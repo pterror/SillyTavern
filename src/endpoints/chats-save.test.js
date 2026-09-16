@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mock, test } from 'node:test';
+import { test } from 'node:test';
 
 import express from 'express';
 
@@ -15,27 +15,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // same as every other route-level test file in this directory (see e.g. groups.test.js's own comment).
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// This session's own fixes to bookmarks.js's legacy JSONL branch/bookmark-creation paths (identifier
-// fabrication cleanup: server-minted branch/bookmark names, integrity slugs, and group-conversion
-// gen_ids instead of client-fabricated ones) only run their new logic when a save actually falls
-// through to the JSONL branch in chats.js's /save and /group/save routes - which only happens when
-// message-tree-db.js's getEntry() finds no usable SQLite backend (see its own "falling back to JSONL"
-// log). This session's own scoping found that's the LIVE path for every legacy/group save in at least
-// one real deployment. Forcing getSqliteEngine() to resolve null here reproduces that condition
-// deterministically, instead of depending on whether this sandbox happens to have a native/wasm SQLite
-// engine available.
-const canMockSqliteEngine = typeof mock.module === 'function';
-if (canMockSqliteEngine) {
-    mock.module('../endpoints/sqlite-engine.js', {
-        namedExports: { getSqliteEngine: async () => null },
-    });
-} else {
-    console.log('chats-legacy-save.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping all legacy-JSONL-path route tests, which need it to force the SQLite-backed message tree unavailable');
-}
-
+// Route-level Express-integration test for /save's and /group/save's unique-name-minting behavior
+// against the real (SQLite-backed) message tree - the only storage path left once chats.js's JSONL
+// fallback was removed. Ported from chats-legacy-save.test.js (deleted alongside this file's
+// addition), which exercised the same pickUniqueChatFileName()/pickUniqueGroupChatId() collision
+// logic but only reachable, before that removal, by mocking getSqliteEngine() to force the
+// now-deleted JSONL fallback. Assertions here read back the real tree (loadBranch()/listBranches())
+// instead of JSONL files on disk, since a save no longer ever produces one.
 const { router: chatsRouter } = await import('./chats.js');
+const { loadBranch, listBranches } = await import('../message-tree-db.js');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chats-legacy-save-test-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chats-save-test-'));
 const chatsDir = path.join(root, 'chats');
 const groupChatsDir = path.join(root, 'groupChats');
 const groupsDir = path.join(root, 'groups');
@@ -76,10 +66,6 @@ async function postJson(app, urlPath, body) {
     }
 }
 
-function readJsonl(filePath) {
-    return fs.readFileSync(filePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-}
-
 function chatHeader(metadata = {}) {
     return { chat_metadata: metadata, user_name: 'unused', character_name: 'unused' };
 }
@@ -92,7 +78,7 @@ function charMsg(text, extra = {}) {
     return { name: 'Bot', is_user: false, is_system: false, mes: text, send_date: 'x', extra };
 }
 
-test('POST /api/chats/save with unique:true keeps a non-colliding name unchanged and mints integrity', { skip: !canMockSqliteEngine }, async () => {
+test('POST /api/chats/save with unique:true keeps a non-colliding name unchanged and mints integrity', async () => {
     const app = buildTestApp();
     const { status, data } = await postJson(app, '/api/chats/save', {
         ch_name: 'Alice',
@@ -108,19 +94,22 @@ test('POST /api/chats/save with unique:true keeps a non-colliding name unchanged
     assert.equal(typeof data.integrity, 'string');
     assert.ok(data.integrity.length > 0);
 
-    const filePath = path.join(chatsDir, 'alice', 'Fresh Chat.jsonl');
-    assert.ok(fs.existsSync(filePath));
-    const [header] = readJsonl(filePath);
-    // The client no longer fabricates chat_metadata.integrity - the value on disk must be the one the
+    const result = await loadBranch(directories, 'alice', 'Fresh Chat');
+    assert.ok(result, 'branch must exist in the tree');
+    // The client no longer fabricates chat_metadata.integrity - the value stored must be the one the
     // server minted and reported back, not something asserted by the caller (there was none here).
-    assert.equal(header.chat_metadata.integrity, data.integrity);
+    assert.equal(result.metadata.integrity, data.integrity);
 });
 
-test('POST /api/chats/save with unique:true mints "<name> - Branch #N" on a real collision, without touching the original file', { skip: !canMockSqliteEngine }, async () => {
+test('POST /api/chats/save with unique:true mints "<name> - Branch #N" on a real collision, without touching the original branch', async () => {
     const app = buildTestApp();
-    const dir = path.join(chatsDir, 'bob');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'Main Chat.jsonl'), `${JSON.stringify(chatHeader({ integrity: 'original-integrity' }))}\n${JSON.stringify(userMsg('untouched'))}\n`);
+    const first = await postJson(app, '/api/chats/save', {
+        ch_name: 'Bob',
+        file_name: 'Main Chat',
+        avatar_url: 'bob.png',
+        chat: [chatHeader({ integrity: 'ignored' }), userMsg('untouched')],
+    });
+    assert.equal(first.data.file_name, 'Main Chat');
 
     const { status, data } = await postJson(app, '/api/chats/save', {
         ch_name: 'Bob',
@@ -134,13 +123,13 @@ test('POST /api/chats/save with unique:true mints "<name> - Branch #N" on a real
     assert.equal(data.ok, true);
     assert.equal(data.file_name, 'Main Chat - Branch #1');
 
-    const originalLines = readJsonl(path.join(dir, 'Main Chat.jsonl'));
-    assert.equal(originalLines[0].chat_metadata.integrity, 'original-integrity');
-    assert.equal(originalLines.length, 2);
+    const original = await loadBranch(directories, 'bob', 'Main Chat');
+    assert.equal(original.messages.length, 1, 'the original branch must be untouched by the collision save');
 
-    const branchLines = readJsonl(path.join(dir, 'Main Chat - Branch #1.jsonl'));
-    assert.equal(branchLines[0].chat_metadata.integrity, data.integrity);
-    assert.equal(branchLines.length, 3);
+    const branch = await loadBranch(directories, 'bob', 'Main Chat - Branch #1');
+    assert.ok(branch);
+    assert.equal(branch.metadata.integrity, data.integrity);
+    assert.equal(branch.messages.length, 2);
 
     // A second collision (both "Main Chat" and "Main Chat - Branch #1" now taken) advances to #2.
     const second = await postJson(app, '/api/chats/save', {
@@ -153,25 +142,6 @@ test('POST /api/chats/save with unique:true mints "<name> - Branch #N" on a real
     assert.equal(second.data.file_name, 'Main Chat - Branch #2');
 });
 
-test('POST /api/chats/save without unique overwrites a same-named file (baseline, unchanged behavior)', { skip: !canMockSqliteEngine }, async () => {
-    const app = buildTestApp();
-    const dir = path.join(chatsDir, 'carol');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'Solo.jsonl'), `${JSON.stringify(chatHeader())}\n${JSON.stringify(userMsg('old'))}\n`);
-
-    const { status, data } = await postJson(app, '/api/chats/save', {
-        ch_name: 'Carol',
-        file_name: 'Solo',
-        avatar_url: 'carol.png',
-        chat: [chatHeader(), userMsg('new')],
-    });
-
-    assert.equal(status, 200);
-    assert.equal(data.file_name, 'Solo');
-    const lines = readJsonl(path.join(dir, 'Solo.jsonl'));
-    assert.equal(lines[1].mes, 'new');
-});
-
 function writeGroupFixture(id, chats) {
     fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify({
         id,
@@ -182,9 +152,14 @@ function writeGroupFixture(id, chats) {
     }));
 }
 
-test('POST /api/chats/group/save with unique:true mints "<id> - Branch #N" against the group\'s own chats list', { skip: !canMockSqliteEngine }, async () => {
+test('POST /api/chats/group/save with unique:true mints "<id> - Branch #N" against the group\'s own chats list', async () => {
     const app = buildTestApp();
     writeGroupFixture('group-1', ['Team Chat']);
+    await postJson(app, '/api/chats/group/save', {
+        id: 'Team Chat',
+        group_id: 'group-1',
+        chat: [chatHeader(), userMsg('hi')],
+    });
 
     const { status, data } = await postJson(app, '/api/chats/group/save', {
         id: 'Team Chat',
@@ -196,8 +171,10 @@ test('POST /api/chats/group/save with unique:true mints "<id> - Branch #N" again
     assert.equal(status, 200);
     assert.equal(data.ok, true);
     assert.equal(data.chat_id, 'Team Chat - Branch #1');
-    assert.ok(fs.existsSync(path.join(groupChatsDir, 'Team Chat - Branch #1.jsonl')));
-    assert.ok(!fs.existsSync(path.join(groupChatsDir, 'Team Chat.jsonl')));
+    const branch = await loadBranch(directories, 'group-1', 'Team Chat - Branch #1');
+    assert.ok(branch);
+    const original = await loadBranch(directories, 'group-1', 'Team Chat');
+    assert.equal(original.messages.length, 1, 'the original branch must be untouched by the collision save');
 
     // The new id must already be registered in the group's own persisted `chats` list from this single
     // request - a caller that used to need a second /api/groups/save-partial round trip just to append
@@ -211,7 +188,7 @@ test('POST /api/chats/group/save with unique:true mints "<id> - Branch #N" again
     assert.equal(groupOnDisk.name, 'Group group-1');
 });
 
-test('POST /api/chats/group/save with a fresh (non-unique) id also registers it in the group\'s chats list', { skip: !canMockSqliteEngine }, async () => {
+test('POST /api/chats/group/save with a fresh (non-unique) id also registers it in the group\'s chats list', async () => {
     const app = buildTestApp();
     writeGroupFixture('group-3', []);
 
@@ -227,7 +204,7 @@ test('POST /api/chats/group/save with a fresh (non-unique) id also registers it 
     assert.deepEqual(groupOnDisk.chats, ['Checkpoint #1']);
 });
 
-test('POST /api/chats/group/save with an already-registered id does not rewrite the group descriptor', { skip: !canMockSqliteEngine }, async () => {
+test('POST /api/chats/group/save with an already-registered id does not rewrite the group descriptor', async () => {
     const app = buildTestApp();
     writeGroupFixture('group-4', ['Ongoing Chat']);
     const groupFilePath = path.join(groupsDir, 'group-4.json');
@@ -246,7 +223,7 @@ test('POST /api/chats/group/save with an already-registered id does not rewrite 
     assert.equal(after, before);
 });
 
-test('POST /api/chats/group/save mints gen_id only for character messages missing one, leaving existing values and user messages untouched', { skip: !canMockSqliteEngine }, async () => {
+test('POST /api/chats/group/save mints gen_id only for character messages missing one, leaving existing values and user messages untouched', async () => {
     const app = buildTestApp();
     writeGroupFixture('group-2', []);
 
@@ -264,13 +241,13 @@ test('POST /api/chats/group/save mints gen_id only for character messages missin
     assert.equal(status, 200);
     assert.equal(data.ok, true);
 
-    const lines = readJsonl(path.join(groupChatsDir, 'group-2-chat.jsonl'));
-    assert.equal(typeof lines[1].extra.gen_id, 'number');
-    assert.equal(lines[2].extra.gen_id, 424242, 'a message\'s real prior gen_id must not be clobbered');
-    assert.equal(lines[3].extra?.gen_id, undefined, 'user messages never get a fabricated gen_id');
+    const branch = await loadBranch(directories, 'group-2', 'group-2-chat');
+    assert.equal(typeof branch.messages[0].extra.gen_id, 'number');
+    assert.equal(branch.messages[1].extra.gen_id, 424242, 'a message\'s real prior gen_id must not be clobbered');
+    assert.equal(branch.messages[2].extra?.gen_id, undefined, 'user messages never get a fabricated gen_id');
 });
 
-test('POST /api/chats/group/save without unique still rejects an id no group claims', { skip: !canMockSqliteEngine }, async () => {
+test('POST /api/chats/group/save without unique still rejects an id no group claims', async () => {
     const app = buildTestApp();
     const { status, data } = await postJson(app, '/api/chats/group/save', {
         id: 'orphan-chat',
@@ -279,4 +256,22 @@ test('POST /api/chats/group/save without unique still rejects an id no group cla
 
     assert.equal(status, 400);
     assert.equal(data.error, 'unknown_group');
+});
+
+test('POST /api/chats/group/save with an empty chat array is a no-op success, not a write', async () => {
+    const app = buildTestApp();
+    writeGroupFixture('group-5', []);
+
+    const { status, data } = await postJson(app, '/api/chats/group/save', {
+        id: 'empty-chat',
+        group_id: 'group-5',
+        chat: [],
+    });
+
+    assert.equal(status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.chat_id, 'empty-chat');
+    assert.equal(data.integrity, undefined);
+    const branches = await listBranches(directories, 'group-5');
+    assert.equal(branches.length, 0, 'nothing should have been saved to the tree');
 });

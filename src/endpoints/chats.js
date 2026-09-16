@@ -19,8 +19,6 @@ import {
     removeOldBackups,
     formatBytes,
     tryWriteFileSync,
-    tryReadFileSync,
-    tryDeleteFile,
     readFirstLine,
     isPathUnderParent,
 } from '../util.js';
@@ -30,8 +28,7 @@ import { readGroupFile, writeGroupFile } from './groups.js';
 import { readCardContent } from './characters.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { migrateOwnerOnTouch } from '../message-tree-migration.js';
-import { upsertChatFromSave, upsertChatFromParse, getChatRow, deleteChatRow, renameChatRow } from '../chat-metadata-db.js';
-import { searchChatMessages } from './chat-content-search-index.js';
+import { upsertChatFromSave } from '../chat-metadata-db.js';
 import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
@@ -567,54 +564,6 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
     });
 }
 
-/**
- * Cache-first counterpart to getChatInfo(): serves a chat's info from the metadata row when its mtime still
- * matches, else falls back to a full parse (caching the result). A cached row only holds the last message's
- * preview, not full text, so callers needing a content `matcher` must call getChatInfo() directly.
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} pathToFile
- * @param {number} mtimeMs The file's current mtime, already known by the caller
- * @param {Record<string, unknown>} [additionalData]
- * @param {boolean} [withMetadata]
- * @returns {Promise<ChatInfo>}
- */
-export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, additionalData = {}, withMetadata = false) {
-    const row = await getChatRow(directories, pathToFile);
-
-    if (row && row.mtime === Math.round(mtimeMs)) {
-        const parsedPath = path.parse(pathToFile);
-        /** @type {ChatInfo} */
-        const chatData = {
-            match: true,
-            file_id: parsedPath.name,
-            file_name: parsedPath.base,
-            file_size: formatBytes(row.file_size),
-            chat_items: row.message_count,
-            mes: row.preview ?? '[The chat is empty]',
-            last_mes: row.last_mes ?? mtimeMs,
-            ...additionalData,
-        };
-        if (withMetadata && row.chat_metadata_json != null && row.chat_metadata_json !== '') {
-            const parsedMetadata = tryParse(row.chat_metadata_json);
-            if (parsedMetadata) {
-                chatData.chat_metadata = parsedMetadata;
-            }
-        }
-        return chatData;
-    }
-
-    const chatInfo = await getChatInfo(pathToFile, additionalData, withMetadata);
-
-    // Not awaited, so a cache miss doesn't pay for the write on top of the parse it just did.
-    if (chatInfo.file_name != null && chatInfo.file_name !== '') {
-        fs.promises.stat(pathToFile)
-            .then(stats => upsertChatFromParse(directories, pathToFile, stats, chatInfo))
-            .catch(err => console.error('[chat-metadata] Failed to cache chat metadata after parse:', err));
-    }
-
-    return chatInfo;
-}
-
 export const router = express.Router();
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
@@ -680,28 +629,29 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
 }
 
 /**
- * Picks a filename that doesn't already exist on disk, for callers that only have a desired base name
- * (e.g. "Some Chat") and want the server - not a client-fetched directory listing - to be the source of
- * truth for uniqueness. Mirrors labelNode()'s "<name> - Branch #N" scheme so branch names look the same
- * whether the chat is tree-stored or still a legacy JSONL file.
- * @param {string} chatDir Directory the chat file would be written into.
+ * Picks a branch name that doesn't already exist for this owner, for callers that only have a desired
+ * base name (e.g. "Some Chat") and want the server - not a client-fetched chat list - to be the source
+ * of truth for uniqueness. Mirrors labelNode()'s "<name> - Branch #N" scheme. Checked against the tree
+ * DB itself (listBranches()), the only place a chat name is actually registered now that /save no
+ * longer ever writes a JSONL file - a directory listing would never find a collision.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} ownerId
  * @param {string} baseName Desired chat name, without extension.
- * @returns {string} `baseName` unchanged if free, otherwise `<baseName> - Branch #N` for the first free N.
+ * @returns {Promise<string>} `baseName` unchanged if free, otherwise `<baseName> - Branch #N` for the first free N.
  */
-function pickUniqueChatFileName(chatDir, baseName) {
-    const exists = (/** @type {string} */ name) => fs.existsSync(path.join(chatDir, sanitize(`${name}.jsonl`)));
-    if (!exists(baseName)) {
+async function pickUniqueChatFileName(directories, ownerId, baseName) {
+    const existing = new Set((await listBranches(directories, ownerId)).map(b => b.name));
+    if (!existing.has(baseName)) {
         return baseName;
     }
     const cleanBase = String(baseName).replace(/ - Branch #\d+$/, '');
     let i = 1;
-    while (exists(`${cleanBase} - Branch #${i}`)) i++;
+    while (existing.has(`${cleanBase} - Branch #${i}`)) i++;
     return `${cleanBase} - Branch #${i}`;
 }
 
 router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const handle = request.user.profile.handle;
         const cardName = String(request.body.avatar_url).replace('.png', '');
         const chatData = request.body.chat;
         let chatName = String(request.body.file_name);
@@ -720,7 +670,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         // A fresh branch/bookmark save asks for a name minted here (like /chats/label's unique:true)
         // instead of asserting a name the client uniquified against its own fetched chat list.
         if (request.body.unique) {
-            chatName = pickUniqueChatFileName(path.join(request.user.directories.chats, cardName), chatName);
+            chatName = await pickUniqueChatFileName(request.user.directories, cardName, chatName);
         }
 
         const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
@@ -735,20 +685,9 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
             });
         }
 
-        // Either no SQLite backend was available (result === null - now impossible at runtime, see
-        // server-main.js's boot-time verifySqliteBackend()) or chatData was empty (result === {
-        // empty: true }). TODO: once the next task removes this JSONL fallback machinery, this route
-        // only needs to handle the empty case.
-        const chatFileName = `${sanitize(chatName)}.jsonl`;
-        const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
-        if (!isPathUnderParent(request.user.directories.chats, chatFilePath)) {
-            return response.sendStatus(400);
-        }
-
-        const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups, request.user.directories);
-        await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
-            console.error(`Could not bump date_last_chat for ${cardName}:`, err));
-        return response.send({ ok: true, integrity, file_name: chatName });
+        // Nothing to save (chatData had no messages beyond the header). Not an error - the client
+        // still expects an { ok: true } response with the name it asked to save under.
+        return response.send({ ok: true, file_name: chatName });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);
@@ -758,27 +697,6 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
     }
 });
-
-/**
- * Gets the chat as an object.
- * @param {string} chatFilePath The full chat file path.
- * @returns {(ChatHeaderLike | TreeChatMessage)[]} If the chatFilePath cannot be read, this will return [].
- */
-export function getChatData(chatFilePath) {
-    /** @type {(ChatHeaderLike | TreeChatMessage)[]} */
-    let chatData = [];
-
-    const chatJSON = tryReadFileSync(chatFilePath) ?? '';
-    if (chatJSON.length > 0) {
-        const lines = chatJSON.split('\n');
-        // Iterate through the array of strings and parse each line as JSON
-        chatData = lines.map(line => tryParse(line)).filter(x => x);
-    } else {
-        console.warn(`File not found: ${chatFilePath}. The chat does not exist or is empty.`);
-    }
-
-    return chatData;
-}
 
 router.post('/get', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -810,30 +728,16 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
             return response.status(404).send({ error: 'not_found' });
         }
 
-        // JSONL fallback path
+        // No file_name: the frontend always sends one, but a direct API caller might not. Ensure the
+        // character's chat directory exists (other routes assume it does) and report an empty chat.
         const directoryPath = path.join(request.user.directories.chats, dirName);
         if (!isPathUnderParent(request.user.directories.chats, directoryPath)) {
             return response.sendStatus(400);
         }
-        const chatDirExists = fs.existsSync(directoryPath);
-
-        if (!chatDirExists) {
+        if (!fs.existsSync(directoryPath)) {
             fs.mkdirSync(directoryPath);
-            return response.send({});
         }
-
-        if (!chatName) {
-            return response.send({});
-        }
-
-        const chatFileName = `${chatName}.jsonl`;
-        const chatFilePath = path.join(directoryPath, sanitize(chatFileName));
-
-        if (!fs.existsSync(chatFilePath)) {
-            return response.status(404).send({ error: 'not_found' });
-        }
-
-        return response.send(getChatData(chatFilePath));
+        return response.send({});
     } catch (error) {
         console.error(error);
         return response.send({});
@@ -861,40 +765,16 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
             });
         }
 
-        if (ownerId != null && ownerId !== '' && await hasSavedChats(request.user.directories, ownerId)) {
-            const newName = String(request.body.renamed_file).replace(/\.jsonl$/, '');
-            const renamed = await renameBranchInTree(request.user.directories, ownerId, oldName, newName);
-            if (renamed) {
-                return response.send({ ok: true, sanitizedFileName: newName });
-            }
+        if (ownerId == null || ownerId === '' || !await hasSavedChats(request.user.directories, ownerId)) {
             return response.status(400).send({ error: true });
         }
 
-        // JSONL fallback
-        const pathToFolder = request.body.is_group
-            ? request.user.directories.groupChats
-            : path.join(request.user.directories.chats, String(request.body.avatar_url).replace('.png', ''));
-        if (!request.body.is_group && !isPathUnderParent(request.user.directories.chats, pathToFolder)) {
-            return response.sendStatus(400);
-        }
-        const pathToOriginalFile = path.join(pathToFolder, sanitize(request.body.original_file));
-        const pathToRenamedFile = path.join(pathToFolder, sanitize(request.body.renamed_file));
-        const sanitizedFileName = path.parse(pathToRenamedFile).name;
-        console.debug('Old chat name', pathToOriginalFile);
-        console.debug('New chat name', pathToRenamedFile);
-
-        if (!fs.existsSync(pathToOriginalFile) || fs.existsSync(pathToRenamedFile)) {
-            console.error('Either Source or Destination files are not available');
+        const newName = String(request.body.renamed_file).replace(/\.jsonl$/, '');
+        const renamed = await renameBranchInTree(request.user.directories, ownerId, oldName, newName);
+        if (!renamed) {
             return response.status(400).send({ error: true });
         }
-
-        fs.copyFileSync(pathToOriginalFile, pathToRenamedFile);
-        fs.unlinkSync(pathToOriginalFile);
-
-        await renameChatRow(request.user.directories, pathToOriginalFile, pathToRenamedFile).catch(err =>
-            console.error('[chat-metadata] Failed to update chat metadata store after rename:', err));
-
-        return response.send({ ok: true, sanitizedFileName });
+        return response.send({ ok: true, sanitizedFileName: newName });
     } catch (error) {
         console.error('Error renaming chat file:', error);
         return response.status(500).send({ error: true });
@@ -913,59 +793,23 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         const activeChats = await getCharacterActiveChatsByIds(request.user.directories, [dirName]);
         const wasActiveChat = activeChats[dirName] === chatName;
 
-        // Tree DB path
-        if (await hasSavedChats(request.user.directories, dirName)) {
-            const deleted = await deleteBranch(request.user.directories, dirName, chatName);
-            if (!deleted) {
-                return response.sendStatus(400);
-            }
-            if (!wasActiveChat) {
-                return response.send({ ok: true });
-            }
-            // Same recency measure listRecentBranches() already sorts by: last_activity (a branch's
-            // leaf message), falling back to the label's own creation time for a branch with no
-            // activity of its own yet.
-            const remaining = await listBranches(request.user.directories, dirName);
-            remaining.sort((a, b) => b.last_activity - a.last_activity);
-            const activeChat = remaining.length ? remaining[0].id : null;
-            await setCharacterActiveChat(request.user.directories, dirName, activeChat);
-            return response.send({ ok: true, activeChat: activeChat ?? '' });
-        }
-
-        // JSONL fallback
-        const chatFileName = String(request.body.chatfile);
-        const chatFilePath = path.join(request.user.directories.chats, dirName, sanitize(chatFileName));
-        if (!isPathUnderParent(request.user.directories.chats, chatFilePath)) {
+        if (!await hasSavedChats(request.user.directories, dirName)) {
             return response.sendStatus(400);
         }
-        if (!tryDeleteFile(chatFilePath)) {
-            console.error('The chat file was not deleted.');
+
+        const deleted = await deleteBranch(request.user.directories, dirName, chatName);
+        if (!deleted) {
             return response.sendStatus(400);
         }
-        await deleteChatRow(request.user.directories, chatFilePath).catch(err =>
-            console.error('[chat-metadata] Failed to update chat metadata store after delete:', err));
-
         if (!wasActiveChat) {
             return response.send({ ok: true });
         }
-
-        const chatsDirectory = path.join(request.user.directories.chats, dirName);
-        /** @type {string[]} */
-        let remainingFiles = [];
-        try {
-            remainingFiles = fs.readdirSync(chatsDirectory, { withFileTypes: true })
-                .filter(file => file.isFile() && path.extname(file.name) === '.jsonl')
-                .map(file => file.name);
-        } catch (err) {
-            console.error('[chats/delete] Failed to list remaining chats after delete:', err);
-        }
-        // File mtime, the same recency measure a fresh JSONL chat list is otherwise sorted by client-side.
-        const remainingWithMtime = (await Promise.allSettled(remainingFiles.map(async file => {
-            const stats = await fs.promises.stat(path.join(chatsDirectory, file));
-            return { file, mtimeMs: stats.mtimeMs };
-        }))).filter(x => x.status === 'fulfilled').map(x => x.value);
-        remainingWithMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
-        const activeChat = remainingWithMtime.length ? path.parse(remainingWithMtime[0].file).name : null;
+        // Same recency measure listRecentBranches() already sorts by: last_activity (a branch's
+        // leaf message), falling back to the label's own creation time for a branch with no
+        // activity of its own yet.
+        const remaining = await listBranches(request.user.directories, dirName);
+        remaining.sort((a, b) => b.last_activity - a.last_activity);
+        const activeChat = remaining.length ? remaining[0].id : null;
         await setCharacterActiveChat(request.user.directories, dirName, activeChat);
         return response.send({ ok: true, activeChat: activeChat ?? '' });
     } catch (error) {
@@ -1493,109 +1337,63 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
         return response.sendStatus(400);
     }
 
-    const ownerId = request.body.is_group ? null : String(request.body.avatar_url).replace('.png', '');
     const chatName = String(request.body.file).replace(/\.jsonl$/, '');
     const exportfilename = request.body.exportfilename;
 
-    // Tree DB path: generates JSONL from tree data on demand.
-    if (ownerId != null && ownerId !== '' && await hasSavedChats(request.user.directories, ownerId)) {
-        try {
-            const result = await loadBranch(request.user.directories, ownerId, chatName);
-            if (!result) {
-                return response.status(404).json({ message: `Branch "${chatName}" not found in tree DB.` });
-            }
+    // The group case previously never reached the tree DB path here (it only checked a non-group
+    // `ownerId`, so group exports always fell through to the now-removed JSONL fallback) - resolving
+    // the owning group the same way /rename and /group/get do closes that gap instead of carrying it
+    // forward as a silent regression once the fallback goes away.
+    const ownerId = request.body.is_group
+        ? (await touchGroupOwner(request.user.directories, { chatId: chatName, groupId: request.body.group_id }))?.id ?? null
+        : String(request.body.avatar_url).replace('.png', '');
 
-            const header = { chat_metadata: result.metadata, user_name: 'unused', character_name: 'unused' };
-            // message-tree-db.js's rowToMessage() always stamps a runtime `node_id` onto every TreeChatMessage
-            // it returns, but that field isn't part of the `TreeChatMessage` JSDoc type itself (cross-file gap
-            // in a file this pass doesn't own) - annotated locally rather than editing message-tree-db.js.
-            const allData = /** @type {(typeof header | (TreeChatMessage & { node_id: string }))[]} */ ([header, ...result.messages]);
-
-            if (request.body.format === 'jsonl') {
-                const jsonl = allData.map(m => {
-                    const clean = /** @type {Record<string, unknown>} */ ({ ...m });
-                    delete clean.node_id; // Strip internal tree field from export
-                    return JSON.stringify(clean);
-                }).join('\n');
-                return response.status(200).json({
-                    message: `Chat saved to ${exportfilename}`,
-                    result: jsonl,
-                });
-            }
-
-            // Plain text export
-            let buffer = '';
-            for (const msg of result.messages) {
-                if (msg.is_system === true) continue;
-                if (msg.mes != null && msg.mes !== '') {
-                    const name = msg.name;
-                    const displayText = msg.extra?.display_text;
-                    const text = (displayText != null && displayText !== '') ? displayText : msg.mes;
-                    const message = text.replace(/\r?\n/g, '\n');
-                    buffer += `${name}: ${message}\n\n`;
-                }
-            }
-            return response.status(200).json({
-                message: `Chat saved to ${exportfilename}`,
-                result: buffer,
-            });
-        } catch (err) {
-            console.error('Tree chat export failed:', err);
-            return response.sendStatus(400);
-        }
+    if (ownerId == null || ownerId === '' || !await hasSavedChats(request.user.directories, ownerId)) {
+        return response.status(404).json({ message: `Could not find chat to export: ${chatName}.` });
     }
 
-    // JSONL fallback path
-    const pathToFolder = request.body.is_group
-        ? request.user.directories.groupChats
-        : path.join(request.user.directories.chats, String(request.body.avatar_url).replace('.png', ''));
-    const filename = path.join(pathToFolder, sanitize(request.body.file));
-    if (!request.body.is_group && !isPathUnderParent(request.user.directories.chats, filename)) {
-        return response.sendStatus(400);
-    }
-    if (!fs.existsSync(filename)) {
-        const errorMessage = {
-            message: `Could not find JSONL file to export. Source chat file: ${filename}.`,
-        };
-        console.error(errorMessage.message);
-        return response.status(404).json(errorMessage);
-    }
     try {
-        if (request.body.format === 'jsonl') {
-            try {
-                const rawFile = fs.readFileSync(filename, 'utf8');
-                return response.status(200).json({
-                    message: `Chat saved to ${exportfilename}`,
-                    result: rawFile,
-                });
-            } catch (err) {
-                console.error(err);
-                return response.status(500).json({
-                    message: `Could not read JSONL file to export. Source chat file: ${filename}.`,
-                });
-            }
+        const result = await loadBranch(request.user.directories, ownerId, chatName);
+        if (!result) {
+            return response.status(404).json({ message: `Branch "${chatName}" not found in tree DB.` });
         }
 
-        const readStream = fs.createReadStream(filename);
-        const rl = readline.createInterface({ input: readStream });
-        let buffer = '';
-        rl.on('line', (line) => {
-            const data = JSON.parse(line);
-            if (data.is_system) return;
-            if (data.mes) {
-                const name = data.name;
-                const message = (data?.extra?.display_text || data?.mes || '').replace(/\r?\n/g, '\n');
-                buffer += (`${name}: ${message}\n\n`);
-            }
-        });
-        rl.on('close', () => {
+        const header = { chat_metadata: result.metadata, user_name: 'unused', character_name: 'unused' };
+        // message-tree-db.js's rowToMessage() always stamps a runtime `node_id` onto every TreeChatMessage
+        // it returns, but that field isn't part of the `TreeChatMessage` JSDoc type itself (cross-file gap
+        // in a file this pass doesn't own) - annotated locally rather than editing message-tree-db.js.
+        const allData = /** @type {(typeof header | (TreeChatMessage & { node_id: string }))[]} */ ([header, ...result.messages]);
+
+        if (request.body.format === 'jsonl') {
+            const jsonl = allData.map(m => {
+                const clean = /** @type {Record<string, unknown>} */ ({ ...m });
+                delete clean.node_id; // Strip internal tree field from export
+                return JSON.stringify(clean);
+            }).join('\n');
             return response.status(200).json({
                 message: `Chat saved to ${exportfilename}`,
-                result: buffer,
+                result: jsonl,
             });
+        }
+
+        // Plain text export
+        let buffer = '';
+        for (const msg of result.messages) {
+            if (msg.is_system === true) continue;
+            if (msg.mes != null && msg.mes !== '') {
+                const name = msg.name;
+                const displayText = msg.extra?.display_text;
+                const text = (displayText != null && displayText !== '') ? displayText : msg.mes;
+                const message = text.replace(/\r?\n/g, '\n');
+                buffer += `${name}: ${message}\n\n`;
+            }
+        }
+        return response.status(200).json({
+            message: `Chat saved to ${exportfilename}`,
+            result: buffer,
         });
     } catch (err) {
-        console.error('chat export failed.', err);
+        console.error('Tree chat export failed:', err);
         return response.sendStatus(400);
     }
 });
@@ -1792,13 +1590,11 @@ router.post('/group/get', async (request, response) => {
                 };
                 return response.send([header, ...result.messages]);
             }
-            // Empty array, not the 404 character /get returns: getGroupChat() reads a miss as "fresh chat"
-            // and seeds it from member greetings, which groups have no isNewChat flag to signal otherwise.
-            return response.send([]);
         }
-
-        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
-        return response.send(getChatData(chatFilePath));
+        // Empty array, not the 404 character /get returns: getGroupChat() reads a miss as "fresh chat"
+        // and seeds it from member greetings, which groups have no isNewChat flag to signal otherwise.
+        // Also what a group not found at all resolves to (no group claims `id`, nothing to load).
+        return response.send([]);
     } catch (error) {
         console.error(error);
         return response.send([]);
@@ -1860,9 +1656,7 @@ router.post('/group/info', async (request, response) => {
             }
         }
 
-        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
-        const chatInfo = await getChatInfo(chatFilePath);
-        return response.send(chatInfo);
+        return response.send({ match: false });
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -1881,13 +1675,6 @@ router.post('/group/delete', async (request, response) => {
         const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
 
         if (group && await deleteBranch(request.user.directories, group.id, id)) {
-            return response.send({ ok: true });
-        }
-
-        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
-        if (tryDeleteFile(chatFilePath)) {
-            await deleteChatRow(request.user.directories, chatFilePath).catch(err =>
-                console.error('[chat-metadata] Failed to update chat metadata store after delete:', err));
             return response.send({ ok: true });
         }
 
@@ -1980,7 +1767,6 @@ router.post('/group/save', async function (request, response) {
         }
 
         let id = String(request.body.id);
-        const handle = request.user.profile.handle;
         const chatData = request.body.chat;
 
         if (!Array.isArray(chatData)) {
@@ -2019,18 +1805,9 @@ router.post('/group/save', async function (request, response) {
             });
         }
 
-        // Either no SQLite backend was available (result === null - now impossible at runtime, see
-        // server-main.js's boot-time verifySqliteBackend()) or chatData was empty (result === {
-        // empty: true }). TODO: once the next task removes this JSONL fallback machinery, this route
-        // only needs to handle the empty case.
-        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
-        const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, id, request.user.directories.backups, request.user.directories);
-        await bumpGroupChatStats(request.user.directories, id, { groupId: request.body.group_id }).catch(err =>
-            console.error(`Could not update group chat stats for ${id}:`, err));
-        await registerGroupChatIdIfNew(request.user.directories, group, id).catch(err =>
-            console.error(`Could not register new chat id "${id}" on group ${group.id}:`, err));
-
-        return response.send({ ok: true, integrity, chat_id: id });
+        // Nothing to save (chatData had no messages beyond the header). Not an error - the client
+        // still expects an { ok: true } response with the id it asked to save under.
+        return response.send({ ok: true, chat_id: id });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);
@@ -2058,206 +1835,47 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             return fragments.every(fragment => textArray.some(text => String(text ?? '').toLowerCase().includes(fragment)));
         };
 
-        // Must run before the JSONL directory scan below: a fully tree-migrated character/group has no
-        // `chats/<owner>` folder on disk at all, so that scan's existsSync() would otherwise short-circuit
-        // this route to an empty result before the tree path gets a chance to run.
-        if (avatar_url || group_id) {
-            const treeMigrated = await isTreeAvailable(request.user.directories);
-            const ownerId = group_id
-                ? (await touchGroupOwner(request.user.directories, { groupId: String(group_id) }))?.id ?? null
-                : String(avatar_url).replace('.png', '');
-
-            if (treeMigrated && ownerId != null && ownerId !== '') {
-                const branches = await searchBranchesByContent(request.user.directories, ownerId, fragments);
-
-                if (branches !== null) {
-                    let results = branches.map(b => ({
-                        node_id: b.id,
-                        file_name: b.name,
-                        file_size: null,
-                        message_count: b.message_count,
-                        last_mes: b.leaf_send_date != null ? b.leaf_send_date : '',
-                        preview_message: getPreviewMessage(b.last_mes ?? undefined),
-                    }));
-
-                    // Also match branch names against the query (content search only covers message text)
-                    if (query) {
-                        const matchedNames = new Set(results.map(r => r.file_name));
-                        const allBranches = fragments.length === 0 ? branches
-                            : await searchBranchesByContent(request.user.directories, ownerId, []);
-
-                        if (allBranches) {
-                            for (const b of allBranches) {
-                                if (!matchedNames.has(b.name) && hasTextMatch([b.name])) {
-                                    results.push({
-                                        node_id: b.id,
-                                        file_name: b.name,
-                                        file_size: null,
-                                        message_count: b.message_count,
-                                        last_mes: b.leaf_send_date != null ? b.leaf_send_date : '',
-                                        preview_message: getPreviewMessage(b.last_mes ?? undefined),
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    const total = results.length;
-                    if (pageSize > 0) {
-                        results = results.slice(page * pageSize, (page + 1) * pageSize);
-                    }
-                    return response.send(results);
-                }
-                // If searchBranchesByContent returned null (DB unavailable), fall through to JSONL logic
-            }
+        if (!avatar_url && !group_id) {
+            return response.send([]);
         }
 
-        // JSONL path, for a globally unavailable tree backend, or an owner the tree has nothing for.
-        /** @type {string[]} */
-        let chatFiles = [];
+        const ownerId = group_id
+            ? (await touchGroupOwner(request.user.directories, { groupId: String(group_id) }))?.id ?? null
+            : String(avatar_url).replace('.png', '');
 
-        if (group_id) {
-            // Find group's chat IDs first
-            const groupDir = path.join(request.user.directories.groups);
-            const groupFiles = fs.readdirSync(groupDir)
-                .filter(file => path.extname(file) === '.json');
-
-            let targetGroup;
-            for (const groupFile of groupFiles) {
-                try {
-                    const groupData = JSON.parse(fs.readFileSync(path.join(groupDir, groupFile), 'utf8'));
-                    if (groupData.id === group_id) {
-                        targetGroup = groupData;
-                        break;
-                    }
-                } catch (error) {
-                    console.warn(groupFile, 'group file is corrupted:', error);
-                }
-            }
-
-            if (!Array.isArray(targetGroup?.chats)) {
-                return response.send([]);
-            }
-
-            // Find group chat files for given group ID
-            const groupChatsDir = path.join(request.user.directories.groupChats);
-            chatFiles = targetGroup.chats
-                .map((/** @type {string} */ chatId) => path.join(groupChatsDir, `${chatId}.jsonl`))
-                .filter((/** @type {string} */ fileName) => fs.existsSync(fileName));
-        } else if (avatar_url) {
-            // Regular character chat directory
-            const character_name = avatar_url.replace('.png', '');
-            const directoryPath = path.join(request.user.directories.chats, character_name);
-
-            if (!fs.existsSync(directoryPath)) {
-                return response.send([]);
-            }
-
-            chatFiles = fs.readdirSync(directoryPath)
-                .filter(file => path.extname(file) === '.jsonl')
-                .map(fileName => path.join(directoryPath, fileName));
+        if (ownerId == null || ownerId === '') {
+            return response.send([]);
         }
 
-        /**
-         * @type {SearchChatResult[]}
-         * @typedef {object} SearchChatResult
-         * @property {string} [file_name] - The name of the chat file
-         * @property {string} [file_size] - The size of the chat file in a human-readable format
-         * @property {number} [message_count] - The number of messages in the chat
-         * @property {number|string} [last_mes] - The timestamp of the last message
-         * @property {string} [preview_message] - A preview of the last message
-         */
-        let results = [];
+        const branches = await searchBranchesByContent(request.user.directories, ownerId, fragments);
+        let results = (branches ?? []).map(b => ({
+            node_id: b.id,
+            file_name: b.name,
+            file_size: null,
+            message_count: b.message_count,
+            last_mes: b.leaf_send_date != null ? b.leaf_send_date : '',
+            preview_message: getPreviewMessage(b.last_mes ?? undefined),
+        }));
 
-        if (query) {
-            // Tries the tantivy message index first; falls back to the full-file scan below if unavailable.
-            const contentSearch = await searchChatMessages(request.user.profile.handle, request.user.directories, query);
+        // Also match branch names against the query (content search only covers message text)
+        if (query && branches !== null) {
+            const matchedNames = new Set(results.map(r => r.file_name));
+            const allBranches = fragments.length === 0 ? branches
+                : await searchBranchesByContent(request.user.directories, ownerId, []);
 
-            if (contentSearch.backend !== 'unavailable') {
-                const scopedFiles = new Set(chatFiles);
-                // resolveHitsToChats() (chat-content-search-index.js, not owned by this pass) declares its
-                // return type without `file_path`, even though it always sets that field on each result -
-                // a JSDoc/implementation gap in that file. Annotated locally rather than editing it.
-                const contentResults = /** @type {(Awaited<ReturnType<typeof searchChatMessages>>['results'][number] & { file_path: string })[]} */ (contentSearch.results);
-                // The index only covers message content, not filenames, so filename matches are still
-                // computed separately here and unioned with the content hits.
-                const contentMatches = contentResults.filter(r => scopedFiles.has(r.file_path));
-                const matchedFilePaths = new Set(contentMatches.map(r => r.file_path));
-
-                for (const chatFile of chatFiles) {
-                    if (matchedFilePaths.has(chatFile)) {
-                        continue;
+            if (allBranches) {
+                for (const b of allBranches) {
+                    if (!matchedNames.has(b.name) && hasTextMatch([b.name])) {
+                        results.push({
+                            node_id: b.id,
+                            file_name: b.name,
+                            file_size: null,
+                            message_count: b.message_count,
+                            last_mes: b.leaf_send_date != null ? b.leaf_send_date : '',
+                            preview_message: getPreviewMessage(b.last_mes ?? undefined),
+                        });
                     }
-                    const fileId = path.parse(chatFile).name;
-                    if (!hasTextMatch([fileId])) {
-                        continue;
-                    }
-                    const stats = await fs.promises.stat(chatFile).catch(() => null);
-                    if (!stats) {
-                        continue;
-                    }
-                    const chatInfo = await getOrComputeChatInfo(request.user.directories, chatFile, stats.mtimeMs, {}, false);
-                    if (chatInfo.file_name == null || chatInfo.file_name === '') {
-                        continue;
-                    }
-                    results.push({
-                        file_name: chatInfo.file_id,
-                        file_size: chatInfo.file_size,
-                        message_count: chatInfo.chat_items,
-                        last_mes: chatInfo.last_mes,
-                        preview_message: getPreviewMessage(chatInfo.mes),
-                    });
                 }
-
-                for (const match of contentMatches) {
-                    results.push({
-                        file_name: match.file_name,
-                        file_size: match.file_size,
-                        message_count: match.message_count,
-                        last_mes: match.last_mes ?? undefined,
-                        preview_message: getPreviewMessage(match.preview_message),
-                    });
-                }
-
-                if (pageSize > 0) {
-                    results = results.slice(page * pageSize, (page + 1) * pageSize);
-                }
-                return response.send(results);
-            }
-        }
-
-        for (const chatFile of chatFiles) {
-            let chatInfo;
-            if (query) {
-                chatInfo = await getChatInfo(chatFile, {}, false, hasTextMatch);
-            } else {
-                const stats = await fs.promises.stat(chatFile).catch(() => null);
-                if (!stats) {
-                    continue;
-                }
-                chatInfo = await getOrComputeChatInfo(request.user.directories, chatFile, stats.mtimeMs, {}, false);
-            }
-            const hasMatch = chatInfo.match === true || hasTextMatch([chatInfo.file_id ?? '']);
-
-            // Skip corrupted or invalid chat files
-            if (chatInfo.file_name == null || chatInfo.file_name === '') {
-                continue;
-            }
-
-            // Empty chats without a file name match are skipped when searching with a query
-            if (query && chatInfo.chat_items === 0 && !hasMatch) {
-                continue;
-            }
-
-            // If no search query or a match was found, include the chat in results
-            if (!query || hasMatch) {
-                results.push({
-                    file_name: chatInfo.file_id,
-                    file_size: chatInfo.file_size,
-                    message_count: chatInfo.chat_items,
-                    last_mes: chatInfo.last_mes,
-                    preview_message: getPreviewMessage(chatInfo.mes),
-                });
             }
         }
 
@@ -2273,23 +1891,9 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
 
 router.post('/recent', async function (request, response) {
     try {
-        /** @typedef {{pngFile?: string, groupId?: string, filePath: string, mtime: number, branch?: import('../message-tree-db.js').BranchView}} ChatFile */
-        /** @type {ChatFile[]} */
-        const allChatFiles = [];
         /** @type {import('../../public/scripts/welcome-screen.js').PinnedChat[]} */
         const pinnedChats = Array.isArray(request.body.pinned) ? request.body.pinned : [];
         const max = parseInt(request.body.max ?? Number.MAX_SAFE_INTEGER) + pinnedChats.length;
-
-        const getTreeBranches = async () => {
-            for (const branch of await listRecentBranches(request.user.directories, max)) {
-                allChatFiles.push({
-                    ...(branch.is_group ? { groupId: branch.owner_id } : { pngFile: `${branch.owner_id}.png` }),
-                    filePath: `${branch.name}.jsonl`,
-                    mtime: branch.last_activity,
-                    branch,
-                });
-            }
-        };
 
         const treeChatInfo = (/** @type {import('../message-tree-db.js').BranchView} */ branch, /** @type {boolean} */ withMetadata) => ({
             node_id: branch.id,
@@ -2302,94 +1906,24 @@ router.post('/recent', async function (request, response) {
             chat_metadata: (withMetadata && branch.metadata != null && branch.metadata !== '') ? JSON.parse(branch.metadata) : undefined,
         });
 
-        const getCharacterChatFiles = async () => {
-            const pngDirents = await fs.promises.readdir(request.user.directories.characters, { withFileTypes: true });
-            const pngFiles = pngDirents.filter(e => e.isFile() && path.extname(e.name) === '.png').map(e => e.name);
+        const branches = await listRecentBranches(request.user.directories, max);
 
-            for (const pngFile of pngFiles) {
-                const chatsDirectory = pngFile.replace('.png', '');
-                const pathToChats = path.join(request.user.directories.chats, chatsDirectory);
-                if (!fs.existsSync(pathToChats)) {
-                    continue;
-                }
-                const pathStats = await fs.promises.stat(pathToChats);
-                if (pathStats.isDirectory()) {
-                    const chatFiles = await fs.promises.readdir(pathToChats);
-                    const jsonlFiles = chatFiles.filter(file => path.extname(file) === '.jsonl');
-
-                    for (const file of jsonlFiles) {
-                        const filePath = path.join(pathToChats, file);
-                        const stats = await fs.promises.stat(filePath);
-                        allChatFiles.push({ pngFile, filePath, mtime: stats.mtimeMs });
-                    }
-                }
-            }
-        };
-
-        const getGroupChatFiles = async () => {
-            const groupDirents = await fs.promises.readdir(request.user.directories.groups, { withFileTypes: true });
-            const groups = groupDirents.filter(e => e.isFile() && path.extname(e.name) === '.json').map(e => e.name);
-
-            for (const group of groups) {
-                try {
-                    const groupPath = path.join(request.user.directories.groups, group);
-                    const groupContents = await fs.promises.readFile(groupPath, 'utf8');
-                    const groupData = JSON.parse(groupContents);
-
-                    if (Array.isArray(groupData.chats)) {
-                        for (const chat of groupData.chats) {
-                            const filePath = path.join(request.user.directories.groupChats, `${chat}.jsonl`);
-                            if (!fs.existsSync(filePath)) {
-                                continue;
-                            }
-                            const stats = await fs.promises.stat(filePath);
-                            allChatFiles.push({ groupId: groupData.id, filePath, mtime: stats.mtimeMs });
-                        }
-                    }
-                } catch (error) {
-                    // Skip group files that can't be read or parsed
-                    continue;
-                }
-            }
-        };
-
-        const getRootChatFiles = async () => {
-            const dirents = await fs.promises.readdir(request.user.directories.chats, { withFileTypes: true });
-            const chatFiles = dirents.filter(e => e.isFile() && path.extname(e.name) === '.jsonl').map(e => e.name);
-
-            for (const file of chatFiles) {
-                const filePath = path.join(request.user.directories.chats, file);
-                const stats = await fs.promises.stat(filePath);
-                allChatFiles.push({ filePath, mtime: stats.mtimeMs });
-            }
-        };
-
-        await Promise.allSettled([getTreeBranches(), getCharacterChatFiles(), getGroupChatFiles(), getRootChatFiles()]);
-
-        const isPinned = (/** @type {ChatFile} */ chatFile) => pinnedChats.some(p => p.file_name === path.basename(chatFile.filePath) && (p.avatar === chatFile.pngFile || p.group === chatFile.groupId));
-        const recentChats = allChatFiles.sort((a, b) => {
+        const isPinned = (/** @type {import('../message-tree-db.js').BranchView} */ branch) => pinnedChats.some(p =>
+            p.file_name === `${branch.name}.jsonl` && (branch.is_group ? p.group === branch.owner_id : p.avatar === `${branch.owner_id}.png`));
+        const recentChats = branches.sort((a, b) => {
             const isAPinned = isPinned(a);
             const isBPinned = isPinned(b);
 
             if (isAPinned && !isBPinned) return -1;
             if (!isAPinned && isBPinned) return 1;
 
-            return b.mtime - a.mtime;
+            return b.last_activity - a.last_activity;
         }).slice(0, max);
-        const jsonFilesPromise = recentChats.map((file) => {
-            const withMetadata = !!request.body.metadata;
-            if (file.branch) {
-                return Promise.resolve(treeChatInfo(file.branch, withMetadata));
-            }
-            return (file.groupId != null && file.groupId !== '')
-                ? getOrComputeChatInfo(request.user.directories, file.filePath, file.mtime, { group: file.groupId }, withMetadata)
-                : getOrComputeChatInfo(request.user.directories, file.filePath, file.mtime, { avatar: file.pngFile }, withMetadata);
-        });
 
-        const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
-        const validFiles = chatData.filter(i => i.file_name != null && i.file_name !== '');
+        const withMetadata = !!request.body.metadata;
+        const chatData = recentChats.map(branch => treeChatInfo(branch, withMetadata));
 
-        return response.send(validFiles);
+        return response.send(chatData);
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
