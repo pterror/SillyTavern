@@ -307,7 +307,7 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode, healUnpersistedTail,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode, healDirtyMessages,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
 } from './scripts/chat-store.js';
 export {
@@ -10477,10 +10477,14 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
     try {
         if (isTreeChat) {
-            // This diff-based reconstruction must stay inline here, not become a separately-callable
-            // function again - its only legitimate caller is the generic save path extensions reach
-            // via getContext().saveChat(). First-party code states its own operations directly via
-            // chat-store.js's chatOp*() family instead.
+            // This diff-based reconstruction is solo-only and kept inline here rather than sharing
+            // chat-store.js's healDirtyMessages() (the same diff, minus this function's mesId/chatData
+            // slicing and metadata-addressing, used by saveChatConditional()'s group branch for the
+            // identical reason: both are reached by getContext().saveChat(), the one generic API every
+            // extension can call regardless of whether it stated any chatOp*() of its own). Left
+            // duplicated rather than refactored onto the shared version to avoid touching this
+            // long-relied-on, extension-facing solo path while fixing the group-side gap - if chatOp*'s
+            // shape changes, healDirtyMessages() needs the same change applied here too.
             const addressedByName = chatName !== undefined;
             const treeAvatar = getCurrentCharacter()?.avatar;
             let treeResult = null;
@@ -13251,12 +13255,14 @@ export async function saveChatConditional() {
         isChatSaving = true;
 
         if (selected_group) {
-            // Every message mutation already persisted itself directly via chatOp*() (chat-store.js) at
-            // its own call site - retry anything that didn't (a dropped chatOpAppend() from a transient
-            // failure - see healUnpersistedTail()'s own doc comment), then this is metadata catch-up
-            // only, mirroring what saveChat()'s tree branch does for solo below.
-            await healUnpersistedTail().catch(error =>
-                console.error('Could not retry an unpersisted message:', error));
+            // Every first-party message mutation already persisted itself directly via chatOp*()
+            // (chat-store.js) at its own call site - but this function is also getContext().saveChat(),
+            // the one generic entry point every extension can call regardless of whether it stated any
+            // op of its own (see healDirtyMessages()'s own doc comment for why groups need the same
+            // diff-catchup solo's saveChat() already provides here, not just a narrower retry). Then
+            // metadata catch-up, mirroring what saveChat()'s tree branch does for solo below.
+            await healDirtyMessages().catch(error =>
+                console.error('Could not sync unsaved changes:', error));
             await saveMetadata();
             // saveGroupChat()'s old shouldSaveGroup=true path bumped this same field the same way
             // (debounced, no reload) after every whole-array resave; keep that bump on its own now that
