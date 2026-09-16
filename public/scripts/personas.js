@@ -2979,8 +2979,15 @@ function registerPersonaSlashCommands() {
  */
 export async function initPersonas() {
     registerPersonaListRedraw();
-    await migrateNonPersonaUser();
     registerPersonaSlashCommands();
+    // migrateNonPersonaUser() is a genuine write (creates + persists a persona record for the current user
+    // avatar) with no user gesture behind it if run unconditionally here on every boot. Defer it to the first
+    // time the user actually opens the Persona Management panel - virtually every persona interaction
+    // (rename, describe, delete, set image, sync name, switch avatar) lives inside that panel, so this is
+    // functionally "first real persona interaction" without needing to hook every mutator individually.
+    $('#persona-management-button .drawer-toggle').one('click', () => {
+        migrateNonPersonaUser().catch(err => console.error('Failed to migrate non-persona user on persona panel open:', err));
+    });
     $('#persona_delete_button').on('click', deleteUserAvatar);
     $('#lock_persona_default').on('click', () => togglePersonaLock('default'));
     $('#lock_user_name').on('click', () => togglePersonaLock('chat'));
