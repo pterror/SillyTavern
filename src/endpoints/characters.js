@@ -1162,7 +1162,7 @@ function processUnsetSentinels(target, source) {
  * @param {((data: any) => boolean) | null} [shouldSkip] Used for bulk merge filtering.
  * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean, hashes?: Object<string, number>}>}
  */
-async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, shouldSkip = null) {
+async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, shouldSkip = null, avatarUpload = null) {
     const pngStringData = await readCardContent(request.user.directories, avatar, avatarPath);
     if (!pngStringData) {
         return { ok: false, error: 'Invalid character file' };
@@ -1226,7 +1226,9 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
     }
 
     const targetImg = avatar.replace('.png', '');
-    await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request, undefined, null, freshFieldPaths);
+    const inputFile = avatarUpload ? path.join(avatarUpload.destination, avatarUpload.filename) : avatarPath;
+    const crop = avatarUpload ? tryParse(request.query.crop) : undefined;
+    await writeCharacterData(inputFile, JSON.stringify(character), targetImg, request, crop, null, freshFieldPaths);
     if (favRequested) {
         await setCharacterFav(request.user.directories, avatar, requestedFav);
     }
@@ -1258,6 +1260,21 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
  */
 router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
+        // A multipart request carrying an avatar file JSON-encodes the rest of the update under `payload`,
+        // since the app-wide multer upload already consumes a field named `avatar` as the file itself.
+        if (request.file && typeof request.body.payload === 'string') {
+            let parsedBody;
+            try {
+                parsedBody = JSON.parse(request.body.payload);
+            } catch {
+                return response.status(400).send({ message: 'Invalid payload JSON' });
+            }
+            if (typeof parsedBody.avatar !== 'string' || forbiddenRegExp.test(parsedBody.avatar)) {
+                return response.status(400).send({ message: 'Invalid avatar filename' });
+            }
+            request.body = parsedBody;
+        }
+
         // ── Bulk mode: avatars array is present ──────────────────
         if (Array.isArray(request.body.avatars)) {
             const { avatars, data, filter } = request.body;
@@ -1326,7 +1343,22 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         const update = request.body;
         const avatarPath = path.join(request.user.directories.characters, update.avatar);
 
-        const result = await mergeCharacterUpdate(avatarPath, update.avatar, update, request);
+        let result;
+        if (request.file) {
+            const uploadPath = path.join(request.file.destination, request.file.filename);
+            try {
+                result = await mergeCharacterUpdate(avatarPath, update.avatar, update, request, null, request.file);
+                if (result.ok) {
+                    invalidateThumbnail(request.user.directories, 'avatar', update.avatar);
+                    cacheBuster.bust(request, response);
+                }
+            } finally {
+                if (fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
+            }
+        } else {
+            result = await mergeCharacterUpdate(avatarPath, update.avatar, update, request);
+        }
+
         if (result.ok) {
             // Additive: only present when the request opted in via _loadedFieldHashes, so a caller that never
             // sends that (and therefore never reads this) sees the exact same `200, no body` shape as before.
