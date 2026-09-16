@@ -1931,7 +1931,7 @@ export async function loadExtensionSettings(settings, versionChanged, enableAuto
     }
 
     if (versionChanged && enableAutoUpdate) {
-        await autoUpdateExtensions(false);
+        await confirmAndAutoUpdateExtensions();
     }
 
     await activateExtensions();
@@ -2103,6 +2103,31 @@ async function checkForExtensionUpdates(force) {
     if (updatesAvailable.length > 0) {
         toastr.info(`${updatesAvailable.map(x => `• ${x}`).join('\n')}`, t`Extension updates available`);
     }
+}
+
+/**
+ * Confirms with the user before running the boot-triggered extension auto-update. Server admins can enable
+ * `enable_extensions_auto_update`, but the actual pull/update of extension code is a write with real effects
+ * (it can change installed code and requires a reload) and until now ran with no user gesture at all whenever
+ * the app version changed. Mirrors the confirm-before-fetching-third-party-code pattern already used for
+ * installExtension() (Popup.show.confirm before installing a URL-supplied extension).
+ * @returns {Promise<void>}
+ */
+async function confirmAndAutoUpdateExtensions() {
+    if (!Object.values(manifests).some(x => x.auto_update)) {
+        return;
+    }
+
+    const confirmation = await Popup.show.confirm(
+        t`Auto-update extensions?`,
+        t`SillyTavern was updated. Some installed extensions are configured to update automatically. Update them now?`,
+    );
+
+    if (!confirmation) {
+        return;
+    }
+
+    await autoUpdateExtensions(false);
 }
 
 /**
