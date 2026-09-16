@@ -448,13 +448,20 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
             }
 
             if (pipelineResult.needsWrite) {
+                // Minted up front (rather than after the build call below) so it can be threaded into
+                // buildPngImportData()/buildJsonImportData() as the character's avatar identity - they use it to
+                // key any imported sprite folder the same way runtime lookup resolves one, instead of the
+                // display name. Cheap even when the build below turns out to fail or return null: mintCharacterId
+                // only checks for an unused id, it doesn't write anything.
+                const pngName = mintCharacterId(directories);
+
                 // png/json: the worker already read/parsed the file, so build the final data here and hand it
                 // back to finish the write, reusing the same buffer - no second read of sourcePath.
                 let data;
                 try {
                     data = format === 'png'
-                        ? buildPngImportData(pipelineResult.rawText, directories)
-                        : buildJsonImportData(pipelineResult.rawText, directories);
+                        ? buildPngImportData(pipelineResult.rawText, directories, pngName)
+                        : buildJsonImportData(pipelineResult.rawText, directories, pngName);
                 } catch (buildErr) {
                     // Must still call finish() here or the worker's pool slot stays stuck "busy" forever.
                     await pipelineResult.finish({ type: 'no-write' }).catch(() => { });
@@ -465,7 +472,6 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     await pipelineResult.finish({ type: 'no-write' });
                     console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
                 } else {
-                    const pngName = mintCharacterId(directories);
                     const destPath = path.join(directories.characters, `${pngName}.png`);
                     await pipelineResult.finish({ type: 'write', destPath, data });
                     await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash);
