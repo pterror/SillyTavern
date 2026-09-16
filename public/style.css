@@ -470,6 +470,12 @@ input[type='checkbox']:focus-visible {
     cursor: default;
 }
 
+/* While the message is being edited, a content-less header is still clickable (it opens the
+   reasoning editor - see the .mes_reasoning_header click handler in reasoning.js). */
+.mes:has(.edit_textarea) .mes_reasoning_details:not([data-has-content="true"]) .mes_reasoning_header {
+    cursor: pointer;
+}
+
 /* TWIMC: Remove with custom CSS to show the icon */
 .mes_reasoning_header>.icon-svg {
     display: none;
@@ -501,8 +507,11 @@ input[type='checkbox']:focus-visible {
     background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 33%, var(--SmartThemeBlurTintColor) 66%);
 }
 
-/* Hide reasoning blocks without content, except the one currently being edited. */
-#chat:not([data-show-hidden-reasoning="true"]) .mes_reasoning_details:not([data-has-content="true"]):not(:has(.reasoning_edit_textarea)) {
+/* Hide reasoning blocks without content, except the one currently being edited, or while the
+   surrounding message itself is being edited - a blank block must stay reachable there, since
+   its header is the only way to open it back up for editing (see .mes_reasoning_header click
+   handler in reasoning.js). */
+#chat:not([data-show-hidden-reasoning="true"]) .mes_reasoning_details:not([data-has-content="true"]):not(:has(.reasoning_edit_textarea)):not(.mes:has(.edit_textarea) .mes_reasoning_details) {
     display: none;
 }
 
