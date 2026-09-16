@@ -4,9 +4,9 @@ import {
     deactivateSendButtons, DEFAULT_SAVE_EDIT_TIMEOUT, deleteLastMessage, depth_prompt_depth_default, depth_prompt_role_default,
     doChatInject, extension_prompts, extension_prompt_types,
     extractImagesFromData, extractJsonFromData, extractMessageFromData, extractMultiSwipes, extractTitleFromData,
-    flushDraftSave, flushWIInjections, formatMessageHistoryItem,
+    flushWIInjections, formatMessageHistoryItem,
     getAllExtensionPrompts, getBiasStrings, getCharacterCardFields, getCurrentCharacter, getCurrentChatId, getCurrentDraftContext,
-    getExtensionPrompt, getExtensionPromptRoleByName, getMaxPromptTokens, getNextMessageId, getRequestHeaders, getSelectionState,
+    getExtensionPrompt, getExtensionPromptRoleByName, getMaxPromptTokens, getNextMessageId, getSelectionState,
     hideStopButton, hideSwipeButtons, isStreamingEnabled,
     main_api, max_context, menu_type, name1, name2, neutralCharacterName, online_status,
     parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, pingServer, processCommands,
@@ -36,11 +36,9 @@ import { deleteItemizedPromptForMessage, itemizedPrompts, saveItemizedPrompts } 
 import { getKoboldGenerationData, kai_flags, kai_settings, koboldai_setting_names, koboldai_settings } from './kai-settings.js';
 import { adjustNovelInstructionPrompt, getNovelGenerationData, nai_settings, novelai_setting_names, novelai_settings } from './nai-settings.js';
 import { user_avatar } from './personas.js';
-import { Popup } from './popup.js';
 import { collapseNewlines, generatedTextFiltered, persona_description_positions, playMessageSound, power_user, renderStoryString } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';
 import { extractReasoningFromData, extractReasoningSignatureFromData, PromptReasoning } from './reasoning.js';
-import { compressRequest } from './request-compression.js';
 import { sendSystemMessage, system_message_types } from './system-messages.js';
 import { getTextGenGenerationData, textgenerationwebui_settings as textgen_settings } from './textgen-settings.js';
 import { getFriendlyTokenizerName, getTokenCountAsync, saveTokenCache } from './tokenizers.js';
@@ -2742,16 +2740,6 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         return;
     }
 
-    // A tree-backed chat needs no name/id pointer to save under: the block below addresses every
-    // write by each message's own real node id, falling back to `fileName` only as a last resort
-    // that's unreachable once any message has actually persisted. The legacy JSONL path has no such
-    // fallback - it truly cannot save without a name.
-    const isTreeChat = !!metadata._tree_stored && !Array.isArray(chatData);
-    if ((fileName == null || fileName === '') && !isTreeChat) {
-        console.warn('saveChat called without chat_name and no chat file found');
-        return;
-    }
-
     // getCurrentCharacter() is typed `Character|undefined` (script.js); the `getSelectionState()`
     // bail-out above only covers the "no selection AND neutral name" case, so a real "no character"
     // state could in principle still reach here - a pre-existing assumption (this call already threw
@@ -2764,146 +2752,60 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             ? chat.slice(0, Number(mesId) + 1)
             : chat.slice();
 
-    /** @type {ChatHeader} */
-    const chatHeader = {
-        chat_metadata: metadata,
-        user_name: 'unused',
-        character_name: 'unused',
-    };
-
     try {
-        if (isTreeChat) {
-            // `heal` is true when this call arrived via getContext().saveChat() (st-context.js) - the
-            // one truly generic entry point where a third-party extension may have mutated `chat[]`
-            // directly, without stating any chatOp*() of its own, and so can't be assumed to already be
-            // in sync - or via StreamingProcessor.onFinishStreaming()'s own no-assistant-node-id
-            // fallback, whose trailing message is an unstated mutation for the same reason (see that
-            // call site's own comment). Every OTHER first-party save (send, edit, swipe reaching this
-            // function via saveChatConditional()) never sets it: their mutation already persisted
-            // itself directly via its own chatOp*() call, and a write that fails now says so immediately
-            // (_chatOpPost()'s own failure reporting) instead of relying on this function to notice
-            // later. chat-store.js's healDirtyMessages() is that diff; it's owner-agnostic, but this
-            // function is solo-only (see the guard at the top), so it only ever runs it for the solo
-            // case here - see saveChatConditional() for where the identical `heal` flag applies to a
-            // group instead.
-            if (heal) {
-                await healDirtyMessages().catch(error =>
-                    console.error('[saveChat] Could not sync unstated changes:', error));
-            }
-
-            const addressedByName = chatName !== undefined;
-            const treeAvatar = getCurrentCharacter()?.avatar;
-            let hasPersistedOpening = false;
-            if (treeAvatar != null) {
-                const hasPersisted = trimmedChat.some(m => isStoredNodeId(m.node_id));
-
-                if (hasPersisted) {
-                    hasPersistedOpening = true;
-                    const position = getCurrentCharacter()?.chat;
-                    const opening = chat[0]?.node_id;
-                    const target = addressedByName
-                        ? fileName
-                        : (chat.some(m => m.node_id === position) ? position
-                            : (isStoredNodeId(opening) ? opening : fileName));
-
-                    // Delegates to _postChatMetadata() (this same file, below) instead of POSTing
-                    // directly, so this and saveMetadata()'s own calls share one serialized
-                    // _metadataSaveChain - see that variable's doc comment for why two unserialized
-                    // metadata saves racing each other produces a false-positive integrity 409.
-                    // `target` can be statically `undefined` here (e.g. `!addressedByName` with no
-                    // matching in-chat position and no persisted opening's node_id, falling through to
-                    // `fileName`, which is itself only guaranteed non-empty when `!isTreeChat` - see the
-                    // guard above) - a pre-existing edge case, not introduced by this typing pass;
-                    // _postChatMetadata()'s own `{string}` param type is left accurate rather than
-                    // widened to paper over it, so the mismatch stays visible at this call site.
-                    await _postChatMetadata({ avatar_url: treeAvatar }, /** @type {string} */ (target), metadata);
-                }
-            }
-
-            if (hasPersistedOpening) {
-                _snapshotMessages();
-            } else {
-                // An opening with no node_id has never touched the tree - opening this chat is a selection, not a write.
-                console.debug('[saveChat] Tree chat has no persisted opening; nothing to save yet.');
-            }
-            return;
+        // `heal` is true when this call arrived via getContext().saveChat() (st-context.js) - the
+        // one truly generic entry point where a third-party extension may have mutated `chat[]`
+        // directly, without stating any chatOp*() of its own, and so can't be assumed to already be
+        // in sync - or via StreamingProcessor.onFinishStreaming()'s own no-assistant-node-id
+        // fallback, whose trailing message is an unstated mutation for the same reason (see that
+        // call site's own comment). Every OTHER first-party save (send, edit, swipe reaching this
+        // function via saveChatConditional()) never sets it: their mutation already persisted
+        // itself directly via its own chatOp*() call, and a write that fails now says so immediately
+        // (_chatOpPost()'s own failure reporting) instead of relying on this function to notice
+        // later. chat-store.js's healDirtyMessages() is that diff; it's owner-agnostic, but this
+        // function is solo-only (see the guard at the top), so it only ever runs it for the solo
+        // case here - see saveChatConditional() for where the identical `heal` flag applies to a
+        // group instead.
+        if (heal) {
+            await healDirtyMessages().catch(error =>
+                console.error('[saveChat] Could not sync unstated changes:', error));
         }
 
-        // `isTreeChat` is always false here - the tree-chat branch above returns before this point -
-        // so this legacy JSONL save always sends the full messages, never the slim stubs.
-        const payloadMessages = trimmedChat;
+        const addressedByName = chatName !== undefined;
+        const treeAvatar = getCurrentCharacter()?.avatar;
+        let hasPersistedOpening = false;
+        if (treeAvatar != null) {
+            const hasPersisted = trimmedChat.some(m => isStoredNodeId(m.node_id));
 
-        // Same pre-existing "assumed selected" invariant as the charactersStore.update() call above.
-        const currentCharacter = /** @type {Character} */ (getCurrentCharacter());
-        const bodyJson = JSON.stringify({
-            ch_name: currentCharacter.name,
-            file_name: fileName,
-            chat: [chatHeader, ...payloadMessages],
-            avatar_url: currentCharacter.avatar,
-            force: force,
-            unique: unique,
-        });
-        const saveChatRequest = await compressRequest({
-            method: 'POST',
-            cache: 'no-cache',
-            headers: getRequestHeaders(),
-            body: bodyJson,
-        });
-        const result = await fetch('/api/chats/save', saveChatRequest);
+            if (hasPersisted) {
+                hasPersistedOpening = true;
+                const position = getCurrentCharacter()?.chat;
+                const opening = chat[0]?.node_id;
+                const target = addressedByName
+                    ? fileName
+                    : (chat.some(m => m.node_id === position) ? position
+                        : (isStoredNodeId(opening) ? opening : fileName));
 
-        if (result.ok) {
-            const data = await result.json().catch(() => null);
-            if (data && typeof data.integrity === 'string') {
-                chat_metadata.integrity = data.integrity;
+                // Delegates to _postChatMetadata() (this same file, below) instead of POSTing
+                // directly, so this and saveMetadata()'s own calls share one serialized
+                // _metadataSaveChain - see that variable's doc comment for why two unserialized
+                // metadata saves racing each other produces a false-positive integrity 409.
+                // `target` can be statically `undefined` here (e.g. `!addressedByName` with no
+                // matching in-chat position and no persisted opening's node_id, falling through to
+                // `fileName`, which can itself be empty) - a pre-existing edge case, not introduced
+                // by this typing pass; _postChatMetadata()'s own `{string}` param type is left
+                // accurate rather than widened to paper over it, so the mismatch stays visible at
+                // this call site.
+                await _postChatMetadata({ avatar_url: treeAvatar }, /** @type {string} */ (target), metadata);
             }
-
-            // The server may have renamed this to stay unique (only asked for via `unique`) - adopt
-            // whatever it actually saved under instead of assuming the name this call proposed.
-            const savedFileName = (data && typeof data.file_name === 'string' && data.file_name) ? data.file_name : fileName;
-
-            if (Array.isArray(data?.assigned_node_ids)) {
-                for (const { index, node_id } of data.assigned_node_ids) {
-                    if (index < chat.length) {
-                        updateMessage(index, { node_id });
-                    }
-                }
-
-                // Rows came back, so this chat now lives in the tree - a character with no prior history would otherwise stay treated as file-backed.
-                chat_metadata._tree_stored = true;
-                // `isTreeChat` reflects the state at the top of this function, before this save could
-                // have minted these rows - it's always false down here (the tree-chat branch above
-                // returns early), so checking it here would never snapshot a chat that just became
-                // tree-stored, leaving it permanently seen as dirty by the slim-wire-payload diff.
-                _snapshotMessages();
-            }
-            return savedFileName;
         }
 
-        const errorData = await result.json();
-        const isIntegrityError = errorData?.error === 'integrity' && !force;
-        if (!isIntegrityError) {
-            throw new Error(result.statusText);
+        if (hasPersistedOpening) {
+            _snapshotMessages();
+        } else {
+            // An opening with no node_id has never touched the tree - opening this chat is a selection, not a write.
+            console.debug('[saveChat] Tree chat has no persisted opening; nothing to save yet.');
         }
-
-        const popupResult = await Popup.show.input(
-            t`ERROR: Chat integrity check failed while saving the file.`,
-            t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-              <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-            '',
-            { okButton: 'OK', cancelButton: false },
-        );
-
-        const forceSaveConfirmed = popupResult === 'OVERWRITE';
-
-        if (!forceSaveConfirmed) {
-            console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
-            // This reload skips the normal debounced save, so flush the draft synchronously first.
-            flushDraftSave();
-            window.location.reload();
-            return;
-        }
-
-        await saveChat({ chatName, withMetadata, mesId, force: true });
     } catch (error) {
         console.error(error);
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);
