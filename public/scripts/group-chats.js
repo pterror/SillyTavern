@@ -102,6 +102,7 @@ export {
     group_generation_id,
     groups,
     saveGroupChat,
+    saveGroupField,
     generateGroupWrapper,
     deleteGroup,
     getGroupAvatar,

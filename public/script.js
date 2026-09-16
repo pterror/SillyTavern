@@ -58,6 +58,7 @@ import {
     groupsStore,
     selected_group,
     saveGroupChat,
+    saveGroupField,
     getGroups,
     generateGroupWrapper,
     is_group_generating,
@@ -13162,24 +13163,16 @@ function _handleMetadataIntegrityConflict() {
     toastr.warning(t`This chat's metadata was changed in another tab or session. Reload the page to see the latest version.`, t`Metadata save rejected`);
 }
 
-// Persists chat_metadata alone, without dragging the per-message diff a full tree save would do. Falls back to the whole-chat save for anything it can't address directly.
-export async function saveMetadata() {
-    const metadata = chat_metadata;
-
-    if (selected_group) {
-        return await saveGroupChat(selected_group, true);
-    }
-
-    const avatar = getCurrentCharacter()?.avatar;
-    if (!avatar || !metadata?._tree_stored) {
-        return;
-    }
-
-    const position = getCurrentCharacter()?.chat;
-    const opening = chat[0]?.node_id;
-    const target = chat.some(m => m.node_id === position) ? position : (isStoredNodeId(opening) ? opening : null);
-    if (!target) {
-        console.warn('[saveMetadata] No valid node to address this chat by - nothing to save metadata onto yet.');
+/**
+ * POSTs one owner's chat_metadata to /api/chats/metadata, with the same retry-then-toast policy for
+ * both solo and group chats.
+ * @param {{avatar_url: string}|{group_id: string}} owner
+ * @param {string} target The node/label this chat is addressed by (character.chat, or group.chat_id).
+ * @param {object} metadata
+ */
+async function _postChatMetadata(owner, target, metadata) {
+    const metadataContentJSON = _metadataContentJSON(metadata);
+    if (metadataContentJSON === _lastSavedMetadataJSON) {
         return;
     }
 
@@ -13187,7 +13180,7 @@ export async function saveMetadata() {
         const response = await fetch('/api/chats/metadata', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, file_name: target, metadata, expected_integrity: metadata?.integrity }),
+            body: JSON.stringify({ ...owner, file_name: target, metadata, expected_integrity: metadata?.integrity }),
         });
         if (response.status === 409) {
             _handleMetadataIntegrityConflict();
@@ -13207,12 +13200,42 @@ export async function saveMetadata() {
             chat_metadata.integrity = result.integrity;
         }
         if (result) {
-            _lastSavedMetadataJSON = _metadataContentJSON(metadata);
+            _lastSavedMetadataJSON = metadataContentJSON;
         }
     } catch (error) {
         console.error('[saveMetadata] Failed to save metadata after retrying:', error);
         toastr.error(t`Could not save chat metadata. Check your connection and try again.`, t`Save failed`);
     }
+}
+
+// Persists chat_metadata alone, without dragging the per-message diff (or, for a group, the whole-array
+// resave) a full save would do.
+export async function saveMetadata() {
+    const metadata = chat_metadata;
+
+    if (selected_group) {
+        const group = groupsStore.get(selected_group);
+        if (!group?.chat_id) {
+            console.warn('[saveMetadata] Group has no current chat_id - nothing to save metadata onto yet.');
+            return;
+        }
+        return await _postChatMetadata({ group_id: selected_group }, group.chat_id, metadata);
+    }
+
+    const avatar = getCurrentCharacter()?.avatar;
+    if (!avatar || !metadata?._tree_stored) {
+        return;
+    }
+
+    const position = getCurrentCharacter()?.chat;
+    const opening = chat[0]?.node_id;
+    const target = chat.some(m => m.node_id === position) ? position : (isStoredNodeId(opening) ? opening : null);
+    if (!target) {
+        console.warn('[saveMetadata] No valid node to address this chat by - nothing to save metadata onto yet.');
+        return;
+    }
+
+    return await _postChatMetadata({ avatar_url: avatar }, target, metadata);
 }
 
 export async function saveChatConditional() {
@@ -13229,7 +13252,14 @@ export async function saveChatConditional() {
         isChatSaving = true;
 
         if (selected_group) {
-            await saveGroupChat(selected_group, true);
+            // Every message mutation already persisted itself directly via chatOp*() (chat-store.js) at
+            // its own call site - this is metadata catch-up only, mirroring what saveChat()'s tree
+            // branch does for solo below.
+            await saveMetadata();
+            // saveGroupChat()'s old shouldSaveGroup=true path bumped this same field the same way
+            // (debounced, no reload) after every whole-array resave; keep that bump on its own now that
+            // the resave it rode along with is gone.
+            await saveGroupField(selected_group, { date_last_chat: Date.now() }, false, false);
         } else {
             await saveChat();
         }
