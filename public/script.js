@@ -8321,23 +8321,80 @@ function reloadLoop() {
     }
 }
 
-//MARK: getSettings()
-///////////////////////////////////////////
-export async function getSettings(initLoaderHandle = null, onStageChange = null) {
-    const response = await fetch('/api/settings/get', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({}),
-        cache: 'no-cache',
-    });
+/**
+ * Cached result of the last successful POST /api/settings/get, and the in-flight request for one
+ * currently underway (if any). getSettings() itself is the only caller that runs at a point where
+ * this data can actually be stale (after a save conflict), and it always passes `force: true`.
+ * Every other caller - including extensions like quick-reply, which activate synchronously inside
+ * getSettings()'s own call chain (getSettings -> loadExtensionSettings -> activateExtensions ->
+ * an extension's init()) and so want the exact response getSettings() just fetched - can safely
+ * reuse this cache instead of issuing their own separate ~60KB POST for identical data.
+ * @type {{data: any}|null}
+ */
+let rawSettingsCache = null;
+/** @type {Promise<any>|null} */
+let rawSettingsFetchPromise = null;
 
-    if (!response.ok) {
-        reloadLoop();
-        toastr.error(t`Settings could not be loaded after multiple attempts. Please try again later.`);
-        throw new Error('Error getting settings');
+/**
+ * Fetches the raw POST /api/settings/get payload (settings.json plus companion catalogs like
+ * world_names, quickReplyPresets, presets, etc).
+ * @param {object} [options]
+ * @param {boolean} [options.force=false] Bypass the cache and fetch fresh data (for callers that
+ * know the cached copy may be stale, e.g. after a save conflict).
+ * @returns {Promise<any>} Parsed JSON response body
+ */
+export function fetchRawSettings({ force = false } = {}) {
+    if (force) {
+        rawSettingsCache = null;
     }
 
-    const data = await response.json();
+    if (rawSettingsCache) {
+        return Promise.resolve(rawSettingsCache.data);
+    }
+
+    if (rawSettingsFetchPromise) {
+        return rawSettingsFetchPromise;
+    }
+
+    rawSettingsFetchPromise = (async () => {
+        try {
+            const response = await fetch('/api/settings/get', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({}),
+                cache: 'no-cache',
+            });
+
+            if (!response.ok) {
+                throw new Error('Error getting settings');
+            }
+
+            const data = await response.json();
+            rawSettingsCache = { data };
+            return data;
+        } finally {
+            rawSettingsFetchPromise = null;
+        }
+    })();
+
+    return rawSettingsFetchPromise;
+}
+
+//MARK: getSettings()
+///////////////////////////////////////////
+export async function getSettings(initLoaderHandle = null, onStageChange = null, { force = false } = {}) {
+    let data;
+    try {
+        data = await fetchRawSettings({ force });
+    } catch (error) {
+        reloadLoop();
+        toastr.error(t`Settings could not be loaded after multiple attempts. Please try again later.`);
+        throw error;
+    }
+    return await applySettings(data, initLoaderHandle, onStageChange);
+}
+
+async function applySettings(data, initLoaderHandle = null, onStageChange = null) {
     if (data.result != 'file not find' && data.settings) {
         knownServerSettingsHash = data.settingsHash;
         settings = JSON.parse(data.settings);
@@ -8608,7 +8665,7 @@ async function performSave() {
                 const data = await result.json().catch(() => ({}));
                 console.warn('Partial settings save rejected, conflicting keys:', data.conflictingKeys);
                 toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
-                await getSettings();
+                await getSettings(null, null, { force: true });
                 return;
             }
 
@@ -8648,7 +8705,7 @@ async function performSave() {
             if (result.status === 409) {
                 console.warn('Settings save rejected: local view of settings was stale, refreshing from server.');
                 toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
-                await getSettings();
+                await getSettings(null, null, { force: true });
                 return;
             }
 
@@ -8701,7 +8758,7 @@ export async function savePartialSettings(partialSettings) {
         // Refetch and let the caller/user redo the change, rather than risk re-clobbering the other session's write.
         console.warn('Partial settings save rejected, conflicting keys:', data.conflictingKeys);
         toastr.warning(t`Settings were changed in another tab or device. Refreshing - please reapply your change.`, t`Settings save rejected`);
-        await getSettings();
+        await getSettings(null, null, { force: true });
         return false;
     }
 
