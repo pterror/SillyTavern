@@ -8,7 +8,12 @@ import { updateMessage } from './chat-store.js';
 import { isProvisionalNodeId } from './node-identity.js';
 import { _snapshotMessages } from './generation.js';
 
-// Switches to a sibling's path; nothing is removed from the database, so swiping back reaches the old alternative's children again.
+/**
+ * Switches to a sibling's path; nothing is removed from the database, so swiping back reaches the old alternative's children again.
+ * @param {number} mesId
+ * @param {number} swipeId
+ * @returns {Promise<boolean>}
+ */
 export async function switchToAlternativePath(mesId, swipeId) {
     const message = chat[mesId];
     const targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
@@ -72,8 +77,11 @@ export async function switchToAlternativePath(mesId, swipeId) {
     return true;
 }
 
-// Moves the character's chat pointer onto targetNodeId. An unstored (provisional) node has nothing
-// persisted server-side to point at yet, so it's skipped, matching switchToAlternativePath()'s guard.
+/**
+ * Moves the character's chat pointer onto targetNodeId. An unstored (provisional) node has nothing
+ * persisted server-side to point at yet, so it's skipped, matching switchToAlternativePath()'s guard.
+ * @param {string} targetNodeId
+ */
 async function _persistNodeSelection(targetNodeId) {
     const avatar = getCurrentCharacter()?.avatar;
     if (!avatar || isProvisionalNodeId(targetNodeId)) {
@@ -91,7 +99,11 @@ async function _persistNodeSelection(targetNodeId) {
     }
 }
 
-// Jumps to any node in the open tree-backed chat without a full reload. Solo tree-backed chats only; returns false so the caller can fall back to a full open.
+/**
+ * Jumps to any node in the open tree-backed chat without a full reload. Solo tree-backed chats only; returns false so the caller can fall back to a full open.
+ * @param {string} targetNodeId
+ * @returns {Promise<boolean>}
+ */
 export async function switchToNode(targetNodeId) {
     if (selected_group || !chat_metadata?._tree_stored || chat.length === 0) {
         return false;
