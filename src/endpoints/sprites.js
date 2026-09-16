@@ -8,6 +8,8 @@ import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { getImageBuffers } from '../util.js';
+import { downloadChubLorebook } from './content-manager.js';
+import { importWorldInfoFromRaw } from './worldinfo.js';
 
 /**
  * Gets the path to the sprites folder for the provided character name
@@ -242,6 +244,55 @@ export function importChubExpressions(directories, data) {
         (async () => {
             for (const [spritesPath, label, expressionsMap] of jobs) {
                 await downloadChubExpressionPack(spritesPath, label, expressionsMap);
+            }
+        })();
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+/**
+ * Downloads any Chub lorebooks linked to a locally-imported character (as opposed to embedded
+ * in the card) and writes them into the user's worlds directory. The live /importURL and
+ * /importUUID paths surface this same data (`definition.extensions.chub.related_lorebooks`, see
+ * content-manager.js's downloadChubCharacter()) as an X-Related-Lorebook-Paths response header
+ * for the client to fetch one-by-one via /importChubLorebookByPath - there is no such round trip
+ * available mid file-import, so this downloads and persists them directly instead, the same way
+ * importChubExpressions() above downloads a card's embedded expression packs during local import.
+ *
+ * Detached/best-effort like importChubExpressions(): fires background network fetches and does
+ * not await them, so it never blocks or fails the character import itself.
+ *
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {object} data Character data (V2/V3 spec)
+ * @returns {void}
+ */
+export function importChubRelatedLorebooks(directories, data) {
+    try {
+        const chubExt = data?.data?.extensions?.chub;
+        if (!chubExt) {
+            return;
+        }
+
+        /** @type {string[]} */
+        const relatedLorebookPaths = (chubExt.related_lorebooks ?? [])
+            .map(entry => entry?.path)
+            .filter(Boolean);
+
+        if (relatedLorebookPaths.length === 0) {
+            return;
+        }
+
+        // Detached on purpose - see doc comment above. Errors are logged, never thrown upward.
+        // Sequential (not Promise.all) to keep concurrent outbound fetches bounded.
+        (async () => {
+            for (const lorebookPath of relatedLorebookPaths) {
+                try {
+                    const result = await downloadChubLorebook(lorebookPath);
+                    importWorldInfoFromRaw(directories, result.fileName, result.buffer.toString('utf8'));
+                } catch (error) {
+                    console.error(`Failed to import related Chub lorebook "${lorebookPath}"`, error);
+                }
             }
         })();
     } catch (error) {
