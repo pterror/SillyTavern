@@ -1528,9 +1528,24 @@ router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async funct
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
  */
+/** Sets favorite status. Accepts `{ avatar, fav }` for one character or `{ bulk: [{ avatar, fav }, ...] }` for a batch. */
 router.post('/fav', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
-        const { avatar, fav } = request.body ?? {};
+        const { avatar, fav, bulk } = request.body ?? {};
+
+        if (Array.isArray(bulk)) {
+            const results = [];
+            for (const entry of bulk) {
+                if (typeof entry.avatar !== 'string' || !entry.avatar) {
+                    results.push({ avatar: entry.avatar, ok: false });
+                    continue;
+                }
+                const updated = await setCharacterFav(request.user.directories, entry.avatar, entry.fav === true || entry.fav === 'true');
+                results.push({ avatar: entry.avatar, ok: updated });
+            }
+            return response.send({ results });
+        }
+
         if (typeof avatar !== 'string' || !avatar) {
             return response.status(400).send({ error: true, reason: 'avatar-required' });
         }
@@ -1604,35 +1619,71 @@ router.post('/allow-global-styles', async function (request, response) {
     }
 });
 
-router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
-    if (!request.body || !request.body.avatar_url) {
-        return response.sendStatus(400);
-    }
-
-    if (request.body.avatar_url !== sanitize(request.body.avatar_url)) {
+/**
+ * Deletes a single character avatar (and optionally its chats directory) from disk.
+ * @param {import('express').Request} request The HTTP request object (used for `request.user.directories`).
+ * @param {string} avatarUrl Avatar filename of the character to delete.
+ * @param {boolean} deleteChats Whether to also remove the character's chats directory.
+ * @returns {Promise<{ok: true}|{ok: false, status: number}>}
+ */
+async function deleteOneCharacter(request, avatarUrl, deleteChats) {
+    if (avatarUrl !== sanitize(avatarUrl)) {
         console.error('Malicious filename prevented');
-        return response.sendStatus(403);
+        return { ok: false, status: 403 };
     }
 
-    const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
+    const avatarPath = path.join(request.user.directories.characters, avatarUrl);
     if (!fs.existsSync(avatarPath)) {
-        return response.sendStatus(400);
+        return { ok: false, status: 400 };
     }
 
-    const dir_name = request.body.avatar_url.replace('.png', '');
+    const dir_name = avatarUrl.replace('.png', '');
 
     fs.unlinkSync(avatarPath);
-    invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
-    await deleteCharacterRow(request.user.directories, request.body.avatar_url).catch(err =>
+    invalidateThumbnail(request.user.directories, 'avatar', avatarUrl);
+    await deleteCharacterRow(request.user.directories, avatarUrl).catch(err =>
         console.error('[character-metadata] Failed to update metadata store after a character delete (the reconciler will catch it):', err));
 
-    if (request.body.delete_chats == true && dir_name) {
+    if (deleteChats && dir_name) {
         try {
             await fs.promises.rm(path.join(request.user.directories.chats, sanitize(dir_name)), { recursive: true, force: true });
         } catch (err) {
             console.error(err);
-            return response.sendStatus(500);
+            return { ok: false, status: 500 };
         }
+    }
+
+    return { ok: true };
+}
+
+router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
+    if (!request.body) {
+        return response.sendStatus(400);
+    }
+
+    // ── Bulk mode: avatar_urls array is present ──────────────────
+    if (Array.isArray(request.body.avatar_urls)) {
+        const avatarUrls = request.body.avatar_urls;
+        const deleteChats = request.body.delete_chats == true;
+        const results = [];
+        for (const avatarUrl of avatarUrls) {
+            if (typeof avatarUrl !== 'string' || !avatarUrl || forbiddenRegExp.test(avatarUrl)) {
+                results.push({ avatar_url: avatarUrl, ok: false });
+                continue;
+            }
+            const result = await deleteOneCharacter(request, avatarUrl, deleteChats);
+            results.push({ avatar_url: avatarUrl, ok: result.ok });
+        }
+        return response.send({ results });
+    }
+
+    if (!request.body.avatar_url) {
+        return response.sendStatus(400);
+    }
+
+    const result = await deleteOneCharacter(request, request.body.avatar_url, request.body.delete_chats == true);
+    if (!result.ok) {
+        return response.sendStatus(result.status);
     }
 
     return response.sendStatus(200);
@@ -2931,74 +2982,109 @@ router.post('/import', async function (request, response) {
     }
 });
 
+/**
+ * Duplicates a single character avatar on disk, re-stamping metadata as needed.
+ * @param {import('express').Request} request The HTTP request object (used for `request.user.directories`).
+ * @param {string} avatarUrl Avatar filename of the character to duplicate.
+ * @returns {Promise<{ok: true, newAvatar: string}|{ok: false, status: number, error: string}>}
+ */
+async function duplicateOneCharacter(request, avatarUrl) {
+    let filename = path.join(request.user.directories.characters, sanitize(avatarUrl));
+    if (!fs.existsSync(filename)) {
+        console.error('file for dupe not found', filename);
+        return { ok: false, status: 404, error: 'not found' };
+    }
+
+    // If filename ends with a _number, increment the number. The suffix regex is capped to safe-integer
+    // length so `suffix++` always advances (an uncapped/loose parse could produce a non-advancing suffix,
+    // e.g. NaN or a float-precision-stuck value, and wedge the loop below in a synchronous existsSync spin).
+    const nameParts = path.basename(filename, path.extname(filename)).split('_');
+    const lastPart = nameParts[nameParts.length - 1];
+    // 15 digits is comfortably inside Number.MAX_SAFE_INTEGER (16 digits) even after +1.
+    const isStrictInteger = /^\d{1,15}$/.test(lastPart);
+
+    let suffix = 1;
+    let baseName;
+
+    if (isStrictInteger && nameParts.length > 1) {
+        suffix = parseInt(lastPart, 10) + 1;
+        baseName = nameParts.slice(0, -1).join('_'); // construct baseName without suffix
+    } else {
+        baseName = nameParts.join('_'); // original filename is completely the baseName
+    }
+
+    let newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
+
+    // No legitimate library needs more than this many same-named duplicates in one chain; this also
+    // bounds the loop by iteration count rather than by the value of `suffix`, so it can't spin forever
+    // even if `suffix` were somehow to stop advancing.
+    const MAX_DUPLICATE_ATTEMPTS = 10000;
+    let attempts = 0;
+    while (fs.existsSync(newFilename)) {
+        suffix++;
+        attempts++;
+        if (attempts > MAX_DUPLICATE_ATTEMPTS) {
+            console.error(`Too many duplicate suffixes for ${baseName}, giving up after ${MAX_DUPLICATE_ATTEMPTS} attempts`);
+            return { ok: false, status: 500, error: 'Too many duplicates with this name' };
+        }
+        newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
+    }
+
+    fs.copyFileSync(filename, newFilename);
+    console.info(`${filename} was copied to ${newFilename}`);
+
+    // A raw byte copy also copies the source's tEXt chunk, which may be stale - re-stamp the copy with
+    // the source's authoritative content when that's the case, so the duplicate isn't silently a copy of
+    // a pre-edit card. writeCardToFile() only rewrites when there's genuinely something to correct.
+    const sourceParked = await getCharacterCardJson(request.user.directories, path.basename(filename));
+    if (sourceParked !== null) {
+        await writeCardToFile(filename, newFilename, sourceParked, null);
+    }
+
+    // /duplicate is a raw file copy, not a re-encode, so it doesn't go through writeCharacterData() and
+    // needs its own metadata-store upsert here.
+    const newAvatar = path.parse(newFilename).base;
+    const rawData = await readCharacterData(newFilename);
+    if (rawData !== undefined) {
+        await fireMetadataUpsertHook(request.user.directories, newAvatar, rawData);
+    }
+
+    return { ok: true, newAvatar };
+}
+
 router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, response) {
     try {
+        // ── Bulk mode: avatar_urls array is present ──────────────
+        if (Array.isArray(request.body.avatar_urls)) {
+            const avatarUrls = request.body.avatar_urls;
+            const results = [];
+            for (const avatarUrl of avatarUrls) {
+                if (typeof avatarUrl !== 'string' || !avatarUrl || forbiddenRegExp.test(avatarUrl)) {
+                    results.push({ avatar_url: avatarUrl, ok: false, error: 'invalid avatar_url' });
+                    continue;
+                }
+                const result = await duplicateOneCharacter(request, avatarUrl);
+                if (result.ok) {
+                    results.push({ avatar_url: avatarUrl, ok: true, path: result.newAvatar });
+                } else {
+                    results.push({ avatar_url: avatarUrl, ok: false, error: result.error });
+                }
+            }
+            return response.send({ results });
+        }
+
         if (!request.body.avatar_url) {
             console.warn('avatar URL not found in request body');
             console.debug(request.body);
             return response.sendStatus(400);
         }
-        let filename = path.join(request.user.directories.characters, sanitize(request.body.avatar_url));
-        if (!fs.existsSync(filename)) {
-            console.error('file for dupe not found', filename);
-            return response.sendStatus(404);
+
+        const result = await duplicateOneCharacter(request, request.body.avatar_url);
+        if (!result.ok) {
+            return response.status(result.status).send({ error: true, message: result.error });
         }
 
-        // If filename ends with a _number, increment the number. The suffix regex is capped to safe-integer
-        // length so `suffix++` always advances (an uncapped/loose parse could produce a non-advancing suffix,
-        // e.g. NaN or a float-precision-stuck value, and wedge the loop below in a synchronous existsSync spin).
-        const nameParts = path.basename(filename, path.extname(filename)).split('_');
-        const lastPart = nameParts[nameParts.length - 1];
-        // 15 digits is comfortably inside Number.MAX_SAFE_INTEGER (16 digits) even after +1.
-        const isStrictInteger = /^\d{1,15}$/.test(lastPart);
-
-        let suffix = 1;
-        let baseName;
-
-        if (isStrictInteger && nameParts.length > 1) {
-            suffix = parseInt(lastPart, 10) + 1;
-            baseName = nameParts.slice(0, -1).join('_'); // construct baseName without suffix
-        } else {
-            baseName = nameParts.join('_'); // original filename is completely the baseName
-        }
-
-        let newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
-
-        // No legitimate library needs more than this many same-named duplicates in one chain; this also
-        // bounds the loop by iteration count rather than by the value of `suffix`, so it can't spin forever
-        // even if `suffix` were somehow to stop advancing.
-        const MAX_DUPLICATE_ATTEMPTS = 10000;
-        let attempts = 0;
-        while (fs.existsSync(newFilename)) {
-            suffix++;
-            attempts++;
-            if (attempts > MAX_DUPLICATE_ATTEMPTS) {
-                console.error(`Too many duplicate suffixes for ${baseName}, giving up after ${MAX_DUPLICATE_ATTEMPTS} attempts`);
-                return response.status(500).send({ error: true, message: 'Too many duplicates with this name' });
-            }
-            newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
-        }
-
-        fs.copyFileSync(filename, newFilename);
-        console.info(`${filename} was copied to ${newFilename}`);
-
-        // A raw byte copy also copies the source's tEXt chunk, which may be stale - re-stamp the copy with
-        // the source's authoritative content when that's the case, so the duplicate isn't silently a copy of
-        // a pre-edit card. writeCardToFile() only rewrites when there's genuinely something to correct.
-        const sourceParked = await getCharacterCardJson(request.user.directories, path.basename(filename));
-        if (sourceParked !== null) {
-            await writeCardToFile(filename, newFilename, sourceParked, null);
-        }
-
-        // /duplicate is a raw file copy, not a re-encode, so it doesn't go through writeCharacterData() and
-        // needs its own metadata-store upsert here.
-        const newAvatar = path.parse(newFilename).base;
-        const rawData = await readCharacterData(newFilename);
-        if (rawData !== undefined) {
-            await fireMetadataUpsertHook(request.user.directories, newAvatar, rawData);
-        }
-
-        response.send({ path: newAvatar });
+        response.send({ path: result.newAvatar });
     } catch (error) {
         console.error(error);
         return response.send({ error: true });

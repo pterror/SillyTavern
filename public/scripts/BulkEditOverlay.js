@@ -60,6 +60,35 @@ class CharacterContextMenu {
     };
 
     /**
+     * Duplicate one or more characters in a single batch request.
+     *
+     * @param {string[]} avatars
+     * @returns {Promise<void>}
+     */
+    static duplicateBulk = async (avatars) => {
+        if (avatars.length === 0) return;
+
+        const result = await fetch('/api/characters/duplicate', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_urls: avatars }),
+        });
+
+        if (!result.ok) {
+            throw new Error('Characters not duplicated');
+        }
+
+        const data = await result.json();
+        for (const entry of data.results ?? []) {
+            if (entry.ok) {
+                await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: entry.avatar_url, newAvatar: entry.path });
+            } else {
+                toastr.error(t`Failed to duplicate character ${entry.avatar_url}.`);
+            }
+        }
+    };
+
+    /**
      * Favorite a character
      * and highlight it.
      *
@@ -85,6 +114,46 @@ class CharacterContextMenu {
         if (character.data?.extensions) character.data.extensions.fav = newFavState;
         const element = document.querySelector(`[data-avatar="${CSS.escape(avatar)}"]`);
         element?.classList.toggle('is_fav');
+    };
+
+    /**
+     * Toggle favorite status for one or more characters in a single batch request.
+     *
+     * @param {string[]} avatars
+     * @returns {Promise<void>}
+     */
+    static favoriteBulk = async (avatars) => {
+        if (avatars.length === 0) return;
+
+        const characters = avatars.map(avatar => CharacterContextMenu.#getCharacter(avatar)).filter(Boolean);
+        const bulk = characters.map(character => ({ avatar: character.avatar, fav: !character.fav }));
+
+        const favResponse = await fetch('/api/characters/fav', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ bulk }),
+        });
+
+        if (!favResponse.ok) {
+            toastr.error(t`Failed to update favorite status.`);
+            return;
+        }
+
+        const data = await favResponse.json();
+        const okAvatars = new Set((data.results ?? []).filter(entry => entry.ok).map(entry => entry.avatar));
+
+        for (const character of characters) {
+            if (!okAvatars.has(character.avatar)) {
+                toastr.error(t`Failed to update favorite status for ${character.avatar}.`);
+                continue;
+            }
+
+            const newFavState = !character.fav;
+            character.fav = newFavState;
+            if (character.data?.extensions) character.data.extensions.fav = newFavState;
+            const element = document.querySelector(`[data-avatar="${CSS.escape(character.avatar)}"]`);
+            element?.classList.toggle('is_fav');
+        }
     };
 
     /**
@@ -771,29 +840,23 @@ class BulkEditOverlay {
     };
 
     /**
-     * Concurrently handle character favorite requests.
+     * Batch-handle character favorite requests in a single request.
      *
      * @returns {Promise<void>}
      */
     handleContextMenuFavorite = async () => {
-        const promises = [];
-
-        for (const characterId of this.selectedCharacters) {
-            promises.push(CharacterContextMenu.favorite(characterId));
-        }
-
-        await Promise.allSettled(promises);
+        await CharacterContextMenu.favoriteBulk(this.selectedCharacters);
         await getCharacters();
         await favsToHotswap();
         this.browseState();
     };
 
     /**
-     * Concurrently handle character duplicate requests.
+     * Batch-handle character duplicate requests in a single request.
      *
-     * @returns {Promise<number>}
+     * @returns {Promise<void>}
      */
-    handleContextMenuDuplicate = () => Promise.all(this.selectedCharacters.map(async characterId => CharacterContextMenu.duplicate(characterId)))
+    handleContextMenuDuplicate = () => CharacterContextMenu.duplicateBulk(this.selectedCharacters)
         .then(() => getCharacters())
         .then(() => this.browseState());
 

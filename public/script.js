@@ -15468,26 +15468,49 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
     /** @type {{avatar: string, entity: object}[]} */
     const removedCharacters = [];
 
+    /** @type {object[]} */
+    const characters = [];
     for (const key of characterKey) {
         const character = charactersStore.get(key);
         if (!character) {
             toastr.warning(t`Character ${key} not found. Skipping deletion.`);
             continue;
         }
+        characters.push(character);
+    }
 
-        const pastChats = await getPastCharacterChats(character.avatar);
+    if (characters.length === 0) {
+        await removeCharacterFromUI(removedCharacters);
+        return deleted;
+    }
 
-        const msg = { avatar_url: character.avatar, delete_chats: deleteChats };
+    // Only needed when chats are actually being deleted (to fire per-chat CHAT_DELETED events below),
+    // so skip the fetch entirely otherwise. Fetched in parallel across characters since there's no batch endpoint for it.
+    const pastChatsByAvatar = new Map();
+    if (deleteChats) {
+        const pastChatsResults = await Promise.all(characters.map(character => getPastCharacterChats(character.avatar)));
+        characters.forEach((character, index) => pastChatsByAvatar.set(character.avatar, pastChatsResults[index]));
+    }
 
-        const response = await fetch('/api/characters/delete', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(msg),
-            cache: 'no-cache',
-        });
+    const response = await fetch('/api/characters/delete', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar_urls: characters.map(character => character.avatar), delete_chats: deleteChats }),
+        cache: 'no-cache',
+    });
 
-        if (!response.ok) {
-            toastr.error(`${response.status} ${response.statusText}`, t`Failed to delete character`);
+    if (!response.ok) {
+        toastr.error(`${response.status} ${response.statusText}`, t`Failed to delete characters`);
+        await removeCharacterFromUI(removedCharacters);
+        return deleted;
+    }
+
+    const data = await response.json();
+    const okAvatars = new Set((data.results ?? []).filter(entry => entry.ok).map(entry => entry.avatar_url));
+
+    for (const character of characters) {
+        if (!okAvatars.has(character.avatar)) {
+            toastr.error(t`Failed to delete character ${character.name}`);
             continue;
         }
 
@@ -15497,6 +15520,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         select_rm_info('char_delete', character.name);
 
         if (deleteChats) {
+            const pastChats = pastChatsByAvatar.get(character.avatar) ?? [];
             for (const chat of pastChats) {
                 const name = chat.file_name.replace('.jsonl', '');
                 await eventSource.emit(event_types.CHAT_DELETED, name);
