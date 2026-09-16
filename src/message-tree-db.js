@@ -365,32 +365,36 @@ export function sanitizeUserMessageExtra(extra) {
  * @returns {AlternativesExpansion}
  */
 function alternativesFromMessage(msg) {
-    const rawSwipes = Array.isArray(msg?.swipes) ? msg.swipes : null;
-    if (!rawSwipes || rawSwipes.length === 0) {
-        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0], nodeIds: [msg?.node_id ?? null] };
+    const rawSwipes = Array.isArray(msg.swipes) ? msg.swipes : null;
+    if (rawSwipes === null || rawSwipes.length === 0) {
+        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0], nodeIds: [msg.node_id ?? null] };
     }
 
     // A hole means "not sent to the client", not "delete it" — skip it, but keep `origIndex` so
     // position-matching callers still see its original slot in the sparse `swipes` array.
     const rawSel = Number.isInteger(msg.swipe_id) ? msg.swipe_id : 0;
-    const rawInfo = /** @type {TreeSwipeInfo[]} */ (Array.isArray(msg.swipe_info) ? msg.swipe_info : []);
-    /** @type {{ text: string, info: TreeSwipeInfo, wasSelected: boolean, origIndex: number, nodeId: string | null }[]} */
+    // Indexed at the same `i` as `rawSwipes`, but `swipe_info` can legitimately be shorter (or have
+    // holes) than `swipes`, so an out-of-bounds/missing slot is a real `undefined`, not just a type
+    // formality - every access below has to treat it as possibly absent.
+    const rawInfo = /** @type {(TreeSwipeInfo | undefined)[]} */ (Array.isArray(msg.swipe_info) ? msg.swipe_info : []);
+    /** @type {{ text: string, info: TreeSwipeInfo | undefined, wasSelected: boolean, origIndex: number, nodeId: string | null }[]} */
     const kept = [];
     for (let i = 0; i < rawSwipes.length; i++) {
         if (typeof rawSwipes[i] !== 'string') continue;
+        const slotInfo = rawInfo[i];
         kept.push({
             text: rawSwipes[i],
-            info: rawInfo[i],
+            info: slotInfo,
             wasSelected: i === rawSel,
             origIndex: i,
             // Only slots the client actually received carry a node id; a fabricated slot can't claim an existing row.
-            nodeId: (rawInfo[i] && typeof rawInfo[i] === 'object' && rawInfo[i].node_id)
-                ? (rawInfo[i].node_id ?? null)
-                : (i === rawSel ? (msg?.node_id ?? null) : null),
+            nodeId: (slotInfo && typeof slotInfo === 'object' && slotInfo.node_id != null)
+                ? slotInfo.node_id
+                : (i === rawSel ? (msg.node_id ?? null) : null),
         });
     }
     if (kept.length === 0) {
-        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0], nodeIds: [msg?.node_id ?? null] };
+        return { contents: [sanitizeForStorage(msg)], selected: 0, origIndices: [0], nodeIds: [msg.node_id ?? null] };
     }
     const swipes = kept.map(k => k.text);
     const info = kept.map(k => k.info);
@@ -399,7 +403,7 @@ function alternativesFromMessage(msg) {
 
     const def = msg.swipe_speaker_default;
     const defName = def && def.name !== undefined ? def.name : msg.name;
-    const defIsUser = def ? !!def.is_user : !!msg.is_user;
+    const defIsUser = def ? (def.is_user ?? false) : (msg.is_user ?? false);
 
     const contents = swipes.map((text, i) => {
         const alt = { ...msg };
@@ -439,7 +443,7 @@ function rowToMessage(row, siblings) {
     const msg = JSON.parse(row.content);
     msg.node_id = row.id;
 
-    if (siblings && siblings.length > 1) {
+    if (siblings.length > 1) {
         // Sent at full length but with holes (only a window around selected carries text) so
         // swipes.length/swipe_id keep working everywhere unchanged; text fills in on demand via /api/chats/alternatives.
         const idx = siblings.findIndex(s => s.id === row.id);
@@ -463,7 +467,7 @@ function rowToMessage(row, siblings) {
         }
     }
 
-    if (row.label) {
+    if (row.label !== null) {
         if (!msg.extra || typeof msg.extra !== 'object') msg.extra = {};
         msg.extra.bookmark_link = row.label;
     }
@@ -543,7 +547,7 @@ function insertMessageSync(db, { id, parentId, ownerId, content, label, createdA
         {
             id,
             parentId: parentId ?? null,
-            identityHash: parentId ? identityHashOf(parentId, content) : null,
+            identityHash: parentId != null ? identityHashOf(parentId, content) : null,
             ownerId,
             content,
             label: label ?? null,
@@ -574,7 +578,7 @@ function wouldBlankStoredText(stored, incoming) {
  */
 function updateMessageContentSync(db, id, content) {
     const row = /** @type {Pick<MessageRow, 'parent_id'> | undefined} */ (db.get('SELECT parent_id FROM messages WHERE id = @id', { id }));
-    const identityHash = row?.parent_id ? identityHashOf(row.parent_id, content) : null;
+    const identityHash = row?.parent_id != null ? identityHashOf(row.parent_id, content) : null;
     db.run('UPDATE messages SET content = @content, identity_hash = @identityHash WHERE id = @id',
         { id, content, identityHash });
 }
@@ -603,7 +607,7 @@ function setMetadataSync(db, id, metadata) {
  * @returns {string | null}
  */
 function readIntegritySync(row) {
-    if (!row?.metadata) return null;
+    if (row?.metadata == null) return null;
     try {
         const parsed = JSON.parse(row.metadata);
         return typeof parsed?.integrity === 'string' ? parsed.integrity : null;
@@ -620,7 +624,7 @@ function readIntegritySync(row) {
  * @returns {boolean}
  */
 function setDefaultChildSync(db, parentId, childId) {
-    if (!parentId || !childId) return false;
+    if (parentId == null || childId == null) return false;
     // Must be a genuine child — refuse rather than leave a parent pointing outside its own subtree.
     const child = /** @type {Pick<MessageRow, 'parent_id'> | undefined} */ (db.get('SELECT parent_id FROM messages WHERE id = @childId', { childId }));
     if (!child || child.parent_id !== parentId) return false;
@@ -699,7 +703,7 @@ function descendDefaultSync(db, nodeId) {
     for (;;) {
         const row = /** @type {Pick<MessageRow, 'default_child_id'> | undefined} */ (db.get('SELECT default_child_id FROM messages WHERE id = @id', { id: current }));
         const next = row?.default_child_id;
-        if (!next || seen.has(next)) return current;
+        if (next == null || seen.has(next)) return current;
         const exists = db.get('SELECT 1 AS ok FROM messages WHERE id = @id', { id: next });
         if (!exists) return current;
         seen.add(next);
@@ -717,11 +721,11 @@ function firstUnlabeledOnPathSync(db, nodeId) {
     /** @type {string | null} */
     let current = nodeId;
     const seen = new Set();
-    while (current && !seen.has(current)) {
+    while (current !== null && !seen.has(current)) {
         seen.add(current);
         const row = /** @type {Pick<MessageRow, 'label' | 'default_child_id'> | undefined} */ (db.get('SELECT label, default_child_id FROM messages WHERE id = @id', { id: current }));
         if (!row) return null;
-        if (!row.label) return current;
+        if (row.label === null) return current;
         current = row.default_child_id;
     }
     return null;
@@ -735,7 +739,7 @@ function firstUnlabeledOnPathSync(db, nodeId) {
  * @returns {Pick<MessageRow, 'id' | 'content'>[]}
  */
 function getSiblingsSync(db, parentId, nodeId) {
-    if (!parentId) {
+    if (parentId == null) {
         return /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (db.all('SELECT id, content FROM messages WHERE id = @nodeId', { nodeId }));
     }
     return /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (db.all(
@@ -785,7 +789,7 @@ function branchViewSync(db, node) {
     let meta = null;
     /** @type {0 | 1} */
     let isGroup = 0;
-    if (node.metadata) {
+    if (node.metadata !== null) {
         meta = node.metadata;
         try { isGroup = JSON.parse(node.metadata)?.__is_group ? 1 : 0; } catch { /* keep 0 */ }
     }
@@ -860,10 +864,10 @@ function hasBranchesSync(db, ownerId) {
  */
 function createBranchSync(db, { leafId, name, isGroup, metadata }) {
     let metaJson = metadata ?? null;
-    if (isGroup) {
+    if (isGroup ?? false) {
         /** @type {Record<string, any>} */
         let obj = {};
-        try { obj = metaJson ? JSON.parse(metaJson) : {}; } catch { obj = {}; }
+        try { obj = metaJson !== null ? JSON.parse(metaJson) : {}; } catch { obj = {}; }
         obj.__is_group = true;
         metaJson = JSON.stringify(obj);
     }
@@ -989,7 +993,7 @@ function buildPathMessages(db, rows, branchName = null) {
     const siblingsByParent = getSiblingsBatchSync(db, rows.map(r => r.parent_id));
     const messages = rows.map(r => rowToMessage(
         r,
-        r.parent_id ? (siblingsByParent.get(r.parent_id) ?? [{ id: r.id, content: r.content }]) : [{ id: r.id, content: r.content }],
+        r.parent_id !== null ? (siblingsByParent.get(r.parent_id) ?? [{ id: r.id, content: r.content }]) : [{ id: r.id, content: r.content }],
     ));
 
     const childIds = getChildIdsBatchSync(db, rows.map(r => r.id));
@@ -1002,7 +1006,7 @@ function buildPathMessages(db, rows, branchName = null) {
         const names = [];
         for (const { branches } of getForkSiblingsSync(db, rows[i].id)) {
             for (const b of branches) {
-                if (b.name && b.name !== branchName && !names.includes(b.name)) names.push(b.name);
+                if (b.name !== null && b.name !== branchName && !names.includes(b.name)) names.push(b.name);
             }
         }
         if (names.length > 0) {
@@ -1046,7 +1050,7 @@ export async function loadBranch(directories, ownerId, branchName) {
 
     /** @type {ChatMetadata} */
     let metadata = {};
-    if (node.metadata) {
+    if (node.metadata !== null) {
         try { metadata = JSON.parse(node.metadata); } catch { metadata = {}; }
     }
     delete metadata.__is_group;
@@ -1078,7 +1082,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
 
     const header = /** @type {ChatHeaderLike} */ (chatData[0]);
     const messages = /** @type {TreeChatMessage[]} */ (chatData.slice(1));
-    const metadata = { ...(header?.chat_metadata || {}) };
+    const metadata = { ...(header.chat_metadata ?? {}) };
 
     const nextIntegrity = crypto.randomUUID();
     metadata.integrity = nextIntegrity;
@@ -1104,12 +1108,12 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             const msg = messages[i];
 
             // Unchanged stub, or a message we already have: keep the row, just re-point the parent.
-            if (msg.node_id) {
+            if (msg.node_id != null) {
                 const known = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'content' | 'label'> | undefined} */ (
                     entry.db.get('SELECT id, parent_id, content, label FROM messages WHERE id = @id', { id: msg.node_id })
                 );
                 if (known) {
-                    if (!msg._unchanged && known.parent_id === parentId) {
+                    if (msg._unchanged !== true && known.parent_id === parentId) {
                         const { contents, selected, nodeIds } = alternativesFromMessage(msg);
                         // Match incoming alternatives to existing siblings by POSITION (original swipe-array
                         // slot), not text identity, so an edit to a non-selected alternative updates its row
@@ -1121,7 +1125,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         for (let k = 0; k < contents.length; k++) {
                             const c = contents[k];
                             const claimedId = nodeIds[k];
-                            const existing = claimedId ? sibById.get(claimedId) : null;
+                            const existing = claimedId !== null ? sibById.get(claimedId) : null;
 
                             /** @type {string} */
                             let sid;
@@ -1160,7 +1164,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         const newLabel = msg.extra?.bookmark_link || null;
                         if (known.label !== newLabel && newLabel !== null) labelMessageSync(entry.db, chosenId, newLabel);
                         setDefaultChildSync(entry.db, parentId, chosenId);
-                        if (!firstId) firstId = chosenId;
+                        if (firstId === null) firstId = chosenId;
                         parentId = chosenId;
                         continue;
                     }
@@ -1168,14 +1172,14 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                     // old branch — fall through and write a fresh row under the new parent instead.
                     if (known.parent_id === parentId) {
                         setDefaultChildSync(entry.db, parentId, known.id);
-                        if (!firstId) firstId = known.id;
+                        if (firstId === null) firstId = known.id;
                         parentId = known.id;
                         continue;
                     }
                 }
             }
 
-            if (msg._unchanged) continue; // stub for a row we can't resolve — nothing to write
+            if (msg._unchanged === true) continue; // stub for a row we can't resolve — nothing to write
 
             const { contents, selected } = alternativesFromMessage(msg);
             const existingSibs = getSiblingsSync(entry.db, parentId, '');
@@ -1186,7 +1190,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                 const c = contents[k];
                 const ck = nodeIdentityKey(parentId, c);
                 let sid = byContent.get(ck);
-                if (!sid) {
+                if (sid === undefined) {
                     sid = newId();
                     insertMessageSync(entry.db, {
                         id: sid,
@@ -1206,19 +1210,19 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
             const resolvedChosenId = /** @type {string} */ (chosenId);
             assignedNodeIds.push({ index: i, node_id: resolvedChosenId });
             setDefaultChildSync(entry.db, parentId, resolvedChosenId);
-            if (!firstId) firstId = resolvedChosenId;
+            if (firstId === null) firstId = resolvedChosenId;
             parentId = resolvedChosenId;
         }
 
         if (existingNode) {
             setMetadataSync(entry.db, existingNode.id, metadataJson);
-        } else if (firstId) {
+        } else if (firstId !== null) {
             // Label the first message of the new chain. If that node is already another chat's entry
             // point (two chats can open on byte-identical messages, e.g. shared group greetings), labeling
             // it would silently rename the older chat away — instead take the first unlabeled node on this
             // chat's own path, or report failure if the whole path is already claimed.
             const target = firstUnlabeledOnPathSync(entry.db, firstId);
-            if (target) {
+            if (target !== null) {
                 db_label(entry.db, target, chatName, metadataJson);
             } else {
                 console.error(color.red(`[message-tree] Could not name chat "${chatName}" for ${ownerId}: every node on its path is already another chat's entry point. The messages are stored; the name is not.`));
@@ -1310,7 +1314,7 @@ export async function listRecentBranches(directories, max) {
         }
     }
 
-    branches.sort((a, b) => (b.last_activity ?? 0) - (a.last_activity ?? 0));
+    branches.sort((a, b) => b.last_activity - a.last_activity);
     return branches.slice(0, limit);
 }
 
@@ -1403,7 +1407,7 @@ export async function labelNode(directories, nodeId, label, { ownerId, unique = 
     if (!msg) return { ok: false };
 
     let resolvedLabel = label;
-    if (unique && label && ownerId) {
+    if (unique && label !== null && label !== '' && ownerId !== undefined) {
         const existingLabels = new Set(listLabeledNodesSync(entry.db, ownerId).map(n => n.label));
         if (existingLabels.has(resolvedLabel)) {
             const baseLabel = String(label).replace(/ - Branch #\d+$/, '');
@@ -1466,7 +1470,7 @@ export async function selectDefaultChild(directories, childId) {
     if (!entry) return false;
 
     const child = /** @type {Pick<MessageRow, 'id' | 'parent_id'> | undefined} */ (entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id', { id: childId }));
-    if (!child || !child.parent_id) return false;
+    if (!child || child.parent_id === null) return false;
 
     setDefaultChildSync(entry.db, child.parent_id, childId);
     return true;
@@ -1507,7 +1511,7 @@ export async function getAlternatives(directories, nodeId, range = {}) {
     const node = /** @type {Pick<MessageRow, 'id' | 'parent_id'> | undefined} */ (entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id', { id: nodeId }));
     if (!node) return null;
 
-    const siblings = /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (node.parent_id
+    const siblings = /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (node.parent_id !== null
         ? entry.db.all(
             'SELECT id, content FROM messages WHERE parent_id = @p ORDER BY created_at ASC, id ASC',
             { p: node.parent_id })
@@ -1515,7 +1519,9 @@ export async function getAlternatives(directories, nodeId, range = {}) {
 
     const selected = siblings.findIndex(s => s.id === nodeId);
     const from = Math.max(0, range.offset ?? 0);
-    const to = range.limit ? from + range.limit : siblings.length;
+    // `limit: 0` is a legitimate request for zero alternatives (e.g. probing just `total`/`selected`),
+    // not "no limit" - only an actually-absent limit should fall back to the full remaining length.
+    const to = range.limit !== undefined ? from + range.limit : siblings.length;
 
     const alternatives = siblings.slice(from, to).map(s => {
         /** @type {any} Raw stored JSON, read only for display fields below - not validated further. */
@@ -1618,7 +1624,7 @@ export async function editMessages(directories, ownerId, edits) {
 
     entry.db.transaction(() => {
         for (const edit of list) {
-            const nodeId = String(edit?.node_id || '');
+            const nodeId = String(edit.node_id || '');
             if (!nodeId) continue;
             const result = editMessageSync(entry.db, ownerId, nodeId, edit.content);
             if (result.ok) applied++;
@@ -1649,7 +1655,7 @@ function editMessageSync(db, ownerId, nodeId, content) {
     // Would collide with a sibling's identity hash — report it instead of letting the unique index throw.
     const parentRow = /** @type {Pick<MessageRow, 'parent_id'> | undefined} */ (db.get('SELECT parent_id FROM messages WHERE id = @id', { id: nodeId }));
     const parent = parentRow?.parent_id;
-    if (parent) {
+    if (parent != null) {
         const twin = /** @type {Pick<MessageRow, 'id'> | undefined} */ (db.get(
             'SELECT id FROM messages WHERE parent_id = @parent AND identity_hash = @identity AND id != @id',
             { parent, identity: identityHashOf(parent, next), id: nodeId }));
@@ -1801,7 +1807,7 @@ export async function degraftRange(directories, ownerId, firstNodeId, lastNodeId
     const first = /** @type {Pick<MessageRow, 'id' | 'parent_id'> | undefined} */ (entry.db.get(
         'SELECT id, parent_id FROM messages WHERE id = @id AND owner_id = @ownerId', { id: firstNodeId, ownerId }));
     if (!first) return { ok: false, reason: 'unknown node' };
-    if (!first.parent_id) return { ok: false, reason: 'unknown node' };
+    if (first.parent_id === null) return { ok: false, reason: 'unknown node' };
 
     // firstNodeId must be its parent's CURRENT default child — can't degraft a message that isn't
     // even the one currently shown on the path (would corrupt an alternative branch).
@@ -1816,7 +1822,7 @@ export async function degraftRange(directories, ownerId, firstNodeId, lastNodeId
     const seen = new Set([cursor.id]);
     while (cursor.id !== lastNodeId) {
         const next = cursor.default_child_id;
-        if (!next || seen.has(next)) return { ok: false, reason: 'not on default path' };
+        if (next == null || seen.has(next)) return { ok: false, reason: 'not on default path' };
         const row = /** @type {Pick<MessageRow, 'id' | 'owner_id' | 'default_child_id'> | undefined} */ (entry.db.get(
             'SELECT id, owner_id, default_child_id FROM messages WHERE id = @id', { id: next }));
         if (!row || row.owner_id !== ownerId) return { ok: false, reason: 'not on default path' };
@@ -1828,7 +1834,7 @@ export async function degraftRange(directories, ownerId, firstNodeId, lastNodeId
     const last = /** @type {Pick<MessageRow, 'default_child_id'>} */ (entry.db.get(
         'SELECT default_child_id FROM messages WHERE id = @id', { id: lastNodeId }));
     const childId = last.default_child_id;
-    if (!childId) return { ok: false, reason: 'use end-path instead' };
+    if (childId === null) return { ok: false, reason: 'use end-path instead' };
 
     const parentId = first.parent_id;
 
@@ -1889,7 +1895,7 @@ export async function swapAdjacent(directories, ownerId, upperNodeId, lowerNodeI
 
     if (lower.parent_id !== upperNodeId) return { ok: false, reason: 'not adjacent' };
 
-    const grandparent = upper.parent_id
+    const grandparent = upper.parent_id !== null
         ? /** @type {Pick<MessageRow, 'id' | 'default_child_id'> | undefined} */ (entry.db.get('SELECT id, default_child_id FROM messages WHERE id = @id', { id: upper.parent_id }))
         : null;
     if (!grandparent || grandparent.default_child_id !== upperNodeId) return { ok: false, reason: 'not on default path' };
@@ -1914,7 +1920,7 @@ export async function swapAdjacent(directories, ownerId, upperNodeId, lowerNodeI
         //     own "is this a genuine child" check reads childId's CURRENT parent_id, which would still
         //     be the old one) - leaving upperNodeId.default_child_id stale and pointing back at
         //     lowerNodeId, which would make the default path cycle (lower -> upper -> lower -> ...).
-        if (childId) {
+        if (childId !== null) {
             const childRow = /** @type {Pick<MessageRow, 'content'>} */ (entry.db.get('SELECT content FROM messages WHERE id = @id', { id: childId }));
             entry.db.run('UPDATE messages SET parent_id = @upperNodeId, identity_hash = @hash WHERE id = @id',
                 { id: childId, upperNodeId, hash: identityHashOf(upperNodeId, childRow.content) });
@@ -1923,7 +1929,7 @@ export async function swapAdjacent(directories, ownerId, upperNodeId, lowerNodeI
         // 2. Now rewire the default path, top-down: G -> lower -> upper -> C.
         setDefaultChildSync(entry.db, grandparentId, lowerNodeId);
         setDefaultChildSync(entry.db, lowerNodeId, upperNodeId);
-        if (childId) {
+        if (childId !== null) {
             setDefaultChildSync(entry.db, upperNodeId, childId);
         } else {
             // upperNodeId used to point at lowerNodeId, which is no longer its child —
@@ -1990,13 +1996,13 @@ export async function deleteAlternative(directories, ownerId, nodeId) {
         // anchor with zero children and no label fall through every other check below and get deleted
         // outright - destroying the owner's entire message tree, not just one alternative. Refuse
         // explicitly rather than relying on the (accidental) shape of the checks that follow.
-        if (!node.parent_id) { result = { ok: false, reason: 'is anchor' }; return; }
+        if (node.parent_id === null) { result = { ok: false, reason: 'is anchor' }; return; }
 
         const parent = /** @type {Pick<MessageRow, 'default_child_id'> | undefined} */ (entry.db.get(
             'SELECT default_child_id FROM messages WHERE id = @id', { id: node.parent_id }));
         if (parent && parent.default_child_id === nodeId) { result = { ok: false, reason: 'is default' }; return; }
 
-        if (node.label) { result = { ok: false, reason: 'labeled' }; return; }
+        if (node.label !== null) { result = { ok: false, reason: 'labeled' }; return; }
 
         const child = entry.db.get('SELECT 1 FROM messages WHERE parent_id = @id LIMIT 1', { id: nodeId });
         if (child) { result = { ok: false, reason: 'has descendants' }; return; }
@@ -2025,7 +2031,7 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
     const sibling = /** @type {Pick<MessageRow, 'id' | 'parent_id'> | undefined} */ (entry.db.get(
         'SELECT id, parent_id FROM messages WHERE id = @id AND owner_id = @ownerId', { id: siblingNodeId, ownerId }));
     if (!sibling) return { ok: false, reason: 'unknown node' };
-    if (!sibling.parent_id) return { ok: false, reason: 'node has no parent' };
+    if (sibling.parent_id === null) return { ok: false, reason: 'node has no parent' };
 
     const list = Array.isArray(contents) ? contents : [contents];
     const parentId = sibling.parent_id;
@@ -2045,7 +2051,7 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
             const body = sanitizeForStorage(content);
             const key = nodeIdentityKey(parentId, body);
             const existing = byIdentity.get(key);
-            if (existing) { nodeIds.push(existing); continue; }
+            if (existing !== undefined) { nodeIds.push(existing); continue; }
 
             const id = newId();
             insertMessageSync(entry.db, {
@@ -2091,7 +2097,7 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata, 
     }
 
     /** @type {ChatMetadata} */
-    const meta = { ...(metadata || {}) };
+    const meta = { ...metadata };
     const integrity = crypto.randomUUID();
     meta.integrity = integrity;
     delete meta.main_chat;
@@ -2211,12 +2217,12 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
         for (const content of list) {
             // An empty-text opening (e.g. an overswiped-to blank slot) would leave a permanent blank
             // greeting since rows are never deleted — skip it, keeping node_ids[i] aligned with contents.
-            if (!String(content?.mes ?? '').trim()) { nodeIds.push(null); continue; }
+            if (!String(content.mes ?? '').trim()) { nodeIds.push(null); continue; }
 
             const body = sanitizeForStorage(content);
             const key = nodeIdentityKey(anchor.id, body);
             const existing = byIdentity.get(key);
-            if (existing) { nodeIds.push(existing); continue; }
+            if (existing !== undefined) { nodeIds.push(existing); continue; }
 
             const id = newId();
             insertMessageSync(entry.db, {
@@ -2276,7 +2282,7 @@ export async function loadAtNode(directories, ownerId, nodeId) {
 
     /** @type {ChatMetadata} */
     let metadata = {};
-    if (node.metadata) {
+    if (node.metadata !== null) {
         try { metadata = JSON.parse(node.metadata); } catch { metadata = {}; }
     }
     delete metadata.__is_group;
@@ -2338,7 +2344,7 @@ export async function setNodeMetadata(directories, ownerId, nodeId, metadata, ex
     }
 
     /** @type {ChatMetadata} */
-    const meta = { ...(metadata || {}) };
+    const meta = { ...metadata };
     const integrity = crypto.randomUUID();
     meta.integrity = integrity;
     delete meta.main_chat;

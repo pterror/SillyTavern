@@ -595,7 +595,7 @@ export function getChatCompletionModel(settings) {
  * @returns {import('./chat-completion-budget.js').CountTokenAsyncFn}
  */
 export function createOpenAITokenCounter(model) {
-    const normalizedModel = getTokenizerModel(String(model || ''));
+    const normalizedModel = getTokenizerModel(model ?? '');
     const tiktokenModel = NON_TIKTOKEN_TOKENIZER_FAMILIES.includes(normalizedModel) ? 'gpt-3.5-turbo' : normalizedModel;
     // Mirrors src/endpoints/tokenizers.js's '/openai/count' route's own tiktoken-family branch exactly
     // (tokensPerMessage/tokensPerName/tokensPadding), the one piece of that route with no standalone
@@ -671,7 +671,7 @@ async function resolveCharacterName2(directories, { avatar, groupId } = {}) {
     let name2 = '';
     let hasCharacter = false;
 
-    if (avatar) {
+    if (avatar != null) {
         try {
             const raw = await readCardContent(directories, avatar);
             if (raw !== undefined) {
@@ -684,15 +684,15 @@ async function resolveCharacterName2(directories, { avatar, groupId } = {}) {
 
     /** @type {string[]} */
     const groupMemberNames = [];
-    if (groupId) {
+    if (groupId != null) {
         // getGroupsByIds() (src/endpoints/groups.js, not a target file) declares its return as the
         // loose `Record<string, object>` its own module doc comment settled on - narrowed here to the
         // real, on-disk `Group` fields this function actually reads. Cross-file boundary, not a guess:
         // `name`/`members` are real `Group` (public/global.d.ts) properties.
         const group = /** @type {GroupRecordShape | undefined} */ (getGroupsByIds(directories, [groupId])[groupId]);
         if (group) {
-            if (!avatar) {
-                name2 = group.name || name2;
+            if (avatar == null && group.name != null && group.name !== '') {
+                name2 = group.name;
             }
             const members = Array.isArray(group.members) ? group.members : [];
             for (const memberAvatar of members) {
@@ -735,27 +735,27 @@ async function resolveCharacterName2(directories, { avatar, groupId } = {}) {
  * @returns {Promise<{ chat: TreeChatMessage[], metadata: ChatMetadata, resolvedNodeId: string | null, ambiguous?: boolean }>}
  */
 async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) {
-    if (ownerId && branchName) {
+    if (ownerId != null && branchName != null) {
         const result = await loadBranch(directories, ownerId, branchName);
         if (result) {
-            return { chat: result.messages, metadata: result.metadata ?? {}, resolvedNodeId: result.branch.leaf_id };
+            return { chat: result.messages, metadata: result.metadata, resolvedNodeId: result.branch.leaf_id };
         }
     }
-    if (nodeId) {
+    if (nodeId != null) {
         const messages = await getAncestorPath(directories, nodeId);
         if (messages) {
             return { chat: messages, metadata: {}, resolvedNodeId: nodeId };
         }
     }
-    if (ownerId && !branchName && !nodeId) {
+    if (ownerId != null && branchName == null && nodeId == null) {
         const anchorId = await getOrCreateAnchor(directories, ownerId);
-        if (anchorId) {
+        if (anchorId != null) {
             const result = await loadAtNode(directories, ownerId, anchorId);
             if (result && result.messages.length > 0) {
                 return { chat: [], metadata: {}, resolvedNodeId: null, ambiguous: true };
             }
             if (result) {
-                return { chat: result.messages, metadata: result.metadata ?? {}, resolvedNodeId: result.node_id };
+                return { chat: result.messages, metadata: result.metadata, resolvedNodeId: result.node_id };
             }
         }
     }
@@ -870,10 +870,10 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
     const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
         await resolveChatHistory(directories, { ownerId, branchName, nodeId });
-    const chatMetadata = chatMetadataOverride ?? loadedChatMetadata ?? {};
+    const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
 
     const { name2, groupMemberNames, hasCharacter } = await resolveCharacterName2(directories, { avatar, groupId });
-    const name1 = username || 'User';
+    const name1 = (username != null && username !== '') ? username : 'User';
 
     // Appends the pending user action onto the loaded history, in the exact tree-DB-native shape
     // every other loaded message already uses (identical rationale/shape to
@@ -942,13 +942,13 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const WORLD_INFO_METADATA_KEY = 'world_info';
     // Hoisted out of the `if` below so entryFilterContext (used by activation further down) can reuse
     // the same real, already-derived value instead of recomputing it - see decision 4 above.
-    const charFilename = avatar ? avatar.replace(/\.[^/.]+$/, '') : null;
+    const charFilename = avatar != null ? avatar.replace(/\.[^/.]+$/, '') : null;
     let worldInfoCandidates = worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
         const charLore = Array.isArray(worldInfoSelection.charLore) ? worldInfoSelection.charLore : [];
         const characterExtraBooks = charLore.find(e => e.name === charFilename)?.extraBooks ?? [];
         let character = null;
-        if (avatar) {
+        if (avatar != null) {
             try {
                 const raw = await readCardContent(directories, avatar);
                 if (raw !== undefined) character = JSON.parse(raw);
@@ -962,7 +962,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
             selectedWorldInfo: worldInfoSelection.globalSelect ?? [],
             character,
             characterExtraBooks,
-            chatWorldName: /** @type {string | null} */ (chatMetadata?.[WORLD_INFO_METADATA_KEY] ?? null),
+            chatWorldName: /** @type {string | null} */ (chatMetadata[WORLD_INFO_METADATA_KEY] ?? null),
             personaWorldLorebook: powerUser.persona_description_lorebook ?? null,
             worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
         }));

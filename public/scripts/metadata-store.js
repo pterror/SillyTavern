@@ -105,7 +105,7 @@ export async function _postChatMetadata(owner, target, metadata) {
         // queued) - an earlier call chained ahead of this one may have already rotated it. The
         // content comparison below (_metadataContentJSON) already excludes `integrity` for the
         // same underlying reason, so this only affects what's actually sent on the wire.
-        const freshMetadata = metadata?.integrity === chat_metadata.integrity ? metadata : { ...metadata, integrity: chat_metadata.integrity };
+        const freshMetadata = metadata.integrity === chat_metadata.integrity ? metadata : { ...metadata, integrity: chat_metadata.integrity };
         const metadataContentJSON = _metadataContentJSON(freshMetadata);
         if (metadataContentJSON === _lastSavedMetadataJSON) {
             return;
@@ -116,7 +116,7 @@ export async function _postChatMetadata(owner, target, metadata) {
             const response = await fetch('/api/chats/metadata', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ ...owner, file_name: target, metadata: freshMetadata, expected_integrity: freshMetadata?.integrity }),
+                body: JSON.stringify({ ...owner, file_name: target, metadata: freshMetadata, expected_integrity: freshMetadata.integrity }),
             });
             if (response.status === 409) {
                 _handleMetadataIntegrityConflict();
@@ -155,9 +155,9 @@ export async function _postChatMetadata(owner, target, metadata) {
 export async function saveMetadata() {
     const metadata = chat_metadata;
 
-    if (selected_group) {
+    if (selected_group != null) {
         const group = groupsStore.get(selected_group);
-        if (!group?.chat_id) {
+        if (group == null || group.chat_id.length === 0) {
             console.warn('[saveMetadata] Group has no current chat_id - nothing to save metadata onto yet.');
             return;
         }
@@ -165,14 +165,14 @@ export async function saveMetadata() {
     }
 
     const avatar = getCurrentCharacter()?.avatar;
-    if (!avatar || !metadata?._tree_stored) {
+    if (avatar == null || !metadata._tree_stored) {
         return;
     }
 
     const position = getCurrentCharacter()?.chat;
     const opening = chat[0]?.node_id;
     const target = chat.some(m => m.node_id === position) ? position : (isStoredNodeId(opening) ? opening : null);
-    if (!target) {
+    if (target == null || target.length === 0) {
         console.warn('[saveMetadata] No valid node to address this chat by - nothing to save metadata onto yet.');
         return;
     }

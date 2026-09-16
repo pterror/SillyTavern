@@ -16,14 +16,15 @@ import { _snapshotMessages } from './generation.js';
  */
 export async function switchToAlternativePath(mesId, swipeId) {
     const message = chat[mesId];
-    const targetNodeId = message?.swipe_info?.[swipeId]?.node_id;
+    const targetNodeId = message.swipe_info?.[swipeId]?.node_id;
 
-    if (!targetNodeId || message.node_id === targetNodeId) {
+    if (targetNodeId == null || targetNodeId.length === 0 || message.node_id === targetNodeId) {
         return false;
     }
 
     // An unstored greeting has no continuation to fetch; no row is minted here (ensureOpeningRow() does that when needed).
     const unstored = isProvisionalNodeId(targetNodeId);
+    /** @type {{messages?: ChatMessage[]}} */
     let payload = { messages: [] };
     if (!unstored) {
         try {
@@ -60,7 +61,7 @@ export async function switchToAlternativePath(mesId, swipeId) {
                 headers: getRequestHeaders(),
                 body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true }),
             });
-            if (avatar) {
+            if (avatar != null) {
                 charactersStore.update(avatar, { chat: targetNodeId });
             }
         } catch (error) {
@@ -84,7 +85,7 @@ export async function switchToAlternativePath(mesId, swipeId) {
  */
 async function _persistNodeSelection(targetNodeId) {
     const avatar = getCurrentCharacter()?.avatar;
-    if (!avatar || isProvisionalNodeId(targetNodeId)) {
+    if (avatar == null || isProvisionalNodeId(targetNodeId)) {
         return;
     }
     charactersStore.update(avatar, { chat: targetNodeId });
@@ -105,7 +106,7 @@ async function _persistNodeSelection(targetNodeId) {
  * @returns {Promise<boolean>}
  */
 export async function switchToNode(targetNodeId) {
-    if (selected_group || !chat_metadata?._tree_stored || chat.length === 0) {
+    if (selected_group != null || !chat_metadata._tree_stored || chat.length === 0) {
         return false;
     }
 

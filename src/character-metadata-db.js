@@ -894,7 +894,7 @@ async function getEntry(directories) {
  */
 function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson = null }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
-    const dataSize = calculateDataSize(character?.data ?? {});
+    const dataSize = calculateDataSize(character.data ?? {});
     const shallowSource = {
         ...character,
         avatar: id,
@@ -909,7 +909,7 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         id,
         name: character.name ?? '',
         name_fold: foldName(character.name),
-        fav: character.fav ? 1 : 0,
+        fav: character.fav === true ? 1 : 0,
         date_added: dateAddedCandidate,
         create_date: parseCreateDateToEpochMs(character.create_date),
         date_last_chat: dateLastChat,
@@ -925,7 +925,7 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         content_hash: contentHash ?? null,
         content_identity_hash: contentIdentityHash ?? null,
         avatar_identity_hash: avatarIdentityHash ?? null,
-        import_poisoned: contentIdentityHash ? 0 : 1,
+        import_poisoned: contentIdentityHash != null ? 0 : 1,
         active_chat: character.chat ?? null,
         active_chat_checked: 1,
         digest_fav: characterDigestFavHash(shallow) % 4294967296,
@@ -1217,7 +1217,7 @@ export async function getCharacterTagIdsByIds(directories, ids) {
         const placeholders = batch.map(() => '?').join(',');
         const rows = (/** @type {{ character_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, batch)));
         for (const row of rows) {
-            if (result[row.character_id]) {
+            if (Object.hasOwn(result, row.character_id)) {
                 result[row.character_id].push(row.tag_id);
             }
         }
@@ -1488,7 +1488,6 @@ export async function bootstrapIfNeeded(directories) {
                 const filePath = path.join(directories.characters, file);
                 const stat = await fsPromises.stat(filePath);
                 const imgData = await parseCharacterCard(filePath, 'png');
-                if (imgData === undefined) return null;
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                 const tagIds = tag_map[file] ?? [];
@@ -1622,7 +1621,6 @@ export async function backfillActiveChatFromCards(directories) {
             try {
                 const filePath = path.join(directories.characters, id);
                 const imgData = await parseCharacterCard(filePath, 'png');
-                if (imgData === undefined) return { id, resolved: false };
                 const character = JSON.parse(imgData);
                 const chat = character.chat ?? null;
                 return { id, chat, resolved: true };
@@ -1823,7 +1821,6 @@ export async function reconcile(directories) {
                     const filePath = path.join(directories.characters, file);
                     const stat = await fsPromises.stat(filePath);
                     const imgData = await parseCharacterCard(filePath, 'png');
-                    if (imgData === undefined) return null;
                     const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                     const tagIds = getTagIdsFor(directories, file);
@@ -1883,7 +1880,7 @@ function startWatcher(entry) {
 
     try {
         entry.watcher = fs.watch(entry.directories.characters, (_eventType, filename) => {
-            if (!filename || !filename.endsWith('.png')) return;
+            if (filename === null || !filename.endsWith('.png')) return;
 
             const existingTimer = entry.watchTimers.get(filename);
             if (existingTimer) clearTimeout(existingTimer);
@@ -1937,7 +1934,6 @@ async function handleWatchEvent(entry, filename) {
     }
 
     const imgData = await parseCharacterCard(filePath, 'png');
-    if (imgData === undefined) return;
     const character = getCharaCardV2(JSON.parse(imgData), entry.directories, false);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(entry.directories.chats, filename.replace(/\.png$/, '')));
     const tagIds = getTagIdsFor(entry.directories, filename);
@@ -2017,7 +2013,7 @@ export async function getCharacterMetadataRow(directories, avatar) {
  * @returns {Promise<string | null>}
  */
 export async function findCharacterIdByContentHash(directories, hash) {
-    if (!hash) return null;
+    if (hash === null) return null;
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -2040,7 +2036,7 @@ export async function findCharacterIdByContentHash(directories, hash) {
  * @returns {Promise<string | null>}
  */
 export async function findCharacterIdByContentIdentityHash(directories, hash) {
-    if (!hash) return null;
+    if (hash === null) return null;
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -2065,7 +2061,7 @@ export async function findCharacterIdByContentIdentityHash(directories, hash) {
  * @returns {Promise<string | null>}
  */
 export async function findCharacterIdByIdentityHashes(directories, contentIdentityHash, avatarIdentityHash) {
-    if (!contentIdentityHash || !avatarIdentityHash) return null;
+    if (contentIdentityHash === null || avatarIdentityHash === null) return null;
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -2456,7 +2452,7 @@ export async function getEntityTagIdsForMany(directories, ids) {
         const characterRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT character_id as entity_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, chunk)));
         const groupRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT group_id as entity_id, tag_id FROM group_tags WHERE group_id IN (${placeholders})`, chunk)));
         for (const row of [...characterRows, ...groupRows]) {
-            result[row.entity_id]?.push(row.tag_id);
+            result[row.entity_id].push(row.tag_id);
         }
 
         if (i + BATCH_FLUSH_SIZE < ids.length) {
@@ -2620,11 +2616,11 @@ function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat,
         id,
         name: name ?? '',
         nameFold: foldName(name),
-        fav: fav ? 1 : 0,
+        fav: fav === true ? 1 : 0,
         dateAdded,
         dateLastChat,
         chatSize,
-        digestFav: groupDigestFavHash({ fav: !!fav }),
+        digestFav: groupDigestFavHash({ fav: fav ?? false }),
         digestContent: groupDigestContentHash(group ?? {}),
     });
 }
@@ -2883,7 +2879,9 @@ export async function getAllEntityTagAssignments(directories) {
  * `tag_name_changes` row per tag id whose `name` changed, so search-index catch-up can reindex just those
  * assignees instead of scanning the whole table.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {TagDefinitionInput[]} tagsArray
+ * @param {unknown[]} tagsArray Raw request-body array - each element is client-controlled and not
+ *   guaranteed to actually match {@link TagDefinitionInput}'s shape (could be `null`, a primitive, or
+ *   an object missing `id`), so every element is validated below before use.
  * @returns {Promise<'ok' | null>}
  */
 export async function saveTagDefinitions(directories, tagsArray) {
@@ -2898,7 +2896,8 @@ export async function saveTagDefinitions(directories, tagsArray) {
         }));
 
         entry.db.run('DELETE FROM tags');
-        for (const tag of tagsArray) {
+        for (const raw of tagsArray) {
+            const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
             entry.db.run('INSERT INTO tags (id, data) VALUES (@id, @data)', { id: tag.id, data: JSON.stringify(tag) });
             if (oldNames.has(tag.id) && oldNames.get(tag.id) !== (tag.name ?? '')) {
@@ -2915,12 +2914,14 @@ export async function saveTagDefinitions(directories, tagsArray) {
 /** Creates or replaces a single tag definition by id, for a single create/rename/recolor edit. */
 /**
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {TagDefinitionInput} tag
+ * @param {unknown} rawTag Raw request-body value - client-controlled and not guaranteed to actually
+ *   match {@link TagDefinitionInput}'s shape, so it's validated below before use.
  * @returns {Promise<'ok' | null>}
  */
-export async function upsertTagDefinition(directories, tag) {
+export async function upsertTagDefinition(directories, rawTag) {
     const entry = await getEntry(directories);
     if (!entry) return null;
+    const tag = /** @type {TagDefinitionInput | null | undefined} */ (rawTag);
     if (!tag || typeof tag.id !== 'string' || !tag.id) return null;
 
     entry.db.transaction(() => {
@@ -3076,7 +3077,7 @@ function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = fa
     for (const tagName of filtered) {
         const key = tagName.toLowerCase();
         let tagId = tagNameToId.get(key);
-        if (!tagId) {
+        if (tagId === undefined) {
             if (onlyExisting) continue;
             tagId = crypto.randomUUID();
             insertTag({ id: tagId, data: JSON.stringify({ id: tagId, name: tagName, create_date: Date.now() }) });
@@ -3159,7 +3160,7 @@ export async function repairStaleShallowTagIds(directories, { dryRun = false } =
             continue; // Unparseable shallow_json is a separate, pre-existing problem - not this pass's job.
         }
         const shallowSet = new Set(Array.isArray(shallow.tag_ids) ? shallow.tag_ids : []);
-        const tableSet = new Set(row.tagIds ? row.tagIds.split(',') : []);
+        const tableSet = new Set(row.tagIds !== null ? row.tagIds.split(',') : []);
         const same = shallowSet.size === tableSet.size && [...shallowSet].every(id => tableSet.has(id));
         if (!same) mismatched.push(row.id);
     }
@@ -3321,7 +3322,7 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
 
     const pending = entry.batch?.pending.get(avatar);
     const shallowJson = pending ? pending.row.shallow_json : (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })))?.shallow_json;
-    if (!shallowJson) return { tagIds: [], tagDefinitions: [] };
+    if (shallowJson === undefined) return { tagIds: [], tagDefinitions: [] };
 
     const cardTags = extractCardTags(shallowJson);
     if (cardTags.length === 0) return { tagIds: [], tagDefinitions: [] };
@@ -3755,8 +3756,8 @@ function makeEntityMergeComparator(sortField, sortOrder, seed) {
 
     if (sortField === 'random') {
         return (a, b) => {
-            const ha = getStringHash(String(a.id ?? ''), Number(seed ?? 0));
-            const hb = getStringHash(String(b.id ?? ''), Number(seed ?? 0));
+            const ha = getStringHash(a.id, Number(seed ?? 0));
+            const hb = getStringHash(b.id, Number(seed ?? 0));
             return dir * (ha - hb) || tiebreak(a, b);
         };
     }
@@ -3881,9 +3882,9 @@ export async function queryEntities(directories, params = {}) {
         }
         return {
             id: r.id, isGroup: r.type === 'group', chat,
-            date_added: Number(r.date_added), create_date: r.create_date === null || r.create_date === undefined ? null : Number(r.create_date),
+            date_added: Number(r.date_added), create_date: r.create_date === null ? null : Number(r.create_date),
             date_last_chat: Number(r.date_last_chat), chat_size: Number(r.chat_size),
-            data_size: r.data_size === null || r.data_size === undefined ? 0 : Number(r.data_size),
+            data_size: r.data_size === null ? 0 : Number(r.data_size),
             favHash: favHash >>> 0, tagIdsHash: tagIdsHash >>> 0, contentHash: contentHash >>> 0,
         };
     };
