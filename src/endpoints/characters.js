@@ -723,10 +723,10 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     const rawText = fs.readFileSync(uploadPath, 'utf8');
     fs.unlinkSync(uploadPath);
 
-    const data = buildJsonImportData(rawText, request.user.directories);
+    const pngName = preservedFileName || mintCharacterId(request.user.directories);
+    const data = buildJsonImportData(rawText, request.user.directories, pngName);
     if (data === null) return '';
 
-    const pngName = preservedFileName || mintCharacterId(request.user.directories);
     await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash);
     return pngName;
 }
@@ -735,14 +735,17 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
  * Pure (no file I/O, no sqlite) counterpart to importFromJson()'s per-spec logic above.
  * @param {string} rawText Raw JSON text
  * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string | null} [avatarFileName] The character's eventual avatar identity (id, no extension), if the
+ * caller has already minted one - threaded into importRisuSprites()/importChubExpressions() so their sprite
+ * folder writes match runtime lookup's avatar-identity-first resolution.
  * @returns {string | null} The final Spec V2 JSON string, or `null` if `rawText` matches no recognized shape.
  */
-export function buildJsonImportData(rawText, directories) {
+export function buildJsonImportData(rawText, directories, avatarFileName = null) {
     let jsonData = JSON.parse(rawText);
 
     if (jsonData.spec !== undefined) {
-        importRisuSprites(directories, jsonData);
-        importChubExpressions(directories, jsonData);
+        importRisuSprites(directories, jsonData, avatarFileName);
+        importChubExpressions(directories, jsonData, avatarFileName);
         importChubRelatedLorebooks(directories, jsonData);
         const rawName = jsonData.data?.name || jsonData.name;
         if (jsonData.data?.name) {
@@ -816,10 +819,10 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
     const imgData = await readCharacterData(uploadPath);
     if (imgData === undefined) throw new Error('Failed to read character data');
 
-    const data = buildPngImportData(imgData, request.user.directories);
+    const pngName = preservedFileName || mintCharacterId(request.user.directories);
+    const data = buildPngImportData(imgData, request.user.directories, pngName);
     if (data === null) return '';
 
-    const pngName = preservedFileName || mintCharacterId(request.user.directories);
     // Temp upload gets cleaned up whether the write succeeds or throws.
     try {
         await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash);
@@ -833,9 +836,11 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
  * Pure (no file I/O, no sqlite) counterpart to importFromPng()'s per-spec logic above.
  * @param {string} rawText Raw embedded card JSON text
  * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string | null} [avatarFileName] The character's eventual avatar identity (id, no extension), if the
+ * caller has already minted one - see buildJsonImportData() for why this is threaded through.
  * @returns {string | null} The final Spec V2 JSON string, or `null` if `rawText` has neither `spec` nor `name`.
  */
-export function buildPngImportData(rawText, directories) {
+export function buildPngImportData(rawText, directories, avatarFileName = null) {
     let jsonData = JSON.parse(rawText);
 
     // Read the pre-sanitize name once: sanitize() can turn an all-illegal name into '', and re-reading it
@@ -847,8 +852,8 @@ export function buildPngImportData(rawText, directories) {
     jsonData.name = sanitize(String(rawName || ''));
 
     if (jsonData.spec !== undefined) {
-        importRisuSprites(directories, jsonData);
-        importChubExpressions(directories, jsonData);
+        importRisuSprites(directories, jsonData, avatarFileName);
+        importChubExpressions(directories, jsonData, avatarFileName);
         importChubRelatedLorebooks(directories, jsonData);
         jsonData = readFromV2(jsonData);
         jsonData.create_date = new Date().toISOString();

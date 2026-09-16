@@ -46,9 +46,14 @@ function getSpritesPath(directories, name, isSubfolder) {
  * The additionalAssets and emotions are removed from the data.
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {object} data RisuAI character data
+ * @param {string | null} [avatarFileName] The character's eventual avatar identity (id, no extension), once the
+ * caller knows it. Runtime lookup (getSpriteFolderName() in public/scripts/extensions/expressions/index.js)
+ * resolves sprite folders by avatar identity first, falling back to display name only when it has none - so
+ * writing under the display name here whenever this is available would create a folder runtime can't find.
+ * Falls back to the display name when not yet known (e.g. no caller has one to give).
  * @returns {void}
  */
-export function importRisuSprites(directories, data) {
+export function importRisuSprites(directories, data, avatarFileName = null) {
     try {
         const name = data?.data?.name;
         const risuData = data?.data?.extensions?.risuai;
@@ -74,7 +79,8 @@ export function importRisuSprites(directories, data) {
         }
 
         // Create sprites folder if it doesn't exist
-        const spritesPath = getSpritesPath(directories, name, false);
+        const folderName = avatarFileName || name;
+        const spritesPath = getSpritesPath(directories, folderName, false);
 
         // Invalid sprites path
         if (!spritesPath) {
@@ -198,17 +204,17 @@ function ensureSpritesPath(directories, name, isSubfolder) {
  * "name/altKey" subfolder (the same subfolder convention /spriteoverride and /uploadsprite's
  * folder= already use), so multiple packs on one character don't collide.
  *
- * Same folder-naming caveat as importRisuSprites() above: keyed by the character's display name,
- * not its avatar identity, so two different characters sharing a name would - at import time -
- * write into the same sprites folder. Left consistent with the sibling function above rather
- * than fixed here; fixing it needs the eventual avatar filename threaded into this pure,
- * no-file-IO-yet transform, which none of its three call sites currently pass through.
+ * Same folder-identity preference as importRisuSprites() above: keyed by the character's eventual
+ * avatar identity when the caller has minted one, falling back to display name only when it
+ * doesn't - matching getSpriteFolderName()'s runtime resolution order.
  *
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {object} data Character data (V2/V3 spec)
+ * @param {string | null} [avatarFileName] The character's eventual avatar identity (id, no extension), once the
+ * caller knows it. See importRisuSprites() for why this takes priority over the display name.
  * @returns {void}
  */
-export function importChubExpressions(directories, data) {
+export function importChubExpressions(directories, data, avatarFileName = null) {
     try {
         const name = data?.data?.name;
         const chubExt = data?.data?.extensions?.chub;
@@ -216,12 +222,14 @@ export function importChubExpressions(directories, data) {
             return;
         }
 
+        const folderName = avatarFileName || name;
+
         /** @type {[string, string, Record<string, unknown>][]} [spritesPath, label, expressionsMap] jobs, resolved synchronously up front so any invalid path is caught before kicking off network work. */
         const jobs = [];
 
         const primaryExpressions = chubExt.expressions?.expressions;
         if (primaryExpressions && typeof primaryExpressions === 'object') {
-            const spritesPath = ensureSpritesPath(directories, name, false);
+            const spritesPath = ensureSpritesPath(directories, folderName, false);
             if (spritesPath) jobs.push([spritesPath, name, primaryExpressions]);
         }
 
@@ -230,7 +238,7 @@ export function importChubExpressions(directories, data) {
                 const altExpressions = altPack?.expressions;
                 if (!altExpressions || typeof altExpressions !== 'object') continue;
                 const label = `${name}/${altKey}`;
-                const spritesPath = ensureSpritesPath(directories, label, true);
+                const spritesPath = ensureSpritesPath(directories, `${folderName}/${altKey}`, true);
                 if (spritesPath) jobs.push([spritesPath, label, altExpressions]);
             }
         }
