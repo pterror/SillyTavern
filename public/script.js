@@ -5006,8 +5006,19 @@ class StreamingProcessor {
         if (this.assistantNodeId) {
             _stampAssistantNodeId(this.assistantNodeId);
         } else {
-            // eslint-disable-next-line no-restricted-syntax -- backend/path didn't send assistant_node_id (not a raw-action stream, or the server-side persist itself failed).
-            await saveChatConditional();
+            // Backend/path didn't send assistant_node_id: not a raw-action stream, the server-side
+            // persist failed, or - the common real case - the user stopped the stream before the
+            // trailing assistant_node_id frame arrived (a deliberate abort intentionally never
+            // resumes to fetch it - see ResumableCompactStreamReader.read()'s own AbortError
+            // handling, llamacpp-compact-stream.js). `chat[messageId]` still has no node_id either
+            // way, so `heal: true` is required here, not optional: it's what makes saveChat() run
+            // healDirtyMessages() first, which is what actually calls chatOpAppend() to persist this
+            // trailing message and learn its real node_id - the plain saveChatConditional() below
+            // would otherwise only resave chat_metadata and silently leave chat[messageId].node_id
+            // unset, which then surfaces later as a "node_id is required" error the next time this
+            // message is addressed (e.g. Continue).
+            // eslint-disable-next-line no-restricted-syntax -- see comment above; this IS the direct persistence path for this exact case.
+            await saveChatConditional({ heal: true });
         }
 
         playMessageSound();
@@ -10472,16 +10483,19 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
     try {
         if (isTreeChat) {
-            // `heal` is true only when this call arrived via getContext().saveChat() (st-context.js) -
-            // the one truly generic entry point where a third-party extension may have mutated `chat[]`
+            // `heal` is true when this call arrived via getContext().saveChat() (st-context.js) - the
+            // one truly generic entry point where a third-party extension may have mutated `chat[]`
             // directly, without stating any chatOp*() of its own, and so can't be assumed to already be
-            // in sync. An ordinary first-party save (send, edit, swipe reaching this function via
-            // saveChatConditional()) never sets it: every mutation already persisted itself directly via
-            // its own chatOp*() call, and a write that fails now says so immediately (_chatOpPost()'s own
-            // failure reporting) instead of relying on this function to notice later. chat-store.js's
-            // healDirtyMessages() is that diff; it's owner-agnostic, but this function is solo-only (see
-            // the guard at the top), so it only ever runs it for the solo case here - see
-            // saveChatConditional() for where the identical `heal` flag applies to a group instead.
+            // in sync - or via StreamingProcessor.onFinishStreaming()'s own no-assistant-node-id
+            // fallback, whose trailing message is an unstated mutation for the same reason (see that
+            // call site's own comment). Every OTHER first-party save (send, edit, swipe reaching this
+            // function via saveChatConditional()) never sets it: their mutation already persisted
+            // itself directly via its own chatOp*() call, and a write that fails now says so immediately
+            // (_chatOpPost()'s own failure reporting) instead of relying on this function to notice
+            // later. chat-store.js's healDirtyMessages() is that diff; it's owner-agnostic, but this
+            // function is solo-only (see the guard at the top), so it only ever runs it for the solo
+            // case here - see saveChatConditional() for where the identical `heal` flag applies to a
+            // group instead.
             if (heal) {
                 await healDirtyMessages().catch(error =>
                     console.error('[saveChat] Could not sync unstated changes:', error));
@@ -10489,11 +10503,12 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
             const addressedByName = chatName !== undefined;
             const treeAvatar = getCurrentCharacter()?.avatar;
-            let treeResult = null;
+            let hasPersistedOpening = false;
             if (treeAvatar) {
                 const hasPersisted = trimmedChat.some(m => isStoredNodeId(m?.node_id));
 
                 if (hasPersisted) {
+                    hasPersistedOpening = true;
                     const position = getCurrentCharacter()?.chat;
                     const opening = chat[0]?.node_id;
                     const target = addressedByName
@@ -10501,38 +10516,15 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                         : (chat.some(m => m.node_id === position) ? position
                             : (isStoredNodeId(opening) ? opening : fileName));
 
-                    const metadataContentJSON = _metadataContentJSON(metadata);
-                    if (metadataContentJSON === _lastSavedMetadataJSON) {
-                        treeResult = {};
-                    } else {
-                        try {
-                            const response = await fetch('/api/chats/metadata', {
-                                method: 'POST',
-                                headers: getRequestHeaders(),
-                                body: JSON.stringify({ avatar_url: treeAvatar, file_name: target, metadata, expected_integrity: metadata?.integrity }),
-                            });
-                            if (response.status === 409) {
-                                _handleMetadataIntegrityConflict();
-                                treeResult = {};
-                            } else if (!response.ok) {
-                                throw new Error(`/api/chats/metadata responded ${response.status}`);
-                            } else {
-                                const meta = await response.json().catch(() => ({}));
-                                _lastSavedMetadataJSON = metadataContentJSON;
-                                treeResult = { integrity: meta.integrity };
-                            }
-                        } catch (error) {
-                            console.warn('[saveChat] The messages are saved; their chat metadata is not:', error);
-                            treeResult = {};
-                        }
-                    }
+                    // Delegates to _postChatMetadata() (this same file, below) instead of POSTing
+                    // directly, so this and saveMetadata()'s own calls share one serialized
+                    // _metadataSaveChain - see that variable's doc comment for why two unserialized
+                    // metadata saves racing each other produces a false-positive integrity 409.
+                    await _postChatMetadata({ avatar_url: treeAvatar }, target, metadata);
                 }
             }
 
-            if (treeResult) {
-                if (typeof treeResult.integrity === 'string') {
-                    chat_metadata.integrity = treeResult.integrity;
-                }
+            if (hasPersistedOpening) {
                 _snapshotMessages();
             } else {
                 // An opening with no node_id has never touched the tree - opening this chat is a selection, not a write.
@@ -13083,49 +13075,74 @@ function _handleMetadataIntegrityConflict() {
     toastr.warning(t`This chat's metadata was changed in another tab or session. Reload the page to see the latest version.`, t`Metadata save rejected`);
 }
 
+// Every metadata-saving call (saveMetadata()'s solo/group branches, and saveChat()'s tree-chat
+// branch) funnels through _postChatMetadata() below, and every call chains onto this same promise -
+// so a second call built while the first is still in flight WAITS for the first's write (and its
+// chat_metadata.integrity update) to land before it even decides whether it still has anything new
+// to send. Without this, two saves fired close together (e.g. one from a generation's normal
+// finish path and another from an abort-cleanup path racing it) both read the SAME stale
+// chat_metadata.integrity before either response applied, so the second one's `expected_integrity`
+// is already wrong by the time the server sees it - a false-positive "changed in another session"
+// 409 against ITS OWN prior write, not a real conflict.
+let _metadataSaveChain = Promise.resolve();
+
 /**
  * POSTs one owner's chat_metadata to /api/chats/metadata, with the same retry-then-toast policy for
- * both solo and group chats.
+ * both solo and group chats. Queued behind any already-in-flight call via `_metadataSaveChain` - see
+ * that variable's own doc comment above.
  * @param {{avatar_url: string}|{group_id: string}} owner
  * @param {string} target The node/label this chat is addressed by (character.chat, or group.chat_id).
  * @param {object} metadata
  */
 async function _postChatMetadata(owner, target, metadata) {
-    const metadataContentJSON = _metadataContentJSON(metadata);
-    if (metadataContentJSON === _lastSavedMetadataJSON) {
-        return;
-    }
+    const run = async () => {
+        // Re-derive the integrity to assert from the LIVE chat_metadata.integrity, not
+        // metadata.integrity as it was captured by the caller (possibly before this call was even
+        // queued) - an earlier call chained ahead of this one may have already rotated it. The
+        // content comparison below (_metadataContentJSON) already excludes `integrity` for the
+        // same underlying reason, so this only affects what's actually sent on the wire.
+        const freshMetadata = metadata?.integrity === chat_metadata.integrity ? metadata : { ...metadata, integrity: chat_metadata.integrity };
+        const metadataContentJSON = _metadataContentJSON(freshMetadata);
+        if (metadataContentJSON === _lastSavedMetadataJSON) {
+            return;
+        }
 
-    const postMetadata = async () => {
-        const response = await fetch('/api/chats/metadata', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ ...owner, file_name: target, metadata, expected_integrity: metadata?.integrity }),
-        });
-        if (response.status === 409) {
-            _handleMetadataIntegrityConflict();
-            return null;
+        const postMetadata = async () => {
+            const response = await fetch('/api/chats/metadata', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ ...owner, file_name: target, metadata: freshMetadata, expected_integrity: freshMetadata?.integrity }),
+            });
+            if (response.status === 409) {
+                _handleMetadataIntegrityConflict();
+                return null;
+            }
+            if (!response.ok) {
+                const error = new Error(`/api/chats/metadata responded ${response.status}`);
+                error.status = response.status;
+                throw error;
+            }
+            return response.json().catch(() => ({}));
+        };
+
+        try {
+            const result = await _retryOp(postMetadata);
+            if (result && typeof result.integrity === 'string') {
+                chat_metadata.integrity = result.integrity;
+            }
+            if (result) {
+                _lastSavedMetadataJSON = metadataContentJSON;
+            }
+        } catch (error) {
+            console.error('[saveMetadata] Failed to save metadata after retrying:', error);
+            toastr.error(t`Could not save chat metadata. Check your connection and try again.`, t`Save failed`);
         }
-        if (!response.ok) {
-            const error = new Error(`/api/chats/metadata responded ${response.status}`);
-            error.status = response.status;
-            throw error;
-        }
-        return response.json().catch(() => ({}));
     };
 
-    try {
-        const result = await _retryOp(postMetadata);
-        if (result && typeof result.integrity === 'string') {
-            chat_metadata.integrity = result.integrity;
-        }
-        if (result) {
-            _lastSavedMetadataJSON = metadataContentJSON;
-        }
-    } catch (error) {
-        console.error('[saveMetadata] Failed to save metadata after retrying:', error);
-        toastr.error(t`Could not save chat metadata. Check your connection and try again.`, t`Save failed`);
-    }
+    const chained = _metadataSaveChain.then(run, run);
+    // Never let one failed/aborted link break the chain for saves queued after it.
+    _metadataSaveChain = chained.catch(() => { });
+    return chained;
 }
 
 // Persists chat_metadata alone, without dragging the per-message diff (or, for a group, the whole-array
@@ -13160,13 +13177,16 @@ export async function saveMetadata() {
 
 /**
  * @param {object} [options]
- * @param {boolean} [options.heal] Whether to reconcile `chat[]` against chatOp*() before saving - true
- * only for getContext().saveChat() (st-context.js), the one generic entry point a third-party extension
- * can reach without having stated any chatOp*() of its own. An ordinary first-party call (every other
- * caller of this function) never needs it: every mutation already persisted itself directly at its own
- * call site. See saveChat()'s own use of this same flag for the solo case; healDirtyMessages()
- * (chat-store.js) is owner-agnostic, so the group branch below applies it identically, just without a
- * dedicated function of its own to pass it through to.
+ * @param {boolean} [options.heal] Whether to reconcile `chat[]` against chatOp*() before saving. True
+ * for getContext().saveChat() (st-context.js), the one generic entry point a third-party extension
+ * can reach without having stated any chatOp*() of its own - an ordinary first-party call never
+ * needed it before, since every mutation already persisted itself directly at its own call site.
+ * The one first-party exception is StreamingProcessor.onFinishStreaming()'s own fallback (no
+ * assistant_node_id came back - not raw-action, a failed server-side persist, or a stopped stream):
+ * that trailing message is a genuine unstated mutation too, so it needs the same reconciliation.
+ * See saveChat()'s own use of this same flag for the solo case; healDirtyMessages() (chat-store.js)
+ * is owner-agnostic, so the group branch below applies it identically, just without a dedicated
+ * function of its own to pass it through to.
  */
 export async function saveChatConditional({ heal = false } = {}) {
     try {
