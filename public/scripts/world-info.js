@@ -3045,7 +3045,7 @@ function enableKeysInputHelper({ template, entry, entryPropName, originalDataVal
             if (!noSave) {
                 data.entries[uid][entryPropName] = keys;
                 setWIOriginalDataValue(data, uid, originalDataValueName, data.entries[uid][entryPropName]);
-                await saveWorldInfo(name, data);
+                await saveWorldInfoEntry(name, data, uid);
             }
             $(this).toggleClass('empty', !data.entries[uid][entryPropName].length);
             // Update the commentInput's placeholder for primary keys
@@ -3085,7 +3085,7 @@ function enableKeysInputHelper({ template, entry, entryPropName, originalDataVal
             if (!noSave) {
                 data.entries[uid][entryPropName] = splitKeywordsAndRegexes(value);
                 setWIOriginalDataValue(data, uid, originalDataValueName, data.entries[uid][entryPropName]);
-                await saveWorldInfo(name, data);
+                await saveWorldInfoEntry(name, data, uid);
                 $(this).toggleClass('empty', !data.entries[uid][entryPropName].length);
             }
             // Update the commentInput's placeholder for primary keys
@@ -3117,7 +3117,7 @@ function handleMatchCheckboxHelper({ template, entry, fieldName, data, name }) {
         const value = $(this).prop('checked');
         data.entries[uid][fieldName] = value;
         setWIOriginalDataValue(data, uid, key, data.entries[uid][fieldName]);
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
     });
     checkBoxElem.prop('checked', !!entry[fieldName]).trigger('input', { noSave: true });
 }
@@ -3261,7 +3261,7 @@ function handleCharacterFilterChangeHelper({ characterFilter, data, entry, name 
             );
         }
         setWIOriginalDataValue(data, uid, 'character_filter', data.entries[uid].characterFilter);
-        await saveWorldInfo(name, data);
+        await saveWorldInfoEntry(name, data, uid);
     });
 }
 
@@ -3286,7 +3286,7 @@ function handleProbabilityInputHelper({ probabilityInput, data, entry, name }) {
             }
         }
         setWIOriginalDataValue(data, uid, 'extensions.probability', data.entries[uid].probability);
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
     });
     probabilityInput.val(entry.probability).trigger('input', { noSave: true });
     probabilityInput.css('width', 'calc(3em + 15px)');
@@ -3308,7 +3308,7 @@ function handleProbabilityToggleHelper({ probabilityToggle, data, entry, name, p
         const value = $(this).prop('checked');
         data.entries[uid].useProbability = value;
         const probabilityContainer = $(this).closest('.world_entry').find('.probabilityContainer');
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
         value ? probabilityContainer.show() : probabilityContainer.hide();
         if (value && data.entries[uid].probability === null) {
             data.entries[uid].probability = 100;
@@ -3338,7 +3338,7 @@ function handleBooleanSelectHelper({ selectElem, entry, entryKey, data, name }) 
         const value = $(this).val();
         data.entries[uid][entryKey] = value === 'null' ? null : value === 'true';
         setWIOriginalDataValue(data, uid, `extensions.${entryKey.replace(/[A-Z]/g, m => `_${m.toLowerCase()}`)}`, data.entries[uid][entryKey]);
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
     });
     selectElem.val((entry[entryKey] === null || entry[entryKey] === undefined) ? 'null' : entry[entryKey] ? 'true' : 'false').trigger('input', { noSave: true });
 }
@@ -3371,7 +3371,7 @@ function handleNumberInputHelper({ inputElem, entry, entryKey, data, name, min, 
         }
         data.entries[uid][entryKey] = !isNaN(value) ? value : null;
         setWIOriginalDataValue(data, uid, `extensions.${entryKey.replace(/[A-Z]/g, m => `_${m.toLowerCase()}`)}`, data.entries[uid][entryKey]);
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
     });
     inputElem.val(entry[entryKey] ?? (clamp ? min : '')).trigger('input', { noSave: true });
 }
@@ -3412,7 +3412,7 @@ function handleEntryStateSelectorHelper({ entryStateSelector, entry, data, name 
                 setWIOriginalDataValue(data, uid, 'extensions.vectorized', true);
                 break;
         }
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
     });
     const entryState = () => entry.constant === true ? 'constant' : entry.vectorized === true ? 'vectorized' : 'normal';
     entryStateSelector.find(`option[value=${entryState()}]`).prop('selected', true).trigger('input', { noSave: true });
@@ -3437,7 +3437,7 @@ function handleEntryKillSwitchHelper({ entryKillSwitch, entry, data, name, templ
         template.toggleClass('disabledWIEntry', !isActive);
         entryKillSwitch.toggleClass('fa-toggle-off', !isActive);
         entryKillSwitch.toggleClass('fa-toggle-on', isActive);
-        await saveWorldInfo(name, data);
+        await saveWorldInfoEntry(name, data, uid);
     });
     const isActive = !entry.disable;
     template.toggleClass('disabledWIEntry', !isActive);
@@ -3485,7 +3485,7 @@ export async function getWorldEntry(name, data, entry) {
         !skipReset && await resetScrollHeight(this);
         data.entries[uid].comment = value;
         setWIOriginalDataValue(data, uid, 'comment', data.entries[uid].comment);
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
     });
     commentInput.val(entry.comment).trigger('input', { skipReset: true, noSave: true });
 
@@ -3498,7 +3498,7 @@ export async function getWorldEntry(name, data, entry) {
         data.entries[uid].order = !isNaN(value) ? value : 0;
         updatePosOrdDisplayHelper({ template: headerTemplate, data, uid });
         setWIOriginalDataValue(data, uid, 'insertion_order', data.entries[uid].order);
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
     });
     orderInput.val(entry.order).trigger('input', { noSave: true });
     orderInput.css('width', 'calc(3em + 15px)');
@@ -3537,7 +3537,7 @@ export async function getWorldEntry(name, data, entry) {
         setWIOriginalDataValue(data, uid, 'position', data.entries[uid].position == 0 ? 'before_char' : 'after_char');
         setWIOriginalDataValue(data, uid, 'extensions.position', data.entries[uid].position);
         setWIOriginalDataValue(data, uid, 'extensions.role', data.entries[uid].role);
-        !noSave && await saveWorldInfo(name, data);
+        !noSave && await saveWorldInfoEntry(name, data, uid);
     });
     const roleValue = entry.position === world_info_position.atDepth ? String(entry.role ?? extension_prompt_roles.SYSTEM) : '';
     headerTemplate.find(`select[name="position"] option[value="${entry.position}"][data-role="${roleValue}"]`).prop('selected', true).trigger('input', { noSave: true });
@@ -3559,7 +3559,7 @@ export async function getWorldEntry(name, data, entry) {
         const uid = $(this).data('uid');
         const entryDup = await duplicateWorldInfoEntry(name, data, uid);
         if (entryDup) {
-            await saveWorldInfo(name, data);
+            await saveWorldInfoEntry(name, data, entryDup.uid);
             updateEditor(entryDup.uid);
         }
     });
@@ -3694,7 +3694,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = $(this).prop('checked');
             const commentContainer = $(this).closest('.world_entry').find('.commentContainer');
             data.entries[uid].addMemo = value;
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
             value ? commentContainer.show() : commentContainer.hide();
         });
         commentToggle.prop('checked', true).trigger('input', { noSave: true });
@@ -3709,7 +3709,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = Number($(this).val());
             data.entries[uid].selectiveLogic = !isNaN(value) ? value : world_info_logic.AND_ANY;
             setWIOriginalDataValue(data, uid, 'selectiveLogic', data.entries[uid].selectiveLogic);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         editTemplate.find(`select[name="entryLogicType"] option[value=${entry.selectiveLogic}]`).prop('selected', true).trigger('input', { noSave: true });
 
@@ -3721,7 +3721,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = $(this).prop('checked');
             data.entries[uid].selective = value;
             setWIOriginalDataValue(data, uid, 'selective', data.entries[uid].selective);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
             const keysecondary = $(this).closest('.world_entry').find('.keysecondary');
             const keysecondarytextpole = $(this).closest('.world_entry').find('.keysecondarytextpole');
             const keyprimaryselect = $(this).closest('.world_entry').find('.keyprimaryselect');
@@ -3761,7 +3761,7 @@ export async function getWorldEntry(name, data, entry) {
                 }
             }
             setWIOriginalDataValue(data, uid, 'character_filter', data.entries[uid].characterFilter);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         characterExclusionInput.prop('checked', entry.characterFilter?.isExclude ?? false).trigger('input', { noSave: true });
 
@@ -3787,7 +3787,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = $(this).val();
             data.entries[uid].content = value;
             setWIOriginalDataValue(data, uid, 'content', data.entries[uid].content);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
             if (!skipCount) countTokensDebounced(counter, value);
         });
         contentInput.val(entry.content).trigger('input', { skipCount: true, noSave: true });
@@ -3801,7 +3801,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = $(this).val();
             data.entries[uid].outletName = value;
             setWIOriginalDataValue(data, uid, 'extensions.outlet_name', data.entries[uid].outletName);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         outletNameInput.val(entry.outletName ?? '').trigger('input', { noSave: true });
         setTimeout(() => createEntryInputAutocomplete(outletNameInput, getOutletNameCallback(data), { allowMultiple: true }), 1);
@@ -3825,7 +3825,7 @@ export async function getWorldEntry(name, data, entry) {
             }
             data.entries[uid].scanDepth = !isEmpty && !isNaN(value) && value >= 0 && value <= MAX_SCAN_DEPTH ? Math.floor(value) : null;
             setWIOriginalDataValue(data, uid, 'extensions.scan_depth', data.entries[uid].scanDepth);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         scanDepthInput.val(entry.scanDepth ?? null).trigger('input', { noSave: true });
 
@@ -3837,7 +3837,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = String($(this).val()).trim();
             data.entries[uid].group = value;
             setWIOriginalDataValue(data, uid, 'extensions.group', data.entries[uid].group);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         groupInput.val(entry.group ?? '').trigger('input', { noSave: true });
         setTimeout(() => createEntryInputAutocomplete(groupInput, getInclusionGroupCallback(data), { allowMultiple: true }), 1);
@@ -3850,7 +3850,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = $(this).prop('checked');
             data.entries[uid].groupOverride = value;
             setWIOriginalDataValue(data, uid, 'extensions.group_override', data.entries[uid].groupOverride);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         groupOverrideInput.prop('checked', entry.groupOverride).trigger('input', { noSave: true });
 
@@ -3890,7 +3890,7 @@ export async function getWorldEntry(name, data, entry) {
             if (!toggled) delayUntilRecursionLevelInput.val('');
             data.entries[uid].delayUntilRecursion = value;
             setWIOriginalDataValue(data, uid, 'extensions.delay_until_recursion', data.entries[uid].delayUntilRecursion);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         delayUntilRecursionInput.prop('checked', entry.delayUntilRecursion).trigger('input', { noSave: true });
         delayUntilRecursionLevelInput.on('input', async function (_, { noSave = false } = {}) {
@@ -3902,7 +3902,7 @@ export async function getWorldEntry(name, data, entry) {
                         : false;
             data.entries[uid].delayUntilRecursion = value;
             setWIOriginalDataValue(data, uid, 'extensions.delay_until_recursion', data.entries[uid].delayUntilRecursion);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         delayUntilRecursionLevelInput.val(['number', 'string'].includes(typeof entry.delayUntilRecursion) ? entry.delayUntilRecursion : '').trigger('input', { noSave: true });
 
@@ -3927,7 +3927,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = $(this).val();
             data.entries[uid].automationId = value;
             setWIOriginalDataValue(data, uid, 'extensions.automation_id', data.entries[uid].automationId);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         automationIdInput.val(entry.automationId ?? '').trigger('input', { noSave: true });
         setTimeout(() => createEntryInputAutocomplete(automationIdInput, getAutomationIdCallback(data)), 1);
@@ -3940,7 +3940,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = $(this).val();
             data.entries[uid].triggers = Array.isArray(value) ? value : [];
             setWIOriginalDataValue(data, uid, 'extensions.triggers', data.entries[uid].triggers);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         if (!isMobile()) {
             generationTypeTriggers.select2({
@@ -3963,7 +3963,7 @@ export async function getWorldEntry(name, data, entry) {
             const value = $(this).prop('checked');
             data.entries[uid].ignoreBudget = value;
             setWIOriginalDataValue(data, uid, 'extensions.ignore_budget', data.entries[uid].ignoreBudget);
-            !noSave && await saveWorldInfo(name, data);
+            !noSave && await saveWorldInfoEntry(name, data, uid);
         });
         ignoreBudgetInput.prop('checked', entry.ignoreBudget ?? false).trigger('input', { noSave: true });
 
@@ -4293,6 +4293,86 @@ async function _save(name, data) {
         body: JSON.stringify({ name: name, data: data }),
     });
     await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
+}
+
+/**
+ * uids with a pending single-entry save, keyed by book name. A shared debounce timer (like
+ * saveWorldDebounced above) only ever fires with the arguments of its *last* call, so instead of
+ * passing entry data through the debounce, this only records which entries are dirty; the flush below
+ * re-reads each one from worldInfoCache, which is always current since callers update it synchronously
+ * before scheduling. That's what lets edits to two different entries inside one debounce window each
+ * still reach the server, without resending every entry in the book to do it.
+ * @type {Map<string, Set<string|number>>}
+ */
+let pendingEntrySaves = new Map();
+
+const flushEntrySavesDebounced = debounce(async () => {
+    const pending = pendingEntrySaves;
+    pendingEntrySaves = new Map();
+    for (const [bookName, uids] of pending) {
+        const data = worldInfoCache.get(bookName);
+        for (const uid of uids) {
+            const entryData = data?.entries?.[uid];
+            if (!entryData) continue;
+            await _saveEntry(bookName, uid, entryData, data);
+        }
+    }
+}, debounce_timeout.relaxed);
+
+async function _saveEntry(name, uid, entryData, data) {
+    await fetch('/api/worldinfo/entry/edit', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: name, uid: uid, data: entryData }),
+    });
+    await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
+}
+
+/**
+ * Saves a single World Info entry, instead of resending the whole book like `saveWorldInfo` does -
+ * for edits confined to one entry (a checkbox, a text field, a duplicated entry's fields, ...), which
+ * is what a WI entry editor's individual controls actually produce. Falls back to the whole-book path
+ * for the embedded (card-attached) lorebook, which isn't backed by a World Info file of its own.
+ *
+ * This will also refresh the `worldInfoCache`, same as `saveWorldInfo`.
+ *
+ * @param {string} name - The name of the world info
+ * @param {any} data - The full in-memory World Info data (only `data.entries[uid]` is sent)
+ * @param {string|number} uid - uid of the single entry that changed
+ * @param {boolean} [immediately=false] - Whether to save immediately or use debouncing
+ * @return {Promise<void>} A promise that resolves when the world info entry is saved
+ */
+export async function saveWorldInfoEntry(name, data, uid, immediately = false) {
+    if (!name || !data || uid === undefined || uid === null) {
+        return;
+    }
+
+    if (name === EMBEDDED_WORLD_NAME) {
+        if (immediately) {
+            return await saveEmbeddedLore(data);
+        }
+        return saveEmbeddedLoreDebounced(data);
+    }
+
+    // Update cache immediately, so any future call (including the debounced flush above) pulls from this
+    worldInfoCache.set(name, data);
+
+    if (immediately) {
+        // Only drop this one entry from the pending set - flushEntrySavesDebounced's timer is shared
+        // across every book, so cancelling it here would also cancel other books' still-pending saves.
+        pendingEntrySaves.get(name)?.delete(uid);
+        const entryData = data.entries?.[uid];
+        if (!entryData) {
+            return;
+        }
+        return await _saveEntry(name, uid, entryData, data);
+    }
+
+    if (!pendingEntrySaves.has(name)) {
+        pendingEntrySaves.set(name, new Set());
+    }
+    pendingEntrySaves.get(name).add(uid);
+    flushEntrySavesDebounced();
 }
 
 
