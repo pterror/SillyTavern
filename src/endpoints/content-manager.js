@@ -1186,6 +1186,9 @@ router.post('/importUUID', async (request, response) => {
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${result.fileName}"`);
         response.set('X-Custom-Content-Type', uuidType);
+        if (Array.isArray(result.relatedLorebookPaths) && result.relatedLorebookPaths.length > 0) {
+            response.set('X-Related-Lorebook-Paths', result.relatedLorebookPaths.map(encodeURIComponent).join(','));
+        }
         return response.send(result.buffer);
     } catch (error) {
         console.error('Importing custom content failed', error);
