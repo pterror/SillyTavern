@@ -26,20 +26,21 @@ const MAX_RANDOM_CACHE_ENTRIES = 10;
 /** @type {Map<string, { seq: number, sortedIds: string[], db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }>} */
 const randomSortCache = new Map();
 
-let randomCacheWarmTimer = null;
+/** @type {NodeJS.Timeout | undefined} */
+let randomCacheWarmTimer = undefined;
 
 // Debounced so a batch of rapid changes triggers only one recomputation.
 characterChangeEmitter.on('change', () => {
     clearTimeout(randomCacheWarmTimer);
     randomCacheWarmTimer = setTimeout(() => {
         for (const [key, entry] of randomSortCache) {
-            const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
+            const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
             const currentSeq = Number(seqRow?.seq ?? 0);
             if (entry.seq !== currentSeq) {
                 const colonIdx = key.lastIndexOf(':');
                 const seed = Number(key.slice(colonIdx + 1));
-                const charIds = entry.db.all('SELECT id FROM characters').map(r => r.id);
-                const groupIds = entry.db.all('SELECT id FROM groups').map(r => r.id);
+                const charIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id);
+                const groupIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM groups'))).map(r => r.id);
                 const allIds = [...charIds, ...groupIds];
                 const hashed = allIds.map(id => ({ id, h: getStringHash(String(id), seed) }));
                 hashed.sort((a, b) => a.h - b.h);
@@ -50,6 +51,13 @@ characterChangeEmitter.on('change', () => {
     }, 500);
 });
 
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @param {'upsert'|'delete'} op
+ * @param {string | null} fields JSON array of changed field names, or null.
+ * @returns {number} The new change row's seq.
+ */
 function insertChange(db, id, op, fields) {
     const { lastInsertRowid } = db.run('INSERT INTO changes (id, op, fields) VALUES (@id, @op, @fields)', { id, op, fields });
     characterChangeEmitter.emit('change');
@@ -85,10 +93,186 @@ const WATCH_DEBOUNCE_MS = 300;
  */
 
 /**
- * @typedef {object} PendingRow
- * @property {object} row
- * @property {boolean} forceDateAdded True if row.date_added must be used verbatim even on conflict (rename)
+ * @typedef {object} PendingRow A still-buffered batch-import row, not yet flushed to the `characters` table.
+ * @property {CharacterUpsertRow} row
  * @property {string[]} tagIds
+ */
+
+/**
+ * @typedef {string | null} NodeId Identifies a node in a chat's message tree (see message-tree-db.js). `null`
+ * means "no active chat" or "not yet resolved" (see `active_chat`/`active_chat_checked` below).
+ * TODO(coordination): message-tree-db.js's own strict-typing pass may introduce a canonical NodeId type under
+ * src/types/*.d.ts; if/when it does, this alias should be replaced with that one so both modules share it.
+ */
+
+/**
+ * @typedef {object} CharacterRow Full `characters` table row shape (see SCHEMA_SQL above).
+ * @property {string} id
+ * @property {string} name
+ * @property {string} name_fold
+ * @property {number} fav 0 or 1
+ * @property {number} date_added Epoch ms. Write-once: every upsert's ON CONFLICT omits it from the SET list.
+ * @property {number | null} create_date Epoch ms, parsed via parseCreateDateToEpochMs().
+ * @property {number} date_last_chat Epoch ms
+ * @property {number} chat_size
+ * @property {number} data_size
+ * @property {number} file_mtime
+ * @property {string | null} world
+ * @property {string | null} creator
+ * @property {string | null} version
+ * @property {string | null} creator_notes
+ * @property {string} shallow_json JSON-serialized shallow character object (character-shallow.js's toShallow()).
+ * @property {number} change_seq
+ * @property {NodeId} active_chat
+ * @property {number} active_chat_checked 0 = not examined, 1 = resolved one way or the other. Never regresses 1->0.
+ * @property {number | null} digest_fav
+ * @property {number | null} digest_tag_ids
+ * @property {number | null} digest_content
+ * @property {string | null} card_json Full Spec-V2 card JSON when it overrides the PNG chunk; null otherwise.
+ * @property {string | null} content_hash sha256 of the raw uploaded import source bytes.
+ * @property {string | null} content_identity_hash Fingerprint of semantic content with install-local fields stripped.
+ * @property {string | null} avatar_identity_hash sha256 over the PNG's raw IDAT payload bytes.
+ * @property {number} import_poisoned 0 or 1 - whether this row may carry old-import-path artifacts.
+ * @property {number | null} allow_global_styles 0, 1, or null ("no preference recorded yet").
+ */
+
+/**
+ * @typedef {Omit<CharacterRow, 'change_seq' | 'allow_global_styles'>} CharacterUpsertRow buildRow()'s output -
+ * every UPSERT_SQL-bound column except `change_seq` (assigned by insertChange() at write time, not by buildRow())
+ * and `allow_global_styles` (not part of UPSERT_SQL at all - owned solely by setCharacterAllowGlobalStyles()).
+ */
+
+/**
+ * @typedef {object} GroupRow Full `groups` table row shape.
+ * @property {string} id
+ * @property {string} name
+ * @property {string} name_fold
+ * @property {number} fav
+ * @property {number} date_added
+ * @property {number} date_last_chat
+ * @property {number} chat_size
+ * @property {number | null} [digest_fav]
+ * @property {number | null} [digest_tag_ids]
+ * @property {number | null} [digest_content]
+ */
+
+/**
+ * @typedef {object} TagRow
+ * @property {string} id
+ * @property {string} data JSON-serialized Tag definition object - see the `tags` table's comment in SCHEMA_SQL.
+ */
+
+/**
+ * @typedef {{ id: string, name?: string, [key: string]: unknown }} TagDefinitionInput A tag definition as
+ * written by a client (tags.js's Tag shape) - only `id`/`name` are relied on here, the rest is passed through.
+ */
+
+/**
+ * @typedef {object} ChangeRow
+ * @property {number} seq
+ * @property {string} id
+ * @property {'upsert'|'delete'} op
+ * @property {string | null} fields JSON array of changed field names, or null (whole record changed, or delete).
+ */
+
+/**
+ * @typedef {object} MetaRow
+ * @property {string} key
+ * @property {string} value
+ */
+
+/** @typedef {{ character_id: string, tag_id: string }} CharacterTagRow */
+/** @typedef {{ group_id: string, tag_id: string }} GroupTagRow */
+/** @typedef {{ tag_id: string, count: number }} TagUsageRow */
+/** @typedef {{ seq: number, tag_id: string }} TagNameChangeRow */
+
+/**
+ * @typedef {object} IdMigrationRow
+ * @property {string} old_id
+ * @property {string} new_id
+ * @property {number} completed 0 or 1
+ */
+
+/**
+ * @typedef {object} LocalImportSkipRow
+ * @property {string} source_path
+ * @property {number} mtime_ms
+ * @property {string} reason
+ * @property {number} checked_at
+ */
+
+/**
+ * @typedef {object} LocalImportMtimeRow
+ * @property {string} source_path
+ * @property {number} mtime_ms
+ * @property {string | null} [duplicate_of]
+ */
+
+/**
+ * @typedef {{
+ *   name?: string,
+ *   fav?: boolean,
+ *   chat?: NodeId,
+ *   create_date?: string | number,
+ *   data?: {
+ *     creator?: string,
+ *     character_version?: string,
+ *     creator_notes?: string,
+ *     extensions?: Record<string, unknown>,
+ *     tags?: unknown[],
+ *   } & Record<string, unknown>,
+ * } & Record<string, unknown>} HoistedCharacterCard
+ * Card object shape read off disk / from a just-written PNG chunk, V1 fields hoisted to the top level by
+ * getCharaCardV2()/parse(). `data.extensions` and other card fields are genuinely caller-arbitrary per the
+ * Spec-V2 card format, so this type is intentionally loose there rather than pretending to a precision the
+ * format doesn't have.
+ */
+
+/**
+ * @typedef {object} HashSourceRow Columns selected via HASH_COLUMNS - the fields queryCharacters()'s toHashRow()
+ * recomputes per-field digests from.
+ * @property {string} id
+ * @property {NodeId} active_chat
+ * @property {number} date_added
+ * @property {number | null} create_date
+ * @property {number} date_last_chat
+ * @property {number} chat_size
+ * @property {number} data_size
+ * @property {string} shallow_json
+ */
+
+/**
+ * @typedef {object} EntityRow One row of queryEntities()'s per-table characters/groups queries, both projected
+ * to the same column set so mergeSortedRows()/makeEntityMergeComparator() can treat them uniformly.
+ * @property {string} id
+ * @property {'character' | 'group'} type
+ * @property {string} name_fold
+ * @property {number} fav
+ * @property {number} date_added
+ * @property {number} date_last_chat
+ * @property {number} chat_size
+ * @property {number | null} create_date `date_added` on the group side (groups have no separate card create_date).
+ * @property {number | null} data_size `null` for a group row (no equivalent).
+ * @property {string | null} shallow_json `null` for a group row.
+ * @property {number | null} [digest_fav] Group side only.
+ * @property {number | null} [digest_tag_ids] Group side only.
+ * @property {number | null} [digest_content] Group side only.
+ */
+
+/**
+ * @typedef {object} EntityHashRow queryEntities()'s toHashRow() output. A NULL-digest group row's
+ * favHash/tagIdsHash/contentHash start as placeholder zeros, corrected in place by resolveFileFallbackHashes().
+ * @property {string} id
+ * @property {boolean} isGroup
+ * @property {NodeId} chat
+ * @property {number} date_added
+ * @property {number | null} create_date
+ * @property {number} date_last_chat
+ * @property {number} chat_size
+ * @property {number} data_size
+ * @property {number} favHash
+ * @property {number} tagIdsHash
+ * @property {number} contentHash
  */
 
 /** @type {Map<string, MetadataDbEntry>} Keyed by directories.root. */
@@ -328,6 +512,10 @@ const UPSERT_SQL = `
 `;
 
 // NFKD-normalizes and strips combining marks so "É"/"e" sort/prefix-match the same as "é"/"e".
+/**
+ * @param {unknown} name
+ * @returns {string}
+ */
 function foldName(name) {
     return String(name ?? '')
         .toLowerCase()
@@ -335,14 +523,21 @@ function foldName(name) {
         .replace(/[\u0300-\u036f]/g, '');
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {string}
+ */
 function getDbPath(directories) {
     return path.join(directories.root, 'character-metadata.sqlite');
 }
 
 // SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS, so this checks PRAGMA table_info and runs the ALTER once.
 // Never backfills existing rows' hashes - they stay NULL.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateContentHashColumn(db) {
-    const columns = db.all('PRAGMA table_info(characters)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     const hasColumn = columns.some(c => c.name === 'content_hash');
     if (!hasColumn) {
         db.exec('ALTER TABLE characters ADD COLUMN content_hash TEXT');
@@ -351,8 +546,11 @@ function migrateContentHashColumn(db) {
 }
 
 // import_poisoned defaults to 1: rows that predate this column came from the old, more-mutating import logic.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateContentIdentityColumns(db) {
-    const columns = db.all('PRAGMA table_info(characters)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'content_identity_hash')) {
         db.exec('ALTER TABLE characters ADD COLUMN content_identity_hash TEXT');
     }
@@ -363,8 +561,11 @@ function migrateContentIdentityColumns(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_import_poisoned ON characters(import_poisoned)');
 }
 
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateAvatarIdentityColumn(db) {
-    const columns = db.all('PRAGMA table_info(characters)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'avatar_identity_hash')) {
         db.exec('ALTER TABLE characters ADD COLUMN avatar_identity_hash TEXT');
     }
@@ -373,8 +574,11 @@ function migrateAvatarIdentityColumn(db) {
 
 // A pre-existing active_chat column means those rows were already resolved in prior boots, so active_chat_checked
 // is retroactively set to 1 for them instead of DEFAULT 0, which would force a full corpus re-read.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateActiveChatColumn(db) {
-    const columns = db.all('PRAGMA table_info(characters)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     const hadActiveChatAlready = columns.some(c => c.name === 'active_chat');
     if (!hadActiveChatAlready) {
         db.exec('ALTER TABLE characters ADD COLUMN active_chat TEXT');
@@ -391,8 +595,11 @@ function migrateActiveChatColumn(db) {
 // Converts create_date from TEXT to INTEGER epoch ms. SQLite has no ALTER COLUMN, so: add a new INTEGER column,
 // backfill it in JS (parseCreateDateToEpochMs handles the "ST humanized" formats SQL alone can't), then DROP the
 // old column and RENAME the new one into place. Unparseable values become NULL and are logged.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateCreateDateColumn(db) {
-    const columns = db.all('PRAGMA table_info(characters)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     const createDateColumn = columns.find(c => c.name === 'create_date');
     const createDateMsColumn = columns.find(c => c.name === 'create_date_ms');
 
@@ -407,12 +614,13 @@ function migrateCreateDateColumn(db) {
 
     // If create_date_ms already exists (interrupted run), skip ADD + backfill and go straight to DROP + RENAME.
     if (!createDateMsColumn) {
-        const rows = db.all('SELECT id, create_date FROM characters WHERE create_date IS NOT NULL');
+        const rows = (/** @type {{ id: string, create_date: number | null }[]} */ (db.all('SELECT id, create_date FROM characters WHERE create_date IS NOT NULL')));
 
         // SQLite refuses to DROP COLUMN while an index still references it.
         db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
         db.exec('ALTER TABLE characters ADD COLUMN create_date_ms INTEGER');
 
+        /** @type {{ id: string, value: number | null }[]} */
         const unparseable = [];
         db.transaction(() => {
             for (const row of rows) {
@@ -444,8 +652,11 @@ function migrateCreateDateColumn(db) {
 
 // deleteRowSync() cascades a character deletion into deleting rows that named it as duplicate_of, so a stale
 // skip can never outlive the character it depends on.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateLocalImportMtimesDuplicateOfColumn(db) {
-    const columns = db.all('PRAGMA table_info(local_import_mtimes)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(local_import_mtimes)')));
     if (!columns.some(c => c.name === 'duplicate_of')) {
         db.exec('ALTER TABLE local_import_mtimes ADD COLUMN duplicate_of TEXT');
     }
@@ -456,8 +667,12 @@ export { computeContentIdentityHash };
 
 // Backfills real values into rows from the old id/name-only shape via a plain UPDATE, since
 // bootstrapGroupsIfNeeded()'s upsert path never overwrites an existing date_added.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 function migrateGroupsColumns(db, directories) {
-    const columns = db.all('PRAGMA table_info(groups)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(groups)')));
     const columnNames = new Set(columns.map(c => c.name));
     const isPreExistingTable = columnNames.size > 0 && !columnNames.has('date_added');
 
@@ -474,7 +689,7 @@ function migrateGroupsColumns(db, directories) {
 
     if (!isPreExistingTable) return;
 
-    const existingIds = db.all('SELECT id FROM groups').map(r => r.id);
+    const existingIds = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM groups'))).map(r => r.id);
     if (existingIds.length === 0) return;
 
     db.transaction(() => {
@@ -490,7 +705,7 @@ function migrateGroupsColumns(db, directories) {
                     { id, name: group.name ?? '', nameFold: foldName(group.name), fav: group.fav ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs), dateLastChat, chatSize },
                 );
             } catch (err) {
-                console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, err.message);
+                console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
             }
         }
     });
@@ -498,8 +713,12 @@ function migrateGroupsColumns(db, directories) {
 
 // Backfills digests immediately, unlike migrateDigestColumns()'s lazy NULL-until-next-write shape - groups are
 // few enough that eager backfill is cheap.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 function migrateGroupDigestColumns(db, directories) {
-    const columns = db.all('PRAGMA table_info(groups)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(groups)')));
     const columnNames = new Set(columns.map(c => c.name));
     const isNewColumn = !columnNames.has('digest_fav');
     if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE groups ADD COLUMN digest_fav INTEGER');
@@ -508,7 +727,7 @@ function migrateGroupDigestColumns(db, directories) {
 
     if (!isNewColumn) return;
 
-    const existingIds = db.all('SELECT id FROM groups').map(r => r.id);
+    const existingIds = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM groups'))).map(r => r.id);
     if (existingIds.length === 0) return;
 
     db.transaction(() => {
@@ -517,7 +736,7 @@ function migrateGroupDigestColumns(db, directories) {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
                 const group = JSON.parse(raw);
-                const tagIds = db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }).map(r => r.tag_id);
+                const tagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }))).map(r => r.tag_id);
                 const fingerprintSource = { ...group, tag_ids: tagIds };
                 db.run(
                     'UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash WHERE id = @id',
@@ -529,26 +748,32 @@ function migrateGroupDigestColumns(db, directories) {
                     },
                 );
             } catch (err) {
-                console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, err.message);
+                console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, /** @type {any} */ (err).message);
             }
         }
     });
 }
 
 // fields: JSON array of changed field names (e.g. '["fav"]'), or NULL meaning the whole record changed.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateChangesFieldsColumn(db) {
-    const columns = db.all('PRAGMA table_info(changes)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(changes)')));
     if (!columns.some(c => c.name === 'fields')) {
         db.exec('ALTER TABLE changes ADD COLUMN fields TEXT');
     }
 }
 
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateRevToSeqColumns(db) {
-    const charCols = db.all('PRAGMA table_info(\'characters\')').map(c => c.name);
+    const charCols = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(\'characters\')'))).map(c => c.name);
     if (charCols.includes('rev') && !charCols.includes('change_seq')) {
         db.exec('ALTER TABLE characters RENAME COLUMN rev TO change_seq');
     }
-    const changeCols = db.all('PRAGMA table_info(\'changes\')').map(c => c.name);
+    const changeCols = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(\'changes\')'))).map(c => c.name);
     if (changeCols.includes('rev') && !changeCols.includes('seq')) {
         db.exec('ALTER TABLE changes RENAME COLUMN rev TO seq');
     }
@@ -558,8 +783,11 @@ function migrateRevToSeqColumns(db) {
 }
 
 // NULL is populated lazily by the next write per row; the tree-descend worker computes from shallow_json on demand.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateDigestColumns(db) {
-    const columns = db.all('PRAGMA table_info(characters)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     const columnNames = new Set(columns.map(c => c.name));
     if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE characters ADD COLUMN digest_fav INTEGER');
     if (!columnNames.has('digest_tag_ids')) db.exec('ALTER TABLE characters ADD COLUMN digest_tag_ids INTEGER');
@@ -567,8 +795,11 @@ function migrateDigestColumns(db) {
 }
 
 // NULL means "no preference recorded yet"; existing values migrate from client accountStorage on first load.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateAllowGlobalStylesColumn(db) {
-    const columns = db.all('PRAGMA table_info(characters)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'allow_global_styles')) {
         db.exec('ALTER TABLE characters ADD COLUMN allow_global_styles INTEGER');
     }
@@ -576,8 +807,11 @@ function migrateAllowGlobalStylesColumn(db) {
 
 // NULL correctly means "PNG chunk is current" for every pre-migration row. The partial index keeps
 // getStaleCardJsonMap()'s scan proportional to edited cards, not library size.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateCardJsonColumn(db) {
-    const columns = db.all('PRAGMA table_info(characters)');
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'card_json')) {
         db.exec('ALTER TABLE characters ADD COLUMN card_json TEXT');
     }
@@ -585,12 +819,19 @@ function migrateCardJsonColumn(db) {
 }
 
 // idx_characters_fav_name_fold has default ASC on both columns, which SQLite can't use for a DESC/ASC ORDER BY.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function migrateFavSortIndex(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_fav_desc_name_fold_asc ON characters(fav DESC, name_fold ASC)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_desc_name_fold_asc ON groups(fav DESC, name_fold ASC)');
 }
 
 // Returns null if no SQLite engine is usable on this install - callers must no-op rather than throw.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<MetadataDbEntry | null>}
+ */
 async function getEntry(directories) {
     const key = directories.root;
     const existing = entries.get(key);
@@ -636,9 +877,24 @@ async function getEntry(directories) {
 }
 
 // dateAddedCandidate is only used on a genuine insert.
+/**
+ * @param {string} id
+ * @param {HoistedCharacterCard} character
+ * @param {object} params
+ * @param {number} params.dateAddedCandidate
+ * @param {number} params.fileMtime
+ * @param {number} params.chatSize
+ * @param {number} params.dateLastChat
+ * @param {string | null} [params.contentHash]
+ * @param {string | null} [params.contentIdentityHash]
+ * @param {string | null} [params.avatarIdentityHash]
+ * @param {string[]} [params.tagIds]
+ * @param {string | null} [params.cardJson]
+ * @returns {CharacterUpsertRow}
+ */
 function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson = null }) {
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
-    const dataSize = calculateDataSize(character?.data);
+    const dataSize = calculateDataSize(character?.data ?? {});
     const shallowSource = {
         ...character,
         avatar: id,
@@ -660,10 +916,11 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         chat_size: chatSize,
         data_size: dataSize,
         file_mtime: fileMtime,
-        world: _.get(character, 'data.extensions.world', '') || null,
-        creator: _.get(character, 'data.creator', '') || null,
-        version: _.get(character, 'data.character_version', '') || null,
-        creator_notes: includeCreatorNotes ? (_.get(character, 'data.creator_notes', '') || null) : null,
+        // Card `data.*` extension fields are genuinely caller-arbitrary (Spec-V2), hence the `any` cast here.
+        world: _.get(/** @type {any} */ (character), 'data.extensions.world', '') || null,
+        creator: _.get(/** @type {any} */ (character), 'data.creator', '') || null,
+        version: _.get(/** @type {any} */ (character), 'data.character_version', '') || null,
+        creator_notes: includeCreatorNotes ? (_.get(/** @type {any} */ (character), 'data.creator_notes', '') || null) : null,
         shallow_json: JSON.stringify(shallow),
         content_hash: contentHash ?? null,
         content_identity_hash: contentIdentityHash ?? null,
@@ -681,8 +938,13 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
 // Meant to run inside db.transaction(...). tagIds only seeds a genuinely new row's tags on first INSERT -
 // character_tags is the source of truth thereafter, so an UPDATE never touches it. fav and active_chat get the
 // same one-time-seed treatment: once a row exists, a stale/foreign value from the card can't override them.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {CharacterUpsertRow} row
+ * @param {string[]} tagIds
+ */
 function writeRowSync(db, row, tagIds) {
-    const existingRow = db.get('SELECT fav, active_chat, shallow_json FROM characters WHERE id = @id', { id: row.id });
+    const existingRow = (/** @type {{ fav: number, active_chat: NodeId, shallow_json: string } | undefined} */ (db.get('SELECT fav, active_chat, shallow_json FROM characters WHERE id = @id', { id: row.id })));
     const existed = !!existingRow;
 
     if (existed) {
@@ -691,7 +953,7 @@ function writeRowSync(db, row, tagIds) {
         // Only a non-NULL existing active_chat gets forced back; NULL means not-yet-examined or confirmed-no-chat,
         // so this write's freshly-resolved candidate is allowed to seed it.
         const forceActiveChat = existingRow.active_chat !== null && row.active_chat !== existingRow.active_chat;
-        const currentTagIds = db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id }).map(r => r.tag_id);
+        const currentTagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id }))).map(r => r.tag_id);
 
         const shallow = JSON.parse(row.shallow_json);
         shallow.tag_ids = currentTagIds;
@@ -722,6 +984,10 @@ function writeRowSync(db, row, tagIds) {
     }
 }
 
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ */
 function deleteRowSync(db, id) {
     db.run('DELETE FROM characters WHERE id = @id', { id });
     db.run('DELETE FROM character_tags WHERE character_id = @id', { id });
@@ -731,6 +997,11 @@ function deleteRowSync(db, id) {
 }
 
 // tags.json remains the write source of truth for tag assignment; this reads its mirror.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {string[]}
+ */
 function getTagIdsFor(directories, avatar) {
     const { tag_map } = readTagsData(directories);
     return tag_map[avatar] ?? [];
@@ -739,6 +1010,10 @@ function getTagIdsFor(directories, avatar) {
 /**
  * @param {string|null} [contentHash] sha256 of the raw uploaded source-file bytes; only the import route has one.
  * @param {string|null} [avatarIdentityHash] Hash of the image bytes actually written; null if no new image bytes.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @param {string} cardJson
+ * @param {number} fileMtimeMs
  */
 export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null, avatarIdentityHash = null) {
     const entry = await getEntry(directories);
@@ -762,11 +1037,17 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
 
 // The one writer (besides a row's first INSERT) allowed to change fav. Pure metadata-store mutation - no PNG
 // touch. Patches shallow_json's embedded fav too, so /query stays consistent with the column.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @param {boolean} fav
+ * @returns {Promise<boolean>}
+ */
 export async function setCharacterFav(directories, avatar, fav) {
     const entry = await getEntry(directories);
     if (!entry) return false;
 
-    const existing = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!existing) return false;
 
     const shallow = JSON.parse(existing.shallow_json);
@@ -781,11 +1062,17 @@ export async function setCharacterFav(directories, avatar, fav) {
 }
 
 // Mirrors setCharacterFav(): DB column + shallow_json mirror, no card file write.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @param {boolean} allowed
+ * @returns {Promise<boolean>}
+ */
 export async function setCharacterAllowGlobalStyles(directories, avatar, allowed) {
     const entry = await getEntry(directories);
     if (!entry) return false;
 
-    const existing = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!existing) return false;
 
     const shallow = JSON.parse(existing.shallow_json);
@@ -801,11 +1088,17 @@ export async function setCharacterAllowGlobalStyles(directories, avatar, allowed
 // The one writer, other than a row's first INSERT, allowed to change active_chat. Mirrors setCharacterFav():
 // never touches the PNG card file, pure metadata-store mutation. Patches shallow_json's embedded chat to match.
 // No-op if this avatar isn't tracked yet - a row must exist for active_chat to mean anything.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @param {NodeId} chat
+ * @returns {Promise<boolean>}
+ */
 export async function setCharacterActiveChat(directories, avatar, chat) {
     const entry = await getEntry(directories);
     if (!entry) return false;
 
-    const existing = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!existing) return false;
 
     const shallow = JSON.parse(existing.shallow_json);
@@ -824,6 +1117,11 @@ export async function setCharacterActiveChat(directories, avatar, chat) {
 // never exceeds it regardless of which sqlite-engine.js backend resolved.
 const FAV_LOOKUP_BATCH_SIZE = 500;
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, boolean>>}
+ */
 export async function getCharacterFavsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -833,7 +1131,7 @@ export async function getCharacterFavsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, batch);
+        const rows = (/** @type {{ id: string, fav: number }[]} */ (entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, batch)));
         for (const row of rows) {
             result[row.id] = !!row.fav;
         }
@@ -841,6 +1139,11 @@ export async function getCharacterFavsByIds(directories, ids) {
     return result;
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, boolean>>}
+ */
 export async function getGroupFavsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -850,7 +1153,7 @@ export async function getGroupFavsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = entry.db.all(`SELECT id, fav FROM groups WHERE id IN (${placeholders})`, batch);
+        const rows = (/** @type {{ id: string, fav: number }[]} */ (entry.db.all(`SELECT id, fav FROM groups WHERE id IN (${placeholders})`, batch)));
         for (const row of rows) {
             result[row.id] = !!row.fav;
         }
@@ -858,6 +1161,11 @@ export async function getGroupFavsByIds(directories, ids) {
     return result;
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, boolean>>}
+ */
 export async function getCharacterAllowGlobalStylesByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -867,7 +1175,7 @@ export async function getCharacterAllowGlobalStylesByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = entry.db.all(`SELECT id, allow_global_styles FROM characters WHERE id IN (${placeholders})`, batch);
+        const rows = (/** @type {{ id: string, allow_global_styles: number | null }[]} */ (entry.db.all(`SELECT id, allow_global_styles FROM characters WHERE id IN (${placeholders})`, batch)));
         for (const row of rows) {
             if (row.allow_global_styles != null) {
                 result[row.id] = !!row.allow_global_styles;
@@ -877,6 +1185,11 @@ export async function getCharacterAllowGlobalStylesByIds(directories, ids) {
     return result;
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, string[]>>}
+ */
 export async function getCharacterTagIdsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -887,7 +1200,7 @@ export async function getCharacterTagIdsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = entry.db.all(`SELECT id FROM characters WHERE id IN (${placeholders})`, batch);
+        const rows = (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM characters WHERE id IN (${placeholders})`, batch)));
         for (const row of rows) {
             trackedIds.add(row.id);
         }
@@ -902,7 +1215,7 @@ export async function getCharacterTagIdsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = entry.db.all(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, batch);
+        const rows = (/** @type {{ character_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, batch)));
         for (const row of rows) {
             if (result[row.character_id]) {
                 result[row.character_id].push(row.tag_id);
@@ -914,6 +1227,11 @@ export async function getCharacterTagIdsByIds(directories, ids) {
 
 // Unlike getCharacterFavsByIds() (which reports every tracked id's real boolean), this omits a tracked-but-NULL
 // row from the result, not just an untracked one: "absent" uniformly means "no chat to stamp, leave it alone".
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, string>>}
+ */
 export async function getCharacterActiveChatsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -923,7 +1241,7 @@ export async function getCharacterActiveChatsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = entry.db.all(`SELECT id, active_chat FROM characters WHERE id IN (${placeholders}) AND active_chat IS NOT NULL`, batch);
+        const rows = (/** @type {{ id: string, active_chat: string }[]} */ (entry.db.all(`SELECT id, active_chat FROM characters WHERE id IN (${placeholders}) AND active_chat IS NOT NULL`, batch)));
         for (const row of rows) {
             result[row.id] = row.active_chat;
         }
@@ -931,6 +1249,11 @@ export async function getCharacterActiveChatsByIds(directories, ids) {
     return result;
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, object>>}
+ */
 export async function getShallowByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
@@ -940,7 +1263,7 @@ export async function getShallowByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = entry.db.all(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch);
+        const rows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch)));
         for (const row of rows) {
             try {
                 result[row.id] = JSON.parse(row.shallow_json);
@@ -954,20 +1277,33 @@ export async function getShallowByIds(directories, ids) {
 
 // null means "PNG chunk is current, read the file". Deliberately uncached: readCharacterData()'s mtime-keyed
 // cache can't represent a db-only edit since neither path nor mtime moves.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {Promise<string | null>}
+ */
 export async function getCharacterCardJson(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = entry.db.get('SELECT card_json FROM characters WHERE id = @id', { id: avatar });
+    const row = (/** @type {{ card_json: string | null } | undefined} */ (entry.db.get('SELECT card_json FROM characters WHERE id = @id', { id: avatar })));
     return row?.card_json ?? null;
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Map<string, string>>}
+ */
 export async function getStaleCardJsonMap(directories) {
     const entry = await getEntry(directories);
     if (!entry) return new Map();
-    const rows = entry.db.all('SELECT id, card_json FROM characters WHERE card_json IS NOT NULL');
+    const rows = (/** @type {{ id: string, card_json: string }[]} */ (entry.db.all('SELECT id, card_json FROM characters WHERE card_json IS NOT NULL')));
     return new Map(rows.map(row => [row.id, row.card_json]));
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ */
 export async function deleteCharacterRow(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -980,11 +1316,16 @@ export async function deleteCharacterRow(directories, avatar) {
 
 // Corrects date_added on a rename (the generic write hook treats newAvatar as brand-new) and unions
 // oldAvatar's tags into newAvatar.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} oldAvatar
+ * @param {string} newAvatar
+ */
 export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const oldRow = entry.db.get('SELECT date_added FROM characters WHERE id = @id', { id: oldAvatar });
+    const oldRow = (/** @type {{ date_added: number } | undefined} */ (entry.db.get('SELECT date_added FROM characters WHERE id = @id', { id: oldAvatar })));
     if (oldRow) {
         const dateAdded = Number(oldRow.date_added);
         // A rename landing mid-batch-import means newAvatar may still be in the buffer, not the table.
@@ -993,7 +1334,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
             pending.row.date_added = dateAdded;
             pending.row.shallow_json = withPatchedDateAdded(pending.row.shallow_json, dateAdded);
         } else {
-            const newRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar });
+            const newRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar })));
             if (newRow) {
                 const shallowJson = withPatchedDateAdded(newRow.shallow_json, dateAdded);
                 entry.db.run('UPDATE characters SET date_added = @dateAdded, shallow_json = @shallowJson WHERE id = @id', { dateAdded, shallowJson, id: newAvatar });
@@ -1004,7 +1345,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     }
 
     // Must read before the transaction below deletes oldAvatar's rows.
-    const oldTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar }).map(r => r.tag_id);
+    const oldTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar }))).map(r => r.tag_id);
     if (oldTagIds.length > 0) {
         const pending = entry.batch?.pending.get(newAvatar);
         if (pending) {
@@ -1022,6 +1363,11 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
 }
 
 /** Returns `shallowJson` with its `date_added` field overwritten; unmodified if it doesn't parse. */
+/**
+ * @param {string} shallowJson
+ * @param {number} dateAdded
+ * @returns {string}
+ */
 function withPatchedDateAdded(shallowJson, dateAdded) {
     try {
         const parsed = JSON.parse(shallowJson);
@@ -1033,6 +1379,11 @@ function withPatchedDateAdded(shallowJson, dateAdded) {
 }
 
 /** Overwrites date_added unconditionally - the one exception to it being write-once elsewhere in this module. */
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {number} dateAddedMs
+ */
 export async function setCharacterDateAdded(directories, id, dateAddedMs) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1044,12 +1395,17 @@ export async function setCharacterDateAdded(directories, id, dateAddedMs) {
         return;
     }
 
-    const row = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
+    const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
     if (!row) return;
     const shallowJson = withPatchedDateAdded(row.shallow_json, dateAddedMs);
     entry.db.run('UPDATE characters SET date_added = @dateAddedMs, shallow_json = @shallowJson WHERE id = @id', { dateAddedMs, shallowJson, id });
 }
 
+/**
+ * @param {MetadataDbEntry} entry
+ * @param {CharacterUpsertRow} row
+ * @param {string[]} tagIds
+ */
 function applyOrBuffer(entry, row, tagIds) {
     if (entry.batch) {
         entry.batch.pending.set(row.id, { row, tagIds });
@@ -1062,6 +1418,9 @@ function applyOrBuffer(entry, row, tagIds) {
     entry.db.transaction(() => writeRowSync(entry.db, row, tagIds));
 }
 
+/**
+ * @param {MetadataDbEntry} entry
+ */
 function flushBatch(entry) {
     if (!entry.batch || entry.batch.pending.size === 0) return;
     const rows = [...entry.batch.pending.values()];
@@ -1074,6 +1433,9 @@ function flushBatch(entry) {
 }
 
 // Suspends the directory watcher (a burst import can overflow inotify's queue) and buffers writes. Idempotent.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function beginBatchImport(directories) {
     const entry = await getEntry(directories);
     if (!entry || entry.batch) return;
@@ -1082,6 +1444,9 @@ export async function beginBatchImport(directories) {
     stopWatcher(entry);
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function endBatchImport(directories) {
     const entry = await getEntry(directories);
     if (!entry || !entry.batch) return;
@@ -1092,11 +1457,14 @@ export async function endBatchImport(directories) {
 }
 
 // One-time backfill for a library predating this metadata store. Seeds date_added from ctimeMs, recorded in meta so it runs once.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function bootstrapIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get('SELECT value FROM meta WHERE key = @key', { key: 'bootstrap_completed' });
+    const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = @key', { key: 'bootstrap_completed' })));
     if (already) return;
 
     if (!fs.existsSync(directories.characters)) {
@@ -1127,12 +1495,12 @@ export async function bootstrapIfNeeded(directories) {
                 const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds, cardJson: imgData });
                 return { row, tagIds };
             } catch (err) {
-                console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, err.message);
+                console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, /** @type {any} */ (err).message);
                 return null;
             }
         });
 
-        const pending = chunkResults.filter(Boolean);
+        const pending = chunkResults.filter((r) => r !== null);
         if (pending.length > 0) {
             entry.db.transaction(() => {
                 for (const { row, tagIds } of pending) {
@@ -1168,6 +1536,9 @@ export async function bootstrapIfNeeded(directories) {
 // Backfills content_identity_hash for poisoned rows without clearing import_poisoned (see SCHEMA_SQL). Reads
 // the PNG's pristine 'chara' chunk, which stays valid even when 'ccv3' doesn't.
 // Resumable without a meta flag: re-queries import_poisoned=1 AND content_identity_hash IS NULL every call.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function backfillContentIdentityHashes(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1176,7 +1547,7 @@ export async function backfillContentIdentityHashes(directories) {
 
     if (!fs.existsSync(directories.characters)) return;
 
-    const poisonedIds = entry.db.all('SELECT id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL').map(r => r.id);
+    const poisonedIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL'))).map(r => r.id);
     if (poisonedIds.length === 0) return;
 
     const backfillStart = Date.now();
@@ -1194,12 +1565,12 @@ export async function backfillContentIdentityHashes(directories) {
                 const character = getCharaCardV2(JSON.parse(pristine), directories, false);
                 return { id, hash: computeContentIdentityHash(character), avatarHash: computeAvatarIdentityHashFromChunks(chunks) };
             } catch (err) {
-                console.error(`[character-metadata] Content-identity backfill failed to process ${id}, leaving it poisoned (will retry next boot):`, err.message);
+                console.error(`[character-metadata] Content-identity backfill failed to process ${id}, leaving it poisoned (will retry next boot):`, /** @type {any} */ (err).message);
                 return null;
             }
         });
 
-        const updates = chunkResults.filter(Boolean);
+        const updates = chunkResults.filter((r) => r !== null);
         if (updates.length > 0) {
             entry.db.transaction(() => {
                 for (const { id, hash, avatarHash } of updates) {
@@ -1229,13 +1600,16 @@ export async function backfillContentIdentityHashes(directories) {
 
 // Keyed on active_chat_checked, not active_chat IS NULL, since the latter can't distinguish "confirmed no
 // chat" from "not examined". Resumable without a flag: re-queries active_chat_checked = 0 every call.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function backfillActiveChatFromCards(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     if (!fs.existsSync(directories.characters)) return;
 
-    const uncheckedIds = entry.db.all('SELECT id FROM characters WHERE active_chat_checked = 0').map(r => r.id);
+    const uncheckedIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters WHERE active_chat_checked = 0'))).map(r => r.id);
     if (uncheckedIds.length === 0) return;
 
     const backfillStart = Date.now();
@@ -1253,7 +1627,7 @@ export async function backfillActiveChatFromCards(directories) {
                 const chat = character.chat ?? null;
                 return { id, chat, resolved: true };
             } catch (err) {
-                console.error(`[character-metadata] Active-chat backfill failed to process ${id}, leaving it unchecked (will retry next boot):`, err.message);
+                console.error(`[character-metadata] Active-chat backfill failed to process ${id}, leaving it unchecked (will retry next boot):`, /** @type {any} */ (err).message);
                 return { id, resolved: false };
             }
         });
@@ -1290,16 +1664,19 @@ export async function backfillActiveChatFromCards(directories) {
 }
 
 // Gated by a meta flag, set only once the NOT LIKE discovery scan (unindexable) finds nothing left to backfill.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function backfillTagIdsInShallowJson(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get('SELECT value FROM meta WHERE key = \'tag_ids_shallow_json_backfill_completed\'');
+    const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'tag_ids_shallow_json_backfill_completed\'')));
     if (already) return;
 
-    const idsToBackfill = entry.db.all(
+    const idsToBackfill = (/** @type {{ id: string }[]} */ (entry.db.all(
         'SELECT id FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\'',
-    ).map(r => r.id);
+    ))).map(r => r.id);
 
     if (idsToBackfill.length === 0) {
         entry.db.run('INSERT INTO meta (key, value) VALUES (\'tag_ids_shallow_json_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
@@ -1315,18 +1692,19 @@ export async function backfillTagIdsInShallowJson(directories) {
     for (let i = 0; i < idsToBackfill.length; i += BACKFILL_BATCH) {
         const batchIds = idsToBackfill.slice(i, i + BACKFILL_BATCH);
 
+        /** @type {{ id: string, shallowJson: string }[]} */
         const prepared = [];
         for (const id of batchIds) {
             try {
-                const row = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
+                const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
                 if (!row) continue;
                 if (row.shallow_json.includes('"tag_ids":')) continue;
-                const tagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
+                const tagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
                 const shallow = JSON.parse(row.shallow_json);
                 shallow.tag_ids = tagIds;
                 prepared.push({ id, shallowJson: JSON.stringify(shallow) });
             } catch (err) {
-                console.error(`[character-metadata] Failed to prepare tag_ids backfill for ${id}:`, err.message);
+                console.error(`[character-metadata] Failed to prepare tag_ids backfill for ${id}:`, /** @type {any} */ (err).message);
             }
         }
 
@@ -1355,19 +1733,22 @@ export async function backfillTagIdsInShallowJson(directories) {
 
     // Not `processed === idsToBackfill.length`: a row a concurrent writer already patched needs no work here
     // but never increments processed, so re-check the discovery query directly to decide the flag.
-    const remaining = entry.db.get('SELECT 1 FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\' LIMIT 1');
+    const remaining = (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\' LIMIT 1')));
     if (!remaining) {
         entry.db.run('INSERT INTO meta (key, value) VALUES (\'tag_ids_shallow_json_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     }
 }
 
 // Diffs tags.json's tag_map against character_tags and applies only the delta, since most rows already agree.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function resyncTags(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     const { tag_map } = readTagsData(directories);
-    const knownIds = new Set(entry.db.all('SELECT id FROM characters').map(r => r.id));
+    const knownIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id));
 
     /** @type {Set<string>} */
     const desired = new Set();
@@ -1376,7 +1757,7 @@ export async function resyncTags(directories) {
         for (const tagId of tagIds) desired.add(`${characterId} ${tagId}`);
     }
 
-    const current = entry.db.all('SELECT character_id, tag_id FROM character_tags');
+    const current = (/** @type {{ character_id: string, tag_id: string }[]} */ (entry.db.all('SELECT character_id, tag_id FROM character_tags')));
     const currentSet = new Set(current.map(r => `${r.character_id} ${r.tag_id}`));
 
     const toAdd = [...desired].filter(k => !currentSet.has(k));
@@ -1396,6 +1777,9 @@ export async function resyncTags(directories) {
 }
 
 // Content-only changes to existing files are the watcher's job, not this function's.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function reconcile(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1408,14 +1792,14 @@ export async function reconcile(directories) {
     } catch {
         return;
     }
-    const storedRow = entry.db.get('SELECT value FROM meta WHERE key = \'last_reconcile_dir_mtime_ms\'');
+    const storedRow = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'last_reconcile_dir_mtime_ms\'')));
     if (storedRow !== undefined && Number(storedRow.value) === currentDirMtimeMs) {
         return;
     }
 
     const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
     const onDisk = new Set(files);
-    const existingIds = new Set(entry.db.all('SELECT id FROM characters').map(r => r.id));
+    const existingIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id));
 
     // Rows whose file no longer exists on disk.
     for (const id of existingIds) {
@@ -1446,7 +1830,7 @@ export async function reconcile(directories) {
                     const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds, cardJson: imgData });
                     return { row, tagIds };
                 } catch (err) {
-                    console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, err.message);
+                    console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, /** @type {any} */ (err).message);
                     return null;
                 }
             });
@@ -1491,6 +1875,9 @@ export async function reconcile(directories) {
     );
 }
 
+/**
+ * @param {MetadataDbEntry} entry
+ */
 function startWatcher(entry) {
     if (entry.watcher || !fs.existsSync(entry.directories.characters)) return;
 
@@ -1511,10 +1898,13 @@ function startWatcher(entry) {
             console.error('[character-metadata] Directory watcher error (the reconciler remains the source of truth):', err.message);
         });
     } catch (err) {
-        console.error('[character-metadata] Failed to start directory watcher (the reconciler remains the source of truth):', err.message);
+        console.error('[character-metadata] Failed to start directory watcher (the reconciler remains the source of truth):', /** @type {any} */ (err).message);
     }
 }
 
+/**
+ * @param {MetadataDbEntry} entry
+ */
 function stopWatcher(entry) {
     if (entry.watcher) {
         entry.watcher.close();
@@ -1524,20 +1914,24 @@ function stopWatcher(entry) {
     entry.watchTimers.clear();
 }
 
+/**
+ * @param {MetadataDbEntry} entry
+ * @param {string} filename
+ */
 async function handleWatchEvent(entry, filename) {
     const filePath = path.join(entry.directories.characters, filename);
     let stat;
     try {
         stat = await fsPromises.stat(filePath);
     } catch (err) {
-        if (err.code === 'ENOENT') {
+        if (/** @type {any} */ (err).code === 'ENOENT') {
             entry.db.transaction(() => deleteRowSync(entry.db, filename));
             return;
         }
         throw err;
     }
 
-    const existing = entry.db.get('SELECT file_mtime FROM characters WHERE id = @id', { id: filename });
+    const existing = (/** @type {{ file_mtime: number } | undefined} */ (entry.db.get('SELECT file_mtime FROM characters WHERE id = @id', { id: filename })));
     if (existing && Number(existing.file_mtime) === stat.mtimeMs) {
         return; // Already up to date (e.g. a write-path hook already handled this exact change).
     }
@@ -1552,6 +1946,9 @@ async function handleWatchEvent(entry, filename) {
 }
 
 // Bootstrap runs in the background so a large corpus doesn't delay the server listening.
+/**
+ * @param {import('./users.js').UserDirectoryList[]} directoriesList
+ */
 export async function initializeMetadataStores(directoriesList) {
     for (const directories of directoriesList) {
         const entry = await getEntry(directories);
@@ -1561,6 +1958,12 @@ export async function initializeMetadataStores(directoriesList) {
         startWatcher(entry);
 
         const __chainStart = process.hrtime.bigint();
+        /**
+         * @template T
+         * @param {string} label
+         * @param {() => Promise<T>} fn
+         * @returns {Promise<T>}
+         */
         const __stage = async (label, fn) => {
             const s = process.hrtime.bigint();
             const result = await fn();
@@ -1603,11 +2006,16 @@ export function disposeMetadataStores() {
 export async function getCharacterMetadataRow(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return undefined;
-    return entry.db.get('SELECT * FROM characters WHERE id = @id', { id: avatar });
+    return (/** @type {CharacterRow | undefined} */ (entry.db.get('SELECT * FROM characters WHERE id = @id', { id: avatar })));
 }
 
 // Also checks the pending batch buffer: a bulk import can drop two identical files in the same
 // still-unflushed batch. Fails open to null, which callers must treat as "can't determine", not "no duplicate".
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string | null} hash
+ * @returns {Promise<string | null>}
+ */
 export async function findCharacterIdByContentHash(directories, hash) {
     if (!hash) return null;
     const entry = await getEntry(directories);
@@ -1621,11 +2029,16 @@ export async function findCharacterIdByContentHash(directories, hash) {
         }
     }
 
-    const row = entry.db.get('SELECT id FROM characters WHERE content_hash = @hash', { hash });
+    const row = (/** @type {{ id: string } | undefined} */ (entry.db.get('SELECT id FROM characters WHERE content_hash = @hash', { hash })));
     return row ? row.id : null;
 }
 
 // Matches semantic content even if bytes differ.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string | null} hash
+ * @returns {Promise<string | null>}
+ */
 export async function findCharacterIdByContentIdentityHash(directories, hash) {
     if (!hash) return null;
     const entry = await getEntry(directories);
@@ -1639,13 +2052,17 @@ export async function findCharacterIdByContentIdentityHash(directories, hash) {
         }
     }
 
-    const row = entry.db.get('SELECT id FROM characters WHERE content_identity_hash = @hash', { hash });
+    const row = (/** @type {{ id: string } | undefined} */ (entry.db.get('SELECT id FROM characters WHERE content_identity_hash = @hash', { hash })));
     return row ? row.id : null;
 }
 
 /**
  * Requires both hashes to match the same row - content_identity_hash alone would wrongly treat
  * same-text-different-portrait characters as duplicates.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string | null} contentIdentityHash
+ * @param {string | null} avatarIdentityHash
+ * @returns {Promise<string | null>}
  */
 export async function findCharacterIdByIdentityHashes(directories, contentIdentityHash, avatarIdentityHash) {
     if (!contentIdentityHash || !avatarIdentityHash) return null;
@@ -1660,19 +2077,19 @@ export async function findCharacterIdByIdentityHashes(directories, contentIdenti
         }
     }
 
-    const exactRow = entry.db.get(
+    const exactRow = /** @type {{ id: string } | undefined} */ (entry.db.get(
         'SELECT id FROM characters WHERE content_identity_hash = @contentIdentityHash AND avatar_identity_hash = @avatarIdentityHash',
         { contentIdentityHash, avatarIdentityHash },
-    );
+    ));
     if (exactRow) return exactRow.id;
 
     // Fallback for rows sharing content_identity_hash but with avatar_identity_hash still NULL: a plain SQL
     // `=` comparison silently excludes NULL, which would miss real duplicates on an unbackfilled library.
     if (!fs.existsSync(directories.characters)) return null;
-    const unbackfilledCandidates = entry.db.all(
+    const unbackfilledCandidates = /** @type {{ id: string }[]} */ (entry.db.all(
         'SELECT id FROM characters WHERE content_identity_hash = @contentIdentityHash AND avatar_identity_hash IS NULL',
         { contentIdentityHash },
-    );
+    ));
     for (const { id } of unbackfilledCandidates) {
         let rowAvatarHash;
         try {
@@ -1697,14 +2114,25 @@ export async function findCharacterIdByIdentityHashes(directories, contentIdenti
 }
 
 // Fails open to null (unavailable store) - callers must treat that as "can't determine", not "not skipped".
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath
+ * @returns {Promise<{ mtimeMs: number, reason: string } | null>}
+ */
 export async function getLocalImportSkip(directories, sourcePath) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const row = entry.db.get('SELECT mtime_ms, reason FROM local_import_skips WHERE source_path = @sourcePath', { sourcePath });
+    const row = (/** @type {{ mtime_ms: number, reason: string } | undefined} */ (entry.db.get('SELECT mtime_ms, reason FROM local_import_skips WHERE source_path = @sourcePath', { sourcePath })));
     return row ? { mtimeMs: Number(row.mtime_ms), reason: row.reason } : null;
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath
+ * @param {number} mtimeMs
+ * @param {string} reason
+ */
 export async function setLocalImportSkip(directories, sourcePath, mtimeMs, reason) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1720,6 +2148,10 @@ export async function setLocalImportSkip(directories, sourcePath, mtimeMs, reaso
     );
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath
+ */
 export async function clearLocalImportSkip(directories, sourcePath) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1729,16 +2161,26 @@ export async function clearLocalImportSkip(directories, sourcePath) {
 
 // Lazy per-cache-miss point lookup, replacing the old bulk-load-whole-table-at-boot getAllLocalImportMtimes()
 // (unbounded memory growth against an ever-growing external corpus).
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath
+ * @returns {Promise<{ mtimeMs: number } | null>}
+ */
 export async function getLocalImportMtime(directories, sourcePath) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const row = entry.db.get('SELECT mtime_ms FROM local_import_mtimes WHERE source_path = @sourcePath', { sourcePath });
+    const row = (/** @type {{ mtime_ms: number } | undefined} */ (entry.db.get('SELECT mtime_ms FROM local_import_mtimes WHERE source_path = @sourcePath', { sourcePath })));
     return row ? { mtimeMs: Number(row.mtime_ms) } : null;
 }
 
 // Batched counterpart to getLocalImportMtime(): one query per chunk of paths. Returns a plain Map scoped to
 // just the given paths, not a whole-table cache.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} sourcePaths
+ * @returns {Promise<Map<string, number>>}
+ */
 export async function getLocalImportMtimesForPaths(directories, sourcePaths) {
     const result = new Map();
     if (!sourcePaths.length) return result;
@@ -1747,7 +2189,7 @@ export async function getLocalImportMtimesForPaths(directories, sourcePaths) {
     if (!entry) return result;
 
     const placeholders = sourcePaths.map(() => '?').join(',');
-    for (const row of entry.db.all(`SELECT source_path, mtime_ms FROM local_import_mtimes WHERE source_path IN (${placeholders})`, sourcePaths)) {
+    for (const row of (/** @type {{ source_path: string, mtime_ms: number }[]} */ (entry.db.all(`SELECT source_path, mtime_ms FROM local_import_mtimes WHERE source_path IN (${placeholders})`, sourcePaths)))) {
         result.set(row.source_path, Number(row.mtime_ms));
     }
     return result;
@@ -1755,19 +2197,31 @@ export async function getLocalImportMtimesForPaths(directories, sourcePaths) {
 
 // Keyset-paginated (source_path > afterSourcePath), not LIMIT/OFFSET: the sweep DELETEs rows as it walks, and
 // OFFSET pagination would silently skip rows as offsets shift underneath it.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} afterSourcePath
+ * @param {number} limit
+ * @returns {Promise<string[]>}
+ */
 export async function getLocalImportMtimeSourcePathsAfter(directories, afterSourcePath, limit) {
     const entry = await getEntry(directories);
     if (!entry) return [];
 
-    const rows = entry.db.all(
+    const rows = /** @type {{ source_path: string }[]} */ (entry.db.all(
         'SELECT source_path FROM local_import_mtimes WHERE source_path > @after ORDER BY source_path LIMIT @limit',
         { after: afterSourcePath, limit },
-    );
+    ));
     return rows.map(row => row.source_path);
 }
 
 // duplicateOf, when given, records that this row's validity depends on that character id still existing -
 // deleteRowSync() cascades the deletion.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath
+ * @param {number} mtimeMs
+ * @param {string | null} [duplicateOf]
+ */
 export async function setLocalImportMtime(directories, sourcePath, mtimeMs, duplicateOf = null) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1780,6 +2234,10 @@ export async function setLocalImportMtime(directories, sourcePath, mtimeMs, dupl
     );
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} sourcePath
+ */
 export async function clearLocalImportMtime(directories, sourcePath) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1787,22 +2245,35 @@ export async function clearLocalImportMtime(directories, sourcePath) {
     entry.db.run('DELETE FROM local_import_mtimes WHERE source_path = @sourcePath', { sourcePath });
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {Promise<string[]>}
+ */
 export async function getCharacterTagIds(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return [];
-    return entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }).map(r => r.tag_id);
+    return (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))).map(r => r.tag_id);
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} tagId
+ * @returns {Promise<number>}
+ */
 export async function getTagUsageCount(directories, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return 0;
-    const row = entry.db.get('SELECT count FROM tag_usage WHERE tag_id = @tagId', { tagId });
+    const row = (/** @type {{ count: number } | undefined} */ (entry.db.get('SELECT count FROM tag_usage WHERE tag_id = @tagId', { tagId })));
     return row ? Number(row.count) : 0;
 }
 
 // Content hash of all tag definitions, the freshness signature replacing tags.json's mtime.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
 function updateTagsHashSync(db) {
-    const rows = db.all('SELECT id, data FROM tags ORDER BY id');
+    const rows = (/** @type {TagRow[]} */ (db.all('SELECT id, data FROM tags ORDER BY id')));
     const content = rows.map(r => r.id + '\0' + r.data).join('\0');
     const hash = crypto.createHash('sha256').update(content).digest('hex');
     db.run(
@@ -1811,21 +2282,35 @@ function updateTagsHashSync(db) {
     );
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<string | null>}
+ */
 export async function getTagsHash(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = entry.db.get('SELECT value FROM meta WHERE key = \'tags_hash\'');
+    const row = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'tags_hash\'')));
     return row ? row.value : null;
 }
 
 // General-purpose key/value accessor pair over the meta table.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @returns {Promise<string | null>}
+ */
 export async function getMetaValue(directories, key) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = entry.db.get('SELECT value FROM meta WHERE key = ?', [key]);
+    const row = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = ?', [key])));
     return row ? String(row.value) : null;
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @param {unknown} value
+ */
 export async function setMetaValue(directories, key, value) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -1836,12 +2321,17 @@ export async function setMetaValue(directories, key, value) {
 }
 
 // Tag ids whose *name* changed since sinceSeq - mirrors getChangesSince()'s truncation handling.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} sinceSeq
+ * @returns {Promise<{ seq: number, tagIds: string[], truncated: boolean } | null>}
+ */
 export async function getTagNameChangesSince(directories, sinceSeq) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     const numericSince = Number.isFinite(sinceSeq) && sinceSeq >= 0 ? Math.trunc(sinceSeq) : 0;
-    const bounds = entry.db.get('SELECT MIN(seq) as minSeq, MAX(seq) as maxSeq FROM tag_name_changes');
+    const bounds = (/** @type {{ minSeq: number | null, maxSeq: number | null } | undefined} */ (entry.db.get('SELECT MIN(seq) as minSeq, MAX(seq) as maxSeq FROM tag_name_changes')));
     const minSeq = bounds?.minSeq != null ? Number(bounds.minSeq) : undefined;
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
@@ -1850,10 +2340,15 @@ export async function getTagNameChangesSince(directories, sinceSeq) {
         return { seq: maxSeq, tagIds: [], truncated: true };
     }
 
-    const rows = entry.db.all('SELECT DISTINCT tag_id FROM tag_name_changes WHERE seq > ?', [numericSince]);
+    const rows = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT DISTINCT tag_id FROM tag_name_changes WHERE seq > ?', [numericSince])));
     return { seq: maxSeq, tagIds: rows.map(row => row.tag_id), truncated: false };
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} tagIds
+ * @returns {Promise<string[] | null>}
+ */
 export async function getCharacterIdsForTagIds(directories, tagIds) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1864,7 +2359,7 @@ export async function getCharacterIdsForTagIds(directories, tagIds) {
     for (let i = 0; i < ids.length; i += CHUNK) {
         const slice = ids.slice(i, i + CHUNK);
         const placeholders = slice.map(() => '?').join(',');
-        for (const row of entry.db.all(`SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders})`, slice)) {
+        for (const row of (/** @type {{ character_id: string }[]} */ (entry.db.all(`SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders})`, slice)))) {
             out.add(row.character_id);
         }
     }
@@ -1872,45 +2367,77 @@ export async function getCharacterIdsForTagIds(directories, tagIds) {
 }
 
 // INSERT OR IGNORE: a resumed migration run reuses the id minted first rather than minting a fresh one.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} oldId
+ * @param {string} newId
+ */
 export async function recordIdMigrationMapping(directories, oldId, newId) {
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.run('INSERT OR IGNORE INTO id_migration (old_id, new_id, completed) VALUES (@oldId, @newId, 0)', { oldId, newId });
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} oldId
+ * @returns {Promise<string | null>}
+ */
 export async function getIdMigrationMapping(directories, oldId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = entry.db.get('SELECT new_id FROM id_migration WHERE old_id = @oldId', { oldId });
+    const row = (/** @type {{ new_id: string } | undefined} */ (entry.db.get('SELECT new_id FROM id_migration WHERE old_id = @oldId', { oldId })));
     return row ? String(row.new_id) : null;
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} newId
+ * @returns {Promise<boolean>}
+ */
 export async function isIdMigrationTargetTaken(directories, newId) {
     const entry = await getEntry(directories);
     if (!entry) return false;
-    return !!entry.db.get('SELECT 1 FROM id_migration WHERE new_id = @newId', { newId });
+    return !!(/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM id_migration WHERE new_id = @newId', { newId })));
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} oldId
+ */
 export async function markIdMigrationComplete(directories, oldId) {
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.run('UPDATE id_migration SET completed = 1 WHERE old_id = @oldId', { oldId });
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<IdMigrationRow[]>}
+ */
 export async function getPendingIdMigrations(directories) {
     const entry = await getEntry(directories);
     if (!entry) return [];
-    return entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 0');
+    return (/** @type {IdMigrationRow[]} */ (entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 0')));
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<IdMigrationRow[]>}
+ */
 export async function getCompletedIdMigrations(directories) {
     const entry = await getEntry(directories);
     if (!entry) return [];
-    return entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 1');
+    return (/** @type {IdMigrationRow[]} */ (entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 1')));
 }
 
 // ids can mix character avatars and group ids. Every requested id is a key in the result ([] if no tags), so
 // a caller never has to distinguish "no tags" from "id absent".
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, string[]> | null>}
+ */
 export async function getEntityTagIdsForMany(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1926,8 +2453,8 @@ export async function getEntityTagIdsForMany(directories, ids) {
         const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE).filter(id => typeof id === 'string' && id.length > 0);
         if (chunk.length === 0) continue;
         const placeholders = chunk.map(() => '?').join(', ');
-        const characterRows = entry.db.all(`SELECT character_id as entity_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, chunk);
-        const groupRows = entry.db.all(`SELECT group_id as entity_id, tag_id FROM group_tags WHERE group_id IN (${placeholders})`, chunk);
+        const characterRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT character_id as entity_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, chunk)));
+        const groupRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT group_id as entity_id, tag_id FROM group_tags WHERE group_id IN (${placeholders})`, chunk)));
         for (const row of [...characterRows, ...groupRows]) {
             result[row.entity_id]?.push(row.tag_id);
         }
@@ -1942,6 +2469,9 @@ export async function getEntityTagIdsForMany(directories, ids) {
 
 // Patches a still-buffered batch-import row's tag ids so a read landing before flush still sees the assignment.
 
+/**
+ * @param {PendingRow} pending
+ */
 function patchPendingRowTagIds(pending) {
     const shallow = JSON.parse(pending.row.shallow_json);
     shallow.tag_ids = pending.tagIds;
@@ -1952,6 +2482,12 @@ function patchPendingRowTagIds(pending) {
 // Requires the entity to exist (checked against characters then groups) since neither table has an FK to
 // enforce it. Checks the batch-import pending buffer too: a just-imported, still-buffered row's auto-assign
 // would otherwise race the flush and silently lose the tag.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {string} tagId
+ * @returns {Promise<'ok' | 'not_found' | null>}
+ */
 export async function assignEntityTag(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -1965,13 +2501,13 @@ export async function assignEntityTag(directories, id, tagId) {
         return 'ok';
     }
 
-    if (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })) {
+    if ((/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
         entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
         // No updateTagsHashSync() here: this only touches character_tags, never the tags table that hashes, so
         // it would be a full O(library-wide tag count) scan for zero signal.
-        const charRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
+        const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
         if (charRow) {
-            const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
+            const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
             const shallow = JSON.parse(charRow.shallow_json);
             shallow.tag_ids = currentTagIds;
             const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
@@ -1979,9 +2515,9 @@ export async function assignEntityTag(directories, id, tagId) {
         }
         return 'ok';
     }
-    if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
+    if ((/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
         entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-        const currentTagIds = entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }).map(r => r.tag_id);
+        const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }))).map(r => r.tag_id);
         entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
         return 'ok';
     }
@@ -1991,6 +2527,12 @@ export async function assignEntityTag(directories, id, tagId) {
 // Not a 404 on a nonexistent entity: nothing to reject. Runs the delete against both tables unconditionally,
 // cheaper than resolving which one first. Checks the batch-import pending buffer too, same reasoning as
 // assignEntityTag().
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {string} tagId
+ * @returns {Promise<'ok' | null>}
+ */
 export async function unassignEntityTag(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -2006,11 +2548,11 @@ export async function unassignEntityTag(directories, id, tagId) {
     entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
     entry.db.run(
         'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
-        { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }).map(r => r.tag_id) }) },
+        { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }))).map(r => r.tag_id) }) },
     );
-    const charRow = entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id });
+    const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
     if (charRow) {
-        const currentTagIds = entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }).map(r => r.tag_id);
+        const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
         const shallow = JSON.parse(charRow.shallow_json);
         shallow.tag_ids = currentTagIds;
         const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
@@ -2019,17 +2561,26 @@ export async function unassignEntityTag(directories, id, tagId) {
     return 'ok';
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} groupId
+ * @returns {Promise<string[]>}
+ */
 export async function getGroupTagIds(directories, groupId) {
     const entry = await getEntry(directories);
     if (!entry) return [];
-    return entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: groupId }).map(r => r.tag_id);
+    return (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: groupId }))).map(r => r.tag_id);
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<Record<string, number> | null>}
+ */
 export async function getAllTagUsage(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const rows = entry.db.all('SELECT tag_id, count FROM tag_usage');
+    const rows = (/** @type {{ tag_id: string, count: number }[]} */ (entry.db.all('SELECT tag_id, count FROM tag_usage')));
     /** @type {Record<string, number>} */
     const result = {};
     for (const row of rows) {
@@ -2053,6 +2604,17 @@ const GROUP_UPSERT_SQL = `
 `;
 
 // row.group feeds digest_content only; its other fields live in the group's own JSON file, not a groups row column.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {object} params
+ * @param {string} params.id
+ * @param {string} [params.name]
+ * @param {boolean} [params.fav]
+ * @param {object} [params.group] Group's own JSON file contents, for digest_content only.
+ * @param {number} params.dateAdded
+ * @param {number} params.dateLastChat
+ * @param {number} params.chatSize
+ */
 function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat, chatSize }) {
     db.run(GROUP_UPSERT_SQL, {
         id,
@@ -2067,12 +2629,24 @@ function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat,
     });
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {string} name
+ * @param {object} [params]
+ * @param {boolean} [params.fav]
+ * @param {object} [params.group]
+ */
 export async function upsertGroupRow(directories, id, name, { fav, group } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
     upsertGroupRowSync(entry.db, { id, name, fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ */
 export async function bumpCharacterDateLastChat(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2082,6 +2656,13 @@ export async function bumpCharacterDateLastChat(directories, avatar) {
 }
 
 /** `stats`, when supplied, is used verbatim instead of statting the group's chat files, which get renamed away. */
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} chatId
+ * @param {object} [params]
+ * @param {string} [params.groupId]
+ * @param {{ chatSize: number, dateLastChat: number }} [params.stats]
+ */
 export async function bumpGroupChatStats(directories, chatId, { groupId, stats } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2094,6 +2675,10 @@ export async function bumpGroupChatStats(directories, chatId, { groupId, stats }
 }
 
 // group_tags has no real foreign key; cascade is application code, same as deleteRowSync() for characters.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ */
 export async function deleteGroupRow(directories, id) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2104,11 +2689,14 @@ export async function deleteGroupRow(directories, id) {
 }
 
 // One-time backfill of `groups` for a library that predates the table; gated by its own meta flag.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function bootstrapGroupsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get('SELECT value FROM meta WHERE key = \'groups_bootstrap_completed\'');
+    const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'groups_bootstrap_completed\'')));
     if (already) return;
 
     if (fs.existsSync(directories.groups)) {
@@ -2133,7 +2721,7 @@ export async function bootstrapGroupsIfNeeded(directories) {
                         });
                     }
                 } catch (err) {
-                    console.error(`[character-metadata] Bootstrap failed to process group file ${file}, skipping it (group tags for it won't resolve until it's next created/edited):`, err.message);
+                    console.error(`[character-metadata] Bootstrap failed to process group file ${file}, skipping it (group tags for it won't resolve until it's next created/edited):`, /** @type {any} */ (err).message);
                 }
             }
         });
@@ -2146,20 +2734,29 @@ export async function bootstrapGroupsIfNeeded(directories) {
 }
 
 // Returns tag definitions in no particular order - sorting is a client concern (compareTagsForSort(), tags.js).
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<object[] | null>}
+ */
 export async function getTagDefinitions(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    return entry.db.all('SELECT data FROM tags').map(r => JSON.parse(r.data));
+    return (/** @type {{ data: string }[]} */ (entry.db.all('SELECT data FROM tags'))).map(r => JSON.parse(r.data));
 }
 
 // Bucketed digest over every tag definition, computed on demand and stored nowhere - a tag row is small
 // enough (~110 bytes, ~130ms at 62k rows) that there's no need for derived state that could drift.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} [bucketCount]
+ * @returns {Promise<{ bucketCount: number, buckets: object[] } | null>}
+ */
 export async function getTagsDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     const buckets = Array.from({ length: bucketCount }, () => emptyDigest());
-    for (const row of entry.db.all('SELECT id, data FROM tags')) {
+    for (const row of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags')))) {
         let parsed;
         try { parsed = JSON.parse(row.data); } catch { continue; }
         const b = bucketOf(row.id, bucketCount);
@@ -2170,12 +2767,18 @@ export async function getTagsDigest(directories, bucketCount = DEFAULT_DIGEST_BU
 
 // Every {id, hash} in one bucket, for a client to diff locally against a stale digest. Deletions need no
 // tombstone: a tag no longer present is simply absent from its bucket's membership.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} bucket
+ * @param {number} [bucketCount]
+ * @returns {Promise<{ bucket: number, bucketCount: number, members: { id: string, hash: number }[] } | null>}
+ */
 export async function getTagsBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     const members = [];
-    for (const row of entry.db.all('SELECT id, data FROM tags')) {
+    for (const row of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags')))) {
         if (bucketOf(row.id, bucketCount) !== bucket) continue;
         let parsed;
         try { parsed = JSON.parse(row.data); } catch { continue; }
@@ -2184,6 +2787,11 @@ export async function getTagsBucketMembers(directories, bucket, bucketCount = DE
     return { bucket, bucketCount, members };
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {unknown[]} ids
+ * @returns {Promise<object[] | null>}
+ */
 export async function getTagDefinitionsByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -2196,7 +2804,7 @@ export async function getTagDefinitionsByIds(directories, ids) {
     for (let i = 0; i < wanted.length; i += CHUNK) {
         const slice = wanted.slice(i, i + CHUNK);
         const placeholders = slice.map(() => '?').join(',');
-        for (const r of entry.db.all(`SELECT data FROM tags WHERE id IN (${placeholders})`, slice)) {
+        for (const r of (/** @type {{ data: string }[]} */ (entry.db.all(`SELECT data FROM tags WHERE id IN (${placeholders})`, slice)))) {
             try { out.push(JSON.parse(r.data)); } catch { /* a row that will not parse cannot be repaired here */ }
         }
     }
@@ -2204,10 +2812,14 @@ export async function getTagDefinitionsByIds(directories, ids) {
 }
 
 // Every tag id currently assigned to at least one entity, read off the trigger-maintained `tag_usage` table.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<string[] | null>}
+ */
 export async function getAssignedTagIds(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const rows = entry.db.all('SELECT tag_id FROM tag_usage WHERE count > 0');
+    const rows = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM tag_usage WHERE count > 0')));
     return rows.map(row => row.tag_id);
 }
 
@@ -2215,18 +2827,19 @@ export async function getAssignedTagIds(directories) {
  * Every entity-to-tag assignment across both tables. Returned compactly: `avatars`/`tagIds` intern each unique
  * id/tag string to an integer index, and `map[i]` lists the tag-id indices assigned to `avatars[i]`.
  * @returns {Promise<{avatars: string[], tagIds: string[], map: number[][]} | null>}
+ * @param {import('./users.js').UserDirectoryList} directories
  */
 export async function getAllEntityTagAssignments(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const characterRows = entry.db.all('SELECT character_id, tag_id FROM character_tags');
+    const characterRows = (/** @type {{ character_id: string, tag_id: string }[]} */ (entry.db.all('SELECT character_id, tag_id FROM character_tags')));
 
     // Yield to the event loop between the two scans, same as getEntityTagIdsForMany() does between chunks, so
     // this full-table read can't starve other requests behind it.
     await new Promise(resolve => setImmediate(resolve));
 
-    const groupRows = entry.db.all('SELECT group_id, tag_id FROM group_tags');
+    const groupRows = (/** @type {{ group_id: string, tag_id: string }[]} */ (entry.db.all('SELECT group_id, tag_id FROM group_tags')));
 
     /** @type {Map<string, number>} */
     const avatarIndex = new Map();
@@ -2235,6 +2848,7 @@ export async function getAllEntityTagAssignments(directories) {
     /** @type {number[][]} */
     const map = [];
 
+    /** @param {string} entityId @param {string} tagId */
     const addAssignment = (entityId, tagId) => {
         let entityIdx = avatarIndex.get(entityId);
         if (entityIdx === undefined) {
@@ -2268,13 +2882,16 @@ export async function getAllEntityTagAssignments(directories) {
  * Replaces the entire `tags` table's contents with `tagsArray` (full replace, not a diff). Appends one
  * `tag_name_changes` row per tag id whose `name` changed, so search-index catch-up can reindex just those
  * assignees instead of scanning the whole table.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {TagDefinitionInput[]} tagsArray
+ * @returns {Promise<'ok' | null>}
  */
 export async function saveTagDefinitions(directories, tagsArray) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     entry.db.transaction(() => {
-        const oldNames = new Map(entry.db.all('SELECT id, data FROM tags').map(row => {
+        const oldNames = new Map((/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags'))).map(row => {
             let parsed = null;
             try { parsed = JSON.parse(row.data); } catch { /* an unparseable old row has no name to compare against */ }
             return [row.id, parsed?.name ?? ''];
@@ -2296,13 +2913,18 @@ export async function saveTagDefinitions(directories, tagsArray) {
 }
 
 /** Creates or replaces a single tag definition by id, for a single create/rename/recolor edit. */
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {TagDefinitionInput} tag
+ * @returns {Promise<'ok' | null>}
+ */
 export async function upsertTagDefinition(directories, tag) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     if (!tag || typeof tag.id !== 'string' || !tag.id) return null;
 
     entry.db.transaction(() => {
-        const oldRow = entry.db.get('SELECT data FROM tags WHERE id = @id', { id: tag.id });
+        const oldRow = (/** @type {{ data: string } | undefined} */ (entry.db.get('SELECT data FROM tags WHERE id = @id', { id: tag.id })));
         let oldName = null;
         if (oldRow) {
             try { oldName = JSON.parse(oldRow.data)?.name ?? ''; } catch { /* an unparseable old row has no name to compare against */ }
@@ -2322,6 +2944,11 @@ export async function upsertTagDefinition(directories, tag) {
 }
 
 /** Deletes a single tag definition by id. */
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} tagId
+ * @returns {Promise<'ok' | null>}
+ */
 export async function deleteTagDefinition(directories, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -2339,11 +2966,14 @@ export async function deleteTagDefinition(directories, tagId) {
 // AND bootstrapGroupsIfNeeded() since it classifies tag_map keys against those tables; an unmatched key is
 // dropped with a warning. On success tags.json is renamed to `tags.json.migrated`, not deleted. Gated by a meta
 // flag; a parse failure does not set it, so a corrupt tags.json is retried next boot.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function migrateTagsJsonIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get('SELECT value FROM meta WHERE key = \'tags_json_migrated\'');
+    const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'tags_json_migrated\'')));
     if (already) return;
 
     const tagsJsonPath = path.join(directories.root, TAGS_FILE);
@@ -2355,12 +2985,12 @@ export async function migrateTagsJsonIfNeeded(directories) {
         return;
     }
 
-    /** @type {{ tags?: object[], tag_map?: Record<string, string[]> }} */
+    /** @type {{ tags?: TagDefinitionInput[], tag_map?: Record<string, string[]> }} */
     let parsed;
     try {
         parsed = JSON.parse(fs.readFileSync(tagsJsonPath, 'utf8'));
     } catch (err) {
-        console.error('[character-metadata] Failed to parse tags.json during migration - leaving it in place and retrying next boot:', err.message);
+        console.error('[character-metadata] Failed to parse tags.json during migration - leaving it in place and retrying next boot:', /** @type {any} */ (err).message);
         return;
     }
 
@@ -2381,15 +3011,21 @@ export async function migrateTagsJsonIfNeeded(directories) {
     try {
         fs.renameSync(tagsJsonPath, `${tagsJsonPath}.migrated`);
     } catch (err) {
-        console.error('[character-metadata] Migrated tags.json successfully but could not rename it out of the way (safe to ignore - it is never read again):', err.message);
+        console.error('[character-metadata] Migrated tags.json successfully but could not rename it out of the way (safe to ignore - it is never read again):', /** @type {any} */ (err).message);
     }
 }
 
 // Imports a `{[id]: tagId[]}` map into character_tags/group_tags, classifying each key against the current
 // characters/groups tables. Returns keys that matched neither.
+/**
+ * @param {MetadataDbEntry} entry
+ * @param {Record<string, unknown>} tagMap Externally-supplied - each value is runtime-checked as string[] below.
+ * @returns {string[]} Dropped keys.
+ */
 function importTagMapSync(entry, tagMap) {
-    const knownCharacterIds = new Set(entry.db.all('SELECT id FROM characters').map(r => r.id));
-    const knownGroupIds = new Set(entry.db.all('SELECT id FROM groups').map(r => r.id));
+    const knownCharacterIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id));
+    const knownGroupIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM groups'))).map(r => r.id));
+    /** @type {string[]} */
     const droppedKeys = [];
 
     entry.db.transaction(() => {
@@ -2423,6 +3059,11 @@ const CARD_TAGS_MAX_PER_CARD = 50;
 // `tagNameToId` is mutated in place so a name introduced earlier in a batch is reused, not re-created.
 /**
  * @param {(params: { id: string, data: string }) => void} insertTag Never called when `onlyExisting` is true.
+ * @param {unknown[]} cardTags
+ * @param {Map<string, string>} tagNameToId
+ * @param {object} [options]
+ * @param {boolean} [options.onlyExisting]
+ * @returns {string[]}
  */
 function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = false } = {}) {
     const filtered = cardTags
@@ -2449,6 +3090,16 @@ function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = fa
 // Seeds character_tags from one character's card-embedded data.tags. Deliberately does not touch
 // shallow_json.tag_ids/digest_tag_ids - callers are responsible for reconciling those once they know the
 // row's final tag id set (see syncShallowTagIdsFromTable()).
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} avatar
+ * @param {unknown[]} cardTags
+ * @param {Map<string, string>} tagNameToId
+ * @param {(params: { id: string, data: string }) => void} insertTag
+ * @param {(params: { characterId: string, tagId: string }) => void} insertAssignment
+ * @param {{ onlyExisting?: boolean }} [options]
+ * @returns {string[]}
+ */
 function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, insertAssignment, options) {
     const tagIds = resolveCardTagIds(cardTags, tagNameToId, insertTag, options);
     for (const tagId of tagIds) {
@@ -2461,11 +3112,13 @@ function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, 
 // character_tags rather than trusting a caller's resolved list, so other pre-existing assignments survive.
 /**
  * @returns {boolean} Whether the row was found and patched.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} avatar
  */
 function syncShallowTagIdsFromTable(db, avatar) {
-    const row = db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar });
+    const row = (/** @type {{ shallow_json: string } | undefined} */ (db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!row) return false;
-    const currentTagIds = db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }).map(r => r.tag_id);
+    const currentTagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))).map(r => r.tag_id);
     const shallow = JSON.parse(row.shallow_json);
     shallow.tag_ids = currentTagIds;
     const lastInsertRowid = insertChange(db, avatar, 'upsert', JSON.stringify(['tag_ids']));
@@ -2480,7 +3133,9 @@ function syncShallowTagIdsFromTable(db, avatar) {
 // seedCardTagsForCharacter() seeds tags without a matching syncShallowTagIdsFromTable() call). Safe to call
 // more than once; only touches rows a full-table comparison finds mismatched.
 /**
- * @param {{ dryRun?: boolean }} [options] `dryRun: true` reports what would be touched without writing anything.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} [options]
+ * @param {boolean} [options.dryRun] `true` reports what would be touched without writing anything.
  * @returns {Promise<{ scanned: number, mismatched: string[] }>} `mismatched` are the affected character ids
  * (found regardless of `dryRun`; only actually repaired when `dryRun` is false).
  */
@@ -2488,12 +3143,13 @@ export async function repairStaleShallowTagIds(directories, { dryRun = false } =
     const entry = await getEntry(directories);
     if (!entry) return { scanned: 0, mismatched: [] };
 
-    const rows = entry.db.all(
+    const rows = /** @type {{ id: string, shallow_json: string, tagIds: string | null }[]} */ (entry.db.all(
         `SELECT c.id, c.shallow_json, GROUP_CONCAT(ct.tag_id) AS tagIds
          FROM characters c LEFT JOIN character_tags ct ON ct.character_id = c.id
          GROUP BY c.id`,
-    );
+    ));
 
+    /** @type {string[]} */
     const mismatched = [];
     for (const row of rows) {
         let shallow;
@@ -2521,6 +3177,10 @@ export async function repairStaleShallowTagIds(directories, { dryRun = false } =
 
 // Accepts either shape a card may carry tags in: { data: { tags: [...] } } or a bare { tags: [...] }.
 // Returns [] (never null/undefined) so callers can iterate unconditionally.
+/**
+ * @param {string} shallowJson
+ * @returns {unknown[]}
+ */
 function extractCardTags(shallowJson) {
     let parsed;
     try {
@@ -2540,18 +3200,21 @@ function extractCardTags(shallowJson) {
 
 // One-time backfill of character_tags from each card's already-parsed shallow_json.data.tags (no disk read
 // needed). Gated by its own meta flag; INSERT OR IGNORE makes an interrupted-and-retried pass safe.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function backfillCardTagsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const already = entry.db.get('SELECT value FROM meta WHERE key = \'card_tags_backfill_completed\'');
+    const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'card_tags_backfill_completed\'')));
     if (already) return;
 
     console.log(color.cyan('[character-metadata] Backfilling tag assignments from card-embedded tags...'));
 
     /** @type {Map<string, string>} */
     const tagNameToId = new Map();
-    for (const row of entry.db.all('SELECT id, data FROM tags')) {
+    for (const row of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags')))) {
         try {
             const tag = JSON.parse(row.data);
             if (tag && typeof tag.name === 'string' && tag.name) {
@@ -2562,14 +3225,16 @@ export async function backfillCardTagsIfNeeded(directories) {
         }
     }
 
-    const rows = entry.db.all('SELECT id, shallow_json FROM characters');
+    const rows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all('SELECT id, shallow_json FROM characters')));
 
+    /** @param {{ id: string, data: string }} params */
     const insertTag = (params) => entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
+    /** @param {{ characterId: string, tagId: string }} params */
     const insertAssignment = (params) => entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
 
     // Computed as before/after deltas since INSERT OR IGNORE gives no per-call signal of whether a row was added.
     const tagDefinitionsBefore = tagNameToId.size;
-    const assignmentsBefore = entry.db.get('SELECT COUNT(*) AS n FROM character_tags')?.n ?? 0;
+    const assignmentsBefore = (/** @type {{ n: number } | undefined} */ (entry.db.get('SELECT COUNT(*) AS n FROM character_tags')))?.n ?? 0;
 
     const backfillStart = Date.now();
     let lastProgressLog = backfillStart;
@@ -2606,7 +3271,7 @@ export async function backfillCardTagsIfNeeded(directories) {
     entry.db.run('INSERT INTO meta (key, value) VALUES (\'card_tags_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
 
     const newTagDefinitions = tagNameToId.size - tagDefinitionsBefore;
-    const assignmentsAfter = entry.db.get('SELECT COUNT(*) AS n FROM character_tags')?.n ?? 0;
+    const assignmentsAfter = (/** @type {{ n: number } | undefined} */ (entry.db.get('SELECT COUNT(*) AS n FROM character_tags')))?.n ?? 0;
     const newAssignments = assignmentsAfter - assignmentsBefore;
 
     console.log(color.cyan(`[character-metadata] Card-tags backfill complete: ${newTagDefinitions} new tag definitions, ${newAssignments} new assignments.`));
@@ -2625,7 +3290,7 @@ function getTagCache(entry) {
     const tagNameToId = new Map();
     /** @type {Map<string, object>} */
     const tagIdToDefinition = new Map();
-    for (const tagRow of entry.db.all('SELECT id, data FROM tags')) {
+    for (const tagRow of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags')))) {
         try {
             const tag = JSON.parse(tagRow.data);
             if (tag && typeof tag.name === 'string' && tag.name) {
@@ -2643,8 +3308,10 @@ function getTagCache(entry) {
 // Must check entry.batch.pending: a character imported inside a multi-file drop can still be buffered there
 // rather than committed to the characters table when this runs.
 /**
- * @param {{ onlyExisting?: boolean }} [options] onlyExisting resolves only tags matching an existing definition,
- * never minting a new one.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @param {object} [options]
+ * @param {boolean} [options.onlyExisting] Resolves only tags matching an existing definition, never minting a new one.
  * @returns {Promise<{ tagIds: string[], tagDefinitions: object[] }>} tagDefinitions is returned alongside tagIds
  * because the client can't resolve an id to a tag it has never seen a definition for.
  */
@@ -2653,7 +3320,7 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     if (!entry) return { tagIds: [], tagDefinitions: [] };
 
     const pending = entry.batch?.pending.get(avatar);
-    const shallowJson = pending ? pending.row.shallow_json : entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })?.shallow_json;
+    const shallowJson = pending ? pending.row.shallow_json : (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })))?.shallow_json;
     if (!shallowJson) return { tagIds: [], tagDefinitions: [] };
 
     const cardTags = extractCardTags(shallowJson);
@@ -2664,6 +3331,7 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     // Tag *definitions* always go straight to the `tags` table, batch mode or not - only `characters`/
     // `character_tags` rows for a not-yet-flushed import are what batch mode buffers (see pending branch below).
     const tagDefinitionsBefore = tagNameToId.size;
+    /** @param {{ id: string, data: string }} params */
     const insertTag = (params) => {
         entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
         tagIdToDefinition.set(params.id, JSON.parse(params.data));
@@ -2671,7 +3339,7 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     const tagIds = resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting });
     if (tagIds.length === 0) return { tagIds: [], tagDefinitions: [] };
 
-    const tagDefinitions = tagIds.map(id => tagIdToDefinition.get(id)).filter(Boolean);
+    const tagDefinitions = tagIds.map(id => tagIdToDefinition.get(id)).filter((t) => t !== undefined);
 
     // Only rehash when a new tag definition was actually minted; a pure re-assignment doesn't change tags_hash.
     if (tagNameToId.size > tagDefinitionsBefore) {
@@ -2701,6 +3369,7 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
 // app currently; kept as a general export primitive symmetric with restoreTagMap() below.
 /**
  * @returns {Promise<Record<string, string[]> | null>} `null` if the metadata store is unavailable.
+ * @param {import('./users.js').UserDirectoryList} directories
  */
 export async function getFullTagMapExport(directories) {
     const entry = await getEntry(directories);
@@ -2712,10 +3381,10 @@ export async function getFullTagMapExport(directories) {
     const SEP = '\x1f';
     /** @type {Record<string, string[]>} */
     const result = {};
-    for (const row of entry.db.all(`SELECT character_id as id, group_concat(tag_id, '${SEP}') as tags FROM character_tags GROUP BY character_id`)) {
+    for (const row of (/** @type {{ id: string, tags: string }[]} */ (entry.db.all(`SELECT character_id as id, group_concat(tag_id, '${SEP}') as tags FROM character_tags GROUP BY character_id`)))) {
         result[row.id] = row.tags.split(SEP);
     }
-    for (const row of entry.db.all(`SELECT group_id as id, group_concat(tag_id, '${SEP}') as tags FROM group_tags GROUP BY group_id`)) {
+    for (const row of (/** @type {{ id: string, tags: string }[]} */ (entry.db.all(`SELECT group_id as id, group_concat(tag_id, '${SEP}') as tags FROM group_tags GROUP BY group_id`)))) {
         result[row.id] = row.tags.split(SEP);
     }
     return result;
@@ -2726,15 +3395,18 @@ export async function getFullTagMapExport(directories) {
 /**
  * @returns {Promise<string[] | null>} Dropped keys (matched neither a known character nor group), or `null` if
  * the metadata store is unavailable.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {unknown} tagMap
  */
 export async function restoreTagMap(directories, tagMap) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    return importTagMapSync(entry, tagMap && typeof tagMap === 'object' ? tagMap : {});
+    return importTagMapSync(entry, tagMap && typeof tagMap === 'object' ? /** @type {Record<string, unknown>} */ (tagMap) : {});
 }
 
 // Columns queryCharacters() may sort by via a plain `ORDER BY <column>`. Deliberately excludes 'random'
 // (sorts by RANDHASH(id, seed), not a column) and 'search' (relevance order supplied by the caller as idOrder).
+/** @type {Record<string, string>} */
 const QUERYABLE_SORT_COLUMNS = {
     name: 'name_fold',
     date_added: 'date_added',
@@ -2748,6 +3420,15 @@ const QUERYABLE_SORT_COLUMNS = {
 
 // `ids: []` is handled specially by the caller (queryCharacters()): "match zero ids" is different from "no id
 // filter requested". This function only ever sees a non-empty `ids` array, or none.
+/**
+ * @param {object} [filter]
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [filter.tags]
+ * @param {boolean} [filter.fav]
+ * @param {string} [filter.world]
+ * @param {string[]} [filter.excludeIds]
+ * @param {string[]} [filter.ids]
+ * @returns {{ where: string, args: any[] }}
+ */
 function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     const clauses = [];
     const args = [];
@@ -2793,29 +3474,43 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
 /**
  * Indexed lookup, not a filesystem scan.
  * @returns {Promise<Array<{id: string, world: string}>|null>} `null` if the metadata store is unavailable.
+ * @param {import('./users.js').UserDirectoryList} directories
  */
 export async function getCharactersWithLinkedWorld(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    return entry.db.all("SELECT id, world FROM characters WHERE world IS NOT NULL AND world != ''");
+    return (/** @type {{ id: string, world: string }[]} */ (entry.db.all("SELECT id, world FROM characters WHERE world IS NOT NULL AND world != ''")));
 }
 
 // A boot-time migration reading this store must check this first - bootstrapIfNeeded() runs in the
 // background and isn't awaited, so an early query could see a partially-backfilled table.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<boolean>}
+ */
 export async function isBootstrapComplete(directories) {
     const entry = await getEntry(directories);
     if (!entry) return false;
-    return !!entry.db.get('SELECT value FROM meta WHERE key = @key', { key: 'bootstrap_completed' });
+    return !!(/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = @key', { key: 'bootstrap_completed' })));
 }
 
 /** Generic one-time-per-user completion marker, keyed by the caller's own namespaced `key`. */
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @returns {Promise<boolean>}
+ */
 export async function isMigrationMarkedComplete(directories, key) {
     const entry = await getEntry(directories);
     if (!entry) return false;
-    return !!entry.db.get('SELECT value FROM meta WHERE key = @key', { key });
+    return !!(/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = @key', { key })));
 }
 
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ */
 export async function markMigrationComplete(directories, key) {
     const entry = await getEntry(directories);
     if (!entry) return;
@@ -2824,13 +3519,23 @@ export async function markMigrationComplete(directories, key) {
 
 /**
  * Browse/sort/filter query backing `POST /api/characters/query`, entirely SQLite-backed.
- * @param {object} params
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} [params]
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [params.tags]
+ * @param {boolean} [params.fav]
+ * @param {string} [params.world]
+ * @param {string[]} [params.excludeIds]
  * @param {string[]} [params.ids] Present-but-empty short-circuits to an empty result.
  * @param {string} [params.sortField] A QUERYABLE_SORT_COLUMNS key, or 'random' (needs `seed`), or 'search'
  * (needs `idOrder`).
+ * @param {'asc'|'desc'} [params.sortOrder]
  * @param {number} [params.seed] Must stay stable across pages of the same query or pages return inconsistent
  * permutations.
  * @param {string[]} [params.idOrder] Relevance-ordered id list from the search engine when sortField === 'search'.
+ * @param {number} [params.offset]
+ * @param {number} [params.limit]
+ * @param {boolean} [params.wantRows]
+ * @param {boolean} [params.wantTotal]
  * @param {boolean} [params.wantHashes] Returns `hashRows` (per-row content hashes) instead of `rows`, computed
  * live from shallow_json rather than the stored digest_* columns, which can drift from a fresh recompute.
  * @returns {Promise<{ rows: object[] | undefined, hashRows: object[] | undefined, total: number | undefined, seq: number } | null>}
@@ -2848,7 +3553,7 @@ export async function queryCharacters(directories, params = {}) {
         wantHashes = false,
     } = params;
 
-    const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
+    const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     const seq = Number(seqRow?.seq ?? 0);
 
     if (Array.isArray(ids) && ids.length === 0) {
@@ -2859,7 +3564,7 @@ export async function queryCharacters(directories, params = {}) {
 
     let total;
     if (wantTotal) {
-        const countRow = entry.db.get(`SELECT COUNT(*) as total FROM characters ${where}`, args);
+        const countRow = (/** @type {{ total: number } | undefined} */ (entry.db.get(`SELECT COUNT(*) as total FROM characters ${where}`, args)));
         total = Number(countRow?.total ?? 0);
     }
 
@@ -2867,6 +3572,7 @@ export async function queryCharacters(directories, params = {}) {
     // that disagree with a fresh recompute from the row's own shallow_json, with no version column to detect
     // the drift. Always recompute live instead.
     const HASH_COLUMNS = 'id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, shallow_json';
+    /** @param {HashSourceRow} r */
     const toHashRow = (r) => {
         const shallow = JSON.parse(r.shallow_json);
         const favHash = characterDigestFavHash(shallow) % 4294967296;
@@ -2889,22 +3595,22 @@ export async function queryCharacters(directories, params = {}) {
     let rows, hashRows;
     if ((wantRows || wantHashes) && sortField === 'search') {
         const orderedIds = Array.isArray(idOrder) ? idOrder : [];
-        const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
-        const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
+        const numericOffset = typeof offset === 'number' && Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
+        const numericLimit = typeof limit === 'number' && Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
         if (wantHashes) {
-            const rawRows = entry.db.all(`SELECT ${HASH_COLUMNS} FROM characters ${where}`, args);
+            const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.all(`SELECT ${HASH_COLUMNS} FROM characters ${where}`, args)));
             const rowById = new Map(rawRows.map(r => [r.id, r]));
             hashRows = orderedIds
                 .filter(id => rowById.has(id))
                 .slice(numericOffset, numericOffset + numericLimit)
-                .map(id => toHashRow(rowById.get(id)));
+                .map(id => toHashRow(/** @type {HashSourceRow} */ (rowById.get(id))));
         } else {
-            const rawRows = entry.db.all(`SELECT id, shallow_json FROM characters ${where}`, args);
+            const rawRows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all(`SELECT id, shallow_json FROM characters ${where}`, args)));
             const shallowById = new Map(rawRows.map(r => [r.id, r.shallow_json]));
             rows = orderedIds
                 .filter(id => shallowById.has(id))
                 .slice(numericOffset, numericOffset + numericLimit)
-                .map(id => JSON.parse(shallowById.get(id)));
+                .map(id => JSON.parse(/** @type {string} */ (shallowById.get(id))));
         }
     } else if (wantRows || wantHashes) {
         const orderParts = [];
@@ -2912,7 +3618,7 @@ export async function queryCharacters(directories, params = {}) {
             const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
             orderParts.push(`RANDHASH(id, ?) ${direction}`);
         } else {
-            const column = QUERYABLE_SORT_COLUMNS[sortField];
+            const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
             const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
             if (column) {
                 orderParts.push(`${column} ${direction}`);
@@ -2926,18 +3632,18 @@ export async function queryCharacters(directories, params = {}) {
         orderParts.push('id ASC');
         const orderBy = `ORDER BY ${orderParts.join(', ')}`;
 
-        const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
-        const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
+        const numericOffset = typeof offset === 'number' && Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
+        const numericLimit = typeof limit === 'number' && Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
 
         // The RANDHASH(id, ?) placeholder above (when present) is the first `?` after the WHERE clause's own
         // args, so its bind value goes right after `args` and before the LIMIT/OFFSET pair - SQLite binds `?`
         // placeholders strictly in the order they appear in the SQL text.
         const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
         if (wantHashes) {
-            const rawRows = entry.db.all(`SELECT ${HASH_COLUMNS} FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset]);
+            const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.all(`SELECT ${HASH_COLUMNS} FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
             hashRows = rawRows.map(toHashRow);
         } else {
-            const rawRows = entry.db.all(`SELECT shallow_json FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset]);
+            const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.all(`SELECT shallow_json FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
             rows = rawRows.map(r => JSON.parse(r.shallow_json));
         }
     }
@@ -2998,18 +3704,18 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
     return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
 }
 
-/**
- * `filter.includeGroups: true` half of `POST /api/characters/query` - queries characters and groups as two
- * separate per-table queries with a JS merge-sort (see mergeSortedRows()), not a UNION ALL, so each table keeps
- * its own index-backed ORDER BY.
- * @param {string} [params.world] Applies to the characters arm only - see buildGroupWhereClause()'s doc comment.
- * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" - same rule as queryCharacters().
- * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random'. Never 'search'.
- * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object}[] | undefined, total: number | undefined, seq: number } | null>}
- * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
- */
+// queryEntities() (below) is the `filter.includeGroups: true` half of `POST /api/characters/query` - it queries
+// characters and groups as two separate per-table queries with a JS merge-sort (see mergeSortedRows()), not a
+// UNION ALL, so each table keeps its own index-backed ORDER BY.
 
 /** Hash-sorted array of all entity IDs, cached per (handle, seed, seq). */
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} handle
+ * @param {number} seed
+ * @param {number} seq
+ * @returns {string[]}
+ */
 function getRandomSortedEntityIds(db, handle, seed, seq) {
     const key = `${handle}:${seed}`;
     const entry = randomSortCache.get(key);
@@ -3019,8 +3725,8 @@ function getRandomSortedEntityIds(db, handle, seed, seq) {
         return entry.sortedIds;
     }
 
-    const charIds = db.all('SELECT id FROM characters').map(r => r.id);
-    const groupIds = db.all('SELECT id FROM groups').map(r => r.id);
+    const charIds = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM characters'))).map(r => r.id);
+    const groupIds = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM groups'))).map(r => r.id);
     const allIds = [...charIds, ...groupIds];
     const hashed = allIds.map(id => ({ id, h: getStringHash(String(id), Number(seed)) }));
     hashed.sort((a, b) => a.h - b.h);
@@ -3028,7 +3734,7 @@ function getRandomSortedEntityIds(db, handle, seed, seq) {
 
     if (randomSortCache.size >= MAX_RANDOM_CACHE_ENTRIES && !randomSortCache.has(key)) {
         const oldest = randomSortCache.keys().next().value;
-        randomSortCache.delete(oldest);
+        if (oldest !== undefined) randomSortCache.delete(oldest);
     }
 
     randomSortCache.set(key, { seq, sortedIds, db });
@@ -3036,8 +3742,15 @@ function getRandomSortedEntityIds(db, handle, seed, seq) {
 }
 
 /** Must match the ORDER BY each side's own SQL query used, so the merge stays a true sorted merge. */
+/**
+ * @param {string} [sortField]
+ * @param {string} [sortOrder]
+ * @param {number} [seed]
+ * @returns {(a: EntityRow, b: EntityRow) => number}
+ */
 function makeEntityMergeComparator(sortField, sortOrder, seed) {
     const dir = sortOrder === 'desc' ? -1 : 1;
+    /** @type {(a: EntityRow, b: EntityRow) => number} */
     const tiebreak = (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 
     if (sortField === 'random') {
@@ -3048,7 +3761,7 @@ function makeEntityMergeComparator(sortField, sortOrder, seed) {
         };
     }
 
-    const column = QUERYABLE_SORT_COLUMNS[sortField];
+    const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
     if (!column) return tiebreak;
 
     if (column === 'name_fold') {
@@ -3061,11 +3774,19 @@ function makeEntityMergeComparator(sortField, sortOrder, seed) {
             || tiebreak(a, b);
     }
     // Remaining columns (date_added, date_last_chat, chat_size, create_date, data_size) are all plain numeric.
-    return (a, b) => dir * (Number(a[column] ?? 0) - Number(b[column] ?? 0)) || tiebreak(a, b);
+    // Dynamic-by-name lookup, hence the `any` casts - `column` is a runtime string, not a literal key.
+    return (a, b) => dir * (Number(/** @type {any} */ (a)[column] ?? 0) - Number(/** @type {any} */ (b)[column] ?? 0)) || tiebreak(a, b);
 }
 
 // Avoids UNION ALL across characters/groups, which would defeat each table's own index-backed ORDER BY.
+/**
+ * @param {EntityRow[]} a
+ * @param {EntityRow[]} b
+ * @param {(a: EntityRow, b: EntityRow) => number} comparator
+ * @returns {EntityRow[]}
+ */
 function mergeSortedRows(a, b, comparator) {
+    /** @type {EntityRow[]} */
     const result = [];
     let i = 0, j = 0;
     while (i < a.length && j < b.length) {
@@ -3077,6 +3798,28 @@ function mergeSortedRows(a, b, comparator) {
     return result;
 }
 
+/**
+ * `filter.includeGroups: true` half of `POST /api/characters/query` - see the doc comment above
+ * buildGroupWhereClause() for why groups get their own where-clause builder.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} [params]
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [params.tags]
+ * @param {boolean} [params.fav]
+ * @param {string} [params.world] Applies to the characters arm only.
+ * @param {string[]} [params.excludeIds]
+ * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" - same rule as queryCharacters().
+ * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random'. Never 'search'.
+ * @param {'asc'|'desc'} [params.sortOrder]
+ * @param {number} [params.seed]
+ * @param {number} [params.offset]
+ * @param {number} [params.limit]
+ * @param {string} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq) cache.
+ * @param {boolean} [params.wantRows]
+ * @param {boolean} [params.wantTotal]
+ * @param {boolean} [params.wantHashes]
+ * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, seq: number } | null>}
+ * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
+ */
 export async function queryEntities(directories, params = {}) {
     const entry = await getEntry(directories);
     if (!entry) return null;
@@ -3089,7 +3832,7 @@ export async function queryEntities(directories, params = {}) {
         wantHashes = false,
     } = params;
 
-    const seqRow = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
+    const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     const seq = Number(seqRow?.seq ?? 0);
 
     if (Array.isArray(ids) && ids.length === 0) {
@@ -3101,23 +3844,28 @@ export async function queryEntities(directories, params = {}) {
 
     let total;
     if (wantTotal) {
-        const countRow = entry.db.get(
+        const countRow = /** @type {{ total: number } | undefined} */ (entry.db.get(
             `SELECT COUNT(*) as total FROM (
                 SELECT id FROM characters ${charWhere.where}
                 UNION ALL
                 SELECT id FROM groups ${groupWhere.where}
             )`,
             [...charWhere.args, ...groupWhere.args],
-        );
+        ));
         total = Number(countRow?.total ?? 0);
     }
 
     // Group rows trust their stored digest_* columns when non-NULL; a NULL digest falls back to a live recompute.
+    /** @type {Set<string>} */
     const groupIdsNeedingFileFallback = new Set();
+    /**
+     * @param {EntityRow} r
+     * @returns {EntityHashRow}
+     */
     const toHashRow = (r) => {
         let favHash, tagIdsHash, contentHash, chat = null;
         if (r.type === 'character') {
-            const shallow = JSON.parse(r.shallow_json);
+            const shallow = JSON.parse(/** @type {string} */ (r.shallow_json));
             favHash = characterDigestFavHash(shallow) % 4294967296;
             tagIdsHash = characterDigestTagIdsHash(shallow);
             contentHash = characterDigestFieldsHash(shallow) % 4294967296;
@@ -3139,7 +3887,10 @@ export async function queryEntities(directories, params = {}) {
             favHash: favHash >>> 0, tagIdsHash: tagIdsHash >>> 0, contentHash: contentHash >>> 0,
         };
     };
-    /** Resolves the placeholder hashes toHashRow() left for NULL-digest group rows, in place. */
+    /**
+     * Resolves the placeholder hashes toHashRow() left for NULL-digest group rows, in place.
+     * @param {EntityHashRow[]} hashRowList
+     */
     const resolveFileFallbackHashes = (hashRowList) => {
         if (groupIdsNeedingFileFallback.size === 0) return;
         for (const hr of hashRowList) {
@@ -3147,13 +3898,13 @@ export async function queryEntities(directories, params = {}) {
             try {
                 const filePath = path.join(directories.groups, sanitize(`${hr.id}.json`));
                 const group = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-                const tagIds = entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: hr.id }).map(r => r.tag_id);
+                const tagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: hr.id }))).map(r => r.tag_id);
                 const fingerprintSource = { ...group, tag_ids: tagIds };
                 hr.favHash = groupDigestFavHash(fingerprintSource) >>> 0;
                 hr.tagIdsHash = groupDigestTagIdsHash(fingerprintSource) >>> 0;
                 hr.contentHash = groupDigestContentHash(fingerprintSource) >>> 0;
             } catch (err) {
-                console.error(`[character-metadata] queryEntities() hash-mode file fallback failed for group ${hr.id}, shipping a zero hash (forces the client to always treat this row as stale):`, err.message);
+                console.error(`[character-metadata] queryEntities() hash-mode file fallback failed for group ${hr.id}, shipping a zero hash (forces the client to always treat this row as stale):`, /** @type {any} */ (err).message);
             }
         }
     };
@@ -3165,7 +3916,7 @@ export async function queryEntities(directories, params = {}) {
             const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
             orderParts.push(`RANDHASH(id, ?) ${direction}`);
         } else {
-            const column = QUERYABLE_SORT_COLUMNS[sortField];
+            const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
             const direction = sortOrder === 'desc' ? 'DESC' : 'ASC';
             if (column) {
                 orderParts.push(`${column} ${direction}`);
@@ -3177,8 +3928,8 @@ export async function queryEntities(directories, params = {}) {
         orderParts.push('id ASC');
         const orderBy = `ORDER BY ${orderParts.join(', ')}`;
 
-        const numericOffset = Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
-        const numericLimit = Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
+        const numericOffset = typeof offset === 'number' && Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
+        const numericLimit = typeof limit === 'number' && Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
         const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
 
         // Two separate per-table queries + a JS merge-sort instead of UNION ALL: a UNION ALL prevented SQLite
@@ -3190,8 +3941,8 @@ export async function queryEntities(directories, params = {}) {
 
             const hasFilters = charWhere.where !== '' || groupWhere.where !== '';
             const filterSet = hasFilters ? new Set([
-                ...entry.db.all(`SELECT id FROM characters ${charWhere.where}`, charWhere.args).map(r => r.id),
-                ...entry.db.all(`SELECT id FROM groups ${groupWhere.where}`, groupWhere.args).map(r => r.id),
+                ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM characters ${charWhere.where}`, charWhere.args))).map(r => r.id),
+                ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM groups ${groupWhere.where}`, groupWhere.args))).map(r => r.id),
             ]) : null;
 
             const descending = sortOrder === 'desc';
@@ -3211,18 +3962,19 @@ export async function queryEntities(directories, params = {}) {
                 hashRows = wantHashes ? [] : undefined;
             } else {
                 const pageIdsJson = JSON.stringify(pageIds);
-                const charPageRows = entry.db.all(
+                const charPageRows = /** @type {EntityRow[]} */ (entry.db.all(
                     `SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json
                     FROM characters WHERE id IN (SELECT value FROM json_each(?))`,
                     [pageIdsJson],
-                );
-                const groupPageRows = entry.db.all(
+                ));
+                const groupPageRows = /** @type {EntityRow[]} */ (entry.db.all(
                     `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content
                     FROM groups WHERE id IN (SELECT value FROM json_each(?))`,
                     [pageIdsJson],
-                );
+                ));
+                /** @type {Map<string, EntityRow>} */
                 const rowById = new Map([...charPageRows, ...groupPageRows].map(r => [r.id, r]));
-                const rawRows = pageIds.map(id => rowById.get(id)).filter(Boolean);
+                const rawRows = pageIds.map(id => rowById.get(id)).filter(r => r !== undefined);
                 if (wantHashes) {
                     hashRows = rawRows.map(toHashRow);
                     resolveFileFallbackHashes(hashRows);
@@ -3234,7 +3986,7 @@ export async function queryEntities(directories, params = {}) {
                         date_added: Number(r.date_added),
                         date_last_chat: Number(r.date_last_chat),
                         chat_size: Number(r.chat_size),
-                        item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
+                        item: r.type === 'character' ? JSON.parse(/** @type {string} */ (r.shallow_json)) : null,
                     }));
                 }
             }
@@ -3248,22 +4000,22 @@ export async function queryEntities(directories, params = {}) {
                 .replace(/\bcreate_date\b/g, 'date_added');
 
             const charArgs = [...charWhere.args, ...orderArgs, fetchLimit];
-            const charRawRows = entry.db.all(
+            const charRawRows = /** @type {EntityRow[]} */ (entry.db.all(
                 `SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json
                 FROM characters ${charWhere.where}
                 ${orderBy}
                 LIMIT ?`,
                 charArgs,
-            );
+            ));
 
             const groupArgs = [...groupWhere.args, ...orderArgs, fetchLimit];
-            const groupRawRows = entry.db.all(
+            const groupRawRows = /** @type {EntityRow[]} */ (entry.db.all(
                 `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content
                 FROM groups ${groupWhere.where}
                 ${groupOrderBy}
                 LIMIT ?`,
                 groupArgs,
-            );
+            ));
 
             const comparator = makeEntityMergeComparator(sortField, sortOrder, seed);
             const merged = mergeSortedRows(charRawRows, groupRawRows, comparator);
@@ -3280,7 +4032,7 @@ export async function queryEntities(directories, params = {}) {
                     date_added: Number(r.date_added),
                     date_last_chat: Number(r.date_last_chat),
                     chat_size: Number(r.chat_size),
-                    item: r.type === 'character' ? JSON.parse(r.shallow_json) : null,
+                    item: r.type === 'character' ? JSON.parse(/** @type {string} */ (r.shallow_json)) : null,
                 }));
             }
         }
@@ -3293,6 +4045,8 @@ export async function queryEntities(directories, params = {}) {
  * Every requested id is a key in the returned object - `true`/`false`, never absent - so callers never have to
  * distinguish "false" from "key missing".
  * @returns {Promise<Record<string, boolean> | null>} `null` if the metadata store is unavailable.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
  */
 export async function checkCharactersExist(directories, ids) {
     const entry = await getEntry(directories);
@@ -3308,7 +4062,7 @@ export async function checkCharactersExist(directories, ids) {
     for (let i = 0; i < ids.length; i += BATCH_FLUSH_SIZE) {
         const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE).filter(id => typeof id === 'string' && id.length > 0);
         if (chunk.length === 0) continue;
-        const rows = entry.db.all(`SELECT id FROM characters WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk);
+        const rows = (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM characters WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk)));
         for (const row of rows) {
             result[row.id] = true;
         }
@@ -3318,10 +4072,13 @@ export async function checkCharactersExist(directories, ids) {
 }
 
 /** @returns {Promise<number | null>} The change log's current high-water mark, or `null` if unavailable. */
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
 export async function getCurrentSeq(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const row = entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes');
+    const row = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     return Number(row?.seq ?? 0);
 }
 
@@ -3329,13 +4086,15 @@ export async function getCurrentSeq(directories) {
  * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean } | null>}
  * `truncated: true` means `sinceSeq` predates the oldest change-log row still kept (the log is never pruned
  * today, so this can currently only trigger for a `sinceSeq` from a different store).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} sinceSeq
  */
 export async function getChangesSince(directories, sinceSeq) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     const numericSince = Number.isFinite(sinceSeq) && sinceSeq >= 0 ? Math.trunc(sinceSeq) : 0;
-    const bounds = entry.db.get('SELECT MIN(seq) as minSeq, MAX(seq) as maxSeq FROM changes');
+    const bounds = (/** @type {{ minSeq: number | null, maxSeq: number | null } | undefined} */ (entry.db.get('SELECT MIN(seq) as minSeq, MAX(seq) as maxSeq FROM changes')));
     const minSeq = bounds?.minSeq != null ? Number(bounds.minSeq) : undefined;
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
@@ -3344,10 +4103,10 @@ export async function getChangesSince(directories, sinceSeq) {
         return { seq: maxSeq, changes: [], truncated: true };
     }
 
-    const rawChanges = entry.db.all('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC', [numericSince]);
+    const rawChanges = (/** @type {ChangeRow[]} */ (entry.db.all('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC', [numericSince])));
     // Collapse to one entry per id: a delete anywhere in the window forces a full refetch even if the id
     // is later re-created, since the client's cached copy predates the delete.
-    /** @type {Map<string, { op: string, hasDelete: boolean, hasNullFields: boolean, fieldSet: Set<string> }>} */
+    /** @type {Map<string, { op: 'upsert' | 'delete', hasDelete: boolean, hasNullFields: boolean, fieldSet: Set<string> }>} */
     const collapsedById = new Map();
     for (const row of rawChanges) {
         let agg = collapsedById.get(row.id);
@@ -3388,6 +4147,8 @@ export async function getChangesSince(directories, sinceSeq) {
  * synchronous JS that would otherwise stall every other request this process is serving.
  * @returns {Promise<{ favBuckets: { hi: number, lo: number }[], contentBuckets: { hi: number, lo: number }[] } | null>}
  * Two parallel bucket-digest streams so a client can tell a fav-only mismatch from a content mismatch.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} [bucketCount]
  */
 export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
@@ -3401,6 +4162,9 @@ export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_B
  * Repair half of getStateDigest(): returns the members of one diverged bucket so a client can find exactly
  * which ids differ without re-fetching the whole library.
  * @returns {Promise<{ members: { id: string, favHash: number, fieldsHash: number, fav: boolean }[] } | null>}
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} bucket
+ * @param {number} [bucketCount]
  */
 export async function getBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
@@ -3414,6 +4178,11 @@ export async function getBucketMembers(directories, bucket, bucketCount = DEFAUL
  * characters table and for each node returns either children hashes (if the subtree is larger than
  * leafThreshold) or leaf member data with fingerprint values (if small enough to resolve directly).
  * Stateless - each call is independent, no caching between requests.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ path: number[] }[]} nodes
+ * @param {number} [branching]
+ * @param {number} [leafThreshold]
+ * @returns {Promise<object | null>}
  */
 export async function treeDescend(directories, nodes, branching = DEFAULT_DIGEST_BUCKET_COUNT, leafThreshold = DEFAULT_DIGEST_BUCKET_COUNT) {
     const entry = await getEntry(directories);
@@ -3425,6 +4194,7 @@ export async function treeDescend(directories, nodes, branching = DEFAULT_DIGEST
  * Global 128-bit XOR-fold digest of the characters table - same value as folding all level-0 children from a
  * root tree-descend call, computed in one pass without bucketing.
  * @returns {Promise<{a: number, b: number, c: number, d: number} | null>}
+ * @param {import('./users.js').UserDirectoryList} directories
  */
 export async function computeRootDigest(directories) {
     const entry = await getEntry(directories);
@@ -3437,6 +4207,8 @@ export async function computeRootDigest(directories) {
  * Repair half of tree-descend(): resolves fingerprint field values for ids the client has already narrowed
  * drift down to, reading from `shallow_json` (no PNG disk reads).
  * @returns {Promise<{ records: { id: string, fingerprint: object }[] } | null>}
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
  */
 export async function resolveFingerprints(directories, ids) {
     const entry = await getEntry(directories);
