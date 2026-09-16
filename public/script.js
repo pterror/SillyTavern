@@ -2668,29 +2668,16 @@ export async function deleteCharacterChatByName(avatar, fileName) {
         return;
     }
 
-    if (fileName === character.chat) {
-        // `character` here is whichever character owned the deleted chat - not necessarily the
-        // globally-selected/on-screen one (this is called from the "recent chats" list, which can
-        // list any character). So this only needs to repoint that character's own stored active-chat
-        // pointer server-side; it must not touch the live `chat`/`chat_metadata` UI state, which
-        // belongs to whatever character is actually being displayed right now.
-        const chatsResponse = await fetch('/api/characters/chats', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar }),
-        });
-        const chatsData = await chatsResponse.json();
-        // Guards against { error: true } (not an array) on a real read failure.
-        const chats = Array.isArray(chatsData) ? chatsData : [];
-        chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
-        // Resume the next most recently active labeled checkpoint, if any (node_id when this
-        // character is tree-backed, else the JSONL-era name). If none remain, there is nothing left
-        // to point at by name - clearing the pointer is a valid, final state (Workstream 6), not
-        // something needing a fabricated replacement name.
-        const successor = chats.length && typeof chats[0] === 'object'
-            ? (chats[0].node_id || chats[0].file_name.replace('.jsonl', ''))
-            : '';
-        await updateRemoteChatName(character.avatar, successor);
+    // The server already atomically repointed the deleted chat's owner - whichever character that
+    // is, not necessarily the globally-selected/on-screen one, since this is called from the
+    // "recent chats" list, which can list any character - to its most recently active remaining
+    // chat (or cleared the pointer if none remain), as part of the delete itself. When it did,
+    // `activeChat` carries the result; mirror it onto the stored character record without touching
+    // the live `chat`/`chat_metadata` UI state, which belongs to whichever character is actually
+    // being displayed right now.
+    const data = await response.json().catch(() => null);
+    if (data && typeof data.activeChat === 'string') {
+        character.chat = data.activeChat;
     }
 
     await eventSource.emit(event_types.CHAT_DELETED, fileName);
