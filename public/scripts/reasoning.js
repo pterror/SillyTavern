@@ -351,7 +351,11 @@ export class ReasoningHandler {
         }
         const extra = chat[messageId].extra;
 
-        if (extra.reasoning) {
+        // extra.reasoning_type is set whenever a reasoning block was deliberately created (manually
+        // added, edited, or parsed), even if its text is currently blank. Checking extra.reasoning
+        // alone would conflate that state with "no reasoning block was ever created" - both are
+        // falsy/empty, but only the latter should count as ReasoningState.None.
+        if (extra.reasoning || extra.reasoning_type) {
             this.state = ReasoningState.Done;
         } else if (extra.reasoning_duration) {
             this.state = ReasoningState.Hidden;
@@ -1230,20 +1234,26 @@ function setReasoningEventHandlers() {
 
     $(document).on('click', '.mes_reasoning_header', function (e) {
         const details = $(this).closest('.mes_reasoning_details');
-        // Keep click behavior aligned with CSS: only blocks with backing content can toggle or enter edit mode.
-        if (details.attr('data-has-content') !== 'true') {
-            e.preventDefault();
-            return;
-        }
-
-        // If we are in message edit mode and reasoning area is closed, a click opens and edits it
         const mes = $(this).closest('.mes');
         const mesEditArea = mes.find('#curEditTextarea');
+
+        // While the message itself is being edited, a click always opens the reasoning editor,
+        // even if the block currently has no content. A reasoning block that was added but left
+        // blank still exists - it's not the same as "no reasoning block at all" - and this is the
+        // only way to reach it, since it has no other visible content to click on.
         if (mesEditArea.length) {
             const summary = $(mes).find('.mes_reasoning_summary');
             if (!summary.attr('open')) {
                 summary.find('.mes_reasoning_edit').trigger('click');
             }
+            return;
+        }
+
+        // Outside of edit mode, keep click behavior aligned with CSS: only blocks with backing
+        // content can toggle open/closed - there is nothing to show or edit otherwise.
+        if (details.attr('data-has-content') !== 'true') {
+            e.preventDefault();
+            return;
         }
     });
 
