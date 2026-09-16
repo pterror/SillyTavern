@@ -9,6 +9,11 @@ import { selected_group } from './group-chats.js';
 import { t } from './i18n.js';
 
 // Freezes obj and all nested objects/arrays, so no nested mutation can bypass updateMessage().
+/**
+ * @template T
+ * @param {T} obj
+ * @returns {T}
+ */
 export function deepFreeze(obj) {
     if (obj === null || typeof obj !== 'object') return obj;
     if (Object.isFrozen(obj)) return obj;
@@ -22,6 +27,11 @@ export function deepFreeze(obj) {
 }
 
 // The only write path for messages; mutating a frozen message directly throws TypeError.
+/**
+ * @param {number} mesId
+ * @param {Partial<ChatMessage>} updates
+ * @returns {ChatMessage|undefined}
+ */
 export function updateMessage(mesId, updates) {
     const old = chat[mesId];
     if (!old) return old;
@@ -32,10 +42,23 @@ export function updateMessage(mesId, updates) {
 
 // Write path for nested fields; updateMessage() only shallow-merges, so writing through `extra`
 // via `{ ...old }` would still throw. Copies only the nodes along `path`, sharing the rest.
+// `path`/`value` address arbitrary nested structure inside a ChatMessage (any depth, array or
+// object) - genuinely untypeable beyond `unknown`, so `rebuild()`'s intermediate nodes are `any`.
+/**
+ * @param {number} mesId
+ * @param {(string|number)[]} path
+ * @param {unknown|((node: unknown) => unknown)} value
+ * @returns {ChatMessage|undefined}
+ */
 export function updateIn(mesId, path, value) {
     const old = chat[mesId];
     if (!old) return old;
 
+    /**
+     * @param {any} node
+     * @param {number} depth
+     * @returns {any}
+     */
     const rebuild = (node, depth) => {
         if (depth === path.length) {
             return typeof value === 'function' ? value(node) : value;
@@ -48,17 +71,43 @@ export function updateIn(mesId, path, value) {
         return copy;
     };
 
-    const result = deepFreeze(rebuild(old, 0));
+    const result = /** @type {ChatMessage} */ (deepFreeze(rebuild(old, 0)));
     chat[mesId] = result;
     return result;
 }
 
 
 /** In-flight ensureOpeningRow() calls, keyed by provisional id, so two callers make one row. */
+/** @type {Map<string, Promise<string|null>>} */
 const _openingRowInFlight = new Map();
+
+// global.d.ts's SwipeInfo (client-side) has no `name`/`is_user` - TreeSwipeInfo (src/message-tree-db.js,
+// server-side) does, and _mergeCardGreetingsIntoOpening()/healDirtyMessages() below both read/write those
+// same fields on client-side swipe_info entries built from card alternatives. Real cross-file gap in
+// global.d.ts, not owned by this file - typed locally rather than editing that shared ambient declaration.
+/** @typedef {SwipeInfo & {name?: string, is_user?: boolean}} SwipeInfoWithSpeaker */
+
+/** @typedef {object} OpeningAlternative
+ * @property {string} mes
+ * @property {string} [name]
+ * @property {boolean} [is_user]
+ * @property {MessageTimestamp} [send_date]
+ * @property {ChatMessageExtra} [extra]
+ * @property {string} [node_id]
+ */
+
+/** @typedef {object} OpeningsResponse
+ * @property {number} [total]
+ * @property {number} [stored]
+ * @property {OpeningAlternative[]} [alternatives]
+ */
 
 // The only writer of chat[0].node_id — minting a row in more than one place raced (two rows for
 // one greeting, two ideas of which was the opening).
+/**
+ * @param {number} [mesId]
+ * @returns {Promise<string|null>}
+ */
 export async function ensureOpeningRow(mesId = 0) {
     const message = chat[mesId];
     if (!message) return null;
@@ -115,6 +164,7 @@ export async function ensureOpeningRow(mesId = 0) {
 
     // Update the shown slot too, or the save path re-reads it as still-unsaved.
     const at = current.swipe_id ?? 0;
+    /** @type {Partial<ChatMessage>} */
     const updates = { node_id: realId };
     if (Array.isArray(current.swipe_info)) {
         const swipeInfo = [...current.swipe_info];
@@ -156,6 +206,10 @@ export async function _mergeCardGreetingsIntoOpening() {
     if (!opening?.node_id || !character?.avatar) return;
     const speaker = character.name ?? name2;
 
+    /**
+     * @param {{offset?: number, limit?: number}} body
+     * @returns {Promise<OpeningsResponse|null>}
+     */
     const ask = async (body) => {
         try {
             const response = await fetch('/api/chats/openings', {
@@ -184,12 +238,17 @@ export async function _mergeCardGreetingsIntoOpening() {
     if (!current?.node_id || current.node_id !== opening.node_id) return;
 
     const swipes = Array.isArray(current.swipes) ? [...current.swipes] : [current.mes ?? ''];
+    // A hole (a swipe slot dropped in the rebuild below) is kept in swipe_info as `null`, not
+    // omitted, to keep the two arrays index-aligned - so this array's element type is nullable.
+    /** @type {(SwipeInfoWithSpeaker|null)[]} */
     const swipeInfo = Array.isArray(current.swipe_info)
         ? [...current.swipe_info]
         : [{ send_date: current.send_date, extra: current.extra ?? {}, node_id: current.node_id }];
 
     // Rebuild the card-only tail instead of appending — otherwise edited/removed card text lingers.
+    /** @type {string[]} */
     const keptSwipes = [];
+    /** @type {(SwipeInfoWithSpeaker|null)[]} */
     const keptInfo = [];
     for (let k = 0; k < swipes.length; k++) {
         const isStored = isStoredNodeId(swipeInfo[k]?.node_id);
@@ -225,9 +284,10 @@ export async function _mergeCardGreetingsIntoOpening() {
     // Whatever is being shown must survive the rebuild.
     const shownWas = current.swipe_id ?? 0;
     const shownText = current.swipes?.[shownWas];
-    let shownAt = swipes.indexOf(shownText);
+    let shownAt = typeof shownText === 'string' ? swipes.indexOf(shownText) : -1;
 
-    const updates = { swipes, swipe_info: swipeInfo };
+    /** @type {Partial<ChatMessage>} */
+    const updates = { swipes, swipe_info: /** @type {SwipeInfo[]} */ (swipeInfo) };
 
     if (shownAt >= 0) {
         updates.swipe_id = shownAt;
@@ -261,6 +321,7 @@ export async function _mergeCardGreetingsIntoOpening() {
 }
 
 // Re-fetches what followed an overswiped message, since the nodes are still in the tree.
+/** @param {number} mesId */
 export async function _restoreContinuation(mesId) {
     const message = chat[mesId];
     if (!chat_metadata?._tree_stored) return;
@@ -290,7 +351,12 @@ export async function _restoreContinuation(mesId) {
     refreshSwipeButtons(true);
 }
 
-/** Whether a given slot on a message is a blank nobody has typed into yet. */
+/**
+ * Whether a given slot on a message is a blank nobody has typed into yet.
+ * @param {ChatMessage|null|undefined} message
+ * @param {number} at
+ * @returns {boolean}
+ */
 export function _isBlankSlot(message, at) {
     if (!Array.isArray(message?.swipes)) return false;
     if (typeof message.swipes[at] !== 'string' || message.swipes[at].length > 0) return false;
@@ -299,19 +365,34 @@ export function _isBlankSlot(message, at) {
 
 // Named actions for writes a chat can make — prefer these over _saveTreeChat's snapshot-diff guessing.
 
+/** @typedef {Error & {status: number}} HttpError */
+
+/**
+ * @param {unknown} error
+ * @returns {error is HttpError}
+ */
+function _hasHttpStatus(error) {
+    return error instanceof Error && typeof (/** @type {*} */ (error).status) === 'number';
+}
+
 /**
  * Retries the SAME request on a transient failure (network error, 5xx) instead of asking something
  * else to guess what changed - a dropped write is still that exact write. A 4xx is a real, immediate
  * refusal (bad request, not found, conflict) and is never retried, since a retry can't change it.
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @param {{attempts?: number, baseDelayMs?: number}} [options]
+ * @returns {Promise<T>}
  */
 async function _retryTransient(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
+    /** @type {unknown} */
     let lastError;
     for (let i = 0; i < attempts; i++) {
         try {
             return await fn();
         } catch (error) {
             lastError = error;
-            if (error?.status >= 400 && error.status < 500) throw error;
+            if (_hasHttpStatus(error) && error.status >= 400 && error.status < 500) throw error;
             if (i < attempts - 1) {
                 await new Promise(resolve => setTimeout(resolve, baseDelayMs * Math.pow(2, i)));
             }
@@ -327,8 +408,10 @@ async function _retryTransient(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
  * `chat[]`/`getCurrentCharacter()`, i.e. whatever's CURRENTLY open - wrong for a caller whose target
  * chat may no longer be the one on screen). See public/scripts/horde.js's `persistHordeRawActionReply()`
  * for the real caller and why it can't use `chatOp*()` directly.
- * @param {() => Promise<any>} fn
+ * @template T
+ * @param {() => Promise<T>} fn
  * @param {{attempts?: number, baseDelayMs?: number}} [options]
+ * @returns {Promise<T>}
  */
 export async function retryTransient(fn, options) {
     return _retryTransient(fn, options);
@@ -339,6 +422,7 @@ export async function retryTransient(fn, options) {
 // selected character by avatar. getCurrentCharacter() alone is wrong while a group is open - it names
 // whichever member is mid-turn (generateGroupWrapper() calls setCharacterId() per activated member),
 // not the group whose tree every message in this chat actually belongs to.
+/** @returns {{group_id: string}|{avatar_url: string}|null} */
 function _currentOwner() {
     if (selected_group) return { group_id: selected_group };
     const avatar = getCurrentCharacter()?.avatar;
@@ -361,9 +445,14 @@ function _reportChatOpFailure() {
 
 /**
  * Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write.
+ * Each chat-op endpoint has its own response shape (`node_ids`, `refused`/`applied`, `node_id`, ...),
+ * read directly by each call site below - genuinely dynamic per-endpoint, so this returns `any`.
+ * @param {string} path
+ * @param {Record<string, unknown>} body
  * @param {boolean} [silent] Skip the generic failure toast - only for a caller that already reports
  * this same failure itself with something more specific (e.g. chatOpEditMany()'s token-count backfill
  * caller); everyone else gets it by default, since most call sites report nothing on their own.
+ * @returns {Promise<any>}
  */
 async function _chatOpPost(path, body, silent = false) {
     const owner = _currentOwner();
@@ -376,7 +465,7 @@ async function _chatOpPost(path, body, silent = false) {
                 body: JSON.stringify({ ...owner, ...body }),
             });
             if (!response.ok) {
-                const error = new Error(`${path} responded ${response.status}`);
+                const error = /** @type {HttpError} */ (new Error(`${path} responded ${response.status}`));
                 error.status = response.status;
                 throw error;
             }
@@ -389,6 +478,10 @@ async function _chatOpPost(path, body, silent = false) {
 }
 
 // Reads the live object, not the caller's copy — updateMessage() may have replaced it.
+/**
+ * @param {number} mesId
+ * @param {string|null|undefined} nodeId
+ */
 export function _markMessageSaved(mesId, nodeId) {
     const live = mesId < chat.length ? chat[mesId] : null;
     if (live?.node_id && live.node_id === nodeId) {
@@ -396,7 +489,17 @@ export function _markMessageSaved(mesId, nodeId) {
     }
 }
 
-// Strips swipe machinery and node_id — a single row, not a set.
+// ChatMessage (global.d.ts, client-facing) has no `swipe_speaker_default` - TreeChatMessage
+// (src/message-tree-db.js, server-side) does, and a message loaded off the tree can carry it. Real
+// gap in that shared ambient declaration, not owned by this file - typed locally instead.
+/** @typedef {ChatMessage & {swipe_speaker_default?: {name?: string, is_user?: boolean}}} ChatMessageWithSpeakerDefault */
+
+/**
+ * Strips swipe machinery and node_id — a single row, not a set.
+ * @param {ChatMessageWithSpeakerDefault} msg
+ * @param {string} [text]
+ * @returns {Partial<ChatMessageWithSpeakerDefault>}
+ */
 function _messageContent(msg, text = msg.mes) {
     const content = { ...msg, mes: text };
     delete content.node_id;
@@ -408,6 +511,7 @@ function _messageContent(msg, text = msg.mes) {
 }
 
 // Never sends an edit that would empty a message — the route refuses it outright with a 409.
+/** @param {number} mesId */
 export async function chatOpEdit(mesId) {
     const msg = chat[mesId];
     if (!isStoredNodeId(msg?.node_id)) return false;
@@ -420,9 +524,13 @@ export async function chatOpEdit(mesId) {
 
 // Batches edits across messages into a single request instead of N round trips that could end up
 // half applied.
-// @param {boolean} [silent] Forwarded to _chatOpPost() - true for a caller that already reports a
-// failure itself, so the generic one doesn't also fire for the same failure.
+/**
+ * @param {number[]} mesIds
+ * @param {boolean} [silent] Forwarded to _chatOpPost() - true for a caller that already reports a
+ * failure itself, so the generic one doesn't also fire for the same failure.
+ */
 export async function chatOpEditMany(mesIds, silent = false) {
+    /** @type {{node_id: string, content: Partial<ChatMessageWithSpeakerDefault>, _mesId: number}[]} */
     const edits = [];
     for (const mesId of mesIds) {
         const msg = chat[mesId];
@@ -437,7 +545,7 @@ export async function chatOpEditMany(mesIds, silent = false) {
     }, silent);
 
     // Only mark accepted edits saved — a partial refusal shouldn't mark everything saved.
-    const refused = new Set((result.refused ?? []).map(r => r.node_id));
+    const refused = new Set((result.refused ?? []).map((/** @type {any} */ r) => r.node_id));
     for (const edit of edits) {
         if (!refused.has(edit.node_id)) _markMessageSaved(edit._mesId, edit.node_id);
     }
@@ -448,11 +556,13 @@ export async function chatOpEditMany(mesIds, silent = false) {
 }
 
 // An opening with no row yet earns one here, since an append must name the row it attaches to.
+/** @param {number} fromIndex */
 export async function chatOpAppend(fromIndex) {
+    /** @type {string|null} */
     let after = null;
     for (let i = fromIndex - 1; i >= 0; i--) {
         if (isProvisionalNodeId(chat[i]?.node_id)) await ensureOpeningRow(i);
-        if (isStoredNodeId(chat[i]?.node_id)) { after = chat[i].node_id; break; }
+        if (isStoredNodeId(chat[i]?.node_id)) { after = chat[i]?.node_id ?? null; break; }
     }
     if (!after) return [];
 
@@ -460,6 +570,7 @@ export async function chatOpAppend(fromIndex) {
         after_node_id: after,
         messages: chat.slice(fromIndex),
     });
+    /** @type {string[]} */
     const ids = result.node_ids ?? [];
     ids.forEach((node_id, offset) => {
         const index = fromIndex + offset;
@@ -487,9 +598,12 @@ export async function chatOpAppend(fromIndex) {
 // A provisional (card-only) opening id is solo-only - ensureOpeningRow() needs a character to mint
 // against, and is a safe no-op here for anything that isn't provisional (a group's opening is already a
 // real row by the time this runs - see _bootstrapGroupChat(), group-chats.js).
-// @returns {Promise<boolean>} Whether anything in `chat[]` has a real, persisted node_id at all -
-// i.e. whether there's something for the caller to address a metadata write onto.
+/**
+ * @returns {Promise<boolean>} Whether anything in `chat[]` has a real, persisted node_id at all -
+ * i.e. whether there's something for the caller to address a metadata write onto.
+ */
 export async function healDirtyMessages() {
+    /** @type {string|null} */
     let lastPersisted = null;
     let firstNewIndex = -1;
 
@@ -504,7 +618,7 @@ export async function healDirtyMessages() {
         let justEnsured = false;
         if (isProvisionalNodeId(msg.node_id)) {
             const at = msg.swipe_id ?? 0;
-            const said = msg.swipe_info?.[at]?.name ?? msg.name;
+            const said = /** @type {SwipeInfoWithSpeaker|undefined} */ (msg.swipe_info?.[at])?.name ?? msg.name;
             const written = msg.node_id !== provisionalNodeId(said, msg.mes);
             const followed = chat.length > i + 1;
             if (written || followed) {
@@ -530,26 +644,33 @@ export async function healDirtyMessages() {
 
         const hasSlots = Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info);
         const selected = msg.swipe_id ?? 0;
+        // Narrowed once here since `hasSlots` (a `const` alias of the `Array.isArray()` pair) doesn't
+        // keep `msg.swipes`/`msg.swipe_info` narrowed at every later, independent access below.
+        const swipes = hasSlots ? /** @type {string[]} */ (msg.swipes) : [];
+        /** @type {SwipeInfoWithSpeaker[]} */
+        const swipeInfo = hasSlots ? /** @type {SwipeInfoWithSpeaker[]} */ (msg.swipe_info) : [];
 
         if (hasSlots
-            && typeof msg.swipes[selected] === 'string'
-            && msg.swipes[selected].length === 0
-            && !msg.swipe_info[selected]?.node_id) {
+            && typeof swipes[selected] === 'string'
+            && swipes[selected].length === 0
+            && !swipeInfo[selected]?.node_id) {
             continue;
         }
 
+        /** @type {string|null} */
         let newSelectedId = null;
+        /** @type {SwipeInfoWithSpeaker[]|null} */
         let learnedIds = null;
         if (hasSlots) {
-            for (let k = 0; k < msg.swipes.length; k++) {
-                if (typeof msg.swipes[k] !== 'string') continue;
-                if (msg.swipes[k].length === 0) continue;
-                if (msg.swipe_info[k]?.node_id) continue;
+            for (let k = 0; k < swipes.length; k++) {
+                if (typeof swipes[k] !== 'string') continue;
+                if (swipes[k].length === 0) continue;
+                if (swipeInfo[k]?.node_id) continue;
 
-                const createdId = await chatOpAddAlternative(i, msg.swipes[k]);
+                const createdId = await chatOpAddAlternative(i, swipes[k]);
                 if (!createdId) continue;
 
-                learnedIds = learnedIds ?? [...msg.swipe_info];
+                learnedIds = learnedIds ?? [...swipeInfo];
                 learnedIds[k] = { ...(learnedIds[k] || {}), node_id: createdId };
                 if (k === selected) newSelectedId = createdId;
             }
@@ -580,15 +701,17 @@ export async function healDirtyMessages() {
 
 // Splices a new message in between two existing ones. Nothing to graft before when mesId lands at
 // the tail (nothing follows it yet) — that's a plain append, so delegate rather than duplicate it.
+/** @param {number} mesId */
 export async function chatOpGraft(mesId) {
     const msg = chat[mesId];
     if (!msg) return null;
     if (mesId + 1 >= chat.length) return (await chatOpAppend(mesId))[0] ?? null;
 
+    /** @type {string|null} */
     let after = null;
     for (let i = mesId - 1; i >= 0; i--) {
         if (isProvisionalNodeId(chat[i]?.node_id)) await ensureOpeningRow(i);
-        if (isStoredNodeId(chat[i]?.node_id)) { after = chat[i].node_id; break; }
+        if (isStoredNodeId(chat[i]?.node_id)) { after = chat[i]?.node_id ?? null; break; }
     }
     if (!after) return null;
 
@@ -608,6 +731,10 @@ export async function chatOpGraft(mesId) {
 // Removes a contiguous run of messages [firstMesId..lastMesId] from the default path. Nothing follows
 // the range — deleting to the end of the chat — is the already-correct tail-delete case, so this
 // delegates to chatOpEndPath rather than duplicate that logic.
+/**
+ * @param {number} firstMesId
+ * @param {number} [lastMesId]
+ */
 export async function chatOpDegraft(firstMesId, lastMesId = firstMesId) {
     const firstMsg = chat[firstMesId];
     const lastMsg = chat[lastMesId];
@@ -630,6 +757,10 @@ export async function chatOpDegraft(firstMesId, lastMesId = firstMesId) {
 // The server doesn't mint new node_ids for this op (the two rows just trade parents), so the client's
 // own chat[] swap is still the right way to reflect it locally — only the persistence mechanism
 // changes versus the old unconditional array-slot swap.
+/**
+ * @param {number} sourceMesId
+ * @param {number} targetMesId
+ */
 export async function chatOpSwapAdjacent(sourceMesId, targetMesId) {
     const sourceMsg = chat[sourceMesId];
     const targetMsg = chat[targetMesId];
@@ -650,6 +781,11 @@ export async function chatOpSwapAdjacent(sourceMesId, targetMesId) {
 }
 
 // May return an existing row — asserting the same alternative twice is the same statement twice.
+/**
+ * @param {number} mesId
+ * @param {string} text
+ * @returns {Promise<string|null>}
+ */
 export async function chatOpAddAlternative(mesId, text) {
     const msg = chat[mesId];
     if (!isStoredNodeId(msg?.node_id) || typeof text !== 'string' || !text.length) return null;
@@ -663,6 +799,7 @@ export async function chatOpAddAlternative(mesId, text) {
 
 // Ends the path here rather than moving the chat's position: a load descends from the pointer to a
 // leaf, so a mid-tree position is walked straight past. Nothing is removed — swiping back restores it.
+/** @param {number} mesId */
 export async function chatOpEndPath(mesId) {
     const msg = chat[mesId];
     if (!isStoredNodeId(msg?.node_id)) return false;
@@ -678,6 +815,10 @@ export async function chatOpEndPathAtAnchor() {
     return true;
 }
 
+/**
+ * @param {number} mesId
+ * @param {number} swipeId
+ */
 export async function chatOpSelect(mesId, swipeId) {
     const msg = chat[mesId];
     const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
@@ -690,6 +831,7 @@ export async function chatOpSelect(mesId, swipeId) {
 }
 
 // Shared persistence call behind both chatOpDeleteAlternative() and chatOpDeleteAlternativeNode() below.
+/** @param {string|null|undefined} nodeId */
 async function _deleteAlternativeNode(nodeId) {
     if (!isStoredNodeId(nodeId)) return false;
 
@@ -703,6 +845,10 @@ async function _deleteAlternativeNode(nodeId) {
 // responsible for calling chatOpSelect() FIRST to swipe away from it, which already persists that
 // selection change on its own. On success, the caller is also responsible for updating its own local
 // `swipes`/`swipe_info` arrays for display — this function's only job is the persistence call.
+/**
+ * @param {number} mesId
+ * @param {number} swipeId
+ */
 export async function chatOpDeleteAlternative(mesId, swipeId) {
     const msg = chat[mesId];
     const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
@@ -721,6 +867,10 @@ export async function chatOpDeleteAlternative(mesId, swipeId) {
 // copy) — if it still matches `nodeId`, the selection never actually moved (e.g. swipe() bailed out
 // early), and this refuses locally without contacting the server, same guarantee as
 // chatOpDeleteAlternative() above.
+/**
+ * @param {string|null|undefined} nodeId
+ * @param {string|null|undefined} currentNodeId
+ */
 export async function chatOpDeleteAlternativeNode(nodeId, currentNodeId) {
     if (nodeId === currentNodeId) return false;
     return _deleteAlternativeNode(nodeId);
