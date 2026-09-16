@@ -165,7 +165,7 @@ export async function saveMetadata() {
     }
 
     const avatar = getCurrentCharacter()?.avatar;
-    if (avatar == null || !metadata._tree_stored) {
+    if (avatar == null) {
         return;
     }
 

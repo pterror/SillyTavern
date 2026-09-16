@@ -33,7 +33,6 @@ import {
     extension_prompt_roles,
     deleteMessage,
     settingsReady,
-    chat_metadata,
     getMessageDeletionStartId,
 } from '../script.js';
 import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';
@@ -3247,7 +3246,7 @@ async function doMesCut(args, text) {
     // resolved (removed if it matched, otherwise a guaranteed non-match), so nothing after the first
     // call can widen any further. Computing it once here, against the still-intact chat[], therefore
     // reproduces exactly the range the old per-message loop would have removed - just in one request.
-    if (chat_metadata?._tree_stored && messagesToCut.length > 0) {
+    if (messagesToCut.length > 0) {
         const firstMessageId = getMessageDeletionStartId(range.start, deleteToolCalls);
         const preCutLength = chat.length;
         const removedCount = range.end - firstMessageId + 1;

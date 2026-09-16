@@ -7149,7 +7149,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     }
 
     // The opening's alternatives are stored openings plus card-only greetings; /alternatives only knows the stored half.
-    const isOpening = mesId === 0 && !!chat_metadata?._tree_stored;
+    const isOpening = mesId === 0;
     const character = isOpening ? getCurrentCharacter() : null;
     if (isOpening && !character?.avatar) {
         return false;
@@ -7616,85 +7616,28 @@ export async function renameCharacter(name = null, { silent = false, renameChats
 }
 
 async function renamePastChats(oldAvatar, newAvatar, newName) {
-    // Tree DB path: single server-side UPDATE instead of fetching and re-saving every chat file
-    if (chat_metadata?._tree_stored) {
-        try {
-            const result = await fetch('/api/chats/tree/rename-in-content', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: newAvatar, new_name: newName }),
-            });
-            if (!result.ok) {
-                throw new Error('Server-side rename failed');
-            }
-            const data = await result.json();
-            if (data.noSavedChats) {
-                // Nothing to rename - the character has no saved chats yet. Not a failure.
-                console.debug('[renamePastChats] Tree DB: no saved chats, nothing to rename');
-                return false;
-            }
-            console.debug(`[renamePastChats] Tree DB: renamed ${data.updated} messages`);
-            return true;
-        } catch (error) {
-            toastr.error(t`Past chats could not be renamed`);
-            console.error(error);
+    // Single server-side UPDATE instead of fetching and re-saving every chat file
+    try {
+        const result = await fetch('/api/chats/tree/rename-in-content', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: newAvatar, new_name: newName }),
+        });
+        if (!result.ok) {
+            throw new Error('Server-side rename failed');
+        }
+        const data = await result.json();
+        if (data.noSavedChats) {
+            // Nothing to rename - the character has no saved chats yet. Not a failure.
+            console.debug('[renamePastChats] Tree DB: no saved chats, nothing to rename');
             return false;
         }
-    }
-
-    // JSONL fallback: fetch and re-save each chat file individually
-    const pastChats = await getPastCharacterChats();
-
-    for (const { file_name } of pastChats) {
-        try {
-            const fileNameWithoutExtension = file_name.replace('.jsonl', '');
-            const getChatResponse = await fetch('/api/chats/get', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({
-                    ch_name: newName,
-                    file_name: fileNameWithoutExtension,
-                    avatar_url: newAvatar,
-                }),
-                cache: 'no-cache',
-            });
-
-            if (getChatResponse.ok) {
-                const currentChat = await getChatResponse.json();
-
-                for (const message of currentChat) {
-                    if (message.is_user || message.is_system || message.extra?.type == system_message_types.NARRATOR) {
-                        continue;
-                    }
-
-                    if (message.name !== undefined) {
-                        message.name = newName;
-                    }
-                }
-
-                await eventSource.emit(event_types.CHARACTER_RENAMED_IN_PAST_CHAT, currentChat, oldAvatar, newAvatar);
-
-                const saveChatRequest = await compressRequest({
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({
-                        ch_name: newName,
-                        file_name: fileNameWithoutExtension,
-                        chat: currentChat,
-                        avatar_url: newAvatar,
-                    }),
-                    cache: 'no-cache',
-                });
-                const saveChatResponse = await fetch('/api/chats/save', saveChatRequest);
-
-                if (!saveChatResponse.ok) {
-                    throw new Error('Could not save chat');
-                }
-            }
-        } catch (error) {
-            toastr.error(t`Past chat could not be updated: ${file_name}`);
-            console.error(error);
-        }
+        console.debug(`[renamePastChats] Tree DB: renamed ${data.updated} messages`);
+        return true;
+    } catch (error) {
+        toastr.error(t`Past chats could not be renamed`);
+        console.error(error);
+        return false;
     }
 }
 
@@ -7933,13 +7876,11 @@ export async function getChat({ isNewChat = false } = {}) {
             chat.splice(0, chat.length, ...data);
             chat.forEach(ensureMessageMediaIsArray);
             // Freeze messages loaded from tree DB: immutable values, replaced only via updateMessage()
-            if (chat_metadata?._tree_stored) {
-                for (let i = 0; i < chat.length; i++) {
-                    chat[i] = deepFreeze(chat[i]);
-                }
-                _snapshotMessages();
-                await _mergeCardGreetingsIntoOpening();
+            for (let i = 0; i < chat.length; i++) {
+                chat[i] = deepFreeze(chat[i]);
             }
+            _snapshotMessages();
+            await _mergeCardGreetingsIntoOpening();
         } else {
             // An empty/corrupted chat file
             chat.splice(0, chat.length);
@@ -7949,9 +7890,7 @@ export async function getChat({ isNewChat = false } = {}) {
         await getChatResult();
 
         // printMessages() -> ensureSwipes() synthesizes missing swipe shape via updateMessage(); re-snapshot so that alone doesn't queue an edit.
-        if (chat_metadata?._tree_stored) {
-            _snapshotMessages();
-        }
+        _snapshotMessages();
 
         eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
 
@@ -7982,7 +7921,6 @@ async function getChatResult() {
         }
 
         if (message?.node_id) {
-            chat_metadata._tree_stored = true;
             _snapshotMessages();
         }
         await ensureOpeningRow(0);
@@ -11372,9 +11310,6 @@ export async function createOrEditCharacter(e) {
                 await clearChat();
                 await printMessages();
                 await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
-                if (message.node_id) {
-                    chat_metadata._tree_stored = true;
-                }
                 await ensureOpeningRow(0);
             }
         } catch (error) {
