@@ -300,9 +300,9 @@ describe('resolveForkRing()', () => {
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    test('a different swipe id on the same message is a separate fork point with no siblings of its own', async () => {
+    test('a different swipe id on the same message shares the same fork point siblings (swipe-agnostic, per getLocalForkSiblings())', async () => {
         setChat([makeMessage({ swipe_id: 0, branches: { '0': ['sib-a'] } })]);
-        expect(await bookmarks.resolveForkRing(0, 1)).toBeNull();
+        expect(await bookmarks.resolveForkRing(0, 1)).toEqual({ ring: ['current-chat', 'sib-a'], selfIndex: 0 });
     });
 
     test('sibling branch: fetches the canonical list from the origin file and locates itself in it', async () => {
