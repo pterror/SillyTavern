@@ -101,7 +101,6 @@ export {
     is_group_generating,
     group_generation_id,
     groups,
-    saveGroupChat,
     saveGroupField,
     generateGroupWrapper,
     deleteGroup,
@@ -873,87 +872,6 @@ async function _bootstrapGroupChat(groupId, chatName) {
     }
 
     return true;
-}
-
-/**
- * Whole-array resave of a group chat. No longer this file's message-persistence primitive - every real
- * mutation now goes through chatOp*() (chat-store.js) directly, and a brand-new chat's greetings mint
- * their own rows via _bootstrapGroupChat() above. The one thing this still does that no direct op can:
- * on the server, /group/save's tree write (saveChatToTree()) never conflicts - it has no expected-
- * integrity check at all, unlike /metadata - so the "integrity" error this handles (and the force-
- * overwrite retry below) can only come from its JSONL fallback (trySaveChat()), reached only when the
- * tree store itself is unavailable. In that state every chatOp*() would fail too (same getEntry()
- * dependency), so there is no direct op to fall back to - the legacy flat-file writer, and the
- * whole-file overwrite it demands on a stale slug, is what's left. Kept for that emergency path, and
- * for the one remaining ordinary caller this file doesn't own (slash-commands.js's /memberadd, which
- * calls this instead of saveGroupField() - it never actually persists the membership change either
- * way, since /group/save doesn't touch group.members at all; a pre-existing bug in a file out of
- * scope here).
- * @param {string} groupId Group ID
- * @param {boolean} shouldSaveGroup Whether to save the group after saving the chat
- * @param {boolean} force Force the saving on integrity error
- * @returns {Promise<void>} A promise that resolves when the group chat has been saved.
- */
-async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
-    const group = groupsStore.get(groupId);
-    if (!group) {
-        console.warn('Group not found', groupId);
-        return;
-    }
-    const chatId = group.chat_id;
-    group.date_last_chat = Date.now();
-    /** @type {ChatHeader} */
-    const chatHeader = {
-        chat_metadata: { ...chat_metadata },
-        user_name: 'unused',
-        character_name: 'unused',
-    };
-    const saveGroupChatRequest = await compressRequest({
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatId, group_id: group.id, chat: [chatHeader, ...chat], force: force }),
-    });
-    const response = await fetch('/api/chats/group/save', saveGroupChatRequest);
-
-    if (response.ok) {
-        // The server mints a fresh integrity slug on every successful write; store it so the next save sends the current slug
-        const data = await response.json().catch(() => null);
-        if (data && typeof data.integrity === 'string') {
-            chat_metadata.integrity = data.integrity;
-        }
-    } else {
-        const errorData = await response.json();
-        const isIntegrityError = errorData?.error === 'integrity' && !force;
-        if (!isIntegrityError) {
-            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group Chat could not be saved`);
-            console.error('Group chat could not be saved', response);
-            return;
-        }
-
-        const popupResult = await Popup.show.input(
-            t`ERROR: Chat integrity check failed while saving the file.`,
-            t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-              <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-            '',
-            { okButton: 'OK', cancelButton: false },
-        );
-
-        const forceSaveConfirmed = popupResult === 'OVERWRITE';
-
-        if (!forceSaveConfirmed) {
-            console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
-            window.location.reload();
-            return;
-        }
-
-        await saveGroupChat(groupId, shouldSaveGroup, true);
-    }
-
-    if (shouldSaveGroup) {
-        // Fires on every group-chat save during ongoing generation/activity, not a single discrete
-        // gesture - genuinely continuous, so keep it debounced (see savePropertyDebounced's note above).
-        await saveGroupField(groupId, { date_last_chat: group.date_last_chat }, false, false);
-    }
 }
 
 /**

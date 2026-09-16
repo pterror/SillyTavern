@@ -77,7 +77,7 @@ import { getMessageTimeStamp, isMobile } from './RossAscends-mods.js';
 import { hideChatMessageRange } from './chats.js';
 import { getContext, saveMetadataDebounced } from './extensions.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
-import { findGroupMemberId, groups, groupsStore, is_group_generating, openGroupById, regenerateGroup, resetSelectedGroup, saveGroupChat, selected_group, getGroupMembers } from './group-chats.js';
+import { findGroupMemberId, groups, groupsStore, is_group_generating, openGroupById, regenerateGroup, resetSelectedGroup, saveGroupField, selected_group, getGroupMembers } from './group-chats.js';
 import { chat_completion_sources, MINIMAX_ENDPOINT, oai_settings, POLLINATIONS_ENDPOINT, promptManager, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT } from './chat-completion-settings.js';
 import { user_avatar } from './personas.js';
 import { addEphemeralStoppingString, chat_styles, context_presets, flushEphemeralStoppingStrings, playMessageSound, power_user } from './power-user.js';
@@ -4958,7 +4958,11 @@ async function addGroupMemberCallback(_, name) {
     group.members.push(avatar);
     // group.members is already mutated above; this just notifies groupsStore subscribers to reprint.
     groupsStore.update(selected_group, { members: group.members });
-    await saveGroupChat(selected_group, true);
+    // Adding a member is a single discrete command, not a continuous edit - save immediately, same as
+    // modifyGroupMember()'s own member-list add/remove (group-chats.js). The previous saveGroupChat()
+    // call here never actually persisted this: /group/save only writes chat messages/metadata, never
+    // group.members, so this command silently relied on in-memory state alone until a real reload wiped it.
+    await saveGroupField(selected_group, { members: group.members }, true, false);
     return character.name;
 }
 
