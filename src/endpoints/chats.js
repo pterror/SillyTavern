@@ -24,7 +24,7 @@ import {
     readFirstLine,
     isPathUnderParent,
 } from '../util.js';
-import { bumpCharacterDateLastChat, bumpGroupChatStats } from '../character-metadata-db.js';
+import { bumpCharacterDateLastChat, bumpGroupChatStats, getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
 import { resolveGroupOwner } from '../character-shallow.js';
 import { readGroupFile, writeGroupFile } from './groups.js';
 import { readCardContent } from './characters.js';
@@ -841,13 +841,26 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         const dirName = String(request.body.avatar_url).replace('.png', '');
         const chatName = String(request.body.chatfile).replace(/\.jsonl$/, '');
 
+        const activeChats = await getCharacterActiveChatsByIds(request.user.directories, [dirName]);
+        const wasActiveChat = activeChats[dirName] === chatName;
+
         // Tree DB path
         if (await hasSavedChats(request.user.directories, dirName)) {
             const deleted = await deleteBranch(request.user.directories, dirName, chatName);
-            if (deleted) {
+            if (!deleted) {
+                return response.sendStatus(400);
+            }
+            if (!wasActiveChat) {
                 return response.send({ ok: true });
             }
-            return response.sendStatus(400);
+            // Same recency measure listRecentBranches() already sorts by: last_activity (a branch's
+            // leaf message), falling back to the label's own creation time for a branch with no
+            // activity of its own yet.
+            const remaining = await listBranches(request.user.directories, dirName);
+            remaining.sort((a, b) => (b.last_activity ?? b.created_at ?? 0) - (a.last_activity ?? a.created_at ?? 0));
+            const activeChat = remaining.length ? remaining[0].id : null;
+            await setCharacterActiveChat(request.user.directories, dirName, activeChat);
+            return response.send({ ok: true, activeChat: activeChat ?? '' });
         }
 
         // JSONL fallback
@@ -856,14 +869,35 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         if (!isPathUnderParent(request.user.directories.chats, chatFilePath)) {
             return response.sendStatus(400);
         }
-        if (tryDeleteFile(chatFilePath)) {
-            await deleteChatRow(request.user.directories, chatFilePath).catch(err =>
-                console.error('[chat-metadata] Failed to update chat metadata store after delete:', err));
-            return response.send({ ok: true });
-        } else {
+        if (!tryDeleteFile(chatFilePath)) {
             console.error('The chat file was not deleted.');
             return response.sendStatus(400);
         }
+        await deleteChatRow(request.user.directories, chatFilePath).catch(err =>
+            console.error('[chat-metadata] Failed to update chat metadata store after delete:', err));
+
+        if (!wasActiveChat) {
+            return response.send({ ok: true });
+        }
+
+        const chatsDirectory = path.join(request.user.directories.chats, dirName);
+        let remainingFiles = [];
+        try {
+            remainingFiles = fs.readdirSync(chatsDirectory, { withFileTypes: true })
+                .filter(file => file.isFile() && path.extname(file.name) === '.jsonl')
+                .map(file => file.name);
+        } catch (err) {
+            console.error('[chats/delete] Failed to list remaining chats after delete:', err);
+        }
+        // File mtime, the same recency measure a fresh JSONL chat list is otherwise sorted by client-side.
+        const remainingWithMtime = (await Promise.allSettled(remainingFiles.map(async file => {
+            const stats = await fs.promises.stat(path.join(chatsDirectory, file));
+            return { file, mtimeMs: stats.mtimeMs };
+        }))).filter(x => x.status === 'fulfilled').map(x => x.value);
+        remainingWithMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        const activeChat = remainingWithMtime.length ? path.parse(remainingWithMtime[0].file).name : null;
+        await setCharacterActiveChat(request.user.directories, dirName, activeChat);
+        return response.send({ ok: true, activeChat: activeChat ?? '' });
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
