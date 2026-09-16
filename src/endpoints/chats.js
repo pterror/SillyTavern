@@ -724,7 +724,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         }
 
         const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
-        if (result) {
+        if (result && 'integrity' in result) {
             await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
                 console.error(`Could not bump date_last_chat for ${cardName}:`, err));
             return response.send({
@@ -735,7 +735,10 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
             });
         }
 
-        // saveChatToTree only returns null for an empty chatData array; everything else lands above.
+        // Either no SQLite backend was available (result === null - now impossible at runtime, see
+        // server-main.js's boot-time verifySqliteBackend()) or chatData was empty (result === {
+        // empty: true }). TODO: once the next task removes this JSONL fallback machinery, this route
+        // only needs to handle the empty case.
         const chatFileName = `${sanitize(chatName)}.jsonl`;
         const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
         if (!isPathUnderParent(request.user.directories.chats, chatFilePath)) {
@@ -1624,11 +1627,13 @@ router.post('/group/import', async function (request, response) {
             }
 
             const result = await saveChatToTree(request.user.directories, group.id, chatname, chatData, true);
-            if (result) {
+            if (result && 'integrity' in result) {
                 fs.unlinkSync(pathToUpload);
                 return response.send({ res: chatname });
             }
-            // saveChatToTree returned null - fall through to the file write rather than losing the upload.
+            // Backend unavailable (now impossible at runtime, see server-main.js's boot-time
+            // verifySqliteBackend()) - fall through to the file write rather than losing the upload.
+            // (chatData can't be empty here: it was already rejected above when parsed from the upload.)
         }
 
         const pathToNewFile = path.join(request.user.directories.groupChats, `${chatname}.jsonl`);
@@ -1998,7 +2003,7 @@ router.post('/group/save', async function (request, response) {
         }
 
         const result = await saveChatToTree(request.user.directories, group.id, id, chatData, true);
-        if (result) {
+        if (result && 'integrity' in result) {
             await bumpGroupChatStats(request.user.directories, id, {
                 groupId: group.id,
                 stats: { dateLastChat: Date.now(), chatSize: Buffer.byteLength(JSON.stringify(chatData), 'utf8') },
@@ -2014,7 +2019,10 @@ router.post('/group/save', async function (request, response) {
             });
         }
 
-        // saveChatToTree only returns null for an empty chatData array.
+        // Either no SQLite backend was available (result === null - now impossible at runtime, see
+        // server-main.js's boot-time verifySqliteBackend()) or chatData was empty (result === {
+        // empty: true }). TODO: once the next task removes this JSONL fallback machinery, this route
+        // only needs to handle the empty case.
         const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
         const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, id, request.user.directories.backups, request.user.directories);
         await bumpGroupChatStats(request.user.directories, id, { groupId: request.body.group_id }).catch(err =>

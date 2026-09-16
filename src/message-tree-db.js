@@ -1073,12 +1073,15 @@ export async function loadBranch(directories, ownerId, branchName) {
  *   present), the rest the messages to save. Plain `(... )[]`, not a tuple, so a caller building this
  *   array dynamically (e.g. from an on-disk `any[]`) isn't forced to prove non-emptiness at compile time.
  * @param {boolean} [isGroup]
- * @returns {Promise<{ integrity: string, assignedNodeIds: { index: number, node_id: string }[] } | null>}
+ * @returns {Promise<{ integrity: string, assignedNodeIds: { index: number, node_id: string }[] } | { empty: true } | null>}
+ *   `null` means no usable SQLite backend is available (now impossible at runtime - see
+ *   server-main.js's boot-time verifySqliteBackend()). `{ empty: true }` means chatData had nothing
+ *   to save; distinct from `null` so callers don't mistake "nothing to write" for "backend down".
  */
 export async function saveChatToTree(directories, ownerId, chatName, chatData, isGroup = false) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    if (!Array.isArray(chatData) || chatData.length === 0) return null;
+    if (!Array.isArray(chatData) || chatData.length === 0) return { empty: true };
 
     const header = /** @type {ChatHeaderLike} */ (chatData[0]);
     const messages = /** @type {TreeChatMessage[]} */ (chatData.slice(1));
