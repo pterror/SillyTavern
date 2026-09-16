@@ -380,8 +380,8 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
 
     try {
         // Hash/classify/identity-hash, and for png/json the eventual write, all run in the worker off the main
-        // thread. Every sqlite call stays on this thread (no WAL/busy_timeout configured for worker access, and
-        // scanDirectory() wraps the whole pass in one transaction).
+        // thread. Every sqlite call stays on this thread (no WAL/busy_timeout configured for worker access,
+        // and character-metadata-db.js's batch-import buffer is single-writer, not thread-safe).
         const pipelineResult = await ensureWorkerPool().runPipeline(sourcePath, format, directories, allowIdentityFallback);
 
         // Re-stat after the worker's read (not the pre-dispatch stat above): a file still being streamed onto
@@ -532,8 +532,10 @@ const SCAN_BATCH_SIZE = 2000;
 
 /**
  * One full pass over one configured directory: streams it in fixed-size batches, bulk-prefetching each batch's
- * persisted mtimes before dispatching through processFile(). Wrapped in beginBatchImport()/endBatchImport() so a
- * directory with many files pays one transaction/watcher-suspension window per pass, not per file.
+ * persisted mtimes before dispatching through processFile(). Wrapped in beginBatchImport()/endBatchImport() so
+ * the watcher-suspension window spans the whole pass; DB commits happen more often than that, every
+ * BATCH_IMPORT_FLUSH_SIZE buffered rows (character-metadata-db.js), so a mid-pass restart only loses the
+ * still-open buffer, not the whole pass.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}
