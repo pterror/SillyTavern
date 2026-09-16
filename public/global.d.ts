@@ -78,6 +78,15 @@ declare global {
         swipe_info?: SwipeInfo[];
         swipe_id?: number;
         extra?: ChatMessageExtra;
+        /**
+         * Tree-node identity for this message. A real, persisted string means it has actually been
+         * written to the server's tree; `undefined` means not yet written; `null` is also a real,
+         * observed "not yet written" value on some code paths (e.g. windowed card-greeting rows); and
+         * a `card:`-prefixed string (see `PROVISIONAL_NODE_PREFIX`) is a provisional id minted
+         * client-side for a greeting the tree doesn't have a row for yet - see `isStoredNodeId()` /
+         * `isProvisionalNodeId()`.
+         */
+        node_id?: string | null;
     };
 
     interface SwipeInfo {
@@ -85,6 +94,8 @@ declare global {
         gen_started?: MessageTimestamp;
         gen_finished?: MessageTimestamp;
         extra?: ChatMessageExtra;
+        /** Same tree-node-identity semantics as `ChatMessage.node_id` - see that field's doc comment. */
+        node_id?: string | null;
     }
 
     interface BaseMessageExtra {
