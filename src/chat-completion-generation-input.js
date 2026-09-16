@@ -391,6 +391,131 @@ import { appendFileAttachments } from './file-attachment-inline.js';
  * whichever chat entry it's given.
  */
 
+/**
+ * Type vocabulary reused verbatim from message-tree-db.js/character-card-fields.js rather than
+ * redeclared here (see this task's own instruction to compose, not duplicate) - `Directories` is the
+ * same `Pick<UserDirectoryList, 'root'>` narrowing message-tree-db.js's own exports settled on,
+ * `TreeChatMessage` is that file's own native tree-row wire shape (`ChatMessage & {persona,
+ * _unchanged, swipe_speaker_default}` - `ChatMessage` there being the global, client-facing
+ * interface, NOT chat-completion-messages.js's/macro-substitution.js's own narrower same-named local
+ * typedefs), and `SanitizedUserMessageExtra` is `sanitizeUserMessageExtra()`'s own real return shape
+ * for an already-validated `userMessageExtra` (see the `userMessageExtra` FIELD-MAPPING NOTE below).
+ * @typedef {import('./message-tree-db.js').Directories} Directories
+ * @typedef {import('./message-tree-db.js').TreeChatMessage} TreeChatMessage
+ * @typedef {import('./message-tree-db.js').SanitizedUserMessageExtra} SanitizedUserMessageExtra
+ * @typedef {import('./world-info/activation.js').WIEntry} WIEntry
+ * @typedef {import('./world-info/result-bucketing.js').WIActivatedEntry} WIActivatedEntry
+ * @typedef {import('./world-info/result-bucketing.js').WIDepthEntry} WIDepthEntry
+ * @typedef {import('./macro-substitution.js').SubstituteParamsContext} SubstituteParamsContext
+ * @typedef {import('./extension-prompt-table.js').ExtensionPromptTable} ExtensionPromptTable
+ */
+
+/**
+ * Loose, read-only shape of the subset of the on-disk `oai_settings` blob (src/settings-store.js)
+ * this resolver actually reads - NOT the full client `ChatCompletionSettings` shape (that type lives
+ * client-side in public/global.d.ts and isn't meaningfully reusable for a server-side partial read
+ * via `readSettingsAtPaths()`, which only ever returns the handful of dotted paths asked for). Real
+ * field list cross-checked against every `oaiSettings.<field>` read in this file.
+ * @typedef {object} OaiSettingsShape
+ * @property {string} [chat_completion_source]
+ * @property {string} [claude_model]
+ * @property {string} [openai_model]
+ * @property {string} [google_model]
+ * @property {string} [vertexai_model]
+ * @property {string} [openrouter_model]
+ * @property {string} [ai21_model]
+ * @property {string} [mistralai_model]
+ * @property {string} [custom_model]
+ * @property {string} [cohere_model]
+ * @property {string} [perplexity_model]
+ * @property {string} [groq_model]
+ * @property {string} [siliconflow_model]
+ * @property {string} [minimax_model]
+ * @property {string} [electronhub_model]
+ * @property {string} [chutes_model]
+ * @property {string} [nanogpt_model]
+ * @property {string} [deepseek_model]
+ * @property {string} [aimlapi_model]
+ * @property {string} [xai_model]
+ * @property {string} [pollinations_model]
+ * @property {string} [cometapi_model]
+ * @property {string} [moonshot_model]
+ * @property {string} [fireworks_model]
+ * @property {string} [azure_openai_model]
+ * @property {string} [zai_model]
+ * @property {string} [workers_ai_model]
+ * @property {number} [names_behavior]
+ * @property {string} [inline_image_quality]
+ * @property {string} [wi_format]
+ * @property {number} [openai_max_context]
+ * @property {number} [openai_max_tokens]
+ * @property {boolean} [squash_system_messages]
+ * @property {string} [scenario_format]
+ * @property {string} [personality_format]
+ * @property {string} [group_nudge_prompt]
+ * @property {string} [impersonation_prompt]
+ * @property {import('./chat-completion-prompt-collection.js').RawPrompt[]} [prompts]
+ * @property {import('./chat-completion-prompt-collection.js').PromptOrderList[]} [prompt_order]
+ * @property {boolean} [continue_prefill]
+ * @property {string} [assistant_prefill]
+ * @property {string} [new_chat_prompt]
+ * @property {string} [new_group_chat_prompt]
+ * @property {string} [continue_nudge_prompt]
+ * @property {string} [send_if_empty]
+ * @property {string} [new_example_chat_prompt]
+ */
+
+/**
+ * Loose, read-only shape of the subset of `power_user` this resolver reads - see the OaiSettingsShape
+ * doc comment above for the same "not the full client shape, just this file's own real read surface"
+ * rationale.
+ * @typedef {object} PowerUserSettingsShape
+ * @property {boolean} [prefer_character_prompt]
+ * @property {boolean} [prefer_character_jailbreak]
+ * @property {string} [persona_description]
+ * @property {number} [persona_description_position]
+ * @property {string} [persona_description_lorebook]
+ * @property {string} [user_prompt_bias]
+ * @property {boolean} [console_log_prompts]
+ * @property {boolean} [pin_examples]
+ * @property {string} [media_display]
+ */
+
+/**
+ * Loose shape of the subset of the top-level `world_info` settings key (selection state, NOT the
+ * shared `world_info_settings` budget/depth/recursion knobs - see `WorldInfoSettingsShape` below) this
+ * resolver reads.
+ * @typedef {object} WorldInfoSelectionShape
+ * @property {string[]} [globalSelect]
+ * @property {{name?: string, extraBooks?: string[]}[]} [charLore]
+ */
+
+/**
+ * Loose shape of the subset of the shared (both-pipelines) `world_info_settings` budget/depth/
+ * recursion settings key this resolver reads - see decision 4 in the module doc comment above for the
+ * full settings-path mapping this mirrors from text-completion-generation-input.js.
+ * @typedef {object} WorldInfoSettingsShape
+ * @property {boolean} [world_info_include_names]
+ * @property {number} [world_info_budget]
+ * @property {number} [world_info_budget_cap]
+ * @property {number} [world_info_depth]
+ * @property {boolean} [world_info_recursive]
+ * @property {number} [world_info_max_recursion_steps]
+ * @property {number} [world_info_min_activations]
+ * @property {number} [world_info_min_activations_depth_max]
+ * @property {boolean} [world_info_use_group_scoring]
+ */
+
+/**
+ * The real fields this module reads off a group JSON file (src/endpoints/groups.js's
+ * `getGroupsByIds()` - that module isn't one of this task's target files, so its own return type
+ * (`Record<string, object>`) stays as loose as it already is; this is the boundary-local narrowing -
+ * see `resolveCharacterName2()` below for the cast site and the cross-file-mismatch note).
+ * @typedef {object} GroupRecordShape
+ * @property {string} [name]
+ * @property {string[]} [members]
+ */
+
 /** Mirrors PromptManager.js's `configuration.promptOrder.dummyId` - see FIELD-MAPPING NOTES above. */
 const PROMPT_ORDER_DUMMY_ID = 100000;
 
@@ -421,8 +546,10 @@ const NON_TIKTOKEN_TOKENIZER_FAMILIES = ['claude', 'llama3', 'llama', 'mistral',
  * (public/scripts/chat-completion-settings.js ~line 1717) - resolves the currently-selected model
  * id/slug for whichever `chat_completion_source` is active. Not previously ported anywhere
  * server-side (see decision/FIELD-MAPPING NOTES above).
- * @param {object} settings A real `oai_settings`-shaped object.
- * @returns {string}
+ * @param {OaiSettingsShape} settings A real `oai_settings`-shaped object.
+ * @returns {string | null | undefined} `undefined` when the field for the active source was never
+ * set; `null` for OpenRouter's own "no specific model, use the website default" sentinel
+ * (`'OR_Website'`) - real, distinct meanings, not conflated by falling back to `''` here.
  */
 export function getChatCompletionModel(settings) {
     switch (settings.chat_completion_source) {
@@ -462,7 +589,9 @@ export function getChatCompletionModel(settings) {
  * `getTokenizerModel()`/`getTiktokenTokenizer()` - see decision 3 above for the full rationale
  * (including the non-tiktoken-family approximation) and why no already-exported "count these
  * messages" function existed to reuse wholesale instead.
- * @param {string} [model] The resolved chat-completion model id/slug (`getChatCompletionModel()`'s output).
+ * @param {string | null} [model] The resolved chat-completion model id/slug
+ * (`getChatCompletionModel()`'s output - `string | null | undefined`, see that function's own doc
+ * comment for why `null` is a real, distinct value here too).
  * @returns {import('./chat-completion-budget.js').CountTokenAsyncFn}
  */
 export function createOpenAITokenCounter(model) {
@@ -473,7 +602,8 @@ export function createOpenAITokenCounter(model) {
     // exported function to call instead.
     const tokensPerName = normalizedModel === 'gpt-3.5-turbo-0301' ? -1 : 1;
     const tokensPerMessage = normalizedModel === 'gpt-3.5-turbo-0301' ? 4 : 3;
-    return async function countTokenAsyncFn(messages) {
+    /** @type {import('./chat-completion-budget.js').CountTokenAsyncFn} */
+    const countTokenAsyncFn = async function countTokenAsyncFn(messages) {
         const list = Array.isArray(messages) ? messages : [messages];
         const tokenizer = getTiktokenTokenizer(tiktokenModel);
         let numTokens = 0;
@@ -488,6 +618,7 @@ export function createOpenAITokenCounter(model) {
         numTokens += 3; // tokensPadding
         return numTokens;
     };
+    return countTokenAsyncFn;
 }
 
 /**
@@ -551,9 +682,14 @@ async function resolveCharacterName2(directories, { avatar, groupId } = {}) {
         } catch { /* leave name2 as '', hasCharacter false - matches text-completion's own fallback */ }
     }
 
-    let groupMemberNames = [];
+    /** @type {string[]} */
+    const groupMemberNames = [];
     if (groupId) {
-        const group = getGroupsByIds(directories, [groupId])[groupId];
+        // getGroupsByIds() (src/endpoints/groups.js, not a target file) declares its return as the
+        // loose `Record<string, object>` its own module doc comment settled on - narrowed here to the
+        // real, on-disk `Group` fields this function actually reads. Cross-file boundary, not a guess:
+        // `name`/`members` are real `Group` (public/global.d.ts) properties.
+        const group = /** @type {GroupRecordShape | undefined} */ (getGroupsByIds(directories, [groupId])[groupId]);
         if (group) {
             if (!avatar) {
                 name2 = group.name || name2;
@@ -595,8 +731,8 @@ async function resolveCharacterName2(directories, { avatar, groupId } = {}) {
  * @param {object} params
  * @param {string} [params.ownerId]
  * @param {string} [params.branchName]
- * @param {string} [params.nodeId]
- * @returns {Promise<{ chat: object[], metadata: object, resolvedNodeId: string|null, ambiguous?: boolean }>}
+ * @param {string | null} [params.nodeId]
+ * @returns {Promise<{ chat: TreeChatMessage[], metadata: ChatMetadata, resolvedNodeId: string | null, ambiguous?: boolean }>}
  */
 async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) {
     if (ownerId && branchName) {
@@ -665,14 +801,14 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {string} [params.textareaText] Current user input textarea text, for bias-string resolution
  * (see the `bias` FIELD-MAPPING NOTE above) - mirrors text-completion-generation-input.js's own
  * equivalent param name/default exactly.
- * @param {object} [params.chatMetadata] Overrides the loaded branch's own metadata when given.
+ * @param {ChatMetadata} [params.chatMetadata] Overrides the loaded branch's own metadata when given.
  * @param {string} [params.userMessageText] The raw user action for this turn - see doc comment.
- * @param {object} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` for the newly-appended
- * user message (see `sanitizeUserMessageExtra()` in message-tree-db.js) - identical contract to
- * text-completion-generation-input.js's own equivalent param: a forwarded file/media attachment
- * REFERENCE, trusted verbatim here (the caller already ran it through the allowlist), ignored when
- * `userMessageText` is omitted.
- * @param {import('./world-info/activation.js').WIEntry[]} [params.worldInfoCandidates] Explicit
+ * @param {SanitizedUserMessageExtra} [params.userMessageExtra] Already-SERVER-VALIDATED `extra` for
+ * the newly-appended user message (see `sanitizeUserMessageExtra()` in message-tree-db.js) - identical
+ * contract to text-completion-generation-input.js's own equivalent param: a forwarded file/media
+ * attachment REFERENCE, trusted verbatim here (the caller already ran it through the allowlist),
+ * ignored when `userMessageText` is omitted.
+ * @param {WIEntry[]} [params.worldInfoCandidates] Explicit
  * override/bypass for the auto-resolved candidates - when omitted, this resolver calls
  * `resolveWorldInfoCandidates()` for real; passing an explicit array (including `[]`) always wins.
  * Either way, this resolver now also ACTIVATES the resulting candidates for real - see doc comment
@@ -684,10 +820,10 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {string} [params.model] Overrides the real `getChatCompletionModel()` resolution when given.
  * @param {import('./chat-completion-tool-capabilities.js').ChatCompletionToolCapabilityModel[]} [params.modelList] See doc comment - not resolved here, caller-supplied only.
  * @param {string|number} [params.characterId] Overrides the PROMPT_ORDER_DUMMY_ID default - see doc comment.
- * @param {(messages: object|object[], full?: boolean) => Promise<number>} [params.countTokenAsyncFn] Overrides the real, internally-resolved OpenAI token counter.
+ * @param {import('./chat-completion-budget.js').CountTokenAsyncFn} [params.countTokenAsyncFn] Overrides the real, internally-resolved OpenAI token counter.
  * @param {import('./chat-completion-budget.js').TokenHandler} [params.tokenHandler] Overrides the whole internally-constructed `TokenHandler`.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
- * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: import('./world-info/activation.js').WIEntry[] }>}
+ * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[] }>}
  */
 export async function resolveChatCompletionGenerationInput(directories, {
     avatar, groupId, ownerId, branchName, nodeId,
@@ -707,16 +843,28 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // analysis in this session's task write-up), and re-deriving that from `type` here would duplicate
     // that decision in a second place.
 
+    // readSettingsAtPaths() (src/settings-store.js, not a target file) declares its return as
+    // `Record<string, unknown>` - it's a generic dotted-path reader with no static knowledge of any
+    // individual settings key's real shape. Narrowed here to this module's own real read surface
+    // (OaiSettingsShape/PowerUserSettingsShape/etc. above), the boundary-local cast this task's own
+    // instructions call for.
     const {
-        oai_settings: oaiSettings = {},
-        power_user: powerUser = {},
-        world_info: worldInfoSelection = {},
-        world_info_settings: worldInfoSettings = {},
+        oai_settings: oaiSettings = /** @type {OaiSettingsShape} */ ({}),
+        power_user: powerUser = /** @type {PowerUserSettingsShape} */ ({}),
+        world_info: worldInfoSelection = /** @type {WorldInfoSelectionShape} */ ({}),
+        world_info_settings: worldInfoSettings = /** @type {WorldInfoSettingsShape} */ ({}),
         world_info_character_strategy: worldInfoCharacterStrategySetting,
         username,
-    } = readSettingsAtPaths(directories, [
-        'oai_settings', 'power_user', 'world_info', 'world_info_settings', 'world_info_character_strategy', 'username',
-    ]);
+    } = /** @type {{
+        oai_settings?: OaiSettingsShape,
+        power_user?: PowerUserSettingsShape,
+        world_info?: WorldInfoSelectionShape,
+        world_info_settings?: WorldInfoSettingsShape,
+        world_info_character_strategy?: number,
+        username?: string,
+    }} */ (readSettingsAtPaths(directories, [
+            'oai_settings', 'power_user', 'world_info', 'world_info_settings', 'world_info_character_strategy', 'username',
+        ]));
 
     const isGroup = Boolean(groupId);
 
@@ -734,8 +882,16 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // loaded message. Kept RAW (the swiped/regenerated message, when there is one, still present as
     // the last entry) - this is the shape getBiasStrings() below expects (it does its own
     // last-entry skip for 'swipe'/'regenerate' - see that function's own doc comment for why).
+    // CROSS-FILE MISMATCH (confirms the parallel investigation's finding, see task instructions):
+    // `sanitizeUserMessageExtra()`'s real return shape (`SanitizedUserMessageExtra`, message-tree-db.js)
+    // is narrower than the global `ChatMessageExtra` slot it's stored into here - e.g. its
+    // `files[].size` is optional where the global `FileAttachment.size` is required. The value is
+    // already server-validated (this resolver's own contract, see the `userMessageExtra` param doc
+    // above), so it's cast at this one boundary rather than widening `SanitizedUserMessageExtra` itself
+    // (not this file's type to own) or fixing message-tree-db.js (not in this task's scope).
+    /** @type {TreeChatMessage[]} */
     const chat = typeof userMessageText === 'string'
-        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}, send_date: Date.now() }]
+        ? [...loadedChat, { is_user: true, name: name1, mes: userMessageText, extra: /** @type {ChatMessageExtra} */ (userMessageExtra && typeof userMessageExtra === 'object' ? userMessageExtra : {}), send_date: Date.now() }]
         : loadedChat;
 
     // Drops the message currently being swiped/regenerated from the context actually used to BUILD
@@ -764,9 +920,10 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // scanning's `chatForWI`, `macroContext.chat`, and `buildChatCompletionMessages()` itself) sees
     // the file-inlined text, mirroring how text-completion's own `coreChat` is mutated once, early,
     // before any of ITS downstream consumers run.
+    /** @type {TreeChatMessage[]} */
     const promptChat = await Promise.all(promptChatBeforeFileInline.map(async (msg) => ({
         ...msg,
-        mes: await appendFileAttachments(msg.extra, msg.mes, { directories }),
+        mes: await appendFileAttachments(msg.extra ?? null, msg.mes ?? '', { directories }),
     })));
 
     const fields = await getCharacterCardFields(directories, {
@@ -797,37 +954,56 @@ export async function resolveChatCompletionGenerationInput(directories, {
                 if (raw !== undefined) character = JSON.parse(raw);
             } catch { /* leave character null - candidate resolution tolerates this */ }
         }
-        worldInfoCandidates = await resolveWorldInfoCandidates({
+        // resolveWorldInfoCandidates() (src/world-info/candidate-resolution.js, not a target file)
+        // declares its return as `Promise<Array<object>>` - looser than reality: its entries are real
+        // on-disk lorebook entries, i.e. genuinely `WIEntry`-shaped. Boundary cast, not a guess.
+        worldInfoCandidates = /** @type {WIEntry[]} */ (await resolveWorldInfoCandidates({
             directories,
             selectedWorldInfo: worldInfoSelection.globalSelect ?? [],
             character,
             characterExtraBooks,
-            chatWorldName: chatMetadata?.[WORLD_INFO_METADATA_KEY] ?? null,
+            chatWorldName: /** @type {string | null} */ (chatMetadata?.[WORLD_INFO_METADATA_KEY] ?? null),
             personaWorldLorebook: powerUser.persona_description_lorebook ?? null,
             worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
-        });
+        }));
     }
 
+    // getChatCompletionModel() returns `string | null | undefined` (see that function's own doc
+    // comment - `null` is OpenRouter's real "use website default" sentinel). `model` therefore stays
+    // `string | null` here; every downstream slot that requires a plain `string` (`macroContext.model`,
+    // `BuildChatCompletionMessagesContext.currentModel`, `resolved.model`) narrows with `model ?? undefined`
+    // at its own use site rather than collapsing this real distinction early.
     const model = modelOverride ?? getChatCompletionModel(oaiSettings);
     const namesBehavior = oaiSettings.names_behavior ?? DEFAULT_NAMES_BEHAVIOR;
     const imageQuality = oaiSettings.inline_image_quality ?? DEFAULT_INLINE_IMAGE_QUALITY;
 
-    const messages = buildChatCompletionMessages(promptChat, {
+    // CROSS-FILE MISMATCH: chat-completion-messages.js declares its OWN local `ChatMessage`/
+    // `ChatMessageExtra` typedefs (this module's `TreeChatMessage` is layered over the global,
+    // client-facing `ChatMessage` instead - see this file's own type-vocabulary doc comment above) and
+    // its `.extra.media` is narrower (`string[]`) than the global `ChatMessageExtra.media`
+    // (`MediaAttachment[]`) it actually receives real tree-loaded messages from. Neither file is a
+    // target of this task; cast at this boundary rather than guess which of the two should change.
+    const messages = buildChatCompletionMessages(/** @type {import('./chat-completion-messages.js').ChatMessage[]} */ (promptChat), {
         isGroup, name1, name2, namesBehavior,
         currentApi: oaiSettings.chat_completion_source,
-        currentModel: model,
+        currentModel: model ?? undefined,
         mediaDisplaySetting: powerUser.media_display,
     });
 
     const messageExamples = buildChatCompletionMessageExamples(
-        parseMesExamplesForChatCompletion(fields.mesExamples),
+        parseMesExamplesForChatCompletion(fields.mesExamples ?? ''),
         { isGroup, name1, name2, appendNamesForGroup: true },
     );
 
+    // CROSS-FILE MISMATCH: macro-substitution.js's own local `ChatMessage.send_date` is `string|number`,
+    // narrower than the global `ChatMessage.send_date`'s `MessageTimestamp` (`string|number|Date`) that
+    // `promptChat` (a `TreeChatMessage[]`, layered over the global type) actually carries. Same
+    // "neither file is a target of this task" boundary as `messages` above.
+    /** @type {SubstituteParamsContext} */
     const macroContext = {
-        name1, name2, isGroup, model,
+        name1, name2, isGroup, model: model ?? undefined,
         characterCard: fields,
-        chat: promptChat, chatMetadata,
+        chat: /** @type {import('./macro-substitution.js').ChatMessage[]} */ (promptChat), chatMetadata,
     };
 
     // Real bias-string resolution - see the `bias` FIELD-MAPPING NOTE above. `prepareOpenAIMessages()`
@@ -846,8 +1022,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // text-completion-generation-input.js's own equivalent does NOT have (that pipeline defers
     // activation to a separate orchestrator; this pipeline has none, so this resolver is it).
     const worldInfoIncludeNames = Boolean(worldInfoSettings.world_info_include_names ?? false);
-    const chatForWI = promptChat.map(x => worldInfoIncludeNames ? `${x.name}: ${x.mes}` : x.mes).reverse();
-    const generationTrigger = GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal';
+    const chatForWI = promptChat.map(x => worldInfoIncludeNames ? `${x.name}: ${x.mes}` : (x.mes ?? '')).reverse();
+    const generationTrigger = type !== undefined && GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal';
     const globalScanData = {
         personaDescription: fields.persona,
         characterDescription: fields.description,
@@ -862,6 +1038,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // `(text: string) => Promise<number>` countTokens shape - see decision 4 above for why a single-field
     // pseudo-message (`[{ content: text }]`) is the right shape and why tokenHandler.countAsync() itself
     // is deliberately bypassed here.
+    /** @type {(text: string) => Promise<number>} */
     const countTokensForWorldInfo = async (text) => tokenHandler.countTokenAsyncFn([{ content: text }]);
     const { activatedEntries } = await activateWorldInfoEntries(worldInfoCandidates, chatForWI, {
         maxContext: oaiSettings.openai_max_context ?? 4095,
@@ -869,7 +1046,14 @@ export async function resolveChatCompletionGenerationInput(directories, {
         budgetCap: worldInfoSettings.world_info_budget_cap ?? 0,
         depth: worldInfoSettings.world_info_depth ?? 2,
         recursive: Boolean(worldInfoSettings.world_info_recursive ?? true),
-        maxRecursionStepsSetting: worldInfoSettings.world_info_max_recursion_steps ?? 0,
+        // BEHAVIOR FIX (flagged per task instructions, not silent): this was `maxRecursionStepsSetting`,
+        // which activateWorldInfoEntries()'s own options object does not declare (its real param is
+        // `maxRecursionSteps` - confirmed both by its own JSDoc and by strict-mode now rejecting the old
+        // key outright as unknown). The old key silently vanished into an ignored extra property, so
+        // `world_info_max_recursion_steps` never actually reached activation - every call effectively
+        // used activateWorldInfoEntries()'s own internal default (0, capped at 25) regardless of the
+        // real setting. Trivial, high-confidence rename; no other change.
+        maxRecursionSteps: worldInfoSettings.world_info_max_recursion_steps ?? 0,
         globalScanData, macroContext, countTokens: countTokensForWorldInfo,
         chatMetadata, isDryRun: Boolean(dryRun),
         useGroupScoring: Boolean(worldInfoSettings.world_info_use_group_scoring ?? false),
@@ -880,11 +1064,19 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // WORLD_INFO placement regex, applied per activated entry - see the REGEX SCRIPTS FIELD-MAPPING
     // NOTE above. Depth override only applies to atDepth-positioned entries, matching
     // src/text-completion-prompt-orchestrator.js's own identical resolveContent callback.
-    const { worldInfoBefore, worldInfoAfter, worldInfoDepth: worldInfoDepthEntries } = bucketActivatedEntries(activatedEntries, {
+    //
+    // activateWorldInfoEntries() (src/world-info/activation.js, not a target file) declares its
+    // `activatedEntries` return as `WIEntry[]` - its own candidate-entry type, which (like WIEntry
+    // itself - see the `worldInfoCandidates` cast above) doesn't declare the `order`/`position`/
+    // `depth`/`role`/`outletName` fields real lorebook entries carry and bucketActivatedEntries()
+    // (src/world-info/result-bucketing.js, also not a target file) requires as `WIActivatedEntry[]`.
+    // Boundary cast, not a guess: same real underlying entries, a documented type gap in those two
+    // (non-target) files.
+    const { worldInfoBefore, worldInfoAfter, worldInfoDepth: worldInfoDepthEntries } = bucketActivatedEntries(/** @type {WIActivatedEntry[]} */ (/** @type {unknown} */ (activatedEntries)), {
         resolveContent: (entry) => {
             const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? WI_DEFAULT_DEPTH) : null;
             return getRegexedString(entry.content, regex_placement.WORLD_INFO, regexScripts, {
-                depth: regexDepth, isMarkdown: false, isPrompt: true, macroContext, regexExtensionEnabled,
+                depth: regexDepth ?? undefined, isMarkdown: false, isPrompt: true, macroContext, regexExtensionEnabled,
             });
         },
     });
@@ -894,6 +1086,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // (same key format/position/depth/scan/role), writing into THIS pipeline's own `injectionTable`
     // (consumed by src/chat-completion-injection-prompts.js's `populateInjectionPrompts()` via
     // src/chat-completion-populate.js) instead of that orchestrator's separate `extensionPromptTable`.
+    /** @type {ExtensionPromptTable} */
     const injectionTable = {};
     for (const depthEntry of worldInfoDepthEntries) {
         setExtensionPrompt(
@@ -977,7 +1170,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         // --- Backend / tool-calling capability inputs (resolved internally by prepareOpenAIMessages() - see doc comment) ---
         mainApi: 'openai',
         settings: oaiSettings,
-        model, modelList,
+        model: model ?? undefined, modelList,
         canUseToolsOverride: undefined,
         includeSignatureOverride: undefined,
         toolReasoningModeOverride: undefined,
