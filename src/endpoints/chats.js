@@ -714,10 +714,9 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
             const result = await loadAtNode(request.user.directories, dirName, chatName)
                 ?? await loadBranch(request.user.directories, dirName, chatName);
             if (result) {
-                // _tree_stored flag lets the client use tree-specific APIs (fork, label)
                 /** @type {any} */
                 const header = {
-                    chat_metadata: { ...result.metadata, _tree_stored: true },
+                    chat_metadata: { ...result.metadata },
                     user_name: 'unused',
                     character_name: 'unused',
                 };
@@ -1584,7 +1583,7 @@ router.post('/group/get', async (request, response) => {
             if (result) {
                 /** @type {any} */
                 const header = {
-                    chat_metadata: { ...result.metadata, _tree_stored: true },
+                    chat_metadata: { ...result.metadata },
                     user_name: 'unused',
                     character_name: 'unused',
                 };
