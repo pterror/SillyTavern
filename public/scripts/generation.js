@@ -2,7 +2,7 @@ import {
     addChatsPreamble, addChatsSeparator, addPersonaDescriptionExtensionPrompt,
     amount_gen, baseChatReplace, cancelDebouncedChatSave, charactersStore, chat, chat_metadata, cleanUpMessage,
     deactivateSendButtons, DEFAULT_SAVE_EDIT_TIMEOUT, deleteLastMessage, depth_prompt_depth_default, depth_prompt_role_default,
-    doChatInject, extension_prompt_roles, extension_prompts, extension_prompt_types,
+    doChatInject, extension_prompts, extension_prompt_types,
     extractImagesFromData, extractJsonFromData, extractMessageFromData, extractMultiSwipes, extractTitleFromData,
     flushDraftSave, flushWIInjections, formatMessageHistoryItem,
     getAllExtensionPrompts, getBiasStrings, getCharacterCardFields, getCurrentCharacter, getCurrentChatId, getCurrentDraftContext,
@@ -73,30 +73,19 @@ export function setAbortController(controller) {
 // Snapshot after load/save: node_id -> message reference. Messages in `chat` (script.js) are frozen
 // after load/creation - all mutation goes through updateMessage()/updateIn() (chat-store.js), which
 // swaps in a new frozen object - so reference equality against this snapshot is a complete,
-// hash-free change-detection signal for the slim wire save protocol below (_buildSlimPayload()).
+// hash-free change-detection signal for callers that want to know what's actually dirty (e.g.
+// saveChat()'s tree-chat branch, which persists per-message by node_id and has no need for a
+// full-chat JSONL payload at all).
 /** @type {Map<string, object>} */
 export const _messageSnapshots = new Map();
 
 export function _snapshotMessages() {
     _messageSnapshots.clear();
     for (const msg of chat) {
-        if (msg.node_id) {
+        if (isStoredNodeId(msg.node_id)) {
             _messageSnapshots.set(msg.node_id, msg);
         }
     }
-}
-
-/**
- * @param {ChatMessage[]} messages
- * @returns {(ChatMessage|{node_id: string, _unchanged: true})[]}
- */
-function _buildSlimPayload(messages) {
-    return messages.map(msg => {
-        if (msg.node_id && _messageSnapshots.get(msg.node_id) === msg) {
-            return { node_id: msg.node_id, _unchanged: true };
-        }
-        return msg;
-    });
 }
 
 // Stamps a server-persisted assistant_node_id onto the just-saved reply and marks it clean in
@@ -106,19 +95,24 @@ function _buildSlimPayload(messages) {
 function _stampAssistantNodeId(nodeId) {
     if (!nodeId) return;
     const mesId = chat.length - 1;
-    const msg = chat[mesId];
-    if (!msg || msg.is_user) return;
+    // `chat.length - 1` is `-1` for an empty chat, and TS's array element type (no
+    // noUncheckedIndexedAccess) doesn't know that - cast explicitly so the out-of-bounds guard
+    // below is real, not a no-op the type checker would otherwise let us delete.
+    const msg = /** @type {ChatMessage | undefined} */ (chat[mesId]);
+    if (msg == null || msg.is_user === true) return;
     const selected = msg.swipe_id ?? 0;
     /** @type {Partial<ChatMessage>} */
     const updates = { node_id: nodeId };
-    if (Array.isArray(msg.swipe_info) && msg.swipe_info[selected] && !msg.swipe_info[selected].node_id) {
+    const swipeInfoEntry = Array.isArray(msg.swipe_info) ? /** @type {SwipeInfo | undefined} */ (msg.swipe_info[selected]) : undefined;
+    if (swipeInfoEntry != null && !isStoredNodeId(swipeInfoEntry.node_id)) {
         const newSwipeInfo = [...msg.swipe_info];
         newSwipeInfo[selected] = { ...newSwipeInfo[selected], node_id: nodeId };
         updates.swipe_info = newSwipeInfo;
     }
     updateMessage(mesId, updates);
-    if (chat[mesId]?.node_id) {
-        _messageSnapshots.set(chat[mesId].node_id, chat[mesId]);
+    const stamped = /** @type {ChatMessage | undefined} */ (chat[mesId]);
+    if (isStoredNodeId(stamped?.node_id)) {
+        _messageSnapshots.set(stamped.node_id, stamped);
     }
 }
 
@@ -126,10 +120,10 @@ function _stampAssistantNodeId(nodeId) {
 // trying anyway means asking the server to blank the row the message still names, which it refuses.
 /** @param {ChatMessage} message */
 export function _isBlankUnwrittenSwipe(message) {
-    if (!Array.isArray(message?.swipes)) return false;
+    if (!Array.isArray(message.swipes)) return false;
     const at = message.swipe_id ?? 0;
     if (typeof message.swipes[at] !== 'string' || message.swipes[at].length > 0) return false;
-    return !message.swipe_info?.[at]?.node_id;
+    return !isStoredNodeId(message.swipe_info?.[at]?.node_id);
 }
 
 // Extracted from StreamingProcessor.onFinishStreaming() (script.js), which still runs the rest of that
@@ -138,7 +132,7 @@ export function _isBlankUnwrittenSwipe(message) {
 // branch is checked under strict null checks with the rest of this file.
 /** @param {{assistantNodeId?: string|null}} params */
 export async function finishStreamedReplyPersistence({ assistantNodeId }) {
-    if (assistantNodeId) {
+    if (isStoredNodeId(assistantNodeId)) {
         _stampAssistantNodeId(assistantNodeId);
     } else {
         // Backend/path didn't send assistant_node_id: not a raw-action stream, the server-side
@@ -199,7 +193,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage }, dryRun);
 
     // Don't recreate abort controller if signal is passed
-    if (!(abortController && signal)) {
+    if (signal == null) {
         abortController = new AbortController();
     }
 
@@ -247,7 +241,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         chat_metadata.tainted = true;
     }
 
-    if (selected_group && !is_group_generating) {
+    if (selected_group != null && !is_group_generating) {
         if (!dryRun) {
             // Returns the promise that generateGroupWrapper returns; resolves when generation is done
             return generateGroupWrapper(false, type, { quiet_prompt, force_avatar, signal: abortController.signal, quietImage, jsonSchema });
@@ -257,7 +251,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         /** @type {string[]} */
         const enabledMembers = (group?.members ?? []).reduce((acc, member) => {
-            if (!group?.disabled_members.includes(member) && !acc.includes(member)) {
+            const isDisabled = group?.disabled_members.includes(member) ?? false;
+            if (!isDisabled && !acc.includes(member)) {
                 acc.push(member);
             }
             return acc;
@@ -275,9 +270,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     //#########QUIET PROMPT STUFF##############
     //this function just gives special care to novel quiet instruction prompts
-    if (quiet_prompt) {
+    if (typeof quiet_prompt === 'string' && quiet_prompt !== '') {
         quiet_prompt = substituteParams(quiet_prompt);
-        quiet_prompt = main_api == 'novel' && !quietToLoud ? adjustNovelInstructionPrompt(quiet_prompt) : quiet_prompt;
+        quiet_prompt = main_api == 'novel' && quietToLoud !== true ? adjustNovelInstructionPrompt(quiet_prompt) : quiet_prompt;
     }
 
     const hasBackendConnection = online_status !== 'no_connection';
@@ -289,7 +284,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         return Promise.resolve();
     }
 
-    const lastMessage = chat[chat.length - 1];
+    // `chat[chat.length - 1]` is `chat[-1]` (`undefined`) for a brand-new, empty chat - real at the
+    // raw-action gates below, which run regardless of chat length. TS's array element type (no
+    // noUncheckedIndexedAccess) doesn't reflect that, so cast explicitly rather than let the type
+    // checker treat the `lastMessage?.` guards downstream as dead code.
+    const lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
 
     let textareaText;
     if (type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun && !depth) {
@@ -304,7 +303,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
     } else {
         textareaText = '';
-        if (chat.length && lastMessage.is_user) {
+        if (chat.length && lastMessage?.is_user === true) {
             //do nothing? why does this check exist?
         } else if (type !== 'quiet' && type !== 'swipe' && !isImpersonate && !dryRun && !depth && chat.length) {
             deleteItemizedPromptForMessage(chat.length - 1);
@@ -343,10 +342,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     // Rewrite the generation timer to account for the time passed for all the continuations.
     if (isContinue && chat.length) {
-        const prevFinished = lastMessage.gen_finished;
-        const prevStarted = lastMessage.gen_started;
+        const prevFinished = lastMessage?.gen_finished;
+        const prevStarted = lastMessage?.gen_started;
 
-        if (prevFinished && prevStarted) {
+        if (prevFinished != null && prevStarted != null) {
             const timePassed = Number(prevFinished) - Number(prevStarted);
             generation_started = new Date(Date.now() - timePassed);
             updateMessage(chat.length - 1, { gen_started: generation_started });
@@ -389,17 +388,17 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // dedup would miss it, creating a duplicate node. Doesn't apply to the insertAt/graft path -
     // only the `/send at=` slash command uses that, and it never triggers a raw-action send.
     const rawActionCharacterAvatar = getCurrentCharacter()?.avatar;
-    const rawActionGroupId = selected_group || undefined;
-    const rawActionOwnerId = rawActionGroupId
+    const rawActionGroupId = selected_group != null ? selected_group : undefined;
+    const rawActionOwnerId = rawActionGroupId != null
         ? String(rawActionGroupId)
-        : (rawActionCharacterAvatar ? String(rawActionCharacterAvatar).replace('.png', '') : undefined);
+        : (rawActionCharacterAvatar != null ? String(rawActionCharacterAvatar).replace('.png', '') : undefined);
     const willUseRawAction = !dryRun
         && ['textgenerationwebui', 'kobold', 'novel', 'koboldhorde', 'openai'].includes(main_api)
         && [undefined, 'normal', 'impersonate', 'quiet', 'swipe', 'regenerate', 'continue'].includes(type)
-        && !!(rawActionOwnerId && rawActionCharacterAvatar);
+        && rawActionOwnerId != null && rawActionCharacterAvatar != null;
 
     //for normal messages sent from user..
-    if ((textareaText != '' || (hasPendingFileAttachment() && !noAttachTypes.includes(type))) && !automatic_trigger && type !== 'quiet' && !dryRun && !depth) {
+    if ((textareaText != '' || (hasPendingFileAttachment() && !noAttachTypes.includes(type))) && automatic_trigger !== true && type !== 'quiet' && !dryRun && !depth) {
         // If user message contains no text other than bias - send as a system message
         if (messageBias && !removeMacros(textareaText)) {
             sendSystemMessage(system_message_types.GENERIC, ' ', { bias: messageBias });
@@ -409,7 +408,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // `undefined` - `null` here is the actual, intended "append, don't insert" argument.
             sentUserMessage = await sendMessageAsUser(textareaText, messageBias, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, willUseRawAction);
         }
-    } else if (textareaText == '' && !automatic_trigger && !dryRun && [undefined, 'normal'].includes(type) && main_api == 'openai' && oai_settings.send_if_empty.trim().length > 0 && !depth) {
+    } else if (textareaText == '' && automatic_trigger !== true && !dryRun && [undefined, 'normal'].includes(type) && main_api == 'openai' && oai_settings.send_if_empty.trim().length > 0 && !depth) {
         // Use send_if_empty if set and the user message is empty. Only when sending messages normally
         sentUserMessage = await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, willUseRawAction);
     }
@@ -496,15 +495,20 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // object's declared shape, not a local mistake.
     const allowWIScan = /** @type {{allowWIScan?: boolean}} */ (extension_settings.note).allowWIScan;
 
-    if (selected_group && Array.isArray(groupDepthPrompts) && groupDepthPrompts.length > 0) {
+    if (selected_group != null && Array.isArray(groupDepthPrompts) && groupDepthPrompts.length > 0) {
         groupDepthPrompts.forEach((value, index) => {
             const role = getExtensionPromptRoleByName(value.role);
             setExtensionPrompt(inject_ids.DEPTH_PROMPT_INDEX(index), value.text, extension_prompt_types.IN_CHAT, value.depth, allowWIScan, role);
         });
     } else {
         const depthPromptText = charDepthPrompt || '';
-        const depthPromptDepth = getCurrentCharacter()?.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default;
-        const depthPromptRole = getExtensionPromptRoleByName(getCurrentCharacter()?.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
+        // v2CharDataExtensionInfos.depth_prompt (char-data.js) is declared as a required property with
+        // required `depth`/`role` sub-fields, but real character cards routinely omit this extension
+        // entirely - the declared type is optimistic, so the optional chain here is load-bearing even
+        // though the type checker considers it redundant. Cast rather than delete the check.
+        const depthPromptExt = /** @type {{depth?: number, role?: "system"|"user"|"assistant"} | undefined} */ (getCurrentCharacter()?.data.extensions.depth_prompt);
+        const depthPromptDepth = depthPromptExt?.depth ?? depth_prompt_depth_default;
+        const depthPromptRole = getExtensionPromptRoleByName(depthPromptExt?.role ?? depth_prompt_role_default);
         setExtensionPrompt(inject_ids.DEPTH_PROMPT, depthPromptText, extension_prompt_types.IN_CHAT, depthPromptDepth, allowWIScan, depthPromptRole);
     }
 
@@ -512,14 +516,14 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     const substitutedFirstMessage = chat.length ? substituteParams(chat[0].mes ?? '') : null;
 
     // Collect messages with usable content
-    let coreChat = chat.filter(x => !x.is_system || (canUseTools && Array.isArray(x.extra?.tool_invocations)));
+    let coreChat = chat.filter(x => x.is_system !== true || (canUseTools && Array.isArray(x.extra?.tool_invocations)));
     if (type === 'swipe') {
         coreChat.pop();
     }
 
     coreChat = await Promise.all(coreChat.map(async (/** @type {ChatMessage} */ chatItem, index) => {
         let message = chatItem === chat[0] ? substitutedFirstMessage : chatItem.mes;
-        let regexType = chatItem.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
+        let regexType = chatItem.is_user === true ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
         let options = { isPrompt: true, depth: (coreChat.length - index - (isContinue ? 2 : 1)) };
 
         let regexedMessage = getRegexedString(message ?? '', regexType, options);
@@ -530,12 +534,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         const titles = [];
-        if (chatItem?.extra?.append_title && chatItem?.extra?.title) {
+        if (chatItem.extra?.append_title === true && chatItem.extra.title != null && chatItem.extra.title !== '') {
             titles.push(chatItem.extra.title);
         }
-        if (Array.isArray(chatItem?.extra?.media)) {
+        if (Array.isArray(chatItem.extra?.media)) {
             for (const mediaItem of chatItem.extra.media) {
-                if (mediaItem?.title && mediaItem?.append_title) {
+                if (mediaItem.title != null && mediaItem.title !== '' && mediaItem.append_title === true) {
                     titles.push(mediaItem.title);
                 }
             }
@@ -557,7 +561,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         const isPrefix = isContinue && i === coreChat.length - 1;
 
         // In group chats, only include reasoning from the currently generating character
-        const isOtherGroupMember = selected_group && coreChat[i].name !== name2;
+        const isOtherGroupMember = selected_group != null && coreChat[i].name !== name2;
 
         coreChat[i] = {
             ...coreChat[i],
@@ -948,14 +952,14 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // call). `groupId` is `selected_group` itself, already the group's real id (see JUDGMENT CALL
         // #1 above) - not derived from characterAvatar the way `ownerId` is for a plain character chat.
         const characterAvatar = getCurrentCharacter()?.avatar;
-        const groupId = selected_group || undefined;
+        const groupId = selected_group != null ? selected_group : undefined;
         // For a group turn, owner_id addresses the GROUP's own chat/branch storage (matching
         // src/endpoints/chats.js's own `ownerId = group_id ? touchGroupOwner(...).id : avatar...`
         // pattern) - a character avatar would be the WRONG owner here, even though characterAvatar
         // itself is still resolved and sent (as `character_avatar`) for the responding member's own
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
         // unchanged from before.
-        const ownerId = groupId ? String(groupId) : (characterAvatar ? String(characterAvatar).replace('.png', '') : undefined);
+        const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
         // UPDATE (this task - node_id-only addressing cutover): `branch_name` is REMOVED from the wire
         // payload entirely (see src/endpoints/backends/text-completions.js's own
         // buildRawActionTextCompletionRequest() ADDRESSING MODEL doc comment) - the server now requires
@@ -981,7 +985,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // legacy path instead of assuming this, for the unlikely case `getCurrentCharacter()` were
         // ever unresolved mid-group-turn) - see JUDGMENT CALL #1 above for why this is verified to
         // always be true in practice for every type this gate covers.
-        if (ownerId && characterAvatar) {
+        if (ownerId != null && characterAvatar != null) {
             // Omitted (undefined) for any type that doesn't add a new message - matches the server's
             // own documented contract. In practice, given the scope above, this path is reached for
             // type 'normal'/undefined (where textareaText is the just-sent text, or '' for a depth>0
@@ -1013,7 +1017,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 group_id: groupId,
                 owner_id: ownerId,
                 node_id: anchorNodeId,
-                type: type ?? 'normal',
+                type: type,
                 // is_impersonate/is_continue/is_swipe are NOT sent - the server derives all three from
                 // `type` alone (isImpersonate = type === 'impersonate', isContinue = type ===
                 // 'continue', isSwipe = type === 'swipe' || type === 'regenerate' - see
@@ -1268,21 +1272,21 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // each per-member Generate() call), and `groupId` is `selected_group` itself, already the
         // group's own real id.
         const characterAvatar = getCurrentCharacter()?.avatar;
-        const groupId = selected_group || undefined;
+        const groupId = selected_group != null ? selected_group : undefined;
         // For a group turn, owner_id addresses the GROUP's own chat/branch storage (matching
         // src/endpoints/chats.js's own `ownerId = group_id ? touchGroupOwner(...).id : avatar...`
         // pattern) - a character avatar would be the WRONG owner here, even though characterAvatar
         // itself is still resolved and sent (as `character_avatar`) for the responding member's own
         // card/prompt resolution. Falls back to the plain per-character ownerId when not in a group,
         // unchanged from before.
-        const ownerId = groupId ? String(groupId) : (characterAvatar ? String(characterAvatar).replace('.png', '') : undefined);
+        const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
         // Same node_id-only addressing as the text-completion cutover above (not assumed) - see that
         // block's own UPDATE comment for the full rationale (`lastMessage`, captured before
         // 'regenerate's own delete-last-message branch, not `chat[chat.length - 1]`).
         const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
         // `characterAvatar` is required unconditionally, group turn or not - see the text-completion
         // cutover's own identical precondition/rationale above.
-        if (ownerId && characterAvatar) {
+        if (ownerId != null && characterAvatar != null) {
             // Same rationale as the text-completion cutover above: omitted (undefined) for any type that doesn't add
             // a new message. Given the scope above, this path is reached for type 'normal'/undefined (where
             // textareaText is the just-sent text, or '' for a depth>0 tool-call follow-up generation, which likewise
@@ -1332,7 +1336,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 await ToolManager.registerFunctionToolsOpenAI(toolsHolder);
                 clientToolsPayload = toolsHolder.tools;
                 const stealthNames = (clientToolsPayload ?? [])
-                    .map(tool => tool?.function?.name)
+                    .map(tool => tool.function.name)
                     .filter(name => typeof name === 'string' && ToolManager.isStealthTool(name));
                 stealthToolNamesPayload = stealthNames.length ? stealthNames : undefined;
             }
@@ -1341,7 +1345,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 group_id: groupId,
                 owner_id: ownerId,
                 node_id: anchorNodeId,
-                type: type ?? 'normal',
+                type: type,
                 // is_impersonate/is_continue/is_swipe are NOT sent - see the text-completion cutover's
                 // own identical UPDATE comment above (server derives all three from `type` alone).
                 user_message: userMessageText,
@@ -1410,7 +1414,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     let cyclePrompt = '';
     /** @type {string|undefined} */
     let pinExmString;
-    /** @type {string[]} */
+    // Built as a sparse array (`new Array(chat2.length)` below, filled by index in token-budget order,
+    // not sequentially) - `string[]` undersold that: real holes exist until the unsparsing loop below
+    // compacts it, and the `!== undefined` checks against those holes are load-bearing, not dead code.
+    /** @type {(string|undefined)[]} */
     let arrMes = [];
     let count_exm_add = 0;
     /** @type {{message: string, extensionPrompts: string[], injected?: boolean}[]} */
@@ -1450,8 +1457,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         // Adjust max context based on CFG prompt to prevent overfitting
         if (cfgGuidanceScale && useCfgPrompt) {
-            const negativePrompt = getCfgPrompt(cfgGuidanceScale, true, true)?.value || '';
-            const positivePrompt = getCfgPrompt(cfgGuidanceScale, false, true)?.value || '';
+            const negativePrompt = getCfgPrompt(cfgGuidanceScale, true, true).value || '';
+            const positivePrompt = getCfgPrompt(cfgGuidanceScale, false, true).value || '';
             if (negativePrompt || positivePrompt) {
                 const previousMaxContext = this_max_context;
                 const [negativePromptTokenCount, positivePromptTokenCount] = await Promise.all([getTokenCountAsync(negativePrompt), getTokenCountAsync(positivePrompt)]);
@@ -1478,7 +1485,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         // Add WI to prompt (and also inject WI to AN value via hijack)
         // Make quiet prompt available for WIAN
-        setExtensionPrompt(inject_ids.QUIET_PROMPT, quiet_prompt || '', extension_prompt_types.IN_PROMPT, 0, true);
+        setExtensionPrompt(inject_ids.QUIET_PROMPT, quiet_prompt ?? '', extension_prompt_types.IN_PROMPT, 0, true);
         const chatForWI = coreChat.map(x => world_info_include_names ? `${x.name}: ${x.mes}` : (x.mes ?? '')).reverse();
         /** @type {import('./world-info.js').WIGlobalScanData} */
         const globalScanData = {
@@ -1516,7 +1523,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // At this point, the raw message examples can be created
         const mesExamplesRawArray = [...mesExamplesArray];
 
-        if (mesExamplesArray && isInstruct) {
+        if (isInstruct) {
             mesExamplesArray = formatInstructModeExamples(mesExamplesArray, name1, name2);
         }
 
@@ -1530,7 +1537,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                     setExtensionPrompt(inject_ids.CUSTOM_WI_DEPTH_ROLE(e.depth, e.role), joinedEntries, extension_prompt_types.IN_CHAT, e.depth, false, e.role);
                 });
             }
-            if (outletEntries && typeof outletEntries === 'object' && Object.keys(outletEntries).length > 0) {
+            if (Object.keys(outletEntries).length > 0) {
                 Object.entries(outletEntries).forEach(([key, value]) => {
                     setExtensionPrompt(inject_ids.CUSTOM_WI_OUTLET(key), value.join('\n'), extension_prompt_types.NONE, 0);
                 });
@@ -1546,9 +1553,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         if (main_api !== 'openai') {
             if (power_user.sysprompt.enabled) {
                 system = power_user.prefer_character_prompt && system
-                    ? substituteParams(system, { original: power_user.sysprompt.content ?? '' })
+                    ? substituteParams(system, { original: power_user.sysprompt.content })
                     : baseChatReplace(power_user.sysprompt.content);
-                system = isInstruct ? substituteParams(system, { original: power_user.sysprompt.content ?? '' }) : system;
+                system = isInstruct ? substituteParams(system, { original: power_user.sysprompt.content }) : system;
             } else {
                 // Nullify if it's not enabled
                 system = '';
@@ -1584,8 +1591,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // Inject the story string as in-chat prompt (if needed)
         const applyStoryStringInject = main_api !== 'openai' && power_user.context.story_string_position === extension_prompt_types.IN_CHAT;
         if (applyStoryStringInject) {
-            const depth = power_user.context.story_string_depth ?? 1;
-            const role = power_user.context.story_string_role ?? extension_prompt_roles.SYSTEM;
+            const depth = power_user.context.story_string_depth;
+            const role = power_user.context.story_string_role;
             setExtensionPrompt(inject_ids.STORY_STRING, combinedStoryString, extension_prompt_types.IN_CHAT, depth, false, role);
             // Remove to prevent duplication
             combinedStoryString = '';
@@ -1606,7 +1613,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         if (main_api !== 'openai' && power_user.sysprompt.enabled) {
             jailbreak = power_user.prefer_character_jailbreak && jailbreak
-                ? substituteParams(jailbreak, { original: power_user.sysprompt.post_history ?? '' })
+                ? substituteParams(jailbreak, { original: power_user.sysprompt.post_history })
                 : baseChatReplace(power_user.sysprompt.post_history);
 
             // Only inject the jb if there is one
@@ -1634,7 +1641,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // widening that shared, project-wide tsconfig from this one file.
         let lastUserMessageIndex = -1;
         for (let i = coreChat.length - 1; i >= 0; i--) {
-            if (coreChat[i].is_user) {
+            if (coreChat[i].is_user === true) {
                 lastUserMessageIndex = i;
                 break;
             }
@@ -1683,12 +1690,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 continue_mag = coreMes;
             }
 
-            if (coreChat[j].is_user) {
+            if (coreChat[j].is_user === true) {
                 userMessageIndices.push(i);
             }
         }
 
-        let addUserAlignment = isInstruct && power_user.instruct.user_alignment_message;
+        let addUserAlignment = isInstruct && power_user.instruct.user_alignment_message !== '';
         let userAlignmentMessage = '';
 
         if (addUserAlignment) {
@@ -1814,11 +1821,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         // Unsparse the array. Adjust injected indices
+        /** @type {string[]} */
         const newArrMes = [];
         const newInjectedIndices = [];
         for (let i = 0; i < arrMes.length; i++) {
-            if (arrMes[i] !== undefined) {
-                newArrMes.push(arrMes[i]);
+            const item = arrMes[i];
+            if (item !== undefined) {
+                newArrMes.push(item);
                 if (injectedIndices.includes(i)) {
                     newInjectedIndices.push(newArrMes.length - 1);
                 }
@@ -1867,8 +1876,15 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         if (generatedPromptCache.length == 0 || type === 'continue') {
             console.debug('generating prompt');
             chatString = '';
-            arrMes = arrMes.reverse();
-            arrMes.forEach(function (item, i, arr) {
+            // Past the unsparsing loop above, every slot is populated (holes were filtered out) -
+            // cast back to plain `string[]` here so the rest of this function doesn't need to
+            // re-guard against a sparseness that no longer exists. Bound to a separate `const` (not
+            // just reassigned to `arrMes`) because TS does not carry a `let` variable's narrowed
+            // type into a closure that captures it - a `const` keeps the narrower type stable there.
+            /** @type {string[]} */
+            const finalArrMes = /** @type {string[]} */ (arrMes.reverse());
+            arrMes = finalArrMes;
+            finalArrMes.forEach(function (item, i, arr) {
                 // OAI doesn't need all of this
                 if (main_api === 'openai') {
                     return;
@@ -1877,7 +1893,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // Cohee: This removes a newline from the end of the last message in the context
                 // Last prompt line will add a newline if it's not a continuation
                 // In instruct mode it only removes it if wrap is enabled and it's not a quiet generation
-                if (i === arrMes.length - 1 && type !== 'continue') {
+                if (i === finalArrMes.length - 1 && type !== 'continue') {
                     if (!isInstruct || (power_user.instruct.wrap && type !== 'quiet')) {
                         item = item.replace(/\n?$/, '');
                     }
@@ -1910,7 +1926,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             //#########QUIET PROMPT STUFF PT2##############
 
             // Add quiet generation prompt at depth 0
-            if (quiet_prompt && quiet_prompt.length) {
+            if (quiet_prompt != null && quiet_prompt.length > 0) {
                 // here name1 is forced for all quiet prompts..why?
                 const name = name1;
                 //checks if we are in instruct, if so, formats the chat as such, otherwise just adds the quiet prompt
@@ -1931,7 +1947,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // need a detection for what the quiet prompt is being asked for...
 
                 // Bail out early?
-                if (!isInstruct && !quietToLoud) {
+                if (!isInstruct && quietToLoud !== true) {
                     return lastMesString;
                 }
             }
@@ -1939,9 +1955,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             // Get instruct mode line
             if (isInstruct && !isContinue) {
-                const name = (quiet_prompt && !quietToLoud && !isImpersonate) ? (quietName ?? 'System') : (isImpersonate ? name1 : name2);
-                const isQuiet = !!(quiet_prompt && type == 'quiet');
-                lastMesString += formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, !!quietToLoud);
+                const name = (quiet_prompt != null && quiet_prompt !== '' && quietToLoud !== true && !isImpersonate) ? (quietName ?? 'System') : (isImpersonate ? name1 : name2);
+                const isQuiet = quiet_prompt != null && quiet_prompt !== '' && type == 'quiet';
+                lastMesString += formatInstructModePrompt(name, isImpersonate, promptBias, name1, name2, isQuiet, quietToLoud === true);
             }
 
             // Get non-instruct impersonation line
@@ -1956,11 +1972,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // Add character's name
             // Force name append on continue (if not continuing on user message or first message)
             const isContinuingOnFirstMessage = chat.length === 1 && isContinue;
-            if (!isInstruct && force_name2 && !isContinuingOnFirstMessage) {
+            if (!isInstruct && force_name2 === true && !isContinuingOnFirstMessage) {
                 if (!lastMesString.endsWith('\n')) {
                     lastMesString += '\n';
                 }
-                if (!isContinue || !(chat[chat.length - 1]?.is_user)) {
+                if (!isContinue || chat[chat.length - 1]?.is_user !== true) {
                     lastMesString += `${name2}:`;
                 }
             }
@@ -2036,12 +2052,14 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                         // TODO: Make all extension prompts use an array/splice method
                         const lengthDiff = mesSend.length - cfgPrompt.depth;
                         const cfgDepth = lengthDiff >= 0 ? lengthDiff : 0;
-                        const cfgMessage = finalMesSend[cfgDepth];
-                        if (cfgMessage) {
-                            if (!Array.isArray(finalMesSend[cfgDepth].extensionPrompts)) {
-                                finalMesSend[cfgDepth].extensionPrompts = [];
+                        // `cfgDepth` is only clamped to a lower bound of 0 above - it is not clamped to
+                        // `finalMesSend.length - 1`, so this index can genuinely be out of range.
+                        const cfgMessage = /** @type {{message: string, extensionPrompts: string[]} | undefined} */ (finalMesSend[cfgDepth]);
+                        if (cfgMessage != null) {
+                            if (!Array.isArray(cfgMessage.extensionPrompts)) {
+                                cfgMessage.extensionPrompts = [];
                             }
-                            finalMesSend[cfgDepth].extensionPrompts.push(`${cfgPrompt.value}\n`);
+                            cfgMessage.extensionPrompts.push(`${cfgPrompt.value}\n`);
                         }
                     }
                 }
@@ -2089,7 +2107,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             let data = {
                 api: main_api,
-                combinedPrompt: null,
+                // Subscribers to GENERATE_BEFORE_COMBINE_PROMPTS below may set this on the emitted
+                // object to override the combined prompt - `null` here is only the "no override"
+                // starting value, not the real type.
+                combinedPrompt: /** @type {string | null} */ (null),
                 description,
                 personality,
                 persona,
@@ -2114,7 +2135,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             await eventSource.emit(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, data);
 
             // If one or multiple subscribers return a value, forfeit the responsibillity of flattening the context.
-            return !data.combinedPrompt ? combine() : data.combinedPrompt;
+            return data.combinedPrompt == null ? combine() : data.combinedPrompt;
         };
 
         finalPrompt = await getCombinedPrompt(false) ?? '';
@@ -2232,7 +2253,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
             // TODO: move these side-effects somewhere else, so this switch-case solely sets generate_data
             // counts will return false if the user has not enabled the token breakdown feature
-            if (counts) {
+            if (counts !== false) {
                 parseTokenCounts(counts, thisPromptBits);
             }
 
@@ -2280,17 +2301,20 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // with no JSDoc type - setExtensionPrompt() (same file) is the only writer and always stores this
         // exact shape, so that's what's cast here rather than the bare `{}` the declaration infers.
         const extensionPromptsTable = /** @type {Record<string, {value: string, position: number, depth: number, scan: boolean, role: number, filter: (() => Promise<boolean>|boolean)|null}>} */ (extension_prompts);
+        // getPresetManager()'s own JSDoc declares a non-nullable return type, but it has a real
+        // `return null;` path (unknown apiId) - the declared type is wrong, not this guard against it.
+        const activePresetManager = /** @type {ReturnType<typeof getPresetManager> | null} */ (getPresetManager());
         let additionalPromptStuff = {
             ...thisPromptBits[currentArrayEntry],
             rawPrompt: generate_data.prompt || generate_data.input,
             mesId: getNextMessageId(type),
             allAnchors: await getAllExtensionPrompts(),
-            chatInjects: injectedIndices?.map(index => arrMes[arrMes.length - index - 1])?.join('') || '',
-            summarizeString: (extensionPromptsTable['1_memory']?.value || ''),
-            authorsNoteString: (extensionPromptsTable['2_floating_prompt']?.value || ''),
-            smartContextString: (extensionPromptsTable.chromadb?.value || ''),
-            chatVectorsString: (extensionPromptsTable['3_vectors']?.value || ''),
-            dataBankVectorsString: (extensionPromptsTable['4_vectors_data_bank']?.value || ''),
+            chatInjects: injectedIndices.map(index => arrMes[arrMes.length - index - 1]).join('') || '',
+            summarizeString: (extensionPromptsTable['1_memory'].value || ''),
+            authorsNoteString: (extensionPromptsTable['2_floating_prompt'].value || ''),
+            smartContextString: (extensionPromptsTable.chromadb.value || ''),
+            chatVectorsString: (extensionPromptsTable['3_vectors'].value || ''),
+            dataBankVectorsString: (extensionPromptsTable['4_vectors_data_bank'].value || ''),
             worldInfoString: worldInfoString,
             storyString: storyString,
             beforeScenarioAnchor: beforeScenarioAnchor,
@@ -2309,12 +2333,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             instruction: main_api !== 'openai' && power_user.sysprompt.enabled ? substituteParams(power_user.prefer_character_prompt && system ? system : power_user.sysprompt.content) : '',
             userPersona: (power_user.persona_description_position == persona_description_positions.IN_PROMPT ? (persona || '') : ''),
             tokenizer: getFriendlyTokenizerName(main_api).tokenizerName || '',
-            presetName: getPresetManager()?.getSelectedPresetName() || '',
+            presetName: activePresetManager?.getSelectedPresetName() ?? '',
             // JSON-stringified so the existing pool-dedup (poolizeValue/poolDedupIncremental) can dedupe
             // byte-identical configs across consecutive generations for free, no separate dedup logic needed.
             samplerConfigJson: JSON.stringify(activeSamplerSettings ?? {}),
             messagesCount: main_api !== 'openai' ? mesSend.length : oaiMessages.length,
-            examplesCount: main_api !== 'openai' ? (pinExmString ? mesExamplesArray.length : count_exm_add) : oaiMessageExamples.length,
+            examplesCount: main_api !== 'openai' ? (pinExmString != null ? mesExamplesArray.length : count_exm_add) : oaiMessageExamples.length,
             // Per-message content before injection, captured here rather than re-split from rawPrompt later.
             historyParts: main_api === 'openai' ? oaiMessages.map(m => m.content) : mesSend.map(e => e.message),
         };
@@ -2332,7 +2356,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         if (isStreamingEnabled() && type !== 'quiet') {
             continue_mag = promptReasoning.removePrefix(continue_mag);
-            streamingProcessor = new StreamingProcessor(type, !!force_name2, generation_started, continue_mag, promptReasoning);
+            streamingProcessor = new StreamingProcessor(type, force_name2 === true, generation_started, continue_mag, promptReasoning);
             if (isContinue) {
                 // Save reply does add cycle text to the prompt, so it's not needed here
                 streamingProcessor.firstMessageText = '';
@@ -2353,7 +2377,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 getMessage = continue_mag + getMessage;
             }
 
-            const isStreamFinished = streamingProcessor && !streamingProcessor.isStopped && streamingProcessor.isFinished;
+            const isStreamFinished = !streamingProcessor.isStopped && streamingProcessor.isFinished;
             // Streaming raw-action tool-calling cutover (chunk (b)/(c)'s streaming counterpart) - see
             // forwardAndPersistCompactStreamWithServerTools()'s own doc comment (src/endpoints/backends/
             // chat-completions.js) for the full mechanism. Only ever set for a raw-action request whose
@@ -2365,10 +2389,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // `streamingProcessor.toolCalls` is naturally empty in this case and the legacy block below
             // would not fire for it anyway - this check exists to actually resolve the hand-off, not
             // merely to avoid a conflict with it.
-            const isStreamWithToolCallHandoff = streamingProcessor && isStreamFinished && streamingProcessor.toolCallHandoff && generate_data?.rawAction;
+            const isStreamWithToolCallHandoff = isStreamFinished && streamingProcessor.toolCallHandoff && generate_data?.rawAction;
             if (isStreamWithToolCallHandoff) {
                 const lastMessage = chat[chat.length - 1];
-                const shouldDeleteMessage = type !== 'swipe' && ['', '...'].includes(lastMessage?.mes ?? '') && !lastMessage?.extra?.reasoning && ['', '...'].includes(streamingProcessor?.result ?? '');
+                const shouldDeleteMessage = type !== 'swipe' && ['', '...'].includes(lastMessage.mes ?? '') && (lastMessage.extra?.reasoning ?? '') === '' && ['', '...'].includes(streamingProcessor.result);
                 if (shouldDeleteMessage) {
                     await deleteLastMessage();
                 } else {
@@ -2416,7 +2440,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // this round is meant to remain visible (see this task's own doc comment on the server's
             // `aborted` branch for the documented narrowing this implies for text-alongside-a-stealth-
             // call).
-            const isStreamWithToolCallAborted = streamingProcessor && isStreamFinished && streamingProcessor.toolCallAborted && generate_data?.rawAction;
+            const isStreamWithToolCallAborted = isStreamFinished && streamingProcessor.toolCallAborted && generate_data?.rawAction;
             if (isStreamWithToolCallAborted) {
                 await deleteLastMessage();
                 streamingProcessor = null;
@@ -2424,11 +2448,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 return;
             }
 
-            const isStreamWithToolCalls = streamingProcessor && Array.isArray(streamingProcessor.toolCalls) && streamingProcessor.toolCalls.length;
+            const isStreamWithToolCalls = Array.isArray(streamingProcessor.toolCalls) && streamingProcessor.toolCalls.length > 0;
             if (canPerformToolCalls && isStreamFinished && isStreamWithToolCalls) {
                 const lastMessage = chat[chat.length - 1];
                 const hasToolCalls = ToolManager.hasToolCalls(streamingProcessor.toolCalls);
-                const shouldDeleteMessage = type !== 'swipe' && ['', '...'].includes(lastMessage?.mes ?? '') && !lastMessage?.extra?.reasoning && ['', '...'].includes(streamingProcessor?.result ?? '');
+                const shouldDeleteMessage = type !== 'swipe' && ['', '...'].includes(lastMessage.mes ?? '') && (lastMessage.extra?.reasoning ?? '') === '' && ['', '...'].includes(streamingProcessor.result);
                 hasToolCalls && shouldDeleteMessage && await deleteLastMessage();
                 if (hasToolCalls && !shouldDeleteMessage) {
                     await streamingProcessor.finalizeIntermediaryMessage(streamingProcessor.messageId, getMessage, { unlockUI: false });
@@ -2439,7 +2463,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 const invocationResult = await ToolManager.invokeFunctionTools(streamingProcessor.toolCalls, {
                     reasoningText: /** @type {null} */ (/** @type {unknown} */ (streamingProcessor.reasoningHandler.reasoning)),
                 });
-                const shouldStopGeneration = (!invocationResult.invocations.length && shouldDeleteMessage) || invocationResult.stealthCalls.length;
+                const shouldStopGeneration = (!invocationResult.invocations.length && shouldDeleteMessage) || invocationResult.stealthCalls.length > 0;
                 if (hasToolCalls) {
                     if (shouldStopGeneration) {
                         if (Array.isArray(invocationResult.errors) && invocationResult.errors.length) {
@@ -2568,7 +2592,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         //Formating
-        const displayIncomplete = type === 'quiet' && !quietToLoud;
+        const displayIncomplete = type === 'quiet' && quietToLoud !== true;
         getMessage = cleanUpMessage({
             getMessage: getMessage,
             isImpersonate: isImpersonate,
@@ -2602,7 +2626,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // Cross-file note: see the streaming branch's own identical cast above - invokeFunctionTools()'s
             // `reasoningText` is inferred as bare `null` from its default value alone.
             const invocationResult = await ToolManager.invokeFunctionTools(data, { reasoningText: /** @type {null} */ (/** @type {unknown} */ (reasoning)) });
-            const shouldStopGeneration = (!invocationResult.invocations.length && shouldDeleteMessage) || invocationResult.stealthCalls.length;
+            const shouldStopGeneration = (!invocationResult.invocations.length && shouldDeleteMessage) || invocationResult.stealthCalls.length > 0;
             if (hasToolCalls) {
                 if (shouldStopGeneration) {
                     if (Array.isArray(invocationResult.errors) && invocationResult.errors.length) {
@@ -2622,7 +2646,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             playMessageSound();
         }
 
-        const isAborted = abortController && abortController.signal.aborted;
+        const isAborted = abortController.signal.aborted;
         if (!isAborted && power_user.auto_swipe && generatedTextFiltered(getMessage)) {
             setSendButtonState(false);
             // Cross-file note: swipe() (script.js) types `event` as the non-nullable `SwipeEvent` even
@@ -2675,11 +2699,9 @@ export function stopGeneration() {
         streamingProcessor.onStopStreaming();
         stopped = true;
     }
-    if (abortController) {
-        abortController.abort('Clicked stop button');
-        hideStopButton();
-        stopped = true;
-    }
+    abortController.abort('Clicked stop button');
+    hideStopButton();
+    stopped = true;
     eventSource.emit(event_types.GENERATION_STOPPED);
     return stopped;
 }
@@ -2702,7 +2724,7 @@ export function stopGeneration() {
  * `unique` caused a rename), or void when nothing was saved.
  */
 export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined, unique = false, heal = false } = {}) {
-    if (selected_group) {
+    if (selected_group != null) {
         toastr.error(t`Operation was aborted to prevent data corruption.`, t`saveChat called for a group chat`);
         throw new Error('saveChat called for a group chat');
     }
@@ -2724,8 +2746,8 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     // write by each message's own real node id, falling back to `fileName` only as a last resort
     // that's unreachable once any message has actually persisted. The legacy JSONL path has no such
     // fallback - it truly cannot save without a name.
-    const isTreeChat = !!metadata?._tree_stored && !Array.isArray(chatData);
-    if (!fileName && !isTreeChat) {
+    const isTreeChat = !!metadata._tree_stored && !Array.isArray(chatData);
+    if ((fileName == null || fileName === '') && !isTreeChat) {
         console.warn('saveChat called without chat_name and no chat file found');
         return;
     }
@@ -2772,8 +2794,8 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             const addressedByName = chatName !== undefined;
             const treeAvatar = getCurrentCharacter()?.avatar;
             let hasPersistedOpening = false;
-            if (treeAvatar) {
-                const hasPersisted = trimmedChat.some(m => isStoredNodeId(m?.node_id));
+            if (treeAvatar != null) {
+                const hasPersisted = trimmedChat.some(m => isStoredNodeId(m.node_id));
 
                 if (hasPersisted) {
                     hasPersistedOpening = true;
@@ -2807,8 +2829,9 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             return;
         }
 
-        // Slim wire protocol: unchanged messages become lightweight stubs to minimize wire payload.
-        const payloadMessages = isTreeChat ? _buildSlimPayload(trimmedChat) : trimmedChat;
+        // `isTreeChat` is always false here - the tree-chat branch above returns before this point -
+        // so this legacy JSONL save always sends the full messages, never the slim stubs.
+        const payloadMessages = trimmedChat;
 
         // Same pre-existing "assumed selected" invariant as the charactersStore.update() call above.
         const currentCharacter = /** @type {Character} */ (getCurrentCharacter());
@@ -2847,9 +2870,10 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
                 // Rows came back, so this chat now lives in the tree - a character with no prior history would otherwise stay treated as file-backed.
                 chat_metadata._tree_stored = true;
-            }
-
-            if (isTreeChat) {
+                // `isTreeChat` reflects the state at the top of this function, before this save could
+                // have minted these rows - it's always false down here (the tree-chat branch above
+                // returns early), so checking it here would never snapshot a chat that just became
+                // tree-stored, leaving it permanently seen as dirty by the slim-wire-payload diff.
                 _snapshotMessages();
             }
             return savedFileName;
@@ -2912,7 +2936,7 @@ export async function saveChatConditional({ heal = false } = {}) {
 
         isChatSaving = true;
 
-        if (selected_group) {
+        if (selected_group != null) {
             if (heal) {
                 await healDirtyMessages().catch(error =>
                     console.error('[saveChatConditional] Could not sync unstated changes:', error));

@@ -122,7 +122,7 @@ function getBackupFunction(handle, name) {
 function getPreviewMessage(lastMessage) {
     const strlen = 400;
 
-    if (!lastMessage) {
+    if (lastMessage == null || lastMessage === '') {
         return '';
     }
 
@@ -204,7 +204,7 @@ function importAgnaiChat(userName, characterName, jsonData) {
     }];
 
     for (const message of jsonData.messages) {
-        const isUser = !!message.userId;
+        const isUser = message.userId != null && message.userId !== '';
         chat.push({
             name: isUser ? userName : characterName,
             is_user: isUser,
@@ -307,7 +307,7 @@ function importKoboldLiteChat(_userName, _characterName, data) {
     // Format messages
     const formattedMessages = data.actions.map(processKoboldMessage);
     // Add prompt if available
-    if (data.prompt) {
+    if (data.prompt != null && data.prompt !== '') {
         formattedMessages.unshift(processKoboldMessage(data.prompt));
     }
     // Combine header and messages
@@ -345,7 +345,7 @@ function flattenChubChat(userName, characterName, lines) {
         return JSON.stringify(lineData);
     }
 
-    return (lines ?? []).map(convert).join('\n');
+    return lines.map(convert).join('\n');
 }
 
 /**
@@ -401,7 +401,7 @@ async function checkChatIntegrity(filePath, integritySlug) {
 
     // Parse the first line of the chat file as JSON. Strip a UTF-8 BOM an external editor may have added.
     const firstLine = await readFirstLine(filePath);
-    const jsonData = tryParse(String(firstLine ?? '').replace(/^\uFEFF/, ''));
+    const jsonData = tryParse(firstLine.replace(/^\uFEFF/, ''));
 
     // A non-parsing first line means the file may be corrupted/truncated - fail so the client confirms the overwrite.
     if (typeof jsonData !== 'object' || jsonData === null || Array.isArray(jsonData)) {
@@ -539,7 +539,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
             lastLine = line;
         });
         rl.on('close', () => {
-            if (lastLine) {
+            if (lastLine != null && lastLine !== '') {
                 const jsonData = tryParse(lastLine);
                 if (jsonData && (jsonData.name || jsonData.character_name || jsonData.chat_metadata)) {
                     chatData.chat_items = (itemCounter - 1);
@@ -594,7 +594,7 @@ export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, add
             last_mes: row.last_mes ?? mtimeMs,
             ...additionalData,
         };
-        if (withMetadata && row.chat_metadata_json) {
+        if (withMetadata && row.chat_metadata_json != null && row.chat_metadata_json !== '') {
             const parsedMetadata = tryParse(row.chat_metadata_json);
             if (parsedMetadata) {
                 chatData.chat_metadata = parsedMetadata;
@@ -606,7 +606,7 @@ export async function getOrComputeChatInfo(directories, pathToFile, mtimeMs, add
     const chatInfo = await getChatInfo(pathToFile, additionalData, withMetadata);
 
     // Not awaited, so a cache miss doesn't pay for the write on top of the parse it just did.
-    if (chatInfo.file_name) {
+    if (chatInfo.file_name != null && chatInfo.file_name !== '') {
         fs.promises.stat(pathToFile)
             .then(stats => upsertChatFromParse(directories, pathToFile, stats, chatInfo))
             .catch(err => console.error('[chat-metadata] Failed to cache chat metadata after parse:', err));
@@ -623,10 +623,9 @@ class IntegrityMismatchError extends Error {
     constructor(...params) {
         // Pass remaining arguments (including vendor specific ones) to parent constructor
         super(...params);
-        // Maintains proper stack trace for where our error was thrown (non-standard)
-        if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, IntegrityMismatchError);
-        }
+        // Maintains proper stack trace for where our error was thrown (non-standard, but always
+        // present in this server's Node/V8 runtime).
+        Error.captureStackTrace(this, IntegrityMismatchError);
         this.date = new Date();
     }
 }
@@ -651,10 +650,10 @@ class IntegrityMismatchError extends Error {
  */
 export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, directories) {
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
-    const header = /** @type {ChatHeaderLike | undefined} */ (chatData?.[0]);
+    const header = /** @type {ChatHeaderLike | undefined} */ (chatData[0]);
     const chatIntegritySlug = doIntegrityCheck ? header?.chat_metadata?.integrity : undefined;
 
-    if (chatIntegritySlug && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
+    if (chatIntegritySlug != null && chatIntegritySlug !== '' && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
         throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatIntegritySlug}".`);
     }
     /** @type {string|undefined} */
@@ -664,14 +663,14 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
         header.chat_metadata.integrity = nextIntegritySlug;
     }
 
-    const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
+    const jsonlData = chatData.map(m => JSON.stringify(m)).join('\n');
     tryWriteFileSync(filePath, jsonlData);
     getBackupFunction(handle, cardName)(backupDirectory, cardName, jsonlData);
 
     if (directories) {
         try {
             const stats = await fs.promises.stat(filePath);
-            const fileSizeBytes = Buffer.byteLength(jsonlData ?? '', 'utf8');
+            const fileSizeBytes = Buffer.byteLength(jsonlData, 'utf8');
             await upsertChatFromSave(directories, filePath, chatData, stats.mtimeMs, fileSizeBytes);
         } catch (err) {
             console.error('[chat-metadata] Failed to update chat metadata store after save:', err);
@@ -859,7 +858,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
             });
         }
 
-        if (ownerId && await hasSavedChats(request.user.directories, ownerId)) {
+        if (ownerId != null && ownerId !== '' && await hasSavedChats(request.user.directories, ownerId)) {
             const newName = String(request.body.renamed_file).replace(/\.jsonl$/, '');
             const renamed = await renameBranchInTree(request.user.directories, ownerId, oldName, newName);
             if (renamed) {
@@ -924,7 +923,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
             // leaf message), falling back to the label's own creation time for a branch with no
             // activity of its own yet.
             const remaining = await listBranches(request.user.directories, dirName);
-            remaining.sort((a, b) => (b.last_activity ?? b.created_at ?? 0) - (a.last_activity ?? a.created_at ?? 0));
+            remaining.sort((a, b) => b.last_activity - a.last_activity);
             const activeChat = remaining.length ? remaining[0].id : null;
             await setCharacterActiveChat(request.user.directories, dirName, activeChat);
             return response.send({ ok: true, activeChat: activeChat ?? '' });
@@ -1074,8 +1073,8 @@ router.post('/tree/branches', validateAvatarUrlMiddleware, async function (reque
             file_name: b.name,
             file_size: 0,
             message_count: b.message_count,
-            last_mes: b.last_mes || '',
-            chat_metadata: b.metadata ? JSON.parse(b.metadata) : {},
+            last_mes: b.last_mes ?? '',
+            chat_metadata: b.metadata != null && b.metadata !== '' ? JSON.parse(b.metadata) : {},
         }));
 
         return response.send(result);
@@ -1237,12 +1236,12 @@ async function _cardGreetingsFromDisk(directories, avatar) {
         // readCardContent(), not readCharacterData(): a greeting edit is persisted to the metadata db
         // without rewriting the PNG, so reading the file directly could show stale greetings.
         const pngStringData = await readCardContent(directories, avatar, avatarPath);
-        if (!pngStringData) return [];
+        if (pngStringData == null || pngStringData === '') return [];
         const character = JSON.parse(pngStringData);
         const { greetings } = cardToGreetingsModel(character);
         const speaker = character?.name ?? character?.data?.name ?? '';
         const sendDate = Date.now();
-        return (greetings ?? [])
+        return greetings
             .filter(text => typeof text === 'string' && text.length > 0)
             .map(text => ({ name: speaker, is_user: false, is_system: false, send_date: sendDate, mes: text, extra: {} }));
     } catch (error) {
@@ -1496,7 +1495,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     const exportfilename = request.body.exportfilename;
 
     // Tree DB path: generates JSONL from tree data on demand.
-    if (ownerId && await hasSavedChats(request.user.directories, ownerId)) {
+    if (ownerId != null && ownerId !== '' && await hasSavedChats(request.user.directories, ownerId)) {
         try {
             const result = await loadBranch(request.user.directories, ownerId, chatName);
             if (!result) {
@@ -1524,10 +1523,12 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             // Plain text export
             let buffer = '';
             for (const msg of result.messages) {
-                if (msg.is_system) continue;
-                if (msg.mes) {
+                if (msg.is_system === true) continue;
+                if (msg.mes != null && msg.mes !== '') {
                     const name = msg.name;
-                    const message = (msg?.extra?.display_text || msg?.mes || '').replace(/\r?\n/g, '\n');
+                    const displayText = msg.extra?.display_text;
+                    const text = (displayText != null && displayText !== '') ? displayText : msg.mes;
+                    const message = text.replace(/\r?\n/g, '\n');
                     buffer += `${name}: ${message}\n\n`;
                 }
             }
@@ -1819,10 +1820,10 @@ router.post('/group/branches', async (request, response) => {
             file_name: `${b.name}.jsonl`,
             file_size: formatBytes(0),
             chat_items: b.message_count,
-            mes: b.last_mes || '[No messages]',
+            mes: (b.last_mes != null && b.last_mes !== '') ? b.last_mes : '[No messages]',
             // The branch's leaf, not its label's birthday - see branchViewSync().
-            last_mes: b.last_activity ?? b.created_at,
-            chat_metadata: request.body.metadata && b.metadata ? JSON.parse(b.metadata) : undefined,
+            last_mes: b.last_activity,
+            chat_metadata: (request.body.metadata && b.metadata != null && b.metadata !== '') ? JSON.parse(b.metadata) : undefined,
         })));
     } catch (error) {
         console.error('Error listing group branches:', error);
@@ -1848,8 +1849,8 @@ router.post('/group/info', async (request, response) => {
                     file_name: `${branch.name}.jsonl`,
                     file_size: formatBytes(0),
                     chat_items: branch.message_count,
-                    mes: branch.last_mes || '[The chat is empty]',
-                    last_mes: branch.last_activity ?? branch.created_at,
+                    mes: (branch.last_mes != null && branch.last_mes !== '') ? branch.last_mes : '[The chat is empty]',
+                    last_mes: branch.last_activity,
                 });
             }
         }
@@ -1954,10 +1955,10 @@ function assignMissingGenIds(chatData) {
     const baseId = Date.now();
     for (let index = 1; index < chatData.length; index++) {
         const message = /** @type {TreeChatMessage} */ (chatData[index]);
-        if (!message || message.is_user || message.is_system) {
+        if (message.is_user === true || message.is_system === true) {
             continue;
         }
-        if (message.extra && typeof message.extra === 'object' && (message.extra.gen_id !== undefined && message.extra.gen_id !== null)) {
+        if (message.extra && typeof message.extra === 'object' && message.extra.gen_id !== undefined) {
             continue;
         }
         if (!message.extra || typeof message.extra !== 'object') {
@@ -2058,7 +2059,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                 ? (await touchGroupOwner(request.user.directories, { groupId: String(group_id) }))?.id ?? null
                 : String(avatar_url).replace('.png', '');
 
-            if (treeMigrated && ownerId) {
+            if (treeMigrated && ownerId != null && ownerId !== '') {
                 const branches = await searchBranchesByContent(request.user.directories, ownerId, fragments);
 
                 if (branches !== null) {
@@ -2067,7 +2068,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                         file_name: b.name,
                         file_size: null,
                         message_count: b.message_count,
-                        last_mes: b.leaf_send_date || '',
+                        last_mes: b.leaf_send_date != null ? b.leaf_send_date : '',
                         preview_message: getPreviewMessage(b.last_mes ?? undefined),
                     }));
 
@@ -2085,7 +2086,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                                         file_name: b.name,
                                         file_size: null,
                                         message_count: b.message_count,
-                                        last_mes: b.leaf_send_date || '',
+                                        last_mes: b.leaf_send_date != null ? b.leaf_send_date : '',
                                         preview_message: getPreviewMessage(b.last_mes ?? undefined),
                                     });
                                 }
@@ -2188,7 +2189,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                         continue;
                     }
                     const chatInfo = await getOrComputeChatInfo(request.user.directories, chatFile, stats.mtimeMs, {}, false);
-                    if (!chatInfo.file_name) {
+                    if (chatInfo.file_name == null || chatInfo.file_name === '') {
                         continue;
                     }
                     results.push({
@@ -2228,10 +2229,10 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                 }
                 chatInfo = await getOrComputeChatInfo(request.user.directories, chatFile, stats.mtimeMs, {}, false);
             }
-            const hasMatch = chatInfo.match || hasTextMatch([chatInfo.file_id ?? '']);
+            const hasMatch = chatInfo.match === true || hasTextMatch([chatInfo.file_id ?? '']);
 
             // Skip corrupted or invalid chat files
-            if (!chatInfo.file_name) {
+            if (chatInfo.file_name == null || chatInfo.file_name === '') {
                 continue;
             }
 
@@ -2276,7 +2277,7 @@ router.post('/recent', async function (request, response) {
                 allChatFiles.push({
                     ...(branch.is_group ? { groupId: branch.owner_id } : { pngFile: `${branch.owner_id}.png` }),
                     filePath: `${branch.name}.jsonl`,
-                    mtime: branch.last_activity ?? branch.created_at,
+                    mtime: branch.last_activity,
                     branch,
                 });
             }
@@ -2288,9 +2289,9 @@ router.post('/recent', async function (request, response) {
             ...(branch.is_group ? { group: branch.owner_id } : { avatar: `${branch.owner_id}.png` }),
             file_size: 0,
             chat_items: branch.message_count,
-            mes: branch.last_mes || '[No messages]',
-            last_mes: branch.last_activity ?? branch.created_at,
-            chat_metadata: withMetadata && branch.metadata ? JSON.parse(branch.metadata) : undefined,
+            mes: (branch.last_mes != null && branch.last_mes !== '') ? branch.last_mes : '[No messages]',
+            last_mes: branch.last_activity,
+            chat_metadata: (withMetadata && branch.metadata != null && branch.metadata !== '') ? JSON.parse(branch.metadata) : undefined,
         });
 
         const getCharacterChatFiles = async () => {
@@ -2372,13 +2373,13 @@ router.post('/recent', async function (request, response) {
             if (file.branch) {
                 return Promise.resolve(treeChatInfo(file.branch, withMetadata));
             }
-            return file.groupId
+            return (file.groupId != null && file.groupId !== '')
                 ? getOrComputeChatInfo(request.user.directories, file.filePath, file.mtime, { group: file.groupId }, withMetadata)
                 : getOrComputeChatInfo(request.user.directories, file.filePath, file.mtime, { avatar: file.pngFile }, withMetadata);
         });
 
         const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
-        const validFiles = chatData.filter(i => i.file_name);
+        const validFiles = chatData.filter(i => i.file_name != null && i.file_name !== '');
 
         return response.send(validFiles);
     } catch (error) {

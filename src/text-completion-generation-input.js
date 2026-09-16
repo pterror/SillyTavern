@@ -382,7 +382,7 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
     let groupMemberNames = [];
     let character = null;
 
-    if (avatar) {
+    if (avatar != null) {
         try {
             const raw = await readCardContent(directories, avatar);
             if (raw !== undefined) {
@@ -392,11 +392,11 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
         } catch { /* leave name2 as '' - matches character-card-fields.js's own no-character fallback */ }
     }
 
-    if (groupId) {
+    if (groupId != null) {
         const group = /** @type {GroupLike | undefined} */ (getGroupsByIds(directories, [groupId])[groupId]);
         if (group) {
-            if (!avatar) {
-                name2 = group.name || name2;
+            if (avatar == null && group.name != null && group.name !== '') {
+                name2 = group.name;
             }
             const members = Array.isArray(group.members) ? group.members : [];
             for (const memberAvatar of members) {
@@ -457,21 +457,21 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
  * @returns {Promise<{ chat: import('./message-tree-db.js').TreeChatMessage[], metadata: ChatMetadata, resolvedNodeId: string|null, ambiguous?: boolean }>}
  */
 async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) {
-    if (ownerId && branchName) {
+    if (ownerId != null && branchName != null) {
         const result = await loadBranch(directories, ownerId, branchName);
         if (result) {
-            return { chat: result.messages, metadata: result.metadata ?? {}, resolvedNodeId: result.branch.leaf_id };
+            return { chat: result.messages, metadata: result.metadata, resolvedNodeId: result.branch.leaf_id };
         }
     }
-    if (nodeId) {
+    if (nodeId != null) {
         const messages = await getAncestorPath(directories, nodeId);
         if (messages) {
             return { chat: messages, metadata: {}, resolvedNodeId: nodeId };
         }
     }
-    if (ownerId && !branchName && !nodeId) {
+    if (ownerId != null && branchName == null && nodeId == null) {
         const anchorId = await getOrCreateAnchor(directories, ownerId);
-        if (anchorId) {
+        if (anchorId != null) {
             const result = await loadAtNode(directories, ownerId, anchorId);
             // A non-empty result means this owner already has a real, established conversation -
             // neither identifier was given, so which point the caller meant is genuinely ambiguous;
@@ -480,7 +480,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
                 return { chat: [], metadata: {}, resolvedNodeId: null, ambiguous: true };
             }
             if (result) {
-                return { chat: result.messages, metadata: result.metadata ?? {}, resolvedNodeId: result.node_id };
+                return { chat: result.messages, metadata: result.metadata, resolvedNodeId: result.node_id };
             }
         }
     }
@@ -595,10 +595,10 @@ export async function resolveTextCompletionGenerationInput(directories, {
 
     const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
         await resolveChatHistory(directories, { ownerId, branchName, nodeId });
-    const chatMetadata = chatMetadataOverride ?? loadedChatMetadata ?? {};
+    const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
 
     const { name2, groupMemberNames, character } = await resolveName2AndGroupMemberNames(directories, { avatar, groupId });
-    const name1 = username || 'User';
+    const name1 = (username != null && username !== '') ? username : 'User';
 
     // Appends the actual raw user action for this turn onto the loaded history, in the exact shape
     // every other loaded message already uses - see this module's doc comment UPDATE section for
@@ -616,7 +616,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const WORLD_INFO_METADATA_KEY = 'world_info';
     let worldInfoCandidates = worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
-        const charFilename = avatar ? avatar.replace(/\.[^/.]+$/, '') : null;
+        const charFilename = avatar != null ? avatar.replace(/\.[^/.]+$/, '') : null;
         const charLore = Array.isArray(worldInfoSelection.charLore) ? worldInfoSelection.charLore : [];
         const characterExtraBooks = charLore.find(e => e.name === charFilename)?.extraBooks ?? [];
         // resolveWorldInfoCandidates() (src/world-info/candidate-resolution.js, not owned by this
@@ -629,7 +629,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
             selectedWorldInfo: worldInfoSelection.globalSelect ?? [],
             character,
             characterExtraBooks,
-            chatWorldName: chatMetadata?.[WORLD_INFO_METADATA_KEY] ?? null,
+            chatWorldName: chatMetadata[WORLD_INFO_METADATA_KEY] ?? null,
             personaWorldLorebook: powerUser.persona_description_lorebook ?? null,
             worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
         }));

@@ -1,12 +1,27 @@
 // Writer side of the chat store: writes should go through the named actions below rather than
 // mutating `chat` directly and asking for a whole-conversation save.
 
-import { chat, chat_metadata, name2, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
+import { chat, chat_metadata, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 // A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
 // owner for every chatOp*() below. See _currentOwner().
 import { selected_group } from './group-chats.js';
 import { t } from './i18n.js';
+
+// Without `noUncheckedIndexedAccess` (a project-wide tsconfig flag, out of scope to flip here since
+// it's shared by all 10 chat-strict files), `chat[i]` types as always-`ChatMessage`, never
+// `undefined` - even though at runtime an out-of-range/stale `mesId` genuinely produces `undefined`
+// at plenty of call sites below (mesId is caller-supplied, not something this module can bound-check
+// itself). That mistyping is what made real, load-bearing "does this message exist" guards look like
+// dead code to the linter. This helper states the honest, narrower-than-the-array's-own type for a
+// single lookup, so the existence checks that follow it mean what they say instead of being deleted.
+/**
+ * @param {number} i
+ * @returns {ChatMessage|undefined}
+ */
+function _chatAt(i) {
+    return chat[i];
+}
 
 // Freezes obj and all nested objects/arrays, so no nested mutation can bypass updateMessage().
 /**
@@ -33,7 +48,7 @@ export function deepFreeze(obj) {
  * @returns {ChatMessage|undefined}
  */
 export function updateMessage(mesId, updates) {
-    const old = chat[mesId];
+    const old = _chatAt(mesId);
     if (!old) return old;
     const result = deepFreeze({ ...old, ...updates });
     chat[mesId] = result;
@@ -51,7 +66,7 @@ export function updateMessage(mesId, updates) {
  * @returns {ChatMessage|undefined}
  */
 export function updateIn(mesId, path, value) {
-    const old = chat[mesId];
+    const old = _chatAt(mesId);
     if (!old) return old;
 
     /**
@@ -109,7 +124,7 @@ const _openingRowInFlight = new Map();
  * @returns {Promise<string|null>}
  */
 export async function ensureOpeningRow(mesId = 0) {
-    const message = chat[mesId];
+    const message = _chatAt(mesId);
     if (!message) return null;
     if (isStoredNodeId(message.node_id)) return message.node_id;
     // Not a tree-backed opening (JSONL chat, or never-saved message); nothing to mint.
@@ -118,7 +133,7 @@ export async function ensureOpeningRow(mesId = 0) {
     const character = getCurrentCharacter();
     const text = typeof message.mes === 'string' ? message.mes : '';
     // No text means no greeting to store — the server refuses it, so skip the round trip.
-    if (!character?.avatar || !text.trim()) return null;
+    if (character?.avatar == null || character.avatar === '' || text.trim() === '') return null;
 
     const provisional = message.node_id;
     const wasClean = _messageSnapshots.get(provisional) === message;
@@ -132,8 +147,8 @@ export async function ensureOpeningRow(mesId = 0) {
                 body: JSON.stringify({
                     avatar_url: character.avatar,
                     contents: [{
-                        name: message.name ?? character.name ?? name2,
-                        is_user: !!message.is_user,
+                        name: message.name ?? character.name,
+                        is_user: message.is_user === true,
                         is_system: false,
                         send_date: message.send_date ?? getMessageTimeStamp(),
                         mes: text,
@@ -154,12 +169,13 @@ export async function ensureOpeningRow(mesId = 0) {
         console.warn('[greetings] Could not give this greeting a row:', error);
         return null;
     }
-    if (!realId) return null;
+    if (realId == null) return null;
 
     // Re-read: the await means the opening may have been replaced or the chat moved on.
-    const current = chat[mesId];
+    const current = _chatAt(mesId);
     if (!current || current.node_id !== provisional) {
-        return isStoredNodeId(chat[mesId]?.node_id) ? chat[mesId].node_id : null;
+        const reread = _chatAt(mesId);
+        return isStoredNodeId(reread?.node_id) ? reread.node_id : null;
     }
 
     // Update the shown slot too, or the save path re-reads it as still-unsaved.
@@ -199,12 +215,12 @@ export async function ensureOpeningRow(mesId = 0) {
 // written here: an appended slot carries a provisional id, marking it as card-only text; it gains a
 // row only if someone uses it.
 export async function _mergeCardGreetingsIntoOpening() {
-    if (!chat_metadata?._tree_stored) return;
+    if (!chat_metadata._tree_stored) return;
 
-    const opening = chat[0];
+    const opening = _chatAt(0);
     const character = getCurrentCharacter();
-    if (!opening?.node_id || !character?.avatar) return;
-    const speaker = character.name ?? name2;
+    if (opening?.node_id == null || opening.node_id === '' || character?.avatar == null || character.avatar === '') return;
+    const speaker = character.name;
 
     /**
      * @param {{offset?: number, limit?: number}} body
@@ -231,11 +247,11 @@ export async function _mergeCardGreetingsIntoOpening() {
     if (cardOnlyCount <= 0) return;
 
     const tail = await ask({ offset: head.stored, limit: cardOnlyCount });
-    const extras = (tail?.alternatives ?? []).filter(a => !a.node_id);
+    const extras = (tail?.alternatives ?? []).filter(a => a.node_id == null || a.node_id === '');
     if (!extras.length) return;
 
-    const current = chat[0];
-    if (!current?.node_id || current.node_id !== opening.node_id) return;
+    const current = _chatAt(0);
+    if (current?.node_id == null || current.node_id === '' || current.node_id !== opening.node_id) return;
 
     const swipes = Array.isArray(current.swipes) ? [...current.swipes] : [current.mes ?? ''];
     // A hole (a swipe slot dropped in the rebuild below) is kept in swipe_info as `null`, not
@@ -307,15 +323,17 @@ export async function _mergeCardGreetingsIntoOpening() {
     // Reading isn't an edit — following the card shouldn't mint a row.
     const wasClean = _messageSnapshots.get(current.node_id) === current;
     updateMessage(0, updates);
-    if (updates.node_id && updates.node_id !== current.node_id) {
+    if (updates.node_id != null && updates.node_id !== current.node_id) {
         _messageSnapshots.delete(current.node_id);
     }
-    if ((wasClean || updates.node_id) && chat[0]?.node_id) {
-        _messageSnapshots.set(chat[0].node_id, chat[0]);
+    // updateMessage() above may have replaced chat[0] - re-read rather than reuse `current`.
+    const updated = _chatAt(0);
+    if ((wasClean || updates.node_id != null) && updated?.node_id != null && updated.node_id !== '') {
+        _messageSnapshots.set(updated.node_id, updated);
     }
     // Refresh the message block too, not just swipe buttons, or the edit appears to do nothing.
-    if (updates.mes !== undefined && chat[0]) {
-        updateMessageBlock(0, chat[0]);
+    if (updates.mes !== undefined && updated) {
+        updateMessageBlock(0, updated);
     }
     refreshSwipeButtons(true);
 }
@@ -323,8 +341,8 @@ export async function _mergeCardGreetingsIntoOpening() {
 // Re-fetches what followed an overswiped message, since the nodes are still in the tree.
 /** @param {number} mesId */
 export async function _restoreContinuation(mesId) {
-    const message = chat[mesId];
-    if (!chat_metadata?._tree_stored) return;
+    const message = _chatAt(mesId);
+    if (!chat_metadata._tree_stored) return;
     // A provisional-id opening has no row, so nothing can follow it.
     if (!isStoredNodeId(message?.node_id)) return;
 
@@ -360,7 +378,8 @@ export async function _restoreContinuation(mesId) {
 export function _isBlankSlot(message, at) {
     if (!Array.isArray(message?.swipes)) return false;
     if (typeof message.swipes[at] !== 'string' || message.swipes[at].length > 0) return false;
-    return !message.swipe_info?.[at]?.node_id;
+    const nodeId = message.swipe_info?.[at]?.node_id;
+    return nodeId == null || nodeId === '';
 }
 
 // Named actions for writes a chat can make — prefer these over _saveTreeChat's snapshot-diff guessing.
@@ -424,9 +443,9 @@ export async function retryTransient(fn, options) {
 // not the group whose tree every message in this chat actually belongs to.
 /** @returns {{group_id: string}|{avatar_url: string}|null} */
 function _currentOwner() {
-    if (selected_group) return { group_id: selected_group };
+    if (selected_group != null && selected_group !== '') return { group_id: selected_group };
     const avatar = getCurrentCharacter()?.avatar;
-    return avatar ? { avatar_url: avatar } : null;
+    return avatar != null && avatar !== '' ? { avatar_url: avatar } : null;
 }
 
 // A dropped write used to rely on some LATER save eventually noticing and catching up (a diff-scan
@@ -484,7 +503,7 @@ async function _chatOpPost(path, body, silent = false) {
  */
 export function _markMessageSaved(mesId, nodeId) {
     const live = mesId < chat.length ? chat[mesId] : null;
-    if (live?.node_id && live.node_id === nodeId) {
+    if (live?.node_id != null && live.node_id !== '' && live.node_id === nodeId) {
         _messageSnapshots.set(live.node_id, live);
     }
 }
@@ -513,7 +532,7 @@ function _messageContent(msg, text = msg.mes) {
 // Never sends an edit that would empty a message — the route refuses it outright with a 409.
 /** @param {number} mesId */
 export async function chatOpEdit(mesId) {
-    const msg = chat[mesId];
+    const msg = _chatAt(mesId);
     if (!isStoredNodeId(msg?.node_id)) return false;
     if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
 
@@ -533,7 +552,7 @@ export async function chatOpEditMany(mesIds, silent = false) {
     /** @type {{node_id: string, content: Partial<ChatMessageWithSpeakerDefault>, _mesId: number}[]} */
     const edits = [];
     for (const mesId of mesIds) {
-        const msg = chat[mesId];
+        const msg = _chatAt(mesId);
         if (!isStoredNodeId(msg?.node_id)) continue;
         if (typeof msg.mes === 'string' && msg.mes.length === 0) continue;
         edits.push({ node_id: msg.node_id, content: _messageContent(msg), _mesId: mesId });
@@ -561,10 +580,11 @@ export async function chatOpAppend(fromIndex) {
     /** @type {string|null} */
     let after = null;
     for (let i = fromIndex - 1; i >= 0; i--) {
-        if (isProvisionalNodeId(chat[i]?.node_id)) await ensureOpeningRow(i);
-        if (isStoredNodeId(chat[i]?.node_id)) { after = chat[i]?.node_id ?? null; break; }
+        if (isProvisionalNodeId(_chatAt(i)?.node_id)) await ensureOpeningRow(i);
+        const nodeId = _chatAt(i)?.node_id;
+        if (isStoredNodeId(nodeId)) { after = nodeId; break; }
     }
-    if (!after) return [];
+    if (after == null || after === '') return [];
 
     const result = await _chatOpPost('/api/chats/message/append', {
         after_node_id: after,
@@ -608,9 +628,9 @@ export async function healDirtyMessages() {
     let firstNewIndex = -1;
 
     for (let i = 0; i < chat.length; i++) {
-        let msg = chat[i];
+        let msg = _chatAt(i);
 
-        if (!msg?.node_id) {
+        if (msg?.node_id == null || msg.node_id === '') {
             if (firstNewIndex < 0) firstNewIndex = i;
             continue;
         }
@@ -623,9 +643,12 @@ export async function healDirtyMessages() {
             const followed = chat.length > i + 1;
             if (written || followed) {
                 const realId = await ensureOpeningRow(i);
-                if (realId && chat[i]?.node_id === realId) {
-                    msg = chat[i];
-                    justEnsured = true;
+                if (realId != null && realId !== '') {
+                    const reread = _chatAt(i);
+                    if (reread?.node_id === realId) {
+                        msg = reread;
+                        justEnsured = true;
+                    }
                 }
             }
         }
@@ -653,7 +676,7 @@ export async function healDirtyMessages() {
         if (hasSlots
             && typeof swipes[selected] === 'string'
             && swipes[selected].length === 0
-            && !swipeInfo[selected]?.node_id) {
+            && (swipeInfo[selected].node_id == null || swipeInfo[selected].node_id === '')) {
             continue;
         }
 
@@ -665,13 +688,13 @@ export async function healDirtyMessages() {
             for (let k = 0; k < swipes.length; k++) {
                 if (typeof swipes[k] !== 'string') continue;
                 if (swipes[k].length === 0) continue;
-                if (swipeInfo[k]?.node_id) continue;
+                if (swipeInfo[k].node_id != null && swipeInfo[k].node_id !== '') continue;
 
                 const createdId = await chatOpAddAlternative(i, swipes[k]);
-                if (!createdId) continue;
+                if (createdId == null || createdId === '') continue;
 
                 learnedIds = learnedIds ?? [...swipeInfo];
-                learnedIds[k] = { ...(learnedIds[k] || {}), node_id: createdId };
+                learnedIds[k] = { ...learnedIds[k], node_id: createdId };
                 if (k === selected) newSelectedId = createdId;
             }
         }
@@ -679,7 +702,7 @@ export async function healDirtyMessages() {
             updateMessage(i, { swipe_info: learnedIds });
         }
 
-        if (newSelectedId) {
+        if (newSelectedId != null) {
             await chatOpSelect(i, selected);
             lastPersisted = newSelectedId;
         } else {
@@ -692,30 +715,31 @@ export async function healDirtyMessages() {
         }
     }
 
-    if (lastPersisted && firstNewIndex >= 0) {
+    if (lastPersisted != null && firstNewIndex >= 0) {
         await chatOpAppend(firstNewIndex);
     }
 
-    return !!lastPersisted;
+    return lastPersisted != null;
 }
 
 // Splices a new message in between two existing ones. Nothing to graft before when mesId lands at
 // the tail (nothing follows it yet) — that's a plain append, so delegate rather than duplicate it.
 /** @param {number} mesId */
 export async function chatOpGraft(mesId) {
-    const msg = chat[mesId];
+    const msg = _chatAt(mesId);
     if (!msg) return null;
     if (mesId + 1 >= chat.length) return (await chatOpAppend(mesId))[0] ?? null;
 
     /** @type {string|null} */
     let after = null;
     for (let i = mesId - 1; i >= 0; i--) {
-        if (isProvisionalNodeId(chat[i]?.node_id)) await ensureOpeningRow(i);
-        if (isStoredNodeId(chat[i]?.node_id)) { after = chat[i]?.node_id ?? null; break; }
+        if (isProvisionalNodeId(_chatAt(i)?.node_id)) await ensureOpeningRow(i);
+        const nodeId = _chatAt(i)?.node_id;
+        if (isStoredNodeId(nodeId)) { after = nodeId; break; }
     }
-    if (!after) return null;
+    if (after == null || after === '') return null;
 
-    const before = chat[mesId + 1]?.node_id;
+    const before = _chatAt(mesId + 1)?.node_id;
     if (!isStoredNodeId(before)) return null;
 
     const result = await _chatOpPost('/api/chats/message/graft', {
@@ -736,11 +760,11 @@ export async function chatOpGraft(mesId) {
  * @param {number} [lastMesId]
  */
 export async function chatOpDegraft(firstMesId, lastMesId = firstMesId) {
-    const firstMsg = chat[firstMesId];
-    const lastMsg = chat[lastMesId];
+    const firstMsg = _chatAt(firstMesId);
+    const lastMsg = _chatAt(lastMesId);
     if (!isStoredNodeId(firstMsg?.node_id) || !isStoredNodeId(lastMsg?.node_id)) return false;
 
-    const after = chat[lastMesId + 1];
+    const after = _chatAt(lastMesId + 1);
     if (!isStoredNodeId(after?.node_id)) {
         return chatOpEndPath(firstMesId - 1);
     }
@@ -762,8 +786,8 @@ export async function chatOpDegraft(firstMesId, lastMesId = firstMesId) {
  * @param {number} targetMesId
  */
 export async function chatOpSwapAdjacent(sourceMesId, targetMesId) {
-    const sourceMsg = chat[sourceMesId];
-    const targetMsg = chat[targetMesId];
+    const sourceMsg = _chatAt(sourceMesId);
+    const targetMsg = _chatAt(targetMesId);
     if (!isStoredNodeId(sourceMsg?.node_id) || !isStoredNodeId(targetMsg?.node_id)) return null;
 
     const upperMesId = Math.min(sourceMesId, targetMesId);
@@ -787,7 +811,7 @@ export async function chatOpSwapAdjacent(sourceMesId, targetMesId) {
  * @returns {Promise<string|null>}
  */
 export async function chatOpAddAlternative(mesId, text) {
-    const msg = chat[mesId];
+    const msg = _chatAt(mesId);
     if (!isStoredNodeId(msg?.node_id) || typeof text !== 'string' || !text.length) return null;
 
     const created = await _chatOpPost('/api/chats/message/alternative', {
@@ -801,7 +825,7 @@ export async function chatOpAddAlternative(mesId, text) {
 // leaf, so a mid-tree position is walked straight past. Nothing is removed — swiping back restores it.
 /** @param {number} mesId */
 export async function chatOpEndPath(mesId) {
-    const msg = chat[mesId];
+    const msg = _chatAt(mesId);
     if (!isStoredNodeId(msg?.node_id)) return false;
 
     await _chatOpPost('/api/chats/message/end-path', { node_id: msg.node_id });
@@ -820,9 +844,9 @@ export async function chatOpEndPathAtAnchor() {
  * @param {number} swipeId
  */
 export async function chatOpSelect(mesId, swipeId) {
-    const msg = chat[mesId];
+    const msg = _chatAt(mesId);
     const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
-    if (!isStoredNodeId(nodeId)) return false;
+    if (!isStoredNodeId(nodeId) || msg == null) return false;
 
     await _chatOpPost('/api/chats/message/select', { node_id: nodeId });
     if (msg.node_id !== nodeId) updateMessage(mesId, { node_id: nodeId });
@@ -850,7 +874,7 @@ async function _deleteAlternativeNode(nodeId) {
  * @param {number} swipeId
  */
 export async function chatOpDeleteAlternative(mesId, swipeId) {
-    const msg = chat[mesId];
+    const msg = _chatAt(mesId);
     const nodeId = msg?.swipe_info?.[swipeId]?.node_id;
     if (nodeId === msg?.node_id) return false;
     return _deleteAlternativeNode(nodeId);
