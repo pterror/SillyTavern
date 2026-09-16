@@ -10,7 +10,6 @@ import {
     getThumbnailUrl,
     getCharacters,
     chat,
-    chatOpEdit,
     saveChatConditional,
     saveItemizedPrompts,
     setActiveGroup,
@@ -519,7 +518,7 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
     const bookmarkNodeId = await ensureOpeningRow(mesId);
 
     if (isTreeStored() && bookmarkNodeId) {
-        await fetch('/api/chats/label', {
+        const response = await fetch('/api/chats/label', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
@@ -529,13 +528,22 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
             }),
         });
 
+        if (!response.ok) {
+            toastr.error('Could not save the bookmark.', 'Bookmark');
+            return null;
+        }
+
+        // The label IS the bookmark link - rowToMessage() (message-tree-db.js) re-synthesizes
+        // extra.bookmark_link from the node's `label` column on every read, and sanitizeForStorage()
+        // strips extra.bookmark_link before any content write for the same reason - so the label
+        // response above is already the full persistence step. Mirror it into the in-memory chat array
+        // for immediate UI use; no second write needed.
+        const { label: resolvedName } = await response.json();
         const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
-        extra.bookmark_link = name;
+        extra.bookmark_link = resolvedName;
         updateMessage(mesId, { extra });
-        await chatOpEdit(mesId).catch(error =>
-            console.error('Could not save the bookmark link on that message:', error));
         toastr.success('Bookmarked. It shows up in the chat list.', 'Bookmark', { timeOut: 6000 });
-        return name;
+        return resolvedName;
     }
 
     // Legacy JSONL path. `integrity` isn't set here - the server mints and rotates it on every
