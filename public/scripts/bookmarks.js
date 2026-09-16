@@ -765,17 +765,26 @@ export async function forkChat(mesId, { swipeId = null } = {}) {
     }
 
     // Label the fork point with the branch name, so it also acts as a checkpoint on the source chat.
+    // When forking the currently-selected swipe (swipeId === null, the only path anything calls this
+    // with today), nodeId IS the node createBranch() just labeled with this exact fileName while
+    // minting the branch - re-POSTing the same label to the same node here would be a redundant
+    // round trip for a no-op write. Mirror that already-persisted label into the in-memory chat
+    // array instead, same as createNewBookmark() does with its own label response. Forking an
+    // alternate swipe labels THAT swipe's own node instead (see createBranch()'s targetNodeId), so
+    // nodeId - the currently-viewed row - still needs its own checkpoint label in that case.
     if (isTreeStored() && !selected_group && nodeId) {
-        const character = getCurrentCharacter();
-        await fetch('/api/chats/label', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                avatar_url: character?.avatar,
-                node_id: nodeId,
-                label: fileName,
-            }),
-        });
+        if (swipeId !== null) {
+            const character = getCurrentCharacter();
+            await fetch('/api/chats/label', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    avatar_url: character?.avatar,
+                    node_id: nodeId,
+                    label: fileName,
+                }),
+            });
+        }
 
         const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
         extra.bookmark_link = fileName;
