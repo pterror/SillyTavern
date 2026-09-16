@@ -130,23 +130,49 @@ router.post('/folders', (request, response) => {
     }
 });
 
+/**
+ * Deletes a single image at a client-relative path, validating it stays under userImages.
+ * @param {import('express').Request} request The HTTP request object (used for `request.user.directories`).
+ * @param {string} relativePath Client-relative path of the image to delete.
+ * @returns {{ok: true}|{ok: false, status: number}}
+ */
+function deleteOneImage(request, relativePath) {
+    const pathToDelete = path.join(request.user.directories.root, relativePath);
+    if (!isPathUnderParent(request.user.directories.userImages, pathToDelete)) {
+        return { ok: false, status: 400 };
+    }
+
+    if (!fs.existsSync(pathToDelete)) {
+        return { ok: false, status: 404 };
+    }
+
+    fs.unlinkSync(pathToDelete);
+    console.info(`Deleted image: ${relativePath} from ${request.user.profile.handle}`);
+    return { ok: true };
+}
+
 router.post('/delete', async (request, response) => {
     try {
+        // ── Bulk mode: paths array is present ─────────────────────
+        if (Array.isArray(request.body.paths)) {
+            const results = request.body.paths.map(p => {
+                if (typeof p !== 'string' || !p) {
+                    return { path: p, ok: false };
+                }
+                return { path: p, ok: deleteOneImage(request, p).ok };
+            });
+            return response.send({ results });
+        }
+
         if (!request.body.path) {
             return response.status(400).send('No path specified');
         }
 
-        const pathToDelete = path.join(request.user.directories.root, request.body.path);
-        if (!isPathUnderParent(request.user.directories.userImages, pathToDelete)) {
-            return response.status(400).send('Invalid path');
+        const result = deleteOneImage(request, request.body.path);
+        if (!result.ok) {
+            return response.status(result.status).send(result.status === 404 ? 'File not found' : 'Invalid path');
         }
 
-        if (!fs.existsSync(pathToDelete)) {
-            return response.status(404).send('File not found');
-        }
-
-        fs.unlinkSync(pathToDelete);
-        console.info(`Deleted image: ${request.body.path} from ${request.user.profile.handle}`);
         return response.sendStatus(200);
     } catch (error) {
         console.error(error);
