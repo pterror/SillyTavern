@@ -401,6 +401,29 @@ describe('batch import mode', () => {
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeDefined();
     });
 
+    // Regression: a restart mid-pass must only lose the still-open buffer, not the whole pass. flushBatch()
+    // is supposed to commit automatically once entry.batch.pending reaches BATCH_IMPORT_FLUSH_SIZE (500 as of
+    // writing), well before endBatchImport() ever runs - so pushing past that threshold without ever calling
+    // endBatchImport() should already make the earliest rows readable.
+    test('flushes automatically mid-pass, before endBatchImport, once the pending buffer fills', async () => {
+        await metadataDb.beginBatchImport(directories);
+
+        const total = 520;
+        for (let i = 0; i < total; i++) {
+            await metadataDb.upsertCharacterFromWrite(directories, `Bulk${i}.png`, cardJson({ name: `Bulk${i}`, data: { name: `Bulk${i}`, tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000 + i);
+        }
+
+        // Never called endBatchImport() yet - if flushing only ever happened there, none of this would be
+        // visible. The first row pushed should have already been committed once the buffer first filled.
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bulk0.png')).toBeDefined();
+
+        // The tail end, still under the next flush threshold, should still be sitting unflushed.
+        expect(await metadataDb.getCharacterMetadataRow(directories, `Bulk${total - 1}.png`)).toBeUndefined();
+
+        await metadataDb.endBatchImport(directories);
+        expect(await metadataDb.getCharacterMetadataRow(directories, `Bulk${total - 1}.png`)).toBeDefined();
+    });
+
     // Regression: the real client fires POST /api/tags/assign for a card's auto-imported tags immediately after
     // /api/characters/import responds - with no wait for a flush. During a multi-file drop (useBatchImportMode),
     // that import's own metadata row can still be sitting unflushed in the pending buffer at that exact moment,

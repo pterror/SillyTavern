@@ -70,6 +70,13 @@ function insertChange(db, id, op, fields) {
 
 const BATCH_FLUSH_SIZE = 500;
 
+// Rows applyOrBuffer() lets accumulate in entry.batch.pending before flushBatch() commits them. Bounds the
+// restart-loss window and the buffer's peak memory during a large batch-import pass (350k+ files here) -
+// NOT chosen to amortize flush overhead, since a bare transaction commit measures ~0.01-0.05ms under WAL
+// (negligible next to ~0.02-0.06ms/row of actual write work). Deliberately separate from SCAN_BATCH_SIZE
+// (readdir/dispatch chunking) and BATCH_FLUSH_SIZE above (SQL IN-clause chunking) - unrelated concerns.
+const BATCH_IMPORT_FLUSH_SIZE = 500;
+
 // Shares characterIndexBuildConcurrency with characters-search-index.js's build - same disk-bound workload.
 const BOOTSTRAP_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
@@ -1409,7 +1416,7 @@ export async function setCharacterDateAdded(directories, id, dateAddedMs) {
 function applyOrBuffer(entry, row, tagIds) {
     if (entry.batch) {
         entry.batch.pending.set(row.id, { row, tagIds });
-        if (entry.batch.pending.size >= BATCH_FLUSH_SIZE) {
+        if (entry.batch.pending.size >= BATCH_IMPORT_FLUSH_SIZE) {
             flushBatch(entry);
         }
         return;
@@ -1432,7 +1439,10 @@ function flushBatch(entry) {
     });
 }
 
-// Suspends the directory watcher (a burst import can overflow inotify's queue) and buffers writes. Idempotent.
+// Suspends the directory watcher (a burst import can overflow inotify's queue) for the whole pass, and buffers
+// writes - but only up to BATCH_IMPORT_FLUSH_SIZE rows at a time; flushBatch() commits and clears the buffer
+// well before endBatchImport(), so a crash mid-pass loses at most one still-open buffer, not the whole pass.
+// Idempotent.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */

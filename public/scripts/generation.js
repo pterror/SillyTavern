@@ -2298,7 +2298,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // Cross-file note: extension_prompts (script.js) is declared `export let extension_prompts = {};`
         // with no JSDoc type - setExtensionPrompt() (same file) is the only writer and always stores this
         // exact shape, so that's what's cast here rather than the bare `{}` the declaration infers.
-        const extensionPromptsTable = /** @type {Record<string, {value: string, position: number, depth: number, scan: boolean, role: number, filter: (() => Promise<boolean>|boolean)|null}>} */ (extension_prompts);
+        // Partial, not Record: a key only exists once the owning extension has actually called
+        // setExtensionPrompt() for it - most keys accessed below are absent whenever that extension
+        // isn't active this session.
+        const extensionPromptsTable = /** @type {Partial<Record<string, {value: string, position: number, depth: number, scan: boolean, role: number, filter: (() => Promise<boolean>|boolean)|null}>>} */ (extension_prompts);
         // getPresetManager()'s own JSDoc declares a non-nullable return type, but it has a real
         // `return null;` path (unknown apiId) - the declared type is wrong, not this guard against it.
         const activePresetManager = /** @type {ReturnType<typeof getPresetManager> | null} */ (getPresetManager());
@@ -2308,11 +2311,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             mesId: getNextMessageId(type),
             allAnchors: await getAllExtensionPrompts(),
             chatInjects: injectedIndices.map(index => arrMes[arrMes.length - index - 1]).join('') || '',
-            summarizeString: (extensionPromptsTable['1_memory'].value || ''),
-            authorsNoteString: (extensionPromptsTable['2_floating_prompt'].value || ''),
-            smartContextString: (extensionPromptsTable.chromadb.value || ''),
-            chatVectorsString: (extensionPromptsTable['3_vectors'].value || ''),
-            dataBankVectorsString: (extensionPromptsTable['4_vectors_data_bank'].value || ''),
+            summarizeString: extensionPromptsTable['1_memory']?.value ?? '',
+            authorsNoteString: extensionPromptsTable['2_floating_prompt']?.value ?? '',
+            smartContextString: extensionPromptsTable.chromadb?.value ?? '',
+            chatVectorsString: extensionPromptsTable['3_vectors']?.value ?? '',
+            dataBankVectorsString: extensionPromptsTable['4_vectors_data_bank']?.value ?? '',
             worldInfoString: worldInfoString,
             storyString: storyString,
             beforeScenarioAnchor: beforeScenarioAnchor,
