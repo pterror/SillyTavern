@@ -905,12 +905,15 @@ router.post('/fork', validateAvatarUrlMiddleware, async function (request, respo
 /** Labels (pins/checkpoints) a message node - a checkpoint is just a label on an existing node in the tree model. */
 router.post('/label', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const { avatar_url, node_id, label, unique } = request.body;
+        const { avatar_url, group_id, node_id, label, unique } = request.body;
         if (!node_id) {
             return response.sendStatus(400);
         }
 
-        const ownerId = avatar_url ? String(avatar_url).replace('.png', '') : undefined;
+        // group_id first, same priority as ownerOf() above - but unlike ownerOf(), left undefined (not
+        // the literal string "undefined") when neither is given, since `unique`'s de-duplication scan
+        // treats a real ownerId as optional and a bogus one as a real (and wrong) scope to scan.
+        const ownerId = group_id ? String(group_id) : (avatar_url ? String(avatar_url).replace('.png', '') : undefined);
         const result = await labelNode(request.user.directories, String(node_id), label || null, { ownerId, unique: !!unique });
         return response.send(result);
     } catch (error) {

@@ -196,6 +196,11 @@ function isTreeStored() {
     return !!chat_metadata?._tree_stored;
 }
 
+/** The tree owner for /api/chats/label while a group is open: its own id, never getCurrentCharacter() - see chat-store.js's _currentOwner() for why a mid-generation "current character" is the wrong owner for a group. */
+function _labelOwner() {
+    return selected_group ? { group_id: selected_group } : { avatar_url: getCurrentCharacter()?.avatar };
+}
+
 export async function createBranch(mesId, { swipeId = null } = {}) {
     if (!chat.length) {
         toastr.warning('The chat is empty.', 'Branch creation failed');
@@ -221,7 +226,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     // A card-only greeting has no node yet - being branched at is what earns it one.
     const branchNodeId = await ensureOpeningRow(mesId);
 
-    if (isTreeStored() && !selected_group && branchNodeId) {
+    if (isTreeStored() && branchNodeId) {
         // Default to the currently-selected swipe's node; an alt-swipe branch resolves its own node
         // below instead. A swipe alternative that already exists is *already a row in the tree* (it was
         // generated and persisted, or fetched from /api/chats/alternatives) - branching it is naming
@@ -245,12 +250,11 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         }
 
         // Nothing to copy - the node already exists, so branching is just naming it.
-        const character = getCurrentCharacter();
         const response = await fetch('/api/chats/label', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                avatar_url: character?.avatar,
+                ..._labelOwner(),
                 node_id: targetNodeId,
                 label: mainChatName,
                 unique: true,
@@ -514,14 +518,12 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
 
     const bookmarkNodeId = await ensureOpeningRow(mesId);
 
-    if (isTreeStored() && !selected_group && bookmarkNodeId) {
-        const character = getCurrentCharacter();
-
+    if (isTreeStored() && bookmarkNodeId) {
         await fetch('/api/chats/label', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                avatar_url: character?.avatar,
+                ..._labelOwner(),
                 node_id: bookmarkNodeId,
                 label: name,
             }),
