@@ -17,12 +17,12 @@ import {
     triggerAutoContinue, unblockGeneration, unshallowCharacter,
 } from '../script.js';
 import { _postChatMetadata, saveMetadata } from './metadata-store.js';
-import { isStoredNodeId } from './node-identity.js';
+import { isProvisionalNodeId, isStoredNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';
 import { getCfgPrompt, getGuidanceScale } from './cfg-scale.js';
 import { oai_settings, openai_messages_count, prepareOpenAIMessages, setOpenAIMessageExamples, setOpenAIMessages } from './chat-completion-settings.js';
 import { clearDraft } from './chat-draft.js';
-import { healDirtyMessages, updateMessage } from './chat-store.js';
+import { ensureOpeningRow, healDirtyMessages, updateMessage } from './chat-store.js';
 import { appendFileContent, hasPendingFileAttachment } from './chats.js';
 import { GENERATION_TYPE_TRIGGERS, inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { eventSource, event_types } from './events.js';
@@ -286,7 +286,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // raw-action gates below, which run regardless of chat length. TS's array element type (no
     // noUncheckedIndexedAccess) doesn't reflect that, so cast explicitly rather than let the type
     // checker treat the `lastMessage?.` guards downstream as dead code.
-    const lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
+    let lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
 
     let textareaText;
     if (type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun && !depth) {
@@ -975,8 +975,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // `type == 'swipe' || type == 'regenerate'` "same anchor either way" treatment (see the
         // `isSwipe` local's own doc comment above). `isStoredNodeId()` (this file's own tree-row/
         // provisional-greeting distinction) guards against sending a provisional (`card:`-prefixed) id
-        // for an unwritten opening greeting - the server would reject that as an unknown node, whereas
-        // `null` correctly asserts "no real history yet" for that same state.
+        // for an unwritten opening greeting - the server would reject that as an unknown node. `null`
+        // only means "no real history yet" when this owner's anchor is actually empty - a provisional
+        // greeting can still coexist with real history elsewhere in the tree (other branches, a
+        // previously-used greeting), so send is exactly the "someone used this greeting" moment
+        // ensureOpeningRow() is meant to fire on - materialize it here (a no-op if not provisional) so
+        // the anchor is never falsely treated as "no history".
+        if (isProvisionalNodeId(lastMessage?.node_id)) {
+            await ensureOpeningRow(chat.length - 1);
+            lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
+        }
         const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
         // `characterAvatar` is required unconditionally, group turn or not: even with `groupId` set,
         // a responding member's own avatar must resolve for real (defensively falls through to the
@@ -1280,7 +1288,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         const ownerId = groupId != null ? String(groupId) : (characterAvatar != null ? String(characterAvatar).replace('.png', '') : undefined);
         // Same node_id-only addressing as the text-completion cutover above (not assumed) - see that
         // block's own UPDATE comment for the full rationale (`lastMessage`, captured before
-        // 'regenerate's own delete-last-message branch, not `chat[chat.length - 1]`).
+        // 'regenerate's own delete-last-message branch, not `chat[chat.length - 1]`), including why an
+        // unused greeting is materialized here rather than assumed to mean "no history".
+        if (isProvisionalNodeId(lastMessage?.node_id)) {
+            await ensureOpeningRow(chat.length - 1);
+            lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
+        }
         const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
         // `characterAvatar` is required unconditionally, group turn or not - see the text-completion
         // cutover's own identical precondition/rationale above.
