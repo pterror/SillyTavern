@@ -5090,17 +5090,13 @@ async function openChat(avatar) {
 }
 
 /**
- * @param {string} avatarKey - The character's avatar filename (e.g., "name.png")
+ * Resolves a base64 avatar data URL into an uploadable Blob, optionally running it through the crop dialog first.
  * @param {string} base64Data - Base64 data URL of the image
  * @param {object} [options={}] - Options
  * @param {boolean} [options.resizePrompt=false] - Whether to show the resize/crop prompt
- * @returns {Promise<boolean>} True if upload was successful, false if cancelled or failed
+ * @returns {Promise<Blob|null>} The final image blob, or null if the user cancelled the crop dialog
  */
-async function uploadCharacterAvatar(avatarKey, base64Data, { resizePrompt = false } = {}) {
-    if (!base64Data || !avatarKey) {
-        return false;
-    }
-
+async function resolveFinalAvatarBlob(base64Data, { resizePrompt = false } = {}) {
     let finalImageData = base64Data;
 
     if (resizePrompt) {
@@ -5110,54 +5106,39 @@ async function uploadCharacterAvatar(avatarKey, base64Data, { resizePrompt = fal
             const dlg = new Popup(t`Set the crop position of the avatar image`, POPUP_TYPE.CROP, '', { cropImage: base64Data });
             const croppedImage = await dlg.show();
             if (!croppedImage) {
-                return false;
+                return null;
             }
             // The dialog returns the already-cropped image
             finalImageData = String(croppedImage);
         }
     }
 
-    try {
-        const response = await fetch(finalImageData);
-        const blob = await response.blob();
+    const response = await fetch(finalImageData);
+    return await response.blob();
+}
 
-        const formData = new FormData();
-        formData.append('avatar', blob, 'avatar.png');
-        formData.append('avatar_url', avatarKey);
+/**
+ * Refreshes cached thumbnails and any currently-rendered `<img>` elements for a character's avatar,
+ * after its underlying image file has changed on the server.
+ * @param {string} avatarKey - The character's avatar filename (e.g., "name.png")
+ * @returns {Promise<void>}
+ */
+async function refreshAvatarDisplay(avatarKey) {
+    const thumbnailUrl = getThumbnailUrl('avatar', avatarKey);
+    await fetch(thumbnailUrl, { method: 'GET', cache: 'reload' });
+    await fetch(`/characters/${avatarKey}`, { method: 'GET', cache: 'reload' });
 
-        const uploadResponse = await fetch('/api/characters/edit-avatar', {
-            method: 'POST',
-            headers: getRequestHeaders({ omitContentType: true }),
-            body: formData,
-        });
-
-        if (!uploadResponse.ok) {
-            const errorText = await uploadResponse.text();
-            throw new Error(errorText); // Will be caught and logged below
+    // Refresh all visible avatar images that use this thumbnail URL
+    // This handles messages, character list, and any other place using the thumbnail
+    const avatarImages = document.querySelectorAll(`img[src^="${thumbnailUrl}"]`);
+    for (const img of avatarImages) {
+        if (img instanceof HTMLImageElement) {
+            const originalSrc = img.src;
+            img.src = '';
+            img.src = originalSrc;
         }
-
-        const thumbnailUrl = getThumbnailUrl('avatar', avatarKey);
-        await fetch(thumbnailUrl, { method: 'GET', cache: 'reload' });
-        await fetch(`/characters/${avatarKey}`, { method: 'GET', cache: 'reload' });
-
-        // Refresh all visible avatar images that use this thumbnail URL
-        // This handles messages, character list, and any other place using the thumbnail
-        const avatarImages = document.querySelectorAll(`img[src^="${thumbnailUrl}"]`);
-        for (const img of avatarImages) {
-            if (img instanceof HTMLImageElement) {
-                const originalSrc = img.src;
-                img.src = '';
-                img.src = originalSrc;
-            }
-        }
-        console.debug(`Refreshed ${avatarImages.length} avatar images for ${avatarKey}`);
-
-        return true;
-    } catch (error) {
-        console.error('Error uploading character avatar:', error);
-        toastr.warning(t`Failed to upload avatar: ${error.message}`);
-        return false;
     }
+    console.debug(`Refreshed ${avatarImages.length} avatar images for ${avatarKey}`);
 }
 
 /**
@@ -5185,24 +5166,38 @@ async function createCharacterCallback(args) {
         post_history_instructions: args.postHistoryInstructions ?? '',
         creator: args.creator ?? '',
         character_version: args.characterVersion ?? '',
-        tags: args.tags ? args.tags.split(',').map(t => t.trim()).filter(t => t) : [],
+        tags: args.tags ?? '',
         talkativeness: args.talkativeness ?? '0.5',
         world: args.world ?? '',
         depth_prompt_prompt: args.depthPrompt ?? '',
         depth_prompt_depth: args.depthPromptDepth ?? '4',
         depth_prompt_role: args.depthPromptRole ?? 'system',
         fav: isTrueBoolean(args.favorite) ? 'true' : 'false',
-        alternate_greetings: [],
         extensions: '{}',
     };
 
     const avatarData = args.avatar ? await resolveAvatarData(args.avatar) : null;
+    let avatarBlob = null;
+    let avatarCancelled = false;
+    if (avatarData) {
+        const resizePrompt = !isFalseBoolean(args.avatarPromptResize);
+        avatarBlob = await resolveFinalAvatarBlob(avatarData, { resizePrompt });
+        avatarCancelled = !avatarBlob;
+    }
 
     try {
+        const formData = new FormData();
+        for (const [key, value] of Object.entries(characterData)) {
+            formData.append(key, value ?? '');
+        }
+        if (avatarBlob) {
+            formData.append('avatar', avatarBlob, 'avatar.png');
+        }
+
         const response = await fetch('/api/characters/create', {
             method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(characterData),
+            headers: getRequestHeaders({ omitContentType: true }),
+            body: formData,
         });
 
         if (!response.ok) {
@@ -5212,13 +5207,9 @@ async function createCharacterCallback(args) {
 
         const avatarKey = await response.text();
 
-        if (avatarData) {
-            const resizePrompt = !isFalseBoolean(args.avatarPromptResize);
-            const uploaded = await uploadCharacterAvatar(avatarKey, avatarData, { resizePrompt });
-            if (!uploaded && resizePrompt) {
-                // User cancelled the resize dialog, but character was still created
-                toastr.info(t`Character created without avatar (resize cancelled)`);
-            }
+        if (avatarCancelled) {
+            // User cancelled the resize dialog, but character was still created
+            toastr.info(t`Character created without avatar (resize cancelled)`);
         }
 
         await getCharacters();
@@ -5327,9 +5318,14 @@ async function updateCharacterCallback(args) {
         hasUpdates = true;
     }
 
-    // Handle avatar (resolve URL/base64, upload separately after merge)
+    // Handle avatar (resolve URL/base64, sent together with the merge request below)
     const avatarData = args.avatar ? await resolveAvatarData(args.avatar) : null;
+    let avatarBlob = null;
+    let avatarCancelled = false;
     if (avatarData) {
+        const resizePrompt = !isFalseBoolean(args.avatarPromptResize);
+        avatarBlob = await resolveFinalAvatarBlob(avatarData, { resizePrompt });
+        avatarCancelled = !avatarBlob;
         hasUpdates = true;
     }
 
@@ -5358,23 +5354,33 @@ async function updateCharacterCallback(args) {
     }
 
     try {
-        const response = await fetch('/api/characters/merge-attributes', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(updateData),
-        });
+        let response;
+        if (avatarBlob) {
+            const formData = new FormData();
+            formData.append('avatar', avatarBlob, 'avatar.png');
+            formData.append('payload', JSON.stringify(updateData));
+            response = await fetch('/api/characters/merge-attributes', {
+                method: 'POST',
+                headers: getRequestHeaders({ omitContentType: true }),
+                body: formData,
+            });
+        } else {
+            response = await fetch('/api/characters/merge-attributes', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify(updateData),
+            });
+        }
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
             throw new Error(errorData.message || `Server returned ${response.status}`); // Will be caught and logged below
         }
 
-        if (avatarData) {
-            const resizePrompt = !isFalseBoolean(args.avatarPromptResize);
-            const uploaded = await uploadCharacterAvatar(character.avatar, avatarData, { resizePrompt });
-            if (!uploaded && resizePrompt) {
-                toastr.warning(t`Avatar update cancelled`);
-            }
+        if (avatarCancelled) {
+            toastr.warning(t`Avatar update cancelled`);
+        } else if (avatarBlob) {
+            await refreshAvatarDisplay(character.avatar);
         }
 
         await getOneCharacter(character.avatar);
