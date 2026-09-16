@@ -522,3 +522,50 @@ router.post('/entry/create', (request, response) => {
 
     return response.send({ ok: true, entry: newEntry });
 });
+
+/**
+ * Writes one World Info entry's full field set, server-side, in one request - the single-entry
+ * analogue of `/edit`'s whole-book write. Replaces the former client flow (shared by every checkbox,
+ * text field, dropdown, etc. in the entry editor) of mutating one field on the client's in-memory copy
+ * of the *entire* lorebook and POSTing the whole `data.entries` object - every other entry included -
+ * through `/edit` on a debounce, just to persist that one field on one entry.
+ *
+ * The client still sends the entry's full field set (not a sparse per-field patch): the entry editor
+ * always has the complete, current entry in memory (it's what renders the form), so sending it whole
+ * costs nothing extra over a patch, while sidestepping any patch/merge-semantics question (e.g. how to
+ * express "delete this field") entirely. What's eliminated is every *other* entry in the book.
+ *
+ * `uid` cannot be reassigned through this endpoint - the written entry's `uid` is forced back to the
+ * one already on disk, the same "server owns identity" principle as the uid minted by /entry/create and
+ * /entry/transplant.
+ */
+router.post('/entry/edit', (request, response) => {
+    const { name, uid, data: entryData } = request.body ?? {};
+
+    if (typeof name !== 'string' || !name) {
+        return response.status(400).send({ error: 'name is required' });
+    }
+    if (uid === undefined || uid === null || uid === '') {
+        return response.status(400).send({ error: 'uid is required' });
+    }
+    if (!_.isObjectLike(entryData) || Array.isArray(entryData)) {
+        return response.status(400).send({ error: 'data must be an object' });
+    }
+
+    const data = readWorldInfoFile(request.user.directories, name, false);
+    if (!data || typeof data.entries !== 'object' || data.entries === null) {
+        return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    }
+
+    const entryUid = String(uid);
+    const existingEntry = data.entries[entryUid];
+    if (!existingEntry) {
+        return response.status(404).send({ error: `Entry uid '${entryUid}' not found in lorebook '${name}'` });
+    }
+
+    const nextEntry = { ...entryData, uid: existingEntry.uid };
+    data.entries[entryUid] = nextEntry;
+    writeWorldInfoFile(request.user.directories, name, data);
+
+    return response.send({ ok: true, entry: nextEntry });
+});
