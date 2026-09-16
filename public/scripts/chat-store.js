@@ -443,22 +443,112 @@ export async function chatOpAppend(fromIndex) {
     return ids;
 }
 
-// Retries a dropped chatOpAppend(): sendMessageAsUser()/addOneMessage() display a message and persist
-// it separately (script.js), catching and logging a chatOpAppend() failure rather than surfacing or
-// retrying it - so a message can sit displayed with no real node_id after a transient failure that
-// outlasted chatOpAppend's own retry budget. Solo's saveChat() (isTreeChat branch) heals this as one
-// side effect of a much larger per-message diff loop that also re-detects edits/new swipes - needed
-// there because that loop is the generic path extensions reach via getContext().saveChat(), which can
-// mutate `chat[]` without calling any chatOp*() itself. Groups have no such generic entry point - every
-// first-party edit/swipe already calls its own chatOp*() directly, same as solo's does - so the only
-// gap worth closing here is this one: find the first message with no real node_id and retry appending
-// it (and everything after it, in the one request chatOpAppend() already batches) onto the last one
-// that does. A no-op when every message already has one, or (nothing to attach to yet - chat[0] itself
-// was never persisted) when none do.
-export async function healUnpersistedTail() {
-    const firstUnpersisted = chat.findIndex(msg => !isStoredNodeId(msg?.node_id));
-    if (firstUnpersisted <= 0) return;
-    await chatOpAppend(firstUnpersisted);
+// getContext().saveChat() is saveChatConditional() (st-context.js) - one generic API, exposed
+// unconditionally to every extension regardless of whether a group or solo chat is active. An
+// extension that mutates `chat[]` directly (edits `.mes`, appends a swipe, adds a trailing message)
+// without calling any chatOp*() itself, then calls getContext().saveChat() expecting "figure out what
+// changed and persist it" - exactly the contract solo's own saveChat() (isTreeChat branch) provides via
+// its inline per-message diff loop - gets exactly that same exposure while a GROUP chat is active, not
+// just the narrower "retry a dropped append" gap. This is that same diff, usable from either branch:
+// finds every message whose content changed since its last confirmed-saved snapshot and persists it via
+// the matching chatOp*() (a changed swipe slot with no node_id -> chatOpAddAlternative + chatOpSelect
+// if it's the shown one, otherwise -> chatOpEdit), plus a trailing run with no node_id at all -> one
+// batched chatOpAppend(). First-party code never needs this - every edit/swipe/append already calls its
+// own chatOp*() at its own call site - so a snapshot already matching means nothing to do, same as it
+// would for solo.
+//
+// A provisional (card-only) opening id is solo-only - ensureOpeningRow() needs a character to mint
+// against, and is a safe no-op here for anything that isn't provisional (in particular, a group's
+// opening is already a real row by the time this runs - see _bootstrapGroupChat(), group-chats.js).
+// @returns {Promise<boolean>} Whether anything in `chat[]` has a real, persisted node_id at all -
+// i.e. whether there's something for the caller to address a metadata write onto.
+export async function healDirtyMessages() {
+    let lastPersisted = null;
+    let firstNewIndex = -1;
+
+    for (let i = 0; i < chat.length; i++) {
+        let msg = chat[i];
+
+        if (!msg?.node_id) {
+            if (firstNewIndex < 0) firstNewIndex = i;
+            continue;
+        }
+
+        let justEnsured = false;
+        if (isProvisionalNodeId(msg.node_id)) {
+            const at = msg.swipe_id ?? 0;
+            const said = msg.swipe_info?.[at]?.name ?? msg.name;
+            const written = msg.node_id !== provisionalNodeId(said, msg.mes);
+            const followed = chat.length > i + 1;
+            if (written || followed) {
+                const realId = await ensureOpeningRow(i);
+                if (realId && chat[i]?.node_id === realId) {
+                    msg = chat[i];
+                    justEnsured = true;
+                }
+            }
+        }
+
+        if (!isStoredNodeId(msg.node_id)) continue;
+
+        lastPersisted = msg.node_id;
+
+        const seen = _messageSnapshots.get(msg.node_id);
+        if (seen === msg) continue;
+
+        if (seen && JSON.stringify(seen) === JSON.stringify(msg)) {
+            _markMessageSaved(i, msg.node_id);
+            continue;
+        }
+
+        const hasSlots = Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info);
+        const selected = msg.swipe_id ?? 0;
+
+        if (hasSlots
+            && typeof msg.swipes[selected] === 'string'
+            && msg.swipes[selected].length === 0
+            && !msg.swipe_info[selected]?.node_id) {
+            continue;
+        }
+
+        let newSelectedId = null;
+        let learnedIds = null;
+        if (hasSlots) {
+            for (let k = 0; k < msg.swipes.length; k++) {
+                if (typeof msg.swipes[k] !== 'string') continue;
+                if (msg.swipes[k].length === 0) continue;
+                if (msg.swipe_info[k]?.node_id) continue;
+
+                const createdId = await chatOpAddAlternative(i, msg.swipes[k]);
+                if (!createdId) continue;
+
+                learnedIds = learnedIds ?? [...msg.swipe_info];
+                learnedIds[k] = { ...(learnedIds[k] || {}), node_id: createdId };
+                if (k === selected) newSelectedId = createdId;
+            }
+        }
+        if (learnedIds && i < chat.length) {
+            updateMessage(i, { swipe_info: learnedIds });
+        }
+
+        if (newSelectedId) {
+            await chatOpSelect(i, selected);
+            lastPersisted = newSelectedId;
+        } else {
+            if (typeof msg.mes === 'string' && msg.mes.length === 0) continue;
+            if (justEnsured) {
+                _markMessageSaved(i, msg.node_id);
+                continue;
+            }
+            await chatOpEdit(i);
+        }
+    }
+
+    if (lastPersisted && firstNewIndex >= 0) {
+        await chatOpAppend(firstNewIndex);
+    }
+
+    return !!lastPersisted;
 }
 
 // Splices a new message in between two existing ones. Nothing to graft before when mesId lands at
