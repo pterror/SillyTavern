@@ -1053,10 +1053,7 @@ async function deleteMessageMedia(messageId, mediaIndex, messageBlock) {
     const updatedMessage = updateIn(messageId, ['extra'], extra);
 
     if (deleteFromServer) {
-        for (const url of deleteUrls) {
-            if (!url) continue;
-            await deleteMediaFromServer(url, true);
-        }
+        await deleteMediaBatchFromServer(deleteUrls.filter(Boolean), true);
     }
 
     await chatOpEdit(messageId).catch(error =>
@@ -1123,6 +1120,47 @@ export async function deleteMediaFromServer(url, silent = false) {
 }
 
 /**
+ * Deletes multiple media files from the server in a single batch request.
+ * @param {string[]} urls Paths to the media files on the server
+ * @param {boolean} [silent=false] If true, do not show error messages
+ * @returns {Promise<boolean>} True if all media files were deleted, false otherwise.
+ */
+export async function deleteMediaBatchFromServer(urls, silent = false) {
+    if (urls.length === 0) return true;
+
+    try {
+        const result = await fetch('/api/images/delete', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ paths: urls }),
+        });
+
+        if (!result.ok) {
+            if (!silent) {
+                const error = await result.text();
+                throw new Error(error);
+            }
+            return false;
+        }
+
+        const data = await result.json();
+        let allOk = true;
+        for (const entry of data.results ?? []) {
+            if (entry.ok) {
+                await eventSource.emit(event_types.MEDIA_ATTACHMENT_DELETED, entry.path);
+            } else {
+                allOk = false;
+            }
+        }
+        return allOk;
+    } catch (error) {
+        toastr.error(String(error), t`Could not delete image`);
+        console.error('Could not delete image', error);
+        return false;
+    }
+}
+
+/**
  * @param {string} url Path to the file on the server
  * @param {boolean} [silent=false] If true, do not show error messages
  * @returns {Promise<boolean>} True if file was deleted, false otherwise.
@@ -1145,6 +1183,47 @@ export async function deleteFileFromServer(url, silent = false) {
 
         await eventSource.emit(event_types.FILE_ATTACHMENT_DELETED, url);
         return true;
+    } catch (error) {
+        toastr.error(String(error), t`Could not delete file`);
+        console.error('Could not delete file', error);
+        return false;
+    }
+}
+
+/**
+ * Deletes multiple files from the server in a single batch request.
+ * @param {string[]} urls Paths to the files on the server
+ * @param {boolean} [silent=false] If true, do not show error messages
+ * @returns {Promise<boolean>} True if all files were deleted, false otherwise.
+ */
+export async function deleteFilesBatchFromServer(urls, silent = false) {
+    if (urls.length === 0) return true;
+
+    try {
+        const result = await fetch('/api/files/delete', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ paths: urls }),
+        });
+
+        if (!result.ok) {
+            if (!silent) {
+                const error = await result.text();
+                throw new Error(error);
+            }
+            return false;
+        }
+
+        const data = await result.json();
+        let allOk = true;
+        for (const entry of data.results ?? []) {
+            if (entry.ok) {
+                await eventSource.emit(event_types.FILE_ATTACHMENT_DELETED, entry.path);
+            } else {
+                allOk = false;
+            }
+        }
+        return allOk;
     } catch (error) {
         toastr.error(String(error), t`Could not delete file`);
         console.error('Could not delete file', error);
@@ -1277,15 +1356,12 @@ async function moveAttachment(attachment, source, callback) {
  * @param {boolean} [confirm=true] If true, show a confirmation dialog
  * @returns {Promise<void>} A promise that resolves when the attachment is deleted.
  */
-export async function deleteAttachment(attachment, source, callback, confirm = true) {
-    if (confirm) {
-        const result = await callGenericPopup('Are you sure you want to delete this attachment?', POPUP_TYPE.CONFIRM);
-
-        if (result !== POPUP_RESULT.AFFIRMATIVE) {
-            return;
-        }
-    }
-
+/**
+ * Removes an attachment's local (settings/metadata) bookkeeping. Does not touch the server-side file.
+ * @param {FileAttachment} attachment Attachment to remove
+ * @param {string} source Source of the attachment ('global', 'chat', or 'character')
+ */
+function removeAttachmentLocal(attachment, source) {
     ensureAttachmentsExist();
 
     switch (source) {
@@ -1306,10 +1382,36 @@ export async function deleteAttachment(attachment, source, callback, confirm = t
         extension_settings.disabled_attachments = extension_settings.disabled_attachments.filter(url => url !== attachment.url);
         saveSettingsDebounced('extension_settings');
     }
+}
+
+export async function deleteAttachment(attachment, source, callback, confirm = true) {
+    if (confirm) {
+        const result = await callGenericPopup('Are you sure you want to delete this attachment?', POPUP_TYPE.CONFIRM);
+
+        if (result !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+    }
+
+    removeAttachmentLocal(attachment, source);
 
     const silent = confirm === false;
     await deleteFileFromServer(attachment.url, silent);
     callback();
+}
+
+/**
+ * Deletes multiple attachments in a single batch server request, awaiting completion before returning.
+ * @param {{attachment: FileAttachment, source: string}[]} targets Attachments (with their source) to delete
+ * @param {boolean} [silent=true] If true, do not show error messages
+ * @returns {Promise<void>}
+ */
+export async function deleteAttachmentsBatch(targets, silent = true) {
+    for (const { attachment, source } of targets) {
+        removeAttachmentLocal(attachment, source);
+    }
+
+    await deleteFilesBatchFromServer(targets.map(({ attachment }) => attachment.url), silent);
 }
 
 /**
@@ -1547,19 +1649,26 @@ async function openAttachmentManager() {
 
             const includeDisabled = true;
             const attachments = getDataBankAttachments(includeDisabled);
-            selectedAttachments.forEach(async (checkbox) => {
+            const targets = [];
+            for (const checkbox of selectedAttachments) {
                 const listItem = checkbox.closest('.attachmentListItem');
                 if (!(listItem instanceof HTMLElement)) {
-                    return;
+                    continue;
                 }
                 const url = listItem.dataset.attachmentUrl;
                 const source = listItem.dataset.attachmentSource;
                 const attachment = attachments.find(a => a.url === url);
                 if (!attachment) {
-                    return;
+                    continue;
                 }
-                await action.perform(attachment, source);
-            });
+                targets.push({ attachment, source });
+            }
+
+            if (action.performBatch) {
+                await action.performBatch(targets);
+            } else {
+                await Promise.all(targets.map(({ attachment, source }) => action.perform(attachment, source)));
+            }
 
             document.querySelectorAll('.attachmentListItemCheckbox, .attachmentsBulkEditCheckbox').forEach(checkbox => {
                 if (checkbox instanceof HTMLInputElement) {
@@ -1581,7 +1690,7 @@ async function openAttachmentManager() {
 
     template.find('.bulkActionDelete').on('click', handleBulkAction({
         confirmMessage: 'Are you sure you want to delete the selected attachments?',
-        perform: async (attachment, source) => await deleteAttachment(attachment, source, () => { }, false),
+        performBatch: async (targets) => await deleteAttachmentsBatch(targets, true),
     }));
 
     template.find('.bulkActionSelectAll').on('click', () => {
