@@ -113,6 +113,75 @@ module.exports = {
                 ],
             },
         },
+        {
+            // These files are driven to zero errors under tsconfig.chat-strict.json (strict
+            // TypeScript via checkJs/JSDoc). Use @typescript-eslint's type-aware rules here to
+            // catch the "treating a nullable/string/number value as a plain boolean" bug class -
+            // e.g. `if (extra.reasoning)` silently treating a deliberate empty-string reasoning
+            // block the same as "no block at all" (fixed in f8a30070c). Scoped tightly to this
+            // list (not a broad glob) because the type-aware parser is slow and because the rest
+            // of the codebase does not yet typecheck cleanly enough for these rules to be useful
+            // signal rather than noise.
+            files: [
+                'public/scripts/node-identity.js',
+                'public/scripts/metadata-store.js',
+                'public/scripts/node-navigation.js',
+                'public/scripts/generation.js',
+                'public/scripts/chat-store.js',
+                'src/message-tree-db.js',
+                'src/character-metadata-db.js',
+                'src/chat-completion-generation-input.js',
+                'src/text-completion-generation-input.js',
+                'src/endpoints/chats.js',
+            ],
+            parser: '@typescript-eslint/parser',
+            parserOptions: {
+                sourceType: 'module',
+                // Deliberately NOT `projectService` (typescript-eslint's newer auto-discovery
+                // mode): projectService finds a project by walking up from each file looking for
+                // a file literally named `tsconfig.json`, and this repo has no such file at the
+                // root (only tsconfig.chat-strict.json / tsconfig.precommit.json). Its escape
+                // hatch for a non-standard-named config (`defaultProject`) is meant for a handful
+                // of stray config files outside the real project (capped at 8 matches by default,
+                // with a scary "THIS_WILL_SLOW_DOWN_LINTING" override to raise it) - not for
+                // pointing a real batch of source files at a specific tsconfig. The classic
+                // `project` option is exactly the supported way to say "typecheck these files
+                // against this specific tsconfig", so we use that instead.
+                project: './tsconfig.chat-strict.json',
+                tsconfigRootDir: __dirname,
+            },
+            plugins: ['@typescript-eslint'],
+            rules: {
+                // Empty string / 0 / NaN are meaningful, distinct values in this codebase (see
+                // the reasoning.js bug above) - so string/number are NOT allowed as implicit
+                // booleans (allowString/allowNumber default to false, i.e. omitted here). A
+                // nullable object/function truthy-check (`if (x)` where x: Foo | null) is left
+                // allowed: existence-checking an object has no "meaningful falsy" ambiguity the
+                // way an empty string or zero does, and disallowing it would just force busywork
+                // `!= null` churn with no bug-catching value. Nullable boolean/enum are NOT
+                // exempted: `true | false | null` collapsing null into false is the same
+                // three-state-collapsed-into-two shape as the reasoning.js bug, so it stays flagged.
+                '@typescript-eslint/strict-boolean-expressions': ['error', {
+                    allowNullableObject: true,
+                    // `any` shows up at these files' boundaries with untyped libraries (jQuery,
+                    // JSON.parse, third-party callbacks) - flagging it here is a generic
+                    // "add more types" task, not an instance of the falsy-collapsing bug class
+                    // this rule exists to catch. Left un-widened for every other type (string,
+                    // number, nullable-*) because those are exactly where that bug hides.
+                    allowAny: true,
+                }],
+                // Flags conditions that, given the real inferred type, can never be true or
+                // never be false - the more direct hit on tonight's bug class, since once
+                // `extra.reasoning` is properly typed as `string` (not `string | undefined`),
+                // `if (extra.reasoning)` is exactly a "this condition doesn't mean what the code
+                // assumes" case this rule targets. allowConstantLoopConditions: true so idiomatic
+                // `while (true)` server-loop patterns aren't flagged - that's a deliberate,
+                // self-documenting infinite loop, not a type-confusion bug.
+                '@typescript-eslint/no-unnecessary-condition': ['error', {
+                    allowConstantLoopConditions: true,
+                }],
+            },
+        },
     ],
     ignorePatterns: [
         '**/node_modules/**',
