@@ -1113,7 +1113,7 @@ async function unlockPersona(type = 'chat') {
  * Lock the persona
  * @param {PersonaLockType} type - Lock type
  */
-async function lockPersona(type = 'chat') {
+async function lockPersona(type = 'chat', { quiet = false } = {}) {
     // First make sure that user_avatar is actually a persona
     if (!personaStore.has(user_avatar)) {
         console.log(`Creating a new persona ${user_avatar}`);
@@ -1142,7 +1142,7 @@ async function lockPersona(type = 'chat') {
             console.log(`Locking persona ${user_avatar} to this chat`);
             chat_metadata.persona = user_avatar;
             saveMetadataDebounced();
-            if (power_user.persona_show_notifications && !isPersonaPanelOpen()) {
+            if (!quiet && power_user.persona_show_notifications && !isPersonaPanelOpen()) {
                 toastr.success(t`User persona ${name1} is locked to ${name2} in this chat`, t`Persona Locked`);
             }
             break;
@@ -1698,8 +1698,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
             toastr.success(message, t`Persona Auto Selected`, { escapeHtml: false });
         }
     } else if (chatPersona && power_user.persona_auto_lock && !chat_metadata.persona) {
-        // Even if it's the same persona, we still might need to auto-lock to chat if that's enabled
-        await lockPersona('chat');
+        await lockPersona('chat', { quiet: true });
     }
 
     updatePersonaUIStates();
