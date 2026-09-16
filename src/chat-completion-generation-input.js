@@ -504,6 +504,8 @@ import { appendFileAttachments } from './file-attachment-inline.js';
  * @property {number} [world_info_min_activations]
  * @property {number} [world_info_min_activations_depth_max]
  * @property {boolean} [world_info_use_group_scoring]
+ * @property {WorldInfoSelectionShape} [world_info]
+ * @property {number} [world_info_character_strategy]
  */
 
 /**
@@ -851,20 +853,21 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const {
         oai_settings: oaiSettings = /** @type {OaiSettingsShape} */ ({}),
         power_user: powerUser = /** @type {PowerUserSettingsShape} */ ({}),
-        world_info: worldInfoSelection = /** @type {WorldInfoSelectionShape} */ ({}),
         world_info_settings: worldInfoSettings = /** @type {WorldInfoSettingsShape} */ ({}),
-        world_info_character_strategy: worldInfoCharacterStrategySetting,
         username,
     } = /** @type {{
         oai_settings?: OaiSettingsShape,
         power_user?: PowerUserSettingsShape,
-        world_info?: WorldInfoSelectionShape,
         world_info_settings?: WorldInfoSettingsShape,
-        world_info_character_strategy?: number,
         username?: string,
     }} */ (readSettingsAtPaths(directories, [
-            'oai_settings', 'power_user', 'world_info', 'world_info_settings', 'world_info_character_strategy', 'username',
+            'oai_settings', 'power_user', 'world_info_settings', 'username',
         ]));
+    // The client's getWorldInfoSettings() (public/scripts/world-info.js) nests the real selection
+    // object under world_info_settings.world_info, and world_info_character_strategy alongside it -
+    // there is no separate top-level `world_info`/`world_info_character_strategy` settings key on disk.
+    const worldInfoSelection = /** @type {WorldInfoSelectionShape} */ (worldInfoSettings.world_info ?? {});
+    const worldInfoCharacterStrategySetting = worldInfoSettings.world_info_character_strategy;
 
     const isGroup = Boolean(groupId);
 
