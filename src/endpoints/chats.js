@@ -1318,6 +1318,9 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
         if (!child) return response.status(400).send({ error: 'node_id is required' });
 
         const ok = await selectDefaultChild(request.user.directories, child);
+        if (ok && request.body.activate && request.body.avatar_url) {
+            await setCharacterActiveChat(request.user.directories, request.body.avatar_url, child);
+        }
         return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'unknown node, or it has no parent' });
     } catch (error) {
         console.error('Error selecting alternative:', error);

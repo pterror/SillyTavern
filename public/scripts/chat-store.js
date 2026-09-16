@@ -1,7 +1,7 @@
 // Writer side of the chat store: writes should go through the named actions below rather than
 // mutating `chat` directly and asking for a whole-conversation save.
 
-import { chat, chat_metadata, name2, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, saveActiveChat, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
+import { chat, chat_metadata, name2, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 // A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
 // owner for every chatOp*() below. See _currentOwner().
@@ -135,10 +135,9 @@ export async function ensureOpeningRow(mesId = 0) {
         await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar, node_id: realId }),
+            body: JSON.stringify({ avatar_url: character.avatar, node_id: realId, activate: true }),
         });
         charactersStore.update(character.avatar, { chat: realId });
-        await saveActiveChat(character.avatar, realId);
     } catch (error) {
         console.warn('[greetings] The greeting has a row, but the position could not be recorded:', error);
     }
