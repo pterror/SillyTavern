@@ -307,8 +307,8 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode, healDirtyMessages,
-    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
+    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
@@ -10477,106 +10477,23 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
     try {
         if (isTreeChat) {
-            // This diff-based reconstruction is solo-only and kept inline here rather than sharing
-            // chat-store.js's healDirtyMessages() (the same diff, minus this function's mesId/chatData
-            // slicing and metadata-addressing, used by saveChatConditional()'s group branch for the
-            // identical reason: both are reached by getContext().saveChat(), the one generic API every
-            // extension can call regardless of whether it stated any chatOp*() of its own). Left
-            // duplicated rather than refactored onto the shared version to avoid touching this
-            // long-relied-on, extension-facing solo path while fixing the group-side gap - if chatOp*'s
-            // shape changes, healDirtyMessages() needs the same change applied here too.
+            // Diffing/healing `chat[]` against chatOp*() is chat-store.js's healDirtyMessages() - not
+            // this function's job. It's reached ONLY via getContext().saveChat() (st-context.js), the
+            // one truly generic entry point where an extension may have mutated `chat[]` without
+            // stating any chatOp*() of its own; that wrapper heals first, then calls
+            // saveChatConditional(), which reaches this function. An ordinary first-party save (send,
+            // edit, swipe) never needs it: every mutation already persisted itself directly via its own
+            // chatOp*() call, and a write that fails now says so immediately (_chatOpPost()'s own
+            // failure reporting) instead of relying on this function to notice later. So all that's left
+            // for this function to do is post whatever chat_metadata changed, addressed at whichever
+            // node is already known to be real.
             const addressedByName = chatName !== undefined;
             const treeAvatar = getCurrentCharacter()?.avatar;
             let treeResult = null;
             if (treeAvatar) {
-                let lastPersisted = null;
-                let firstNewIndex = -1;
+                const hasPersisted = trimmedChat.some(m => isStoredNodeId(m?.node_id));
 
-                for (let i = 0; i < trimmedChat.length; i++) {
-                    let msg = trimmedChat[i];
-
-                    if (!msg.node_id) {
-                        if (firstNewIndex < 0) firstNewIndex = i;
-                        continue;
-                    }
-
-                    let justEnsured = false;
-                    if (isProvisionalNodeId(msg.node_id)) {
-                        const at = msg.swipe_id ?? 0;
-                        const said = msg.swipe_info?.[at]?.name ?? msg.name;
-                        const written = msg.node_id !== provisionalNodeId(said, msg.mes);
-                        const followed = trimmedChat.length > i + 1;
-                        if (written || followed) {
-                            const realId = await ensureOpeningRow(i);
-                            if (realId && chat[i]?.node_id === realId) {
-                                msg = chat[i];
-                                justEnsured = true;
-                            }
-                        }
-                    }
-
-                    if (!isStoredNodeId(msg.node_id)) continue;
-
-                    lastPersisted = msg.node_id;
-
-                    const seen = _messageSnapshots.get(msg.node_id);
-                    if (seen === msg) continue;
-
-                    if (seen && JSON.stringify(seen) === JSON.stringify(msg)) {
-                        _markMessageSaved(i, msg.node_id);
-                        continue;
-                    }
-
-                    const hasSlots = Array.isArray(msg.swipes) && Array.isArray(msg.swipe_info);
-                    const selected = msg.swipe_id ?? 0;
-
-                    if (hasSlots
-                        && typeof msg.swipes[selected] === 'string'
-                        && msg.swipes[selected].length === 0
-                        && !msg.swipe_info[selected]?.node_id) {
-                        continue;
-                    }
-
-                    let newSelectedId = null;
-                    let learnedIds = null;
-                    if (hasSlots) {
-                        for (let k = 0; k < msg.swipes.length; k++) {
-                            if (typeof msg.swipes[k] !== 'string') continue;
-                            if (msg.swipes[k].length === 0) continue;
-                            if (msg.swipe_info[k]?.node_id) continue;
-
-                            const createdId = await chatOpAddAlternative(i, msg.swipes[k]);
-                            if (!createdId) continue;
-
-                            learnedIds = learnedIds ?? [...msg.swipe_info];
-                            learnedIds[k] = { ...(learnedIds[k] || {}), node_id: createdId };
-                            if (k === selected) newSelectedId = createdId;
-                        }
-                    }
-                    if (learnedIds && i < chat.length) {
-                        updateMessage(i, { swipe_info: learnedIds });
-                    }
-
-                    if (newSelectedId) {
-                        await chatOpSelect(i, selected);
-                        lastPersisted = newSelectedId;
-                    } else {
-                        if (typeof msg.mes === 'string' && msg.mes.length === 0) {
-                            continue;
-                        }
-                        if (justEnsured) {
-                            _markMessageSaved(i, msg.node_id);
-                            continue;
-                        }
-                        await chatOpEdit(i);
-                    }
-                }
-
-                if (lastPersisted) {
-                    if (firstNewIndex >= 0) {
-                        await chatOpAppend(firstNewIndex);
-                    }
-
+                if (hasPersisted) {
                     const position = getCurrentCharacter()?.chat;
                     const opening = chat[0]?.node_id;
                     const target = addressedByName
@@ -13255,14 +13172,11 @@ export async function saveChatConditional() {
         isChatSaving = true;
 
         if (selected_group) {
-            // Every first-party message mutation already persisted itself directly via chatOp*()
-            // (chat-store.js) at its own call site - but this function is also getContext().saveChat(),
-            // the one generic entry point every extension can call regardless of whether it stated any
-            // op of its own (see healDirtyMessages()'s own doc comment for why groups need the same
-            // diff-catchup solo's saveChat() already provides here, not just a narrower retry). Then
-            // metadata catch-up, mirroring what saveChat()'s tree branch does for solo below.
-            await healDirtyMessages().catch(error =>
-                console.error('Could not sync unsaved changes:', error));
+            // Every message mutation already persisted itself directly via chatOp*() (chat-store.js) at
+            // its own call site - this is metadata catch-up only, mirroring what saveChat()'s tree
+            // branch does for solo below. (Diffing/healing chat[] against chatOp*() for a generic
+            // caller that bypassed them - e.g. an extension - is getContext().saveChat()'s job, not
+            // this function's: see healDirtyMessages()'s own doc comment.)
             await saveMetadata();
             // saveGroupChat()'s old shouldSaveGroup=true path bumped this same field the same way
             // (debounced, no reload) after every whole-array resave; keep that bump on its own now that

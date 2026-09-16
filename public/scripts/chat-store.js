@@ -6,6 +6,7 @@ import { getMessageTimeStamp } from './RossAscends-mods.js';
 // A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
 // owner for every chatOp*() below. See _currentOwner().
 import { selected_group } from './group-chats.js';
+import { t } from './i18n.js';
 
 // Freezes obj and all nested objects/arrays, so no nested mutation can bypass updateMessage().
 export function deepFreeze(obj) {
@@ -345,23 +346,42 @@ function _currentOwner() {
     return avatar ? { avatar_url: avatar } : null;
 }
 
+// A dropped write used to rely on some LATER save eventually noticing and catching up (a diff-scan
+// against `chat[]` - the same shape this whole codebase spent tonight removing as _saveTreeChat()).
+// _retryTransient() already covers a transient blip; once that's exhausted, or a 4xx refuses outright,
+// the honest thing is to say so immediately, not stay silent and hope something notices later. Rate-
+// limited so a burst of failures (e.g. several ops during one dropped connection) produces one toast,
+// not a flood.
+let _lastChatOpFailureToastAt = 0;
+function _reportChatOpFailure() {
+    const now = Date.now();
+    if (now - _lastChatOpFailureToastAt < 10_000) return;
+    _lastChatOpFailureToastAt = now;
+    toastr.error(t`Could not save your last change. Check your connection and try again.`, t`Save failed`);
+}
+
 /** Posts one operation. Throws on refusal, so a caller cannot mistake a refusal for a write. */
 async function _chatOpPost(path, body) {
     const owner = _currentOwner();
     if (!owner) throw new Error('no character or group is selected');
-    return _retryTransient(async () => {
-        const response = await fetch(path, {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ ...owner, ...body }),
+    try {
+        return await _retryTransient(async () => {
+            const response = await fetch(path, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ ...owner, ...body }),
+            });
+            if (!response.ok) {
+                const error = new Error(`${path} responded ${response.status}`);
+                error.status = response.status;
+                throw error;
+            }
+            return response.json().catch(() => ({}));
         });
-        if (!response.ok) {
-            const error = new Error(`${path} responded ${response.status}`);
-            error.status = response.status;
-            throw error;
-        }
-        return response.json().catch(() => ({}));
-    });
+    } catch (error) {
+        _reportChatOpFailure();
+        throw error;
+    }
 }
 
 // Reads the live object, not the caller's copy — updateMessage() may have replaced it.
@@ -443,23 +463,24 @@ export async function chatOpAppend(fromIndex) {
     return ids;
 }
 
-// getContext().saveChat() is saveChatConditional() (st-context.js) - one generic API, exposed
-// unconditionally to every extension regardless of whether a group or solo chat is active. An
-// extension that mutates `chat[]` directly (edits `.mes`, appends a swipe, adds a trailing message)
-// without calling any chatOp*() itself, then calls getContext().saveChat() expecting "figure out what
-// changed and persist it" - exactly the contract solo's own saveChat() (isTreeChat branch) provides via
-// its inline per-message diff loop - gets exactly that same exposure while a GROUP chat is active, not
-// just the narrower "retry a dropped append" gap. This is that same diff, usable from either branch:
-// finds every message whose content changed since its last confirmed-saved snapshot and persists it via
-// the matching chatOp*() (a changed swipe slot with no node_id -> chatOpAddAlternative + chatOpSelect
-// if it's the shown one, otherwise -> chatOpEdit), plus a trailing run with no node_id at all -> one
-// batched chatOpAppend(). First-party code never needs this - every edit/swipe/append already calls its
-// own chatOp*() at its own call site - so a snapshot already matching means nothing to do, same as it
-// would for solo.
+// The one remaining reason `chat[]` can hold a change no chatOp*() has stated: getContext().saveChat()
+// (st-context.js) is a generic API, and a third-party extension using it can mutate `chat[]` directly -
+// edit `.mes`, add a swipe, push a trailing message - with no way to require it call a specific chatOp*()
+// instead, since arbitrary extension code can't be forced to state what it meant. First-party code never
+// has this problem: every edit/swipe/append already calls its own chatOp*() at its own call site, and a
+// write that fails now says so immediately (_reportChatOpFailure() above) rather than leaving `chat[]`
+// silently out of sync for something to notice later - so this is intentionally NOT wired into the
+// ordinary save path (saveChatConditional()/saveChat()) at all, only into that one generic entry point.
+// See st-context.js's saveChat binding for where and why this actually runs.
+//
+// Finds every message whose content differs from its last confirmed-saved snapshot and persists it via
+// the matching chatOp*() (a changed swipe slot with no node_id -> chatOpAddAlternative + chatOpSelect if
+// it's the shown one, otherwise -> chatOpEdit), plus a trailing run with no node_id at all -> one batched
+// chatOpAppend(). A snapshot already matching means nothing to do.
 //
 // A provisional (card-only) opening id is solo-only - ensureOpeningRow() needs a character to mint
-// against, and is a safe no-op here for anything that isn't provisional (in particular, a group's
-// opening is already a real row by the time this runs - see _bootstrapGroupChat(), group-chats.js).
+// against, and is a safe no-op here for anything that isn't provisional (a group's opening is already a
+// real row by the time this runs - see _bootstrapGroupChat(), group-chats.js).
 // @returns {Promise<boolean>} Whether anything in `chat[]` has a real, persisted node_id at all -
 // i.e. whether there's something for the caller to address a metadata write onto.
 export async function healDirtyMessages() {
