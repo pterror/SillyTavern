@@ -478,7 +478,11 @@ export async function getGroupChat(groupId, reload = false) {
             addOneMessage(mes);
             await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, (chat.length - 1), 'first_message');
         }
-        await saveGroupChat(groupId, false);
+        const bootstrapped = await _bootstrapGroupChat(groupId, group.chat_id);
+        if (!bootstrapped) {
+            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group Chat could not be saved`);
+            console.error('Could not bootstrap the new group chat', groupId);
+        }
     } else if (Array.isArray(data) && data.length) {
         chat.splice(0, chat.length, ...data);
         chat.forEach(ensureMessageMediaIsArray);
@@ -802,7 +806,89 @@ function resetSelectedGroup() {
 }
 
 /**
- * Saves a group chat to the server.
+ * Mints the tree rows for a brand-new group chat's member greetings directly, instead of resaving the
+ * whole array. `chat[]` here carries no node_id at all yet (getGroupChat()'s freshChat branch just
+ * pushed plain message objects) - the shape is one linear chain (each member's greeting is the next
+ * turn), not alternatives, so this is: mint the first turn via /openings/ensure (which also creates the
+ * group's anchor), point the anchor at it, label it with the group's own pre-assigned chat_id (a group's
+ * chat_id is decided at group/chat creation, unlike a fresh solo chat's - it can't become the new node's
+ * own id the way a character's `.chat` pointer does, since group.chats/branch-switching already
+ * resolves other chats by that pre-assigned string), then append every remaining turn after it.
+ * @param {string} groupId
+ * @param {string} chatName group.chat_id - the name this chat needs to be reachable under
+ * @returns {Promise<boolean>} Whether every message in `chat[]` now carries a real node_id.
+ */
+async function _bootstrapGroupChat(groupId, chatName) {
+    if (!chat.length) return true;
+
+    const contentOf = (msg) => ({
+        name: msg.name, is_user: !!msg.is_user, is_system: !!msg.is_system,
+        send_date: msg.send_date, mes: msg.mes, extra: msg.extra ?? {},
+    });
+    const post = (path, body) => fetch(path, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ group_id: groupId, ...body }),
+    });
+
+    const ensureResponse = await post('/api/chats/openings/ensure', { contents: [contentOf(chat[0])] });
+    if (!ensureResponse.ok) return false;
+    const firstId = (await ensureResponse.json().catch(() => null))?.node_ids?.[0];
+    if (!firstId) return false;
+    chat[0].node_id = firstId;
+
+    const selectResponse = await post('/api/chats/message/select', { node_id: firstId });
+    if (!selectResponse.ok) return false;
+
+    // /label always answers 200 even on refusal (e.g. unknown node) - the real result is in the body.
+    const labelResponse = await fetch('/api/chats/label', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ node_id: firstId, label: chatName }),
+    });
+    const labeled = labelResponse.ok && (await labelResponse.json().catch(() => null))?.ok;
+    if (!labeled) return false;
+
+    if (chat.length > 1) {
+        const appendResponse = await post('/api/chats/message/append', { after_node_id: firstId, messages: chat.slice(1) });
+        if (!appendResponse.ok) return false;
+        const nodeIds = (await appendResponse.json().catch(() => null))?.node_ids ?? [];
+        nodeIds.forEach((node_id, offset) => {
+            if (chat[offset + 1]) chat[offset + 1].node_id = node_id;
+        });
+        if (nodeIds.length !== chat.length - 1) return false;
+    }
+
+    // The label carries this chat's identity; metadata (integrity, __is_group) is a separate write onto
+    // that same labeled node, same as every later metadata-only edit (saveMetadata()) makes.
+    const metaResponse = await post('/api/chats/metadata', {
+        file_name: chatName,
+        metadata: { ...chat_metadata, __is_group: true },
+    });
+    if (metaResponse.ok) {
+        const meta = await metaResponse.json().catch(() => ({}));
+        if (typeof meta.integrity === 'string') {
+            chat_metadata.integrity = meta.integrity;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Whole-array resave of a group chat. No longer this file's message-persistence primitive - every real
+ * mutation now goes through chatOp*() (chat-store.js) directly, and a brand-new chat's greetings mint
+ * their own rows via _bootstrapGroupChat() above. The one thing this still does that no direct op can:
+ * on the server, /group/save's tree write (saveChatToTree()) never conflicts - it has no expected-
+ * integrity check at all, unlike /metadata - so the "integrity" error this handles (and the force-
+ * overwrite retry below) can only come from its JSONL fallback (trySaveChat()), reached only when the
+ * tree store itself is unavailable. In that state every chatOp*() would fail too (same getEntry()
+ * dependency), so there is no direct op to fall back to - the legacy flat-file writer, and the
+ * whole-file overwrite it demands on a stale slug, is what's left. Kept for that emergency path, and
+ * for the one remaining ordinary caller this file doesn't own (slash-commands.js's /memberadd, which
+ * calls this instead of saveGroupField() - it never actually persists the membership change either
+ * way, since /group/save doesn't touch group.members at all; a pre-existing bug in a file out of
+ * scope here).
  * @param {string} groupId Group ID
  * @param {boolean} shouldSaveGroup Whether to save the group after saving the chat
  * @param {boolean} force Force the saving on integrity error
