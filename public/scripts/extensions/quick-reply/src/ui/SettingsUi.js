@@ -182,15 +182,18 @@ export class SettingsUi {
             qrs.saveSetProp('injectInput', qrs.injectInput);
         });
         this.color = this.dom.querySelector('#qr--color');
-        // @ts-ignore
-        this.color.color = this.currentQrSet?.color ?? 'transparent';
-        this.color.setAttribute('color', this.currentQrSet?.color ?? 'transparent');
         this.color.addEventListener('change', (evt) => {
             if (!this.dom.closest('body')) return;
             if (this._populating) return;
             const qrs = this.currentQrSet;
             // @ts-ignore
-            qrs.color = evt.detail.rgb;
+            const rgb = evt.detail.rgb;
+            // The picker re-fires 'change' from its own connectedCallback every time this settings
+            // panel is (re)connected to the document - e.g. once when it's first inserted, and again
+            // when moveExtensionContainerIntoTab() relocates it into its tab - echoing the value it
+            // was just set to rather than a user edit. Only a real value change is worth a save.
+            if (rgb === qrs.color) return;
+            qrs.color = rgb;
             qrs.saveSetProp('color', qrs.color);
             this.currentQrSet.updateColor();
         });
