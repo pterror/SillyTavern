@@ -212,6 +212,152 @@ const DEFAULT_STORY_STRING_DEPTH = 1;
 const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
 
 /**
+ * Minimal shape this resolver reads off `power_user.reasoning` - see module doc comment's
+ * FIELD-MAPPING NOTES (absent from a fresh settings.json; defaults mirror
+ * public/scripts/power-user.js's own `power_user_settings_defaults.reasoning`).
+ * @typedef {object} ReasoningSettings
+ * @property {boolean} [add_to_prompts]
+ * @property {number} [max_additions]
+ * @property {string} [prefix]
+ * @property {string} [separator]
+ * @property {string} [suffix]
+ */
+
+/** @typedef {object} SyspromptSettings
+ * @property {boolean} [enabled]
+ * @property {string} [content]
+ * @property {string} [post_history]
+ */
+
+/**
+ * Minimal shape this resolver reads off `power_user.context` - forwarded verbatim as
+ * `contextSettings` too (the orchestrator's own param there is untyped `object`).
+ * @typedef {object} PowerUserContextSettings
+ * @property {string} [story_string]
+ * @property {number} [story_string_position]
+ * @property {number} [story_string_depth]
+ * @property {number} [story_string_role]
+ * @property {boolean} [names_as_stop_strings]
+ */
+
+/**
+ * Minimal shape this resolver reads off top-level `power_user` - see module doc comment's
+ * FIELD-MAPPING NOTES for which of these are absent from a fresh settings.json (populated only
+ * once a user touches the corresponding control) and what this resolver falls back to then.
+ * @typedef {object} PowerUserSettingsBundle
+ * @property {string} [persona_description]
+ * @property {number} [persona_description_position]
+ * @property {string} [persona_description_lorebook]
+ * @property {string} [user_prompt_bias]
+ * @property {boolean} [always_force_name2]
+ * @property {number} [token_padding]
+ * @property {boolean} [request_token_probabilities]
+ * @property {boolean} [single_line]
+ * @property {string} [custom_stopping_strings]
+ * @property {boolean} [custom_stopping_strings_macro]
+ * @property {boolean} [console_log_prompts]
+ * @property {boolean} [collapse_newlines]
+ * @property {boolean} [strip_examples]
+ * @property {boolean} [pin_examples]
+ * @property {PowerUserContextSettings} [context]
+ * @property {import('./instruct-template-format.js').InstructSettings} [instruct]
+ * @property {ReasoningSettings} [reasoning]
+ * @property {SyspromptSettings} [sysprompt]
+ */
+
+/**
+ * Minimal shape this resolver reads off top-level `world_info_settings` - see module doc comment's
+ * FIELD-MAPPING NOTES (these ARE nested under `world_info_settings`, not top-level, despite the
+ * orchestrator's own flat `worldInfo*` param names).
+ * @typedef {object} WorldInfoSettingsBundle
+ * @property {boolean} [world_info_include_names]
+ * @property {number} [world_info_budget]
+ * @property {number} [world_info_budget_cap]
+ * @property {number} [world_info_depth]
+ * @property {boolean} [world_info_recursive]
+ * @property {number} [world_info_max_recursion_steps]
+ * @property {number} [world_info_min_activations]
+ * @property {number} [world_info_min_activations_depth_max]
+ * @property {boolean} [world_info_use_group_scoring]
+ */
+
+/**
+ * Minimal shape this resolver reads off the top-level `world_info` settings key (the user's global
+ * lorebook SELECTION plus per-character overrides - NOT `world_info_settings`, a different key of
+ * the same name-ish - see module doc comment's UPDATE section on `worldInfoCandidates`).
+ * @typedef {object} WorldInfoSelectionBundle
+ * @property {string[]} [globalSelect]
+ * @property {{name?: string, extraBooks?: string[]}[]} [charLore]
+ */
+
+/**
+ * Minimal shape this resolver reads off `textgenerationwebui_settings` - see module doc comment's
+ * FIELD-MAPPING NOTES (absent-until-touched defaults mirror public/scripts/textgen-settings.js's
+ * own settings object).
+ * @typedef {object} TextGenSettingsBundle
+ * @property {string} [banned_tokens]
+ * @property {string} [global_banned_tokens]
+ * @property {boolean} [send_banned_tokens]
+ * @property {import('./token-bans-and-bias.js').LogitBiasEntry[]} [logit_bias]
+ */
+
+/**
+ * Minimal shape this resolver reads off top-level `kai_settings` - see module doc comment's
+ * FIELD-MAPPING NOTES (`api_server` is a real field, absent until a user sets a Kobold URL).
+ * @typedef {object} KoboldSettingsBundle
+ * @property {string} [api_server]
+ */
+
+/**
+ * Minimal shape this resolver reads off `extension_settings.cfg` - mirrors
+ * `extension_settings.cfg.global`/`.chara[]`'s real shape (see module doc comment's
+ * FIELD-MAPPING NOTES) - one entry per `src/cfg-prompt-resolve.js`'s own `CfgSettings`, `chara[]`
+ * additionally carrying the `name` (avatar) this override applies to.
+ * @typedef {object} CfgSettingsBundle
+ * @property {import('./cfg-prompt-resolve.js').CfgSettings} [global]
+ * @property {(import('./cfg-prompt-resolve.js').CfgSettings & { name?: string })[]} [chara]
+ */
+
+/**
+ * Minimal shape this resolver reads off `extension_settings` - only the two sub-keys this resolver
+ * actually reads (see module doc comment's FIELD-MAPPING NOTES).
+ * @typedef {object} ExtensionSettingsBundle
+ * @property {import('./authors-note.js').AuthorsNoteSettings} [note]
+ * @property {CfgSettingsBundle} [cfg]
+ */
+
+/**
+ * The exact set of top-level settings.json paths this resolver reads via `readSettingsAtPaths()`,
+ * typed field-for-field per the module doc comment's FIELD-MAPPING NOTES - `readSettingsAtPaths()`
+ * itself returns a generic `Record<string, unknown>` (it has no way to know what its caller asked
+ * for), so this resolver's own knowledge of what it requested is cast on here rather than left
+ * `unknown` at every use site below.
+ * @typedef {object} TextCompletionSettingsBundle
+ * @property {PowerUserSettingsBundle} [power_user]
+ * @property {WorldInfoSettingsBundle} [world_info_settings]
+ * @property {WorldInfoSelectionBundle} [world_info]
+ * @property {number} [world_info_character_strategy]
+ * @property {TextGenSettingsBundle} [textgenerationwebui_settings]
+ * @property {KoboldSettingsBundle} [kai_settings]
+ * @property {object} [nai_settings]
+ * @property {ExtensionSettingsBundle} [extension_settings]
+ * @property {string} [username]
+ * @property {number} [amount_gen]
+ * @property {number} [max_context]
+ */
+
+/**
+ * Minimal shape this resolver reads off a group JSON file (src/endpoints/groups.js's
+ * `getGroupsByIds()` returns `Record<string, object>` - untyped, since groups.js has no dedicated
+ * `Group` type to import - so this is this resolver's own local, minimal view of the fields it
+ * actually reads; a genuine cross-file boundary gap, not a guess about groups.js's real shape,
+ * which is verified against public/scripts/group-chats.js's own group object).
+ * @typedef {object} GroupLike
+ * @property {string} [name]
+ * @property {string[]} [members]
+ */
+
+/**
  * Reads a character card's display name (`.name`), or a group's display name when no specific
  * member avatar is given. Real reads via already-committed, exported helpers
  * (src/endpoints/characters.js's `readCardContent`, src/endpoints/groups.js's `getGroupsByIds`) -
@@ -247,7 +393,7 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
     }
 
     if (groupId) {
-        const group = getGroupsByIds(directories, [groupId])[groupId];
+        const group = /** @type {GroupLike | undefined} */ (getGroupsByIds(directories, [groupId])[groupId]);
         if (group) {
             if (!avatar) {
                 name2 = group.name || name2;
@@ -305,8 +451,10 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
  * @param {object} params
  * @param {string} [params.ownerId]
  * @param {string} [params.branchName]
- * @param {string} [params.nodeId]
- * @returns {Promise<{ chat: object[], metadata: object, resolvedNodeId: string|null, ambiguous?: boolean }>}
+ * @param {string|null} [params.nodeId] `null` is a real, distinct input (see the outer resolver's own
+ * doc comment on this same param) - both flow here as "falsy, fall through to the next resolution
+ * strategy", so this function makes no distinction between `null` and omitted.
+ * @returns {Promise<{ chat: import('./message-tree-db.js').TreeChatMessage[], metadata: ChatMetadata, resolvedNodeId: string|null, ambiguous?: boolean }>}
  */
 async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) {
     if (ownerId && branchName) {
@@ -372,7 +520,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {boolean} [params.isContinue]
  * @param {boolean} [params.isSwipe]
  * @param {string} [params.textareaText]
- * @param {object} [params.chatMetadata] Overrides the loaded branch's own metadata when given.
+ * @param {ChatMetadata} [params.chatMetadata] Overrides the loaded branch's own metadata when given.
  * @param {string} [params.userMessageText] The raw user action for this turn - "the user sent this
  * text". When given, appended onto the resolved chat history as the newest message (see doc comment
  * UPDATE section for the exact shape). Omit for generation types that don't add a new message
@@ -389,8 +537,10 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * override/bypass for the auto-resolved candidates (see doc comment UPDATE section) - when omitted
  * (left `undefined`), this resolver calls `resolveWorldInfoCandidates()` for real; passing an
  * explicit array (including `[]`) always wins.
- * @param {(text: string) => Promise<number>} params.countTokens REQUIRED - see doc comment.
- * @param {(text: string) => number[]} params.encodeTokens REQUIRED - see doc comment.
+ * @param {(text: string) => Promise<number>} [params.countTokens] REQUIRED at runtime (checked and
+ * thrown on below) - typed optional here only so a caller omitting the whole `params` object
+ * (`= {}`) still type-checks; the runtime check is the actual enforcement.
+ * @param {(text: string) => number[]} [params.encodeTokens] REQUIRED at runtime - see `countTokens` above.
  * @param {number} [params.amountGen] Overrides settings.amount_gen when given.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
  * @returns {Promise<import('./text-completion-prompt-orchestrator.js').AssembleTextCompletionPromptInput>}
@@ -423,11 +573,11 @@ export async function resolveTextCompletionGenerationInput(directories, {
         username,
         amount_gen: settingsAmountGen,
         max_context: settingsMaxContext,
-    } = readSettingsAtPaths(directories, [
+    } = /** @type {TextCompletionSettingsBundle} */ (readSettingsAtPaths(directories, [
         'power_user', 'world_info_settings', 'world_info', 'world_info_character_strategy',
         'textgenerationwebui_settings', 'kai_settings', 'nai_settings',
         'extension_settings', 'username', 'amount_gen', 'max_context',
-    ]);
+    ]));
 
     // Per-mainApi backend-specific settings object - see module doc comment FIELD-MAPPING NOTES for
     // the exact rationale (no preset-merge step for kobold/novel here, same as textgenerationwebui's
@@ -435,6 +585,10 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const backendSettings = mainApi === 'kobold' ? koboldSettings : mainApi === 'novel' ? novelSettings : textgenSettings;
 
     const backend = mainApi === 'textgenerationwebui' ? resolveTextGenBackend(directories) : null;
+    // Computed here (rather than inline in `resolved` below) so its type is tied to `backend`'s own
+    // null-check instead of a second, separate `mainApi === 'textgenerationwebui'` comparison the
+    // type checker can't relate back to this one.
+    const model = backend ? backend.model : undefined;
 
     const isGroup = Boolean(groupId);
     const hasCharacterOrGroup = Boolean(avatar) || Boolean(groupId);
@@ -465,7 +619,12 @@ export async function resolveTextCompletionGenerationInput(directories, {
         const charFilename = avatar ? avatar.replace(/\.[^/.]+$/, '') : null;
         const charLore = Array.isArray(worldInfoSelection.charLore) ? worldInfoSelection.charLore : [];
         const characterExtraBooks = charLore.find(e => e.name === charFilename)?.extraBooks ?? [];
-        worldInfoCandidates = await resolveWorldInfoCandidates({
+        // resolveWorldInfoCandidates() (src/world-info/candidate-resolution.js, not owned by this
+        // task) is typed `Promise<Array<object>>` - genuinely looser than the real entries it returns
+        // (each one is `{...WIEntry, world, decorators, content, hash}` per that function's own doc
+        // comment) - cast to this resolver's own declared `WIEntry[]` output type rather than
+        // widening this file's contract to match the looser upstream type.
+        worldInfoCandidates = /** @type {import('./world-info/activation.js').WIEntry[]} */ (await resolveWorldInfoCandidates({
             directories,
             selectedWorldInfo: worldInfoSelection.globalSelect ?? [],
             character,
@@ -473,11 +632,15 @@ export async function resolveTextCompletionGenerationInput(directories, {
             chatWorldName: chatMetadata?.[WORLD_INFO_METADATA_KEY] ?? null,
             personaWorldLorebook: powerUser.persona_description_lorebook ?? null,
             worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
-        });
+        }));
     }
 
     const context = powerUser.context ?? {};
-    const instruct = powerUser.instruct ?? {};
+    // `user_alignment_message` is a genuine `power_user.instruct` field (public/scripts/power-user.js's
+    // own `instruct` defaults, public/scripts/instruct-mode.js's settings binding) that
+    // src/instruct-template-format.js's `InstructSettings` typedef (not owned by this task) doesn't
+    // declare - widened locally rather than editing that file.
+    const instruct = /** @type {import('./instruct-template-format.js').InstructSettings & { user_alignment_message?: string }} */ (powerUser.instruct ?? {});
     const reasoning = powerUser.reasoning ?? {};
     const sysprompt = powerUser.sysprompt ?? {};
     const noteSettings = extensionSettings.note ?? {};
@@ -592,7 +755,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         // already, not as a separate top-level field) - `undefined` for the other two, matching
         // text-completion-prompt-orchestrator.js's own Step 16 doc comment on this exact point.
         settings: backendSettings,
-        model: mainApi === 'textgenerationwebui' ? backend.model : undefined,
+        model,
 
         // --- Backend-specific generation-data (kobold/novel dispatch only) ---
         // None of these have a real settings.json/chat-metadata source of truth without either a
