@@ -1,0 +1,6 @@
+{
+    "extends": "./tsconfig.precommit.json",
+    "compilerOptions": {
+        "strict": true
+    }
+}
