@@ -443,6 +443,24 @@ export async function chatOpAppend(fromIndex) {
     return ids;
 }
 
+// Retries a dropped chatOpAppend(): sendMessageAsUser()/addOneMessage() display a message and persist
+// it separately (script.js), catching and logging a chatOpAppend() failure rather than surfacing or
+// retrying it - so a message can sit displayed with no real node_id after a transient failure that
+// outlasted chatOpAppend's own retry budget. Solo's saveChat() (isTreeChat branch) heals this as one
+// side effect of a much larger per-message diff loop that also re-detects edits/new swipes - needed
+// there because that loop is the generic path extensions reach via getContext().saveChat(), which can
+// mutate `chat[]` without calling any chatOp*() itself. Groups have no such generic entry point - every
+// first-party edit/swipe already calls its own chatOp*() directly, same as solo's does - so the only
+// gap worth closing here is this one: find the first message with no real node_id and retry appending
+// it (and everything after it, in the one request chatOpAppend() already batches) onto the last one
+// that does. A no-op when every message already has one, or (nothing to attach to yet - chat[0] itself
+// was never persisted) when none do.
+export async function healUnpersistedTail() {
+    const firstUnpersisted = chat.findIndex(msg => !isStoredNodeId(msg?.node_id));
+    if (firstUnpersisted <= 0) return;
+    await chatOpAppend(firstUnpersisted);
+}
+
 // Splices a new message in between two existing ones. Nothing to graft before when mesId lands at
 // the tail (nothing follows it yet) — that's a plain append, so delegate rather than duplicate it.
 export async function chatOpGraft(mesId) {

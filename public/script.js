@@ -307,7 +307,7 @@ export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
     updateMessage, updateIn, deepFreeze,
-    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
+    ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode, healUnpersistedTail,
     _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _markMessageSaved,
 } from './scripts/chat-store.js';
 export {
@@ -13252,8 +13252,11 @@ export async function saveChatConditional() {
 
         if (selected_group) {
             // Every message mutation already persisted itself directly via chatOp*() (chat-store.js) at
-            // its own call site - this is metadata catch-up only, mirroring what saveChat()'s tree
-            // branch does for solo below.
+            // its own call site - retry anything that didn't (a dropped chatOpAppend() from a transient
+            // failure - see healUnpersistedTail()'s own doc comment), then this is metadata catch-up
+            // only, mirroring what saveChat()'s tree branch does for solo below.
+            await healUnpersistedTail().catch(error =>
+                console.error('Could not retry an unpersisted message:', error));
             await saveMetadata();
             // saveGroupChat()'s old shouldSaveGroup=true path bumped this same field the same way
             // (debounced, no reload) after every whole-array resave; keep that bump on its own now that
