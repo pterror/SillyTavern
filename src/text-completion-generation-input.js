@@ -152,10 +152,12 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  * `src/world-info/candidate-resolution.js`'s `resolveWorldInfoCandidates()` (this closes the
  * previously-documented passthrough-only gap). Field mapping, verified against
  * public/scripts/world-info.js:
- * - `selectedWorldInfo` <- `world_info.globalSelect` (top-level settings key `world_info`, NOT
- *   `world_info_settings` - these are two different top-level settings keys; `world_info` holds the
- *   user's global lorebook SELECTION plus per-character `charLore` overrides, `world_info_settings`
- *   holds the numeric/boolean WI behavior knobs already mapped above). Not filtered against a
+ * - `selectedWorldInfo` <- `world_info_settings.world_info.globalSelect` (NOT a separate top-level
+ *   `world_info` settings key - getWorldInfoSettings(), public/scripts/world-info.js, nests the
+ *   user's global lorebook SELECTION plus per-character `charLore` overrides under
+ *   `world_info_settings.world_info`, alongside the numeric/boolean WI behavior knobs mapped above -
+ *   a prior version of this comment claimed these were separate top-level keys; they are not, and
+ *   that mistake meant the global lorebook selection was silently never applied). Not filtered against a
  *   "real lorebook names" list here (the client filters `globalSelect` against `world_names` at load
  *   time) - a stale/deleted lorebook name simply resolves to zero entries via `loadWorldEntries()`'s
  *   own `readWorldInfoFile(...) ?? {}` guard, so omitting the filter is behaviorally inert, not a gap.
@@ -168,12 +170,11 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  *   `getCharaFilename()`, which does the same strip when given an explicit avatar key).
  * - `chatWorldName` <- `chatMetadata[METADATA_KEY]`, `METADATA_KEY === 'world_info'` (verified
  *   against public/scripts/world-info.js's own `export const METADATA_KEY = 'world_info';`) - i.e.
- *   `chatMetadata.world_info`, a plain string chat-metadata field, unrelated to the top-level
- *   `world_info` settings key of the same name.
+ *   `chatMetadata.world_info`, a plain string chat-metadata field, unrelated to the
+ *   `world_info_settings.world_info` settings key of a similar name.
  * - `personaWorldLorebook` <- `power_user.persona_description_lorebook`.
- * - `worldInfoCharacterStrategy` <- the top-level settings key `world_info_character_strategy`
- *   (verified NOT nested under `world_info_settings` - public/scripts/world-info.js reads/writes it
- *   as a bare top-level `settings.world_info_character_strategy`), defaulting to
+ * - `worldInfoCharacterStrategy` <- `world_info_settings.world_info_character_strategy` (nested,
+ *   same as `world_info` above - not a separate top-level settings key), defaulting to
  *   `world_info_insertion_strategy.character_first` (the client's own module-level default) when
  *   absent from a fresh settings.json.
  * A caller that already has its own resolved candidate list (or wants to bypass this resolution
@@ -279,12 +280,14 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  * @property {number} [world_info_min_activations]
  * @property {number} [world_info_min_activations_depth_max]
  * @property {boolean} [world_info_use_group_scoring]
+ * @property {WorldInfoSelectionBundle} [world_info]
+ * @property {number} [world_info_character_strategy]
  */
 
 /**
- * Minimal shape this resolver reads off the top-level `world_info` settings key (the user's global
- * lorebook SELECTION plus per-character overrides - NOT `world_info_settings`, a different key of
- * the same name-ish - see module doc comment's UPDATE section on `worldInfoCandidates`).
+ * The user's global lorebook SELECTION plus per-character overrides - getWorldInfoSettings()
+ * (public/scripts/world-info.js) nests this under `world_info_settings.world_info` on save; there is
+ * no separate top-level `world_info` settings key.
  * @typedef {object} WorldInfoSelectionBundle
  * @property {string[]} [globalSelect]
  * @property {{name?: string, extraBooks?: string[]}[]} [charLore]
@@ -335,8 +338,6 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  * @typedef {object} TextCompletionSettingsBundle
  * @property {PowerUserSettingsBundle} [power_user]
  * @property {WorldInfoSettingsBundle} [world_info_settings]
- * @property {WorldInfoSelectionBundle} [world_info]
- * @property {number} [world_info_character_strategy]
  * @property {TextGenSettingsBundle} [textgenerationwebui_settings]
  * @property {KoboldSettingsBundle} [kai_settings]
  * @property {object} [nai_settings]
@@ -564,8 +565,6 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const {
         power_user: powerUser = {},
         world_info_settings: worldInfoSettings = {},
-        world_info: worldInfoSelection = {},
-        world_info_character_strategy: worldInfoCharacterStrategySetting,
         textgenerationwebui_settings: textgenSettings = {},
         kai_settings: koboldSettings = {},
         nai_settings: novelSettings = {},
@@ -574,10 +573,16 @@ export async function resolveTextCompletionGenerationInput(directories, {
         amount_gen: settingsAmountGen,
         max_context: settingsMaxContext,
     } = /** @type {TextCompletionSettingsBundle} */ (readSettingsAtPaths(directories, [
-        'power_user', 'world_info_settings', 'world_info', 'world_info_character_strategy',
+        'power_user', 'world_info_settings',
         'textgenerationwebui_settings', 'kai_settings', 'nai_settings',
         'extension_settings', 'username', 'amount_gen', 'max_context',
     ]));
+    // The client's getWorldInfoSettings() (public/scripts/world-info.js) nests the real selection
+    // object under world_info_settings.world_info, and world_info_character_strategy alongside it -
+    // there is no separate top-level `world_info`/`world_info_character_strategy` settings key on disk
+    // (the doc comments above describing them as separate top-level keys were wrong).
+    const worldInfoSelection = worldInfoSettings.world_info ?? {};
+    const worldInfoCharacterStrategySetting = worldInfoSettings.world_info_character_strategy;
 
     // Per-mainApi backend-specific settings object - see module doc comment FIELD-MAPPING NOTES for
     // the exact rationale (no preset-merge step for kobold/novel here, same as textgenerationwebui's
