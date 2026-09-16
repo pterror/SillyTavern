@@ -9748,11 +9748,10 @@ export async function switchToAlternativePath(mesId, swipeId) {
             await fetch('/api/chats/message/select', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId }),
+                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true }),
             });
             if (avatar) {
                 charactersStore.update(avatar, { chat: targetNodeId });
-                await saveActiveChat(avatar, targetNodeId);
             }
         } catch (error) {
             console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
@@ -9768,6 +9767,25 @@ export async function switchToAlternativePath(mesId, swipeId) {
     return true;
 }
 
+// Moves the character's chat pointer onto targetNodeId. An unstored (provisional) node has nothing
+// persisted server-side to point at yet, so it's skipped, matching switchToAlternativePath()'s guard.
+async function _persistNodeSelection(targetNodeId) {
+    const avatar = getCurrentCharacter()?.avatar;
+    if (!avatar || isProvisionalNodeId(targetNodeId)) {
+        return;
+    }
+    charactersStore.update(avatar, { chat: targetNodeId });
+    try {
+        await fetch('/api/chats/message/select', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true }),
+        });
+    } catch (error) {
+        console.warn('[switchToNode] Failed to persist the selection:', error);
+    }
+}
+
 // Jumps to any node in the open tree-backed chat without a full reload. Solo tree-backed chats only; returns false so the caller can fall back to a full open.
 export async function switchToNode(targetNodeId) {
     if (selected_group || !chat_metadata?._tree_stored || chat.length === 0) {
@@ -9776,12 +9794,7 @@ export async function switchToNode(targetNodeId) {
 
     const alreadyLoadedAt = chat.findIndex(m => m.node_id === targetNodeId);
     if (alreadyLoadedAt >= 0) {
-        const avatar = getCurrentCharacter()?.avatar;
-        if (avatar) {
-            charactersStore.update(avatar, { chat: targetNodeId });
-            await saveActiveChat(avatar, targetNodeId).catch(error =>
-                console.warn('[switchToNode] Failed to persist the selection:', error));
-        }
+        await _persistNodeSelection(targetNodeId);
         return true;
     }
 
@@ -9839,12 +9852,7 @@ export async function switchToNode(targetNodeId) {
 
     chat.splice(forkPos + 1, chat.length - (forkPos + 1), ...between, ...below);
 
-    const avatar = getCurrentCharacter()?.avatar;
-    if (avatar) {
-        charactersStore.update(avatar, { chat: targetNodeId });
-        await saveActiveChat(avatar, targetNodeId).catch(error =>
-            console.warn('[switchToNode] Failed to persist the selection:', error));
-    }
+    await _persistNodeSelection(targetNodeId);
 
     _snapshotMessages();
 
