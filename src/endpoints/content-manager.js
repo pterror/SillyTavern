@@ -419,7 +419,7 @@ function getContentLog(contentLogPath) {
     return contentLogText.split('\n');
 }
 
-async function downloadChubLorebook(id) {
+export async function downloadChubLorebook(id) {
     const [lorebooks, creatorName, projectName] = id.split('/');
     const result = await fetch(`https://api.chub.ai/api/${lorebooks}/${creatorName}/${projectName}`, {
         method: 'GET',
