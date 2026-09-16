@@ -1002,6 +1002,35 @@ class PresetManager {
     }
 
     /**
+     * Maps this manager's API ID to the saveSettings()/saveSettingsDebounced() key path that scopes
+     * a save to just this API's settings.extensions object, mirroring the switch in getPresetList().
+     * @returns {string|undefined} Key path, or undefined if the API ID is unrecognized.
+     */
+    getExtensionsSettingsKey() {
+        switch (this.apiId) {
+            case 'koboldhorde':
+            case 'kobold':
+                return 'kai_settings.extensions';
+            case 'novel':
+                return 'nai_settings.extensions';
+            case 'textgenerationwebui':
+                return 'textgenerationwebui_settings.extensions';
+            case 'openai':
+                return 'oai_settings.extensions';
+            case 'context':
+                return 'power_user.context.extensions';
+            case 'instruct':
+                return 'power_user.instruct.extensions';
+            case 'sysprompt':
+                return 'power_user.sysprompt.extensions';
+            case 'reasoning':
+                return 'power_user.reasoning.extensions';
+            default:
+                return undefined;
+        }
+    }
+
+    /**
      * Writes a value to a preset extension field.
      * @param {object} options
      * @param {string} [options.name] Name of the preset. If not provided, uses the currently selected preset name.
@@ -1019,7 +1048,9 @@ class PresetManager {
             // Set the value at the specified path
             settings.extensions = ensurePlainObject(settings.extensions || {});
             path ? lodash.set(settings.extensions, path, value) : (settings.extensions = value);
-            await saveSettings();
+            // Scope the save to just this API's settings.extensions instead of the whole settings blob.
+            const settingsKey = this.getExtensionsSettingsKey();
+            settingsKey ? await saveSettings(settingsKey) : await saveSettings();
         }
 
         // Also update the preset by name
