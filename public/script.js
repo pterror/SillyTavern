@@ -11800,6 +11800,13 @@ function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
     is_delete_mode = true;
 }
 
+// A single shared debounce instance is fine: only one message is ever in edit mode at a time
+// (this_edit_mes_id). messageEditDone() cancels this before its own save to avoid a double write.
+const messageEditAutoSaveDebounced = debounce((mesId) => {
+    chatOpEdit(mesId).catch(error =>
+        console.error('Could not save the edited message:', error));
+}, DEFAULT_SAVE_EDIT_TIMEOUT);
+
 function messageEditAuto(div) {
     const { mesBlock, text, mes, bias } = applyMessageEdit(div);
 
@@ -11815,8 +11822,7 @@ function messageEditAuto(div) {
     ));
     mesBlock.find('.mes_bias').empty();
     mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
-    chatOpEdit(this_edit_mes_id).catch(error =>
-        console.error('Could not save the edited message:', error));
+    messageEditAutoSaveDebounced(this_edit_mes_id);
 }
 
 /**
@@ -12035,6 +12041,9 @@ async function messageEditDone(div) {
     await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
     const editedMesId = this_edit_mes_id;
     this_edit_mes_id = undefined;
+    // Cancel a pending keystroke-driven autosave (messageEditAutoSaveDebounced) so it can't fire a
+    // stale write after this call's own save lands.
+    cancelDebounce(messageEditAutoSaveDebounced);
     // Says the edit directly rather than letting the fallback save infer it from a snapshot diff.
     // chatOpEdit() already retries transient failures itself (chat-store.js's _chatOpPost).
     try {
