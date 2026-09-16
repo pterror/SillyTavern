@@ -19,10 +19,69 @@ global.document = { querySelector: jest.fn(() => null) };
 const chatState = { chat: [], chat_metadata: {} };
 const openCharacterChatMock = jest.fn(async () => {});
 const openGroupChatMock = jest.fn(async () => {});
-const saveChatMock = jest.fn(async () => {});
+/**
+ * Real saveChat() (generation.js, since a8bdcc599) sends the plain proposed name with `unique: true`
+ * and returns whatever unique name the server actually saved under - naming is no longer computed
+ * client-side. Mirrored here against the same existing-chats listing bookmarks.js's own
+ * getExistingChatNames() fetches (these tests already drive that fetch per-case), so the mock produces
+ * the same "<name> - Branch #N" result the server would.
+ */
+const saveChatMock = jest.fn(async ({ chatName, unique = false } = {}) => {
+    if (!unique) return chatName;
+    const response = await fetch('/api/characters/chats', { method: 'POST', headers: {}, body: '{}' });
+    let existing = [];
+    if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data)) existing = data.map(x => x.file_name.replace('.jsonl', ''));
+    }
+    for (let i = 1; ; i++) {
+        const candidate = `${chatName} - Branch #${i}`;
+        if (!existing.includes(candidate)) return candidate;
+    }
+});
 const getCurrentCharacterMock = jest.fn(() => ({ avatar: 'char.png', name: 'Char', chat: 'current-chat' }));
 const getCurrentChatDetailsMock = jest.fn(() => ({ sessionName: 'current-chat' }));
 const groupsStoreMock = { get: jest.fn() };
+/**
+ * Real updateMessage() (chat-store.js) shallow-merges into chat[mesId] and replaces the array slot
+ * (it doesn't mutate the old object in place) - createBranch()/createNewBookmark() rely on exactly
+ * that to land `extra.branches`/`extra.bookmark_link` where these tests read them back from
+ * chatState.chat[0]. Deep-freezing the result is chat-store.js's own hygiene, not behavior any test
+ * here depends on, so it's left out.
+ */
+const updateMessageMock = jest.fn((mesId, updates) => {
+    const old = chatState.chat[mesId];
+    if (!old) return old;
+    const result = { ...old, ...updates };
+    chatState.chat[mesId] = result;
+    return result;
+});
+/**
+ * Real hydrateSwipes() (script.js) only does anything when the requested swipe is a `null` hole;
+ * every message these tests build has fully-populated string swipes, so the real fast path always
+ * applies (return true, no fetch). Mirrors just that predicate rather than the fetch-and-fill branch,
+ * which nothing here constructs a hole to exercise.
+ */
+const hydrateSwipesMock = jest.fn(async (mesId, { index = null, all = false } = {}) => {
+    const message = chatState.chat[mesId];
+    if (!message || !Array.isArray(message.swipes)) return false;
+    const isHole = i => typeof message.swipes[i] !== 'string';
+    const wanted = all
+        ? message.swipes.some((_, i) => isHole(i))
+        : (index !== null && index >= 0 && index < message.swipes.length && isHole(index));
+    return !wanted;
+});
+/**
+ * Real ensureOpeningRow() (chat-store.js) returns null for any message without a stored/provisional
+ * node_id - true of every fixture here (isTreeStored() is always false in this file, so its return
+ * value never actually gates anything below it either way).
+ */
+const ensureOpeningRowMock = jest.fn(async () => null);
+/** switchToNode() is only wired to the .select_chat_block click handler, which these tests never trigger. */
+const switchToNodeMock = jest.fn(async () => false);
+/** Real, pure predicate (node-identity.js) - re-implemented here rather than imported so the mocked
+ * utils.js (which node-identity.js itself imports getStringHash from) doesn't need widening for it. */
+const isStoredNodeIdMock = jest.fn((nodeId) => typeof nodeId === 'string' && nodeId.length > 0 && !nodeId.startsWith('card:'));
 
 /** Replaces the mocked chat array's contents in place, keeping its identity stable across tests. */
 function setChat(messages) {
@@ -54,6 +113,11 @@ jest.unstable_mockModule('../public/script.js', () => ({
     saveItemizedPrompts: jest.fn(),
     setActiveGroup: jest.fn(),
     getCurrentChatDetails: getCurrentChatDetailsMock,
+    updateMessage: updateMessageMock,
+    hydrateSwipes: hydrateSwipesMock,
+    ensureOpeningRow: ensureOpeningRowMock,
+    switchToNode: switchToNodeMock,
+    isStoredNodeId: isStoredNodeIdMock,
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
@@ -152,9 +216,10 @@ beforeEach(() => {
     getCurrentChatDetailsMock.mockReturnValue({ sessionName: 'current-chat' });
     openCharacterChatMock.mockClear();
     openGroupChatMock.mockClear();
-    saveChatMock.mockClear().mockResolvedValue(undefined);
-    // Default: no existing chats found (createBranch's getExistingChatNames call) / no fork data.
-    // Individual tests override this when they need a specific fetch response.
+    saveChatMock.mockClear();
+    // Default: no existing chats found (createBranch's getExistingChatNames call, also read by
+    // saveChatMock's own unique-naming above) / no fork data. Individual tests override this when
+    // they need a specific fetch response.
     global.fetch = jest.fn(async () => ({ ok: false }));
 });
 

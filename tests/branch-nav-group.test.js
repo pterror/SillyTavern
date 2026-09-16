@@ -33,6 +33,14 @@ jest.unstable_mockModule('../public/script.js', () => ({
     saveItemizedPrompts: jest.fn(),
     setActiveGroup: jest.fn(),
     getCurrentChatDetails: jest.fn(() => ({ sessionName: 'current-chat' })),
+    // None of these 5 are reached by anything this file's tests exercise (branchSwipe()/resolveForkRing()
+    // for group chats never call them) - present only because bookmarks.js's named imports are resolved
+    // eagerly at link time, same reasoning as every other entry here.
+    updateMessage: jest.fn(),
+    hydrateSwipes: jest.fn(async () => true),
+    ensureOpeningRow: jest.fn(async () => null),
+    switchToNode: jest.fn(async () => false),
+    isStoredNodeId: jest.fn(() => false),
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
