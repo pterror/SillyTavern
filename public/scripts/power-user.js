@@ -4442,7 +4442,10 @@ jQuery(() => {
         $('#stscript_autocomplete_font_scale_counter').val(value);
         power_user.stscript.autocomplete.font.scale = Number(value);
         document.body.style.setProperty('--ac-font-scale', value.toString());
-        window.dispatchEvent(new Event('resize', { bubbles: true }));
+        // Only the autocomplete box itself needs to react to this - a real window resize dispatch here also
+        // fires unrelated resize-listeners (favorites hotswap refetch, movingUI rescale, zoom report), so call
+        // the one thing this change actually affects directly instead of faking a resize.
+        adjustAutocompleteDebounced();
         saveSettingsDebounced('power_user.stscript.autocomplete.font.scale');
     });
     $('#stscript_autocomplete_font_scale_counter').on('input', function () {
@@ -4450,17 +4453,17 @@ jQuery(() => {
         $('#stscript_autocomplete_font_scale').val(value);
         power_user.stscript.autocomplete.font.scale = Number(value);
         document.body.style.setProperty('--ac-font-scale', value.toString());
-        window.dispatchEvent(new Event('resize', { bubbles: true }));
+        adjustAutocompleteDebounced();
         saveSettingsDebounced('power_user.stscript.autocomplete.font.scale');
     });
 
     $('#stscript_autocomplete_width_left').on('input', function () {
         const value = Number($(this).val());
-        // the resize dispatch must run every time (including on load), but the save should only fire on real changes.
+        // adjustAutocompleteDebounced() must run every time (including on load), but the save should only fire on real changes.
         const changed = power_user.stscript.autocomplete.width.left !== value;
         power_user.stscript.autocomplete.width.left = value;
         /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
-        window.dispatchEvent(new Event('resize', { bubbles: true }));
+        adjustAutocompleteDebounced();
         if (changed) {
             saveSettingsDebounced('power_user.stscript.autocomplete.width.left');
         }
@@ -4468,11 +4471,11 @@ jQuery(() => {
 
     $('#stscript_autocomplete_width_right').on('input', function () {
         const value = Number($(this).val());
-        // the resize dispatch must run every time (including on load), but the save should only fire on real changes.
+        // adjustAutocompleteDebounced() must run every time (including on load), but the save should only fire on real changes.
         const changed = power_user.stscript.autocomplete.width.right !== value;
         power_user.stscript.autocomplete.width.right = value;
         /**@type {HTMLElement}*/(this.closest('.doubleRangeInputContainer')).style.setProperty('--value', value.toString());
-        window.dispatchEvent(new Event('resize', { bubbles: true }));
+        adjustAutocompleteDebounced();
         if (changed) {
             saveSettingsDebounced('power_user.stscript.autocomplete.width.right');
         }
