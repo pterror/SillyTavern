@@ -1,5 +1,6 @@
 import { chat, chat_metadata, getCurrentCharacter, getRequestHeaders } from '../script.js';
 import { groupsStore, selected_group } from './group-chats.js';
+import { _setCurrentTarget } from './chat-store.js';
 import { delay } from './utils.js';
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
@@ -133,7 +134,7 @@ export async function _postChatMetadata(owner, target, metadata) {
         try {
             const result = await _retryOp(postMetadata);
             if (result && typeof result.integrity === 'string') {
-                chat_metadata.integrity = result.integrity;
+                _setCurrentTarget(target, result.integrity, owner);
             }
             if (result) {
                 _lastSavedMetadataJSON = metadataContentJSON;
