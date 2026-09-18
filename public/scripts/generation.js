@@ -980,9 +980,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // greeting can still coexist with real history elsewhere in the tree (other branches, a
         // previously-used greeting), so send is exactly the "someone used this greeting" moment
         // ensureOpeningRow() is meant to fire on - materialize it here (a no-op if not provisional) so
-        // the anchor is never falsely treated as "no history".
-        if (isProvisionalNodeId(lastMessage?.node_id)) {
-            await ensureOpeningRow(chat.length - 1);
+        // the anchor is never falsely treated as "no history". A message that's neither provisional
+        // NOR stored (its node_id is missing/stale some other way - e.g. a prior write that never
+        // actually landed client-side) gets the same "don't trust it as empty" treatment, via the
+        // same generic reconciliation saveChatConditional({heal:true}) already uses elsewhere.
+        if (lastMessage != null && !isStoredNodeId(lastMessage.node_id)) {
+            if (isProvisionalNodeId(lastMessage.node_id)) {
+                await ensureOpeningRow(chat.length - 1);
+            } else {
+                await healDirtyMessages();
+            }
             lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
         }
         const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
@@ -1289,9 +1296,14 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // Same node_id-only addressing as the text-completion cutover above (not assumed) - see that
         // block's own UPDATE comment for the full rationale (`lastMessage`, captured before
         // 'regenerate's own delete-last-message branch, not `chat[chat.length - 1]`), including why an
-        // unused greeting is materialized here rather than assumed to mean "no history".
-        if (isProvisionalNodeId(lastMessage?.node_id)) {
-            await ensureOpeningRow(chat.length - 1);
+        // unused greeting is materialized here rather than assumed to mean "no history", and why a
+        // present-but-not-stored node_id gets the same generic healing treatment.
+        if (lastMessage != null && !isStoredNodeId(lastMessage.node_id)) {
+            if (isProvisionalNodeId(lastMessage.node_id)) {
+                await ensureOpeningRow(chat.length - 1);
+            } else {
+                await healDirtyMessages();
+            }
             lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
         }
         const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
