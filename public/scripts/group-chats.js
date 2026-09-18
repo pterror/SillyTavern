@@ -86,6 +86,7 @@ import {
     ensureMessageMediaIsArray,
 } from '../script.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
+import { _setCurrentTarget } from './chat-store.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -867,7 +868,7 @@ async function _bootstrapGroupChat(groupId, chatName) {
     if (metaResponse.ok) {
         const meta = await metaResponse.json().catch(() => ({}));
         if (typeof meta.integrity === 'string') {
-            chat_metadata.integrity = meta.integrity;
+            _setCurrentTarget(chatName, meta.integrity, { group_id: groupId });
         }
     }
 
@@ -2382,8 +2383,8 @@ export async function createNewGroupChat(groupId) {
     }
     const { chat_id, chats } = await response.json();
     group.chats = chats;
-    group.chat_id = chat_id;
     updateChatMetadata({}, true);
+    _setCurrentTarget(chat_id, null, { group_id: groupId });
     groupsStore.update(group.id, { chats: group.chats, chat_id: group.chat_id });
 
     await getGroupChat(group.id);
@@ -2437,9 +2438,9 @@ export async function openGroupChat(groupId, chatId) {
     }
 
     await clearChat({ clearData: true });
-    group.chat_id = chatId;
     group.date_last_chat = Date.now();
     updateChatMetadata({}, true);
+    _setCurrentTarget(chatId, null, { group_id: groupId });
 
     groupsStore.update(group.id, { chat_id: group.chat_id, date_last_chat: group.date_last_chat });
 
@@ -2462,7 +2463,9 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
     }
 
     if (group.chat_id === oldChatId) {
-        group.chat_id = newChatId;
+        // Same node under a new label, not a different node - carry the current integrity forward
+        // rather than clearing to unknown (see _setCurrentTarget()'s own doc comment).
+        _setCurrentTarget(newChatId, chat_metadata.integrity, { group_id: groupId });
     }
 
     group.chats.splice(group.chats.indexOf(oldChatId), 1);
@@ -2505,7 +2508,7 @@ export async function deleteGroupChatByName(groupId, chatName) {
     // If the deleted chat was the current chat, switch to the last chat in the group
     if (group.chat_id === chatName) {
         if (group.chats.length) {
-            group.chat_id = group.chats[group.chats.length - 1];
+            _setCurrentTarget(group.chats[group.chats.length - 1], null, { group_id: groupId });
         } else {
             const newChatResponse = await fetch('/api/groups/new-chat', {
                 method: 'POST',
@@ -2515,7 +2518,7 @@ export async function deleteGroupChatByName(groupId, chatName) {
             if (newChatResponse.ok) {
                 const { chat_id, chats } = await newChatResponse.json();
                 group.chats = chats;
-                group.chat_id = chat_id;
+                _setCurrentTarget(chat_id, null, { group_id: groupId });
             }
         }
     }
@@ -2544,8 +2547,8 @@ export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } 
     group.chats.splice(group.chats.indexOf(chatId), 1);
 
     if (group.chat_id === chatId) {
-        group.chat_id = '';
         updateChatMetadata({}, true);
+        _setCurrentTarget('', null, { group_id: groupId });
     }
 
     // group.chats/chat_id already mutated above, regardless of how the delete fetch below turns out (matches
@@ -2667,9 +2670,6 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
     }
 
     const data = await response.json().catch(() => null);
-    if (data && typeof data.integrity === 'string') {
-        chat_metadata.integrity = data.integrity;
-    }
     // The server may have renamed this to stay unique (only asked for via `unique`) - adopt whatever
     // it actually saved under instead of assuming the id this call proposed.
     const savedId = (data && typeof data.chat_id === 'string' && data.chat_id) ? data.chat_id : name;

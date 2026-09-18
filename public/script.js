@@ -293,7 +293,7 @@ export { messageFormatting };
 import {
     updateMessage, updateIn, deepFreeze,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
-    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot,
+    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
@@ -2629,13 +2629,13 @@ export async function deleteCharacterChatByName(avatar, fileName) {
  * empty pointer here.
  */
 async function pointToFreshChat() {
-    charactersStore.update(getCurrentCharacter().avatar, { chat: '' });
+    _setCurrentTarget('', null);
     $('#selected_chat_pole').val('');
     await getChat({ isNewChat: true });
     // getChat() can refetch and clobber the clear above back to a still-old server value; reapply it before the save below.
     const openingNodeId = chat[0]?.node_id;
     const pointer = isStoredNodeId(openingNodeId) ? openingNodeId : '';
-    charactersStore.update(getCurrentCharacter().avatar, { chat: pointer });
+    _setCurrentTarget(pointer, chat_metadata.integrity ?? null);
     $('#selected_chat_pole').val(pointer);
     await saveActiveChat(getCurrentCharacter().avatar, pointer);
 }
@@ -2658,7 +2658,7 @@ export async function replaceCurrentChat() {
             // branches (labeled tree nodes) when this character is tree-backed - node_id addresses
             // it exactly; the JSONL-era fallback shape has no node_id, so fall back to its name.
             const pointer = chats[0].node_id || chats[0].file_name.replace('.jsonl', '');
-            charactersStore.update(getCurrentCharacter().avatar, { chat: pointer });
+            _setCurrentTarget(pointer, null);
             $('#selected_chat_pole').val(getCurrentCharacter().chat);
             await saveActiveChat(getCurrentCharacter().avatar, getCurrentCharacter().chat);
             await getChat();
@@ -7872,6 +7872,7 @@ export async function getChat({ isNewChat = false } = {}) {
             /** @type {ChatHeader} */
             const chatHeader = data.shift();
             chat_metadata = chatHeader?.chat_metadata ?? {};
+            _setCurrentTarget(getCurrentCharacter().chat, chat_metadata.integrity ?? null);
             _resetMetadataSaveSnapshot();
             chat.splice(0, chat.length, ...data);
             chat.forEach(ensureMessageMediaIsArray);
@@ -7885,6 +7886,7 @@ export async function getChat({ isNewChat = false } = {}) {
             // An empty/corrupted chat file
             chat.splice(0, chat.length);
             chat_metadata = {};
+            _setCurrentTarget(getCurrentCharacter().chat, null);
             _resetMetadataSaveSnapshot();
         }
         await getChatResult();
@@ -8081,8 +8083,8 @@ export async function saveActiveChat(avatar, chat) {
 export async function openCharacterChat(file_name) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
-    charactersStore.update(getCurrentCharacter().avatar, { chat: file_name });
     chat_metadata = {};
+    _setCurrentTarget(file_name, null);
     _resetMetadataSaveSnapshot();
 
     // Must run even if getChat fails, or "which chat was open" is lost on reload.
@@ -12251,7 +12253,9 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
             await renameGroupChat(groupId, oldFileName, newFileName);
         // Only a name-addressed pointer has to follow the rename - a node-addressed one already names that node.
         } else if (!byNode && characterAvatar !== undefined && characterAvatar === this_avatar && charactersStore.get(characterAvatar)?.chat === oldFileName) {
-            charactersStore.update(characterAvatar, { chat: newFileName });
+            // Same node under a new label, not a different node - carry the current integrity forward
+            // rather than clearing to unknown (see _setCurrentTarget()'s own doc comment).
+            _setCurrentTarget(newFileName, chat_metadata.integrity);
             $('#selected_chat_pole').val(charactersStore.get(characterAvatar).chat);
             // merge-attributes instead of createOrEditCharacter(), which would do a full-card save.
             await fetch('/api/characters/merge-attributes', {

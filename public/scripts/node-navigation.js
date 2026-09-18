@@ -1,10 +1,10 @@
 import {
     chat,
-    getRequestHeaders, getCurrentChatId, getCurrentCharacter, charactersStore,
+    getRequestHeaders, getCurrentChatId, getCurrentCharacter,
     redisplayChat, updateViewMessageIds, refreshSwipeButtons,
 } from '../script.js';
 import { selected_group } from './group-chats.js';
-import { updateMessage } from './chat-store.js';
+import { updateMessage, _setCurrentTarget } from './chat-store.js';
 import { isProvisionalNodeId } from './node-identity.js';
 import { _snapshotMessages } from './generation.js';
 
@@ -62,7 +62,7 @@ export async function switchToAlternativePath(mesId, swipeId) {
                 body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true }),
             });
             if (avatar != null) {
-                charactersStore.update(avatar, { chat: targetNodeId });
+                _setCurrentTarget(targetNodeId, null);
             }
         } catch (error) {
             console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
@@ -88,7 +88,7 @@ async function _persistNodeSelection(targetNodeId) {
     if (avatar == null || isProvisionalNodeId(targetNodeId)) {
         return;
     }
-    charactersStore.update(avatar, { chat: targetNodeId });
+    _setCurrentTarget(targetNodeId, null);
     try {
         await fetch('/api/chats/message/select', {
             method: 'POST',

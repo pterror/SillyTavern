@@ -1,11 +1,11 @@
 // Writer side of the chat store: writes should go through the named actions below rather than
 // mutating `chat` directly and asking for a whole-conversation save.
 
-import { chat, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
+import { chat, chat_metadata, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 // A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
 // owner for every chatOp*() below. See _currentOwner().
-import { selected_group } from './group-chats.js';
+import { selected_group, groupsStore } from './group-chats.js';
 import { t } from './i18n.js';
 
 // Without `noUncheckedIndexedAccess` (a project-wide tsconfig flag, out of scope to flip here since
@@ -117,6 +117,40 @@ const _openingRowInFlight = new Map();
  * @property {OpeningAlternative[]} [alternatives]
  */
 
+// The only writer of chat_metadata.integrity and the live target pointer (charactersStore's `chat`
+// for solo, the current group's `chat_id` for a group) — every call replaces both together so the
+// two can never drift out of pairing the way ensureOpeningRow()/switchToNode()/switchToAlternativePath()
+// used to. `integrity` omitted/null means unknown, matching setNodeMetadata/setChatMetadata's own
+// falsy-`expected_integrity` semantics (the next write goes through unconditionally). `owner` overrides
+// the ambient selected_group/getCurrentCharacter() inference (same shape as _currentOwner()'s return
+// below) for a caller whose target isn't necessarily the currently open one - see deleteGroupChatByName()
+// (group-chats.js), which can repoint a group that isn't selected_group.
+// This file's own import of group-chats.js's selected_group/groupsStore, alongside group-chats.js's
+// import of this function, is the same bidirectional pattern chat-store.js already has with
+// script.js - see .oxlint-cycle-baseline's own history for that precedent.
+/**
+ * @param {string} nodeId
+ * @param {string|null} [integrity]
+ * @param {{group_id: string}|{avatar_url: string}|null} [owner]
+ */
+export function _setCurrentTarget(nodeId, integrity = null, owner = null) {
+    chat_metadata.integrity = integrity ?? undefined;
+    if (owner) {
+        if ('group_id' in owner) {
+            groupsStore.update(owner.group_id, { chat_id: nodeId });
+        } else {
+            charactersStore.update(owner.avatar_url, { chat: nodeId });
+        }
+        return;
+    }
+    if (selected_group != null && selected_group !== '') {
+        groupsStore.update(selected_group, { chat_id: nodeId });
+    } else {
+        const avatar = getCurrentCharacter()?.avatar;
+        if (avatar != null && avatar !== '') charactersStore.update(avatar, { chat: nodeId });
+    }
+}
+
 // The only writer of chat[0].node_id — minting a row in more than one place raced (two rows for
 // one greeting, two ideas of which was the opening).
 /**
@@ -203,7 +237,7 @@ export async function ensureOpeningRow(mesId = 0) {
             headers: getRequestHeaders(),
             body: JSON.stringify({ avatar_url: character.avatar, node_id: realId, activate: true }),
         });
-        charactersStore.update(character.avatar, { chat: realId });
+        _setCurrentTarget(realId, null);
     } catch (error) {
         console.warn('[greetings] The greeting has a row, but the position could not be recorded:', error);
     }
