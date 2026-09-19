@@ -15,6 +15,9 @@ const CHUNK_SIZE = 5000;
 /** Nodes with ≤ this many records return per-record hash data directly instead of children digests. */
 const DEFAULT_LEAF_THRESHOLD = 96;
 
+/** Kept well under SQLite's SQLITE_MAX_VARIABLE_NUMBER so a chunked IN (...) query never exceeds it. */
+const ID_LOOKUP_BATCH_SIZE = 500;
+
 /**
  * @param {string} dbPath
  * @returns {Promise<import('./endpoints/sqlite-engine.js').SqliteEngineHandle | null>}
@@ -23,6 +26,37 @@ async function openReadOnly(dbPath) {
     const engine = await getSqliteEngine();
     if (!engine) return null;
     return engine.openDatabase(dbPath);
+}
+
+/** Registers PATH_KEY(id, depth, branching) so a query can scope to a row's tree-path key in SQL. */
+function registerPathKeyFunction(db) {
+    db.defineFunction('PATH_KEY', (id, depth, branching) => pathKey(getStringHash(String(id)), Number(depth), Number(branching)));
+}
+
+/**
+ * A node at path: [] covers the whole table (used for the very first call in a descent, before anything is known
+ * to be mismatched) - no WHERE clause can narrow that, so this returns an unscoped query in that case. Otherwise
+ * scopes to the union of every requested node's subtree, via PATH_KEY so only rows actually in a requested
+ * subtree are read/parsed, not the whole table.
+ * @param {{ path: number[] }[]} nodes
+ * @param {number} branching
+ * @returns {{ where: string, params: any[] }}
+ */
+function buildNodeScopeSql(nodes, branching) {
+    if (nodes.length === 0) return { where: 'WHERE 0', params: [] };
+    if (nodes.some(n => n.path.length === 0)) return { where: '', params: [] };
+    const clauses = [];
+    const params = [];
+    const seen = new Set();
+    for (const n of nodes) {
+        const key = n.path.join(',');
+        const dedupeKey = `${n.path.length}:${key}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        clauses.push('PATH_KEY(id, ?, ?) = ?');
+        params.push(n.path.length, branching, key);
+    }
+    return { where: `WHERE ${clauses.join(' OR ')}`, params };
 }
 
 /**
@@ -61,7 +95,9 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
     const db = await openReadOnly(dbPath);
     if (!db) return null;
     try {
-        const rows = db.all('SELECT id, shallow_json, digest_fav, digest_tag_ids, digest_content FROM characters');
+        registerPathKeyFunction(db);
+        const { where, params } = buildNodeScopeSql(nodes, branching);
+        const rows = db.all(`SELECT id, shallow_json FROM characters ${where}`, params);
 
         // nodesByDepth: depth -> Map<pathKey, nodeIndex[]>
         const nodesByDepth = new Map();
@@ -98,18 +134,10 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
                     if (!nodeIndices) continue;
 
                     if (!parsed) {
-                        // digest columns are NULL for rows written before the digest-columns migration
-                        if (row.digest_fav != null && row.digest_tag_ids != null && row.digest_content != null) {
-                            favHash = row.digest_fav;
-                            tagIdsHash = row.digest_tag_ids;
-                            fieldsHash = row.digest_content;
-                            parsed = true;
-                        } else {
-                            parsed = JSON.parse(row.shallow_json);
-                            favHash = characterDigestFavHash(parsed) % 4294967296;
-                            tagIdsHash = characterDigestTagIdsHash(parsed);
-                            fieldsHash = characterDigestFieldsHash(parsed) % 4294967296;
-                        }
+                        parsed = JSON.parse(row.shallow_json);
+                        favHash = characterDigestFavHash(parsed) % 4294967296;
+                        tagIdsHash = characterDigestTagIdsHash(parsed);
+                        fieldsHash = characterDigestFieldsHash(parsed) % 4294967296;
                     }
                     for (const idx of nodeIndices) {
                         const nd = nodeData[idx];
@@ -160,21 +188,11 @@ async function treeDescend(dbPath, nodes, branching, leafThreshold) {
 
                         // Leaf members carry per-record hashes only, not fingerprint values (fetched
                         // separately via 'resolve-fingerprints' for records identified as drifted).
-                        let memberFavHash, memberTagIdsHash, memberContentHash, memberFav;
-                        if (row.digest_fav != null && row.digest_tag_ids != null && row.digest_content != null) {
-                            memberFavHash = row.digest_fav;
-                            memberTagIdsHash = row.digest_tag_ids;
-                            memberContentHash = row.digest_content;
-                            // fav needs the actual value, not the hash - parse just for this
-                            const p = JSON.parse(row.shallow_json);
-                            memberFav = !!p?.fav;
-                        } else {
-                            const p = JSON.parse(row.shallow_json);
-                            memberFavHash = characterDigestFavHash(p) % 4294967296;
-                            memberTagIdsHash = characterDigestTagIdsHash(p);
-                            memberContentHash = characterDigestFieldsHash(p) % 4294967296;
-                            memberFav = !!p?.fav;
-                        }
+                        const p = JSON.parse(row.shallow_json);
+                        const memberFavHash = characterDigestFavHash(p) % 4294967296;
+                        const memberTagIdsHash = characterDigestTagIdsHash(p);
+                        const memberContentHash = characterDigestFieldsHash(p) % 4294967296;
+                        const memberFav = !!p?.fav;
                         for (const n of nodeIndices) {
                             leafMembers.get(n).push({
                                 id: row.id,
@@ -215,17 +233,19 @@ async function resolveFingerprints(dbPath, ids) {
     const db = await openReadOnly(dbPath);
     if (!db) return null;
     try {
-        const idSet = new Set(ids);
+        const uniqueIds = [...new Set(ids)];
         const results = [];
-        const rows = db.all('SELECT id, shallow_json FROM characters');
-        for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
-            for (let j = i; j < Math.min(i + CHUNK_SIZE, rows.length); j++) {
-                const row = rows[j];
-                if (!idSet.has(row.id)) continue;
+        for (let i = 0; i < uniqueIds.length; i += ID_LOOKUP_BATCH_SIZE) {
+            const batch = uniqueIds.slice(i, i + ID_LOOKUP_BATCH_SIZE);
+            const placeholders = batch.map(() => '?').join(',');
+            const rows = db.all(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch);
+            for (const row of rows) {
                 const parsed = JSON.parse(row.shallow_json);
                 results.push({ id: row.id, fingerprint: characterDigestFingerprint(parsed) });
             }
-            await new Promise((resolve) => setImmediate(resolve));
+            if (i + ID_LOOKUP_BATCH_SIZE < uniqueIds.length) {
+                await new Promise((resolve) => setImmediate(resolve));
+            }
         }
         return { records: results };
     } finally {
@@ -240,23 +260,16 @@ async function computeRootDigest(dbPath) {
     const db = await openReadOnly(dbPath);
     if (!db) return null;
     try {
-        const rows = db.all('SELECT id, digest_fav, digest_tag_ids, digest_content, shallow_json FROM characters');
+        const rows = db.all('SELECT id, shallow_json FROM characters');
         let digest = emptyDigest128();
 
         for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
             for (let j = i; j < Math.min(i + CHUNK_SIZE, rows.length); j++) {
                 const row = rows[j];
-                let favHash, tagIdsHash, fieldsHash;
-                if (row.digest_fav != null && row.digest_tag_ids != null && row.digest_content != null) {
-                    favHash = row.digest_fav;
-                    tagIdsHash = row.digest_tag_ids;
-                    fieldsHash = row.digest_content;
-                } else {
-                    const parsed = JSON.parse(row.shallow_json);
-                    favHash = characterDigestFavHash(parsed) % 4294967296;
-                    tagIdsHash = characterDigestTagIdsHash(parsed);
-                    fieldsHash = characterDigestFieldsHash(parsed) % 4294967296;
-                }
+                const parsed = JSON.parse(row.shallow_json);
+                const favHash = characterDigestFavHash(parsed) % 4294967296;
+                const tagIdsHash = characterDigestTagIdsHash(parsed);
+                const fieldsHash = characterDigestFieldsHash(parsed) % 4294967296;
                 digest = combineDigest128(digest, row.id, favHash, tagIdsHash, fieldsHash);
             }
             await new Promise((resolve) => setImmediate(resolve));

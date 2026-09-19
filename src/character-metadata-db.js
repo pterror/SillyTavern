@@ -132,9 +132,6 @@ const WATCH_DEBOUNCE_MS = 300;
  * @property {number} change_seq
  * @property {NodeId} active_chat
  * @property {number} active_chat_checked 0 = not examined, 1 = resolved one way or the other. Never regresses 1->0.
- * @property {number | null} digest_fav
- * @property {number | null} digest_tag_ids
- * @property {number | null} digest_content
  * @property {string | null} card_json Full Spec-V2 card JSON when it overrides the PNG chunk; null otherwise.
  * @property {string | null} content_hash sha256 of the raw uploaded import source bytes.
  * @property {string | null} content_identity_hash Fingerprint of semantic content with install-local fields stripped.
@@ -312,10 +309,6 @@ const SCHEMA_SQL = `
         active_chat    TEXT,
         -- 0 = not examined, 1 = resolved one way or the other (real chat name or confirmed none). Never regresses 1->0.
         active_chat_checked INTEGER NOT NULL DEFAULT 0,
-        -- Pre-computed per-field digest hashes for the anti-entropy worker (hash-utils.js's characterDigest* fns).
-        digest_fav     INTEGER,
-        digest_tag_ids INTEGER,
-        digest_content INTEGER,
         -- Full Spec-V2 card JSON, authoritative when the PNG's embedded tEXt chunk is stale. NULL means "PNG chunk
         -- is current, read from there" - a metadata-only edit stores JSON here without rewriting the PNG (keeps
         -- storage proportional to cards actually edited, not library size); any write that rewrites the PNG
@@ -472,12 +465,12 @@ const UPSERT_SQL = `
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
         file_mtime, world, creator, version, creator_notes, shallow_json, content_hash,
         content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked, change_seq,
-        digest_fav, digest_tag_ids, digest_content, card_json
+        card_json
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
         @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @content_hash,
         @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @active_chat_checked, @changeSeq,
-        @digest_fav, @digest_tag_ids, @digest_content, @card_json
+        @card_json
     )
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
@@ -507,9 +500,6 @@ const UPSERT_SQL = `
         active_chat = excluded.active_chat,
         -- Never regresses 1 -> 0.
         active_chat_checked = CASE WHEN excluded.active_chat_checked = 1 THEN 1 ELSE characters.active_chat_checked END,
-        digest_fav = excluded.digest_fav,
-        digest_tag_ids = excluded.digest_tag_ids,
-        digest_content = excluded.digest_content,
         -- Plain overwrite, not COALESCE: NULL here is a real signal ("file now current, stop preferring the
         -- parked copy"), not an absence of one - a COALESCE would keep serving stale edits after an avatar
         -- replace with no way to ever clear them.
@@ -718,8 +708,9 @@ function migrateGroupsColumns(db, directories) {
     });
 }
 
-// Backfills digests immediately, unlike migrateDigestColumns()'s lazy NULL-until-next-write shape - groups are
-// few enough that eager backfill is cheap.
+// Backfills digests immediately - groups are few enough that eager backfill is cheap. Unlike characters, group
+// rows still trust this stored value (see queryEntities()'s toHashRow()): a group's digest source is its own
+// JSON file, not shallow_json, and nothing has found that drift stale.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {import('./users.js').UserDirectoryList} directories
@@ -789,16 +780,18 @@ function migrateRevToSeqColumns(db) {
     db.run('UPDATE meta SET key = \'tantivy_char_index_tags_hash\' WHERE key = \'tantivy_char_index_tags_rev\'');
 }
 
-// NULL is populated lazily by the next write per row; the tree-descend worker computes from shallow_json on demand.
+// queryCharacters()/queryEntities() always recompute a character's digest hashes live from shallow_json rather
+// than trusting a stored value - stored digest_fav/digest_tag_ids/digest_content drifted from shallow_json with
+// no way to detect it. Drops the columns for any install that still has them from before that switch.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
-function migrateDigestColumns(db) {
+function migrateDropCharacterDigestColumns(db) {
     const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     const columnNames = new Set(columns.map(c => c.name));
-    if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE characters ADD COLUMN digest_fav INTEGER');
-    if (!columnNames.has('digest_tag_ids')) db.exec('ALTER TABLE characters ADD COLUMN digest_tag_ids INTEGER');
-    if (!columnNames.has('digest_content')) db.exec('ALTER TABLE characters ADD COLUMN digest_content INTEGER');
+    if (columnNames.has('digest_fav')) db.exec('ALTER TABLE characters DROP COLUMN digest_fav');
+    if (columnNames.has('digest_tag_ids')) db.exec('ALTER TABLE characters DROP COLUMN digest_tag_ids');
+    if (columnNames.has('digest_content')) db.exec('ALTER TABLE characters DROP COLUMN digest_content');
 }
 
 // NULL means "no preference recorded yet"; existing values migrate from client accountStorage on first load.
@@ -868,7 +861,7 @@ async function getEntry(directories) {
     migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateChangesFieldsColumn(db);
     migrateRevToSeqColumns(db);
-    migrateDigestColumns(db);
+    migrateDropCharacterDigestColumns(db);
     migrateAllowGlobalStylesColumn(db);
     migrateCardJsonColumn(db);
     migrateGroupsColumns(db, directories);
@@ -935,9 +928,6 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         import_poisoned: contentIdentityHash != null ? 0 : 1,
         active_chat: character.chat ?? null,
         active_chat_checked: 1,
-        digest_fav: characterDigestFavHash(shallow) % 4294967296,
-        digest_tag_ids: characterDigestTagIdsHash(shallow) % 4294967296,
-        digest_content: characterDigestFieldsHash(shallow) % 4294967296,
         card_json: cardJson ?? null,
     };
 }
@@ -1062,8 +1052,8 @@ export async function setCharacterFav(directories, avatar, fav) {
 
     const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['fav']));
     entry.db.run(
-        'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, change_seq = @changeSeq, digest_fav = @digestFav WHERE id = @id',
-        { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestFav: characterDigestFavHash(shallow) % 4294967296 },
+        'UPDATE characters SET fav = @fav, shallow_json = @shallow_json, change_seq = @changeSeq WHERE id = @id',
+        { id: avatar, fav: fav ? 1 : 0, shallow_json: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid) },
     );
     return true;
 }
@@ -1085,9 +1075,10 @@ export async function setCharacterAllowGlobalStyles(directories, avatar, allowed
     const shallow = JSON.parse(existing.shallow_json);
     shallow.allow_global_styles = !!allowed;
 
+    const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['allow_global_styles']));
     entry.db.run(
-        'UPDATE characters SET allow_global_styles = @val, shallow_json = @shallowJson WHERE id = @id',
-        { id: avatar, val: allowed ? 1 : 0, shallowJson: JSON.stringify(shallow) },
+        'UPDATE characters SET allow_global_styles = @val, shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id',
+        { id: avatar, val: allowed ? 1 : 0, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid) },
     );
     return true;
 }
@@ -1344,7 +1335,8 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
             const newRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar })));
             if (newRow) {
                 const shallowJson = withPatchedDateAdded(newRow.shallow_json, dateAdded);
-                entry.db.run('UPDATE characters SET date_added = @dateAdded, shallow_json = @shallowJson WHERE id = @id', { dateAdded, shallowJson, id: newAvatar });
+                const lastInsertRowid = insertChange(entry.db, newAvatar, 'upsert', JSON.stringify(['date_added']));
+                entry.db.run('UPDATE characters SET date_added = @dateAdded, shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id', { dateAdded, shallowJson, id: newAvatar, changeSeq: Number(lastInsertRowid) });
             } else {
                 entry.db.run('UPDATE characters SET date_added = @dateAdded WHERE id = @id', { dateAdded, id: newAvatar });
             }
@@ -1407,7 +1399,8 @@ export async function setCharacterDateAdded(directories, id, dateAddedMs) {
     const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
     if (!row) return;
     const shallowJson = withPatchedDateAdded(row.shallow_json, dateAddedMs);
-    entry.db.run('UPDATE characters SET date_added = @dateAddedMs, shallow_json = @shallowJson WHERE id = @id', { dateAddedMs, shallowJson, id });
+    const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['date_added']));
+    entry.db.run('UPDATE characters SET date_added = @dateAddedMs, shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id', { dateAddedMs, shallowJson, id, changeSeq: Number(lastInsertRowid) });
 }
 
 /**
@@ -2491,7 +2484,6 @@ function patchPendingRowTagIds(pending) {
     const shallow = JSON.parse(pending.row.shallow_json);
     shallow.tag_ids = pending.tagIds;
     pending.row.shallow_json = JSON.stringify(shallow);
-    pending.row.digest_tag_ids = characterDigestTagIdsHash(shallow) % 4294967296;
 }
 
 // Requires the entity to exist (checked against characters then groups) since neither table has an FK to
@@ -2526,7 +2518,7 @@ export async function assignEntityTag(directories, id, tagId) {
             const shallow = JSON.parse(charRow.shallow_json);
             shallow.tag_ids = currentTagIds;
             const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
-            entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
+            entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid) });
         }
         return 'ok';
     }
@@ -2571,7 +2563,7 @@ export async function unassignEntityTag(directories, id, tagId) {
         const shallow = JSON.parse(charRow.shallow_json);
         shallow.tag_ids = currentTagIds;
         const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
-        entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 });
+        entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid) });
     }
     return 'ok';
 }
@@ -3109,7 +3101,7 @@ function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = fa
 }
 
 // Seeds character_tags from one character's card-embedded data.tags. Deliberately does not touch
-// shallow_json.tag_ids/digest_tag_ids - callers are responsible for reconciling those once they know the
+// shallow_json.tag_ids - callers are responsible for reconciling it once they know the
 // row's final tag id set (see syncShallowTagIdsFromTable()).
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
@@ -3129,7 +3121,7 @@ function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, 
     return tagIds;
 }
 
-// Patches one character row's shallow_json.tag_ids/digest_tag_ids to match character_tags. Re-reads
+// Patches one character row's shallow_json.tag_ids to match character_tags. Re-reads
 // character_tags rather than trusting a caller's resolved list, so other pre-existing assignments survive.
 /**
  * @returns {boolean} Whether the row was found and patched.
@@ -3144,8 +3136,8 @@ function syncShallowTagIdsFromTable(db, avatar) {
     shallow.tag_ids = currentTagIds;
     const lastInsertRowid = insertChange(db, avatar, 'upsert', JSON.stringify(['tag_ids']));
     db.run(
-        'UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq, digest_tag_ids = @digestTagIds WHERE id = @id',
-        { id: avatar, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid), digestTagIds: characterDigestTagIdsHash(shallow) % 4294967296 },
+        'UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id',
+        { id: avatar, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid) },
     );
     return true;
 }
@@ -3589,9 +3581,7 @@ export async function queryCharacters(directories, params = {}) {
         total = Number(countRow?.total ?? 0);
     }
 
-    // digest_fav/digest_tag_ids/digest_content are deliberately not read here: spot checks found stored values
-    // that disagree with a fresh recompute from the row's own shallow_json, with no version column to detect
-    // the drift. Always recompute live instead.
+    // Characters have no stored digest_fav/digest_tag_ids/digest_content: always recompute live from shallow_json.
     const HASH_COLUMNS = 'id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, shallow_json';
     /** @param {HashSourceRow} r */
     const toHashRow = (r) => {
