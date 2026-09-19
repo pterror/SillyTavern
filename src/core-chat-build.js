@@ -32,6 +32,8 @@
  *   never needs to know the override existed.
  */
 
+import { isSystemChatItem } from '../public/scripts/core-chat-predicates.js';
+
 /**
  * @typedef {object} CoreChatMessageExtraMedia
  * @property {string} [title]
@@ -58,9 +60,11 @@
  */
 
 /**
- * Mirrors the message-filtering piece of Generate() (public/script.js):
- * `chat.filter(x => !x.is_system || (canUseTools && Array.isArray(x.extra?.tool_invocations)))`
- * followed by `if (type === 'swipe') coreChat.pop()`.
+ * Mirrors the message-filtering piece of Generate() (public/scripts/generation.js):
+ * `chat.filter(x => !isSystemChatItem(x) || (canUseTools && Array.isArray(x.extra?.tool_invocations)))`
+ * followed by `if (type === 'swipe') coreChat.pop()`. isSystemChatItem() is the shared predicate
+ * (../public/scripts/core-chat-predicates.js) both sides call, so `is_system` is only ever treated
+ * as a system flag when it's exactly `true` - not merely truthy.
  *
  * System messages are dropped unless tool-calling is in play AND the message actually carries
  * tool invocations. On a swipe, the last SURVIVING message (i.e. after filtering, not the last
@@ -79,7 +83,7 @@
  * @returns {CoreChatMessage[]} A new filtered array (the client's `coreChat` before its `.map()` step).
  */
 export function buildCoreChat(chat, { canUseTools, isSwipe }) {
-    const coreChat = chat.filter(x => !x.is_system || (canUseTools && Array.isArray(x.extra?.tool_invocations)));
+    const coreChat = chat.filter(x => !isSystemChatItem(x) || (canUseTools && Array.isArray(x.extra?.tool_invocations)));
     if (isSwipe) {
         coreChat.pop();
     }
