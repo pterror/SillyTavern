@@ -1,5 +1,6 @@
 import { Fuse, DOMPurify } from '../lib.js';
 import { canUseNegativeLookbehind, copyText, findPersona, flashHighlight, resolveAvatarData } from './utils.js';
+import { buildConnectApiMap } from './connect-api-map.js';
 
 import {
     Generate,
@@ -161,74 +162,21 @@ export const CONNECT_API_MAP = {};
 /** @type {string[]} */
 export const UNIQUE_APIS = [];
 
+/** @type {Record<string, string>} CSS selector for the API button, keyed by `selected`. `koboldhorde` has none. */
+const CONNECT_API_BUTTON_BY_SELECTED = {
+    'kobold': '#api_button',
+    'novel': '#api_button_novel',
+    'textgenerationwebui': '#api_button_textgenerationwebui',
+    'openai': '#api_button_openai',
+};
+
 function setupConnectAPIMap() {
-    /** @type {Record<string, ConnectAPIMap>} */
-    const result = {
-        'kobold': {
-            selected: 'kobold',
-            button: '#api_button',
-        },
-        'horde': {
-            selected: 'koboldhorde',
-        },
-        'novel': {
-            selected: 'novel',
-            button: '#api_button_novel',
-        },
-        'koboldcpp': {
-            selected: 'textgenerationwebui',
-            button: '#api_button_textgenerationwebui',
-            type: textgen_types.KOBOLDCPP,
-        },
-        'kcpp': {
-            selected: 'textgenerationwebui',
-            button: '#api_button_textgenerationwebui',
-            type: textgen_types.KOBOLDCPP,
-        },
-        'openai': {
-            selected: 'openai',
-            button: '#api_button_openai',
-            source: chat_completion_sources.OPENAI,
-        },
-        'oai': {
-            selected: 'openai',
-            button: '#api_button_openai',
-            source: chat_completion_sources.OPENAI,
-        },
-        'google': {
-            selected: 'openai',
-            button: '#api_button_openai',
-            source: chat_completion_sources.MAKERSUITE,
-        },
-        // OpenRouter needs chat comp and text comp differentiated
-        'openrouter': {
-            selected: 'openai',
-            button: '#api_button_openai',
-            source: chat_completion_sources.OPENROUTER,
-        },
-        'openrouter-text': {
-            selected: 'textgenerationwebui',
-            button: '#api_button_textgenerationwebui',
-            type: textgen_types.OPENROUTER,
-        },
-    };
-
-    for (const textGenType of Object.values(textgen_types)) {
-        if (result[textGenType]) continue;
-        result[textGenType] = {
-            selected: 'textgenerationwebui',
-            button: '#api_button_textgenerationwebui',
-            type: textGenType,
-        };
-    }
-
-    for (const chatCompletionSource of Object.values(chat_completion_sources)) {
-        if (result[chatCompletionSource]) continue;
-        result[chatCompletionSource] = {
-            selected: 'openai',
-            button: '#api_button_openai',
-            source: chatCompletionSource,
-        };
+    const result = buildConnectApiMap(textgen_types, chat_completion_sources);
+    for (const entry of Object.values(result)) {
+        const button = CONNECT_API_BUTTON_BY_SELECTED[entry.selected];
+        if (button) {
+            entry.button = button;
+        }
     }
 
     Object.assign(CONNECT_API_MAP, result);
