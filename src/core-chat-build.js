@@ -32,7 +32,7 @@
  *   never needs to know the override existed.
  */
 
-import { isSystemChatItem } from '../public/scripts/core-chat-predicates.js';
+import { collectMessageTitles, isSystemChatItem } from '../public/scripts/core-chat-predicates.js';
 
 /**
  * @typedef {object} CoreChatMessageExtraMedia
@@ -98,26 +98,14 @@ export function buildCoreChat(chat, { canUseTools, isSwipe }) {
  *
  * Pure function of a single message object - does not know about or need the already-resolved
  * message text; the caller appends this suffix to that text itself (see finalizeCoreChatMessage()).
+ * Delegates to the shared collectMessageTitles() (../public/scripts/core-chat-predicates.js) that
+ * generation.js also calls, so `append_title`/`title` are checked identically on both sides.
  *
  * @param {CoreChatMessage} chatItem
  * @returns {string} The `\n\n`-prefixed titles block to append to the message, or `''` if there are no titles.
  */
 export function applyMessageTitles(chatItem) {
-    const titles = [];
-    if (chatItem?.extra?.append_title && chatItem?.extra?.title) {
-        titles.push(chatItem.extra.title);
-    }
-    if (Array.isArray(chatItem?.extra?.media)) {
-        for (const mediaItem of chatItem.extra.media) {
-            if (mediaItem?.title && mediaItem?.append_title) {
-                titles.push(mediaItem.title);
-            }
-        }
-    }
-    if (titles.length > 0) {
-        return `\n\n${titles.join('\n\n')}`;
-    }
-    return '';
+    return collectMessageTitles(chatItem);
 }
 
 /**
