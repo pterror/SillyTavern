@@ -43,6 +43,7 @@ import {
 } from './PromptManager.js';
 
 import { forceCharacterEditorTokenize, getCustomStoppingStrings, persona_description_positions, power_user } from './power-user.js';
+import { getPersonaDescription, getPersonaDescriptionPosition } from './personas.js';
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
 import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
@@ -1428,8 +1429,9 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
     });
 
     // Persona Description
-    if (power_user.persona_description && power_user.persona_description_position === persona_description_positions.IN_PROMPT) {
-        systemPrompts.push({ role: 'system', content: power_user.persona_description, identifier: 'personaDescription' });
+    const personaDescription = getPersonaDescription();
+    if (personaDescription && getPersonaDescriptionPosition() === persona_description_positions.IN_PROMPT) {
+        systemPrompts.push({ role: 'system', content: personaDescription, identifier: 'personaDescription' });
     }
 
     const knownExtensionPrompts = [

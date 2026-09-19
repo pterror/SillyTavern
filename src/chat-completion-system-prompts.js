@@ -90,8 +90,8 @@ import { persona_description_positions } from './story-string-assembly.js';
  * @property {string} [personalityFormat] Equivalent of oai_settings.personality_format.
  * @property {string} [groupNudgePrompt] Equivalent of oai_settings.group_nudge_prompt (raw, pre-substituteParams).
  * @property {string} [impersonationPrompt] Equivalent of oai_settings.impersonation_prompt (raw, pre-substituteParams).
- * @property {string} [personaDescription] Equivalent of power_user.persona_description.
- * @property {number} [personaDescriptionPosition] Equivalent of power_user.persona_description_position (one of persona_description_positions).
+ * @property {string} [personaDescription] Equivalent of the active persona's personaStore `description` field.
+ * @property {number} [personaDescriptionPosition] Equivalent of the active persona's personaStore `position` field (one of persona_description_positions).
  * @property {string} [wiFormat] Equivalent of oai_settings.wi_format, forwarded to formatWorldInfo().
  * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] Forwarded to every substituteParams() call this function makes.
  */

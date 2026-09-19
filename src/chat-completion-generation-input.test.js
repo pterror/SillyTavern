@@ -86,10 +86,12 @@ function writeCharacter(avatar, overrides = {}) {
 function buildSettingsFixture() {
     return {
         username: 'Tester',
+        user_avatar: 'Tester.png',
         main_api: 'koboldhorde', // deliberately NOT 'openai' - proves the resolver hardcodes mainApi regardless.
         power_user: {
-            persona_description: 'A curious {{user}}.',
-            persona_description_position: 1,
+            persona_data: {
+                'Tester.png': { description: 'A curious {{user}}.', position: 1 },
+            },
             console_log_prompts: false,
             pin_examples: false,
             prefer_character_prompt: true,
@@ -199,7 +201,7 @@ async function run() {
     assert.equal(input.maxContext, 8192, 'maxContext resolves from oai_settings.openai_max_context');
     assert.equal(input.maxTokens, 512, 'maxTokens resolves from oai_settings.openai_max_tokens');
     assert.equal(input.squashSystemMessages, true);
-    assert.equal(input.personaDescription, 'A curious {{user}}.', 'personaDescription resolves from power_user.persona_description');
+    assert.equal(input.personaDescription, 'A curious {{user}}.', 'personaDescription resolves from power_user.persona_data[user_avatar].description');
     assert.equal(input.personaDescriptionPosition, 1);
     assert.equal(input.wiFormat, '{0}');
     assert.deepEqual(input.prompts.map(p => p.identifier), buildSettingsFixture().oai_settings.prompts.map(p => p.identifier), 'prompts forwards the real oai_settings.prompts array');

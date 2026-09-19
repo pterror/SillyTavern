@@ -36,7 +36,7 @@ import { force_output_sequence, formatInstructModeChat, formatInstructModeExampl
 import { applyItemizedPromptBreakdown, deleteItemizedPromptForMessage, itemizedPrompts, saveItemizedPrompts } from './itemized-prompts.js';
 import { getKoboldGenerationData, kai_flags, kai_settings, koboldai_setting_names, koboldai_settings } from './kai-settings.js';
 import { adjustNovelInstructionPrompt, getNovelGenerationData, nai_settings, novelai_setting_names, novelai_settings } from './nai-settings.js';
-import { user_avatar } from './personas.js';
+import { user_avatar, getPersonaDescriptionPosition } from './personas.js';
 import { collapseNewlines, generatedTextFiltered, persona_description_positions, playMessageSound, power_user, renderStoryString } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';
 import { extractReasoningFromData, extractReasoningSignatureFromData, PromptReasoning } from './reasoning.js';
@@ -1585,7 +1585,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         const storyStringParams = {
             description: description,
             personality: personality,
-            persona: power_user.persona_description_position == persona_description_positions.IN_PROMPT ? persona : '',
+            persona: getPersonaDescriptionPosition() == persona_description_positions.IN_PROMPT ? persona : '',
             scenario: scenario,
             system: system,
             char: name2,
@@ -2350,7 +2350,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             padding: power_user.token_padding,
             main_api: main_api,
             instruction: main_api !== 'openai' && power_user.sysprompt.enabled ? substituteParams(power_user.prefer_character_prompt && system ? system : power_user.sysprompt.content) : '',
-            userPersona: (power_user.persona_description_position == persona_description_positions.IN_PROMPT ? (persona || '') : ''),
+            userPersona: (getPersonaDescriptionPosition() == persona_description_positions.IN_PROMPT ? (persona || '') : ''),
             tokenizer: getFriendlyTokenizerName(main_api).tokenizerName || '',
             presetName: activePresetManager?.getSelectedPresetName() ?? '',
             // JSON-stringified so the existing pool-dedup (poolizeValue/poolDedupIncremental) can dedupe

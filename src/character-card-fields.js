@@ -227,7 +227,7 @@ export async function getGroupCharacterDepthPrompts(directories, groupId, charac
  * the client's `useGroupCards = selected_group && character`).
  * @param {boolean} [options.preferCharacterPrompt] Mirrors `power_user.prefer_character_prompt`.
  * @param {boolean} [options.preferCharacterJailbreak] Mirrors `power_user.prefer_character_jailbreak`.
- * @param {string} [options.personaDescription] Mirrors `power_user.persona_description`.
+ * @param {string} [options.personaDescription] Mirrors the active persona's personaStore `description` field.
  * @param {object} [options.chatMetadata] Mirrors the client's `chat_metadata` global.
  * @returns {Promise<CharacterCardFields & {charDepthPromptDepth: number, charDepthPromptRole: number}>}
  * `charDepthPromptDepth`/`charDepthPromptRole` are resolved ADDITIVELY on top of the

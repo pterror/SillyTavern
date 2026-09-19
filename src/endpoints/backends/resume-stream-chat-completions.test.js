@@ -83,8 +83,6 @@ function buildSettingsFixture() {
     return {
         username: 'Tester',
         power_user: {
-            persona_description: '',
-            persona_description_position: 0,
             console_log_prompts: false,
             pin_examples: false,
             request_token_probabilities: false,

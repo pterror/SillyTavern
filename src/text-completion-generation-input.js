@@ -172,7 +172,7 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  *   against public/scripts/world-info.js's own `export const METADATA_KEY = 'world_info';`) - i.e.
  *   `chatMetadata.world_info`, a plain string chat-metadata field, unrelated to the
  *   `world_info_settings.world_info` settings key of a similar name.
- * - `personaWorldLorebook` <- `power_user.persona_description_lorebook`.
+ * - `personaWorldLorebook` <- the active persona's personaStore `lorebook` field.
  * - `worldInfoCharacterStrategy` <- `world_info_settings.world_info_character_strategy` (nested,
  *   same as `world_info` above - not a separate top-level settings key), defaulting to
  *   `world_info_insertion_strategy.character_first` (the client's own module-level default) when
@@ -246,9 +246,7 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  * FIELD-MAPPING NOTES for which of these are absent from a fresh settings.json (populated only
  * once a user touches the corresponding control) and what this resolver falls back to then.
  * @typedef {object} PowerUserSettingsBundle
- * @property {string} [persona_description]
- * @property {number} [persona_description_position]
- * @property {string} [persona_description_lorebook]
+ * @property {Record<string, import('../public/scripts/power-user.js').PersonaRecord>} [persona_data] Keyed by persona avatar filename - the active persona's record (looked up by `user_avatar`) supplies `personaDescription`/`personaDescriptionPosition`/`personaWorldLorebook` below.
  * @property {string} [user_prompt_bias]
  * @property {boolean} [always_force_name2]
  * @property {number} [token_padding]
@@ -343,6 +341,7 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  * @property {object} [nai_settings]
  * @property {ExtensionSettingsBundle} [extension_settings]
  * @property {string} [username]
+ * @property {string} [user_avatar] The active persona's avatar filename - key into `power_user.persona_data`.
  * @property {number} [amount_gen]
  * @property {number} [max_context]
  */
@@ -570,13 +569,19 @@ export async function resolveTextCompletionGenerationInput(directories, {
         nai_settings: novelSettings = {},
         extension_settings: extensionSettings = {},
         username,
+        user_avatar: userAvatar,
         amount_gen: settingsAmountGen,
         max_context: settingsMaxContext,
     } = /** @type {TextCompletionSettingsBundle} */ (readSettingsAtPaths(directories, [
         'power_user', 'world_info_settings',
         'textgenerationwebui_settings', 'kai_settings', 'nai_settings',
-        'extension_settings', 'username', 'amount_gen', 'max_context',
+        'extension_settings', 'username', 'user_avatar', 'amount_gen', 'max_context',
     ]));
+    // The active persona's own record (personaStore's server-side shape, power_user.persona_data
+    // keyed by avatar filename) - supplies personaDescription/personaDescriptionPosition/
+    // personaWorldLorebook below. public/scripts/personas.js's getPersonaDescription() and its
+    // siblings are this resolver's client-side equivalent of this same lookup.
+    const activePersona = powerUser.persona_data?.[userAvatar] ?? {};
     // The client's getWorldInfoSettings() (public/scripts/world-info.js) nests the real selection
     // object under world_info_settings.world_info, and world_info_character_strategy alongside it -
     // there is no separate top-level `world_info`/`world_info_character_strategy` settings key on disk
@@ -635,7 +640,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
             character,
             characterExtraBooks,
             chatWorldName: chatMetadata[WORLD_INFO_METADATA_KEY] ?? null,
-            personaWorldLorebook: powerUser.persona_description_lorebook ?? null,
+            personaWorldLorebook: activePersona.lorebook ?? null,
             worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
         }));
     }
@@ -670,7 +675,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         // must treat this as a real error (an explicit branch_name/node_id was required), not silently
         // pick a leaf.
         chatResolutionAmbiguous: Boolean(chatResolutionAmbiguous),
-        personaDescription: powerUser.persona_description,
+        personaDescription: activePersona.description,
         chatMetadata, chat, textareaText,
         userPromptBias: powerUser.user_prompt_bias,
         alwaysForceName2: Boolean(powerUser.always_force_name2),
@@ -723,7 +728,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         storyStringRole: context.story_string_role ?? DEFAULT_STORY_STRING_ROLE,
         sysPromptEnabled: Boolean(sysprompt.enabled ?? false),
         sysPromptContent: sysprompt.content ?? '',
-        personaDescriptionPosition: powerUser.persona_description_position ?? 0,
+        personaDescriptionPosition: activePersona.position ?? 0,
         stripExamples: Boolean(powerUser.strip_examples ?? false),
         isInstruct: Boolean(instruct.enabled ?? false),
         instructPreset: instruct,

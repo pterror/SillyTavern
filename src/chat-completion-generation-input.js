@@ -180,9 +180,12 @@ import { substituteParams } from './macro-substitution.js';
  * ============================================================================================
  *
  * - Most fields live under the top-level `oai_settings` key (NOT `power_user`/
- *   `textgenerationwebui_settings` like the text-completion path) - `persona_description`/
- *   `persona_description_position`/`console_log_prompts`/`pin_examples` are the exceptions, still
- *   under `power_user`, matching the client's own split.
+ *   `textgenerationwebui_settings` like the text-completion path) - `persona_data`/
+ *   `console_log_prompts`/`pin_examples` are the exceptions, still under `power_user`, matching the
+ *   client's own split. `personaDescription`/`personaDescriptionPosition`/`personaWorldLorebook`
+ *   resolve from the active persona's own record in `power_user.persona_data` (keyed by
+ *   `user_avatar`), not a flat `power_user.persona_description*` field - matching the client's own
+ *   personaStore, which is that same `power_user.persona_data`.
  * - `oai_settings.prompts`/`.prompt_order` are real, present-by-default arrays (verified directly -
  *   `prompt_order` ships one entry keyed `character_id: 100000`, the client's own
  *   `configuration.promptOrder.dummyId` "no per-character order configured" sentinel).
@@ -473,9 +476,7 @@ import { substituteParams } from './macro-substitution.js';
  * @typedef {object} PowerUserSettingsShape
  * @property {boolean} [prefer_character_prompt]
  * @property {boolean} [prefer_character_jailbreak]
- * @property {string} [persona_description]
- * @property {number} [persona_description_position]
- * @property {string} [persona_description_lorebook]
+ * @property {Record<string, import('../public/scripts/power-user.js').PersonaRecord>} [persona_data] Keyed by persona avatar filename - the active persona's record (looked up by `user_avatar`) supplies personaDescription/personaDescriptionPosition/personaWorldLorebook below.
  * @property {string} [user_prompt_bias]
  * @property {boolean} [console_log_prompts]
  * @property {boolean} [pin_examples]
@@ -856,19 +857,23 @@ export async function resolveChatCompletionGenerationInput(directories, {
         power_user: powerUser = /** @type {PowerUserSettingsShape} */ ({}),
         world_info_settings: worldInfoSettings = /** @type {WorldInfoSettingsShape} */ ({}),
         username,
+        user_avatar: userAvatar,
     } = /** @type {{
         oai_settings?: OaiSettingsShape,
         power_user?: PowerUserSettingsShape,
         world_info_settings?: WorldInfoSettingsShape,
         username?: string,
+        user_avatar?: string,
     }} */ (readSettingsAtPaths(directories, [
-            'oai_settings', 'power_user', 'world_info_settings', 'username',
+            'oai_settings', 'power_user', 'world_info_settings', 'username', 'user_avatar',
         ]));
     // The client's getWorldInfoSettings() (public/scripts/world-info.js) nests the real selection
     // object under world_info_settings.world_info, and world_info_character_strategy alongside it -
     // there is no separate top-level `world_info`/`world_info_character_strategy` settings key on disk.
     const worldInfoSelection = /** @type {WorldInfoSelectionShape} */ (worldInfoSettings.world_info ?? {});
     const worldInfoCharacterStrategySetting = worldInfoSettings.world_info_character_strategy;
+    // The active persona's own record - see PowerUserSettingsShape's persona_data doc above.
+    const activePersona = powerUser.persona_data?.[userAvatar] ?? {};
 
     const isGroup = Boolean(groupId);
 
@@ -935,7 +940,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         groupId,
         preferCharacterPrompt: Boolean(powerUser.prefer_character_prompt),
         preferCharacterJailbreak: Boolean(powerUser.prefer_character_jailbreak),
-        personaDescription: powerUser.persona_description,
+        personaDescription: activePersona.description,
         chatMetadata,
     });
 
@@ -967,7 +972,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
             character,
             characterExtraBooks,
             chatWorldName: /** @type {string | null} */ (chatMetadata[WORLD_INFO_METADATA_KEY] ?? null),
-            personaWorldLorebook: powerUser.persona_description_lorebook ?? null,
+            personaWorldLorebook: activePersona.lorebook ?? null,
             worldInfoCharacterStrategy: worldInfoCharacterStrategySetting ?? world_info_insertion_strategy.character_first,
         }));
     }
@@ -1132,8 +1137,8 @@ export async function resolveChatCompletionGenerationInput(directories, {
         scenario: fields.scenario,
         systemPromptOverride: fields.system,
         jailbreakPromptOverride: fields.jailbreak,
-        personaDescription: powerUser.persona_description,
-        personaDescriptionPosition: powerUser.persona_description_position ?? 0,
+        personaDescription: activePersona.description,
+        personaDescriptionPosition: activePersona.position ?? 0,
 
         // --- World info (real candidates + real activation - see doc comment decision 4 for the
         // narrower remaining gap: worldInfoDepth/anBefore/anAfter/outletEntries/worldInfoExamples) ---

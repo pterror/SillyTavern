@@ -22,7 +22,7 @@ import { StructuredCloneMap } from './util/StructuredCloneMap.js';
 import { renderTemplateAsync } from './templates.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { getOrCreatePersonaDescriptor, setPersonaDescription, user_avatar } from './personas.js';
+import { getOrCreatePersonaDescriptor, getPersonaDescriptionLorebook, setPersonaDescription, user_avatar } from './personas.js';
 import { characterRepository } from './character-repository.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 
@@ -1127,16 +1127,17 @@ function registerWorldInfoSlashCommands() {
      * @returns {Promise<string>} The name of the persona-bound lorebook
      */
     async function getPersonaBookCallback({ name, create }, _unnamedArg) {
-        let bookName = power_user.persona_description_lorebook || '';
+        let bookName = getPersonaDescriptionLorebook();
         if (bookName) {
             return bookName;
         }
 
         if (isTrueBoolean(String(create))) {
             const newName = await createWorldWithName(name, `Persona Book ${name1}`.replace(/[^a-z0-9 -]/gi, '_').replace(/_{2,}/g, '_').substring(0, 64));
-            power_user.persona_description_lorebook = newName;
+            getOrCreatePersonaDescriptor();
+            personaStore.update(user_avatar, { lorebook: newName });
             setPersonaDescription();
-            saveSettingsDebounced('power_user.persona_description_lorebook');
+            saveSettingsDebounced('power_user.persona_data');
             return newName;
         }
 
@@ -4425,7 +4426,7 @@ async function renameWorldInfo(name, data) {
     }
 
     const entryPreviouslySelected = selected_world_info.findIndex((e) => e === oldName);
-    const retargetPersonaLore = power_user.persona_description_lorebook === oldName;
+    const retargetPersonaLore = getPersonaDescriptionLorebook() === oldName;
 
     await saveWorldInfo(newName, data, true);
     await deleteWorldInfo(oldName);
@@ -4464,11 +4465,10 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
 
     // Update link for active persona
     if (retargetPersonaLore) {
-        power_user.persona_description_lorebook = newName;
         getOrCreatePersonaDescriptor();
         personaStore.update(user_avatar, { lorebook: newName });
         setPersonaDescription();
-        saveSettingsDebounced('power_user.persona_description_lorebook', 'power_user.persona_data');
+        saveSettingsDebounced('power_user.persona_data');
     }
 
     // Update links for other personas
@@ -4584,14 +4584,11 @@ export async function deleteWorldInfo(worldInfoName) {
         }
     }
 
-    if (power_user.persona_description_lorebook === worldInfoName) {
-        power_user.persona_description_lorebook = '';
-        if (personaStore.has(user_avatar)) {
-            getOrCreatePersonaDescriptor();
-            personaStore.update(user_avatar, { lorebook: '' });
-        }
+    if (getPersonaDescriptionLorebook() === worldInfoName) {
+        getOrCreatePersonaDescriptor();
+        personaStore.update(user_avatar, { lorebook: '' });
         $('#persona_lore_button').toggleClass('world_set', false);
-        saveSettingsDebounced('power_user.persona_description_lorebook', 'power_user.persona_data');
+        saveSettingsDebounced('power_user.persona_data');
     }
 
     return true;
@@ -4690,7 +4687,7 @@ async function getCharacterLore() {
             continue;
         }
 
-        if (power_user.persona_description_lorebook === worldName) {
+        if (getPersonaDescriptionLorebook() === worldName) {
             if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in persona lore! Skipping...`);
             continue;
         }
@@ -4759,7 +4756,7 @@ async function getChatLore() {
 
 async function getPersonaLore() {
     const chatWorld = chat_metadata[METADATA_KEY];
-    const personaWorld = power_user.persona_description_lorebook;
+    const personaWorld = getPersonaDescriptionLorebook();
 
     if (!personaWorld) {
         return [];
