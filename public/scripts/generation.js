@@ -25,6 +25,7 @@ import { clearDraft } from './chat-draft.js';
 import { ensureOpeningRow, healDirtyMessages, updateMessage } from './chat-store.js';
 import { appendFileContent, hasPendingFileAttachment } from './chats.js';
 import { GENERATION_TYPE_TRIGGERS, inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
+import { isSystemChatItem } from './core-chat-predicates.js';
 import { eventSource, event_types } from './events.js';
 import { extension_settings, runGenerationInterceptors } from './extensions.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
@@ -519,7 +520,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     const substitutedFirstMessage = chat.length ? substituteParams(chat[0].mes ?? '') : null;
 
     // Collect messages with usable content
-    let coreChat = chat.filter(x => x.is_system !== true || (canUseTools && Array.isArray(x.extra?.tool_invocations)));
+    let coreChat = chat.filter(x => !isSystemChatItem(x) || (canUseTools && Array.isArray(x.extra?.tool_invocations)));
     if (type === 'swipe') {
         coreChat.pop();
     }
