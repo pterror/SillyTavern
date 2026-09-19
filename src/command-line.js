@@ -5,7 +5,7 @@ import { hideBin } from 'yargs/helpers';
 import ipRegex from 'ip-regex';
 import envPaths from 'env-paths';
 import { color, getConfigValue, stringToBool } from './util.js';
-import { initConfig } from './config-init.js';
+import { initConfig, getDefaultYamlConfig } from './config-init.js';
 
 /**
  * @typedef {object} CommandLineArguments Parsed command line arguments
@@ -52,35 +52,38 @@ export class CommandLineParser {
      */
     getDefaultConfig(isGlobal) {
         const appPaths = envPaths('SillyTavern', { suffix: '' });
+        const yamlDefaults = getDefaultYamlConfig();
         const configPath = isGlobal ? path.join(appPaths.data, 'config.yaml') : './config.yaml';
-        const dataPath = isGlobal ? path.join(appPaths.data, 'data') : './data';
+        const dataPath = isGlobal ? path.join(appPaths.data, 'data') : yamlDefaults.dataRoot;
         return Object.freeze({
             configPath: configPath,
             dataRoot: dataPath,
-            port: 8000,
-            listen: false,
-            listenAddressIPv6: '[::]',
-            listenAddressIPv4: '0.0.0.0',
-            enableIPv4: true,
-            enableIPv6: false,
-            dnsPreferIPv6: false,
-            heartbeatInterval: 0,
-            browserLaunchEnabled: false,
-            browserLaunchHostname: 'auto',
-            browserLaunchPort: -1,
-            browserLaunchAvoidLocalhost: false,
-            enableCorsProxy: false,
-            disableCsrf: false,
-            ssl: false,
-            certPath: 'certs/cert.pem',
-            keyPath: 'certs/privkey.pem',
-            keyPassphrase: '',
-            whitelistMode: true,
-            basicAuthMode: false,
-            enableKeepAlive: false,
-            requestProxyEnabled: false,
+            port: yamlDefaults.port,
+            listen: yamlDefaults.listen,
+            listenAddressIPv6: yamlDefaults.listenAddress.ipv6,
+            listenAddressIPv4: yamlDefaults.listenAddress.ipv4,
+            enableIPv4: yamlDefaults.protocol.ipv4,
+            enableIPv6: yamlDefaults.protocol.ipv6,
+            dnsPreferIPv6: yamlDefaults.dnsPreferIPv6,
+            heartbeatInterval: yamlDefaults.heartbeatInterval,
+            browserLaunchEnabled: yamlDefaults.browserLaunch.enabled,
+            browserLaunchHostname: yamlDefaults.browserLaunch.hostname,
+            browserLaunchPort: yamlDefaults.browserLaunch.port,
+            browserLaunchAvoidLocalhost: yamlDefaults.browserLaunch.avoidLocalhost,
+            enableCorsProxy: yamlDefaults.enableCorsProxy,
+            disableCsrf: yamlDefaults.disableCsrfProtection,
+            ssl: yamlDefaults.ssl.enabled,
+            certPath: yamlDefaults.ssl.certPath,
+            keyPath: yamlDefaults.ssl.keyPath,
+            keyPassphrase: yamlDefaults.ssl.keyPassphrase,
+            whitelistMode: yamlDefaults.whitelistMode,
+            basicAuthMode: yamlDefaults.basicAuthMode,
+            enableKeepAlive: yamlDefaults.enableKeepAlive,
+            requestProxyEnabled: yamlDefaults.requestProxy.enabled,
+            // Not derived: default/config.yaml's requestProxy.url is a format example for that file's own
+            // documentation, not a real default value.
             requestProxyUrl: '',
-            requestProxyBypass: [],
+            requestProxyBypass: yamlDefaults.requestProxy.bypass,
             getIPv4ListenUrl: function () {
                 throw new Error('getIPv4ListenUrl is not implemented');
             },
