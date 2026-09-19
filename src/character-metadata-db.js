@@ -1357,11 +1357,13 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
         const pending = entry.batch?.pending.get(newAvatar);
         if (pending) {
             pending.tagIds = [...new Set([...pending.tagIds, ...oldTagIds])];
+            patchPendingRowTagIds(pending);
         } else {
             entry.db.transaction(() => {
                 for (const tagId of oldTagIds) {
                     entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@newAvatar, @tagId)', { newAvatar, tagId });
                 }
+                syncShallowTagIdsFromTable(entry.db, newAvatar);
             });
         }
     }
@@ -1773,13 +1775,20 @@ export async function resyncTags(directories) {
 
     if (toAdd.length === 0 && toRemove.length === 0) return;
 
+    /** @type {Set<string>} */
+    const touchedCharacterIds = new Set();
     entry.db.transaction(() => {
         for (const key of toAdd) {
             const [characterId, tagId] = key.split(' ');
             entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId, tagId });
+            touchedCharacterIds.add(characterId);
         }
         for (const row of toRemove) {
             entry.db.run('DELETE FROM character_tags WHERE character_id = @characterId AND tag_id = @tagId', { characterId: row.character_id, tagId: row.tag_id });
+            touchedCharacterIds.add(row.character_id);
+        }
+        for (const characterId of touchedCharacterIds) {
+            syncShallowTagIdsFromTable(entry.db, characterId);
         }
     });
 }
@@ -3046,6 +3055,7 @@ function importTagMapSync(entry, tagMap) {
                 for (const tagId of tagIds) {
                     entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
                 }
+                if (tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, key);
             } else if (knownGroupIds.has(key)) {
                 for (const tagId of tagIds) {
                     entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
@@ -3140,9 +3150,9 @@ function syncShallowTagIdsFromTable(db, avatar) {
     return true;
 }
 
-// Repairs rows where shallow_json.tag_ids is stale but character_tags is correct (can happen when
-// seedCardTagsForCharacter() seeds tags without a matching syncShallowTagIdsFromTable() call). Safe to call
-// more than once; only touches rows a full-table comparison finds mismatched.
+// Repairs rows where shallow_json.tag_ids is stale but character_tags is correct - a safety net for any
+// character_tags write that skips syncShallowTagIdsFromTable(), not a substitute for calling it at each
+// write site. Safe to call more than once; only touches rows a full-table comparison finds mismatched.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} [options]
