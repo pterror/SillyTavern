@@ -17,6 +17,16 @@ const SELECT_SAMPLER = {
 const textGenObjectStore = localforage.createInstance({ name: 'SillyTavern_TextCompletions' });
 let selectedSamplers = {};
 
+/**
+ * Whether the given (or currently active) main API is the Text Completion backend - the one
+ * sampler visibility/selection in this file is gated on.
+ * @param {string} [api] API to check. Defaults to the currently active main API.
+ * @returns {boolean}
+ */
+function isTextCompletionApi(api = main_api) {
+    return api === 'textgenerationwebui';
+}
+
 async function showSamplerSelectPopup() {
     const html = $(document.createElement('div'));
     html.attr('id', 'sampler_view_list')
@@ -33,7 +43,7 @@ async function showSamplerSelectPopup() {
     setSamplerListListeners();
 
     $('#resetSelectedSamplers').off('click').on('click', async function () {
-        if (main_api === 'textgenerationwebui') {
+        if (isTextCompletionApi(main_api)) {
             $('#prioritizeManuallySelectedSamplers').toggleClass('toggleEnabled', false);
             await resetApiSelectedSamplers(null, true);
         }
@@ -41,7 +51,7 @@ async function showSamplerSelectPopup() {
         await validateDisabledSamplers(true);
     });
 
-    if (main_api === 'textgenerationwebui') {
+    if (isTextCompletionApi(main_api)) {
         $('#prioritizeManuallySelectedSamplers').show();
         $('#prioritizeManuallySelectedSamplers').toggleClass('toggleEnabled', isSamplerManualPriorityEnabled());
         $('#prioritizeManuallySelectedSamplers').off('click').on('click', function () {
@@ -57,7 +67,7 @@ async function showSamplerSelectPopup() {
     }
 
     await showPromise;
-    if (main_api === 'textgenerationwebui') await saveApiSelectedSamplers();
+    if (isTextCompletionApi(main_api)) await saveApiSelectedSamplers();
 }
 
 function getRelatedDOMElement(samplerName) {
@@ -184,7 +194,7 @@ function setSamplerListListeners() {
         const shouldDisplay = isChecked ? targetDisplayType : 'none';
         relatedDOMElement.css('display', shouldDisplay);
 
-        if (main_api === 'textgenerationwebui') setApiSamplersState(samplerName, shouldDisplay !== 'none');
+        if (isTextCompletionApi(main_api)) setApiSamplersState(samplerName, shouldDisplay !== 'none');
     });
 }
 
@@ -201,7 +211,7 @@ function isElementVisibleInDOM(element) {
 
 async function listSamplers(main_api, arrayOnly = false) {
     let availableSamplers;
-    if (main_api === 'textgenerationwebui') {
+    if (isTextCompletionApi(main_api)) {
         availableSamplers = TGsamplerNames;
         const valuesToRemove = new Set(['streaming', 'bypass_status_check', 'custom_model', 'generic_model', 'openrouter_allow_fallbacks', 'legacy_api', 'extensions']);
         availableSamplers = availableSamplers.filter(sampler => !valuesToRemove.has(sampler));
@@ -212,8 +222,8 @@ async function listSamplers(main_api, arrayOnly = false) {
         return availableSamplers;
     }
 
-    const samplersActivatedManually = (main_api === 'textgenerationwebui') ? getActiveManualApiSamplers() : [];
-    const prioritizeManualSamplerSelect = (main_api === 'textgenerationwebui') ? isSamplerManualPriorityEnabled() : false;
+    const samplersActivatedManually = isTextCompletionApi(main_api) ? getActiveManualApiSamplers() : [];
+    const prioritizeManualSamplerSelect = isTextCompletionApi(main_api) ? isSamplerManualPriorityEnabled() : false;
 
     const samplersListHTML = availableSamplers.reduce((html, sampler) => {
         let customColor;
@@ -237,7 +247,7 @@ async function listSamplers(main_api, arrayOnly = false) {
         };
 
         if (displayname === undefined) displayname = sampler;
-        if (main_api === 'textgenerationwebui') setApiSamplersState(sampler, shouldBeChecked());
+        if (isTextCompletionApi(main_api)) setApiSamplersState(sampler, shouldBeChecked());
 
         return html + `
         <label class="sampler_view_list_item wide50p flex-container">
@@ -256,8 +266,8 @@ export async function validateDisabledSamplers(redraw = false) {
         return;
     }
 
-    const samplersActivatedManually = (main_api === 'textgenerationwebui') ? getActiveManualApiSamplers() : [];
-    const prioritizeManualSamplerSelect = (main_api === 'textgenerationwebui') ? isSamplerManualPriorityEnabled() : false;
+    const samplersActivatedManually = isTextCompletionApi(main_api) ? getActiveManualApiSamplers() : [];
+    const prioritizeManualSamplerSelect = isTextCompletionApi(main_api) ? isSamplerManualPriorityEnabled() : false;
 
     for (const sampler of APISamplers) {
         const { relatedDOMElement, targetDisplayType } = getRelatedDOMElement(sampler);
@@ -273,7 +283,7 @@ export async function validateDisabledSamplers(redraw = false) {
         relatedDOMElement.removeData(SELECT_SAMPLER.DATA);
     }
 
-    if (!prioritizeManualSamplerSelect && main_api === 'textgenerationwebui') {
+    if (!prioritizeManualSamplerSelect && isTextCompletionApi(main_api)) {
         showTGSamplerControls();
     }
 
