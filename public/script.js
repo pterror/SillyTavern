@@ -8802,6 +8802,7 @@ function applyMessageEdit(div) {
 
     updateMessage(mesId, editUpdates);
     mes = chat[mesId];
+    syncMesToSwipe(mesId);
 
     chat_metadata.tainted = true;
 
