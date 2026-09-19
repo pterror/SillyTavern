@@ -17,6 +17,16 @@ export const DATA_FIELD = 'data';
 /** Indexed, unstored boolean favorite-flag field. */
 export const FAV_FIELD = 'fav';
 
+// byteCount must not exceed 6: a JS number is only exact up to 2^53-1, and 7 bytes (2^56) silently overflows and collides.
+export function stringToSortKey(str, byteCount = 6) {
+    const lower = (str || '').toLowerCase();
+    let key = 0;
+    for (let i = 0; i < byteCount; i++) {
+        key = key * 256 + (i < lower.length ? lower.charCodeAt(i) & 0xFF : 0);
+    }
+    return key;
+}
+
 /**
  * Favorite filtering happens at the query level (via FAV_FIELD), not as a post-fetch filter, since relevance
  * ranking has no relationship to favorite status and could otherwise miss favorited items entirely under a row cap.

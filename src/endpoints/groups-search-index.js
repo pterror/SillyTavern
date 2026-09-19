@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { getTagDefinitions, getEntityTagIdsForMany, getTagsHash } from '../character-metadata-db.js';
 import { getGroupsData } from './groups.js';
-import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD } from './tantivy-search.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 
@@ -22,15 +22,6 @@ const TANTIVY_COLLATION_FIELDS = ['name_sort_key', 'fav_name_sort_key'];
 const ALL_FAST_FIELDS = [...TANTIVY_FAST_FIELDS, ...TANTIVY_COLLATION_FIELDS];
 const TANTIVY_FILTER_TEXT_FIELDS = [{ name: 'tag_ids', tokenizerName: 'whitespace' }];
 
-// Capped at 6 bytes: 7 bytes is 2^56, past Number.MAX_SAFE_INTEGER, and silently loses the low byte.
-function stringToSortKey(str, byteCount = 6) {
-    const lower = (str || '').toLowerCase();
-    let key = 0;
-    for (let i = 0; i < byteCount; i++) {
-        key = key * 256 + (i < lower.length ? lower.charCodeAt(i) & 0xFF : 0);
-    }
-    return key;
-}
 const TANTIVY_FIELD_LABELS = {
     name: ['name'],
     tag: ['resolved_tags'],
