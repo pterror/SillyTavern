@@ -43,6 +43,131 @@ const SOURCES = [
 ];
 
 /**
+ * Per-source vectorizer dispatch table. Each entry bundles the three pieces of per-source behavior that
+ * getVector/getBatchVector/getSourceSettings used to hand-write in three separate switches over the same
+ * source labels: how to embed one text, how to embed a batch, and how to build sourceSettings from a request.
+ * @type {Record<string, {
+ *   getVector: (text: string, sourceSettings: object, isQuery: boolean, directories: import('../users.js').UserDirectoryList) => Promise<number[]>|number[],
+ *   getBatchVector: (batch: string[], sourceSettings: object, isQuery: boolean, directories: import('../users.js').UserDirectoryList) => Promise<number[][]>|number[][],
+ *   getSettings: (request: object) => object,
+ * }>}
+ */
+const VECTOR_SOURCES = {
+    nomicai: {
+        getVector: (text, sourceSettings, isQuery, directories) => getNomicAIVector(text, 'nomicai', directories),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getNomicAIBatchVector(batch, 'nomicai', directories),
+        getSettings: () => ({ model: 'nomic-embed-text-v1.5' }),
+    },
+    togetherai: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'togetherai', directories, sourceSettings.model),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'togetherai', directories, sourceSettings.model),
+        getSettings: (request) => ({ model: String(request.body.model) }),
+    },
+    mistral: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'mistral', directories, sourceSettings.model),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'mistral', directories, sourceSettings.model),
+        getSettings: () => ({ model: 'mistral-embed' }),
+    },
+    openai: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'openai', directories, sourceSettings.model),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'openai', directories, sourceSettings.model),
+        getSettings: (request) => ({ model: String(request.body.model) }),
+    },
+    electronhub: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'electronhub', directories, sourceSettings.model),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'electronhub', directories, sourceSettings.model),
+        getSettings: (request) => ({ model: String(request.body.model || 'text-embedding-3-small') }),
+    },
+    openrouter: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'openrouter', directories, sourceSettings.model),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'openrouter', directories, sourceSettings.model),
+        getSettings: (request) => ({ model: String(request.body.model) || 'openai/text-embedding-3-large' }),
+    },
+    transformers: {
+        getVector: (text) => getTransformersVector(text),
+        getBatchVector: (batch) => getTransformersBatchVector(batch),
+        getSettings: () => ({ model: getConfigValue('extensions.models.embedding', '') }),
+    },
+    extras: {
+        getVector: (text, sourceSettings) => getExtrasVector(text, sourceSettings.extrasUrl, sourceSettings.extrasKey),
+        getBatchVector: (batch, sourceSettings) => getExtrasBatchVector(batch, sourceSettings.extrasUrl, sourceSettings.extrasKey),
+        getSettings: (request) => ({ extrasUrl: String(request.body.extrasUrl), extrasKey: String(request.body.extrasKey) }),
+    },
+    palm: {
+        getVector: (text, sourceSettings) => getMakerSuiteVector(text, sourceSettings.model, sourceSettings.request),
+        getBatchVector: (batch, sourceSettings) => getMakerSuiteBatchVector(batch, sourceSettings.model, sourceSettings.request),
+        getSettings: (request) => ({ model: String(request.body.model || 'text-embedding-005'), request }),
+    },
+    vertexai: {
+        getVector: (text, sourceSettings) => getVertexVector(text, sourceSettings.model, sourceSettings.request),
+        getBatchVector: (batch, sourceSettings) => getVertexBatchVector(batch, sourceSettings.model, sourceSettings.request),
+        getSettings: (request) => ({ model: String(request.body.model || 'text-embedding-005'), request }),
+    },
+    cohere: {
+        getVector: (text, sourceSettings, isQuery, directories) => getCohereVector(text, isQuery, directories, sourceSettings.model),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getCohereBatchVector(batch, isQuery, directories, sourceSettings.model),
+        getSettings: (request) => ({ model: String(request.body.model) }),
+    },
+    llamacpp: {
+        getVector: (text, sourceSettings, isQuery, directories) => getLlamaCppVector(text, sourceSettings.apiUrl, directories),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getLlamaCppBatchVector(batch, sourceSettings.apiUrl, directories),
+        getSettings: (request) => ({ apiUrl: String(request.body.apiUrl) }),
+    },
+    vllm: {
+        getVector: (text, sourceSettings, isQuery, directories) => getVllmVector(text, sourceSettings.apiUrl, sourceSettings.model, directories),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getVllmBatchVector(batch, sourceSettings.apiUrl, sourceSettings.model, directories),
+        getSettings: (request) => ({ apiUrl: String(request.body.apiUrl), model: String(request.body.model) }),
+    },
+    ollama: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOllamaVector(text, sourceSettings.apiUrl, sourceSettings.model, sourceSettings.keep, directories),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOllamaBatchVector(batch, sourceSettings.apiUrl, sourceSettings.model, sourceSettings.keep, directories),
+        getSettings: (request) => ({ apiUrl: String(request.body.apiUrl), model: String(request.body.model), keep: Boolean(request.body.keep) }),
+    },
+    webllm: {
+        getVector: (text, sourceSettings) => sourceSettings.embeddings[text],
+        getBatchVector: (batch, sourceSettings) => batch.map(x => sourceSettings.embeddings[x]),
+        getSettings: (request) => ({ model: String(request.body.model), embeddings: request.body.embeddings ?? {} }),
+    },
+    koboldcpp: {
+        getVector: (text, sourceSettings) => sourceSettings.embeddings[text],
+        getBatchVector: (batch, sourceSettings) => batch.map(x => sourceSettings.embeddings[x]),
+        getSettings: (request) => ({ model: String(request.body.model), embeddings: request.body.embeddings ?? {} }),
+    },
+    chutes: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'chutes', directories, sourceSettings.model),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'chutes', directories, sourceSettings.model),
+        getSettings: (request) => ({ model: String(request.body.model || 'chutes-qwen-qwen3-embedding-8b') }),
+    },
+    nanogpt: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'nanogpt', directories, sourceSettings.model),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'nanogpt', directories, sourceSettings.model),
+        getSettings: (request) => ({ model: String(request.body.model || 'text-embedding-3-small') }),
+    },
+    siliconflow: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'siliconflow', directories, sourceSettings.model, sourceSettings.urlOverride),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'siliconflow', directories, sourceSettings.model, sourceSettings.urlOverride),
+        getSettings: (request) => ({
+            model: String(request.body.model || 'Qwen/Qwen3-Embedding-0.6B'),
+            urlOverride: request.body.siliconflow_endpoint === 'cn'
+                ? 'https://api.siliconflow.cn/v1' : null,
+        }),
+    },
+    workers_ai: {
+        getVector: (text, sourceSettings, isQuery, directories) => getOpenAIVector(text, 'workers_ai', directories, sourceSettings.model, sourceSettings.urlOverride),
+        getBatchVector: (batch, sourceSettings, isQuery, directories) => getOpenAIBatchVector(batch, 'workers_ai', directories, sourceSettings.model, sourceSettings.urlOverride),
+        getSettings: (request) => {
+            const accountId = String(request.body.workers_ai_account_id || '').trim();
+            return {
+                model: String(request.body.model || '@cf/baai/bge-m3'),
+                urlOverride: accountId
+                    ? `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1`
+                    : null,
+            };
+        },
+    },
+};
+
+/**
  * Gets the vector for the given text from the given source.
  * @param {string} source - The source of the vector
  * @param {Object} sourceSettings - Settings for the source, if it needs any
@@ -52,48 +177,11 @@ const SOURCES = [
  * @returns {Promise<number[]>} - The vector for the text
  */
 async function getVector(source, sourceSettings, text, isQuery, directories) {
-    switch (source) {
-        case 'nomicai':
-            return getNomicAIVector(text, source, directories);
-        case 'togetherai':
-        case 'mistral':
-        case 'openai':
-            return getOpenAIVector(text, source, directories, sourceSettings.model);
-        case 'electronhub':
-            return getOpenAIVector(text, source, directories, sourceSettings.model);
-        case 'openrouter':
-            return getOpenAIVector(text, source, directories, sourceSettings.model);
-        case 'transformers':
-            return getTransformersVector(text);
-        case 'extras':
-            return getExtrasVector(text, sourceSettings.extrasUrl, sourceSettings.extrasKey);
-        case 'palm':
-            return getMakerSuiteVector(text, sourceSettings.model, sourceSettings.request);
-        case 'vertexai':
-            return getVertexVector(text, sourceSettings.model, sourceSettings.request);
-        case 'cohere':
-            return getCohereVector(text, isQuery, directories, sourceSettings.model);
-        case 'llamacpp':
-            return getLlamaCppVector(text, sourceSettings.apiUrl, directories);
-        case 'vllm':
-            return getVllmVector(text, sourceSettings.apiUrl, sourceSettings.model, directories);
-        case 'ollama':
-            return getOllamaVector(text, sourceSettings.apiUrl, sourceSettings.model, sourceSettings.keep, directories);
-        case 'webllm':
-            return sourceSettings.embeddings[text];
-        case 'koboldcpp':
-            return sourceSettings.embeddings[text];
-        case 'chutes':
-            return getOpenAIVector(text, source, directories, sourceSettings.model);
-        case 'nanogpt':
-            return getOpenAIVector(text, source, directories, sourceSettings.model);
-        case 'siliconflow':
-            return getOpenAIVector(text, source, directories, sourceSettings.model, sourceSettings.urlOverride);
-        case 'workers_ai':
-            return getOpenAIVector(text, source, directories, sourceSettings.model, sourceSettings.urlOverride);
+    const entry = VECTOR_SOURCES[source];
+    if (!entry) {
+        throw new Error(`Unknown vector source ${source}`);
     }
-
-    throw new Error(`Unknown vector source ${source}`);
+    return entry.getVector(text, sourceSettings, isQuery, directories);
 }
 
 /**
@@ -106,71 +194,17 @@ async function getVector(source, sourceSettings, text, isQuery, directories) {
  * @returns {Promise<number[][]>} - The array of vectors for the texts
  */
 async function getBatchVector(source, sourceSettings, texts, isQuery, directories) {
+    const entry = VECTOR_SOURCES[source];
+    if (!entry) {
+        throw new Error(`Unknown vector source ${source}`);
+    }
+
     const batchSize = 10;
     const batches = Array(Math.ceil(texts.length / batchSize)).fill(undefined).map((_, i) => texts.slice(i * batchSize, i * batchSize + batchSize));
 
     let results = [];
     for (let batch of batches) {
-        switch (source) {
-            case 'nomicai':
-                results.push(...await getNomicAIBatchVector(batch, source, directories));
-                break;
-            case 'togetherai':
-            case 'mistral':
-            case 'openai':
-                results.push(...await getOpenAIBatchVector(batch, source, directories, sourceSettings.model));
-                break;
-            case 'electronhub':
-                results.push(...await getOpenAIBatchVector(batch, source, directories, sourceSettings.model));
-                break;
-            case 'openrouter':
-                results.push(...await getOpenAIBatchVector(batch, source, directories, sourceSettings.model));
-                break;
-            case 'transformers':
-                results.push(...await getTransformersBatchVector(batch));
-                break;
-            case 'extras':
-                results.push(...await getExtrasBatchVector(batch, sourceSettings.extrasUrl, sourceSettings.extrasKey));
-                break;
-            case 'palm':
-                results.push(...await getMakerSuiteBatchVector(batch, sourceSettings.model, sourceSettings.request));
-                break;
-            case 'vertexai':
-                results.push(...await getVertexBatchVector(batch, sourceSettings.model, sourceSettings.request));
-                break;
-            case 'cohere':
-                results.push(...await getCohereBatchVector(batch, isQuery, directories, sourceSettings.model));
-                break;
-            case 'llamacpp':
-                results.push(...await getLlamaCppBatchVector(batch, sourceSettings.apiUrl, directories));
-                break;
-            case 'vllm':
-                results.push(...await getVllmBatchVector(batch, sourceSettings.apiUrl, sourceSettings.model, directories));
-                break;
-            case 'ollama':
-                results.push(...await getOllamaBatchVector(batch, sourceSettings.apiUrl, sourceSettings.model, sourceSettings.keep, directories));
-                break;
-            case 'webllm':
-                results.push(...texts.map(x => sourceSettings.embeddings[x]));
-                break;
-            case 'koboldcpp':
-                results.push(...texts.map(x => sourceSettings.embeddings[x]));
-                break;
-            case 'chutes':
-                results.push(...await getOpenAIBatchVector(batch, source, directories, sourceSettings.model));
-                break;
-            case 'nanogpt':
-                results.push(...await getOpenAIBatchVector(batch, source, directories, sourceSettings.model));
-                break;
-            case 'siliconflow':
-                results.push(...await getOpenAIBatchVector(batch, source, directories, sourceSettings.model, sourceSettings.urlOverride));
-                break;
-            case 'workers_ai':
-                results.push(...await getOpenAIBatchVector(batch, source, directories, sourceSettings.model, sourceSettings.urlOverride));
-                break;
-            default:
-                throw new Error(`Unknown vector source ${source}`);
-        }
+        results.push(...await entry.getBatchVector(batch, sourceSettings, isQuery, directories));
     }
 
     return results;
@@ -183,101 +217,8 @@ async function getBatchVector(source, sourceSettings, texts, isQuery, directorie
  * @returns {object} - An object that can be used as `sourceSettings` in functions that take that parameter.
  */
 function getSourceSettings(source, request) {
-    switch (source) {
-        case 'togetherai':
-            return {
-                model: String(request.body.model),
-            };
-        case 'openai':
-            return {
-                model: String(request.body.model),
-            };
-        case 'electronhub':
-            return {
-                model: String(request.body.model || 'text-embedding-3-small'),
-            };
-        case 'openrouter':
-            return {
-                model: String(request.body.model) || 'openai/text-embedding-3-large',
-            };
-        case 'cohere':
-            return {
-                model: String(request.body.model),
-            };
-        case 'llamacpp':
-            return {
-                apiUrl: String(request.body.apiUrl),
-            };
-        case 'vllm':
-            return {
-                apiUrl: String(request.body.apiUrl),
-                model: String(request.body.model),
-            };
-        case 'ollama':
-            return {
-                apiUrl: String(request.body.apiUrl),
-                model: String(request.body.model),
-                keep: Boolean(request.body.keep),
-            };
-        case 'extras':
-            return {
-                extrasUrl: String(request.body.extrasUrl),
-                extrasKey: String(request.body.extrasKey),
-            };
-        case 'transformers':
-            return {
-                model: getConfigValue('extensions.models.embedding', ''),
-            };
-        case 'palm':
-        case 'vertexai':
-            return {
-                model: String(request.body.model || 'text-embedding-005'),
-                request: request, // Pass the request object to get API key and URL
-            };
-        case 'mistral':
-            return {
-                model: 'mistral-embed',
-            };
-        case 'nomicai':
-            return {
-                model: 'nomic-embed-text-v1.5',
-            };
-        case 'webllm':
-            return {
-                model: String(request.body.model),
-                embeddings: request.body.embeddings ?? {},
-            };
-        case 'koboldcpp':
-            return {
-                model: String(request.body.model),
-                embeddings: request.body.embeddings ?? {},
-            };
-        case 'chutes':
-            return {
-                model: String(request.body.model || 'chutes-qwen-qwen3-embedding-8b'),
-            };
-        case 'nanogpt':
-            return {
-                model: String(request.body.model || 'text-embedding-3-small'),
-            };
-        case 'siliconflow':
-            return {
-                model: String(request.body.model || 'Qwen/Qwen3-Embedding-0.6B'),
-                urlOverride: request.body.siliconflow_endpoint === 'cn'
-                    ? 'https://api.siliconflow.cn/v1' : null,
-            };
-        case 'workers_ai': {
-            const accountId = String(request.body.workers_ai_account_id || '').trim();
-            return {
-                model: String(request.body.model || '@cf/baai/bge-m3'),
-                urlOverride: accountId
-                    ? `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1`
-                    : null,
-            };
-        }
-        default:
-            return {};
-    }
+    const entry = VECTOR_SOURCES[source];
+    return entry ? entry.getSettings(request) : {};
 }
 
 /**
