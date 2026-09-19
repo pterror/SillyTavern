@@ -176,8 +176,9 @@ export async function loadItemizedPrompts(chatId) {
         }
 
         if (response.status === 404) {
-            itemizedPrompts = [];
-            await promptStorage.removeItem(chatId);
+            if (!itemizedPrompts.length) {
+                itemizedPrompts = [];
+            }
         } else if (response.ok) {
             const stored = await response.json();
             itemizedPrompts = decodeStoredItemizedPrompts(stored);
