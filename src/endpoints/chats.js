@@ -1,9 +1,7 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import readline from 'node:readline';
-import process from 'node:process';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -12,14 +10,9 @@ import _ from 'lodash';
 
 import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
 import {
-    getConfigValue,
     humanizedDateTime,
     tryParse,
-    generateTimestamp,
-    removeOldBackups,
     formatBytes,
-    tryWriteFileSync,
-    readFirstLine,
     isPathUnderParent,
 } from '../util.js';
 import { bumpCharacterDateLastChat, bumpGroupChatStats, getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
@@ -28,7 +21,6 @@ import { readGroupFile, writeGroupFile } from './groups.js';
 import { readCardContent } from './characters.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { migrateOwnerOnTouch } from '../message-tree-migration.js';
-import { upsertChatFromSave } from '../chat-metadata-db.js';
 import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
@@ -42,74 +34,7 @@ import {
  * @typedef {import('../message-tree-db.js').ChatHeaderLike} ChatHeaderLike
  */
 
-const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
-const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
-const throttleInterval = Number(getConfigValue('backups.chat.throttleInterval', 10_000, 'number'));
-const checkIntegrity = !!getConfigValue('backups.chat.checkIntegrity', true, 'boolean');
-
 export const CHAT_BACKUPS_PREFIX = 'chat_';
-
-/**
- * Non-ASCII names would otherwise all collapse to the same sanitized key; a hash suffix keeps them distinct.
- * @param {string} name The chat/backup name to derive a filesystem-safe key from.
- * @returns {string} The sanitized key.
- */
-export function getBackupKey(name) {
-    const sanitized = sanitize(name).replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    if (/[^\x20-\x7E]/.test(name)) {
-        const hash = crypto.createHash('sha256').update(name).digest('hex').slice(0, 8);
-        return `${sanitized}_${hash}`;
-    }
-    return sanitized;
-}
-
-/**
- * Saves a chat to the backups directory.
- * @param {string} directory The user's backup directory.
- * @param {string} name The name of the chat.
- * @param {string} data The serialized chat to save.
- * @param {string} backupPrefix The file prefix. Typically CHAT_BACKUPS_PREFIX.
- * @returns
- */
-function backupChat(directory, name, data, backupPrefix = CHAT_BACKUPS_PREFIX) {
-    try {
-        if (!isBackupEnabled) { return; }
-        if (!fs.existsSync(directory)) {
-            console.error(`The chat couldn't be backed up because no directory exists at ${directory}!`);
-        }
-        name = getBackupKey(name);
-
-        const backupFile = path.join(directory, `${backupPrefix}${name}_${generateTimestamp()}.jsonl`);
-
-        tryWriteFileSync(backupFile, data);
-        removeOldBackups(directory, `${backupPrefix}${name}_`);
-        if (isNaN(maxTotalChatBackups) || maxTotalChatBackups < 0) {
-            return;
-        }
-        removeOldBackups(directory, backupPrefix, maxTotalChatBackups);
-    } catch (err) {
-        console.error(`Could not backup chat for ${name}`, err);
-    }
-}
-
-/**
- * @type {Map<string, import('lodash').DebouncedFunc<typeof backupChat>>}
- */
-const backupFunctions = new Map();
-
-/**
- * Keyed per user and chat, so rapid saves in one chat can't swallow the throttled backup of another.
- * @param {string} handle
- * @param {string} name
- * @returns {typeof backupChat} Backup function
- */
-function getBackupFunction(handle, name) {
-    const key = `${handle} ${name}`;
-    if (!backupFunctions.has(key)) {
-        backupFunctions.set(key, _.throttle(backupChat, throttleInterval, { leading: true, trailing: true }));
-    }
-    return backupFunctions.get(key) || (() => { });
-}
 
 /**
  * Gets a preview message from a chat message string.
@@ -127,12 +52,6 @@ function getPreviewMessage(lastMessage) {
         ? '...' + lastMessage.substring(lastMessage.length - strlen)
         : lastMessage;
 }
-
-process.on('exit', () => {
-    for (const func of backupFunctions.values()) {
-        func.flush();
-    }
-});
 
 /**
  * @typedef {object} OobaChatData
@@ -380,51 +299,6 @@ function importRisuChat(userName, characterName, jsonData) {
 }
 
 /**
- * Checks if the chat being saved has the same integrity as the one being loaded.
- * @param {string} filePath Path to the chat file
- * @param {string} integritySlug Integrity slug
- * @returns {Promise<boolean>} Whether the chat is intact
- */
-async function checkChatIntegrity(filePath, integritySlug) {
-    // If the chat file doesn't exist, assume it's intact
-    if (!fs.existsSync(filePath)) {
-        return true;
-    }
-
-    // If the chat file is empty, there is nothing that could be lost by overwriting it
-    if (fs.statSync(filePath).size === 0) {
-        return true;
-    }
-
-    // Parse the first line of the chat file as JSON. Strip a UTF-8 BOM an external editor may have added.
-    const firstLine = await readFirstLine(filePath);
-    const jsonData = tryParse(firstLine.replace(/^\uFEFF/, ''));
-
-    // A non-parsing first line means the file may be corrupted/truncated - fail so the client confirms the overwrite.
-    if (typeof jsonData !== 'object' || jsonData === null || Array.isArray(jsonData)) {
-        console.warn(`File "${filePath}" is not empty, but its first line could not be parsed as a chat header. Overwriting it requires an explicit confirmation.`);
-        return false;
-    }
-
-    const chatIntegrity = jsonData?.chat_metadata?.integrity;
-
-    // If the chat has no integrity metadata, assume it's intact (legacy chats created before integrity checks existed)
-    if (!chatIntegrity) {
-        return true;
-    }
-
-    // Check if the integrity matches
-    const matches = chatIntegrity === integritySlug;
-
-    if (!matches) {
-        const stat = fs.statSync(filePath);
-        console.error(`[integrity-debug] mismatch for "${filePath}": expected="${integritySlug}" onDisk="${chatIntegrity}" fileMtime=${stat.mtime.toISOString()} fileCtime=${stat.ctime.toISOString()} fileSize=${stat.size} now=${new Date().toISOString()}`);
-    }
-
-    return matches;
-}
-
-/**
  * @typedef {Object} ChatInfo
  * @property {string} [file_id] - The name of the chat file (without extension)
  * @property {string} [file_name] - The name of the chat file (with extension)
@@ -577,55 +451,6 @@ class IntegrityMismatchError extends Error {
         Error.captureStackTrace(this, IntegrityMismatchError);
         this.date = new Date();
     }
-}
-
-/**
- * Tries to save the chat data to a file, performing an integrity check if required.
- *
- * Also rotates the integrity slug on every successful write (when tracking is enabled), writes it into the
- * saved file, and returns it to the caller, which must feed it into that tab's next save. Otherwise the slug
- * never diverges from what any tab that ever loaded the chat is sending, and the check can never catch a stale
- * write from another tab.
- * @param {(ChatHeaderLike | TreeChatMessage)[]} chatData `[0]` is the chat header (only `chat_metadata` is read/mutated here).
- * @param {string} filePath
- * @param {boolean} skipIntegrityCheck If undefined, the chat's integrity will not be checked.
- * @param {string} handle
- * @param {string} cardName
- * @param {string} backupDirectory
- * @param {import('../users.js').UserDirectoryList} [directories] When given, updates the chat metadata store
- * right after the write succeeds. Optional since not every caller has directories to offer.
- * @returns {Promise<string|undefined>} The new integrity slug written to the file, or undefined if integrity
- * tracking is disabled or the chat has no header to carry a slug.
- */
-export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, directories) {
-    const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
-    const header = /** @type {ChatHeaderLike | undefined} */ (chatData[0]);
-    const chatIntegritySlug = doIntegrityCheck ? header?.chat_metadata?.integrity : undefined;
-
-    if (chatIntegritySlug != null && chatIntegritySlug !== '' && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
-        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatIntegritySlug}".`);
-    }
-    /** @type {string|undefined} */
-    let nextIntegritySlug;
-    if (checkIntegrity && header?.chat_metadata && typeof header.chat_metadata === 'object') {
-        nextIntegritySlug = crypto.randomUUID();
-        header.chat_metadata.integrity = nextIntegritySlug;
-    }
-
-    const jsonlData = chatData.map(m => JSON.stringify(m)).join('\n');
-    tryWriteFileSync(filePath, jsonlData);
-    getBackupFunction(handle, cardName)(backupDirectory, cardName, jsonlData);
-
-    if (directories) {
-        try {
-            const stats = await fs.promises.stat(filePath);
-            const fileSizeBytes = Buffer.byteLength(jsonlData, 'utf8');
-            await upsertChatFromSave(directories, filePath, chatData, stats.mtimeMs, fileSizeBytes);
-        } catch (err) {
-            console.error('[chat-metadata] Failed to update chat metadata store after save:', err);
-        }
-    }
-    return nextIntegritySlug;
 }
 
 /**
