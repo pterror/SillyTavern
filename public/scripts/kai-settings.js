@@ -244,6 +244,8 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
                     text += event.content;
                 } else if ('assistantNodeId' in event) {
                     state.assistantNodeId = event.assistantNodeId;
+                } else if ('control' in event && event.control?.itemization) {
+                    state.itemization = event.control.itemization;
                 }
             }
 

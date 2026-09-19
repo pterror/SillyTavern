@@ -555,8 +555,12 @@ export function createBackpressureWriter(res) {
  * @param {import('node-fetch').Response} upstreamResponse
  * @param {import('express').Response} response
  * @param {object} [persist] `pendingAssistantPersist`, or omit/`null` to leave behavior unchanged.
+ * @param {Record<string, *>} [itemization] Raw-action prompt-itemization breakdown
+ * (buildRawActionTextCompletionRequest()'s own `itemization` field) - when set, written as the first
+ * frame, a control-JSON frame the client's CompactStreamDecoder already decodes generically
+ * (`{control: {itemization: ...}}`).
  */
-export async function pipeLlamaCppCompactStream(upstreamResponse, response, persist) {
+export async function pipeLlamaCppCompactStream(upstreamResponse, response, persist, itemization) {
     if (!upstreamResponse.ok || !upstreamResponse.body) {
         return forwardFetchResponse(upstreamResponse, response);
     }
@@ -569,6 +573,9 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         const generationRecord = createGenerationRecord(id);
         const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
         let writer = initialWriter;
+        if (itemization) {
+            writer.write(encodeControlFrame({ itemization }));
+        }
         const decoder = new StringDecoder('utf8');
         let sseBuffer = '';
         let lastIndex = 0;

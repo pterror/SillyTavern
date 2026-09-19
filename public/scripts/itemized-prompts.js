@@ -325,6 +325,30 @@ export async function replaceItemizedPromptText(mesId, promptText) {
     itemizedPrompt.rawPrompt = promptText;
 }
 
+/**
+ * Merges a raw-action generation's server-computed prompt-breakdown fields (storyString,
+ * worldInfoString, examplesString, mesSendString, promptBias, generatedPromptCache,
+ * beforeScenarioAnchor, afterScenarioAnchor, finalPrompt, rawPrompt) into the already-pushed
+ * itemizedPrompts entry for `mesId`. Needed because finishGenerating() (generation.js) pushes the
+ * entry synchronously before dispatching the request, but for a raw-action request the actual
+ * values are only known once the server's response (or its streamed control frame) arrives.
+ * @param {number} mesId
+ * @param {Record<string, *>} breakdown
+ */
+export function applyItemizedPromptBreakdown(mesId, breakdown) {
+    if (!breakdown || !Array.isArray(itemizedPrompts)) {
+        return;
+    }
+
+    const itemizedPrompt = itemizedPrompts.find(x => x.mesId === mesId);
+
+    if (!itemizedPrompt) {
+        return;
+    }
+
+    Object.assign(itemizedPrompt, breakdown);
+}
+
 export async function deleteItemizedPrompts(chatId) {
     try {
         if (!chatId) {

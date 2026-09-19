@@ -1367,6 +1367,9 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
                     } else if ('assistantNodeId' in event) {
                         state.assistantNodeId = event.assistantNodeId;
                         yield { text, swipes, logprobs, toolCalls, state };
+                    } else if ('control' in event && event.control?.itemization) {
+                        state.itemization = event.control.itemization;
+                        yield { text, swipes, logprobs, toolCalls, state };
                     }
                 }
             }

@@ -4683,6 +4683,8 @@ export class StreamingProcessor {
         this.toolCallAborted = false;
         /** @type {string?} The node persistAssistantReply() wrote, if the server sent one ahead of [DONE]. */
         this.assistantNodeId = null;
+        /** @type {Record<string, *>?} Raw-action prompt-breakdown fields for itemized-prompts.js, if the server sent them via a control frame. */
+        this.itemization = null;
         // Initialize reasoning in its own handler
         this.reasoningHandler = new ReasoningHandler(timeStarted);
         /** @type {PromptReasoning} */
@@ -4938,7 +4940,7 @@ export class StreamingProcessor {
         // Save/persist decision extracted to generation.js (finishStreamedReplyPersistence()) so it can
         // be typechecked under strict null checks with the rest of that invariant-critical cluster -
         // see that function's own comment for the assistantNodeId-vs-heal reasoning.
-        await finishStreamedReplyPersistence({ assistantNodeId: this.assistantNodeId });
+        await finishStreamedReplyPersistence({ assistantNodeId: this.assistantNodeId, itemization: this.itemization });
 
         playMessageSound();
     }
@@ -5021,6 +5023,7 @@ export class StreamingProcessor {
                 // declaration comment above.
                 this.toolCallAborted = state?.toolCallAborted ?? this.toolCallAborted;
                 this.assistantNodeId = state?.assistantNodeId ?? this.assistantNodeId;
+                this.itemization = state?.itemization ?? this.itemization;
                 this.result = text;
                 this.swipes = Array.from(swipes ?? []);
                 if (logprobs) {

@@ -1070,7 +1070,7 @@ export async function assembleTextCompletionPrompt(input) {
         // e.g. proving a note positioned at BEFORE_PROMPT/IN_PROMPT resolves here (and NOT via
         // doChatInject/chat splicing), and that an IN_CHAT-positioned note leaves these empty.
         resolvedBeforeScenarioAnchor, resolvedAfterScenarioAnchor,
-        system, combinedStoryString, storyStringInjection, mesExamplesArray, mesExamplesRawArray,
+        system, combinedStoryString, storyStringInjection, mesExamplesArray, mesExamplesRawArray, examplesString,
         jailbreak,
         chat2, userMessageIndices, userAlignmentMessage, addUserAlignment,
         arrMes, cyclePrompt, generatedPromptCache,
@@ -1084,5 +1084,37 @@ export async function assembleTextCompletionPrompt(input) {
         gaps: {
             extensionPromptsSideTable: 'worldInfoDepth/storyStringInjection/characterDepthPrompt(single-character AND group-chat, via getGroupCharacterDepthPrompts()) ARE spliced into the chat array via doChatInject() (see module doc comment gap 1). authorsNote is now written at its REAL position (any of IN_CHAT/BEFORE_PROMPT/IN_PROMPT) - IN_CHAT is spliced via doChatInject(), BEFORE_PROMPT/IN_PROMPT is resolved into beforeScenarioAnchor/afterScenarioAnchor (now CLOSED, see resolvedBeforeScenarioAnchor/resolvedAfterScenarioAnchor above). outletEntries is still NOT wired into anything - still open.',
         },
+    };
+}
+
+/**
+ * Maps assembleTextCompletionPrompt()'s own return shape onto the field names
+ * public/scripts/itemized-prompts.js's `itemizedPrompts` entries actually use (the same names
+ * public/scripts/generation.js's non-raw-action Generate() locals of the same purpose use, since a
+ * raw-action request skips that local assembly entirely - see generation.js's own gate at
+ * `if (!rawActionGenerateData && !rawActionChatCompletionData)`). Shared by every raw-action
+ * text-completion-family caller (text-completions.js's buildRawActionTextCompletionRequest(),
+ * kobold.js's buildRawActionKoboldRequest()) so the mapping can't drift between them.
+ * `worldInfoString`: mirrors public/scripts/world-info.js's own `getWorldInfoPrompt()`
+ * (`worldInfoString = worldInfoBefore + worldInfoAfter`) exactly.
+ * `finalPrompt`/`rawPrompt`: both the server's actual, fully-assembled prompt text
+ * (`combinedPrompt`) - `finalPrompt` is what itemizedParams() sums for "Total Tokens in Prompt",
+ * `rawPrompt` is what "Show Raw Prompt"/the diff-vs-previous feature displays; both were sourced
+ * from the same finalPrompt local pre-raw-action, so both take the same value here too.
+ * @param {Awaited<ReturnType<typeof assembleTextCompletionPrompt>>} assembled
+ * @returns {Record<string, *>}
+ */
+export function buildItemizationBreakdown(assembled) {
+    return {
+        storyString: assembled.combinedStoryString,
+        worldInfoString: (assembled.worldInfoBefore || '') + (assembled.worldInfoAfter || ''),
+        examplesString: assembled.examplesString || '',
+        mesSendString: assembled.mesSendString,
+        promptBias: assembled.promptBias,
+        generatedPromptCache: assembled.generatedPromptCache,
+        beforeScenarioAnchor: assembled.resolvedBeforeScenarioAnchor,
+        afterScenarioAnchor: assembled.resolvedAfterScenarioAnchor,
+        finalPrompt: assembled.combinedPrompt,
+        rawPrompt: assembled.combinedPrompt,
     };
 }

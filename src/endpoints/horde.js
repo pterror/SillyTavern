@@ -346,6 +346,10 @@ async function buildRawActionHordePayload(request) {
     return {
         body: { prompt, params, trusted_workers: !!trustedWorkers, models: Array.isArray(models) ? models : [] },
         rawActionPersist,
+        // Same gating as `rawActionPersist` above - see text-completions.js's identical comment for
+        // why impersonate/quiet/the continue-text-conflict case must still reach the client
+        // completely unmodified.
+        itemization: rawActionPersist ? built.itemization : null,
     };
 }
 
@@ -397,15 +401,22 @@ async function fetchHordeJobStatus(jobId, agent) {
  * @param {string} params.agent
  * @param {object|null} params.rawActionPersist Same shape `persistAssistantReply()` takes minus
  * `directories`/`ownerId` (already merged in by the caller) - or `null` to skip persistence.
+ * @param {Record<string, *>} [params.itemization] Raw-action prompt-itemization breakdown
+ * (buildRawActionHordePayload()'s own `itemization` field, itself buildRawActionKoboldRequest()'s) -
+ * when set, written as a control-JSON frame, same as kobold.js/text-completions.js's own raw-action
+ * streaming paths.
  * @returns {Promise<void>}
  */
-async function streamHordeGeneration({ response, jobId, agent, rawActionPersist }) {
+async function streamHordeGeneration({ response, jobId, agent, rawActionPersist, itemization }) {
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
     response.setHeader('X-Generation-Id', jobId);
 
     const generationRecord = createGenerationRecord(jobId);
     const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord, HORDE_KEEPALIVE_INTERVAL_MS);
     let writer = initialWriter;
+    if (itemization) {
+        writer.write(encodeControlFrame({ itemization }));
+    }
 
     const pollState = registerHordePoll(jobId);
 
@@ -489,6 +500,7 @@ router.post('/generate-text', async (request, response) => {
     // character_avatar/group_id) - the existing dispatch code below (the actual POST to Horde's real
     // coordinator) is completely unaware of which branch produced `request.body`, same pattern.
     let rawActionPersist = null;
+    let rawActionItemization = null;
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const ownerId = request.body.owner_id;
         try {
@@ -497,6 +509,7 @@ router.post('/generate-text', async (request, response) => {
             rawActionPersist = built.rawActionPersist
                 ? { ...built.rawActionPersist, directories: request.user.directories, ownerId }
                 : null;
+            rawActionItemization = built.itemization;
         } catch (error) {
             console.error('Failed to build raw-action Horde request:', error);
             return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
@@ -536,7 +549,7 @@ router.post('/generate-text', async (request, response) => {
         return response.send({ error: { message: submitData?.message || 'Horde did not return a job id' } });
     }
 
-    return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist });
+    return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist, itemization: rawActionItemization });
 });
 
 router.post('/sd-samplers', async (_, response) => {

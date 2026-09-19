@@ -15,7 +15,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame, encodeControlFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
@@ -25,7 +25,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
-import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
+import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
 import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
@@ -50,9 +50,12 @@ export const router = express.Router();
  * @param {import('express').Request} request Express request
  * @param {import('express').Response} response Express response
  * @param {object} [persist] `pendingAssistantPersist` - see above.
+ * @param {Record<string, *>} [itemization] Raw-action prompt-itemization breakdown (buildRawActionTextCompletionRequest()'s
+ * own `itemization` field) - when set, written as the first frame, a control-JSON frame the client's
+ * CompactStreamDecoder already decodes generically (`{control: {itemization: ...}}`).
  * @returns {Promise<any>} Nothing valuable
  */
-async function parseOllamaStream(jsonStream, request, response, persist) {
+async function parseOllamaStream(jsonStream, request, response, persist, itemization) {
     try {
         if (!jsonStream.body) {
             throw new Error('No body in the response');
@@ -63,6 +66,9 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
         response.setHeader('X-Generation-Id', generationId);
         const generationRecord = createGenerationRecord(generationId);
         const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
+        if (itemization) {
+            initialWriter.write(encodeControlFrame({ itemization }));
+        }
         let writer = initialWriter;
 
         let partialData = '';
@@ -158,9 +164,12 @@ async function parseOllamaStream(jsonStream, request, response, persist) {
  * probabilities frame ahead of the content frame it belongs to, same ordering
  * llamacpp-compact-stream.js's own encodeEvent() uses. `null` (the default) for an api_type with no
  * such field - NovelAI's `data.logprobs` is the only current caller.
+ * @param {Record<string, *>} [itemization] Raw-action prompt-itemization breakdown (buildRawActionTextCompletionRequest()'s
+ * own `itemization` field) - when set, written as the first frame, a control-JSON frame the client's
+ * CompactStreamDecoder already decodes generically (`{control: {itemization: ...}}`).
  * @returns {Promise<void>}
  */
-export async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractProbabilities = null) {
+export async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractProbabilities = null, itemization = null) {
     if (!fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
@@ -185,6 +194,9 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     const generationRecord = createGenerationRecord(generationId);
     const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
     let writer = initialWriter;
+    if (itemization) {
+        writer.write(encodeControlFrame({ itemization }));
+    }
     const safeWrite = (chunk) => writer.write(chunk);
 
     const onSocketClose = () => {
@@ -708,7 +720,13 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // every other, non-continue caller shape where `chat` could legitimately be empty.
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
-    return { params: assembled.generate_data, backend, anchorNodeId, anchorContent, name1: orchestratorInput.name1, name2: orchestratorInput.name2 };
+    return {
+        params: assembled.generate_data, backend, anchorNodeId, anchorContent,
+        name1: orchestratorInput.name1, name2: orchestratorInput.name2,
+        // Prompt-itemization breakdown for the client's itemizedPrompts entry - see
+        // buildItemizationBreakdown()'s own doc comment (text-completion-prompt-orchestrator.js).
+        itemization: buildItemizationBreakdown(assembled),
+    };
 }
 
 router.post('/generate', async function (request, response) {
@@ -751,6 +769,12 @@ router.post('/generate', async function (request, response) {
     // Every wire format reachable by this route is covered - there is no remaining streaming
     // api_type left un-persisted for the raw-action case.
     let pendingAssistantPersist = null;
+
+    // Set only by the raw-action branch below (buildRawActionTextCompletionRequest()'s own
+    // `itemization` field - see that function's doc comment) - `null` for every other branch
+    // (connection-profile, default/legacy), same scoping reason as `pendingAssistantPersist` above:
+    // read by both the non-streaming response branch and the streaming branches further down.
+    let rawActionItemization = null;
 
     try {
         // "Generate using connection profile X" - the raw action is the profile id plus the raw
@@ -958,6 +982,11 @@ router.post('/generate', async function (request, response) {
                     directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: built.anchorContent,
                 };
+                // Same gating as `pendingAssistantPersist` above, not unconditional on `built.itemization`
+                // existing - impersonate/quiet/the continue-text-conflict case must still reach the
+                // client completely unmodified (see this block's own comment above), matching how
+                // `data.assistant_node_id` below is likewise only ever set when persistence itself ran.
+                rawActionItemization = built.itemization;
             }
 
             // Replace the body entirely - mirrors the connection-profile branch's own final
@@ -1115,12 +1144,12 @@ router.post('/generate', async function (request, response) {
 
         if (request.body.api_type === TEXTGEN_TYPES.OLLAMA && request.body.stream) {
             const stream = await fetch(url, args);
-            parseOllamaStream(stream, request, response, pendingAssistantPersist);
+            parseOllamaStream(stream, request, response, pendingAssistantPersist, rawActionItemization);
         } else if (request.body.stream) {
             const completionsStream = await fetch(url, args);
             if (request.body.api_type === TEXTGEN_TYPES.LLAMACPP) {
                 // Compact wire format for the llama.cpp raw-completions path only - see llamacpp-compact-stream.js.
-                await pipeLlamaCppCompactStream(completionsStream, response, pendingAssistantPersist);
+                await pipeLlamaCppCompactStream(completionsStream, response, pendingAssistantPersist, rawActionItemization);
             } else if (request.body.api_type === TEXTGEN_TYPES.OPENROUTER) {
                 // OPENROUTER is dispatched through /v1/chat/completions (see the URL-construction
                 // switch above), even though this file is nominally the TEXT-completions backend -
@@ -1128,14 +1157,14 @@ router.post('/generate', async function (request, response) {
                 // (`choices[0].delta.content`), a materially different shape from every other
                 // api_type reaching this branch (`choices[0].text`). Given its own extractor rather
                 // than folded into the generic branch below.
-                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content);
+                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content, null, rawActionItemization);
             } else {
                 // Pipe remote SSE stream to Express response as the compact binary wire format,
                 // tapping the OpenAI TEXT-completions-shaped `choices[0].text` field for raw-action
                 // persistence - see forwardAndPersistCompactStream()'s own doc comment above.
                 // `pendingAssistantPersist` being null (connection_profile_id and legacy/default
                 // calls) only skips persistence; the client still gets the same compact-v1 stream.
-                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.text);
+                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.text, null, rawActionItemization);
             }
         } else {
             const completionsReply = await fetch(url, args);
@@ -1174,6 +1203,14 @@ router.post('/generate', async function (request, response) {
                     if (persisted) {
                         data.assistant_node_id = persisted.node_id;
                     }
+                }
+
+                // Raw-action prompt-itemization breakdown - see buildRawActionTextCompletionRequest()'s
+                // own `itemization` field. Attached regardless of `pendingAssistantPersist` (impersonate/
+                // quiet raw-action calls skip persistence but are harmless to include this on; the
+                // client only ever reads it for a real, itemized assistant message).
+                if (rawActionItemization) {
+                    data.itemization = rawActionItemization;
                 }
 
                 return response.send(data);

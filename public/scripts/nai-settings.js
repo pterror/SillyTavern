@@ -741,6 +741,8 @@ export async function generateNovelWithStreaming(generate_data, signal) {
                     pendingProbabilities = null;
                 } else if ('assistantNodeId' in event) {
                     state.assistantNodeId = event.assistantNodeId;
+                } else if ('control' in event && event.control?.itemization) {
+                    state.itemization = event.control.itemization;
                 }
             }
 
