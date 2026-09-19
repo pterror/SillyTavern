@@ -222,7 +222,6 @@ export const CHAT_COMPLETION_SOURCES = {
  */
 export const UPLOADS_DIRECTORY = '_uploads';
 
-// TODO: this is copied from the client code; there should be a way to de-duplicate it eventually
 export const TEXTGEN_TYPES = {
     OOBA: 'ooba',
     MANCER: 'mancer',
