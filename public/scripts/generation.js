@@ -16,7 +16,7 @@ import {
     showStopButton, StreamingProcessor, substituteParams, swipe,
     triggerAutoContinue, unblockGeneration, unshallowCharacter,
 } from '../script.js';
-import { _postChatMetadata, saveMetadata } from './metadata-store.js';
+import { _postChatMetadata, deriveChatAddressNode, saveMetadata } from './metadata-store.js';
 import { isProvisionalNodeId, isStoredNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';
 import { getCfgPrompt, getGuidanceScale } from './cfg-scale.js';
@@ -2806,23 +2806,8 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
 
             if (hasPersisted) {
                 hasPersistedOpening = true;
-                const position = getCurrentCharacter()?.chat;
-                const opening = chat[0]?.node_id;
-                const target = addressedByName
-                    ? fileName
-                    : (chat.some(m => m.node_id === position) ? position
-                        : (isStoredNodeId(opening) ? opening : fileName));
+                const target = addressedByName ? fileName : deriveChatAddressNode(fileName);
 
-                // Delegates to _postChatMetadata() (this same file, below) instead of POSTing
-                // directly, so this and saveMetadata()'s own calls share one serialized
-                // _metadataSaveChain - see that variable's doc comment for why two unserialized
-                // metadata saves racing each other produces a false-positive integrity 409.
-                // `target` can be statically `undefined` here (e.g. `!addressedByName` with no
-                // matching in-chat position and no persisted opening's node_id, falling through to
-                // `fileName`, which can itself be empty) - a pre-existing edge case, not introduced
-                // by this typing pass; _postChatMetadata()'s own `{string}` param type is left
-                // accurate rather than widened to paper over it, so the mismatch stays visible at
-                // this call site.
                 await _postChatMetadata({ avatar_url: treeAvatar }, /** @type {string} */ (target), metadata);
             }
         }
