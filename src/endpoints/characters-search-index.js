@@ -9,7 +9,7 @@ import {
     characterChangeEmitter,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
-import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery } from './tantivy-search.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, stringToSortKey } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
@@ -142,16 +142,6 @@ async function makeTagIdsResolver(directories, avatars) {
 
 // This binding has no explicit index-handle-close API.
 const NOOP_CLOSE = () => { };
-
-// byteCount must not exceed 6: a JS number is only exact up to 2^53-1, and 7 bytes (2^56) silently overflows and collides.
-function stringToSortKey(str, byteCount = 6) {
-    const lower = (str || '').toLowerCase();
-    let key = 0;
-    for (let i = 0; i < byteCount; i++) {
-        key = key * 256 + (i < lower.length ? lower.charCodeAt(i) & 0xFF : 0);
-    }
-    return key;
-}
 
 function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor) {
     return tantivy.Document.fromDict({
