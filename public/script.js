@@ -2545,6 +2545,13 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
 
     await getGroups({ silent: silentGroups });
     await printCharacters(true);
+
+    // Server search results were fetched against whatever search index state existed at the time; a change
+    // that landed since then (e.g. an import, or the background rebuild it triggered) can make them stale.
+    const activeSearchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
+    if (activeSearchTerm) {
+        await fetchServerCharacterSearchResults(activeSearchTerm).then(() => printCharactersDebounced());
+    }
 }
 
 async function delChat(chatfile) {
