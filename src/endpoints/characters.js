@@ -19,7 +19,7 @@ import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, 
 import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, color, mapWithConcurrency } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
-import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash } from '../character-card-normalize.js';
+import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
@@ -207,18 +207,23 @@ export async function readCharacterData(inputFile, inputFormat = 'png', precompu
 export async function readCardContent(directories, avatar, filePath = undefined, precomputedStat = undefined) {
     const parked = await getCharacterCardJson(directories, avatar);
     const raw = parked !== null ? parked : await readCharacterData(filePath ?? path.join(directories.characters, avatar), 'png', precomputedStat);
-    return await correctFirstMesDriftOnRead(directories, avatar, filePath, raw);
+    return await correctV1FieldDriftOnRead(directories, avatar, filePath, raw);
 }
 
 /**
- * Corrects `data.first_mes` vs. the top-level v1 mirror when they disagree, persisting the fix to the metadata store (never the PNG).
+ * Corrects every V1_V2_FIELD_MAPPINGS field (character-card-normalize.js) vs. its `data.*` v2 counterpart
+ * when they disagree, persisting the fix to the metadata store (never the PNG). readCardContent() is the
+ * only read seam that returns a card's raw top-level fields as-is (every other reader goes through
+ * getCharaCardV2()/readFromV2(), which already resolves this drift in memory on every call) - so a caller
+ * reading straight off readCardContent(), such as character-card-fields.js's prompt-field resolution, would
+ * otherwise see a stale v1 mirror.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {string} [filePath]
  * @param {string|undefined} raw readCardContent()'s own read result
  * @returns {Promise<string|undefined>} `raw`, or the corrected JSON string if a fix was applied
  */
-async function correctFirstMesDriftOnRead(directories, avatar, filePath, raw) {
+async function correctV1FieldDriftOnRead(directories, avatar, filePath, raw) {
     if (raw === undefined) return raw;
 
     let card;
@@ -229,17 +234,24 @@ async function correctFirstMesDriftOnRead(directories, avatar, filePath, raw) {
     }
 
     if (card.spec === undefined || _.isUndefined(card.data)) return raw;
-    const v2FirstMes = card.data.first_mes;
-    if (_.isUndefined(v2FirstMes) || (!_.isUndefined(card.first_mes) && String(card.first_mes) === String(v2FirstMes))) return raw;
 
-    card.first_mes = v2FirstMes;
+    let changed = false;
+    _.forEach(V1_V2_FIELD_MAPPINGS, (v2Path, charField) => {
+        const v2Value = _.get(card.data, v2Path);
+        if (_.isUndefined(v2Value)) return;
+        if (!_.isUndefined(card[charField]) && JSON.stringify(card[charField]) === JSON.stringify(v2Value)) return;
+        card[charField] = v2Value;
+        changed = true;
+    });
+    if (!changed) return raw;
+
     const corrected = JSON.stringify(card);
 
     try {
         const stat = await fsPromises.stat(filePath ?? path.join(directories.characters, avatar));
         await upsertCharacterFromWrite(directories, avatar, corrected, stat.mtimeMs);
     } catch (err) {
-        console.debug(`[first-mes-repair] Could not persist the fix for "${avatar}" (will just retry on its next read):`, err.message);
+        console.debug(`[v1-field-drift-repair] Could not persist the fix for "${avatar}" (will just retry on its next read):`, err.message);
     }
 
     return corrected;

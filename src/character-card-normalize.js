@@ -136,6 +136,23 @@ function canonicalStringify(value) {
 }
 
 /**
+ * Top-level Spec-V1 field name -> its `data.*` Spec-V2 path. The one place this mapping is defined -
+ * readFromV2() and characters.js's correctV1FieldDriftOnRead() both read it rather than each keeping
+ * their own copy.
+ */
+export const V1_V2_FIELD_MAPPINGS = {
+    name: 'name',
+    description: 'description',
+    personality: 'personality',
+    scenario: 'scenario',
+    first_mes: 'first_mes',
+    mes_example: 'mes_example',
+    talkativeness: 'extensions.talkativeness',
+    fav: 'extensions.fav',
+    tags: 'tags',
+};
+
+/**
  * @param {object} char Character object, expected to already carry a `data` (Spec V2) object
  * @returns {object} The same object, with V1 top-level fields hoisted back from `data.*`
  */
@@ -148,19 +165,7 @@ export function readFromV2(char) {
     // If 'json_data' was already saved, don't let it propagate
     _.unset(char, 'json_data');
 
-    const fieldMappings = {
-        name: 'name',
-        description: 'description',
-        personality: 'personality',
-        scenario: 'scenario',
-        first_mes: 'first_mes',
-        mes_example: 'mes_example',
-        talkativeness: 'extensions.talkativeness',
-        fav: 'extensions.fav',
-        tags: 'tags',
-    };
-
-    _.forEach(fieldMappings, (v2Path, charField) => {
+    _.forEach(V1_V2_FIELD_MAPPINGS, (v2Path, charField) => {
         //console.info(`Migrating field: ${charField} from ${v2Path}`);
         const v2Value = _.get(char.data, v2Path);
         if (_.isUndefined(v2Value)) {
