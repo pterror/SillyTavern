@@ -56,6 +56,15 @@ export const ENCODE_TOKENIZERS = [
 ];
 
 /**
+ * Whether the given (or currently active) main API is Chat Completion (OpenAI-compatible).
+ * @param {string} [api] API to check. Defaults to the currently active main API.
+ * @returns {boolean}
+ */
+function isOpenAiApi(api = main_api) {
+    return api === 'openai';
+}
+
+/**
  * A list of Text Completion sources that support remote tokenization.
  * Populated in initTokenziers due to circular dependencies.
  * @type {string[]}
@@ -452,7 +461,7 @@ function callTokenizerAsync(type, str) {
  * @returns {Promise<number[]>} Token counts, same order/length as `strings`
  */
 export async function getTokenCountsAsyncBatch(strings, padding = 0) {
-    if (main_api === 'openai') {
+    if (isOpenAiApi()) {
         // Shadow-prompt building and extension/WI counting take different, incompatible paths per string
         // (see getTokenCountAsync) - not worth special-casing for a batch here, just parallelize.
         return Promise.all(strings.map(str => getTokenCountAsync(str, padding)));
@@ -535,7 +544,7 @@ export async function getTokenCountAsync(str, padding = undefined) {
     let tokenizerType = power_user.tokenizer;
     let modelHash = '';
 
-    if (main_api === 'openai') {
+    if (isOpenAiApi()) {
         if (padding === power_user.token_padding) {
             // For main "shadow" prompt building
             tokenizerType = tokenizers.NONE;
@@ -591,7 +600,7 @@ export function getTokenCount(str, padding = undefined) {
     let tokenizerType = power_user.tokenizer;
     let modelHash = '';
 
-    if (main_api === 'openai') {
+    if (isOpenAiApi()) {
         if (padding === power_user.token_padding) {
             // For main "shadow" prompt building
             tokenizerType = tokenizers.NONE;

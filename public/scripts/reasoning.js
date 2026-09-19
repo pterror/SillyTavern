@@ -34,6 +34,15 @@ export const reasoning_templates = [];
 export const DEFAULT_REASONING_TEMPLATE = 'Think XML';
 
 /**
+ * Whether the given (or currently active) main API is Chat Completion (OpenAI-compatible).
+ * @param {string} [api] API to check. Defaults to the currently active main API.
+ * @returns {boolean}
+ */
+function isOpenAiApi(api = main_api) {
+    return api === 'openai';
+}
+
+/**
  * @type {Record<string, JQuery<HTMLElement>>} List of UI elements for reasoning settings
  * @readonly
  */
@@ -181,7 +190,7 @@ export function extractReasoningSignatureFromData(data, {
     chatCompletionSource = null,
 } = {}) {
     // Only Gemini models use thought signatures (via MakerSuite/VertexAI or OpenRouter)
-    if ((mainApi ?? main_api) !== 'openai') {
+    if (!isOpenAiApi(mainApi ?? main_api)) {
         return null;
     }
 
@@ -219,7 +228,7 @@ export function extractReasoningSignatureFromData(data, {
  * @returns {boolean} True if the model supports reasoning
  */
 export function isHiddenReasoningModel() {
-    if (main_api !== 'openai') {
+    if (!isOpenAiApi()) {
         return false;
     }
 
