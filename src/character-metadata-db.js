@@ -909,7 +909,9 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         id,
         name: character.name ?? '',
         name_fold: foldName(character.name),
-        fav: character.fav === true ? 1 : 0,
+        // Falls back to the V2 mirror when the V1 top-level field is absent, same drift the other
+        // V1_V2_FIELD_MAPPINGS fields get repaired for at read-time (character-card-normalize.js).
+        fav: (character.fav ?? _.get(/** @type {any} */ (character), 'data.extensions.fav')) === true ? 1 : 0,
         date_added: dateAddedCandidate,
         create_date: parseCreateDateToEpochMs(character.create_date),
         date_last_chat: dateLastChat,
