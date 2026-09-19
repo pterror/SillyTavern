@@ -4553,10 +4553,6 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
  * @returns {Promise<boolean>} A promise that resolves to true if the world info was successfully deleted, false otherwise
  */
 export async function deleteWorldInfo(worldInfoName) {
-    if (!world_names.includes(worldInfoName)) {
-        return false;
-    }
-
     const response = await fetch('/api/worldinfo/delete', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -6330,18 +6326,6 @@ export async function assignLorebookToChat({ shiftKey, altKey }) {
  */
 export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOriginal = true } = {}) {
     if (sourceName === targetName) {
-        return false;
-    }
-
-    if (!world_names.includes(sourceName)) {
-        toastr.error(t`Source lorebook '${sourceName}' not found.`);
-        console.error(`[WI Move] Source lorebook '${sourceName}' does not exist.`);
-        return false;
-    }
-
-    if (!world_names.includes(targetName)) {
-        toastr.error(t`Target lorebook '${targetName}' not found.`);
-        console.error(`[WI Move] Target lorebook '${targetName}' does not exist.`);
         return false;
     }
 
