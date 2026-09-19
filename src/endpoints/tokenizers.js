@@ -749,8 +749,10 @@ export async function encodeViaKoboldAPI(baseUrl, text) {
  * `.find()` return `undefined` and fall to the `tokenizers.OPENAI` default case.
  * @param {string} [options.dreamGenModelId] `textgen_settings.dreamgen_model` equivalent.
  * @param {{id?: string}[]} [options.dreamGenModels] LIVE external data - mirrors the client's
- * module-level `dreamGenModels`. JUDGMENT CALL: the client's own `getCurrentDreamGenModelTokenizer()`
- * does `dreamGenModels.find(...)` with NO fallback and then reads `model.id` unconditionally - with
+ * module-level `dreamGenModels`. JUDGMENT CALL: the client's own
+ * `public/scripts/textgen-models.js`'s `getCurrentDreamGenModelTokenizer()` (which carries a
+ * cross-reference back to this comment) does `dreamGenModels.find(...)` with NO fallback and then
+ * reads `model.id` unconditionally - with
  * an empty/not-yet-fetched list (the honest default for this live parameter) that would throw a
  * `TypeError` on the client too. That's a latent client bug, not a "live fallback" worth
  * reproducing; this port uses `model?.id` and falls back to the same `tokenizers.MISTRAL` result the

@@ -1372,6 +1372,12 @@ export function getCurrentOpenRouterModelTokenizer() {
     }
 }
 
+/**
+ * `src/endpoints/tokenizers.js`'s `resolveTextgenTokenizerForTokenIds()` is a server-side port of
+ * this decision tree; its doc comment's JUDGMENT CALL note documents that this function throws on
+ * an empty/not-yet-fetched `dreamGenModels` (no `?.` on `model.id` below) and that the port
+ * deliberately does not reproduce that crash. Keep both in sync if this logic changes.
+ */
 export function getCurrentDreamGenModelTokenizer() {
     const modelId = textgen_settings.dreamgen_model;
     const model = dreamGenModels.find(x => x.id === modelId);
