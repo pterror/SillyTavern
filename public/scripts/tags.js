@@ -419,17 +419,6 @@ function rebuildTagStores() {
             serverAssignedTagIds.add(change.relatedId);
         }
     });
-
-    // getTagsList() reads a resident character's tags off its own tag_ids field (see its doc comment) - mirror
-    // tag_map changes back onto the matching character so a toggle shows up before the next delta sync.
-    tagMapStore.onChange((change) => {
-        const keys = change.op === 'relatedRemoved' ? (change.affectedKeys ?? []) : (change.key ? [change.key] : []);
-        for (const key of keys) {
-            if (charactersStore.has(key)) {
-                charactersStore.update(key, { tag_ids: tagMapStore.get(key) });
-            }
-        }
-    });
 }
 
 /** Refreshes the client-side tags cache so the next boot's freshness check can hit it. */
