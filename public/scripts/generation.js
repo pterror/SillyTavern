@@ -25,7 +25,7 @@ import { clearDraft } from './chat-draft.js';
 import { ensureOpeningRow, healDirtyMessages, updateMessage } from './chat-store.js';
 import { appendFileContent, hasPendingFileAttachment } from './chats.js';
 import { GENERATION_TYPE_TRIGGERS, inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
-import { isSystemChatItem } from './core-chat-predicates.js';
+import { collectMessageTitles, isSystemChatItem } from './core-chat-predicates.js';
 import { eventSource, event_types } from './events.js';
 import { extension_settings, runGenerationInterceptors } from './extensions.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
@@ -537,20 +537,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             chatItem = chat[residentId];
         }
 
-        const titles = [];
-        if (chatItem.extra?.append_title === true && chatItem.extra.title != null && chatItem.extra.title !== '') {
-            titles.push(chatItem.extra.title);
-        }
-        if (Array.isArray(chatItem.extra?.media)) {
-            for (const mediaItem of chatItem.extra.media) {
-                if (mediaItem.title != null && mediaItem.title !== '' && mediaItem.append_title === true) {
-                    titles.push(mediaItem.title);
-                }
-            }
-        }
-        if (titles.length > 0) {
-            regexedMessage = `${regexedMessage}\n\n${titles.join('\n\n')}`;
-        }
+        regexedMessage = `${regexedMessage}${collectMessageTitles(chatItem)}`;
 
         return {
             ...chatItem,
