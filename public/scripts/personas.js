@@ -25,7 +25,7 @@ import {
     updateMessage,
     chatOpEditMany,
 } from '../script.js';
-import { power_user, personaStore } from './power-user.js';
+import { power_user, personaStore, defaultPersonaRecord } from './power-user.js';
 import { getTokenCountAsync } from './tokenizers.js';
 import {
     PAGINATION_TEMPLATE,
@@ -652,12 +652,7 @@ export async function convertCharacterToPersona(avatar = null) {
         personaStore.create(overwriteName, record);
     }
 
-    // If the user is currently using this persona, update the description
-    if (user_avatar === overwriteName) {
-        power_user.persona_description = description;
-    }
-
-    saveSettingsDebounced('power_user.persona_data', 'power_user.persona_description');
+    saveSettingsDebounced('power_user.persona_data');
     await eventSource.emit(event_types.PERSONA_CREATED, { avatarId: overwriteName, name, description, title: '' });
 
     console.log('Persona for character created');
@@ -682,25 +677,52 @@ const countPersonaDescriptionTokens = debounce(async () => {
 /**
  * Updates the UI for the Persona Management page with the current persona values
  */
+/** Gets the description of the currently active persona. @returns {string} */
+export function getPersonaDescription() {
+    return personaStore.get(user_avatar)?.description ?? '';
+}
+
+/** Gets the prompt-injection position of the currently active persona's description. @returns {number} */
+export function getPersonaDescriptionPosition() {
+    return personaStore.get(user_avatar)?.position ?? persona_description_positions.IN_PROMPT;
+}
+
+/** Gets the at-depth injection depth of the currently active persona's description. @returns {number} */
+export function getPersonaDescriptionDepth() {
+    return personaStore.get(user_avatar)?.depth ?? DEFAULT_DEPTH;
+}
+
+/** Gets the at-depth injection role of the currently active persona's description. @returns {number} */
+export function getPersonaDescriptionRole() {
+    return personaStore.get(user_avatar)?.role ?? DEFAULT_ROLE;
+}
+
+/** Gets the lorebook bound to the currently active persona. @returns {string} */
+export function getPersonaDescriptionLorebook() {
+    return personaStore.get(user_avatar)?.lorebook ?? '';
+}
+
 export function setPersonaDescription() {
     $('#your_name').text(name1);
 
-    if (power_user.persona_description_position === persona_description_positions.AFTER_CHAR) {
-        power_user.persona_description_position = persona_description_positions.IN_PROMPT;
+    if (getPersonaDescriptionPosition() === persona_description_positions.AFTER_CHAR) {
+        getOrCreatePersonaDescriptor();
+        personaStore.update(user_avatar, { position: persona_description_positions.IN_PROMPT });
+        saveSettingsDebounced('power_user.persona_data');
     }
 
-    $('#persona_depth_position_settings').toggle(power_user.persona_description_position === persona_description_positions.AT_DEPTH);
-    $('#persona_description').val(power_user.persona_description);
-    $('#persona_depth_value').val(power_user.persona_description_depth ?? DEFAULT_DEPTH);
+    $('#persona_depth_position_settings').toggle(getPersonaDescriptionPosition() === persona_description_positions.AT_DEPTH);
+    $('#persona_description').val(getPersonaDescription());
+    $('#persona_depth_value').val(getPersonaDescriptionDepth());
     $('#persona_description_position')
-        .val(power_user.persona_description_position)
-        .find(`option[value="${power_user.persona_description_position}"]`)
+        .val(getPersonaDescriptionPosition())
+        .find(`option[value="${getPersonaDescriptionPosition()}"]`)
         .attr('selected', String(true));
     $('#persona_depth_role')
-        .val(power_user.persona_description_role)
-        .find(`option[value="${power_user.persona_description_role}"]`)
+        .val(getPersonaDescriptionRole())
+        .find(`option[value="${getPersonaDescriptionRole()}"]`)
         .prop('selected', String(true));
-    $('#persona_lore_button').toggleClass('world_set', !!power_user.persona_description_lorebook);
+    $('#persona_lore_button').toggleClass('world_set', !!getPersonaDescriptionLorebook());
     countPersonaDescriptionTokens();
 
     updatePersonaUIStates();
@@ -963,25 +985,6 @@ async function selectCurrentPersona({ toastPersonaNameChange = true } = {}) {
         if (personaName !== name1) {
             console.log(`Auto-updating user name to ${personaName}`);
             setUserName(personaName, { toastPersonaNameChange: !shouldAutoLock && toastPersonaNameChange });
-        }
-
-        const descriptor = personaStore.get(user_avatar);
-
-        if (descriptor) {
-            power_user.persona_description = descriptor.description ?? '';
-            power_user.persona_description_position = descriptor.position ?? persona_description_positions.IN_PROMPT;
-            power_user.persona_description_depth = descriptor.depth ?? DEFAULT_DEPTH;
-            power_user.persona_description_role = descriptor.role ?? DEFAULT_ROLE;
-            power_user.persona_description_lorebook = descriptor.lorebook ?? '';
-        } else {
-            // Can't actually happen anymore now that personaStore.get(user_avatar) truthy above guarantees a
-            // record exists (name and the rest of the record are always created together via
-            // personaStore.create() now) - kept as a defensive fallback rather than relying on that invariant.
-            power_user.persona_description = '';
-            power_user.persona_description_position = persona_description_positions.IN_PROMPT;
-            power_user.persona_description_depth = DEFAULT_DEPTH;
-            power_user.persona_description_role = DEFAULT_ROLE;
-            power_user.persona_description_lorebook = '';
         }
 
         setPersonaDescription();
@@ -1258,50 +1261,36 @@ async function deletePersona(avatarId, { silent = false } = {}) {
 }
 
 async function onPersonaDescriptionInput() {
-    power_user.persona_description = String($('#persona_description').val());
+    const description = String($('#persona_description').val());
     countPersonaDescriptionTokens();
 
-    if (personaStore.has(user_avatar)) {
-        getOrCreatePersonaDescriptor(); // ensures a record exists (it always does now, kept for clarity)
-        personaStore.update(user_avatar, { description: power_user.persona_description });
-    }
+    getOrCreatePersonaDescriptor();
+    personaStore.update(user_avatar, { description });
 
     $(`.avatar-container[data-avatar-id="${user_avatar}"] .ch_description`)
-        .text(power_user.persona_description || $('#user_avatar_block').attr('no_desc_text'))
-        .toggleClass('text_muted', !power_user.persona_description);
-    saveSettingsDebounced('power_user.persona_description', 'power_user.persona_data');
+        .text(description || $('#user_avatar_block').attr('no_desc_text'))
+        .toggleClass('text_muted', !description);
+    saveSettingsDebounced('power_user.persona_data');
 
-    if (personaStore.has(user_avatar)) {
-        await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
-    }
+    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
 }
 
 async function onPersonaDescriptionDepthValueInput() {
-    power_user.persona_description_depth = Number($('#persona_depth_value').val());
+    const depth = Number($('#persona_depth_value').val());
 
-    if (personaStore.has(user_avatar)) {
-        getOrCreatePersonaDescriptor();
-        personaStore.update(user_avatar, { depth: power_user.persona_description_depth });
-        saveSettingsDebounced('power_user.persona_description_depth', 'power_user.persona_data');
-        await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
-        return;
-    }
-
-    saveSettingsDebounced('power_user.persona_description_depth');
+    getOrCreatePersonaDescriptor();
+    personaStore.update(user_avatar, { depth });
+    saveSettingsDebounced('power_user.persona_data');
+    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
 }
 
 async function onPersonaDescriptionDepthRoleInput() {
-    power_user.persona_description_role = Number($('#persona_depth_role').find(':selected').val());
+    const role = Number($('#persona_depth_role').find(':selected').val());
 
-    if (personaStore.has(user_avatar)) {
-        getOrCreatePersonaDescriptor();
-        personaStore.update(user_avatar, { role: power_user.persona_description_role });
-        saveSettingsDebounced('power_user.persona_description_role', 'power_user.persona_data');
-        await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
-        return;
-    }
-
-    saveSettingsDebounced('power_user.persona_description_role');
+    getOrCreatePersonaDescriptor();
+    personaStore.update(user_avatar, { role });
+    saveSettingsDebounced('power_user.persona_data');
+    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
 }
 
 /**
@@ -1310,7 +1299,7 @@ async function onPersonaDescriptionDepthRoleInput() {
  */
 async function onPersonaLoreButtonClick({ shiftKey, altKey }) {
     const personaName = personaStore.get(user_avatar)?.name;
-    const selectedLorebook = power_user.persona_description_lorebook;
+    const selectedLorebook = getPersonaDescriptionLorebook();
 
     if (!personaName) {
         toastr.warning(t`You must bind a name to this persona before you can set a lorebook.`, t`Persona Name Not Set`);
@@ -1336,58 +1325,35 @@ async function onPersonaLoreButtonClick({ shiftKey, altKey }) {
     }
 
     worldSelect.on('change', async function () {
-        power_user.persona_description_lorebook = String($(this).val());
+        const lorebook = String($(this).val());
 
-        if (personaStore.has(user_avatar)) {
-            getOrCreatePersonaDescriptor();
-            personaStore.update(user_avatar, { lorebook: power_user.persona_description_lorebook });
-        }
+        getOrCreatePersonaDescriptor();
+        personaStore.update(user_avatar, { lorebook });
 
-        $('#persona_lore_button').toggleClass('world_set', !!power_user.persona_description_lorebook);
-        saveSettingsDebounced('power_user.persona_description_lorebook', 'power_user.persona_data');
+        $('#persona_lore_button').toggleClass('world_set', !!lorebook);
+        saveSettingsDebounced('power_user.persona_data');
 
-        if (personaStore.has(user_avatar)) {
-            await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
-        }
+        await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
     });
 
     await callGenericPopup(template, POPUP_TYPE.TEXT);
 }
 
 async function onPersonaDescriptionPositionInput() {
-    power_user.persona_description_position = Number(
+    const position = Number(
         $('#persona_description_position').find(':selected').val(),
     );
 
-    if (personaStore.has(user_avatar)) {
-        getOrCreatePersonaDescriptor();
-        personaStore.update(user_avatar, { position: power_user.persona_description_position });
-        saveSettingsDebounced('power_user.persona_description_position', 'power_user.persona_data');
-        await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
-        $('#persona_depth_position_settings').toggle(power_user.persona_description_position === persona_description_positions.AT_DEPTH);
-        return;
-    }
-
-    saveSettingsDebounced('power_user.persona_description_position');
-    $('#persona_depth_position_settings').toggle(power_user.persona_description_position === persona_description_positions.AT_DEPTH);
+    getOrCreatePersonaDescriptor();
+    personaStore.update(user_avatar, { position });
+    saveSettingsDebounced('power_user.persona_data');
+    await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
+    $('#persona_depth_position_settings').toggle(position === persona_description_positions.AT_DEPTH);
 }
 
 export function getOrCreatePersonaDescriptor() {
     if (!personaStore.has(user_avatar)) {
-        // Only reachable if user_avatar isn't a real persona at all (name too) - every other call site here
-        // guards with personaStore.has(user_avatar)/personaStore.get(user_avatar)?.name first, so this always
-        // creates a nameless placeholder record in that edge case, same as the original code did (it never
-        // set `name` here either - that came from power_user.personas separately, whenever it did).
-        personaStore.create(user_avatar, {
-            name: '',
-            description: power_user.persona_description,
-            position: power_user.persona_description_position,
-            depth: power_user.persona_description_depth,
-            role: power_user.persona_description_role,
-            lorebook: power_user.persona_description_lorebook,
-            connections: [],
-            title: '',
-        });
+        personaStore.create(user_avatar, defaultPersonaRecord());
     }
     return personaStore.get(user_avatar);
 }
@@ -2241,9 +2207,6 @@ async function updatePersonaCallback(args) {
     // Update description
     if (args.description !== undefined) {
         personaStore.update(avatarId, { description: args.description });
-        if (avatarId === user_avatar) {
-            power_user.persona_description = args.description;
-        }
         hasUpdates = true;
     }
 
@@ -2258,9 +2221,6 @@ async function updatePersonaCallback(args) {
         const position = parsePersonaPosition(args.descriptionPosition);
         if (position !== null) {
             personaStore.update(avatarId, { position });
-            if (avatarId === user_avatar) {
-                power_user.persona_description_position = position;
-            }
             hasUpdates = true;
         }
     }
@@ -2270,9 +2230,6 @@ async function updatePersonaCallback(args) {
         const depth = Number(args.descriptionDepth);
         if (!isNaN(depth)) {
             personaStore.update(avatarId, { depth });
-            if (avatarId === user_avatar) {
-                power_user.persona_description_depth = depth;
-            }
             hasUpdates = true;
         }
     }
@@ -2282,9 +2239,6 @@ async function updatePersonaCallback(args) {
         const role = parsePersonaRole(args.descriptionRole);
         if (role !== null) {
             personaStore.update(avatarId, { role });
-            if (avatarId === user_avatar) {
-                power_user.persona_description_role = role;
-            }
             hasUpdates = true;
         }
     }
@@ -2292,9 +2246,6 @@ async function updatePersonaCallback(args) {
     // Update lorebook
     if (args.lorebook !== undefined) {
         personaStore.update(avatarId, { lorebook: args.lorebook });
-        if (avatarId === user_avatar) {
-            power_user.persona_description_lorebook = args.lorebook;
-        }
         hasUpdates = true;
     }
 

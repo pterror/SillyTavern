@@ -12,7 +12,7 @@ test.describe('World Info Rename Persona Lore', () => {
             const { createNewWorldInfo, deleteWorldInfo, openWorldInfoEditor, world_names } = await import('./scripts/world-info.js');
             const { Popup, POPUP_RESULT } = await import('./scripts/popup.js');
             const { power_user } = await import('./scripts/power-user.js');
-            const { getOrCreatePersonaDescriptor, user_avatar } = await import('./scripts/personas.js');
+            const { getOrCreatePersonaDescriptor, getPersonaDescriptionLorebook, user_avatar } = await import('./scripts/personas.js');
 
             async function waitFor(condition, timeoutMs = 5000, intervalMs = 50) {
                 const start = Date.now();
@@ -40,7 +40,6 @@ test.describe('World Info Rename Persona Lore', () => {
                 }
 
                 power_user.personas[user_avatar] = power_user.personas[user_avatar] || 'STAGE_REPRO_PERSONA';
-                power_user.persona_description_lorebook = oldName;
                 const descriptor = getOrCreatePersonaDescriptor();
                 descriptor.lorebook = oldName;
 
@@ -66,7 +65,7 @@ test.describe('World Info Rename Persona Lore', () => {
                 }
 
                 return {
-                    personaLoreAfter: power_user.persona_description_lorebook,
+                    personaLoreAfter: getPersonaDescriptionLorebook(),
                     descriptorLoreAfter: descriptor.lorebook,
                     hasOldWorld: $('#world_editor_select option').toArray().some(option => String($(option).text()) === oldName),
                     hasNewWorld: $('#world_editor_select option').toArray().some(option => String($(option).text()) === newName),

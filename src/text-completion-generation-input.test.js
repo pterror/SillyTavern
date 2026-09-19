@@ -80,6 +80,7 @@ function writeCharacter(avatar, overrides = {}) {
 function buildSettingsFixture() {
     return {
         username: 'Tester',
+        user_avatar: 'Tester.png',
         amount_gen: 250,
         max_context: 4096,
         main_api: 'koboldhorde', // deliberately NOT 'textgenerationwebui' - proves the resolver hardcodes mainApi regardless.
@@ -89,8 +90,9 @@ function buildSettingsFixture() {
             collapse_newlines: true,
             pin_examples: false,
             strip_examples: false,
-            persona_description: 'A curious {{user}}.',
-            persona_description_position: 1,
+            persona_data: {
+                'Tester.png': { description: 'A curious {{user}}.', position: 1 },
+            },
             user_prompt_bias: '',
             custom_stopping_strings: '"CUSTOM_STOP"',
             custom_stopping_strings_macro: false,

@@ -263,7 +263,7 @@ function getPersonaLore(directories, chatWorldName, personaWorldLorebook, select
  * `selected_world_info` -> `selectedWorldInfo`, `getCurrentCharacter()` -> `character`,
  * `world_info.charLore` lookup -> `characterExtraBooks` (see getCharacterLore's doc comment above
  * for why that lookup is left to the caller), `chat_metadata[METADATA_KEY]` -> `chatWorldName`,
- * `power_user.persona_description_lorebook` -> `personaWorldLorebook`,
+ * the active persona's personaStore `lorebook` field -> `personaWorldLorebook`,
  * `world_info_character_strategy` -> `worldInfoCharacterStrategy`.
  *
  * `getStringHash` is reused as-is from `public/scripts/hash-utils.js` (already the canonical
@@ -284,7 +284,7 @@ function getPersonaLore(directories, chatWorldName, personaWorldLorebook, select
  * @param {{data?: {extensions?: {world?: string}}}|null} [options.character] The active character card (only `.data.extensions.world` is read - replaces `getCurrentCharacter()`)
  * @param {string[]} [options.characterExtraBooks] Extra lorebook names for this character, from the caller's own `world_info.charLore`-equivalent lookup (replaces `world_info.charLore?.find(...)?.extraBooks`)
  * @param {string|null} [options.chatWorldName] The current chat's own lorebook name, if any (replaces `chat_metadata[METADATA_KEY]`)
- * @param {string|null} [options.personaWorldLorebook] The active persona's lorebook name, if any (replaces `power_user.persona_description_lorebook`)
+ * @param {string|null} [options.personaWorldLorebook] The active persona's lorebook name, if any (replaces the active persona's personaStore `lorebook` field)
  * @param {number} [options.worldInfoCharacterStrategy] One of `world_info_insertion_strategy`'s values (replaces `world_info_character_strategy`)
  * @returns {Promise<Array<object>>} Entries shaped `{ ...entry, world, decorators, content, hash }`, highest priority first
  */
