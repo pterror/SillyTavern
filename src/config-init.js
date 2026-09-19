@@ -153,12 +153,20 @@ function getAllKeys(obj, prefix = '') {
 }
 
 /**
+ * Reads and parses the canonical default config, ./default/config.yaml.
+ * @returns {object} Parsed default config object
+ */
+export function getDefaultYamlConfig() {
+    return yaml.parse(fs.readFileSync(path.join(serverDirectory, './default/config.yaml'), 'utf8'));
+}
+
+/**
  * Compares the current config.yaml with the default config.yaml and adds any missing values.
  * @param {string} configPath Path to config.yaml
  */
 export function addMissingConfigValues(configPath) {
     try {
-        const defaultConfig = yaml.parse(fs.readFileSync(path.join(serverDirectory, './default/config.yaml'), 'utf8'));
+        const defaultConfig = getDefaultYamlConfig();
 
         if (!fs.existsSync(configPath)) {
             console.warn(color.yellow(`Warning: config.yaml not found at ${configPath}. Creating a new one with default values.`));
