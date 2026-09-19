@@ -2071,6 +2071,36 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
 }
 
 /**
+ * Conflict-checks, rotates `integrity`, strips the tree-owned keys, and writes metadata to an
+ * already-resolved node. Shared by `setChatMetadata()` and `setNodeMetadata()`, which differ only
+ * in how they resolve `chatName`/`nodeId` to this node.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {Pick<MessageRow, 'id' | 'metadata'>} node
+ * @param {ChatMetadata} metadata
+ * @param {string} [expectedIntegrity]
+ * @returns {{ ok: boolean, reason?: string, integrity?: string }}
+ */
+function writeNodeMetadataSync(db, node, metadata, expectedIntegrity) {
+    if (typeof expectedIntegrity === 'string' && expectedIntegrity) {
+        const currentIntegrity = readIntegritySync(node);
+        if (currentIntegrity !== expectedIntegrity) {
+            return { ok: false, reason: 'conflict' };
+        }
+    }
+
+    /** @type {ChatMetadata} */
+    const meta = { ...metadata };
+    const integrity = crypto.randomUUID();
+    meta.integrity = integrity;
+    delete meta.main_chat;
+    delete meta.fork_point;
+    delete meta._tree_stored;
+
+    setMetadataSync(db, node.id, JSON.stringify(meta));
+    return { ok: true, integrity };
+}
+
+/**
  * Replaces a chat's metadata and rotates its integrity slug.
  * If `expectedIntegrity` is given, the write is rejected with a conflict when the node's current
  * `integrity` doesn't match - the same optional, per-write precondition `/api/settings/save-partial`
@@ -2092,23 +2122,7 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata, 
         ?? getLabeledNodeSync(entry.db, ownerId, chatName);
     if (!node) return { ok: false, reason: 'unknown chat' };
 
-    if (typeof expectedIntegrity === 'string' && expectedIntegrity) {
-        const currentIntegrity = readIntegritySync(node);
-        if (currentIntegrity !== expectedIntegrity) {
-            return { ok: false, reason: 'conflict' };
-        }
-    }
-
-    /** @type {ChatMetadata} */
-    const meta = { ...metadata };
-    const integrity = crypto.randomUUID();
-    meta.integrity = integrity;
-    delete meta.main_chat;
-    delete meta.fork_point;
-    delete meta._tree_stored;
-
-    setMetadataSync(entry.db, node.id, JSON.stringify(meta));
-    return { ok: true, integrity };
+    return writeNodeMetadataSync(entry.db, node, metadata, expectedIntegrity);
 }
 
 /**
@@ -2339,23 +2353,7 @@ export async function setNodeMetadata(directories, ownerId, nodeId, metadata, ex
         'SELECT id, metadata FROM messages WHERE id = @id AND owner_id = @ownerId', { id: nodeId, ownerId }));
     if (!node) return { ok: false, reason: 'unknown node' };
 
-    if (typeof expectedIntegrity === 'string' && expectedIntegrity) {
-        const currentIntegrity = readIntegritySync(node);
-        if (currentIntegrity !== expectedIntegrity) {
-            return { ok: false, reason: 'conflict' };
-        }
-    }
-
-    /** @type {ChatMetadata} */
-    const meta = { ...metadata };
-    const integrity = crypto.randomUUID();
-    meta.integrity = integrity;
-    delete meta.main_chat;
-    delete meta.fork_point;
-    delete meta._tree_stored;
-
-    setMetadataSync(entry.db, nodeId, JSON.stringify(meta));
-    return { ok: true, integrity };
+    return writeNodeMetadataSync(entry.db, node, metadata, expectedIntegrity);
 }
 
 /**
