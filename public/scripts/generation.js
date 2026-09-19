@@ -32,7 +32,7 @@ import { generateGroupWrapper, getGroupDepthPrompts, groupsStore, is_group_gener
 import { adjustHordeGenerationParams, horde_settings, isHordeGenerationNotAllowed, MIN_LENGTH } from './horde.js';
 import { t } from './i18n.js';
 import { force_output_sequence, formatInstructModeChat, formatInstructModeExamples, formatInstructModePrompt, formatInstructModeStoryString } from './instruct-mode.js';
-import { deleteItemizedPromptForMessage, itemizedPrompts, saveItemizedPrompts } from './itemized-prompts.js';
+import { applyItemizedPromptBreakdown, deleteItemizedPromptForMessage, itemizedPrompts, saveItemizedPrompts } from './itemized-prompts.js';
 import { getKoboldGenerationData, kai_flags, kai_settings, koboldai_setting_names, koboldai_settings } from './kai-settings.js';
 import { adjustNovelInstructionPrompt, getNovelGenerationData, nai_settings, novelai_setting_names, novelai_settings } from './nai-settings.js';
 import { user_avatar } from './personas.js';
@@ -128,8 +128,13 @@ export function _isBlankUnwrittenSwipe(message) {
 // method (finalizeIntermediaryMessage(), the auto-swipe check, playMessageSound()) - this is just its
 // save/persist decision, so the DOM-coupled class can stay in script.js while this invariant-critical
 // branch is checked under strict null checks with the rest of this file.
-/** @param {{assistantNodeId?: string|null}} params */
-export async function finishStreamedReplyPersistence({ assistantNodeId }) {
+/** @param {{assistantNodeId?: string|null, itemization?: Record<string, *>|null}} params */
+export async function finishStreamedReplyPersistence({ assistantNodeId, itemization }) {
+    // Same "last chat message is this reply" convention _stampAssistantNodeId() already uses -
+    // valid here too since this only ever runs once the streamed reply has actually been appended.
+    if (itemization) {
+        applyItemizedPromptBreakdown(chat.length - 1, itemization);
+    }
     if (isStoredNodeId(assistantNodeId)) {
         _stampAssistantNodeId(assistantNodeId);
     } else {
@@ -2643,6 +2648,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // This relies on `saveReply` having been called to add the message to the chat, so it must be last.
             parseAndSaveLogprobs(data, continue_mag);
             _stampAssistantNodeId(data.assistant_node_id);
+            // Non-streaming raw-action response - see finishStreamedReplyPersistence()'s identical
+            // streaming-path application of `itemization` for why this exists and the same
+            // chat.length-1 convention.
+            if (data.itemization) {
+                applyItemizedPromptBreakdown(chat.length - 1, data.itemization);
+            }
         }
 
         if (canPerformToolCalls) {

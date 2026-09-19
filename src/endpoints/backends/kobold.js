@@ -8,7 +8,7 @@ import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
-import { assembleTextCompletionPrompt } from '../../text-completion-prompt-orchestrator.js';
+import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
 import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
@@ -153,7 +153,13 @@ export async function buildRawActionKoboldRequest(directories, {
     const assembled = await assembleTextCompletionPrompt(orchestratorInput);
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
-    return { params: assembled.generate_data, anchorNodeId, anchorContent, name1: orchestratorInput.name1, name2: orchestratorInput.name2 };
+    return {
+        params: assembled.generate_data, anchorNodeId, anchorContent,
+        name1: orchestratorInput.name1, name2: orchestratorInput.name2,
+        // Prompt-itemization breakdown for the client's itemizedPrompts entry - see
+        // buildItemizationBreakdown()'s own doc comment (text-completion-prompt-orchestrator.js).
+        itemization: buildItemizationBreakdown(assembled),
+    };
 }
 
 router.post('/generate', async function (request, response_generate) {
@@ -168,6 +174,9 @@ router.post('/generate', async function (request, response_generate) {
     // straight off the parsed body, not defaulted, so the "key absent" (`undefined`) vs. "explicit
     // null" distinction survives intact.
     let pendingAssistantPersist = null;
+    // Set only by the raw-action branch below (buildRawActionKoboldRequest()'s own `itemization`
+    // field) - see text-completions.js's identical `rawActionItemization` for the full rationale.
+    let rawActionItemization = null;
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
@@ -225,6 +234,10 @@ router.post('/generate', async function (request, response_generate) {
                 directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
                 isSwipe, isContinue, anchorContent: built.anchorContent,
             };
+            // Same gating as `pendingAssistantPersist` above - see text-completions.js's identical
+            // comment for why impersonate/quiet/the continue-text-conflict case must still reach the
+            // client completely unmodified.
+            rawActionItemization = built.itemization;
         }
 
         // Replace the body entirely - `built.params` already carries `api_server`
@@ -359,7 +372,7 @@ router.post('/generate', async function (request, response_generate) {
                 // compact binary wire format every streaming path uses, raw-action or not (see
                 // text-completions.js's forwardAndPersistCompactStream() doc comment) -
                 // `pendingAssistantPersist` only gates whether the final text also gets persisted.
-                await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token);
+                await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token, null, rawActionItemization);
                 return;
             } else {
                 if (!response.ok) {
@@ -386,6 +399,12 @@ router.post('/generate', async function (request, response_generate) {
                     const generatedText = data?.results?.[0]?.text ?? '';
                     const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
                     if (persisted) data.assistant_node_id = persisted.node_id;
+                }
+
+                // Raw-action prompt-itemization breakdown - see text-completions.js's identical
+                // non-streaming attachment for the full rationale.
+                if (rawActionItemization) {
+                    data.itemization = rawActionItemization;
                 }
 
                 return response_generate.send(data);

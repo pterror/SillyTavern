@@ -344,27 +344,6 @@ async function run() {
         }
     }
 
-    /** Like postGenerate(), but for a streaming request: returns the raw response status/headers/body text, unparsed - so the test can assert on the literal bytes the client received. */
-    async function postGenerateStream(app, body) {
-        const server = app.listen(0, '127.0.0.1');
-        await new Promise(resolve => server.once('listening', resolve));
-        const port = server.address().port;
-        try {
-            const res = await fetch(`http://127.0.0.1:${port}/generate`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-            const bodyText = await res.text();
-            return { status: res.status, headers: res.headers, bodyText };
-        } finally {
-            // See postGenerate()'s own comment on this same call - avoids a several-second stall per
-            // streaming test waiting for the client's keep-alive connection to time out on its own.
-            server.closeAllConnections?.();
-            await new Promise(resolve => server.close(resolve));
-        }
-    }
-
     /** Starts a fake backend that emits a real OpenAI-text-completions-shaped SSE stream, chunked exactly as given, ending with `data: [DONE]\n\n`. */
     async function startFakeSseBackend(textChunks) {
         const sseBody = textChunks.map(text => `data: ${JSON.stringify({ choices: [{ text }] })}\n\n`).join('') + 'data: [DONE]\n\n';
@@ -396,7 +375,7 @@ async function run() {
         });
     }
 
-    /** Like postGenerateStream(), but returns the raw response bytes (not decoded as UTF-8 text) - required for the compact binary protocol, whose control-frame bytes are not valid UTF-8 on their own. */
+    /** Like postGenerate(), but for a streaming request: returns the raw response bytes (not decoded as UTF-8 text) - required for the compact binary protocol, whose control-frame bytes are not valid UTF-8 on their own. */
     async function postGenerateStreamBytes(app, body) {
         const server = app.listen(0, '127.0.0.1');
         await new Promise(resolve => server.once('listening', resolve));
@@ -428,6 +407,7 @@ async function run() {
         const swipes = [];
         let currentIndex = 0;
         let assistantNodeId = null;
+        let itemization = null;
         for (const event of events) {
             if ('index' in event) {
                 currentIndex = event.index;
@@ -435,6 +415,8 @@ async function run() {
                 reasoning += event.reasoning;
             } else if ('assistantNodeId' in event) {
                 assistantNodeId = event.assistantNodeId;
+            } else if ('control' in event && event.control?.itemization) {
+                itemization = event.control.itemization;
             } else if ('content' in event) {
                 if (currentIndex > 0) {
                     const swipeIndex = currentIndex - 1;
@@ -444,7 +426,7 @@ async function run() {
                 }
             }
         }
-        return { text, reasoning, swipes, assistantNodeId };
+        return { text, reasoning, swipes, assistantNodeId, itemization };
     }
 
     // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained
@@ -1084,12 +1066,10 @@ async function run() {
 
     // (i-5) STREAMING raw-action via LLAMACPP's own compact wire format: pipeLlamaCppCompactStream()
     // already fully JSON-parses every upstream SSE event (to re-encode it into the compact format) -
-    // this proves `data.content` is now also accumulated and persisted, with the compact-format
-    // bytes reaching the client completely unchanged. With no embedded 0xFF bytes, no index changes
-    // (every event here implicitly has index 0, matching the initial `lastIndex`), and no
-    // `completion_probabilities`, the compact wire format degenerates to exactly the concatenated
-    // `content` strings, UTF-8 encoded - allowing a direct byte-for-byte comparison without needing
-    // a separate compact-format decoder.
+    // this proves `data.content` is now also accumulated and persisted. Decoded (not a raw byte
+    // comparison - a leading control frame now always carries the itemization breakdown for a real,
+    // persisted raw-action stream like this one, so the wire bytes are no longer just the
+    // concatenated `content` strings the way they were before that was added).
     {
         const llamaCppBranch = 'stream-llamacpp-chat';
         await saveChatToTree(directories, ownerId, llamaCppBranch, [
@@ -1111,14 +1091,16 @@ async function run() {
         const messageCountBefore = branchBefore.messages.length;
 
         const app = buildTestApp();
-        const { status, bodyText } = await postGenerateStream(app, {
+        const { status, bytes } = await postGenerateStreamBytes(app, {
             owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
             type: 'normal', user_message: 'Say hi via llama.cpp.', stream: true,
         });
         fakeBackend.server.close();
 
         assert.equal(status, 200);
-        assert.equal(bodyText, llamaCppChunks.join(''), 'the compact-format bytes reaching the client are exactly the concatenated content, unaffected by the persistence addition');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, llamaCppChunks.join(''), 'the decoded compact stream reconstructs the exact concatenated content, unaffected by the persistence addition');
+        assert.ok(decoded.itemization, 'the itemization breakdown was sent as a control frame for this real, persisted raw-action stream');
 
         const branchAfter = await waitFor(async () => {
             const branch = await loadBranch(directories, ownerId, llamaCppBranch);
