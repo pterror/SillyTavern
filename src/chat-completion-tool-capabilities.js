@@ -1,4 +1,5 @@
 import { TOOL_REASONING_MODES } from './chat-completion-history.js';
+import { CHAT_COMPLETION_SOURCES } from './constants.js';
 
 /**
  * Server-side port of THREE small, pure, settings-driven predicate/enum groups from the client's
@@ -62,35 +63,7 @@ import { TOOL_REASONING_MODES } from './chat-completion-history.js';
  * read; all others are ignored.
  */
 
-/** Mirrors public/scripts/chat-completion-settings.js's `chat_completion_sources` verbatim (~line 177-204). */
-export const chat_completion_sources = {
-    OPENAI: 'openai',
-    CLAUDE: 'claude',
-    OPENROUTER: 'openrouter',
-    AI21: 'ai21',
-    MAKERSUITE: 'makersuite',
-    VERTEXAI: 'vertexai',
-    MISTRALAI: 'mistralai',
-    CUSTOM: 'custom',
-    COHERE: 'cohere',
-    PERPLEXITY: 'perplexity',
-    GROQ: 'groq',
-    ELECTRONHUB: 'electronhub',
-    CHUTES: 'chutes',
-    NANOGPT: 'nanogpt',
-    DEEPSEEK: 'deepseek',
-    AIMLAPI: 'aimlapi',
-    XAI: 'xai',
-    POLLINATIONS: 'pollinations',
-    MOONSHOT: 'moonshot',
-    FIREWORKS: 'fireworks',
-    COMETAPI: 'cometapi',
-    AZURE_OPENAI: 'azure_openai',
-    ZAI: 'zai',
-    SILICONFLOW: 'siliconflow',
-    WORKERS_AI: 'workers_ai',
-    MINIMAX: 'minimax',
-};
+export const chat_completion_sources = CHAT_COMPLETION_SOURCES;
 
 /** Mirrors public/scripts/chat-completion-settings.js's `custom_prompt_post_processing_types` verbatim (~line 220-230). */
 export const custom_prompt_post_processing_types = {
