@@ -280,8 +280,15 @@ describe('DictEntityStore', () => {
 });
 
 describe('RelationStore', () => {
+    // Backed by a plain `{[key]: string[]}` map for test convenience, but - unlike the old dict-backed
+    // RelationStore - `resolve()` only returns an array for a key that's already a known entry; it never
+    // auto-vivifies one. That mirrors the real wiring (tags.js's resolveTagIdsArray()), where a key only
+    // resolves to something if the character/group it names is actually resident.
     function makeStore(initial = { char1: ['tagA', 'tagB'], char2: ['tagB'] }) {
-        return { map: initial, store: new RelationStore(initial) };
+        const map = initial;
+        const resolve = (key) => Object.hasOwn(map, key) && Array.isArray(map[key]) ? map[key] : undefined;
+        const allEntries = () => Object.entries(map).filter(([, ids]) => Array.isArray(ids));
+        return { map, store: new RelationStore(resolve, allEntries) };
     }
 
     test('get() returns [] for an unknown key rather than undefined', () => {
@@ -302,7 +309,7 @@ describe('RelationStore', () => {
     });
 
     test('assign() adds to the key, reports wasFirstUse only on the tag\'s first assignment anywhere', () => {
-        const { map, store } = makeStore({ char1: [] });
+        const { map, store } = makeStore({ char1: [], char2: [] });
         const listener = jest.fn();
         store.onChange(listener);
 
@@ -315,10 +322,12 @@ describe('RelationStore', () => {
         expect(listener).toHaveBeenCalledTimes(2);
     });
 
-    test('assign() creates the key array on demand for a key with no prior entries', () => {
-        const { map, store } = makeStore({});
-        store.assign('brandNew', 'tagX');
-        expect(map.brandNew).toEqual(['tagX']);
+    test('assign() is a no-op (returns null, does not emit) for a key that doesn\'t resolve to anything', () => {
+        const { store } = makeStore({});
+        const listener = jest.fn();
+        store.onChange(listener);
+        expect(store.assign('brandNew', 'tagX')).toBeNull();
+        expect(listener).not.toHaveBeenCalled();
     });
 
     test('assign() is a no-op (returns null, does not emit) if already assigned', () => {
@@ -366,28 +375,15 @@ describe('RelationStore', () => {
         expect(listener).toHaveBeenCalledWith(change);
     });
 
-    test('renameKey() moves a key\'s assignments without touching usage counts', () => {
-        const { map, store } = makeStore({ char1: ['tagA'] });
-        const before = store.getAssignedIds();
-        const change = store.renameKey('char1', 'char1renamed');
-        expect(map.char1renamed).toEqual(['tagA']);
-        expect(Object.hasOwn(map, 'char1')).toBe(false);
-        expect(change).toEqual({ op: 'keyRenamed', oldKey: 'char1', newKey: 'char1renamed' });
-        expect(store.getAssignedIds()).toEqual(before);
+    test('setKey() is a no-op for a key that doesn\'t resolve to anything', () => {
+        const { store } = makeStore({});
+        expect(store.setKey('ghost', ['tagA'])).toBeNull();
     });
 
-    test('copyKey() unions fromKey\'s ids into toKey and leaves fromKey untouched', () => {
-        const { map, store } = makeStore({ char1: ['tagA', 'tagB'], char2: ['tagB'] });
-        const change = store.copyKey('char1', 'char2');
-        expect(map.char2.sort()).toEqual(['tagA', 'tagB']);
-        expect(map.char1).toEqual(['tagA', 'tagB']); // untouched
-        expect(change).toEqual({ op: 'keyCopied', fromKey: 'char1', toKey: 'char2', addedIds: ['tagA'] });
-    });
-
-    test('removeKey() deletes the key and reports which related ids lost their last use', () => {
+    test('removeKey() clears the key\'s assignments in place and reports which related ids lost their last use', () => {
         const { map, store } = makeStore({ char1: ['tagA'], char2: ['tagA', 'tagB'] });
         const change = store.removeKey('char1');
-        expect(Object.hasOwn(map, 'char1')).toBe(false);
+        expect(map.char1).toEqual([]); // cleared, not deleted - there's no separate map entry to drop
         expect(change.op).toBe('keyRemoved');
         expect(change.removedIds).toEqual(['tagA']);
         expect(change.lastUseIds).toEqual([]); // tagA still used by char2
@@ -418,7 +414,7 @@ describe('RelationStore', () => {
         expect(store.getAssignedIds().has('tagC')).toBe(true);
     });
 
-    test('reindex() recomputes usage counts from the current map without emitting', () => {
+    test('reindex() recomputes usage counts from the current entries without emitting', () => {
         const { map, store } = makeStore({ char1: ['tagA'] });
         map.char1.push('tagB'); // mutate directly, bypassing the store
         const listener = jest.fn();
@@ -430,12 +426,12 @@ describe('RelationStore', () => {
     });
 
     test('onChange() unsubscribe stops further notifications', () => {
-        const { store } = makeStore({});
+        const { store } = makeStore({ k: [] });
         const listener = jest.fn();
         const unsubscribe = store.onChange(listener);
         store.assign('k', 'v');
         unsubscribe();
-        store.assign('k2', 'v2');
+        store.assign('k', 'v2');
         expect(listener).toHaveBeenCalledTimes(1);
     });
 });
@@ -448,12 +444,38 @@ describe('RelationStore', () => {
  * full app entry point (script.js) with DOM/jQuery side effects that aren't set up for node/jest - so this is
  * scoped to the store-wiring contract itself, not a full integration test of e.g. tags.js's DOM handlers.
  */
+/**
+ * Builds a RelationStore resolver/allEntries pair over a charactersStore + groupsStore, the same as
+ * tags.js's resolveTagIdsArray()/allTagIdsEntries() - factored out so the test body itself stays
+ * conditional-free (see the module doc comment on `test('tags: ...')` below).
+ */
+function makeCharGroupTagResolver(charactersStore, groupsStore) {
+    function resolve(key) {
+        const character = charactersStore.get(key);
+        if (character) return character.tag_ids;
+        const group = groupsStore.get(key);
+        if (group) return group.tag_ids;
+        return undefined;
+    }
+    function* allEntries() {
+        for (const c of charactersStore.getAll()) yield [c.avatar, c.tag_ids];
+        for (const g of groupsStore.getAll()) yield [String(g.id), g.tag_ids];
+    }
+    return { resolve, allEntries };
+}
+
 describe('migrated-subsystem store wiring', () => {
-    test('tags: EntityStore keyed by tag.id + RelationStore over tag_map, as wired in tags.js', () => {
+    test('tags: EntityStore keyed by tag.id + RelationStore resolving straight through to characters\'/groups\' own tag_ids, as wired in tags.js', () => {
         const tags = [{ id: 't1', name: 'Fluffy' }];
-        const tag_map = { charAvatar1: ['t1'] };
+        // tags.js has no separate backing map for tagMapStore - it resolves each key to the resident
+        // character's/group's own tag_ids array (see resolveTagIdsArray()/allTagIdsEntries()).
+        const characters = [{ avatar: 'charAvatar1.png', tag_ids: ['t1'] }];
+        const groups = [];
+        const charactersStore = new EntityStore(characters, c => c.avatar);
+        const groupsStore = new EntityStore(groups, g => g.id);
+        const { resolve, allEntries } = makeCharGroupTagResolver(charactersStore, groupsStore);
         const tagsStore = new EntityStore(tags, tag => tag.id);
-        const tagMapStore = new RelationStore(tag_map);
+        const tagMapStore = new RelationStore(resolve, allEntries);
 
         const tagListener = jest.fn();
         const mapListener = jest.fn();
@@ -466,8 +488,9 @@ describe('migrated-subsystem store wiring', () => {
         const unlinkChange = tagMapStore.removeRelatedIdEverywhere('t1');
 
         expect(tagListener).toHaveBeenCalledTimes(1);
-        expect(unlinkChange.affectedKeys).toEqual(['charAvatar1']);
+        expect(unlinkChange.affectedKeys).toEqual(['charAvatar1.png']);
         expect(tagMapStore.getAssignedIds().has('t1')).toBe(false);
+        expect(characters[0].tag_ids).toEqual([]); // the entity's own array was mutated in place
         expect(mapListener).toHaveBeenCalledWith(expect.objectContaining({ op: 'relatedRemoved', relatedId: 't1' }));
     });
 

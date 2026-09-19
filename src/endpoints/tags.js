@@ -3,6 +3,7 @@ import express from 'express';
 import {
     assignEntityTag,
     unassignEntityTag,
+    setEntityTagIdsMany,
     getEntityTagIdsForMany,
     getAllEntityTagAssignments,
     getAssignedTagIds,
@@ -233,6 +234,32 @@ router.post('/unassign', async (request, response) => {
         response.send({ result: 'ok' });
     } catch (err) {
         console.error('Could not unassign tag', err);
+        response.sendStatus(500);
+    }
+});
+
+// Bulk counterpart to /assign and /unassign, for a multi-entity, whole-tag-set write (e.g. restoring a tag
+// backup file) instead of looping single-tag calls per tag per entity.
+router.post('/assign-many', async (request, response) => {
+    try {
+        const { tagIdsByEntity } = request.body;
+        if (typeof tagIdsByEntity !== 'object' || tagIdsByEntity === null || Array.isArray(tagIdsByEntity)) {
+            return response.status(400).send({ error: 'tagIdsByEntity must be an object' });
+        }
+        for (const [id, tagIds] of Object.entries(tagIdsByEntity)) {
+            if (!id || !Array.isArray(tagIds) || !tagIds.every(t => typeof t === 'string' && t)) {
+                return response.status(400).send({ error: 'tagIdsByEntity must map non-empty entity ids to arrays of non-empty string tag ids' });
+            }
+        }
+
+        const result = await setEntityTagIdsMany(request.user.directories, tagIdsByEntity);
+        if (result === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+
+        response.send({ result });
+    } catch (err) {
+        console.error('Could not bulk-assign tags', err);
         response.sendStatus(500);
     }
 });

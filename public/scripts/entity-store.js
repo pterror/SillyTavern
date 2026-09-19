@@ -250,40 +250,42 @@ export class DictEntityStore {
 
 /**
  * @typedef {object} RelationChange
- * @property {'assigned'|'unassigned'|'keySet'|'keyRenamed'|'keyCopied'|'keyRemoved'|'relatedRemoved'} op
+ * @property {'assigned'|'unassigned'|'keySet'|'keyRemoved'|'relatedRemoved'} op
  * @property {string} [key]
  * @property {string} [relatedId]
  * @property {boolean} [wasFirstUse] - for 'assigned': whether this was `relatedId`'s first assignment anywhere
  * @property {boolean} [wasLastUse] - for 'unassigned': whether this removed `relatedId`'s last assignment anywhere
- * @property {string[]} [addedIds] - for 'keySet'/'keyCopied': related ids that became newly assigned to `key`/`toKey`
+ * @property {string[]} [addedIds] - for 'keySet': related ids that became newly assigned to `key`
  * @property {string[]} [removedIds] - for 'keySet'/'keyRemoved': related ids that stopped being assigned to `key`
  * @property {string[]} [lastUseIds] - for 'keyRemoved'/'relatedRemoved': related ids that had no other assignment left after this
- * @property {string} [oldKey]
- * @property {string} [newKey]
- * @property {string} [fromKey]
- * @property {string} [toKey]
  * @property {string} [replacedWithId] - for 'relatedRemoved': a related id substituted in wherever `relatedId` was removed
  * @property {string[]} [affectedKeys] - for 'relatedRemoved': every key that had `relatedId` removed
  */
 
 /**
- * A generic store for a many-to-many relation between a "key" (e.g. a character avatar) and a set of "related
- * ids" (e.g. tag ids) - the shape `tag_map` has. Backed by - and mutating in place - an existing
- * `{[key: string]: string[]}` object.
+ * A generic store for a many-to-many relation between a "key" (e.g. a character avatar or group id) and a set
+ * of "related ids" (e.g. tag ids). Unlike `EntityStore`/`DictEntityStore`, this doesn't own a backing
+ * collection of its own - each key's related-id array lives as a field on that key's own entity (wherever the
+ * caller's `resolve` function finds it), so there's nothing here to fall out of sync with that entity.
  *
  * Keeps an incrementally-maintained usage count per related id, so `getAssignedIds()` is O(1) instead of a full
  * scan, and mutating ops can report `wasFirstUse`/`wasLastUse` for free.
  */
 export class RelationStore {
     /**
-     * @param {{[key: string]: string[]}} map - the backing object. Mutated in place.
+     * @param {(key: string) => string[]|undefined} resolve Returns the *live*, mutable related-ids array for
+     *   a key - mutated in place (push/splice) to change the relation - or `undefined` if `key` doesn't
+     *   currently resolve to anything (e.g. an entity that isn't resident).
+     * @param {() => Iterable<[string, string[]]>} allEntries Returns every currently-resolvable [key, array]
+     *   pair. Used to seed/rebuild the usage-count index and for whole-collection scans
+     *   (`removeRelatedIdEverywhere()`).
      */
-    constructor(map) {
-        this.map = map;
+    constructor(resolve, allEntries) {
+        this.resolve = resolve;
+        this.allEntries = allEntries;
         /** @type {Map<string, number>} */
         this.usageCounts = new Map();
-        for (const ids of Object.values(map)) {
-            if (!Array.isArray(ids)) continue;
+        for (const [, ids] of allEntries()) {
             for (const id of ids) {
                 this.usageCounts.set(id, (this.usageCounts.get(id) ?? 0) + 1);
             }
@@ -294,7 +296,8 @@ export class RelationStore {
 
     /** @param {string} key @returns {string[]} */
     get(key) {
-        return Array.isArray(this.map[key]) ? this.map[key] : [];
+        const ids = this.resolve(key);
+        return Array.isArray(ids) ? ids : [];
     }
 
     /** @param {string} key @param {string} relatedId @returns {boolean} */
@@ -310,12 +313,12 @@ export class RelationStore {
     /**
      * @param {string} key
      * @param {string} relatedId
-     * @returns {RelationChange?} null if already assigned (no-op)
+     * @returns {RelationChange?} null if `key` doesn't resolve, or the relation already exists (no-op)
      */
     assign(key, relatedId) {
-        if (!Array.isArray(this.map[key])) this.map[key] = [];
-        if (this.map[key].includes(relatedId)) return null;
-        this.map[key].push(relatedId);
+        const ids = this.resolve(key);
+        if (!ids || ids.includes(relatedId)) return null;
+        ids.push(relatedId);
         const wasFirstUse = !this.usageCounts.has(relatedId);
         this.usageCounts.set(relatedId, (this.usageCounts.get(relatedId) ?? 0) + 1);
         return this._emit({ op: 'assigned', key, relatedId, wasFirstUse });
@@ -324,23 +327,25 @@ export class RelationStore {
     /**
      * @param {string} key
      * @param {string} relatedId
-     * @returns {RelationChange?} null if not currently assigned (no-op)
+     * @returns {RelationChange?} null if `key` doesn't resolve, or the relation doesn't exist (no-op)
      */
     unassign(key, relatedId) {
-        const list = this.map[key];
-        if (!Array.isArray(list)) return null;
-        const idx = list.indexOf(relatedId);
+        const ids = this.resolve(key);
+        if (!ids) return null;
+        const idx = ids.indexOf(relatedId);
         if (idx === -1) return null;
-        list.splice(idx, 1);
+        ids.splice(idx, 1);
         const count = (this.usageCounts.get(relatedId) ?? 1) - 1;
         const wasLastUse = count <= 0;
         if (wasLastUse) this.usageCounts.delete(relatedId); else this.usageCounts.set(relatedId, count);
         return this._emit({ op: 'unassigned', key, relatedId, wasLastUse });
     }
 
-    /** Replaces the full set of related ids for a key. Computes and reports exactly the delta. */
+    /** Replaces the full set of related ids for a key. Computes and reports exactly the delta. Null if `key` doesn't resolve. */
     setKey(key, relatedIds) {
-        const oldIds = this.get(key);
+        const ids = this.resolve(key);
+        if (!ids) return null;
+        const oldIds = [...ids];
         const oldSet = new Set(oldIds);
         const newSet = new Set(relatedIds);
         const addedIds = relatedIds.filter(id => !oldSet.has(id));
@@ -350,34 +355,17 @@ export class RelationStore {
             const count = (this.usageCounts.get(id) ?? 1) - 1;
             if (count <= 0) this.usageCounts.delete(id); else this.usageCounts.set(id, count);
         }
-        this.map[key] = relatedIds;
+        ids.length = 0;
+        ids.push(...relatedIds);
         return this._emit({ op: 'keySet', key, addedIds, removedIds });
     }
 
-    /** Usage counts are unaffected - the same related ids are still assigned, just under a different key. */
-    renameKey(oldKey, newKey) {
-        const ids = this.get(oldKey);
-        this.map[newKey] = ids;
-        delete this.map[oldKey];
-        return this._emit({ op: 'keyRenamed', oldKey, newKey });
-    }
-
-    /** Merges `fromKey`'s related ids into `toKey` (union); `fromKey` itself is left untouched. */
-    copyKey(fromKey, toKey) {
-        const fromIds = this.get(fromKey);
-        const toIds = this.get(toKey);
-        const toSet = new Set(toIds);
-        const addedIds = fromIds.filter(id => !toSet.has(id));
-        for (const id of addedIds) this.usageCounts.set(id, (this.usageCounts.get(id) ?? 0) + 1);
-        this.map[toKey] = [...toIds, ...addedIds];
-        return this._emit({ op: 'keyCopied', fromKey, toKey, addedIds });
-    }
-
+    /** Clears a key's related ids (the entity itself isn't removed - there's no separate map entry to drop). Null if `key` doesn't resolve. */
     removeKey(key) {
-        const ids = this.map[key];
-        if (!(key in this.map)) return null;
-        delete this.map[key];
-        const removedIds = Array.isArray(ids) ? ids : [];
+        const ids = this.resolve(key);
+        if (!ids) return null;
+        const removedIds = [...ids];
+        ids.length = 0;
         const lastUseIds = [];
         for (const id of removedIds) {
             const count = (this.usageCounts.get(id) ?? 1) - 1;
@@ -389,15 +377,13 @@ export class RelationStore {
     /** Removes a related id from every key it's assigned to, optionally substituting another id in its place. */
     removeRelatedIdEverywhere(relatedId, { replaceWithId } = {}) {
         const affectedKeys = [];
-        for (const key of Object.keys(this.map)) {
-            const list = this.map[key];
-            if (!Array.isArray(list)) continue;
-            const idx = list.indexOf(relatedId);
+        for (const [key, ids] of this.allEntries()) {
+            const idx = ids.indexOf(relatedId);
             if (idx === -1) continue;
-            list.splice(idx, 1);
+            ids.splice(idx, 1);
             affectedKeys.push(key);
-            if (replaceWithId && !list.includes(replaceWithId)) {
-                list.push(replaceWithId);
+            if (replaceWithId && !ids.includes(replaceWithId)) {
+                ids.push(replaceWithId);
                 this.usageCounts.set(replaceWithId, (this.usageCounts.get(replaceWithId) ?? 0) + 1);
             }
         }
@@ -408,8 +394,7 @@ export class RelationStore {
     /** Re-syncs usage counts without emitting a change; callers doing bulk ops should emit their own change afterward. */
     reindex() {
         this.usageCounts = new Map();
-        for (const ids of Object.values(this.map)) {
-            if (!Array.isArray(ids)) continue;
+        for (const [, ids] of this.allEntries()) {
             for (const id of ids) {
                 this.usageCounts.set(id, (this.usageCounts.get(id) ?? 0) + 1);
             }

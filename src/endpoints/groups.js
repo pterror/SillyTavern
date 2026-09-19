@@ -171,8 +171,27 @@ export function getGroupsByIds(directories, ids) {
     return result;
 }
 
-router.post('/all', (request, response) => {
-    return response.send(getGroupsData(request.user.directories));
+/**
+ * Overwrites each group's `.tag_ids` with the metadata store's own value, in place - group-side counterpart
+ * to characters.js's stampDbTagIds(), same reasoning: the group's JSON file carries no tag assignments,
+ * group_tags is the source of truth.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object[]} groups Already-loaded group objects (each with `.id` set) - mutated in place.
+ * @returns {Promise<void>}
+ */
+export async function stampDbTagIds(directories, groups) {
+    const ids = groups.map(g => g.id).filter(Boolean);
+    if (ids.length === 0) return;
+    const tagIdsById = await getEntityTagIdsForMany(directories, ids);
+    for (const group of groups) {
+        group.tag_ids = tagIdsById?.[group.id] ?? [];
+    }
+}
+
+router.post('/all', async (request, response) => {
+    const groups = getGroupsData(request.user.directories);
+    await stampDbTagIds(request.user.directories, groups);
+    return response.send(groups);
 });
 
 // Group-side counterpart to /api/characters/batch. `fields` omitted returns every field, since groups
