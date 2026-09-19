@@ -6,6 +6,7 @@ import {
     getTagDefinitions, getEntityTagIdsForMany, getTagsHash,
     getChangesSince, getCurrentSeq, getTagNameChangesSince, getCharacterIdsForTagIds,
     getMetaValue, setMetaValue, getCharacterFavsByIds, getStaleCardJsonMap,
+    characterChangeEmitter,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery } from './tantivy-search.js';
@@ -423,6 +424,17 @@ async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
     return rebuildTantivyIndexFromScratch(directories, tantivy);
 }
 
+// getIndex() serves a stale index immediately and rebuilds in the background (see search-index-coordinator.js);
+// characterChangeEmitter is the only push channel the client has for "results you already have may be stale
+// now" (public/script.js's setupCharacterChangeStream()/getCharacters()), so it's re-emitted once that rebuild
+// actually lands, not just when the underlying metadata changed.
+function loadOrUpdateTantivyIndexAndNotify(directories, tantivy, previous) {
+    return loadOrUpdateTantivyIndex(directories, tantivy, previous).then(result => {
+        characterChangeEmitter.emit('change');
+        return result;
+    });
+}
+
 // `backend: 'unavailable'` distinguishes "nothing usable could be loaded" from a genuine no-match.
 async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
     const signature = await getFreshnessSignature(directories);
@@ -434,7 +446,7 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
 
     const tantivyIndex = await indexCoordinator.getIndex(
         handle, signature,
-        (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous),
+        (previous) => loadOrUpdateTantivyIndexAndNotify(directories, engine.tantivy, previous),
         () => openPersistedTantivyIndexStale(directories, engine.tantivy),
     );
     const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
@@ -484,7 +496,7 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
 
     const tantivyIndex = await indexCoordinator.getIndex(
         handle, signature,
-        (previous) => loadOrUpdateTantivyIndex(directories, engine.tantivy, previous),
+        (previous) => loadOrUpdateTantivyIndexAndNotify(directories, engine.tantivy, previous),
         () => openPersistedTantivyIndexStale(directories, engine.tantivy),
     );
 
