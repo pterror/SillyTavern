@@ -151,6 +151,16 @@ export async function _postChatMetadata(owner, target, metadata) {
     return chained;
 }
 
+/**
+ * @param {string|null} fallback
+ * @returns {string|null}
+ */
+export function deriveChatAddressNode(fallback) {
+    const position = getCurrentCharacter()?.chat;
+    const opening = chat[0]?.node_id;
+    return chat.some(m => m.node_id === position) ? position : (isStoredNodeId(opening) ? opening : fallback);
+}
+
 // Persists chat_metadata alone, without dragging the per-message diff (or, for a group, the whole-array
 // resave) a full save would do.
 export async function saveMetadata() {
@@ -170,9 +180,7 @@ export async function saveMetadata() {
         return;
     }
 
-    const position = getCurrentCharacter()?.chat;
-    const opening = chat[0]?.node_id;
-    const target = chat.some(m => m.node_id === position) ? position : (isStoredNodeId(opening) ? opening : null);
+    const target = deriveChatAddressNode(null);
     if (target == null || target.length === 0) {
         console.warn('[saveMetadata] No valid node to address this chat by - nothing to save metadata onto yet.');
         return;
