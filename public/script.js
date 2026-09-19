@@ -192,12 +192,11 @@ import {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
-    seedTagMapFromRecords,
+    reindexTagAssignments,
     printTagFilters,
     getTagKeyForEntity,
     printTagList,
     createTagMapFromList,
-    renameTagKey,
     importTags,
     mergeServerTagDefinitions,
     tag_filter_type,
@@ -243,6 +242,10 @@ import {
     isPersonaPanelOpen,
     DEFAULT_DEPTH as PERSONA_DEFAULT_DEPTH,
     DEFAULT_ROLE as PERSONA_DEFAULT_ROLE,
+    getPersonaDescription,
+    getPersonaDescriptionPosition,
+    getPersonaDescriptionDepth,
+    getPersonaDescriptionRole,
 } from './scripts/personas.js';
 import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_settings } from './scripts/backgrounds.js';
 import { loader } from './scripts/action-loader.js';
@@ -1005,8 +1008,9 @@ async function firstLoadInit() {
     const characterResidencyPromise = (async () => {
         await seedCharactersFromCache();
         await getCharacters();
-        // Must run after getCharacters() (also awaits getGroups()): tag_map needs both characters and group ids.
-        await seedTagMapFromRecords();
+        // Must run after getCharacters() (also awaits getGroups()): tag assignments live on characters'/groups'
+        // own tag_ids, so their usage-count index can't be built until both are resident.
+        await reindexTagAssignments();
     })();
     characterResidencyPromise.then(() => { residencyResolved = true; });
 
@@ -4311,23 +4315,26 @@ export function addPersonaDescriptionExtensionPrompt() {
     const INJECT_TAG = 'PERSONA_DESCRIPTION';
     setExtensionPrompt(INJECT_TAG, '', extension_prompt_types.IN_PROMPT, 0);
 
-    if (!power_user.persona_description || power_user.persona_description_position === persona_description_positions.NONE) {
+    const personaDescription = getPersonaDescription();
+    const personaDescriptionPosition = getPersonaDescriptionPosition();
+
+    if (!personaDescription || personaDescriptionPosition === persona_description_positions.NONE) {
         return;
     }
 
     const promptPositions = [persona_description_positions.BOTTOM_AN, persona_description_positions.TOP_AN];
 
-    if (promptPositions.includes(power_user.persona_description_position) && shouldWIAddPrompt) {
+    if (promptPositions.includes(personaDescriptionPosition) && shouldWIAddPrompt) {
         const originalAN = extension_prompts[NOTE_MODULE_NAME].value;
-        const ANWithDesc = power_user.persona_description_position === persona_description_positions.TOP_AN
-            ? `${power_user.persona_description}\n${originalAN}`
-            : `${originalAN}\n${power_user.persona_description}`;
+        const ANWithDesc = personaDescriptionPosition === persona_description_positions.TOP_AN
+            ? `${personaDescription}\n${originalAN}`
+            : `${originalAN}\n${personaDescription}`;
 
         setExtensionPrompt(NOTE_MODULE_NAME, ANWithDesc, chat_metadata[metadata_keys.position], chat_metadata[metadata_keys.depth], extension_settings.note.allowWIScan, chat_metadata[metadata_keys.role]);
     }
 
-    if (power_user.persona_description_position === persona_description_positions.AT_DEPTH) {
-        setExtensionPrompt(INJECT_TAG, power_user.persona_description, extension_prompt_types.IN_CHAT, power_user.persona_description_depth, true, power_user.persona_description_role);
+    if (personaDescriptionPosition === persona_description_positions.AT_DEPTH) {
+        setExtensionPrompt(INJECT_TAG, personaDescription, extension_prompt_types.IN_CHAT, getPersonaDescriptionDepth(), true, getPersonaDescriptionRole());
     }
 }
 
@@ -4515,7 +4522,7 @@ export function getCharacterCardFieldsLazy({ avatar = undefined } = {}) {
 
     /** @type {Record<string, () => string|string[]>} */
     const resolvers = {
-        persona: () => baseChatReplace(power_user.persona_description?.trim()),
+        persona: () => baseChatReplace(getPersonaDescription().trim()),
         system: () => {
             if (!character) return '';
             const systemPrompt = chat_metadata.system_prompt || character.data?.system_prompt || '';
@@ -7541,9 +7548,8 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             const oldName = getCharaFilename(null, { manualAvatarKey: oldAvatar });
             const newName = getCharaFilename(null, { manualAvatarKey: newAvatar });
 
-            // Replace other auxiliary fields where was referenced by avatar key
-            // Tag List
-            renameTagKey(oldAvatar, newAvatar);
+            // Tag assignments live on the character's own tag_ids, carried forward by the server's rename
+            // route and picked up fresh by the getCharacters() reload below - nothing to do here.
 
             // Additional lore books
             const charLore = world_info.charLore?.find(x => x.name == oldName);
@@ -12041,7 +12047,7 @@ async function endMetadataBatchImport() {
     }
 }
 
-// Must run before importTags() for the same character - getTagKeyForEntity() can't seed a tag_map entry for an avatar not yet in charactersStore.
+// Must run before importTags() for the same character - getTagKeyForEntity() can't resolve a key for an avatar not yet in charactersStore.
 function applyImportedCharacter(character) {
     if (!character?.avatar) {
         return;

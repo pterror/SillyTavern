@@ -43,27 +43,27 @@ export {
     TAG_FOLDER_TYPES,
     TAG_FOLDER_DEFAULT_TYPE,
     tags,
-    tag_map,
     filterByTagState,
     isBogusFolder,
     isBogusFolderOpen,
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
-    seedTagMapFromRecords,
+    reindexTagAssignments,
     printTagFilters,
     getTagsList,
     printTagList,
     appendTagToList,
     createTagMapFromList,
-    renameTagKey,
     importTags,
     sortTags,
     compareTagsForSort,
     removeTagFromMap,
     invalidateAssignedTagIdsCache,
     getAssignedTagIds,
+    getTagMapSnapshot,
     tagsStore,
+    tagMapStore,
     mergeServerTagDefinitions,
 };
 
@@ -361,12 +361,6 @@ const TAG_FOLDER_DEFAULT_TYPE = 'NONE';
  */
 let tags = [];
 
-/**
- * A map representing the key of an entity (character avatar, group id, etc) with a corresponding array of tags this entity has assigned. The array might not exist if no tags were assigned yet.
- * @type {{[identifier: string]: string[]?}}
- */
-let tag_map = {};
-
 /** Server-loaded set of tag IDs assigned to at least one entity (from tag_usage table, fetched with tag definitions). */
 let serverAssignedTagIds = new Set();
 
@@ -383,17 +377,88 @@ let expanded_tags_cache = [];
  */
 let tagsStore = new EntityStore(tags, tag => tag.id);
 
-/** @type {RelationStore} */
-let tagMapStore = new RelationStore(tag_map);
+/**
+ * Resolves a tagMapStore key (character avatar or group id) to that entity's own, resident `tag_ids` array -
+ * both characters and groups carry their tag assignments as a server-stamped field on the entity itself (see
+ * `stampDbTagIds()` in characters.js and its group-side counterpart in groups.js), so there's no separate map
+ * for this to keep in sync with.
+ * @param {string} key
+ * @returns {string[]|undefined} undefined if `key` isn't a currently-resident character or group
+ */
+function resolveTagIdsArray(key) {
+    const character = charactersStore.get(key);
+    if (character) {
+        if (!Array.isArray(character.tag_ids)) character.tag_ids = [];
+        return character.tag_ids;
+    }
+    const group = groupsStore.get(key);
+    if (group) {
+        if (!Array.isArray(group.tag_ids)) group.tag_ids = [];
+        return group.tag_ids;
+    }
+    return undefined;
+}
+
+/** Every currently-resident character/group key paired with its live `tag_ids` array. */
+function* allTagIdsEntries() {
+    for (const character of charactersStore.getAll()) {
+        if (!character.avatar) continue;
+        if (!Array.isArray(character.tag_ids)) character.tag_ids = [];
+        yield /** @type {[string, string[]]} */ ([character.avatar, character.tag_ids]);
+    }
+    for (const group of groupsStore.getAll()) {
+        if (!group.id) continue;
+        if (!Array.isArray(group.tag_ids)) group.tag_ids = [];
+        yield /** @type {[string, string[]]} */ ([String(group.id), group.tag_ids]);
+    }
+}
 
 /**
- * Rebuilds `tagsStore`/`tagMapStore` to wrap the current `tags`/`tag_map` references and re-registers their
- * subscribers - needed whenever those references are reassigned (e.g. `loadTagsSettings`), since a store built
- * against the old reference would keep indexing stale data and a fresh instance carries no subscribers of its own.
+ * Resolves against the live `charactersStore`/`groupsStore` bindings on every call (see `resolveTagIdsArray()`),
+ * so - unlike `tagsStore` - it's never left wrapping a stale reference and never needs recreating.
+ * @type {RelationStore}
+ */
+const tagMapStore = new RelationStore(resolveTagIdsArray, allTagIdsEntries);
+
+/**
+ * A fresh `{[key: string]: string[]}` snapshot of every resident entity's tag assignments - for external
+ * consumers (getContext().tagMap, the tag backup file) that need a plain object rather than `tagMapStore`
+ * itself. Computed on demand, so it can never itself drift from the entities it was built from.
+ * @returns {{[key: string]: string[]}}
+ */
+function getTagMapSnapshot() {
+    /** @type {{[key: string]: string[]}} */
+    const snapshot = {};
+    for (const [key, tagIds] of allTagIdsEntries()) {
+        if (tagIds.length) snapshot[key] = tagIds;
+    }
+    return snapshot;
+}
+
+tagMapStore.onChange(() => {
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+});
+
+// Assignments are no longer saved as one blob - each op is persisted individually via /api/tags/assign|unassign.
+tagMapStore.onChange(persistTagMapChange);
+
+tagMapStore.onChange((change) => {
+    if (change.op === 'unassigned' && change.wasLastUse) {
+        serverAssignedTagIds.delete(change.relatedId);
+    }
+    if (change.op === 'assigned' && change.wasFirstUse) {
+        serverAssignedTagIds.add(change.relatedId);
+    }
+});
+
+/**
+ * Rebuilds `tagsStore` to wrap the current `tags` reference and re-registers its subscribers - needed whenever
+ * that reference is reassigned (e.g. `loadTagsSettings`), since a store built against the old reference would
+ * keep indexing stale data and a fresh instance carries no subscribers of its own.
  */
 function rebuildTagStores() {
     tagsStore = new EntityStore(tags, tag => tag.id);
-    tagMapStore = new RelationStore(tag_map);
 
     tagsStore.onChange(() => {
         invalidateTagsFuseIndex();
@@ -401,24 +466,7 @@ function rebuildTagStores() {
         invalidateGroupsFuseIndex();
     });
 
-    tagMapStore.onChange(() => {
-        invalidateCharactersFuseIndex();
-        invalidateGroupsFuseIndex();
-    });
-
     tagsStore.onChange(persistTagChange);
-
-    // Assignments are no longer saved as one blob - each op is persisted individually via /api/tags/assign|unassign.
-    tagMapStore.onChange(persistTagMapChange);
-
-    tagMapStore.onChange((change) => {
-        if (change.op === 'unassigned' && change.wasLastUse) {
-            serverAssignedTagIds.delete(change.relatedId);
-        }
-        if (change.op === 'assigned' && change.wasFirstUse) {
-            serverAssignedTagIds.add(change.relatedId);
-        }
-    });
 }
 
 /** Refreshes the client-side tags cache so the next boot's freshness check can hit it. */
@@ -639,8 +687,8 @@ function persistTagMapChange(change) {
 }
 
 /**
- * Recomputes `tagMapStore`'s usage-count index from `tag_map` - a bridge for the modules that still write
- * into `tag_map` directly instead of through `tagMapStore`'s own ops.
+ * Recomputes `tagMapStore`'s usage-count index - a bridge for callers (e.g. the tag restore flow) that write
+ * entity `tag_ids` arrays directly instead of through `tagMapStore`'s own ops.
  */
 function invalidateAssignedTagIdsCache() {
     tagMapStore.reindex();
@@ -927,7 +975,8 @@ function filterByFolder(filterHelper) {
 /**
  * Loads tag *definitions* from the server (POST /api/tags/get). A fetch failure reuses the last-known-good
  * cache instead of falling back to DEFAULT_TAGS, so a transient network error can't overwrite real definitions
- * with the built-in defaults on next save. `tag_map` (assignments) is loaded separately, see seedTagMapFromRecords().
+ * with the built-in defaults on next save. Assignments aren't loaded separately - they live on each character/
+ * group's own `tag_ids` field, already resident by the time `characters`/`groups` are populated.
  */
 /**
  * Repairs a cached copy of the tag definitions against the server's bucket digest instead of refetching all of
@@ -1022,7 +1071,6 @@ async function loadTagsSettings() {
                 const cached = await getCachedTags();
                 if (cached && cached.hash === hash) {
                     tags = cached.tags;
-                    tag_map = Object.create(null);
                     serverAssignedTagIds = new Set(cached.assignedTagIds ?? []);
                     rebuildTagStores();
                     invalidateCharactersFuseIndex();
@@ -1045,7 +1093,6 @@ async function loadTagsSettings() {
                 const repaired = await syncTagDefinitionsFromDigest(cached.tags);
                 if (repaired) {
                     tags = repaired;
-                    tag_map = Object.create(null);
                     serverAssignedTagIds = new Set(cached.assignedTagIds ?? []);
                     rebuildTagStores();
                     await setCachedTags(manifestHash, tags, [...serverAssignedTagIds]);
@@ -1095,7 +1142,6 @@ async function loadTagsSettings() {
         tags = DEFAULT_TAGS;
         seedSave = true;
     }
-    tag_map = Object.create(null);
 
     rebuildTagStores();
     if (tagsFile && Array.isArray(tagsFile.assignedTagIds)) {
@@ -1117,59 +1163,26 @@ async function loadTagsSettings() {
 }
 
 /**
- * Builds the local tag_map from character records' own tag_ids field plus a lightweight group-tag fetch.
+ * Reindexes `tagMapStore`'s usage-count index now that `characters`/`groups` are populated - both already
+ * carry their own `tag_ids` (server-stamped, see `resolveTagIdsArray()`), so there's nothing left to fetch or
+ * seed here; this just accounts for the assignments that were invisible while those arrays were still empty.
  * Must run after both `characters` and `groups` are populated.
  */
-async function seedTagMapFromRecords() {
+async function reindexTagAssignments() {
     try {
-        tag_map = Object.create(null);
-        for (const char of characters) {
-            if (char.avatar && Array.isArray(char.tag_ids)) {
-                tag_map[char.avatar] = char.tag_ids;
-            }
-        }
-
-        // Groups don't carry tag_ids in their records, but they're a small set, so one bulk fetch is cheap.
-        const groupIds = groups.map(g => g.id).filter(Boolean);
-        if (groupIds.length > 0) {
-            const response = await fetch('/api/tags/for', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ ids: groupIds }),
-                cache: 'no-cache',
-            });
-            if (response.ok) {
-                const groupTags = await response.json();
-                for (const [id, tagIds] of Object.entries(groupTags)) {
-                    if (Array.isArray(tagIds) && tagIds.length > 0) {
-                        tag_map[id] = tagIds;
-                    }
-                }
-            }
-        }
-
-        rebuildTagStores();
+        tagMapStore.reindex();
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
 
-        // The initial render already ran with an empty tag_map - redraw now that real assignments are known.
+        // The initial render already ran before real assignments were resident - redraw now that they are.
         printCharactersDebounced();
         printTagFilters(tag_filter_type.character);
         printTagFilters(tag_filter_type.group_members_list);
         printTagFilters(tag_filter_type.group_candidates_list);
     } catch (error) {
-        console.error('Error building tag map from records:', error);
+        console.error('Error reindexing tag assignments:', error);
         toastr.warning('Could not load tag data. Tags may be missing.', 'Tag Loading Error', { timeOut: 10000 });
     }
-}
-
-/**
- * Called on a character rename. Only updates the local tagMapStore key - fires no network call, since the
- * server's own rename route already carries tag assignments forward atomically.
- */
-function renameTagKey(oldKey, newKey) {
-    // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
-    tagMapStore.renameKey(oldKey, newKey);
 }
 
 function createTagMapFromList(listElement, key) {
@@ -1205,27 +1218,25 @@ function getTagsList(key, sort = true, residencyFallbackTagIds = undefined) {
         return [];
     }
 
-    // A resident character carries its own live tag_ids; tag_map is only bulk-populated once at boot and
-    // never rebuilt, so it goes stale for anything that becomes resident afterward.
+    // A resident character or group carries its own live, server-stamped tag_ids field.
     const character = charactersStore.get(key);
     if (character) {
         const tagIds = Array.isArray(character.tag_ids) ? character.tag_ids : [];
         return tagIdsToTagList(tagIds, sort);
     }
+    const group = groupsStore.get(key);
+    if (group) {
+        const tagIds = Array.isArray(group.tag_ids) ? group.tag_ids : [];
+        return tagIdsToTagList(tagIds, sort);
+    }
 
     // Under lazyLoadCharacters, most list/search rows are non-resident query rows with their own correct
-    // tag_ids but no tag_map entry - a caller already holding such a row's tag_ids passes it here so it's
-    // used instead of falling through to an empty tag_map[key].
+    // tag_ids - a caller already holding such a row's tag_ids passes it here instead.
     if (Array.isArray(residencyFallbackTagIds)) {
         return tagIdsToTagList(residencyFallbackTagIds, sort);
     }
 
-    if (!Array.isArray(tag_map[key])) {
-        tag_map[key] = [];
-        return [];
-    }
-
-    return tagIdsToTagList(tag_map[key], sort);
+    return [];
 }
 
 function getInlineListSelector() {
@@ -1280,14 +1291,9 @@ export function getTagKeyForEntity(entityOrKey) {
         x = character.avatar;
     }
 
-    // Guard against a falsy avatar: `tag_map[undefined]` would coerce to a real "undefined" string key.
-    if (character && x && !(x in tag_map)) {
-        tag_map[x] = [];
-        return x;
-    }
-
-    // We should hopefully have a key now. Let's check
-    if (x in tag_map) {
+    // A resolvable key is one resolveTagIdsArray() can find a live tag_ids array for - a resident character
+    // (guarded against a falsy avatar here first) or group.
+    if (x && resolveTagIdsArray(x)) {
         return x;
     }
 
@@ -1359,7 +1365,7 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
 
     let result = false;
 
-    /** @type {Set<string>} The resolved tag_map keys (avatar / group id) actually touched by this call */
+    /** @type {Set<string>} The resolved tagMapStore keys (avatar / group id) actually touched by this call */
     const affectedKeys = new Set();
     /** @type {Map<string, boolean>} Per tag id, whether *any* assignment in this batch was that tag's first use
      * anywhere - read directly off tagMapStore.assign()'s own return value, no before/after snapshot needed. */
@@ -1428,10 +1434,10 @@ function tagChangeAffectsCurrentView(tagIds) {
 }
 
 /**
- * Redraws whatever needs to be redrawn after a tag_map mutation for the given tag ids / entity keys.
+ * Redraws whatever needs to be redrawn after a tagMapStore mutation for the given tag ids / entity keys.
  * See `tagChangeAffectsCurrentView` for what "needs a full re-render" means here.
  * @param {string[]} tagIds - The ids of the tags that were added/removed
- * @param {Set<string>} affectedKeys - The tag_map keys (avatar / group id) that were actually touched
+ * @param {Set<string>} affectedKeys - The tagMapStore keys (avatar / group id) that were actually touched
  * @param {Map<string, boolean>} [usageFlips] - For each tag id, whether this mutation flipped its overall
  * used/unused status (read directly off tagMapStore.assign()/.unassign()'s wasFirstUse/wasLastUse - not
  * re-derived by comparing before/after snapshots). Used to skip reprinting the tag filter buttons when a tag's
@@ -1458,9 +1464,9 @@ function redrawAfterTagChange(tagIds, affectedKeys, usageFlips = new Map()) {
 }
 
 /**
- * Patches the tag pills of any currently-rendered character/group list rows for the given tag_map keys, without
+ * Patches the tag pills of any currently-rendered character/group list rows for the given tagMapStore keys, without
  * touching the rest of the list.
- * @param {Iterable<string>} keys - tag_map keys (character avatar or group id)
+ * @param {Iterable<string>} keys - tagMapStore keys (character avatar or group id)
  */
 function updateEntityRowTags(keys) {
     for (const key of keys) {
@@ -1493,7 +1499,7 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
     let result = false;
     const entityIds = Array.isArray(entityId) ? entityId : [entityId];
 
-    /** @type {Set<string>} The resolved tag_map keys (avatar / group id) actually touched by this call */
+    /** @type {Set<string>} The resolved tagMapStore keys (avatar / group id) actually touched by this call */
     const affectedKeys = new Set();
     // Whether *any* removal in this batch was this tag's last use anywhere - read directly off
     // tagMapStore.unassign()'s own return value, no before/after snapshot needed.
@@ -1685,7 +1691,7 @@ async function importTags(character, { importSetting = null, suppressSuccessToas
  */
 async function handleTagImport(character, { importSetting = null } = {}) {
     /** @type {string[]} */
-    const alreadyAssignedTags = tag_map[character.avatar] ?? [];
+    const alreadyAssignedTags = tagMapStore.get(character.avatar);
     const importTags = character.tags.map(t => t.trim()).filter(t => t)
         .filter(t => !IMPORT_EXLCUDED_TAGS.includes(t))
         .filter(t => {
@@ -2061,7 +2067,7 @@ function onTagFilterClick(listElement) {
     const filterHelper = getFilterHelper($(listElement));
 
     // Deliberately not calling saveSettingsDebounced() here - persistence is via accountStorage below.
-    // A full settings resave on every tag filter click is a real perf cost once tags/tag_map are large.
+    // A full settings resave on every tag filter click is a real perf cost once there are lots of tags/entities.
     if (existingTag && isMainCharacterList(filterHelper)) {
         existingTag.filter_state = state;
     }
@@ -2227,7 +2233,7 @@ function printTagFilters(type = tag_filter_type.character) {
 
         if (visibleAvatars.length > 0) {
             const activeCharacterTagIds = visibleAvatars
-                .map(avatar => tag_map[avatar] || [])
+                .map(avatar => tagMapStore.get(avatar))
                 .flat()
                 .filter(onlyUnique);
 
@@ -2605,9 +2611,10 @@ function compareTagsForSort(a, b, counts = null) {
 }
 
 /**
- * Deliberately still direct `tags`/`tag_map` mutations rather than per-item store ops: this bulk, rare,
- * all-or-nothing operation has its own id-remapping logic (idToActualTagIdMap), and gets a single bulk
- * reindex at the end instead.
+ * Deliberately still direct `tags`/entity `tag_ids` mutations rather than per-item store ops: this bulk, rare,
+ * all-or-nothing operation has its own id-remapping logic (idToActualTagIdMap) and persists every entity's
+ * assignments in one request (see setEntityTagIdsMany() server-side, POSTed to below) instead of one
+ * assign/unassign call per tag per entity.
  */
 async function onTagRestoreFileSelect(e) {
     const file = e.target.files[0];
@@ -2680,6 +2687,9 @@ async function onTagRestoreFileSelect(e) {
         toastr.error(t`Could not verify character existence against the server. Tag map keys could not be validated this run.`, 'Tag Restore');
     }
 
+    /** @type {Record<string, string[]>} Full desired tag id list per entity, for the bulk assign-many request. */
+    const tagIdsByEntity = {};
+
     for (const key of tagMapKeys) {
         const tagIds = data.tag_map[key];
 
@@ -2698,15 +2708,41 @@ async function onTagRestoreFileSelect(e) {
         }
 
         // Get existing tag ids for this key or empty array.
-        const existingTagIds = tag_map[key] || [];
+        const existingTagIds = tagMapStore.get(key);
 
-        // Merge existing and new tag ids. Replace the ones mapped to a new id. Remove duplicates.
+        // Merge existing and new tag ids. Replace the ones mapped to a new id. Remove duplicates. Drop tags
+        // that don't exist.
         const combinedTags = existingTagIds.concat(tagIds)
             .map(tagId => (idToActualTagIdMap.has(tagId)) ? idToActualTagIdMap.get(tagId) : tagId)
-            .filter(onlyUnique);
+            .filter(onlyUnique)
+            .filter(tagId => tags.some(y => String(y.id) === String(tagId)));
 
-        // Verify that all tags exist. Remove tags that don't exist.
-        tag_map[key] = combinedTags.filter(tagId => tags.some(y => String(y.id) === String(tagId)));
+        tagIdsByEntity[key] = combinedTags;
+
+        // Reflect immediately for whichever of these are currently resident - an entity that isn't loaded yet
+        // picks this up from the server on its next fetch, same as any other tag change.
+        const liveTagIds = resolveTagIdsArray(key);
+        if (liveTagIds) {
+            liveTagIds.length = 0;
+            liveTagIds.push(...combinedTags);
+        }
+    }
+
+    if (Object.keys(tagIdsByEntity).length) {
+        try {
+            const response = await fetch('/api/tags/assign-many', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ tagIdsByEntity }),
+                cache: 'no-cache',
+            });
+            if (!response.ok) {
+                throw new Error(`Failed to persist restored tag assignments: ${response.statusText}`);
+            }
+        } catch (error) {
+            console.error('Error persisting restored tag assignments:', error);
+            warnings.push('Could not save restored tag assignments to the server; they may be lost on reload.');
+        }
     }
 
     if (warnings.length) {
@@ -2739,52 +2775,40 @@ function onBackupRestoreClick() {
 function onTagsBackupClick() {
     const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
     const filename = `tags_${timestamp}.json`;
+    // File format field name kept as `tag_map` for backward compatibility with existing backup files -
+    // this is a freshly-computed snapshot of each resident entity's own tag_ids, not a persisted cache.
     const data = {
         tags: tags,
-        tag_map: tag_map,
+        tag_map: getTagMapSnapshot(),
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     download(blob, filename, 'application/json');
 }
 
 async function onTagsPruneClick() {
+    // Stale tag_map references to a missing/deleted character or group used to need a separate existence
+    // check and prune pass here: tag_map was a standalone cache that could outlive the entity it named.
+    // tagMapStore now resolves straight through to each entity's own tag_ids field (see resolveTagIdsArray()),
+    // so a key only ever exists for as long as the entity itself is resident - there's no longer a stray
+    // reference this pass could find.
     const allTagsInTagMaps = getAssignedTagIds();
     const tagsToPrune = tags.filter(tag => !allTagsInTagMaps.has(tag.id));
 
-    // Character-shaped keys go through an authoritative existence check rather than a resident-array scan,
-    // since this path actually deletes tag_map entries; group ids are always fully resident.
-    const groupEntityIds = new Set(groups.map(g => String(g.id)));
-    const candidateCharacterKeys = Object.keys(tag_map).filter(key => !groupEntityIds.has(key));
-    const characterKeyExistence = await checkCharactersExistOrNull(candidateCharacterKeys);
-
-    let tagMapsToPrune;
-    if (characterKeyExistence === null) {
-        // A failed/partial check must abort the prune for the affected keys, never fall through to pruning them.
-        toastr.error(t`Could not verify character existence against the server. Skipping pruning of stale character tag references this run.`, 'Prune Tags');
-        tagMapsToPrune = [];
-    } else {
-        tagMapsToPrune = candidateCharacterKeys.filter(key => !characterKeyExistence[key]);
-    }
-
-    if (!tagsToPrune.length && !tagMapsToPrune.length) {
-        toastr.info(t`No unused tags or references found.`);
+    if (!tagsToPrune.length) {
+        toastr.info(t`No unused tags found.`);
         return;
     }
 
-    const confirm = await Popup.show.confirm(t`Prune ${tagsToPrune.length} tags and ${tagMapsToPrune.length} references`, t`Are you sure you want to remove all unused tags and references to missing or deleted characters and groups?`);
+    const confirm = await Popup.show.confirm(t`Prune ${tagsToPrune.length} tags`, t`Are you sure you want to remove all unused tags?`);
 
     if (!confirm) {
         return;
     }
 
-    // Fuse-index invalidation (per removal) is handled by the tagsStore/tagMapStore.onChange subscribers
+    // Fuse-index invalidation (per removal) is handled by the tagsStore.onChange subscriber
     // (rebuildTagStores()) - firing once per pruned item here is fine, it's just setting dirty flags.
     for (const tag of tagsToPrune) {
         tagsStore.remove(tag.id);
-    }
-
-    for (const key of tagMapsToPrune) {
-        tagMapStore.removeKey(key);
     }
 
     printCharactersDebounced();
@@ -3051,27 +3075,45 @@ function onClearAllFiltersClick(filterHelper) {
 }
 
 /**
- * Copy tags from one character to another.
+ * Copies one character's tag assignments onto its duplicate, server-side. `CHARACTER_DUPLICATED` fires before
+ * the duplicate is resident (its caller reloads the character list only after awaiting this), so this can't
+ * go through `tagMapStore` (which only resolves keys of currently-resident entities) - it posts straight to
+ * the bulk tag-assignment endpoint instead. The reload right after picks it up via `newAvatar`'s own fresh
+ * `tag_ids`.
  * @param {{oldAvatar: string, newAvatar: string}} data Event data
  */
-function copyTags(data) {
-    // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
-    tagMapStore.copyKey(data.oldAvatar, data.newAvatar);
+async function copyTags(data) {
+    const tagIds = tagMapStore.get(data.oldAvatar);
+    if (!tagIds.length) return;
+    try {
+        const response = await fetch('/api/tags/assign-many', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ tagIdsByEntity: { [data.newAvatar]: tagIds } }),
+            cache: 'no-cache',
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to copy tags: ${response.statusText}`);
+        }
+    } catch (error) {
+        console.error(`Error copying tags from ${data.oldAvatar} to ${data.newAvatar}:`, error);
+    }
 }
 
 /**
- * Clears all tags assigned to a given entity key, without removing the tag_map entry itself.
- * Exported so other modules (BulkEditOverlay.js) don't need to write into `tag_map` directly.
- * @param {string} key - tag_map key (character avatar or group id)
+ * Clears all tags assigned to a given entity key.
+ * Exported so other modules (BulkEditOverlay.js) don't need to reach into `tagMapStore` directly.
+ * @param {string} key - tagMapStore key (character avatar or group id)
  */
 export function clearEntityTags(key) {
     tagMapStore.setKey(key, []);
 }
 
 /**
- * Removes a tag_map entry entirely for a given entity key (e.g. the character/group was deleted).
- * Exported so other modules (group-chats.js, script.js) don't need to write into `tag_map` directly.
- * @param {string} key - tag_map key (character avatar or group id)
+ * Clears all tags assigned to a given entity key (e.g. the character/group was deleted, so there's nothing
+ * left to keep them assigned to).
+ * Exported so other modules (group-chats.js, script.js) don't need to reach into `tagMapStore` directly.
+ * @param {string} key - tagMapStore key (character avatar or group id)
  */
 export function removeEntityTags(key) {
     tagMapStore.removeKey(key);
@@ -3085,8 +3127,10 @@ export function removeEntityTags(key) {
 function printViewTagList(tagContainer, empty = true) {
     if (empty) tagContainer.empty();
     const counts = new Map(tags.map(tag => [tag.id, 0]));
-    for (const tagId of Object.values(tag_map).flat()) {
-        if (counts.has(tagId)) counts.set(tagId, counts.get(tagId) + 1);
+    for (const [, tagIds] of allTagIdsEntries()) {
+        for (const tagId of tagIds) {
+            if (counts.has(tagId)) counts.set(tagId, counts.get(tagId) + 1);
+        }
     }
     const sortedTags = sortTags(tags, counts);
     for (const tag of sortedTags) {
@@ -3259,7 +3303,7 @@ function registerTagsSlashCommands() {
             if (!key) return 'false';
             const tag = paraGetTag(tagName);
             if (!tag) return 'false';
-            return String(tag_map[key].includes(tag.id));
+            return String(tagMapStore.isAssigned(key, tag.id));
         },
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
@@ -3432,9 +3476,9 @@ export function applyCharacterTagsToMessageDivs({ mesIds = [] } = {}) {
             }
         });
 
-        const tagsList = tags, characterTagData = tag_map;
+        const tagsList = tags;
 
-        if (!tagsList?.length || !characterTagData) {
+        if (!tagsList?.length) {
             return;
         }
 
@@ -3458,7 +3502,7 @@ export function applyCharacterTagsToMessageDivs({ mesIds = [] } = {}) {
 
             // If tags are NOT in the cache, compute and store them
             if (!tagsForCharacter) {
-                const tagIds = characterTagData[avatarFileName];
+                const tagIds = tagMapStore.get(avatarFileName);
                 if (tagIds?.length) {
                     const tagNames = tagIds
                         .map(id => tagNamesById[id])

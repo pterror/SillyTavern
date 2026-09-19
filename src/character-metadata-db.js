@@ -2568,6 +2568,81 @@ export async function unassignEntityTag(directories, id, tagId) {
     return 'ok';
 }
 
+// Bulk counterpart to assignEntityTag()/unassignEntityTag(): those two only add/remove one tag on one entity
+// at a time, which is fine for interactive UI clicks but means a multi-entity restore (e.g. from a tag backup
+// file) would otherwise have to loop a single-tag call per tag per entity. This replaces each listed entity's
+// whole tag set in one transaction instead. Same existence-then-write shape and shallow_json/digest upkeep as
+// assignEntityTag()/unassignEntityTag(), just batched.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {Record<string, string[]>} tagIdsByEntity Entity id -> full desired tag id list (replaces, not merges, each entity's assignments).
+ * @returns {Promise<Record<string, 'ok' | 'not_found'> | null>}
+ */
+export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const ids = Object.keys(tagIdsByEntity);
+
+    /** @type {Set<string>} */
+    const characterIds = new Set();
+    /** @type {Set<string>} */
+    const groupIds = new Set();
+    for (let i = 0; i < ids.length; i += BATCH_FLUSH_SIZE) {
+        const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        for (const row of (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM characters WHERE id IN (${placeholders})`, chunk)))) {
+            characterIds.add(row.id);
+        }
+        for (const row of (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM groups WHERE id IN (${placeholders})`, chunk)))) {
+            groupIds.add(row.id);
+        }
+    }
+
+    /** @type {Record<string, 'ok' | 'not_found'>} */
+    const result = {};
+
+    entry.db.transaction(() => {
+        for (const id of ids) {
+            const tagIds = Array.isArray(tagIdsByEntity[id]) ? [...new Set(tagIdsByEntity[id])] : [];
+
+            const pending = entry.batch?.pending.get(id);
+            if (pending) {
+                pending.tagIds = tagIds;
+                patchPendingRowTagIds(pending);
+                result[id] = 'ok';
+                continue;
+            }
+
+            if (characterIds.has(id)) {
+                entry.db.run('DELETE FROM character_tags WHERE character_id = @id', { id });
+                for (const tagId of tagIds) {
+                    entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+                }
+                const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
+                if (charRow) {
+                    const shallow = JSON.parse(charRow.shallow_json);
+                    shallow.tag_ids = tagIds;
+                    const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
+                    entry.db.run('UPDATE characters SET shallow_json = @shallowJson, change_seq = @changeSeq WHERE id = @id', { id, shallowJson: JSON.stringify(shallow), changeSeq: Number(lastInsertRowid) });
+                }
+                result[id] = 'ok';
+            } else if (groupIds.has(id)) {
+                entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id });
+                for (const tagId of tagIds) {
+                    entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+                }
+                entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: tagIds }) });
+                result[id] = 'ok';
+            } else {
+                result[id] = 'not_found';
+            }
+        }
+    });
+
+    return result;
+}
+
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} groupId

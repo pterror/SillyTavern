@@ -1,5 +1,5 @@
 import { fuzzySearchCharacters, fuzzySearchGroups, fuzzySearchPersonas, fuzzySearchTags, fuzzySearchWorldInfo, power_user } from './power-user.js';
-import { tag_map } from './tags.js';
+import { tagMapStore } from './tags.js';
 import { includesIgnoreCaseAndAccents } from './utils.js';
 
 
@@ -223,7 +223,7 @@ export class FilterHelper {
     isElementTagged(entity, tagId) {
         const isCharacter = entity.type === 'character';
         const lookupValue = isCharacter ? entity.item.avatar : String(entity.id);
-        const isTagged = Array.isArray(tag_map[lookupValue]) && tag_map[lookupValue].includes(tagId);
+        const isTagged = tagMapStore.isAssigned(lookupValue, tagId);
 
         return isTagged;
     }

@@ -52,7 +52,7 @@ import {
     updateBindModelTemplatesState,
 } from './instruct-mode.js';
 
-import { getTagsList, tag_import_setting, tag_map, tag_sort_mode, tags, getAssignedTagIds } from './tags.js';
+import { getTagsList, tag_import_setting, tag_sort_mode, tags, getAssignedTagIds } from './tags.js';
 import { tokenizers } from './tokenizers.js';
 import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
@@ -312,11 +312,6 @@ export const power_user = {
     persona_data: {},
     preset_order: {},
 
-    persona_description: '',
-    persona_description_position: persona_description_positions.IN_PROMPT,
-    persona_description_role: 0,
-    persona_description_depth: 2,
-    persona_description_lorebook: '',
     persona_show_notifications: true,
     persona_sort_order: 'asc',
 
@@ -385,7 +380,7 @@ export const power_user = {
 /**
  * @returns {PersonaRecord} A freshly-defaulted persona record.
  */
-function defaultPersonaRecord() {
+export function defaultPersonaRecord() {
     return {
         name: '',
         description: '',
@@ -3137,8 +3132,8 @@ function findTagIdByName(name) {
         (a, b) => a.includes(b),
     ];
 
-    // Only get tags that contain at least one record in the tag_map
-    const liveTagIds = new Set(Object.values(tag_map).flat());
+    // Only get tags that are actually assigned to at least one entity
+    const liveTagIds = getAssignedTagIds();
     const liveTags = tags.filter(x => liveTagIds.has(x.id));
 
     const exactNameMatchIndex = liveTags.map(x => x.name.toLowerCase()).indexOf(name.toLowerCase());
@@ -3158,7 +3153,7 @@ function findTagIdByName(name) {
 /**
  * Picks one random character, optionally tag-filtered, via the server's `ORDER BY RANDOM() LIMIT 1` - a
  * one-shot pick unrelated to the persisted seeded random-sort *list* ordering, so it goes straight through
- * `characterRepository.query()` instead of scanning `characters`/`tag_map`.
+ * `characterRepository.query()` instead of scanning `characters`/`groups`.
  * @param {string} [tagName] Optional tag name to filter the pick to.
  * @returns {Promise<string|undefined>} The avatar of the randomly selected character, or undefined if none matched.
  */

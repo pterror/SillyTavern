@@ -31,7 +31,7 @@ import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
-import { getGroupsData, getGroupsByIds } from './groups.js';
+import { getGroupsData, getGroupsByIds, stampDbTagIds as stampDbGroupTagIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getStaleCardJsonMap } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
@@ -2030,6 +2030,7 @@ router.post('/all', async function (request, response) {
 
         if (includeGroups) {
             const groupsData = getGroupsData(request.user.directories);
+            await stampDbGroupTagIds(request.user.directories, groupsData);
             const { items, total } = paginateEntities(data, groupsData, {
                 sortField, sortOrder, offset: numericOffset, limit: numericLimit,
             });

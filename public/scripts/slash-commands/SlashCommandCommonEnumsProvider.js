@@ -2,7 +2,7 @@ import { chat_metadata, characters, substituteParams, chat, extension_prompt_rol
 import { extension_settings } from '../extensions.js';
 import { getGroupMembersResident, groups } from '../group-chats.js';
 import { personaStore } from '../power-user.js';
-import { searchCharByName, getTagsList, tags, tag_map } from '../tags.js';
+import { searchCharByName, getTagsList, tags, getAssignedTagIds } from '../tags.js';
 import { onlyUniqueJson, sortIgnoreCaseAndAccents } from '../utils.js';
 import { world_names } from '../world-info.js';
 import { SlashCommandClosure } from './SlashCommandClosure.js';
@@ -230,7 +230,7 @@ export const commonEnumProviders = {
      * @returns {() => SlashCommandEnumValue[]}
      */
     tags: (mode = 'all') => () => {
-        let assignedTags = mode === 'assigned' ? new Set(Object.values(tag_map).flat()) : new Set();
+        let assignedTags = mode === 'assigned' ? getAssignedTagIds() : new Set();
         return tags.filter(tag => mode === 'all' || (mode === 'assigned' && assignedTags.has(tag.id)))
             .map(tag => new SlashCommandEnumValue(tag.name, null, enumTypes.command, enumIcons.tag));
     },
