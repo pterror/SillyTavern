@@ -2337,7 +2337,11 @@ router.post('/query', async function (request, response) {
             // matched set since ordering comes from SQL. Undefined tells the search engine to return all matches.
             const idFetchCap = sort.field === 'search' ? offset + pageSize : undefined;
             const favOnly = filter.fav === true;
-            const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly);
+            // tags is applied inside the search engine itself (runIdSearch/buildTagFilterQuery) so the ranked id
+            // list this returns is already tags-filtered - queryCharacters()'s search-sort branch can then page
+            // it directly. world isn't: the search engine has no world field, so a world-filtered search-sorted
+            // request still needs queryCharacters()'s own WHERE-clause check (see that function's comment).
+            const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly, filter.tags);
 
             // filter.ids and filter.search both restrict the candidate set - when both are present they
             // intersect, not override each other, for both types when includeGroups is active.
