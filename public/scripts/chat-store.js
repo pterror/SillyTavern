@@ -658,6 +658,21 @@ export async function healDirtyMessages() {
     let lastPersisted = null;
     let firstNewIndex = -1;
 
+    // The opening row is a special case of "no node_id at all": unlike every other position, it has
+    // no earlier persisted message to anchor a chatOpAppend() onto - the loop below's `lastPersisted`
+    // guard can never fire for it (see this function's own module-level heal-call site in
+    // generation.js for why this matters: a genuinely brand-new chat's greeting can reach here with
+    // no node_id - e.g. _openingFromTree()'s (or _bootstrapGroupChat()'s) own eager-materialize call
+    // having failed - and a lone entry at index 0 would otherwise leave `lastPersisted` null forever).
+    // Same treatment ensureOpeningRow() already gives a PROVISIONAL greeting - stamp the same
+    // provisional id `_openingFromTree()` would have (script.js), then let ensureOpeningRow() mint
+    // the real row, so it flows through the exact same, already-tested materialization path.
+    const opening = _chatAt(0);
+    if (opening && (opening.node_id == null || opening.node_id === '')) {
+        updateMessage(0, { node_id: provisionalNodeId(opening.name, opening.mes) });
+        await ensureOpeningRow(0);
+    }
+
     for (let i = 0; i < chat.length; i++) {
         let msg = _chatAt(i);
 
