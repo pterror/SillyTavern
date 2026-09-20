@@ -20,7 +20,7 @@ function getTagsCacheStore() {
 
 const CACHE_KEY = 'tagsData';
 
-/** @returns {Promise<{ hash: number, tags: object[], assignedTagIds?: string[] }|null>} */
+/** @returns {Promise<{ hash: number, tags: object[] }|null>} */
 export async function getCachedTags() {
     try {
         return await getTagsCacheStore().getItem(CACHE_KEY);
@@ -34,9 +34,9 @@ export async function getCachedTags() {
  * @param {number} hash `tags_rev` at the time `tags` was fetched (see /api/tags/manifest).
  * @param {object[]} tags
  */
-export async function setCachedTags(hash, tags, assignedTagIds = []) {
+export async function setCachedTags(hash, tags) {
     try {
-        await getTagsCacheStore().setItem(CACHE_KEY, { hash, tags, assignedTagIds });
+        await getTagsCacheStore().setItem(CACHE_KEY, { hash, tags });
     } catch (error) {
         console.error('Failed to cache tags data:', error);
     }

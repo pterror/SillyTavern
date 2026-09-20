@@ -22,7 +22,7 @@ import { groupCandidatesFilter, groupMembersFilter, selected_group } from './gro
 import { groups, groupsStore } from './group-store.js';
 import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, getFreeName, debounce, findChar, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
-import { EntityStore, RelationStore } from './entity-store.js';
+import { EntityStore } from './entity-store.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -63,7 +63,7 @@ export {
     getAssignedTagIds,
     getTagMapSnapshot,
     tagsStore,
-    tagMapStore,
+    isTagAssignedToKey,
     mergeServerTagDefinitions,
 };
 
@@ -361,8 +361,14 @@ const TAG_FOLDER_DEFAULT_TYPE = 'NONE';
  */
 let tags = [];
 
-/** Server-loaded set of tag IDs assigned to at least one entity (from tag_usage table, fetched with tag definitions). */
-let serverAssignedTagIds = new Set();
+/**
+ * Per-tag assignment count across every character and group, maintained incrementally (never by scanning
+ * characters/groups): seeded once at boot from the server's trigger-maintained `tag_usage` table aggregate
+ * (`GET /api/tags/usage` - a real COUNT(*)-per-tag query, O(distinct tags) not O(characters)), then kept in
+ * sync by a plain increment/decrement at each assign/unassign call site below.
+ * @type {Map<string, number>}
+ */
+let tagUsageCounts = new Map();
 
 /**
  * A cache of all cut-off tag lists that got expanded until the last reload. They will be printed expanded again.
@@ -378,7 +384,7 @@ let expanded_tags_cache = [];
 let tagsStore = new EntityStore(tags, tag => tag.id);
 
 /**
- * Resolves a tagMapStore key (character avatar or group id) to that entity's own, resident `tag_ids` array -
+ * Resolves an entity key (character avatar or group id) to that entity's own, resident `tag_ids` array -
  * both characters and groups carry their tag assignments as a server-stamped field on the entity itself (see
  * `stampDbTagIds()` in characters.js and its group-side counterpart in groups.js), so there's no separate map
  * for this to keep in sync with.
@@ -414,16 +420,10 @@ function* allTagIdsEntries() {
 }
 
 /**
- * Resolves against the live `charactersStore`/`groupsStore` bindings on every call (see `resolveTagIdsArray()`),
- * so - unlike `tagsStore` - it's never left wrapping a stale reference and never needs recreating.
- * @type {RelationStore}
- */
-const tagMapStore = new RelationStore(resolveTagIdsArray, allTagIdsEntries);
-
-/**
  * A fresh `{[key: string]: string[]}` snapshot of every resident entity's tag assignments - for external
- * consumers (getContext().tagMap, the tag backup file) that need a plain object rather than `tagMapStore`
- * itself. Computed on demand, so it can never itself drift from the entities it was built from.
+ * consumers (getContext().tagMap, the tag backup file) that need a plain object rather than reading `tag_ids`
+ * off each entity directly. Computed on demand, so it can never itself drift from the entities it was built
+ * from - never held as standing state, only ever built fresh for the one caller that asked for it.
  * @returns {{[key: string]: string[]}}
  */
 function getTagMapSnapshot() {
@@ -435,22 +435,151 @@ function getTagMapSnapshot() {
     return snapshot;
 }
 
-tagMapStore.onChange(() => {
+/** @param {string} key @returns {string[]} */
+function getTagIdsForKey(key) {
+    return resolveTagIdsArray(key) ?? [];
+}
+
+/** @param {string} key @param {string} tagId @returns {boolean} */
+function isTagAssignedToKey(key, tagId) {
+    return getTagIdsForKey(key).includes(tagId);
+}
+
+/**
+ * Assigns `tagId` to `key`, persisting it server-side and invalidating whatever depends on it - the direct
+ * replacement for what a maintained relation store's assign op + change listeners used to do together.
+ * @param {string} key @param {string} tagId
+ * @returns {{wasFirstUse: boolean}?} null if `key` doesn't resolve, or it already had `tagId` (no-op)
+ */
+function assignTagToKey(key, tagId) {
+    const ids = resolveTagIdsArray(key);
+    if (!ids || ids.includes(tagId)) return null;
+    ids.push(tagId);
+    const wasFirstUse = !tagUsageCounts.has(tagId);
+    tagUsageCounts.set(tagId, (tagUsageCounts.get(tagId) ?? 0) + 1);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-});
+    assignTagOnServer(key, tagId);
+    return { wasFirstUse };
+}
 
-// Assignments are no longer saved as one blob - each op is persisted individually via /api/tags/assign|unassign.
-tagMapStore.onChange(persistTagMapChange);
+/**
+ * Unassigns `tagId` from `key`, persisting it server-side and invalidating whatever depends on it - the direct
+ * replacement for what a maintained relation store's unassign op + change listeners used to do together.
+ * @param {string} key @param {string} tagId
+ * @returns {{wasLastUse: boolean}?} null if `key` doesn't resolve, or it didn't have `tagId` (no-op)
+ */
+function unassignTagFromKey(key, tagId) {
+    const ids = resolveTagIdsArray(key);
+    if (!ids) return null;
+    const idx = ids.indexOf(tagId);
+    if (idx === -1) return null;
+    ids.splice(idx, 1);
+    const count = (tagUsageCounts.get(tagId) ?? 1) - 1;
+    const wasLastUse = count <= 0;
+    if (wasLastUse) tagUsageCounts.delete(tagId); else tagUsageCounts.set(tagId, count);
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+    unassignTagOnServer(key, tagId);
+    return { wasLastUse };
+}
 
-tagMapStore.onChange((change) => {
-    if (change.op === 'unassigned' && change.wasLastUse) {
-        serverAssignedTagIds.delete(change.relatedId);
+/** Replaces the full set of tag ids for `key`, persisting exactly the delta server-side. No-op if `key` doesn't resolve. */
+function setKeyTagIds(key, tagIds) {
+    const ids = resolveTagIdsArray(key);
+    if (!ids) return;
+    const oldSet = new Set(ids);
+    const newSet = new Set(tagIds);
+    const addedIds = tagIds.filter(id => !oldSet.has(id));
+    const removedIds = ids.filter(id => !newSet.has(id));
+    for (const id of addedIds) tagUsageCounts.set(id, (tagUsageCounts.get(id) ?? 0) + 1);
+    for (const id of removedIds) {
+        const count = (tagUsageCounts.get(id) ?? 1) - 1;
+        if (count <= 0) tagUsageCounts.delete(id); else tagUsageCounts.set(id, count);
     }
-    if (change.op === 'assigned' && change.wasFirstUse) {
-        serverAssignedTagIds.add(change.relatedId);
+    ids.length = 0;
+    ids.push(...tagIds);
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+    const tasks = [
+        ...addedIds.map(tagId => () => assignTagOnServer(key, tagId)),
+        ...removedIds.map(tagId => () => unassignTagOnServer(key, tagId)),
+    ];
+    runWithConcurrency(tasks, task => task());
+}
+
+/** Clears `key`'s tag ids (the entity itself isn't removed). No-op if `key` doesn't resolve. */
+function removeKeyTagIds(key) {
+    const ids = resolveTagIdsArray(key);
+    if (!ids) return;
+    const removedIds = [...ids];
+    ids.length = 0;
+    for (const id of removedIds) {
+        const count = (tagUsageCounts.get(id) ?? 1) - 1;
+        if (count <= 0) tagUsageCounts.delete(id); else tagUsageCounts.set(id, count);
     }
-});
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+    // Usually redundant with the server's own deletion cascade, but harmless (unassign tolerates unknown ids).
+    runWithConcurrency(removedIds, tagId => unassignTagOnServer(key, tagId));
+}
+
+/**
+ * Removes `tagId` from every currently-resident key, optionally substituting another tag id in its place.
+ * A genuine whole-corpus operation by nature (merging/deleting a tag has to touch everything that has it) -
+ * unlike the getContext()/per-render call sites this session removed, this one only runs on a rare, explicit
+ * user action (tag merge/delete), so the full scan here is the real cost of the operation, not a regression.
+ * @param {string} tagId @param {{replaceWithId?: string}} [options]
+ * @returns {string[]} Every key that had `tagId` removed
+ */
+function removeTagIdEverywhere(tagId, { replaceWithId } = {}) {
+    const affectedKeys = [];
+    for (const [key, ids] of allTagIdsEntries()) {
+        const idx = ids.indexOf(tagId);
+        if (idx === -1) continue;
+        ids.splice(idx, 1);
+        affectedKeys.push(key);
+        if (replaceWithId && !ids.includes(replaceWithId)) {
+            ids.push(replaceWithId);
+            tagUsageCounts.set(replaceWithId, (tagUsageCounts.get(replaceWithId) ?? 0) + 1);
+        }
+    }
+    tagUsageCounts.delete(tagId);
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+    const tasks = [];
+    for (const key of affectedKeys) {
+        tasks.push(() => unassignTagOnServer(key, tagId));
+        if (replaceWithId) tasks.push(() => assignTagOnServer(key, replaceWithId));
+    }
+    runWithConcurrency(tasks, task => task());
+    return affectedKeys;
+}
+
+/**
+ * Seeds `tagUsageCounts` from the server's trigger-maintained `tag_usage` table aggregate - a real
+ * one-time COUNT(*)-per-tag query (`GET /api/tags/usage`), not a per-character scan, so it's safe to pay
+ * once at boot. Without this, a fresh session's counts would start at 0 for tags that already have
+ * assignments from before this session, and the very first unassign of an already-shared tag would
+ * incorrectly read as "last use anywhere".
+ */
+async function loadTagUsageCounts() {
+    try {
+        const response = await fetch('/api/tags/usage', {
+            method: 'GET',
+            headers: getRequestHeaders(),
+            cache: 'no-cache',
+        });
+        if (!response.ok) {
+            console.error(`Failed to load tag usage counts: ${response.statusText}`);
+            return;
+        }
+        const counts = await response.json();
+        tagUsageCounts = new Map(Object.entries(counts ?? {}).map(([id, count]) => [id, Number(count)]));
+    } catch (error) {
+        console.error('Error loading tag usage counts:', error);
+    }
+}
 
 /**
  * Rebuilds `tagsStore` to wrap the current `tags` reference and re-registers its subscribers - needed whenever
@@ -480,7 +609,7 @@ async function refreshTagsManifestCache() {
     if (manifestResponse.ok) {
         const { hash } = await manifestResponse.json();
         if (hash !== null && hash !== undefined) {
-            await setCachedTags(hash, tags, [...serverAssignedTagIds]);
+            await setCachedTags(hash, tags);
         }
     } else {
         console.error(`Failed to refresh tags manifest: ${manifestResponse.statusText}`);
@@ -593,7 +722,7 @@ async function runWithConcurrency(items, worker, chunkSize = 8) {
  * Fire-and-forget as far as retry/rollback goes. Patches the row on completion because this races a
  * concurrent `/api/characters/query` re-render: a non-resident row (common under `lazyLoadCharacters`) has
  * no other source of truth and would otherwise permanently show as untagged if the redraw wins the race.
- * @param {string} id Character avatar or group id (a tagMapStore key)
+ * @param {string} id Character avatar or group id (an entity key)
  * @param {string} tagId
  * @returns {Promise<void>}
  */
@@ -617,7 +746,7 @@ async function assignTagOnServer(id, tagId) {
 /**
  * Same fire-and-forget/race-patching behavior as assignTagOnServer(). Unassigning an unknown/already-untagged
  * id is a harmless server-side no-op, so this is also safe to call redundantly.
- * @param {string} id Character avatar or group id (a tagMapStore key)
+ * @param {string} id Character avatar or group id (an entity key)
  * @param {string} tagId
  * @returns {Promise<void>}
  */
@@ -639,59 +768,18 @@ async function unassignTagOnServer(id, tagId) {
 }
 
 /**
- * Translates one tagMapStore RelationChange into the matching /api/tags/assign|unassign network call(s) -
- * the tagMapStore.onChange subscriber registered in rebuildTagStores(). Fire-and-forget, no rollback on failure.
- * `keyRenamed` is a no-op: the server's `/characters/rename` route already carries tag assignments forward
- * atomically, so firing assign/unassign here too would be redundant at best and a race at worst.
- * @param {import('./entity-store.js').RelationChange} change
- */
-function persistTagMapChange(change) {
-    switch (change.op) {
-        case 'assigned':
-            assignTagOnServer(change.key, change.relatedId);
-            break;
-        case 'unassigned':
-            unassignTagOnServer(change.key, change.relatedId);
-            break;
-        case 'keySet': {
-            const key = change.key;
-            const tasks = [
-                ...change.addedIds.map(tagId => () => assignTagOnServer(key, tagId)),
-                ...change.removedIds.map(tagId => () => unassignTagOnServer(key, tagId)),
-            ];
-            runWithConcurrency(tasks, task => task());
-            break;
-        }
-        case 'keyCopied':
-            runWithConcurrency(change.addedIds, tagId => assignTagOnServer(change.toKey, tagId));
-            break;
-        case 'keyRemoved':
-            // Usually redundant with the server's own deletion cascade, but harmless (unassign tolerates unknown ids).
-            runWithConcurrency(change.removedIds, tagId => unassignTagOnServer(change.key, tagId));
-            break;
-        case 'relatedRemoved': {
-            const tasks = [];
-            for (const key of change.affectedKeys) {
-                tasks.push(() => unassignTagOnServer(key, change.relatedId));
-                if (change.replacedWithId) {
-                    tasks.push(() => assignTagOnServer(key, change.replacedWithId));
-                }
-            }
-            runWithConcurrency(tasks, task => task());
-            break;
-        }
-        case 'keyRenamed':
-            // No-op - see this function's doc comment above.
-            break;
-    }
-}
-
-/**
- * Recomputes `tagMapStore`'s usage-count index - a bridge for callers (e.g. the tag restore flow) that write
- * entity `tag_ids` arrays directly instead of through `tagMapStore`'s own ops.
+ * Recomputes `tagUsageCounts` from scratch - a bridge for callers (e.g. the tag restore flow) that write
+ * entity `tag_ids` arrays directly instead of through `assignTagToKey()`/`unassignTagFromKey()`. A genuine
+ * whole-corpus scan, same as `removeTagIdEverywhere()` - fine here because it only runs on that same kind of
+ * rare, explicit bulk operation, not on any hot per-render/per-message path.
  */
 function invalidateAssignedTagIdsCache() {
-    tagMapStore.reindex();
+    tagUsageCounts = new Map();
+    for (const [, tagIds] of allTagIdsEntries()) {
+        for (const tagId of tagIds) {
+            tagUsageCounts.set(tagId, (tagUsageCounts.get(tagId) ?? 0) + 1);
+        }
+    }
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
 }
@@ -702,14 +790,7 @@ function invalidateAssignedTagIdsCache() {
  * @returns {{ has(id: string): boolean }}
  */
 function getAssignedTagIds() {
-    if (serverAssignedTagIds.size === 0) {
-        return tagMapStore.usageCounts;
-    }
-    return {
-        has(id) {
-            return serverAssignedTagIds.has(id) || tagMapStore.usageCounts.has(id);
-        },
-    };
+    return tagUsageCounts;
 }
 
 /**
@@ -1056,6 +1137,10 @@ async function loadTagsSettings() {
     let fetchFailed = false;
     let manifestHash = null;
 
+    // Fired once, in parallel with everything below - a real server-side aggregate query (see its own doc
+    // comment), not dependent on which tag-definitions path below ends up running.
+    const usageCountsPromise = loadTagUsageCounts();
+
     // Cheap freshness check before paying for the full (potentially very large) /api/tags/get response.
     try {
         const manifestResponse = await fetch('/api/tags/manifest', {
@@ -1071,10 +1156,10 @@ async function loadTagsSettings() {
                 const cached = await getCachedTags();
                 if (cached && cached.hash === hash) {
                     tags = cached.tags;
-                    serverAssignedTagIds = new Set(cached.assignedTagIds ?? []);
                     rebuildTagStores();
                     invalidateCharactersFuseIndex();
                     invalidateGroupsFuseIndex();
+                    await usageCountsPromise;
                     return;
                 }
             }
@@ -1093,11 +1178,11 @@ async function loadTagsSettings() {
                 const repaired = await syncTagDefinitionsFromDigest(cached.tags);
                 if (repaired) {
                     tags = repaired;
-                    serverAssignedTagIds = new Set(cached.assignedTagIds ?? []);
                     rebuildTagStores();
-                    await setCachedTags(manifestHash, tags, [...serverAssignedTagIds]);
+                    await setCachedTags(manifestHash, tags);
                     invalidateCharactersFuseIndex();
                     invalidateGroupsFuseIndex();
+                    await usageCountsPromise;
                     return;
                 }
             }
@@ -1144,17 +1229,15 @@ async function loadTagsSettings() {
     }
 
     rebuildTagStores();
-    if (tagsFile && Array.isArray(tagsFile.assignedTagIds)) {
-        serverAssignedTagIds = new Set(tagsFile.assignedTagIds);
-    }
 
     // Fill the cache the freshness check at the top reads.
     if (tagsFile && manifestHash !== null && manifestHash !== undefined) {
-        await setCachedTags(manifestHash, tags, [...serverAssignedTagIds]);
+        await setCachedTags(manifestHash, tags);
     }
 
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
+    await usageCountsPromise;
 
     if (seedSave) {
         // Without this, defaults could end up living only in memory until some unrelated mutation saves them.
@@ -1163,14 +1246,14 @@ async function loadTagsSettings() {
 }
 
 /**
- * Reindexes `tagMapStore`'s usage-count index now that `characters`/`groups` are populated - both already
- * carry their own `tag_ids` (server-stamped, see `resolveTagIdsArray()`), so there's nothing left to fetch or
- * seed here; this just accounts for the assignments that were invisible while those arrays were still empty.
+ * `tagUsageCounts` comes from the server aggregate (`loadTagUsageCounts()`) and each entity's own `tag_ids`
+ * (server-stamped, see `resolveTagIdsArray()`) - neither depends on `characters`/`groups` being resident
+ * client-side, so there's nothing left to reindex here. This just redraws now that real assignments are
+ * visible - the initial render ran before `characters`/`groups` were populated.
  * Must run after both `characters` and `groups` are populated.
  */
 async function reindexTagAssignments() {
     try {
-        tagMapStore.reindex();
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
 
@@ -1187,8 +1270,7 @@ async function reindexTagAssignments() {
 
 function createTagMapFromList(listElement, key) {
     const tagIds = [...($(listElement).find('.tag').map((_, el) => $(el).attr('id')))];
-    // Fuse-index invalidation is handled by the tagMapStore.onChange subscriber (rebuildTagStores()).
-    tagMapStore.setKey(key, tagIds);
+    setKeyTagIds(key, tagIds);
 }
 
 /**
@@ -1365,10 +1447,10 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
 
     let result = false;
 
-    /** @type {Set<string>} The resolved tagMapStore keys (avatar / group id) actually touched by this call */
+    /** @type {Set<string>} The resolved entity keys (avatar / group id) actually touched by this call */
     const affectedKeys = new Set();
     /** @type {Map<string, boolean>} Per tag id, whether *any* assignment in this batch was that tag's first use
-     * anywhere - read directly off tagMapStore.assign()'s own return value, no before/after snapshot needed. */
+     * anywhere - read directly off assignTagToKey()'s own return value, no before/after snapshot needed. */
     const usageFlips = new Map();
 
     // Add tags to the map
@@ -1377,7 +1459,7 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
         if (!key) return;
         affectedKeys.add(key);
         tags.forEach((tag) => {
-            const change = tagMapStore.assign(key, tag.id);
+            const change = assignTagToKey(key, tag.id);
             if (change) {
                 result = true;
                 if (change.wasFirstUse) usageFlips.set(tag.id, true);
@@ -1434,12 +1516,12 @@ function tagChangeAffectsCurrentView(tagIds) {
 }
 
 /**
- * Redraws whatever needs to be redrawn after a tagMapStore mutation for the given tag ids / entity keys.
+ * Redraws whatever needs to be redrawn after a tag assignment change for the given tag ids / entity keys.
  * See `tagChangeAffectsCurrentView` for what "needs a full re-render" means here.
  * @param {string[]} tagIds - The ids of the tags that were added/removed
- * @param {Set<string>} affectedKeys - The tagMapStore keys (avatar / group id) that were actually touched
+ * @param {Set<string>} affectedKeys - The entity keys (avatar / group id) that were actually touched
  * @param {Map<string, boolean>} [usageFlips] - For each tag id, whether this mutation flipped its overall
- * used/unused status (read directly off tagMapStore.assign()/.unassign()'s wasFirstUse/wasLastUse - not
+ * used/unused status (read directly off assignTagToKey()/unassignTagFromKey()'s wasFirstUse/wasLastUse - not
  * re-derived by comparing before/after snapshots). Used to skip reprinting the tag filter buttons when a tag's
  * overall status didn't actually change (the common case - toggling a tag that's already used elsewhere).
  */
@@ -1464,9 +1546,9 @@ function redrawAfterTagChange(tagIds, affectedKeys, usageFlips = new Map()) {
 }
 
 /**
- * Patches the tag pills of any currently-rendered character/group list rows for the given tagMapStore keys, without
+ * Patches the tag pills of any currently-rendered character/group list rows for the given entity keys, without
  * touching the rest of the list.
- * @param {Iterable<string>} keys - tagMapStore keys (character avatar or group id)
+ * @param {Iterable<string>} keys - entity keys (character avatar or group id)
  */
 function updateEntityRowTags(keys) {
     for (const key of keys) {
@@ -1499,10 +1581,10 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
     let result = false;
     const entityIds = Array.isArray(entityId) ? entityId : [entityId];
 
-    /** @type {Set<string>} The resolved tagMapStore keys (avatar / group id) actually touched by this call */
+    /** @type {Set<string>} The resolved entity keys (avatar / group id) actually touched by this call */
     const affectedKeys = new Set();
     // Whether *any* removal in this batch was this tag's last use anywhere - read directly off
-    // tagMapStore.unassign()'s own return value, no before/after snapshot needed.
+    // unassignTagFromKey()'s own return value, no before/after snapshot needed.
     let wasLastUse = false;
 
     // Remove tag from the map
@@ -1510,7 +1592,7 @@ export function removeTagFromEntity(tag, entityId, { tagListSelector = null, tag
         const key = id !== null && id !== undefined ? getTagKeyForEntity(id) : getTagKey();
         if (!key) return;
         affectedKeys.add(key);
-        const change = tagMapStore.unassign(key, tag.id);
+        const change = unassignTagFromKey(key, tag.id);
         if (change) {
             result = true;
             if (change.wasLastUse) wasLastUse = true;
@@ -1543,9 +1625,7 @@ function removeTagFromMap(tagId, characterId = null) {
         return false;
     }
 
-    // Fuse-index invalidation (only if this actually changed something) is handled by the tagMapStore.onChange
-    // subscriber (rebuildTagStores()).
-    return !!tagMapStore.unassign(key, tagId);
+    return !!unassignTagFromKey(key, tagId);
 }
 
 /**
@@ -1691,7 +1771,7 @@ async function importTags(character, { importSetting = null, suppressSuccessToas
  */
 async function handleTagImport(character, { importSetting = null } = {}) {
     /** @type {string[]} */
-    const alreadyAssignedTags = tagMapStore.get(character.avatar);
+    const alreadyAssignedTags = getTagIdsForKey(character.avatar);
     const importTags = character.tags.map(t => t.trim()).filter(t => t)
         .filter(t => !IMPORT_EXLCUDED_TAGS.includes(t))
         .filter(t => {
@@ -2233,7 +2313,7 @@ function printTagFilters(type = tag_filter_type.character) {
 
         if (visibleAvatars.length > 0) {
             const activeCharacterTagIds = visibleAvatars
-                .map(avatar => tagMapStore.get(avatar))
+                .map(avatar => getTagIdsForKey(avatar))
                 .flat()
                 .filter(onlyUnique);
 
@@ -2708,7 +2788,7 @@ async function onTagRestoreFileSelect(e) {
         }
 
         // Get existing tag ids for this key or empty array.
-        const existingTagIds = tagMapStore.get(key);
+        const existingTagIds = getTagIdsForKey(key);
 
         // Merge existing and new tag ids. Replace the ones mapped to a new id. Remove duplicates. Drop tags
         // that don't exist.
@@ -2788,7 +2868,7 @@ function onTagsBackupClick() {
 async function onTagsPruneClick() {
     // Stale tag_map references to a missing/deleted character or group used to need a separate existence
     // check and prune pass here: tag_map was a standalone cache that could outlive the entity it named.
-    // tagMapStore now resolves straight through to each entity's own tag_ids field (see resolveTagIdsArray()),
+    // Tag assignments now resolve straight through to each entity's own tag_ids field (see resolveTagIdsArray()),
     // so a key only ever exists for as long as the entity itself is resident - there's no longer a stray
     // reference this pass could find.
     const allTagsInTagMaps = getAssignedTagIds();
@@ -2968,8 +3048,7 @@ async function onTagDeleteClick() {
 
     const mergeTagId = $('#merge_tag_select').val() ? String($('#merge_tag_select').val()) : null;
 
-    // Fuse-index invalidation is handled by the tagsStore/tagMapStore.onChange subscribers (rebuildTagStores()).
-    tagMapStore.removeRelatedIdEverywhere(id, { replaceWithId: mergeTagId });
+    removeTagIdEverywhere(id, { replaceWithId: mergeTagId });
 
     tagsStore.remove(id);
     $(`.tag[id="${id}"]`).remove();
@@ -3077,13 +3156,13 @@ function onClearAllFiltersClick(filterHelper) {
 /**
  * Copies one character's tag assignments onto its duplicate, server-side. `CHARACTER_DUPLICATED` fires before
  * the duplicate is resident (its caller reloads the character list only after awaiting this), so this can't
- * go through `tagMapStore` (which only resolves keys of currently-resident entities) - it posts straight to
+ * go through the resident-entity tag helpers (which only resolve keys of currently-resident entities) - it posts straight to
  * the bulk tag-assignment endpoint instead. The reload right after picks it up via `newAvatar`'s own fresh
  * `tag_ids`.
  * @param {{oldAvatar: string, newAvatar: string}} data Event data
  */
 async function copyTags(data) {
-    const tagIds = tagMapStore.get(data.oldAvatar);
+    const tagIds = getTagIdsForKey(data.oldAvatar);
     if (!tagIds.length) return;
     try {
         const response = await fetch('/api/tags/assign-many', {
@@ -3102,21 +3181,21 @@ async function copyTags(data) {
 
 /**
  * Clears all tags assigned to a given entity key.
- * Exported so other modules (BulkEditOverlay.js) don't need to reach into `tagMapStore` directly.
- * @param {string} key - tagMapStore key (character avatar or group id)
+ * Exported so other modules (BulkEditOverlay.js) don't need to reach into `setKeyTagIds()` directly.
+ * @param {string} key - entity key (character avatar or group id)
  */
 export function clearEntityTags(key) {
-    tagMapStore.setKey(key, []);
+    setKeyTagIds(key, []);
 }
 
 /**
  * Clears all tags assigned to a given entity key (e.g. the character/group was deleted, so there's nothing
  * left to keep them assigned to).
- * Exported so other modules (group-chats.js, script.js) don't need to reach into `tagMapStore` directly.
- * @param {string} key - tagMapStore key (character avatar or group id)
+ * Exported so other modules (group-chats.js, script.js) don't need to reach into `removeKeyTagIds()` directly.
+ * @param {string} key - entity key (character avatar or group id)
  */
 export function removeEntityTags(key) {
-    tagMapStore.removeKey(key);
+    removeKeyTagIds(key);
 }
 
 /**
@@ -3303,7 +3382,7 @@ function registerTagsSlashCommands() {
             if (!key) return 'false';
             const tag = paraGetTag(tagName);
             if (!tag) return 'false';
-            return String(tagMapStore.isAssigned(key, tag.id));
+            return String(isTagAssignedToKey(key, tag.id));
         },
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
@@ -3502,7 +3581,7 @@ export function applyCharacterTagsToMessageDivs({ mesIds = [] } = {}) {
 
             // If tags are NOT in the cache, compute and store them
             if (!tagsForCharacter) {
-                const tagIds = tagMapStore.get(avatarFileName);
+                const tagIds = getTagIdsForKey(avatarFileName);
                 if (tagIds?.length) {
                     const tagNames = tagIds
                         .map(id => tagNamesById[id])

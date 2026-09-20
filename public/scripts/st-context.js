@@ -259,7 +259,10 @@ export function getContext() {
         getCurrentLocale,
         addLocaleData,
         tags,
-        tagMap: getTagMapSnapshot(),
+        // Lazy getter, same reason as characterId above: only paid for by callers that actually read it.
+        get tagMap() {
+            return getTagMapSnapshot();
+        },
         getTagById,
         menuType: menu_type,
         createCharacterData: create_save,
