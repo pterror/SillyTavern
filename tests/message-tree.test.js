@@ -192,8 +192,9 @@ describe('message deduplication during migration', () => {
         expect(result.migrated).toBe(2);
 
         // 4 unique messages total: m0, m1 shared once each, plus m2-root and m2-branch's divergent tails.
+        // (parent_id IS NOT NULL excludes the per-owner anchor row every owner has - see ensureAnchorSync().)
         const db = await treeDb.getDbHandle(directories);
-        const { count } = db.get('SELECT COUNT(*) as count FROM messages');
+        const { count } = db.get('SELECT COUNT(*) as count FROM messages WHERE parent_id IS NOT NULL');
         expect(count).toBe(4);
 
         const rootLoaded = await treeDb.loadBranch(directories, 'migrate-char', 'root');
@@ -387,7 +388,7 @@ describe('labeling nodes', () => {
         const directories = makeDirectories();
         // Ensure the DB file exists so this hits the "not found" branch, not "no backend".
         await treeDb.isAvailable(directories);
-        expect(await treeDb.labelNode(directories, 'not-a-real-id', 'x')).toBe(false);
+        expect(await treeDb.labelNode(directories, 'not-a-real-id', 'x')).toEqual({ ok: false });
     });
 });
 

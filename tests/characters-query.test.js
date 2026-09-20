@@ -793,7 +793,7 @@ describe('POST /api/characters/changes', () => {
 
         const response = await postJson('/api/characters/changes', { sinceSeq: afterA.seq });
         const body = await response.json();
-        expect(body.changes).toEqual([{ id: 'B.png', op: 'upsert' }]);
+        expect(body.changes).toEqual([{ id: 'B.png', op: 'upsert', fields: null }]);
     });
 
     test('rejects a missing/invalid sinceSeq with 400', async () => {
