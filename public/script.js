@@ -7952,45 +7952,34 @@ async function getChatResult() {
     }
 }
 
+// _openingFromTree() is the only builder of a real greeting; its null return means the card itself
+// has no greeting text (not a failure - see that function's own doc comment), which callers treat as
+// "nothing to open on" via the empty `mes` below.
 async function getFirstMessage() {
     const character = getCurrentCharacter();
     const { greetings, defaultIndex } = cardToGreetingsModel(character);
-    const regexedGreetings = greetings.map(greeting => getRegexedString(greeting, regex_placement.AI_OUTPUT));
     const swipeId = defaultIndex ?? 0;
 
     // Raw greetings, not regexed: identity is the message as stored, and regex is a display transform.
     const fromTree = await _openingFromTree(greetings, swipeId);
     if (fromTree) return fromTree;
 
-    const message = {
+    return {
         name: name2,
         is_user: false,
         is_system: false,
         send_date: getMessageTimeStamp(),
-        mes: regexedGreetings[swipeId] ?? '',
+        mes: '',
         extra: {},
     };
-
-    // A lone default with no alternates stays a plain, non-swipeable message.
-    const hasSwipeableGreetings = regexedGreetings.length > (defaultIndex !== null ? 1 : 0);
-    if (hasSwipeableGreetings) {
-        message.swipe_id = swipeId;
-        message.swipes = regexedGreetings;
-        message.swipe_info = regexedGreetings.map(_ => ({
-            send_date: message.send_date,
-            gen_started: void 0,
-            gen_finished: void 0,
-            extra: {},
-        }));
-    }
-
-    return message;
 }
 
-// Builds the opening from existing opening nodes so it carries a real node_id; returns null when not tree-backed.
+// Builds the opening from existing opening nodes so it carries a real node_id - the only place a
+// greeting is ever built. A null return means the card genuinely has no greeting text; a failure to
+// resolve the character or reach the store is a thrown error, not a silent, less-correct fallback.
 async function _openingFromTree(cardGreetings, preferredIndex) {
     const character = getCurrentCharacter();
-    if (!character?.avatar) return null;
+    if (!character?.avatar) throw new Error('_openingFromTree: no resolvable character avatar');
 
     const post = async (path, body) => {
         const response = await fetch(path, {
@@ -7998,7 +7987,7 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
             headers: getRequestHeaders(),
             body: JSON.stringify({ avatar_url: character.avatar, ...body }),
         });
-        if (!response.ok) return null;
+        if (!response.ok) throw new Error(`_openingFromTree: ${path} responded ${response.status}`);
         return response.json().catch(() => null);
     };
 
@@ -8018,9 +8007,10 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
         .filter(text => typeof text === 'string' && text.length > 0)
         .map(asMessage);
 
-    // Only an unreachable store falls back to the file-era path - not "no chat history yet" or "no openings yet".
+    // A malformed (non-JSON) response is a real failure too, same as the request itself not being ok -
+    // neither means "no chat history yet" or "no openings yet".
     const openings = await post('/api/chats/openings', {});
-    if (!openings) return null;
+    if (!openings) throw new Error('_openingFromTree: /api/chats/openings returned no usable body');
 
     const windowStart = openings.offset ?? 0;
     const preferredText = contents[preferredIndex]?.mes;
