@@ -45,7 +45,7 @@ then
     # passing a package name instead switches it into GENERATE mode (diffing node_modules against a fresh
     # install to CREATE a patch from local changes), which is a different command entirely and would silently
     # do nothing useful here (confirmed the hard way: it reported "no changes" and made this whole chain fail).
-    if npx patch-package > /dev/null 2>&1 && npm rebuild inotify-remastered-plus --ignore-scripts=false
+    if ./node_modules/.bin/patch-package > /dev/null 2>&1 && npm rebuild inotify-remastered-plus --ignore-scripts=false
     then
         echo "inotify-remastered-plus rebuild finished."
     else
