@@ -433,9 +433,8 @@ router.post('/status', async function (request, response) {
                 if (modelInfoReply.ok) {
                     /** @type {any} */
                     const modelInfo = await modelInfoReply.json();
-                    console.debug('Ooba model info:', modelInfo);
-
                     const modelName = modelInfo?.model_name;
+                    console.debug('Ooba model info:', { model_name: modelName });
                     result = modelName || result;
                     response.setHeader('x-supports-tokenization', 'true');
                 }
@@ -450,9 +449,8 @@ router.post('/status', async function (request, response) {
                 if (modelInfoReply.ok) {
                     /** @type {any} */
                     const modelInfo = await modelInfoReply.json();
-                    console.debug('Tabby model info:', modelInfo);
-
                     const modelName = modelInfo?.id;
+                    console.debug('Tabby model info:', { id: modelName });
                     result = modelName || result;
                 } else {
                     // TabbyAPI returns an error 400 if a model isn't loaded
@@ -501,9 +499,8 @@ router.post('/props', async function (request, response) {
             props.chat_template = props.chat_template.slice(0, -1) + '\n';
         }
         props.chat_template_hash = createHash('sha256').update(props.chat_template).digest('hex');
-        // Pass the object, not a pre-stringified template - stringify() ran unconditionally even when
-        // minLogLevel gates console.debug down to a no-op.
-        console.debug('Model properties:', props);
+        const { chat_template, ...propsSummary } = props;
+        console.debug('Model properties:', { ...propsSummary, chat_template_length: chat_template?.length });
         return response.send(props);
     } catch (error) {
         console.error(error);
