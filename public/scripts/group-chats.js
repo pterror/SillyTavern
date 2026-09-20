@@ -87,6 +87,7 @@ import {
 } from '../script.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget } from './chat-store.js';
+import { provisionalNodeId } from './node-identity.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -790,6 +791,11 @@ async function getFirstCharacterMessage(character) {
         character.avatar != 'none'
             ? getThumbnailUrl('avatar', character.avatar)
             : default_avatar;
+    // Same provisional-marker treatment the solo path gives a fresh greeting (script.js:8039's
+    // `chosenNodeId = chosen.node_id ?? provisionalNodeId(...)`), so _bootstrapGroupChat() failing
+    // anywhere in its chain leaves this healable (isProvisionalNodeId() true) rather than a plain
+    // `undefined` node_id, which healDirtyMessages()'s trailing-run logic can never recover.
+    mes.node_id = provisionalNodeId(mes.name, mes.mes);
     return mes;
 }
 
