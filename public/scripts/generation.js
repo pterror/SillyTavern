@@ -293,6 +293,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // noUncheckedIndexedAccess) doesn't reflect that, so cast explicitly rather than let the type
     // checker treat the `lastMessage?.` guards downstream as dead code.
     let lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
+    // By position, not chat.indexOf(lastMessage): a heal call below can replace this position's
+    // object via updateMessage(), which indexOf would then fail to find even though the position itself is fine.
+    let lastMessageIndex = chat.length - 1;
 
     let textareaText;
     if (type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun && !depth) {
@@ -978,9 +981,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // actually landed client-side) gets the same "don't trust it as empty" treatment, via the
         // same generic reconciliation saveChatConditional({heal:true}) already uses elsewhere.
         if (lastMessage != null && !isStoredNodeId(lastMessage.node_id)) {
-            // By reference, not chat.length - 1: sendMessageAsUser() above may have already appended
-            // a new message, which would make chat.length - 1 point past lastMessage.
-            const lastMessageIndex = chat.indexOf(lastMessage);
             if (isProvisionalNodeId(lastMessage.node_id)) {
                 await ensureOpeningRow(lastMessageIndex);
             } else {
@@ -1295,9 +1295,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // unused greeting is materialized here rather than assumed to mean "no history", and why a
         // present-but-not-stored node_id gets the same generic healing treatment.
         if (lastMessage != null && !isStoredNodeId(lastMessage.node_id)) {
-            // See the text-completion cutover's identical block above for why this locates `lastMessage`
-            // by reference (`chat.indexOf`) instead of `chat.length - 1`.
-            const lastMessageIndex = chat.indexOf(lastMessage);
             if (isProvisionalNodeId(lastMessage.node_id)) {
                 await ensureOpeningRow(lastMessageIndex);
             } else {
