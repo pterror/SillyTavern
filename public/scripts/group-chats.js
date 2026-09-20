@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { EntityStore } from './entity-store.js';
+import { groups, groupsStore, setGroups, rebuildGroupsStoreCore } from './group-store.js';
 
 import {
     shuffle,
@@ -116,21 +116,14 @@ export {
 let is_group_generating = false; // Group generation flag
 let is_group_automode_enabled = false;
 let hideMutedSprites = false;
-/** @type {Group[]} */
-let groups = [];
-/**
- * `groups` is reassigned to a new array reference on every getGroups() refetch rather than spliced in place,
- * so `groupsStore` has to be rebuilt (rebuildGroupsStore()) each time rather than just wrapping it once.
- * @type {EntityStore<Group>}
- */
-export let groupsStore = new EntityStore(groups, g => g.id);
+export { groupsStore };
 
 /**
  * Rebuilds `groupsStore` to wrap the current `groups` array reference, since `groups` is reassigned (not
  * spliced) on every reload.
  */
 function rebuildGroupsStore() {
-    groupsStore = new EntityStore(groups, g => g.id);
+    rebuildGroupsStoreCore();
     groupsStore.onChange(() => invalidateGroupsFuseIndex());
 
     // Member lists only need reprinting when `members` itself changed, not on every groupsStore change,
@@ -936,7 +929,7 @@ async function getGroups({ silent = false } = {}) {
     if (response.ok) {
         /** @type {Group[]} */
         const data = await response.json();
-        groups = data.slice();
+        setGroups(data.slice());
 
         // Convert groups to new format
         for (const group of groups) {

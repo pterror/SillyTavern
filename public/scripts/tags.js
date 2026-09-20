@@ -1,8 +1,6 @@
 import { DOMPurify } from '../lib.js';
 
 import {
-    characters,
-    charactersStore,
     getCurrentCharacter,
     getSelectionState,
     saveSettingsDebounced,
@@ -17,9 +15,11 @@ import {
     getRequestHeaders,
     fetchServerCharacterSearchResults,
 } from '../script.js';
+import { characters, charactersStore } from './character-store.js';
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';
 
-import { groupCandidatesFilter, groupMembersFilter, groups, groupsStore, selected_group } from './group-chats.js';
+import { groupCandidatesFilter, groupMembersFilter, selected_group } from './group-chats.js';
+import { groups, groupsStore } from './group-store.js';
 import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, getFreeName, debounce, findChar, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
 import { EntityStore, RelationStore } from './entity-store.js';
