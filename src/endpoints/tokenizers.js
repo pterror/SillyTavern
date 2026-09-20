@@ -166,6 +166,10 @@ class SentencePieceTokenizer {
      * @type {string|undefined} Path to the fallback model
      */
     #fallbackModel;
+    /**
+     * @type {Promise<import('@agnai/sentencepiece-js').SentencePieceProcessor|null>|null}
+     */
+    #loadPromise;
 
     /**
      * Creates a new Sentencepiece tokenizer.
@@ -186,15 +190,30 @@ class SentencePieceTokenizer {
             return this.#instance;
         }
 
+        if (!this.#loadPromise) {
+            this.#loadPromise = this.#load();
+        }
+
+        return this.#loadPromise;
+    }
+
+    /**
+     * Loads the Sentencepiece tokenizer instance.
+     * @returns {Promise<import('@agnai/sentencepiece-js').SentencePieceProcessor|null>} Sentencepiece tokenizer instance
+     */
+    async #load() {
         try {
             const pathToModel = await getPathToTokenizer(this.#model, this.#fallbackModel);
-            this.#instance = new SentencePieceProcessor();
-            await this.#instance.load(pathToModel);
+            const instance = new SentencePieceProcessor();
+            await instance.load(pathToModel);
             console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
+            this.#instance = instance;
             return this.#instance;
         } catch (error) {
             console.error('Sentencepiece tokenizer failed to load: ' + this.#model, error);
             return null;
+        } finally {
+            this.#loadPromise = null;
         }
     }
 }
