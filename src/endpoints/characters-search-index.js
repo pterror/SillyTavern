@@ -426,7 +426,12 @@ function loadOrUpdateTantivyIndexAndNotify(directories, tantivy, previous) {
 }
 
 // `backend: 'unavailable'` distinguishes "nothing usable could be loaded" from a genuine no-match.
-async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
+// `tags` is ANDed into the query the same way searchCharacterIdsSorted() already does it, via
+// buildTagFilterQuery()/TAG_IDS_FIELD - so a tags-narrowed search-sorted request's ranked id list only ever
+// contains ids that would also pass buildWhereClause()'s tags filter, and callers can page it directly with no
+// separate DB-side re-check. `world` has no equivalent: no field for it exists in the tantivy schema
+// (buildSchema()'s fast/filter field lists), so it isn't applied here - see this change's commit message.
+async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly, tags) {
     const signature = await getFreshnessSignature(directories);
     const engine = await resolveSearchEngine();
 
@@ -439,9 +444,18 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
         (previous) => loadOrUpdateTantivyIndexAndNotify(directories, engine.tantivy, previous),
         () => openPersistedTantivyIndexStale(directories, engine.tantivy),
     );
-    const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
+    let query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
     if (!query) {
         return { hits: [], total: 0, backend: 'tantivy' };
+    }
+    if (tags && (tags.include?.length > 0 || tags.exclude?.length > 0)) {
+        const tagQuery = buildTagFilterQuery(engine.tantivy, tantivyIndex.schema, tags, TAG_IDS_FIELD);
+        if (tagQuery) {
+            query = engine.tantivy.Query.booleanQuery([
+                { occur: engine.tantivy.Occur.Must, query },
+                { occur: engine.tantivy.Occur.Must, query: tagQuery },
+            ]);
+        }
     }
     const boundedMaxRows = Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
     const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
@@ -449,8 +463,8 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly) {
 }
 
 // A matched id that can no longer be resolved (deleted, or corrupt) is silently dropped.
-export async function searchCharacters(handle, directories, searchTerm, maxRows, favOnly) {
-    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly);
+export async function searchCharacters(handle, directories, searchTerm, maxRows, favOnly, tags) {
+    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly, tags);
     if (hits.length === 0) {
         return { results: [], total, backend };
     }
@@ -468,8 +482,8 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
 }
 
 // Id-only counterpart to searchCharacters() - no per-hit disk read, for a caller that resolves rows itself.
-export async function searchCharacterIds(handle, directories, searchTerm, maxRows, favOnly) {
-    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly);
+export async function searchCharacterIds(handle, directories, searchTerm, maxRows, favOnly, tags) {
+    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly, tags);
     return { ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend };
 }
 
