@@ -413,32 +413,12 @@ function* allTagIdsEntries() {
     }
 }
 
-/** @type {RelationStore?} the real, once-built instance behind `tagMapStore` - see that constant's doc comment */
-let tagMapStoreInstance = null;
-
 /**
  * Resolves against the live `charactersStore`/`groupsStore` bindings on every call (see `resolveTagIdsArray()`),
  * so - unlike `tagsStore` - it's never left wrapping a stale reference and never needs recreating.
- *
- * A `Proxy` rather than a plain `new RelationStore(...)` here: that construction eagerly calls
- * `allTagIdsEntries()`, which reads `charactersStore` - a script.js export that (thanks to the
- * script.js<->tags.js import cycle) hasn't necessarily finished initializing yet this early in tags.js's own
- * module evaluation, causing a TDZ crash (see `CharacterRepository`'s `store` getter in
- * character-repository.js for the same constraint, solved the same way: defer the real construction past
- * module-eval time). The `Proxy` defers building the real `RelationStore` until the first actual property
- * access - by then the module graph has settled - and caches it, so every call site below keeps working
- * unchanged and the instance is still built eagerly-once, not per call.
  * @type {RelationStore}
  */
-const tagMapStore = new Proxy(/** @type {RelationStore} */ ({}), {
-    get(_target, prop, _receiver) {
-        if (tagMapStoreInstance === null) {
-            tagMapStoreInstance = new RelationStore(resolveTagIdsArray, allTagIdsEntries);
-        }
-        const value = Reflect.get(tagMapStoreInstance, prop, tagMapStoreInstance);
-        return typeof value === 'function' ? value.bind(tagMapStoreInstance) : value;
-    },
-});
+const tagMapStore = new RelationStore(resolveTagIdsArray, allTagIdsEntries);
 
 /**
  * A fresh `{[key: string]: string[]}` snapshot of every resident entity's tag assignments - for external
