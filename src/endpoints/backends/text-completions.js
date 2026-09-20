@@ -420,7 +420,6 @@ router.post('/status', async function (request, response) {
         }
 
         const modelIds = data.data.map(x => x.id);
-        console.info('Models available:', modelIds);
 
         // Set result to the first model ID
         result = modelIds[0] || 'Valid';
@@ -499,8 +498,6 @@ router.post('/props', async function (request, response) {
             props.chat_template = props.chat_template.slice(0, -1) + '\n';
         }
         props.chat_template_hash = createHash('sha256').update(props.chat_template).digest('hex');
-        const { chat_template, ...propsSummary } = props;
-        console.debug('Model properties:', { ...propsSummary, chat_template_length: chat_template?.length });
         return response.send(props);
     } catch (error) {
         console.error(error);
