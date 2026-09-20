@@ -7969,6 +7969,13 @@ async function getFirstMessage() {
         send_date: getMessageTimeStamp(),
         mes: regexedGreetings[swipeId] ?? '',
         extra: {},
+        // Same provisional-marker treatment _openingFromTree() gives its own chosen greeting
+        // (`chosenNodeId = chosen.node_id ?? provisionalNodeId(...)`, above) - this branch runs
+        // whenever that call returned null (tree store unreachable, or no resolvable avatar), and
+        // without this the message carries no node_id at all, which healDirtyMessages() can never
+        // recover (its trailing-run logic needs isProvisionalNodeId() true to route to
+        // ensureOpeningRow() instead of a doomed chatOpAppend()).
+        node_id: provisionalNodeId(name2, regexedGreetings[swipeId] ?? ''),
     };
 
     // A lone default with no alternates stays a plain, non-swipeable message.
