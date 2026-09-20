@@ -1228,11 +1228,11 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
 
     test('getTagsHash advances on a definitions save, but not on assign/unassign', async () => {
         const before = await metadataDb.getTagsHash(directories);
-        expect(before).toBe(0);
+        expect(before).toBe(null);
 
         await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
         const afterSave = await metadataDb.getTagsHash(directories);
-        expect(afterSave).toBeGreaterThanOrEqual(before);
+        expect(afterSave).not.toBe(before);
 
         // assignEntityTag()/unassignEntityTag() deliberately do NOT touch getTagsHash() (see their own doc
         // comments) - it hashes the `tags` (definitions) table, which an assignment never writes to, so it's

@@ -493,8 +493,8 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
     const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
     if (!query) return { ids: [], total: 0, backend: 'tantivy' };
 
-    // fav_name_sort_key and name_sort_key are both encoded so ascending order gives the intended result.
-    const effectiveOrder = (sortField === 'fav' || sortField === 'name') ? 'asc' : sortOrder;
+    // fav_name_sort_key is encoded so ascending order gives favorites-first-then-alpha, unconditionally.
+    const effectiveOrder = sortField === 'fav' ? 'asc' : sortOrder;
 
     let fullQuery = query;
 
