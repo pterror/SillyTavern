@@ -1403,9 +1403,13 @@ function tryParseStreamingError(response, decoded) {
         // No JSON. Do nothing.
     }
 
-    const message = data?.error?.message || data?.error || data?.message || data?.detail;
+    // `data.error` can be a boolean flag (`{ error: true, message: '...' }`, this server's own shape)
+    // rather than a string or an object with its own `.message` - checking it before `data.message`
+    // let a truthy `true` win over the real string sitting right next to it.
+    const message = data?.error?.message || data?.message || data?.detail
+        || (typeof data?.error === 'string' ? data.error : undefined);
 
-    if (message) {
+    if (typeof message === 'string' && message) {
         toastr.error(message, 'Text Completion API');
         throw new Error(message);
     }
