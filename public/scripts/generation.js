@@ -978,12 +978,15 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // actually landed client-side) gets the same "don't trust it as empty" treatment, via the
         // same generic reconciliation saveChatConditional({heal:true}) already uses elsewhere.
         if (lastMessage != null && !isStoredNodeId(lastMessage.node_id)) {
+            // By reference, not chat.length - 1: sendMessageAsUser() above may have already appended
+            // a new message, which would make chat.length - 1 point past lastMessage.
+            const lastMessageIndex = chat.indexOf(lastMessage);
             if (isProvisionalNodeId(lastMessage.node_id)) {
-                await ensureOpeningRow(chat.length - 1);
+                await ensureOpeningRow(lastMessageIndex);
             } else {
                 await healDirtyMessages();
             }
-            lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
+            lastMessage = /** @type {ChatMessage | undefined} */ (chat[lastMessageIndex]);
         }
         const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
         // `characterAvatar` is required unconditionally, group turn or not: even with `groupId` set,
@@ -1292,12 +1295,15 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // unused greeting is materialized here rather than assumed to mean "no history", and why a
         // present-but-not-stored node_id gets the same generic healing treatment.
         if (lastMessage != null && !isStoredNodeId(lastMessage.node_id)) {
+            // See the text-completion cutover's identical block above for why this locates `lastMessage`
+            // by reference (`chat.indexOf`) instead of `chat.length - 1`.
+            const lastMessageIndex = chat.indexOf(lastMessage);
             if (isProvisionalNodeId(lastMessage.node_id)) {
-                await ensureOpeningRow(chat.length - 1);
+                await ensureOpeningRow(lastMessageIndex);
             } else {
                 await healDirtyMessages();
             }
-            lastMessage = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
+            lastMessage = /** @type {ChatMessage | undefined} */ (chat[lastMessageIndex]);
         }
         const anchorNodeId = isStoredNodeId(lastMessage?.node_id) ? lastMessage.node_id : null;
         // `characterAvatar` is required unconditionally, group turn or not - see the text-completion
