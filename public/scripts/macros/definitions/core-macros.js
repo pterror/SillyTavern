@@ -8,8 +8,7 @@ import { MACRO_VARIABLE_SHORTHAND_PATTERN } from '../engine/MacroLexer.js';
 import { MacroParser } from '../engine/MacroParser.js';
 import { MacroCstWalker } from '../engine/MacroCstWalker.js';
 
-// Control characters, unlikely to appear in user-generated content
-export const ELSE_MARKER = '\u0000\u001FELSE\u001F\u0000';
+import { ELSE_MARKER } from '../engine/MacroConstants.js';
 
 export function registerCoreMacros() {
     MacroRegistry.registerMacro('space', {
