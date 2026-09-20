@@ -12,7 +12,7 @@ import {
 } from './lib.js';
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
-import { EntityStore } from './scripts/entity-store.js';
+import { characters, charactersStore } from './scripts/character-store.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
@@ -468,11 +468,7 @@ export let settingsReady = false;
 let currentVersion = '0.0.0';
 export let displayVersion = 'SillyTavern';
 
-/** @type {Character[]} */
-export let characters = [];
-// Wraps the same `characters` array in place; never reassigned to a new reference (unlike `tags`), so no
-// rebuild-on-reassignment hook is needed.
-export const charactersStore = new EntityStore(characters, c => c.avatar);
+export { characters, charactersStore };
 // Not narrowed to specific ops/fields: invalidateCharactersFuseIndex() just sets a dirty flag, rebuild is lazy.
 charactersStore.onChange(() => invalidateCharactersFuseIndex());
 // Source of truth for character selection. Never assign directly - go through setCharacterId().

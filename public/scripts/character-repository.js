@@ -350,32 +350,15 @@ function liveFieldsFromHashRow(hashRow) {
 
 /** Owns character residency for internal (non-extension) client code. */
 export class CharacterRepository {
-    /** @type {import('./entity-store.js').EntityStore<Character>|undefined} explicit store passed to the constructor, if any */
-    #explicitStore;
-
-    /** @type {import('./entity-store.js').EntityStore<Character>|null} resolved lazily - see `get store()` */
-    #resolvedStore = null;
+    /** @type {import('./entity-store.js').EntityStore<Character>} */
+    store;
 
     /**
      * @param {import('./entity-store.js').EntityStore<Character>} [store] - defaults to the app's real
      * `charactersStore` singleton; overridable for tests.
      */
-    constructor(store) {
-        this.#explicitStore = store;
-    }
-
-    /**
-     * Resolves lazily rather than defaulting eagerly in the constructor: this module's top-level
-     * `characterRepository` instance is constructed at module-eval time, before script.js's own
-     * `charactersStore` export has necessarily initialized - a `store = charactersStore` constructor default
-     * would hit a TDZ crash reading it that early.
-     * @returns {import('./entity-store.js').EntityStore<Character>}
-     */
-    get store() {
-        if (this.#resolvedStore === null) {
-            this.#resolvedStore = this.#explicitStore ?? charactersStore;
-        }
-        return this.#resolvedStore;
+    constructor(store = charactersStore) {
+        this.store = store;
     }
 
     /**
