@@ -60,3 +60,6 @@ yarn.lock
 *.code-workspace
 test-results/
 .direnv
+.claude
+.mcp.json
+/bin
