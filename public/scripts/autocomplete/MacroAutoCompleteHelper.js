@@ -6,6 +6,7 @@
  * consistent behavior across all contexts where macro autocomplete is used.
  */
 
+import { chat_metadata } from '/scripts/chat-state.js';
 import { AutoCompleteNameResult } from './AutoCompleteNameResult.js';
 import {
     EnhancedMacroAutoCompleteOption,
@@ -26,7 +27,6 @@ import { MacroFlagDefinitions, MacroFlagType } from '../macros/engine/MacroFlags
 import { MacroParser } from '../macros/engine/MacroParser.js';
 import { MacroCstWalker } from '../macros/engine/MacroCstWalker.js';
 import { onboardingExperimentalMacroEngine } from '../macros/engine/MacroDiagnostics.js';
-import { chat_metadata } from '/script.js';
 import { extension_settings } from '../extensions.js';
 
 /** @typedef {import('./EnhancedMacroAutoCompleteOption.js').MacroAutoCompleteContext} MacroAutoCompleteContext */

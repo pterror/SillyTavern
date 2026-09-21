@@ -1,6 +1,7 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { Generate, chat, deleteCharacter, duplicateCharacter, getCharacters, getCurrentCharacter, getOneCharacter, getThumbnailUrl, is_send_press, reloadCurrentChat, renameCharacter, saveChatConditional, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
+import { Generate, deleteCharacter, duplicateCharacter, getCharacters, getCurrentCharacter, getOneCharacter, getThumbnailUrl, is_send_press, reloadCurrentChat, renameCharacter, saveChatConditional, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
+import { chat } from '../../chat-state.js';
 import { getRequestHeaders } from '../../request-headers.js';
 import { charactersStore } from '../../character-store.js';
 import { eventSource, event_types } from '../../events.js';

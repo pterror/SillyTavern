@@ -1,11 +1,11 @@
 import {
-    chat_metadata,
     substituteParams,
     getSelectionState,
     saveSettingsDebounced,
     animation_duration,
     getCurrentCharacter,
 } from '../script.js';
+import { chat_metadata } from './chat-state.js';
 import { eventSource, event_types } from './events.js';
 import { extension_settings, saveMetadataDebounced } from './extensions.js';
 import { selected_group } from './group-chats.js';

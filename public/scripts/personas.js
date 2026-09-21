@@ -3,8 +3,6 @@ import {
     characterToEntity,
     getCurrentCharacter,
     getSelectionState,
-    chat,
-    chat_metadata,
     createOrEditCharacter,
     default_user_avatar,
     getCurrentChatId,
@@ -21,6 +19,7 @@ import {
     updateMessage,
     chatOpEditMany,
 } from '../script.js';
+import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';

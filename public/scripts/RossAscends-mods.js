@@ -21,8 +21,8 @@ import {
     characterToEntity,
     groupToEntity,
     entitiesFilter,
-    chat,
 } from '../script.js';
+import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource } from './events.js';

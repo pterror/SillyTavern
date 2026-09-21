@@ -1,13 +1,13 @@
 import {
     MAX_INJECTION_DEPTH,
     animation_duration,
-    chat_metadata,
     extension_prompt_roles,
     extension_prompt_types,
     saveSettingsDebounced,
     getCurrentCharacter,
     getSelectionState,
 } from '../script.js';
+import { chat_metadata } from './chat-state.js';
 import { eventSource, event_types } from './events.js';
 import { extension_settings, getContext, saveMetadataDebounced } from './extensions.js';
 import { getCharaFilename, debounce, delay } from './utils.js';

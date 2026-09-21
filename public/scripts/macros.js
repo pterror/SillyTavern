@@ -1,5 +1,6 @@
 import { Handlebars, moment, seedrandom, droll } from '../lib.js';
-import { chat, chat_metadata, main_api, getMaxPromptTokens, getMaxContextTokens, getMaxResponseTokens, getCurrentChatId, substituteParams, extension_prompts } from '../script.js';
+import { main_api, getMaxPromptTokens, getMaxContextTokens, getMaxResponseTokens, getCurrentChatId, substituteParams, extension_prompts } from '../script.js';
+import { chat, chat_metadata } from './chat-state.js';
 import { eventSource, event_types } from './events.js';
 import { timestampToMoment, isDigitsOnly, getStringHash, escapeRegex, uuidv4 } from './utils.js';
 import { textgenerationwebui_banned_in_macros } from './textgen-settings.js';

@@ -2,7 +2,6 @@ import { Popper, css, DOMPurify } from '../lib.js';
 import {
     addCopyToCodeBlocks,
     appendMediaToMessage,
-    chat,
     getCurrentChatId,
     getCurrentCharacter,
     getSelectionState,
@@ -12,7 +11,6 @@ import {
     chatOpEdit,
     chatOpEditMany,
     updateMessage,
-    chat_metadata,
     neutralCharacterName,
     updateChatMetadata,
     system_message_types,
@@ -27,6 +25,7 @@ import {
     chatElement,
     updateIn,
 } from '../script.js';
+import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';

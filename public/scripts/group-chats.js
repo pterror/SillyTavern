@@ -28,7 +28,6 @@ import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInva
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 
 import {
-    chat,
     sendSystemMessage,
     printMessages,
     substituteParams,
@@ -51,7 +50,6 @@ import {
     deleteLastMessage,
     showSwipeButtons,
     hideSwipeButtons,
-    chat_metadata,
     updateChatMetadata,
     getThumbnailUrl,
     setMenuType,
@@ -80,6 +78,7 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
 } from '../script.js';
+import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';

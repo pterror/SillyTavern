@@ -1,5 +1,5 @@
+import { chat } from '../../chat-state.js';
 import { moment } from '../../../lib.js';
-import { chat } from '../../../script.js';
 import { timestampToMoment } from '../../utils.js';
 import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroRegistry.js';
 

@@ -283,6 +283,7 @@ import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPro
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
+import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
@@ -445,12 +446,6 @@ export const neutralCharacterName = 'Assistant';
 let default_user_name = 'User';
 export let name1 = default_user_name;
 export let name2 = systemUserName;
-/** @type {ChatMessage[]} */
-export let chat = [];
-
-// Messages in `chat` are frozen after load/creation; all mutation goes through updateMessage()/updateIn()
-// (chat-store.js), which swaps in a new frozen object - so reference equality against a snapshot is a
-// complete, hash-free change-detection signal for the slim wire save protocol below.
 
 /** @type {((mesId: number, message?: object) => boolean) | null} */
 let _hasForkBranches = null;
@@ -512,8 +507,6 @@ export const chatElement = $('#chat');
 
 let dialogueResolve = null;
 let dialogueCloseStop = false;
-/** @type {ChatMetadata} */
-export let chat_metadata = {};
 let crop_data = undefined;
 
 /** @type {Object<string, {v1?: string, v2: string, transform?: string}>} */
@@ -1172,7 +1165,7 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
             this_edit_mes_id = undefined;
             selected_button = 'character_edit';
             setCharacterId(entity);
-            chat_metadata = {};
+            setChatMetadata({});
             _resetMetadataSaveSnapshot();
             await getChat();
         } else {
@@ -2549,7 +2542,7 @@ async function delChat(chatfile) {
         // choose another chat if current was deleted
         const name = chatfile.replace('.jsonl', '');
         if (name === getCurrentCharacter().chat) {
-            chat_metadata = {};
+            setChatMetadata({});
             _resetMetadataSaveSnapshot();
             await replaceCurrentChat();
         }
@@ -7402,7 +7395,7 @@ export function resetChatState() {
     // sets up system user to tell user about having deleted a character
     chat.splice(0, chat.length, ...SAFETY_CHAT);
     // resets chat metadata
-    chat_metadata = {};
+    setChatMetadata({});
     _resetMetadataSaveSnapshot();
     // resets the characters array, forcing getcharacters to reset
     characters.length = 0;
@@ -7865,7 +7858,7 @@ export async function getChat({ isNewChat = false } = {}) {
         if (Array.isArray(data) && data.length > 0) {
             /** @type {ChatHeader} */
             const chatHeader = data.shift();
-            chat_metadata = chatHeader?.chat_metadata ?? {};
+            setChatMetadata(chatHeader?.chat_metadata ?? {});
             _setCurrentTarget(getCurrentCharacter().chat, chat_metadata.integrity ?? null);
             _resetMetadataSaveSnapshot();
             chat.splice(0, chat.length, ...data);
@@ -7879,7 +7872,7 @@ export async function getChat({ isNewChat = false } = {}) {
         } else {
             // An empty/corrupted chat file
             chat.splice(0, chat.length);
-            chat_metadata = {};
+            setChatMetadata({});
             _setCurrentTarget(getCurrentCharacter().chat, null);
             _resetMetadataSaveSnapshot();
         }
@@ -8067,7 +8060,7 @@ export async function saveActiveChat(avatar, chat) {
 export async function openCharacterChat(file_name) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
-    chat_metadata = {};
+    setChatMetadata({});
     _setCurrentTarget(file_name, null);
     _resetMetadataSaveSnapshot();
 
@@ -9698,7 +9691,7 @@ export function removeDepthPrompts() {
  * @param {boolean} reset Should a metadata be reset by this call.
  */
 export function updateChatMetadata(newValues, reset) {
-    chat_metadata = reset ? { ...newValues } : { ...chat_metadata, ...newValues };
+    setChatMetadata(reset ? { ...newValues } : { ...chat_metadata, ...newValues });
     if (reset) {
         // A wholesale replace (chat switch, import, group-chat metadata load) - the previous
         // save snapshot no longer describes what the server has for this metadata object.
@@ -12171,7 +12164,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         // server-side - it's just an empty tree under this character's anchor until the user
         // sends a message (which mints a real row) or explicitly labels a point in it. See
         // pointToFreshChat() for how the pointer is (or isn't) actually resolved.
-        chat_metadata = {};
+        setChatMetadata({});
         _resetMetadataSaveSnapshot();
         await pointToFreshChat();
         if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
@@ -12295,7 +12288,7 @@ export async function closeCurrentChat() {
         setActiveCharacter(null);
         setActiveGroup(null);
         this_edit_mes_id = undefined;
-        chat_metadata = {};
+        setChatMetadata({});
         _resetMetadataSaveSnapshot();
         selected_button = 'characters';
         $('#rm_button_selected_ch').children('h2').text('');
@@ -12489,7 +12482,7 @@ export async function newAssistantChat({ temporary = false } = {}) {
         return openPermanentAssistantChat();
     }
     chat.splice(0, chat.length);
-    chat_metadata = {};
+    setChatMetadata({});
     _resetMetadataSaveSnapshot();
     setCharacterName(neutralCharacterName);
     sendSystemMessage(system_message_types.ASSISTANT_NOTE);

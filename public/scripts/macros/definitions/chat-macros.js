@@ -1,5 +1,5 @@
+import { chat, chat_metadata } from '../../chat-state.js';
 import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroRegistry.js';
-import { chat, chat_metadata } from '../../../script.js';
 
 /**
  * Registers macros that inspect the current chat log and swipe state

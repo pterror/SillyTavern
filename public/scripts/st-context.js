@@ -3,8 +3,6 @@ import {
     addOneMessage,
     appendMediaToMessage,
     callPopup,
-    chat,
-    chat_metadata,
     CONNECT_API_MAP,
     create_save,
     deactivateSendButtons,
@@ -70,6 +68,7 @@ import {
     getOneCharacter,
     getCharacterSource,
 } from '../script.js';
+import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';

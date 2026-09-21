@@ -1,6 +1,7 @@
 /** Display-only: never import chat-store writers (`updateMessage()` etc.) — display substitutions have previously leaked into stored messages this way. */
 
-import { chat, converter, systemUserName, substituteParams, setMesForShowdownParse } from '../script.js';
+import { converter, systemUserName, substituteParams, setMesForShowdownParse } from '../script.js';
+import { chat } from './chat-state.js';
 import { COMMENT_NAME_DEFAULT } from './slash-commands.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { decodeStyleTags, encodeStyleTags } from './chats.js';
