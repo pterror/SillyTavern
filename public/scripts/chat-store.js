@@ -379,7 +379,7 @@ export async function _restoreContinuation(mesId) {
 
     let payload;
     try {
-        const response = await fetch('/api/chats/continuation', {
+        const response = await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({ node_id: message.node_id, chat_name: getCurrentChatId() }),

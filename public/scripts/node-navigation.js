@@ -22,24 +22,28 @@ export async function switchToAlternativePath(mesId, swipeId) {
         return false;
     }
 
-    // An unstored greeting has no continuation to fetch; no row is minted here (ensureOpeningRow() does that when needed).
+    // An unstored greeting has nothing to select or fetch; no row is minted here (ensureOpeningRow() does that when needed).
     const unstored = isProvisionalNodeId(targetNodeId);
     /** @type {{messages?: ChatMessage[]}} */
     let payload = { messages: [] };
+    const avatar = getCurrentCharacter()?.avatar;
     if (!unstored) {
         try {
-            const response = await fetch('/api/chats/continuation', {
+            const response = await fetch('/api/chats/message/select', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ node_id: targetNodeId, chat_name: getCurrentChatId() }),
+                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true, chat_name: getCurrentChatId() }),
             });
             if (!response.ok) {
-                console.warn(`[switchToAlternativePath] HTTP ${response.status} fetching continuation for ${targetNodeId}`);
+                console.warn(`[switchToAlternativePath] HTTP ${response.status} selecting ${targetNodeId}`);
                 return false;
             }
             payload = await response.json();
+            if (avatar != null) {
+                _setCurrentTarget(targetNodeId, null);
+            }
         } catch (error) {
-            console.warn('[switchToAlternativePath] Failed to fetch continuation:', error);
+            console.warn('[switchToAlternativePath] Failed to select the alternative:', error);
             return false;
         }
     }
@@ -51,23 +55,6 @@ export async function switchToAlternativePath(mesId, swipeId) {
 
     updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
-
-    // Moves the character's chat pointer onto the node now being shown, or a reload resolves to the old path. An unstored greeting has nothing to persist.
-    const avatar = getCurrentCharacter()?.avatar;
-    if (!unstored) {
-        try {
-            await fetch('/api/chats/message/select', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true }),
-            });
-            if (avatar != null) {
-                _setCurrentTarget(targetNodeId, null);
-            }
-        } catch (error) {
-            console.warn('[switchToAlternativePath] Failed to persist the selection:', error);
-        }
-    }
 
     // Without this the freshly-fetched messages read as changed against the snapshot on the next save.
     _snapshotMessages();
@@ -154,23 +141,25 @@ export async function switchToNode(targetNodeId) {
     const between = ancestry.slice(forkAncestryIdx + 1);
 
     let below = [];
-    try {
-        const response = await fetch('/api/chats/continuation', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ node_id: targetNodeId, chat_name: getCurrentChatId() }),
-        });
-        if (response.ok) {
-            below = (await response.json())?.messages ?? [];
+    const avatar = getCurrentCharacter()?.avatar;
+    if (avatar != null && !isProvisionalNodeId(targetNodeId)) {
+        try {
+            const response = await fetch('/api/chats/message/select', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, activate: true, chat_name: getCurrentChatId() }),
+            });
+            if (response.ok) {
+                below = (await response.json())?.messages ?? [];
+                _setCurrentTarget(targetNodeId, null);
+            }
+        } catch (error) {
+            // Not fatal - the segment through the target is still correct, it just won't carry on past it.
+            console.warn('[switchToNode] Failed to select the target and fetch what follows it:', error);
         }
-    } catch (error) {
-        // Not fatal - the segment through the target is still correct, it just won't carry on past it.
-        console.warn('[switchToNode] Failed to fetch the continuation past the target:', error);
     }
 
     chat.splice(forkPos + 1, chat.length - (forkPos + 1), ...between, ...below);
-
-    await _persistNodeSelection(targetNodeId);
 
     _snapshotMessages();
 

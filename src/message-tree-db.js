@@ -1482,6 +1482,10 @@ export async function selectDefaultChild(directories, childId) {
     const child = /** @type {Pick<MessageRow, 'id' | 'parent_id'> | undefined} */ (entry.db.get('SELECT id, parent_id FROM messages WHERE id = @id', { id: childId }));
     if (!child || child.parent_id === null) return false;
 
+    // Already the parent's default - nothing to write.
+    const parent = /** @type {Pick<MessageRow, 'default_child_id'> | undefined} */ (entry.db.get('SELECT default_child_id FROM messages WHERE id = @id', { id: child.parent_id }));
+    if (parent?.default_child_id === childId) return true;
+
     setDefaultChildSync(entry.db, child.parent_id, childId);
     return true;
 }
