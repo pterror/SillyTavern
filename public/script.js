@@ -282,6 +282,7 @@ import { saveDraft, loadDraft } from './scripts/chat-draft.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
+import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
@@ -820,9 +821,6 @@ export let main_api;// = "kobold";
 //css
 var css_send_form_display = $('<div id=send_form></div>').css('display');
 
-export let token;
-
-
 /** The tag of the active character. (NOT the id) */
 export let active_character = '';
 /** The tag of the active group. (Coincidentally also the id) */
@@ -830,18 +828,7 @@ export let active_group = '';
 
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
 
-export function getRequestHeaders({ omitContentType = false } = {}) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': token,
-    };
-
-    if (omitContentType) {
-        delete headers['Content-Type'];
-    }
-
-    return headers;
-}
+export { getRequestHeaders };
 
 export function getSlideToggleOptions() {
     return {
@@ -881,7 +868,7 @@ async function firstLoadInit() {
     try {
         const tokenResponse = await fetch('/csrf-token');
         const tokenData = await tokenResponse.json();
-        token = tokenData.token;
+        setToken(tokenData.token);
     } catch {
         toastr.error(t`Couldn't get CSRF token. Please refresh the page.`, t`Error`, { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true });
         throw new Error('Initialization failed');
