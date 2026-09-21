@@ -1,6 +1,6 @@
 import {
     addChatsPreamble, addChatsSeparator, addPersonaDescriptionExtensionPrompt,
-    amount_gen, baseChatReplace, cancelDebouncedChatSave, cleanUpMessage,
+    baseChatReplace, cancelDebouncedChatSave, cleanUpMessage,
     deactivateSendButtons, DEFAULT_SAVE_EDIT_TIMEOUT, deleteLastMessage, depth_prompt_depth_default, depth_prompt_role_default,
     doChatInject, extension_prompts, extension_prompt_types,
     extractImagesFromData, extractJsonFromData, extractMessageFromData, extractMultiSwipes, extractTitleFromData,
@@ -8,7 +8,7 @@ import {
     getAllExtensionPrompts, getBiasStrings, getCharacterCardFields, getCurrentCharacter, getCurrentChatId, getCurrentDraftContext,
     getExtensionPrompt, getExtensionPromptRoleByName, getMaxPromptTokens, getNextMessageId, getSelectionState,
     hideStopButton, hideSwipeButtons, isStreamingEnabled,
-    main_api, max_context, menu_type, name1, name2, neutralCharacterName, online_status,
+    main_api, menu_type, name1, name2, neutralCharacterName, online_status,
     parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, pingServer, processCommands,
     removeDepthPrompts, removeLastMessage, removeMacros, resolveClientToolHandoffLoop,
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest,
@@ -17,6 +17,7 @@ import {
     triggerAutoContinue, unblockGeneration, unshallowCharacter,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
+import { amount_gen, max_context } from './generation-params.js';
 import { charactersStore } from './character-store.js';
 import { _postChatMetadata, deriveChatAddressNode, saveMetadata } from './metadata-store.js';
 import { isProvisionalNodeId, isStoredNodeId } from './node-identity.js';

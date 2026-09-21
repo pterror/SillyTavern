@@ -2,7 +2,6 @@ import {
     abortStatusCheck,
     getStoppingStrings,
     main_api,
-    max_context,
     online_status,
     resultCheckStatus,
     saveSettingsDebounced,
@@ -11,6 +10,7 @@ import {
     startStatusLoading,
     substituteParams,
 } from '../script.js';
+import { max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { deriveTemplatesFromChatTemplate } from './chat-templates.js';
