@@ -7,6 +7,19 @@ export let active_character = '';
 /** @type {string?} */
 export let active_group = '';
 
+export const default_user_name = 'User';
+
+export let name1 = default_user_name;
+
+/**
+ * Raw mutator for name1, with no notification/save side effects - those live in script.js's
+ * setUserName, which calls this to write the value.
+ * @param {string} value
+ */
+export function setName1Raw(value) {
+    name1 = value;
+}
+
 // Same resolution contract as tags.js's getTagKeyForEntity, reimplemented here against
 // character-store.js/group-store.js (both leaves) instead of importing tags.js, so this module carries no
 // back-edge into tags.js's part of the import cycle. The one behavioral difference from tags.js's version:

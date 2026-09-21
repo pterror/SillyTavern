@@ -19,7 +19,6 @@ import {
     getMediaIndex,
     is_send_press,
     main_api,
-    name1,
     name2,
     resultCheckStatus,
     saveSettingsDebounced,
@@ -29,6 +28,7 @@ import {
     substituteParamsExtended,
     system_message_types,
 } from '../script.js';
+import { name1 } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { getGroupNames, selected_group } from './group-chats.js';

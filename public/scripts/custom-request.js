@@ -1,5 +1,6 @@
 import { getPresetManager } from './preset-manager.js';
-import { extractJsonFromData, extractMessageFromData, getGenerateUrl, name1, name2 } from '../script.js';
+import { extractJsonFromData, extractMessageFromData, getGenerateUrl, name2 } from '../script.js';
+import { name1 } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { getTextGenServer, createTextGenGenerationData, setting_names, textgenerationwebui_settings } from './textgen-settings.js';
 import { extractReasoningFromData } from './reasoning.js';

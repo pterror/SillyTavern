@@ -1,4 +1,5 @@
-import { name1, name2, getCharacterCardFieldsLazy, getGeneratingModel } from '../../../script.js';
+import { name2, getCharacterCardFieldsLazy, getGeneratingModel } from '../../../script.js';
+import { name1 } from '../../app-selection-state.js';
 import { charactersStore } from '../../character-store.js';
 import { groupsStore, selected_group } from '../../../scripts/group-chats.js';
 import { logMacroGeneralError } from './MacroDiagnostics.js';

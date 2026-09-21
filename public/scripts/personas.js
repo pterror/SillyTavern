@@ -10,7 +10,6 @@ import {
     setThumbnailVersion,
     groupToEntity,
     menu_type,
-    name1,
     name2,
     reloadCurrentChat,
     saveMetadata,
@@ -19,6 +18,7 @@ import {
     updateMessage,
     chatOpEditMany,
 } from '../script.js';
+import { name1 } from './app-selection-state.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
