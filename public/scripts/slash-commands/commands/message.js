@@ -1,9 +1,9 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { Generate, addOneMessage, chatElement, chatOpAddAlternative, chatOpAppend, chatOpEdit, chatOpGraft, comment_avatar, default_avatar, deleteSwipe, extractMessageBias, getCurrentCharacter, getThumbnailUrl, is_send_press, neutralCharacterName, refreshSwipeButtons, reloadCurrentChat, saveChatConditional, sendMessageAsUser, setCharacterId, setCharacterName, substituteParams, swipe, system_message_types, updateMessage, updateMessageElement, updateSwipeCounter } from '../../../script.js';
+import { Generate, addOneMessage, chatElement, chatOpAddAlternative, chatOpAppend, chatOpEdit, chatOpGraft, comment_avatar, default_avatar, deleteSwipe, extractMessageBias, getCurrentCharacter, getThumbnailUrl, is_send_press, neutralCharacterName, refreshSwipeButtons, reloadCurrentChat, saveChatConditional, sendMessageAsUser, setCharacterName, substituteParams, swipe, system_message_types, updateMessage, updateMessageElement, updateSwipeCounter } from '../../../script.js';
 import { chat, chat_metadata } from '../../chat-state.js';
 import { setActiveCharacter, setActiveGroup } from '../../app-selection-state.js';
-import { charactersStore } from '../../character-store.js';
+import { charactersStore, setCharacterId } from '../../character-store.js';
 import { eventSource, event_types } from '../../events.js';
 import { getMessageTimeStamp } from '../../RossAscends-mods.js';
 import { hideChatMessageRange } from '../../chats.js';

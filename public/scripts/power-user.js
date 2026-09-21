@@ -9,7 +9,6 @@ import {
     getCurrentChatId,
     printCharactersDebounced,
     printCharacters,
-    setCharacterId,
     setEditedMessageId,
     getFirstDisplayedMessageId,
     showMoreMessages,
@@ -30,7 +29,7 @@ import {
 import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore } from './character-store.js';
+import { characters, charactersStore, setCharacterId } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';
 import {

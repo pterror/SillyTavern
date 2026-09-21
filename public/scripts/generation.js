@@ -12,14 +12,14 @@ import {
     parseAndSaveLogprobs, parseMesExamples, parseTokenCounts, pingServer, processCommands,
     removeDepthPrompts, removeLastMessage, removeMacros, resolveClientToolHandoffLoop,
     saveReply, sendGenerationRequest, sendMessageAsUser, sendStreamingRequest,
-    setCharacterId, setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
+    setCharacterName, setExtensionPrompt, setGenerationProgress, setInContextMessages, setSendButtonState,
     showStopButton, StreamingProcessor, substituteParams, swipe,
     triggerAutoContinue, unblockGeneration, unshallowCharacter,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { amount_gen, main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
-import { charactersStore } from './character-store.js';
+import { charactersStore, setCharacterId } from './character-store.js';
 import { _postChatMetadata, deriveChatAddressNode, saveMetadata } from './metadata-store.js';
 import { isProvisionalNodeId, isStoredNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';

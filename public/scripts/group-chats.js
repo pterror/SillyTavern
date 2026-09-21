@@ -36,7 +36,6 @@ import {
     clearChat,
     Generate,
     select_rm_info,
-    setCharacterId,
     setCharacterName,
     setEditedMessageId,
     is_send_press,
@@ -80,7 +79,7 @@ import {
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore } from './character-store.js';
+import { characters, charactersStore, setCharacterId } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget } from './chat-store.js';
