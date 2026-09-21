@@ -435,9 +435,12 @@ function alternativesFromMessage(msg) {
  * Rebuilds the client-facing message object for a node, re-synthesizing swipe arrays from sibling rows.
  * @param {Pick<MessageRow, 'id' | 'content' | 'label'>} row
  * @param {Pick<MessageRow, 'id' | 'content'>[]} siblings
+ * @param {boolean} [fullSwipes] When true, every sibling's text is filled in instead of only the
+ *   window around the selected one - for callers (export) that need the complete data, not the
+ *   lazy-loaded placeholder the live UI pages in on demand.
  * @returns {TreeChatMessage}
  */
-function rowToMessage(row, siblings) {
+function rowToMessage(row, siblings, fullSwipes = false) {
     // Raw stored JSON, not yet validated against TreeChatMessage's shape - that's exactly what the
     // rest of this function does field-by-field before returning it as one.
     const msg = JSON.parse(row.content);
@@ -453,8 +456,8 @@ function rowToMessage(row, siblings) {
         msg.swipe_info = new Array(siblings.length).fill(null);
         msg.swipe_id = selected;
 
-        const from = Math.max(0, selected - ALTERNATIVE_WINDOW);
-        const to = Math.min(siblings.length, selected + ALTERNATIVE_WINDOW + 1);
+        const from = fullSwipes ? 0 : Math.max(0, selected - ALTERNATIVE_WINDOW);
+        const to = fullSwipes ? siblings.length : Math.min(siblings.length, selected + ALTERNATIVE_WINDOW + 1);
         for (let i = from; i < to; i++) {
             /** @type {any} Raw stored JSON, not yet validated - see rowToMessage's own doc comment on `msg` above. */
             let o = {};
@@ -987,13 +990,15 @@ export async function hasSavedChats(directories, ownerId) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {Omit<MessageRow, 'identity_hash'>[]} rows Root-to-leaf, contiguous, anchor already excluded.
  * @param {string | null} [branchName] The chat this load is FOR, so its own label doesn't show up as one of its own fork alternatives.
+ * @param {boolean} [fullSwipes] Forwarded to {@link rowToMessage} - see its own doc comment.
  * @returns {TreeChatMessage[]}
  */
-function buildPathMessages(db, rows, branchName = null) {
+function buildPathMessages(db, rows, branchName = null, fullSwipes = false) {
     const siblingsByParent = getSiblingsBatchSync(db, rows.map(r => r.parent_id));
     const messages = rows.map(r => rowToMessage(
         r,
         r.parent_id !== null ? (siblingsByParent.get(r.parent_id) ?? [{ id: r.id, content: r.content }]) : [{ id: r.id, content: r.content }],
+        fullSwipes,
     ));
 
     const childIds = getChildIdsBatchSync(db, rows.map(r => r.id));
@@ -1034,9 +1039,11 @@ function resolveNodeOrName(db, ownerId, target) {
  * @param {Directories} directories
  * @param {string} ownerId
  * @param {string} branchName
+ * @param {boolean} [fullSwipes] Forwarded to {@link rowToMessage} - see its own doc comment. Live UI
+ *   loads must leave this false; only a caller needing the complete data (export) sets it true.
  * @returns {Promise<{ messages: TreeChatMessage[], metadata: ChatMetadata, branch: BranchView } | null>}
  */
-export async function loadBranch(directories, ownerId, branchName) {
+export async function loadBranch(directories, ownerId, branchName, fullSwipes = false) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -1046,7 +1053,7 @@ export async function loadBranch(directories, ownerId, branchName) {
     const leafId = descendDefaultSync(entry.db, node.id);
     const rows = getPathSync(entry.db, leafId).filter(r => !isAnchorRow(r));
 
-    const messages = buildPathMessages(entry.db, rows, branchName);
+    const messages = buildPathMessages(entry.db, rows, branchName, fullSwipes);
 
     /** @type {ChatMetadata} */
     let metadata = {};
