@@ -912,6 +912,7 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         // Favorite status is db-authoritative once a row exists; the card written below never carries `fav`.
         const initialFav = request.body.fav === 'true' || request.body.fav === true;
         const charaData = charaFormatData(request.body, request.user.directories);
+        charaData.create_date = new Date().toISOString();
         omitFavField(charaData);
         const char = JSON.stringify(charaData);
         const internalName = request.body.file_name || mintCharacterId(request.user.directories);
