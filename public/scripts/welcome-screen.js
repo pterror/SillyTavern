@@ -4,7 +4,6 @@ import {
     deleteCharacterChatByName,
     displayVersion,
     doNewChat,
-    getCharacters,
     getCurrentCharacter,
     getCurrentChatId,
     getSystemMessageByType,
@@ -13,7 +12,6 @@ import {
     neutralCharacterName,
     newAssistantChat,
     openCharacterChat,
-    printCharactersDebounced,
     renameGroupOrCharacterChat,
     saveSettingsDebounced,
     selectCharacterByAvatar,
@@ -22,6 +20,7 @@ import {
     unshallowCharacter,
     updateRemoteChatName,
 } from '../script.js';
+import { getCharacters, printCharactersDebounced } from './character-list.js';
 import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';

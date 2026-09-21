@@ -4,7 +4,6 @@ import {
     online_status,
     is_send_press,
     saveSettingsDebounced,
-    getEntitiesList,
     buildAvatarList,
     selectCharacterByAvatar,
     menu_type,
@@ -12,10 +11,8 @@ import {
     userInputGenerateMutex,
     doNavbarIconClick,
     isSwipingAllowed,
-    characterToEntity,
-    groupToEntity,
-    entitiesFilter,
 } from '../script.js';
+import { getEntitiesList, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
 import { chat } from './chat-state.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { main_api, max_context } from './generation-params.js';

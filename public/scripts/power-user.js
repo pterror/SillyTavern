@@ -7,8 +7,6 @@ import {
     reloadCurrentChat,
     substituteParams,
     getCurrentChatId,
-    printCharactersDebounced,
-    printCharacters,
     setEditedMessageId,
     getFirstDisplayedMessageId,
     showMoreMessages,
@@ -16,7 +14,6 @@ import {
     isChatSaveScheduled,
     setAnimationDuration,
     ANIMATION_DURATION_DEFAULT,
-    entitiesFilter,
     doNewChat,
     online_status,
     messageFormatting,
@@ -26,6 +23,7 @@ import {
     settingsReady,
     getMessageDeletionStartId,
 } from '../script.js';
+import { printCharactersDebounced, printCharacters, entitiesFilter } from './character-list.js';
 import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';

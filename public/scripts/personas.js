@@ -1,6 +1,5 @@
 import {
     buildAvatarList,
-    characterToEntity,
     getCurrentCharacter,
     getSelectionState,
     createOrEditCharacter,
@@ -8,7 +7,6 @@ import {
     getCurrentChatId,
     getThumbnailUrl,
     setThumbnailVersion,
-    groupToEntity,
     menu_type,
     name2,
     reloadCurrentChat,
@@ -18,6 +16,7 @@ import {
     updateMessage,
     chatOpEditMany,
 } from '../script.js';
+import { characterToEntity, groupToEntity } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';

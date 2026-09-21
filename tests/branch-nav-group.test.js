@@ -28,7 +28,6 @@ jest.unstable_mockModule('../public/script.js', () => ({
     openCharacterChat: openCharacterChatMock,
     getRequestHeaders: jest.fn(() => ({})),
     getThumbnailUrl: jest.fn(),
-    getCharacters: jest.fn(),
     saveChatConditional: jest.fn(),
     saveItemizedPrompts: jest.fn(),
     setActiveGroup: jest.fn(),
@@ -46,6 +45,10 @@ jest.unstable_mockModule('../public/script.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
     humanizedDateTime: jest.fn(() => '2026-01-01'),
+}));
+
+jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
+    getCharacters: jest.fn(),
 }));
 
 jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({

@@ -2,12 +2,10 @@
 
 import {
     characterGroupOverlay,
-    getCharacters,
     buildAvatarList,
-    characterToEntity,
-    printCharactersDebounced,
     deleteCharacter,
 } from '../script.js';
+import { getCharacters, characterToEntity, printCharactersDebounced } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';
