@@ -9,7 +9,6 @@ import {
     getCharacters,
     saveChatConditional,
     saveItemizedPrompts,
-    setActiveGroup,
     getCurrentChatDetails,
     updateMessage,
     hydrateSwipes,
@@ -18,6 +17,7 @@ import {
     isStoredNodeId,
 } from '../script.js';
 import { chat_metadata, chat } from './chat-state.js';
+import { setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import {
     DEFAULT_AUTO_MODE_DELAY,

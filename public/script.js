@@ -194,7 +194,6 @@ import {
     loadTagsSettings,
     reindexTagAssignments,
     printTagFilters,
-    getTagKeyForEntity,
     printTagList,
     createTagMapFromList,
     importTags,
@@ -284,6 +283,7 @@ import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMess
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
+import { active_character, active_group, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings } from './scripts/app-selection-state.js';
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
@@ -814,11 +814,6 @@ export let main_api;// = "kobold";
 //css
 var css_send_form_display = $('<div id=send_form></div>').css('display');
 
-/** The tag of the active character. (NOT the id) */
-export let active_character = '';
-/** The tag of the active group. (Coincidentally also the id) */
-export let active_group = '';
-
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
 
 export function getSlideToggleOptions() {
@@ -1078,24 +1073,6 @@ export function setAnimationDuration(ms = null) {
     animation_duration = ms ?? ANIMATION_DURATION_DEFAULT;
     // Set CSS variable to document
     document.documentElement.style.setProperty('--animation-duration', `${animation_duration}ms`);
-}
-
-/**
- * Sets the currently active character
- * @param {object|number|string} [entityOrKey] - An entity with id property (character, group, tag), or directly an id or tag key. If not provided, the active character is reset to `null`.
- */
-export function setActiveCharacter(entityOrKey) {
-    active_character = entityOrKey ? getTagKeyForEntity(entityOrKey) : null;
-    if (active_character) active_group = null;
-}
-
-/**
- * Sets the currently active group.
- * @param {object|number|string} [entityOrKey] - An entity with id property (character, group, tag), or directly an id or tag key. If not provided, the active group is reset to `null`.
- */
-export function setActiveGroup(entityOrKey) {
-    active_group = entityOrKey ? getTagKeyForEntity(entityOrKey) : null;
-    if (active_group) active_character = null;
 }
 
 export function startStatusLoading() {
@@ -7538,7 +7515,7 @@ export async function renameCharacter(name = null, { silent = false, renameChats
 
             // Update active character, if the current one was the currently active one
             if (active_character === oldAvatar) {
-                active_character = newAvatar;
+                setActiveCharacter(newAvatar);
                 saveSettingsDebounced('active_character');
             }
 
@@ -8395,8 +8372,7 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         setPersonaDescription();
 
         //Load the active character and group
-        active_character = settings.active_character;
-        active_group = settings.active_group;
+        setActiveCharacterAndGroupFromSettings(settings.active_character, settings.active_group);
 
         setWorldInfoSettings(settings.world_info_settings ?? settings, data);
 

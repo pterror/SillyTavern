@@ -6,10 +6,6 @@ import {
     is_send_press,
     max_context,
     saveSettingsDebounced,
-    active_group,
-    active_character,
-    setActiveGroup,
-    setActiveCharacter,
     getEntitiesList,
     buildAvatarList,
     selectCharacterByAvatar,
@@ -23,6 +19,7 @@ import {
     entitiesFilter,
 } from '../script.js';
 import { chat } from './chat-state.js';
+import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource } from './events.js';
