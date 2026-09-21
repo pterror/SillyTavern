@@ -11,7 +11,6 @@ import {
     setActiveGroup,
     setActiveCharacter,
     getEntitiesList,
-    getRequestHeaders,
     buildAvatarList,
     selectCharacterByAvatar,
     menu_type,
@@ -24,6 +23,7 @@ import {
     entitiesFilter,
     chat,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource } from './events.js';
 

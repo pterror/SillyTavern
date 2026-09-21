@@ -8,7 +8,6 @@ import {
     getCharacters,
     getCurrentCharacter,
     getCurrentChatId,
-    getRequestHeaders,
     getSystemMessageByType,
     getThumbnailUrl,
     is_send_press,
@@ -26,6 +25,7 @@ import {
     unshallowCharacter,
     updateRemoteChatName,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';

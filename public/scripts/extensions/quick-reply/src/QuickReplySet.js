@@ -1,4 +1,5 @@
-import { getRequestHeaders, substituteParams } from '../../../../script.js';
+import { substituteParams } from '../../../../script.js';
+import { getRequestHeaders } from '../../../request-headers.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 import { executeSlashCommandsOnChatInput, executeSlashCommandsWithOptions } from '../../../slash-commands.js';
 import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';

@@ -1,4 +1,5 @@
-import { chat, chat_metadata, getCurrentCharacter, getRequestHeaders } from '../script.js';
+import { chat, chat_metadata, getCurrentCharacter } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { groupsStore, selected_group } from './group-chats.js';
 import { _setCurrentTarget } from './chat-store.js';
 import { delay } from './utils.js';

@@ -1,5 +1,6 @@
 import { DOMPurify } from '../../../lib.js';
-import { getRequestHeaders, processDroppedFiles } from '../../../script.js';
+import { processDroppedFiles } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { eventSource, event_types } from '../../events.js';
 import { deleteExtension, EMPTY_AUTHOR, extensionNames, getAuthorFromUrl, getContext, installExtension, renderExtensionTemplateAsync, isOfficialExtension } from '../../extensions.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';

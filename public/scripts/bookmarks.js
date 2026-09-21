@@ -6,7 +6,6 @@ import {
     syncSwipeToMes,
     openCharacterChat,
     chat_metadata,
-    getRequestHeaders,
     getThumbnailUrl,
     getCharacters,
     chat,
@@ -20,6 +19,7 @@ import {
     switchToNode,
     isStoredNodeId,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import {
     DEFAULT_AUTO_MODE_DELAY,
     group_activation_strategy,

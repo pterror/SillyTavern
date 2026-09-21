@@ -1,8 +1,8 @@
 import {
-    chat,
-    getRequestHeaders, getCurrentChatId, getCurrentCharacter,
+    chat, getCurrentChatId, getCurrentCharacter,
     redisplayChat, updateViewMessageIds, refreshSwipeButtons,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { selected_group } from './group-chats.js';
 import { updateMessage, _setCurrentTarget } from './chat-store.js';
 import { isProvisionalNodeId } from './node-identity.js';

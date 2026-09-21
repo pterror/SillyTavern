@@ -1,4 +1,4 @@
-import { getRequestHeaders } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { oai_settings } from '../../chat-completion-settings.js';
 import { isValidUrl } from '../../utils.js';
 import { getPreviewString, saveTtsProviderSettings } from './index.js';

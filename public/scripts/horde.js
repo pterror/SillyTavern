@@ -1,6 +1,5 @@
 import {
     amount_gen,
-    getRequestHeaders,
     main_api,
     max_context,
     resultCheckStatus,
@@ -8,6 +7,7 @@ import {
     setGenerationProgress,
     setOnlineStatus,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { isMobile } from './RossAscends-mods.js';
 import { autoSelectInstructPreset } from './instruct-mode.js';

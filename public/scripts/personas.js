@@ -8,7 +8,6 @@ import {
     createOrEditCharacter,
     default_user_avatar,
     getCurrentChatId,
-    getRequestHeaders,
     getThumbnailUrl,
     setThumbnailVersion,
     groupToEntity,
@@ -22,6 +21,7 @@ import {
     updateMessage,
     chatOpEditMany,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { power_user, personaStore, defaultPersonaRecord } from './power-user.js';

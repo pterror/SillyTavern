@@ -10,9 +10,9 @@ import {
     buildAvatarList,
     DEFAULT_PRINT_TIMEOUT,
     printCharacters,
-    getRequestHeaders,
     fetchServerCharacterSearchResults,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { characters, charactersStore } from './character-store.js';
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';

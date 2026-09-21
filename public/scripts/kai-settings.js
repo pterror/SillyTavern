@@ -1,5 +1,4 @@
 import {
-    getRequestHeaders,
     saveSettingsDebounced,
     getStoppingStrings,
     substituteParams,
@@ -11,6 +10,7 @@ import {
     startStatusLoading,
     setGenerationParamsFromPreset,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset } from './instruct-mode.js';

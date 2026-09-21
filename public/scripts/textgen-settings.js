@@ -1,6 +1,5 @@
 import {
     abortStatusCheck,
-    getRequestHeaders,
     getStoppingStrings,
     main_api,
     max_context,
@@ -12,6 +11,7 @@ import {
     startStatusLoading,
     substituteParams,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { deriveTemplatesFromChatTemplate } from './chat-templates.js';
 import { t } from './i18n.js';

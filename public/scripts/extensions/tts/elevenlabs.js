@@ -1,5 +1,5 @@
 import { saveTtsProviderSettings } from './index.js';
-import { getRequestHeaders } from '/script.js';
+import { getRequestHeaders } from '/scripts/request-headers.js';
 import { event_types, eventSource } from '/scripts/events.js';
 import { SECRET_KEYS, secret_state, writeSecret } from '/scripts/secrets.js';
 import { getBase64Async } from '/scripts/utils.js';

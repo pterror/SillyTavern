@@ -1,6 +1,7 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettingsDebounced, substituteParams, getRequestHeaders, chat_metadata, getCurrentCharacter, saveCharacterDebounced, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
+import { saveSettingsDebounced, substituteParams, chat_metadata, getCurrentCharacter, saveCharacterDebounced, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';

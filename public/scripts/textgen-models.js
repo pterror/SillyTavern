@@ -1,6 +1,7 @@
 import { DOMPurify } from '../lib.js';
 import { isMobile } from './RossAscends-mods.js';
-import { amount_gen, getRequestHeaders, max_context, online_status, setGenerationParamsFromPreset } from '../script.js';
+import { amount_gen, max_context, online_status, setGenerationParamsFromPreset } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { textgenerationwebui_settings as textgen_settings, textgen_types } from './textgen-settings.js';
 import { tokenizers } from './tokenizers.js';

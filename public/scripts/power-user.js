@@ -5,7 +5,6 @@ import {
     scrollChatToBottom,
     reloadMarkdownProcessor,
     reloadCurrentChat,
-    getRequestHeaders,
     substituteParams,
     getCurrentChatId,
     printCharactersDebounced,
@@ -31,6 +30,7 @@ import {
     settingsReady,
     getMessageDeletionStartId,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';

@@ -1,4 +1,4 @@
-import { getRequestHeaders } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { VIDEO_EXTENSIONS } from './constants.js';
 import { t } from './i18n.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from './popup.js';
