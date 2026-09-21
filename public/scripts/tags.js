@@ -5,13 +5,9 @@ import {
     getSelectionState,
     saveSettingsDebounced,
     menu_type,
-    entitiesFilter,
-    printCharactersDebounced,
     buildAvatarList,
-    DEFAULT_PRINT_TIMEOUT,
-    printCharacters,
-    fetchServerCharacterSearchResults,
 } from '../script.js';
+import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, fetchServerCharacterSearchResults } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { characters, charactersStore } from './character-store.js';

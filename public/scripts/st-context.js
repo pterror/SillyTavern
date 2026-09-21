@@ -10,7 +10,6 @@ import {
     extractMessageFromData,
     Generate,
     generateQuietPrompt,
-    getCharacters,
     getCurrentChatId,
     getThumbnailUrl,
     menu_type,
@@ -61,9 +60,8 @@ import {
     getMediaIndex,
     scrollChatToBottom,
     scrollOnMediaLoad,
-    getOneCharacter,
-    getCharacterSource,
 } from '../script.js';
+import { getCharacters, getOneCharacter, getCharacterSource } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';

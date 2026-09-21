@@ -6,7 +6,6 @@ import {
     syncSwipeToMes,
     openCharacterChat,
     getThumbnailUrl,
-    getCharacters,
     saveChatConditional,
     saveItemizedPrompts,
     getCurrentChatDetails,
@@ -16,6 +15,7 @@ import {
     switchToNode,
     isStoredNodeId,
 } from '../script.js';
+import { getCharacters } from './character-list.js';
 import { chat_metadata, chat } from './chat-state.js';
 import { setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';

@@ -41,7 +41,6 @@ import {
     is_send_press,
     resetChatState,
     setSendButtonState,
-    getCharacters,
     system_message_types,
     online_status,
     talkativeness_default,
@@ -77,6 +76,7 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
 } from '../script.js';
+import { getCharacters } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId } from './character-store.js';
