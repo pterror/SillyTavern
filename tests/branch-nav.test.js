@@ -10,13 +10,16 @@ global.document = { querySelector: jest.fn(() => null) };
 // tests/character-repository.test.js uses for script.js, the whole import surface is mocked at the
 // module boundary. Every name bookmarks.js actually imports has to be present on these mocks (ESM
 // named imports are resolved eagerly at link time), even the ones these tests never touch.
-// `chat` and `chat_metadata` are exported as stable references and mutated *in place* between tests
-// (never reassigned) - a Jest synthetic-ESM mock's exports are snapshotted once at first import, so
-// reassigning `chatState.chat = [...]` in a test would silently stop being visible to bookmarks.js.
+// `chat`/`chat_metadata` are real, unmocked scripts/chat-state.js - importing the real module (rather
+// than a synthetic mock of it) means these tests exercise the same live bindings bookmarks.js does,
+// so there's no separate mock surface to drift out of sync with it. They're exported as stable
+// references and mutated *in place* between tests (never reassigned), which is what makes sharing
+// them this way work: reassigning `chatState.chat = [...]` would only rebind this file's local
+// variable, not what bookmarks.js sees.
 // Same reasoning is why there's no per-test `selected_group` toggle here: it's a primitive, so it
 // can't be live-mutated the way an array/object can - the group-chat-specific cases live in their
 // own file (branch-nav-group.test.js) with `selected_group` baked in from that file's first import.
-const chatState = { chat: [], chat_metadata: {} };
+const chatState = await import('../public/scripts/chat-state.js');
 const openCharacterChatMock = jest.fn(async () => {});
 const openGroupChatMock = jest.fn(async () => {});
 /**
@@ -83,13 +86,13 @@ const switchToNodeMock = jest.fn(async () => false);
  * utils.js (which node-identity.js itself imports getStringHash from) doesn't need widening for it. */
 const isStoredNodeIdMock = jest.fn((nodeId) => typeof nodeId === 'string' && nodeId.length > 0 && !nodeId.startsWith('card:'));
 
-/** Replaces the mocked chat array's contents in place, keeping its identity stable across tests. */
+/** Replaces the real chat array's contents in place, keeping its identity stable across tests. */
 function setChat(messages) {
     chatState.chat.length = 0;
     chatState.chat.push(...messages);
 }
 
-/** Replaces the mocked chat_metadata object's contents in place, keeping its identity stable. */
+/** Replaces the real chat_metadata object's contents in place, keeping its identity stable. */
 function setChatMetadata(metadata) {
     for (const key of Object.keys(chatState.chat_metadata)) {
         delete chatState.chat_metadata[key];
@@ -116,11 +119,6 @@ jest.unstable_mockModule('../public/script.js', () => ({
     ensureOpeningRow: ensureOpeningRowMock,
     switchToNode: switchToNodeMock,
     isStoredNodeId: isStoredNodeIdMock,
-}));
-
-jest.unstable_mockModule('../public/scripts/chat-state.js', () => ({
-    chat: chatState.chat,
-    chat_metadata: chatState.chat_metadata,
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({

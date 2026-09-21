@@ -7,7 +7,9 @@ import { describe, test, expect, jest, beforeEach, beforeAll } from '@jest/globa
 global.toastr = { warning: jest.fn(), error: jest.fn(), info: jest.fn(), success: jest.fn() };
 global.document = { querySelector: jest.fn(() => null) };
 
-const chatState = { chat: [], chat_metadata: {} };
+// `chat`/`chat_metadata` are real, unmocked scripts/chat-state.js - see branch-nav.test.js's header
+// comment for why (bookmarks.js's own live bindings, not a synthetic mock of them).
+const chatState = await import('../public/scripts/chat-state.js');
 const openCharacterChatMock = jest.fn(async () => {});
 const openGroupChatMock = jest.fn(async () => {});
 const groupsStoreMock = { get: jest.fn(() => ({ chat_id: 'current-chat' })) };
@@ -39,11 +41,6 @@ jest.unstable_mockModule('../public/script.js', () => ({
     ensureOpeningRow: jest.fn(async () => null),
     switchToNode: jest.fn(async () => false),
     isStoredNodeId: jest.fn(() => false),
-}));
-
-jest.unstable_mockModule('../public/scripts/chat-state.js', () => ({
-    chat: chatState.chat,
-    chat_metadata: chatState.chat_metadata,
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
