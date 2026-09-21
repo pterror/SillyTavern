@@ -283,7 +283,7 @@ import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMess
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
-import { active_character, active_group, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings } from './scripts/app-selection-state.js';
+import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, setAmountGen, setMaxContext } from './scripts/generation-params.js';
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
@@ -444,8 +444,6 @@ export let converter;
 
 export const systemUserName = 'SillyTavern System';
 export const neutralCharacterName = 'Assistant';
-let default_user_name = 'User';
-export let name1 = default_user_name;
 export let name2 = systemUserName;
 
 /** @type {((mesId: number, message?: object) => boolean) | null} */
@@ -8170,9 +8168,7 @@ export function changeMainAPI(api = null) {
 }
 
 export function setUserName(value, { toastPersonaNameChange = true } = {}) {
-    name1 = value;
-    if (name1 === undefined || name1 == '')
-        name1 = default_user_name;
+    setName1Raw(value === undefined || value == '' ? default_user_name : value);
     console.log(`User name changed to ${name1}`);
     $('#your_name').text(name1);
     if (toastPersonaNameChange && power_user.persona_show_notifications && !isPersonaPanelOpen()) {
@@ -8291,7 +8287,7 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         settings = JSON.parse(data.settings);
         Object.assign(serverKeyHashes, data.keyHashes);
         if (settings.username !== undefined && settings.username !== '') {
-            name1 = settings.username;
+            setName1Raw(settings.username);
             $('#your_name').text(name1);
         }
 

@@ -16,7 +16,6 @@ import {
     main_api,
     menu_type,
     messageFormatting,
-    name1,
     name2,
     online_status,
     openCharacterChat,
@@ -69,6 +68,7 @@ import {
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { max_context } from './generation-params.js';
+import { name1 } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';
