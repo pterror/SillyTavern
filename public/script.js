@@ -12,7 +12,7 @@ import {
 } from './lib.js';
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
-import { characters, charactersStore } from './scripts/character-store.js';
+import { characters, charactersStore, this_avatar, setCharacterId } from './scripts/character-store.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
@@ -463,9 +463,6 @@ export let displayVersion = 'SillyTavern';
 
 // Not narrowed to specific ops/fields: invalidateCharactersFuseIndex() just sets a dirty flag, rebuild is lazy.
 charactersStore.onChange(() => invalidateCharactersFuseIndex());
-// Source of truth for character selection. Never assign directly - go through setCharacterId().
-let this_avatar;
-
 export function getCurrentCharacter() {
     return this_avatar !== undefined ? charactersStore.get(this_avatar) : undefined;
 }
@@ -7384,31 +7381,6 @@ export function setMenuType(value) {
 
 export function setExternalAbortController(controller) {
     setAbortController(controller);
-}
-
-/**
- * Sets the currently selected character, keyed by avatar (`this_avatar`, the source of truth).
- * @param {string|object|undefined} value A character avatar, a character object, or undefined to clear.
- */
-export function setCharacterId(value) {
-    switch (typeof value) {
-        case 'string':
-            this_avatar = charactersStore.has(value) ? value : undefined;
-            break;
-        case 'object': {
-            // Identify by avatar rather than by object reference - the object may be a fresh reload of the
-            // same character (different reference, same avatar), which should still resolve.
-            const avatar = value?.avatar;
-            this_avatar = (avatar !== undefined && charactersStore.has(avatar)) ? avatar : undefined;
-            break;
-        }
-        case 'undefined':
-            this_avatar = undefined;
-            break;
-        default:
-            console.error('Invalid character ID type:', value);
-            break;
-    }
 }
 
 export function setCharacterName(value) {
