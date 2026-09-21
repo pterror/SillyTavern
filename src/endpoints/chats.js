@@ -1268,7 +1268,7 @@ router.post('/group/import', async function (request, response) {
     }
 });
 
-router.post('/import', validateAvatarUrlMiddleware, function (request, response) {
+router.post('/import', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     const format = request.body.file_type;
@@ -1290,6 +1290,30 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
     try {
         const pathToUpload = path.join(request.file.destination, request.file.filename);
         const data = fs.readFileSync(pathToUpload, 'utf8');
+
+        // Once a character is in the tree, an import must go through the store too, or the file it
+        // drops is never read again (see touchGroupOwner() below). Migrate any file-backed history
+        // first - migrating after would strand it behind the import's own label.
+        const useTree = await isTreeAvailable(request.user.directories);
+        if (useTree) {
+            await migrateOwnerOnTouch(request.user.directories, {
+                ownerId: avatarUrl,
+                chatDir: directoryPath,
+            });
+        }
+
+        /**
+         * @param {string} chatText jsonl-formatted chat text (header line + one message per line)
+         * @param {string} chatName
+         * @returns {Promise<boolean>} true if saved to the tree, false if the caller must fall back
+         * to a raw file write.
+         */
+        const saveImportToTree = async (chatText, chatName) => {
+            if (!useTree) return false;
+            const chatData = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
+            const result = await saveChatToTree(request.user.directories, avatarUrl, chatName, chatData, false);
+            return !!(result && 'integrity' in result);
+        };
 
         if (format === 'json') {
             fs.unlinkSync(pathToUpload);
@@ -1316,19 +1340,20 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
                 return response.send({ error: true });
             }
 
-            const handleChat = (/** @type {string} */ chat) => {
+            const handleChat = async (/** @type {string} */ chat) => {
                 const fileName = `${characterName} - ${humanizedDateTime()} imported.jsonl`;
-                const filePath = path.join(directoryPath, fileName);
                 fileNames.push(fileName);
+                if (await saveImportToTree(chat, fileName.replace(/\.jsonl$/, ''))) return;
+                const filePath = path.join(directoryPath, fileName);
                 writeFileAtomicSync(filePath, chat, 'utf8');
             };
 
             const chat = importFunc(userName, characterName, jsonData);
 
             if (Array.isArray(chat)) {
-                chat.forEach(handleChat);
+                for (const c of chat) await handleChat(c);
             } else {
-                handleChat(chat);
+                await handleChat(chat);
             }
 
             return response.send({ res: true, fileNames });
@@ -1357,12 +1382,14 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
             }
 
             const fileName = `${characterName} - ${humanizedDateTime()} imported.jsonl`;
-            const filePath = path.join(directoryPath, fileName);
             fileNames.push(fileName);
-            if (flattenedChat !== data) {
-                writeFileAtomicSync(filePath, flattenedChat, 'utf8');
-            } else {
-                fs.copyFileSync(pathToUpload, filePath);
+            if (!(await saveImportToTree(flattenedChat, fileName.replace(/\.jsonl$/, '')))) {
+                const filePath = path.join(directoryPath, fileName);
+                if (flattenedChat !== data) {
+                    writeFileAtomicSync(filePath, flattenedChat, 'utf8');
+                } else {
+                    fs.copyFileSync(pathToUpload, filePath);
+                }
             }
             fs.unlinkSync(pathToUpload);
             response.send({ res: true, fileNames });
