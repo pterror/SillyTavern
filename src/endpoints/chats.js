@@ -1177,7 +1177,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     }
 
     try {
-        const result = await loadBranch(request.user.directories, ownerId, chatName);
+        const result = await loadBranch(request.user.directories, ownerId, chatName, true);
         if (!result) {
             return response.status(404).json({ message: `Branch "${chatName}" not found in tree DB.` });
         }
