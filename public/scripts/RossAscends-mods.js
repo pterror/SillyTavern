@@ -4,7 +4,6 @@ import {
     online_status,
     main_api,
     is_send_press,
-    max_context,
     saveSettingsDebounced,
     getEntitiesList,
     buildAvatarList,
@@ -20,6 +19,7 @@ import {
 } from '../script.js';
 import { chat } from './chat-state.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
+import { max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource } from './events.js';

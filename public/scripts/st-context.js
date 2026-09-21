@@ -14,7 +14,6 @@ import {
     getCurrentChatId,
     getThumbnailUrl,
     main_api,
-    max_context,
     menu_type,
     messageFormatting,
     name1,
@@ -69,6 +68,7 @@ import {
     getCharacterSource,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
+import { max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';

@@ -1,12 +1,10 @@
 import { Fuse, lodash } from '../lib.js';
 
 import {
-    amount_gen,
     getCurrentCharacter,
     koboldai_setting_names,
     koboldai_settings,
     main_api,
-    max_context,
     nai_settings,
     novelai_setting_names,
     novelai_settings,
@@ -14,6 +12,7 @@ import {
     saveSettings,
     saveSettingsDebounced,
 } from '../script.js';
+import { amount_gen, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { groupsStore, selected_group } from './group-chats.js';

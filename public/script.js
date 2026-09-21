@@ -284,6 +284,7 @@ import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings } from './scripts/app-selection-state.js';
+import { amount_gen, max_context, setAmountGen, setMaxContext } from './scripts/generation-params.js';
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
@@ -796,9 +797,6 @@ const serverKeyHashes = {};
 let _saveRetryCounter = 0;
 // Serializes saveSettings() so overlapping calls can't race on a stale serverKeyHashes snapshot.
 let _saveQueue = Promise.resolve();
-export let amount_gen = 80; //default max length of AI generated responses
-export let max_context = 2048;
-
 /** User preference for swipeable messages */
 let swipes = true;
 /** Forcefully hide swipes. */
@@ -5272,7 +5270,7 @@ class TempResponseLength {
             oai_settings.openai_max_tokens = responseLength;
         } else {
             this.#originalResponseLength = amount_gen;
-            amount_gen = responseLength;
+            setAmountGen(responseLength);
         }
 
         this.#lastApi = api;
@@ -5294,7 +5292,7 @@ class TempResponseLength {
         if (api === 'openai') {
             oai_settings.openai_max_tokens = this.#originalResponseLength;
         } else {
-            amount_gen = this.#originalResponseLength;
+            setAmountGen(this.#originalResponseLength);
         }
 
         console.log('[TempResponseLength] Restored original response length:', this.#originalResponseLength);
@@ -8305,9 +8303,9 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         await eventSource.emit(event_types.SETTINGS_LOADED_BEFORE, settings);
 
         //Load AI model config settings
-        amount_gen = settings.amount_gen;
+        setAmountGen(settings.amount_gen);
         if (settings.max_context !== undefined)
-            max_context = parseInt(settings.max_context);
+            setMaxContext(parseInt(settings.max_context));
 
         swipes = settings.swipes !== undefined ? !!settings.swipes : true;  // enable swipes by default
         $('#swipes-checkbox').prop('checked', swipes); /// swipecode
@@ -8673,13 +8671,13 @@ export function setGenerationParamsFromPreset(preset) {
     $('#max_context_unlocked').prop('checked', needsUnlock).trigger('change');
 
     if (preset.genamt !== undefined) {
-        amount_gen = preset.genamt;
+        setAmountGen(preset.genamt);
         $('#amount_gen').val(amount_gen);
         $('#amount_gen_counter').val(amount_gen);
     }
 
     if (preset.max_length !== undefined) {
-        max_context = preset.max_length;
+        setMaxContext(preset.max_length);
         $('#max_context').val(max_context);
         $('#max_context_counter').val(max_context);
     }
@@ -13646,13 +13644,13 @@ jQuery(async function () {
             sliderId: '#amount_gen',
             counterId: '#amount_gen_counter',
             format: (val) => `${val}`,
-            setValue: (val) => { amount_gen = Number(val); },
+            setValue: (val) => { setAmountGen(Number(val)); },
         },
         {
             sliderId: '#max_context',
             counterId: '#max_context_counter',
             format: (val) => `${val}`,
-            setValue: (val) => { max_context = Number(val); },
+            setValue: (val) => { setMaxContext(Number(val)); },
         },
     ];
 
