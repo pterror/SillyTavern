@@ -1,6 +1,7 @@
 import { DOMPurify } from '../lib.js';
 
-import { addOneMessage, chat, chatOpAppend, getGeneratingApi, getGeneratingModel, main_api, system_avatar, systemUserName } from '../script.js';
+import { addOneMessage, chatOpAppend, getGeneratingApi, getGeneratingModel, main_api, system_avatar, systemUserName } from '../script.js';
+import { chat } from './chat-state.js';
 import { event_types, eventSource } from './events.js';
 import { chat_completion_sources, custom_prompt_post_processing_types, getChatCompletionModel, model_list, oai_settings } from './chat-completion-settings.js';
 import { Popup } from './popup.js';

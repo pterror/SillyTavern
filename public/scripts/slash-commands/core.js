@@ -1,5 +1,6 @@
 import { SlashCommandParser } from './SlashCommandParser.js';
-import { addOneMessage, chat, chatOpAppend, chatOpGraft, chat_metadata, default_avatar, extractMessageBias, generateQuietPrompt, getCurrentCharacter, getThumbnailUrl, name1, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, substituteParams, system_avatar, system_message_types } from '../../script.js';
+import { addOneMessage, chatOpAppend, chatOpGraft, default_avatar, extractMessageBias, generateQuietPrompt, getCurrentCharacter, getThumbnailUrl, name1, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, substituteParams, system_avatar, system_message_types } from '../../script.js';
+import { chat, chat_metadata } from '../chat-state.js';
 import { eventSource, event_types } from '../events.js';
 import { getMessageTimeStamp } from '../RossAscends-mods.js';
 import { AUTOCOMPLETE_STATE, AutoComplete } from '../autocomplete/AutoComplete.js';

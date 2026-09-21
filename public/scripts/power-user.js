@@ -11,7 +11,6 @@ import {
     printCharacters,
     setCharacterId,
     setEditedMessageId,
-    chat,
     getFirstDisplayedMessageId,
     showMoreMessages,
     saveChatConditional,
@@ -30,6 +29,7 @@ import {
     settingsReady,
     getMessageDeletionStartId,
 } from '../script.js';
+import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';

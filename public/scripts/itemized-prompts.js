@@ -1,5 +1,6 @@
 import { DiffMatchPatch, DOMPurify, localforage } from '../lib.js';
-import { chat, getCurrentChatId, reloadCurrentChat } from '../script.js';
+import { getCurrentChatId, reloadCurrentChat } from '../script.js';
+import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { t } from './i18n.js';

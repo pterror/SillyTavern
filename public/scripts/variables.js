@@ -1,4 +1,5 @@
-import { chat_metadata, getCurrentChatId, saveSettingsDebounced } from '../script.js';
+import { getCurrentChatId, saveSettingsDebounced } from '../script.js';
+import { chat_metadata } from './chat-state.js';
 import { extension_settings, saveMetadataDebounced } from './extensions.js';
 import { executeSlashCommandsWithOptions } from './slash-commands.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';

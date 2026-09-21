@@ -5,7 +5,8 @@ import { power_user } from './power-user.js';
 import { isMobile } from './RossAscends-mods.js';
 import { getTokenCountAsync } from './tokenizers.js';
 import { addLongPressEvent, clamp, copyText, timestampToMoment } from './utils.js';
-import { chat, deleteSwipe, ensureSwipes, hydrateSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe } from '/script.js';
+import { deleteSwipe, ensureSwipes, hydrateSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe } from '/script.js';
+import { chat } from '/scripts/chat-state.js';
 
 /**
  * Returns whether a swipe picker can be opened for the message.

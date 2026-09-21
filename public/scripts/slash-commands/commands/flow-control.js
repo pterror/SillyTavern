@@ -1,7 +1,8 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { DOMPurify, Fuse } from '../../../lib.js';
-import { chat, sendSystemMessage, system_message_types } from '../../../script.js';
+import { sendSystemMessage, system_message_types } from '../../../script.js';
+import { chat } from '../../chat-state.js';
 import { t } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';

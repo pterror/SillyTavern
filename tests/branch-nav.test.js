@@ -104,11 +104,9 @@ jest.unstable_mockModule('../public/script.js', () => ({
     system_message_types: {},
     syncSwipeToMes: jest.fn(() => true),
     openCharacterChat: openCharacterChatMock,
-    chat_metadata: chatState.chat_metadata,
     getRequestHeaders: jest.fn(() => ({})),
     getThumbnailUrl: jest.fn(),
     getCharacters: jest.fn(),
-    chat: chatState.chat,
     saveChatConditional: jest.fn(),
     saveItemizedPrompts: jest.fn(),
     setActiveGroup: jest.fn(),
@@ -118,6 +116,11 @@ jest.unstable_mockModule('../public/script.js', () => ({
     ensureOpeningRow: ensureOpeningRowMock,
     switchToNode: switchToNodeMock,
     isStoredNodeId: isStoredNodeIdMock,
+}));
+
+jest.unstable_mockModule('../public/scripts/chat-state.js', () => ({
+    chat: chatState.chat,
+    chat_metadata: chatState.chat_metadata,
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({

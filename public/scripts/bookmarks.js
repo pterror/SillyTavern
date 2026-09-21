@@ -5,10 +5,8 @@ import {
     system_message_types,
     syncSwipeToMes,
     openCharacterChat,
-    chat_metadata,
     getThumbnailUrl,
     getCharacters,
-    chat,
     saveChatConditional,
     saveItemizedPrompts,
     setActiveGroup,
@@ -19,6 +17,7 @@ import {
     switchToNode,
     isStoredNodeId,
 } from '../script.js';
+import { chat_metadata, chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import {
     DEFAULT_AUTO_MODE_DELAY,

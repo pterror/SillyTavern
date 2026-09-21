@@ -1,7 +1,8 @@
 import {
     moment,
 } from '../lib.js';
-import { chat, chatOpEdit, closeMessageEditor, main_api, messageFormatting, saveChatDebounced, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
+import { chatOpEdit, closeMessageEditor, main_api, messageFormatting, saveChatDebounced, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
+import { chat } from './chat-state.js';
 import { event_types, eventSource } from './events.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { getCurrentLocale, t, translate } from './i18n.js';

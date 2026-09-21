@@ -1,6 +1,5 @@
 import {
     addOneMessage,
-    chat,
     closeCurrentChat,
     deleteCharacterChatByName,
     displayVersion,
@@ -25,6 +24,7 @@ import {
     unshallowCharacter,
     updateRemoteChatName,
 } from '../script.js';
+import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';

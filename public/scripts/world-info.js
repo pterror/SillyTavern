@@ -1,6 +1,7 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettingsDebounced, substituteParams, chat_metadata, getCurrentCharacter, saveCharacterDebounced, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
+import { saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterDebounced, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
+import { chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';

@@ -1,6 +1,5 @@
 import {
     animation_duration,
-    chat,
     cleanUpMessage,
     Generate,
     getGeneratingApi,
@@ -9,6 +8,7 @@ import {
     substituteParamsExtended,
     updateMessage,
 } from '../script.js';
+import { chat } from './chat-state.js';
 import { event_types, eventSource } from './events.js';
 import { debounce, delay, getStringHash } from './utils.js';
 import { decodeTextTokens, getTokenizerBestMatch } from './tokenizers.js';
