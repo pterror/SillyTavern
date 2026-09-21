@@ -4,7 +4,6 @@ import {
     substituteParams,
     setOnlineStatus,
     resultCheckStatus,
-    main_api,
     online_status,
     abortStatusCheck,
     startStatusLoading,
@@ -20,6 +19,7 @@ import {
     power_user,
 } from './power-user.js';
 import { getSortableDelay, versionCompare } from './utils.js';
+import { main_api } from './generation-params.js';
 
 export let koboldai_settings;
 export let koboldai_setting_names;

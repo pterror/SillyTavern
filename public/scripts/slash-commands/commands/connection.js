@@ -1,7 +1,8 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { Fuse } from '../../../lib.js';
-import { main_api, online_status, saveSettingsDebounced } from '../../../script.js';
+import { online_status, saveSettingsDebounced } from '../../../script.js';
+import { main_api } from '../../generation-params.js';
 import { MINIMAX_ENDPOINT, POLLINATIONS_ENDPOINT, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT, chat_completion_sources, oai_settings } from '../../chat-completion-settings.js';
 import { t } from '../../i18n.js';
 import { instruct_presets, selectContextPreset, selectInstructPreset } from '../../instruct-mode.js';

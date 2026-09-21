@@ -284,7 +284,7 @@ import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
-import { amount_gen, max_context, setAmountGen, setMaxContext } from './scripts/generation-params.js';
+import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
@@ -804,8 +804,6 @@ export let lastSwipeInfo = { now: performance.now(), direction: SWIPE_DIRECTION.
 export let recentSwipes = 0;
 
 export let extension_prompts = {};
-
-export let main_api;// = "kobold";
 
 //css
 var css_send_form_display = $('<div id=send_form></div>').css('display');
@@ -8155,7 +8153,7 @@ export function changeMainAPI(api = null) {
 
     $('body').toggleClass('chat-completion-selected', selectedVal === 'openai');
 
-    main_api = selectedVal;
+    setMainApi(selectedVal);
     setOnlineStatus('no_connection');
 
     if (main_api == 'koboldhorde') {
@@ -8356,7 +8354,7 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
             settings.main_api = 'openai';
         }
 
-        main_api = settings.main_api;
+        setMainApi(settings.main_api);
         $('#main_api').val(main_api);
         $(`#main_api option[value=${main_api}]`).attr('selected', 'true');
         changeMainAPI();

@@ -1,6 +1,7 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { activateSendButtons, deactivateSendButtons, generateQuietPrompt, generateRaw, main_api, stopGeneration } from '../../../script.js';
+import { activateSendButtons, deactivateSendButtons, generateQuietPrompt, generateRaw, stopGeneration } from '../../../script.js';
+import { main_api } from '../../generation-params.js';
 import { chat_metadata } from '../../chat-state.js';
 import { characters } from '../../character-store.js';
 import { saveMetadataDebounced } from '../../extensions.js';

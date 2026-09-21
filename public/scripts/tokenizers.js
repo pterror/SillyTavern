@@ -1,5 +1,6 @@
 import { localforage } from '../lib.js';
-import { getCurrentCharacter, getSelectionState, main_api, nai_settings, online_status } from '../script.js';
+import { getCurrentCharacter, getSelectionState, nai_settings, online_status } from '../script.js';
+import { main_api } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { power_user, registerDebugFunction } from './power-user.js';

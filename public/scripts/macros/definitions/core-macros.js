@@ -1,5 +1,6 @@
 import { seedrandom, droll } from '../../../lib.js';
-import { main_api, getMaxPromptTokens, getMaxContextTokens, getMaxResponseTokens, extension_prompts, getCurrentChatId } from '../../../script.js';
+import { getMaxPromptTokens, getMaxContextTokens, getMaxResponseTokens, extension_prompts, getCurrentChatId } from '../../../script.js';
+import { main_api } from '../../generation-params.js';
 import { chat_metadata } from '../../chat-state.js';
 import { getStringHash, isFalseBoolean } from '../../utils.js';
 import { textgenerationwebui_banned_in_macros } from '../../textgen-settings.js';

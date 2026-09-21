@@ -1,6 +1,4 @@
-import {
-    main_api,
-} from '../script.js';
+import { main_api } from './generation-params.js';
 import { setting_names as TGsamplerNames, showTGSamplerControls, textgenerationwebui_settings } from './textgen-settings.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup, POPUP_TYPE } from './popup.js';
