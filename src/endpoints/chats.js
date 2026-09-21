@@ -799,24 +799,6 @@ router.post('/ancestry', async function (request, response) {
 });
 
 /** The conversation below a node, for moving onto a different alternative's path. */
-router.post('/continuation', async function (request, response) {
-    try {
-        const nodeId = String(request.body.node_id || '');
-        if (!nodeId) {
-            return response.status(400).send({ error: 'node_id is required' });
-        }
-        const branchName = request.body.chat_name ? String(request.body.chat_name) : null;
-        const result = await getContinuation(request.user.directories, nodeId, branchName);
-        if (!result) {
-            return response.status(404).send({ error: 'Node not found' });
-        }
-        return response.send(result);
-    } catch (error) {
-        console.error('Error fetching continuation:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
 // ---------------------------------------------------------------------------
 //  Per-row operations a save is made of, replacing handing the whole conversation over each time.
 // ---------------------------------------------------------------------------
@@ -1066,10 +1048,15 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
         if (!child) return response.status(400).send({ error: 'node_id is required' });
 
         const ok = await selectDefaultChild(request.user.directories, child);
-        if (ok && request.body.activate && request.body.avatar_url) {
+        if (!ok) {
+            return response.status(409).send({ ok, reason: 'unknown node, or it has no parent' });
+        }
+        if (request.body.activate && request.body.avatar_url) {
             await setCharacterActiveChat(request.user.directories, request.body.avatar_url, child);
         }
-        return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'unknown node, or it has no parent' });
+        const branchName = request.body.chat_name ? String(request.body.chat_name) : null;
+        const continuation = await getContinuation(request.user.directories, child, branchName);
+        return response.send({ ok: true, messages: continuation?.messages ?? [] });
     } catch (error) {
         console.error('Error selecting alternative:', error);
         return response.status(500).send({ error: true });
