@@ -1,10 +1,10 @@
 import {
     getSelectionState,
     getCurrentCharacter,
-    getRequestHeaders,
     animation_duration,
     animation_easing,
 } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { eventSource, event_types } from '../../events.js';
 import { groups, selected_group } from '../../group-chats.js';
 import { loadFileToDocument, delay, getBase64Async, getSanitizedFilename, saveBase64AsFile, getFileExtension, getVideoThumbnail, clamp } from '../../utils.js';

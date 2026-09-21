@@ -1,4 +1,4 @@
-import { getRequestHeaders } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { splitRecursive } from '../../utils.js';
 import { getPreviewString, saveTtsProviderSettings } from './index.js';
 

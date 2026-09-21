@@ -1,5 +1,6 @@
 import { DOMPurify, moment, sha256 } from '../lib.js';
-import { getRequestHeaders, saveSettings } from '../script.js';
+import { saveSettings } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { t } from './i18n.js';
 import { chat_completion_sources } from './chat-completion-settings.js';

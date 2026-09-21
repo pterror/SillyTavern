@@ -6,7 +6,6 @@ import {
     getCurrentChatId,
     getCurrentCharacter,
     getSelectionState,
-    getRequestHeaders,
     name2,
     reloadCurrentChat,
     saveSettingsDebounced,
@@ -28,6 +27,7 @@ import {
     chatElement,
     updateIn,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { selected_group } from './group-chats.js';

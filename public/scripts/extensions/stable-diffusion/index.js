@@ -7,7 +7,6 @@ import {
     getCharacterAvatar,
     getCurrentCharacter,
     getCurrentChatId,
-    getRequestHeaders,
     getSelectionState,
     getUserAvatar,
     saveSettingsDebounced,
@@ -16,6 +15,7 @@ import {
     systemUserName,
     user_avatar,
 } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { charactersStore } from '../../character-store.js';
 import { event_types, eventSource } from '../../events.js';
 import {

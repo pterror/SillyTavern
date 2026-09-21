@@ -6,7 +6,8 @@ import {
     lodash,
 } from '../lib.js';
 
-import { animation_duration, getCurrentCharacter, getRequestHeaders, processDroppedFiles, user_avatar } from '../script.js';
+import { animation_duration, getCurrentCharacter, processDroppedFiles, user_avatar } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { isMobile } from './RossAscends-mods.js';
 import { collapseNewlines, power_user, personaStore } from './power-user.js';

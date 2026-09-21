@@ -17,7 +17,6 @@ import {
     getExtensionPromptMaxDepth,
     getMediaDisplay,
     getMediaIndex,
-    getRequestHeaders,
     is_send_press,
     main_api,
     name1,
@@ -30,6 +29,7 @@ import {
     substituteParamsExtended,
     system_message_types,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { getGroupNames, selected_group } from './group-chats.js';
 

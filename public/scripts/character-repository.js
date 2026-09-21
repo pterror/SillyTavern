@@ -8,7 +8,8 @@
  * read a row regardless of which shape it came back as.
  */
 
-import { getRequestHeaders, unshallowCharacter } from '../script.js';
+import { unshallowCharacter } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups } from './character-cache.js';
 

@@ -828,8 +828,6 @@ export let active_group = '';
 
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
 
-export { getRequestHeaders };
-
 export function getSlideToggleOptions() {
     return {
         miliseconds: animation_duration * 1.5,

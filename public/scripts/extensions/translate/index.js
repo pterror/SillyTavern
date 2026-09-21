@@ -1,12 +1,12 @@
 export { translate };
 
 import {
-    getRequestHeaders,
     reloadCurrentChat,
     saveSettingsDebounced,
     substituteParams,
     updateMessageBlock,
 } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { eventSource, event_types } from '../../events.js';
 import { extension_settings, getContext, renderExtensionTemplateAsync } from '../../extensions.js';
 import { POPUP_TYPE, callGenericPopup } from '../../popup.js';

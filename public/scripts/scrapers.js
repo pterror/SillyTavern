@@ -1,4 +1,4 @@
-import { getRequestHeaders } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { renderExtensionTemplateAsync } from './extensions.js';
 import { POPUP_RESULT, POPUP_TYPE, callGenericPopup } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';

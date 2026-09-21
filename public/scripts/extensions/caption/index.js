@@ -1,6 +1,7 @@
 import { ensureImageFormatSupported, getBase64Async, getFileExtension, isTrueBoolean, saveBase64AsFile } from '../../utils.js';
 import { getContext, getApiUrl, doExtrasFetch, extension_settings, modules, renderExtensionTemplateAsync } from '../../extensions.js';
-import { appendMediaToMessage, chat_metadata, getRequestHeaders, saveSettingsDebounced, substituteParams } from '../../../script.js';
+import { appendMediaToMessage, chat_metadata, saveSettingsDebounced, substituteParams } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { eventSource, event_types } from '../../events.js';
 import { getMessageTimeStamp } from '../../RossAscends-mods.js';
 import { SECRET_KEYS, secret_state } from '../../secrets.js';

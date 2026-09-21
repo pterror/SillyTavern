@@ -1,5 +1,6 @@
 import { localforage } from '../lib.js';
-import { getCurrentCharacter, getRequestHeaders, getSelectionState, main_api, nai_settings, online_status } from '../script.js';
+import { getCurrentCharacter, getSelectionState, main_api, nai_settings, online_status } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { chat_completion_sources, model_list, oai_settings } from './chat-completion-settings.js';

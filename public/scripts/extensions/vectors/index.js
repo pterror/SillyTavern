@@ -2,7 +2,6 @@ import {
     extension_prompt_types,
     extension_prompt_roles,
     getCurrentChatId,
-    getRequestHeaders,
     is_send_press,
     saveSettingsDebounced,
     setExtensionPrompt,
@@ -10,6 +9,7 @@ import {
     generateRaw,
     substituteParamsExtended,
 } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { eventSource, event_types } from '../../events.js';
 import {
     ModuleWorkerWrapper,

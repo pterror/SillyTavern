@@ -54,7 +54,6 @@ import {
     chat_metadata,
     updateChatMetadata,
     getThumbnailUrl,
-    getRequestHeaders,
     setMenuType,
     menu_type,
     select_selected_character,
@@ -81,6 +80,7 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';

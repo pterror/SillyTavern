@@ -1,4 +1,5 @@
-import { CONNECT_API_MAP, createModelIcon, getRequestHeaders, substituteParams } from '../../script.js';
+import { CONNECT_API_MAP, createModelIcon, substituteParams } from '../../script.js';
+import { getRequestHeaders } from '../request-headers.js';
 import { getConnectApiMapAllowedSelected } from '../connect-api-map.js';
 import { extension_settings, openThirdPartyExtensionMenu } from '../extensions.js';
 import { t } from '../i18n.js';

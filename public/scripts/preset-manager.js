@@ -3,7 +3,6 @@ import { Fuse, lodash } from '../lib.js';
 import {
     amount_gen,
     getCurrentCharacter,
-    getRequestHeaders,
     koboldai_setting_names,
     koboldai_settings,
     main_api,
@@ -15,6 +14,7 @@ import {
     saveSettings,
     saveSettingsDebounced,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { groupsStore, selected_group } from './group-chats.js';
 import { t } from './i18n.js';

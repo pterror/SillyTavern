@@ -1,4 +1,4 @@
-import { getRequestHeaders } from '../../../script.js';
+import { getRequestHeaders } from '../../request-headers.js';
 import { getApiUrl } from '../../extensions.js';
 import { doExtrasFetch, modules } from '../../extensions.js';
 import { getPreviewString } from './index.js';

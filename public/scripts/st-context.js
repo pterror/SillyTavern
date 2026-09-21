@@ -14,7 +14,6 @@ import {
     generateQuietPrompt,
     getCharacters,
     getCurrentChatId,
-    getRequestHeaders,
     getThumbnailUrl,
     main_api,
     max_context,
@@ -71,6 +70,7 @@ import {
     getOneCharacter,
     getCharacterSource,
 } from '../script.js';
+import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';
 import {
