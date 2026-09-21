@@ -17,8 +17,6 @@ import {
     isChatSaveScheduled,
     setAnimationDuration,
     ANIMATION_DURATION_DEFAULT,
-    setActiveGroup,
-    setActiveCharacter,
     entitiesFilter,
     doNewChat,
     online_status,
@@ -30,6 +28,7 @@ import {
     getMessageDeletionStartId,
 } from '../script.js';
 import { chat } from './chat-state.js';
+import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';

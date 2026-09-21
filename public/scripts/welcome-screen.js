@@ -17,14 +17,13 @@ import {
     renameGroupOrCharacterChat,
     saveSettingsDebounced,
     selectCharacterByAvatar,
-    setActiveCharacter,
-    setActiveGroup,
     system_avatar,
     system_message_types,
     unshallowCharacter,
     updateRemoteChatName,
 } from '../script.js';
 import { chat } from './chat-state.js';
+import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';
