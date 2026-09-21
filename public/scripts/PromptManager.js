@@ -2,7 +2,8 @@
 
 import { DOMPurify } from '../lib.js';
 
-import { is_send_press, main_api, substituteParams } from '../script.js';
+import { is_send_press, substituteParams } from '../script.js';
+import { main_api } from './generation-params.js';
 import { event_types, eventSource } from './events.js';
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './chat-completion-settings.js';

@@ -1,6 +1,7 @@
 import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroRegistry.js';
 import { isMobile } from '../../RossAscends-mods.js';
-import { parseMesExamples, main_api } from '../../../script.js';
+import { parseMesExamples } from '../../../script.js';
+import { main_api } from '../../generation-params.js';
 import { power_user } from '../../power-user.js';
 import { formatInstructModeExamples } from '../../instruct-mode.js';
 

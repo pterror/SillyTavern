@@ -18,7 +18,6 @@ import {
     getMediaDisplay,
     getMediaIndex,
     is_send_press,
-    main_api,
     name2,
     resultCheckStatus,
     saveSettingsDebounced,
@@ -82,6 +81,7 @@ import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
+import { main_api } from './generation-params.js';
 
 export {
     openai_messages_count,

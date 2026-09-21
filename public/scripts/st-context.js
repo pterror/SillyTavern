@@ -13,7 +13,6 @@ import {
     getCharacters,
     getCurrentChatId,
     getThumbnailUrl,
-    main_api,
     menu_type,
     messageFormatting,
     name2,
@@ -67,7 +66,7 @@ import {
     getCharacterSource,
 } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
-import { max_context } from './generation-params.js';
+import { main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore } from './character-store.js';

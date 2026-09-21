@@ -1,11 +1,10 @@
 import {
-    main_api,
     resultCheckStatus,
     saveSettingsDebounced,
     setGenerationProgress,
     setOnlineStatus,
 } from '../script.js';
-import { amount_gen, max_context } from './generation-params.js';
+import { amount_gen, main_api, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { isMobile } from './RossAscends-mods.js';
