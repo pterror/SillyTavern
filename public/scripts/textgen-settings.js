@@ -1,7 +1,5 @@
 import {
     abortStatusCheck,
-    eventSource,
-    event_types,
     getRequestHeaders,
     getStoppingStrings,
     main_api,
@@ -14,6 +12,7 @@ import {
     startStatusLoading,
     substituteParams,
 } from '../script.js';
+import { eventSource, event_types } from './events.js';
 import { deriveTemplatesFromChatTemplate } from './chat-templates.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset, selectContextPreset, selectInstructPreset } from './instruct-mode.js';

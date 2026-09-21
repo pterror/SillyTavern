@@ -1,7 +1,6 @@
 import { DOMPurify, Bowser } from '../lib.js';
 
 import {
-    charactersStore,
     online_status,
     main_api,
     is_send_press,
@@ -15,7 +14,6 @@ import {
     getRequestHeaders,
     buildAvatarList,
     selectCharacterByAvatar,
-    eventSource,
     menu_type,
     substituteParams,
     userInputGenerateMutex,
@@ -26,6 +24,8 @@ import {
     entitiesFilter,
     chat,
 } from '../script.js';
+import { charactersStore } from './character-store.js';
+import { eventSource } from './events.js';
 
 import {
     power_user,

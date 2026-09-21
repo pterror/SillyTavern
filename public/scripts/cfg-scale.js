@@ -2,12 +2,11 @@ import {
     chat_metadata,
     substituteParams,
     getSelectionState,
-    eventSource,
-    event_types,
     saveSettingsDebounced,
     animation_duration,
     getCurrentCharacter,
 } from '../script.js';
+import { eventSource, event_types } from './events.js';
 import { extension_settings, saveMetadataDebounced } from './extensions.js';
 import { selected_group } from './group-chats.js';
 import { getCharaFilename, delay } from './utils.js';

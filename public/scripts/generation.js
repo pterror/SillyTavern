@@ -1,6 +1,6 @@
 import {
     addChatsPreamble, addChatsSeparator, addPersonaDescriptionExtensionPrompt,
-    amount_gen, baseChatReplace, cancelDebouncedChatSave, charactersStore, chat, chat_metadata, cleanUpMessage,
+    amount_gen, baseChatReplace, cancelDebouncedChatSave, chat, chat_metadata, cleanUpMessage,
     deactivateSendButtons, DEFAULT_SAVE_EDIT_TIMEOUT, deleteLastMessage, depth_prompt_depth_default, depth_prompt_role_default,
     doChatInject, extension_prompts, extension_prompt_types,
     extractImagesFromData, extractJsonFromData, extractMessageFromData, extractMultiSwipes, extractTitleFromData,
@@ -16,6 +16,7 @@ import {
     showStopButton, StreamingProcessor, substituteParams, swipe,
     triggerAutoContinue, unblockGeneration, unshallowCharacter,
 } from '../script.js';
+import { charactersStore } from './character-store.js';
 import { _postChatMetadata, deriveChatAddressNode, saveMetadata } from './metadata-store.js';
 import { isProvisionalNodeId, isStoredNodeId } from './node-identity.js';
 import { setFloatingPrompt } from './authors-note.js';

@@ -3,15 +3,11 @@ import {
     addOneMessage,
     appendMediaToMessage,
     callPopup,
-    characters,
-    charactersStore,
     chat,
     chat_metadata,
     CONNECT_API_MAP,
     create_save,
     deactivateSendButtons,
-    event_types,
-    eventSource,
     extension_prompts,
     extractMessageFromData,
     Generate,
@@ -75,6 +71,8 @@ import {
     getOneCharacter,
     getCharacterSource,
 } from '../script.js';
+import { characters, charactersStore } from './character-store.js';
+import { event_types, eventSource } from './events.js';
 import {
     extension_settings,
     getExtensionManifest,

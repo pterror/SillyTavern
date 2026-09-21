@@ -2,9 +2,6 @@
 
 import {
     characterGroupOverlay,
-    charactersStore,
-    event_types,
-    eventSource,
     getCharacters,
     getRequestHeaders,
     buildAvatarList,
@@ -12,6 +9,8 @@ import {
     printCharactersDebounced,
     deleteCharacter,
 } from '../script.js';
+import { charactersStore } from './character-store.js';
+import { event_types, eventSource } from './events.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';

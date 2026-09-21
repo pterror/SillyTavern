@@ -10,9 +10,8 @@ import {
     abortStatusCheck,
     startStatusLoading,
     setGenerationParamsFromPreset,
-    eventSource,
-    event_types,
 } from '../script.js';
+import { eventSource, event_types } from './events.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset } from './instruct-mode.js';
 import { CompactStreamDecoder } from './llamacpp-compact-stream.js';

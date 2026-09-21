@@ -3,8 +3,6 @@ import {
     addCopyToCodeBlocks,
     appendMediaToMessage,
     chat,
-    eventSource,
-    event_types,
     getCurrentChatId,
     getCurrentCharacter,
     getSelectionState,
@@ -28,9 +26,10 @@ import {
     getMediaIndex,
     getMediaDisplay,
     chatElement,
-    charactersStore,
     updateIn,
 } from '../script.js';
+import { charactersStore } from './character-store.js';
+import { eventSource, event_types } from './events.js';
 import { selected_group } from './group-chats.js';
 import { power_user } from './power-user.js';
 import {

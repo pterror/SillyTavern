@@ -3,14 +3,10 @@ import { Fuse, Handlebars } from '../lib.js';
 import {
     saveSettingsDebounced,
     scrollChatToBottom,
-    characters,
-    charactersStore,
     reloadMarkdownProcessor,
     reloadCurrentChat,
     getRequestHeaders,
     substituteParams,
-    eventSource,
-    event_types,
     getCurrentChatId,
     printCharactersDebounced,
     printCharacters,
@@ -35,6 +31,8 @@ import {
     settingsReady,
     getMessageDeletionStartId,
 } from '../script.js';
+import { characters, charactersStore } from './character-store.js';
+import { eventSource, event_types } from './events.js';
 import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';
 import {
     groups,

@@ -364,8 +364,6 @@ export {
     system_message_types,
     sendSystemMessage,
     getSystemMessageByType,
-    event_types,
-    eventSource,
     /** @deprecated Use setCharacterSettingsOverrides instead. */
     setCharacterSettingsOverrides as setScenarioOverride,
     /** @deprecated Use appendMediaToMessage instead. */
@@ -468,7 +466,6 @@ export let settingsReady = false;
 let currentVersion = '0.0.0';
 export let displayVersion = 'SillyTavern';
 
-export { characters, charactersStore };
 // Not narrowed to specific ops/fields: invalidateCharactersFuseIndex() just sets a dirty flag, rebuild is lazy.
 charactersStore.onChange(() => invalidateCharactersFuseIndex());
 // Source of truth for character selection. Never assign directly - go through setCharacterId().

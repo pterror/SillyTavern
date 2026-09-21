@@ -1,6 +1,7 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { chat, closeCurrentChat, displayPastChats, eventSource, event_types, getCurrentChatDetails, getCurrentChatId, getFirstDisplayedMessageId, newAssistantChat, reloadCurrentChat, renameChat, saveChatConditional, saveSettings, showMoreMessages } from '../../../script.js';
+import { chat, closeCurrentChat, displayPastChats, getCurrentChatDetails, getCurrentChatId, getFirstDisplayedMessageId, newAssistantChat, reloadCurrentChat, renameChat, saveChatConditional, saveSettings, showMoreMessages } from '../../../script.js';
+import { eventSource, event_types } from '../../events.js';
 import { debounce_timeout } from '../../constants.js';
 import { t } from '../../i18n.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';
