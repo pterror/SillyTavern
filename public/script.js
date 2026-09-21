@@ -12533,7 +12533,6 @@ export async function doNavbarIconClick() {
         // instead of closing - the user is switching between the two right-side panels.
         if (drawer.hasClass('fillRight') && !drawer.hasClass('frontFillRight')) {
             activateFillRightDrawer(targetDrawerID);
-            return;
         }
         if (MOBILE_OVERLAY_PANEL_IDS.includes(targetDrawerID) && !drawer.hasClass('frontMobileOverlay')) {
             activateMobileOverlayPanel(targetDrawerID);
