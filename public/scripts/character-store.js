@@ -1,4 +1,5 @@
 import { EntityStore } from './entity-store.js';
+import { selectCharacterByAvatar } from '../script.js';
 
 /** @type {Character[]} */
 export let characters = [];
@@ -32,4 +33,17 @@ export function setCharacterId(value) {
             console.error('Invalid character ID type:', value);
             break;
     }
+}
+
+/**
+ * Thin wrapper around selectCharacterByAvatar(), kept for the public extension API (context.selectCharacterById).
+ * @param {number|string} id
+ * @param {{switchMenu?: boolean}} [options]
+ */
+export async function selectCharacterById(id, { switchMenu = true } = {}) {
+    const avatar = characters[id]?.avatar;
+    if (avatar === undefined) {
+        return;
+    }
+    await selectCharacterByAvatar(avatar, { switchMenu });
 }

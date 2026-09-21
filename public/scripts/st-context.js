@@ -27,7 +27,6 @@ import {
     saveMetadata,
     saveReply,
     saveSettingsDebounced,
-    selectCharacterById,
     sendGenerationRequest,
     sendStreamingRequest,
     sendSystemMessage,
@@ -69,7 +68,7 @@ import { chat, chat_metadata } from './chat-state.js';
 import { main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore } from './character-store.js';
+import { characters, charactersStore, selectCharacterById } from './character-store.js';
 import { event_types, eventSource } from './events.js';
 import {
     extension_settings,

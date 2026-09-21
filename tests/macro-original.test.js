@@ -18,6 +18,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     name1: 'User',
     name2: 'Character',
     charactersStore: { get: () => undefined },
+    selectCharacterByAvatar: jest.fn(),
     getCharacterCardFieldsLazy: () => null,
     getGeneratingModel: () => '',
     parseMesExamples: () => [],

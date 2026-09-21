@@ -1147,16 +1147,6 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
     }
 }
 
-// Thin wrapper around selectCharacterByAvatar(), kept for the public extension API (context.selectCharacterById).
-// Internal code should call selectCharacterByAvatar() directly.
-export async function selectCharacterById(id, { switchMenu = true } = {}) {
-    const avatar = characters[id]?.avatar;
-    if (avatar === undefined) {
-        return;
-    }
-    await selectCharacterByAvatar(avatar, { switchMenu });
-}
-
 function getBackBlock() {
     const template = $('#bogus_folder_back_template .bogus_folder_select').clone();
     return template;

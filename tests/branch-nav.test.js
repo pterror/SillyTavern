@@ -114,6 +114,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     saveItemizedPrompts: jest.fn(),
     setActiveGroup: jest.fn(),
     getCurrentChatDetails: getCurrentChatDetailsMock,
+    selectCharacterByAvatar: jest.fn(),
     updateMessage: updateMessageMock,
     hydrateSwipes: hydrateSwipesMock,
     ensureOpeningRow: ensureOpeningRowMock,
