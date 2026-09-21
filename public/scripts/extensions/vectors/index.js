@@ -1,6 +1,4 @@
 import {
-    eventSource,
-    event_types,
     extension_prompt_types,
     extension_prompt_roles,
     getCurrentChatId,
@@ -12,6 +10,7 @@ import {
     generateRaw,
     substituteParamsExtended,
 } from '../../../script.js';
+import { eventSource, event_types } from '../../events.js';
 import {
     ModuleWorkerWrapper,
     extension_settings,

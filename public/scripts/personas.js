@@ -1,15 +1,12 @@
 import {
     buildAvatarList,
     characterToEntity,
-    charactersStore,
     getCurrentCharacter,
     getSelectionState,
     chat,
     chat_metadata,
     createOrEditCharacter,
     default_user_avatar,
-    eventSource,
-    event_types,
     getCurrentChatId,
     getRequestHeaders,
     getThumbnailUrl,
@@ -25,6 +22,8 @@ import {
     updateMessage,
     chatOpEditMany,
 } from '../script.js';
+import { charactersStore } from './character-store.js';
+import { eventSource, event_types } from './events.js';
 import { power_user, personaStore, defaultPersonaRecord } from './power-user.js';
 import { getTokenCountAsync } from './tokenizers.js';
 import {

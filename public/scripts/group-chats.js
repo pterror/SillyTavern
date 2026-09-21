@@ -32,8 +32,6 @@ import {
     sendSystemMessage,
     printMessages,
     substituteParams,
-    characters,
-    charactersStore,
     default_avatar,
     addOneMessage,
     clearChat,
@@ -67,8 +65,6 @@ import {
     saveChatConditional,
     deactivateSendButtons,
     activateSendButtons,
-    eventSource,
-    event_types,
     getCurrentChatId,
     setCharacterSettingsOverrides,
     system_avatar,
@@ -85,6 +81,8 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
 } from '../script.js';
+import { characters, charactersStore } from './character-store.js';
+import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget } from './chat-store.js';
 import { provisionalNodeId } from './node-identity.js';

@@ -2,9 +2,6 @@ import { Popper } from '../../../lib.js';
 import {
     animation_duration,
     appendMediaToMessage,
-    charactersStore,
-    event_types,
-    eventSource,
     formatCharacterAvatar,
     generateQuietPrompt,
     getCharacterAvatar,
@@ -19,6 +16,8 @@ import {
     systemUserName,
     user_avatar,
 } from '../../../script.js';
+import { charactersStore } from '../../character-store.js';
+import { event_types, eventSource } from '../../events.js';
 import {
     doExtrasFetch,
     extension_settings,

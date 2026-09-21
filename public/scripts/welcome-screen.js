@@ -1,13 +1,10 @@
 import {
     addOneMessage,
-    charactersStore,
     chat,
     closeCurrentChat,
     deleteCharacterChatByName,
     displayVersion,
     doNewChat,
-    event_types,
-    eventSource,
     getCharacters,
     getCurrentCharacter,
     getCurrentChatId,
@@ -29,6 +26,8 @@ import {
     unshallowCharacter,
     updateRemoteChatName,
 } from '../script.js';
+import { charactersStore } from './character-store.js';
+import { event_types, eventSource } from './events.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { deleteGroupChatByName, getGroupAvatar, groupsStore, is_group_generating, openGroupById, openGroupChat } from './group-chats.js';
 import { t } from './i18n.js';

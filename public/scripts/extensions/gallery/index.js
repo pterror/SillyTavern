@@ -1,12 +1,11 @@
 import {
-    eventSource,
     getSelectionState,
     getCurrentCharacter,
     getRequestHeaders,
-    event_types,
     animation_duration,
     animation_easing,
 } from '../../../script.js';
+import { eventSource, event_types } from '../../events.js';
 import { groups, selected_group } from '../../group-chats.js';
 import { loadFileToDocument, delay, getBase64Async, getSanitizedFilename, saveBase64AsFile, getFileExtension, getVideoThumbnail, clamp } from '../../utils.js';
 import { loadMovingUIState } from '../../power-user.js';

@@ -1,4 +1,5 @@
-import { eventSource, event_types, getCurrentCharacter, getCurrentChatId, getSelectionState, messageFormatting, reloadCurrentChat, saveSettingsDebounced } from '../../../script.js';
+import { getCurrentCharacter, getCurrentChatId, getSelectionState, messageFormatting, reloadCurrentChat, saveSettingsDebounced } from '../../../script.js';
+import { eventSource, event_types } from '../../events.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { selected_group } from '../../group-chats.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from '../../popup.js';

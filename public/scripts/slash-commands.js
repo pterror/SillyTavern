@@ -1,4 +1,4 @@
-import { eventSource, event_types } from '../script.js';
+import { eventSource, event_types } from './events.js';
 import { registerVariableCommands } from './variables.js';
 import { registerActionLoaderSlashCommands } from './action-loader-slashcommands.js';
 import {

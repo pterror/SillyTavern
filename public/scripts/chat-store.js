@@ -1,7 +1,8 @@
 // Writer side of the chat store: writes should go through the named actions below rather than
 // mutating `chat` directly and asking for a whole-conversation save.
 
-import { chat, chat_metadata, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, charactersStore, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
+import { chat, chat_metadata, getCurrentCharacter, getCurrentChatId, getRequestHeaders, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
+import { charactersStore } from './character-store.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 // A group has no avatar of its own - while one is open it, not getCurrentCharacter(), is the tree
 // owner for every chatOp*() below. See _currentOwner().

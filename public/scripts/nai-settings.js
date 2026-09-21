@@ -1,7 +1,5 @@
 import {
     abortStatusCheck,
-    event_types,
-    eventSource,
     getRequestHeaders,
     getStoppingStrings,
     resultCheckStatus,
@@ -10,6 +8,7 @@ import {
     setOnlineStatus,
     startStatusLoading,
 } from '../script.js';
+import { event_types, eventSource } from './events.js';
 import { MAX_CONTEXT_DEFAULT, MAX_RESPONSE_DEFAULT, power_user } from './power-user.js';
 import { getTextTokens, tokenizers } from './tokenizers.js';
 import { CompactStreamDecoder } from './llamacpp-compact-stream.js';

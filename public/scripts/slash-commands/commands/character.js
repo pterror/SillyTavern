@@ -1,6 +1,8 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { Generate, charactersStore, chat, deleteCharacter, duplicateCharacter, eventSource, event_types, getCharacters, getCurrentCharacter, getOneCharacter, getRequestHeaders, getThumbnailUrl, is_send_press, reloadCurrentChat, renameCharacter, saveChatConditional, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
+import { Generate, chat, deleteCharacter, duplicateCharacter, getCharacters, getCurrentCharacter, getOneCharacter, getRequestHeaders, getThumbnailUrl, is_send_press, reloadCurrentChat, renameCharacter, saveChatConditional, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
+import { charactersStore } from '../../character-store.js';
+import { eventSource, event_types } from '../../events.js';
 import { is_group_generating } from '../../group-chats.js';
 import { t } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';

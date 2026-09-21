@@ -1,6 +1,7 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
-import { chat_metadata, eventSource, event_types, extension_prompt_roles, extension_prompt_types, setExtensionPrompt } from '../../../script.js';
+import { chat_metadata, extension_prompt_roles, extension_prompt_types, setExtensionPrompt } from '../../../script.js';
+import { eventSource, event_types } from '../../events.js';
 import { promptManager } from '../../chat-completion-settings.js';
 import { saveMetadataDebounced } from '../../extensions.js';
 import { t } from '../../i18n.js';

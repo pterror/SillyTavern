@@ -1,4 +1,5 @@
-import { chat, chat_metadata, eventSource, event_types, getCurrentCharacter, fetchRawSettings } from '../../../script.js';
+import { chat, chat_metadata, getCurrentCharacter, fetchRawSettings } from '../../../script.js';
+import { eventSource, event_types } from '../../events.js';
 import { extension_settings } from '../../extensions.js';
 import { QuickReplyApi } from './api/QuickReplyApi.js';
 import { AutoExecuteHandler } from './src/AutoExecuteHandler.js';

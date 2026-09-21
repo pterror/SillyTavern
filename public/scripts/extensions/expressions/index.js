@@ -1,6 +1,8 @@
 import { DOMPurify, Fuse } from '../../../lib.js';
 
-import { charactersStore, eventSource, event_types, generateQuietPrompt, generateRaw, getCurrentCharacter, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types } from '../../../script.js';
+import { generateQuietPrompt, generateRaw, getCurrentCharacter, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types } from '../../../script.js';
+import { charactersStore } from '../../character-store.js';
+import { eventSource, event_types } from '../../events.js';
 import { dragElement, isMobile } from '../../RossAscends-mods.js';
 import { getContext, getApiUrl, modules, extension_settings, ModuleWorkerWrapper, doExtrasFetch, renderExtensionTemplateAsync } from '../../extensions.js';
 import { loadMovingUIState, performFuzzySearch, power_user } from '../../power-user.js';

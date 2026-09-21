@@ -2,14 +2,13 @@ import {
     MAX_INJECTION_DEPTH,
     animation_duration,
     chat_metadata,
-    eventSource,
-    event_types,
     extension_prompt_roles,
     extension_prompt_types,
     saveSettingsDebounced,
     getCurrentCharacter,
     getSelectionState,
 } from '../script.js';
+import { eventSource, event_types } from './events.js';
 import { extension_settings, getContext, saveMetadataDebounced } from './extensions.js';
 import { getCharaFilename, debounce, delay } from './utils.js';
 import { getTokenCountAsync } from './tokenizers.js';
