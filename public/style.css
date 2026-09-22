@@ -5720,6 +5720,14 @@ body:has(#character_popup.open) #top-settings-holder:has(.drawer-content.openDra
     display: none;
 }
 
+.inline-drawer {
+    transition: opacity 0.2s ease-in-out;
+}
+
+.inline-drawer.token-count-zero {
+    opacity: 0.5;
+}
+
 .drawer25pWidth {
     flex-basis: calc((var(--sheldWidth) / 4) - 16px);
 }
