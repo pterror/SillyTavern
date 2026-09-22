@@ -9,7 +9,7 @@ import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { readSettingsAtPaths } from './settings-store.js';
 import { copyCharacterFile } from './local-import-copy.js';
-import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook } from './endpoints/characters.js';
+import { importCharacterFileHeadless, buildPngImportData, buildJsonImportData, mintCharacterId, fireMetadataUpsertHook, reflinkAgainstExistingDuplicate } from './endpoints/characters.js';
 import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, getLocalImportSkip, setLocalImportSkip, clearLocalImportSkip, getLocalImportMtime, getLocalImportMtimesForPaths, getLocalImportMtimeSourcePathsAfter, setLocalImportMtime, clearLocalImportMtime, setCharacterDateAdded, seedCardTagsForSingleCharacter } from './character-metadata-db.js';
 import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
@@ -479,7 +479,8 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     importedCharacterId = `${pngName}.png`;
                     const destPath = path.join(directories.characters, `${pngName}.png`);
                     await pipelineResult.finish({ type: 'write', destPath, data });
-                    await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash);
+                    await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash, pipelineResult.avatarIdentityHash);
+                    await reflinkAgainstExistingDuplicate(directories, `${pngName}.png`, destPath, data, pipelineResult.avatarIdentityHash);
                     try {
                         await setCharacterDateAdded(directories, `${pngName}.png`, stat.mtimeMs);
                     } catch (err) {

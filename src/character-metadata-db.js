@@ -9,7 +9,7 @@ import sanitize from 'sanitize-filename';
 
 import { color, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
 import extract from 'png-chunks-extract';
-import { parse as parseCharacterCard, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
+import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, calculateGroupChatStats, resolveGroupOwner, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
@@ -323,13 +323,10 @@ const SCHEMA_SQL = `
         active_chat    TEXT,
         -- 0 = not examined, 1 = resolved one way or the other (real chat name or confirmed none). Never regresses 1->0.
         active_chat_checked INTEGER NOT NULL DEFAULT 0,
-        -- Full Spec-V2 card JSON, authoritative when the PNG's embedded tEXt chunk is stale. NULL means "PNG chunk
-        -- is current, read from there" - a metadata-only edit stores JSON here without rewriting the PNG (keeps
-        -- storage proportional to cards actually edited, not library size); any write that rewrites the PNG
-        -- clears this to NULL. readCardContent() (characters.js) is the read seam; it bypasses the mtime-keyed
-        -- PNG cache for the non-NULL case since a db-only write doesn't move the file's mtime. Export paths
-        -- materialize this column into the PNG chunk so exported files stay self-contained.
-        card_json      TEXT
+        -- Full Spec-V2 card JSON - the single source of truth for character data. The PNG is never read as a
+        -- data source for an already-imported character; readCardContent() (characters.js) is the read seam.
+        -- Export paths materialize this column into the PNG chunk so exported files stay self-contained.
+        card_json      TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_characters_name_fold ON characters(name_fold);
     CREATE INDEX IF NOT EXISTS idx_characters_date_added ON characters(date_added);
@@ -857,17 +854,80 @@ function migrateAllowGlobalStylesColumn(db) {
     }
 }
 
-// NULL correctly means "PNG chunk is current" for every pre-migration row. The partial index keeps
-// getStaleCardJsonMap()'s scan proportional to edited cards, not library size.
+// card_json is the single source of truth for character data (never the PNG, post-import) - see SCHEMA_SQL's
+// column comment. A pre-existing row from before this column existed has no other source for it than its PNG,
+// so this is the one place the app still reads a PNG's embedded chunk for an already-imported character - a
+// one-time transition, not a runtime fallback. SQLite has no ALTER COLUMN, so making the column NOT NULL
+// (once every row has a value) means rebuilding the table: create the replacement with the same columns,
+// copy the data across, drop the old table, rename the new one into place.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {import('./users.js').UserDirectoryList} directories
  */
-function migrateCardJsonColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+function migrateCardJsonColumn(db, directories) {
+    let columns = (/** @type {{ name: string, type: string, notnull: number, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'card_json')) {
         db.exec('ALTER TABLE characters ADD COLUMN card_json TEXT');
+        columns = (/** @type {{ name: string, type: string, notnull: number, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
     }
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_card_json_present ON characters(id) WHERE card_json IS NOT NULL');
+
+    const cardJsonColumn = columns.find(c => c.name === 'card_json');
+    if (cardJsonColumn !== undefined && cardJsonColumn.notnull === 1) return; // already migrated
+
+    const nullRows = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM characters WHERE card_json IS NULL')));
+    if (nullRows.length > 0) {
+        let backfilled = 0;
+        /** @type {string[]} */
+        const unresolved = [];
+        db.transaction(() => {
+            for (const row of nullRows) {
+                let cardJson;
+                try {
+                    cardJson = readCharacterCardFromBuffer(fs.readFileSync(path.join(directories.characters, row.id)));
+                } catch {
+                    cardJson = undefined;
+                }
+                if (cardJson === undefined) {
+                    unresolved.push(row.id);
+                    continue;
+                }
+                db.run('UPDATE characters SET card_json = @cardJson WHERE id = @id', { id: row.id, cardJson });
+                backfilled++;
+            }
+        });
+        console.log(color.cyan(`[character-metadata] card_json migration: backfilled ${backfilled}/${nullRows.length} pre-existing row(s) from their PNG.`));
+        if (unresolved.length > 0) {
+            console.error(color.red(
+                `[character-metadata] card_json migration: ${unresolved.length} row(s) have no readable PNG and no other ` +
+                `character-data source, so card_json can't be backfilled for them: ${unresolved.slice(0, 20).join(', ')}` +
+                `${unresolved.length > 20 ? ', ...' : ''}. Leaving the column nullable until these rows are resolved ` +
+                '(fix or remove them, then restart) - NOT NULL cannot be added while any row would violate it.',
+            ));
+            return;
+        }
+    }
+
+    db.exec('CREATE TABLE characters_new (' + columns.map(c => {
+        let def = `${/** @type {string} */ (c.name)} ${/** @type {string} */ (c.type)}`;
+        if (c.name === 'card_json' || c.notnull) def += ' NOT NULL';
+        if (c.dflt_value !== null && c.dflt_value !== undefined) def += ` DEFAULT ${c.dflt_value}`;
+        if (c.pk) def += ' PRIMARY KEY';
+        return def;
+    }).join(', ') + ')');
+    const columnList = columns.map(c => c.name).join(', ');
+    db.exec(`INSERT INTO characters_new (${columnList}) SELECT ${columnList} FROM characters`);
+    db.exec('DROP TABLE characters');
+    db.exec('ALTER TABLE characters_new RENAME TO characters');
+
+    // Every index on `characters` created above this point in getEntry()'s migration chain was dropped along
+    // with the table just now (SQLite drops a table's indexes with it) and needs recreating - anything created
+    // further down getEntry()'s chain (migrateGroupsColumns() onward) still runs after this function returns.
+    db.exec(SCHEMA_SQL);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_hash ON characters(content_hash)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_identity_hash ON characters(content_identity_hash)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_import_poisoned ON characters(import_poisoned)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_active_chat_checked ON characters(active_chat_checked)');
 }
 
 // idx_characters_fav_name_fold has default ASC on both columns, which SQLite can't use for a DESC/ASC ORDER BY.
@@ -915,7 +975,7 @@ async function getEntry(directories) {
     migrateRevToSeqColumns(db);
     migrateCharacterDigestColumns(db);
     migrateAllowGlobalStylesColumn(db);
-    migrateCardJsonColumn(db);
+    migrateCardJsonColumn(db, directories);
     migrateGroupsColumns(db, directories);
     migrateGroupDigestColumns(db, directories);
     migrateFavSortIndex(db);
@@ -926,6 +986,15 @@ async function getEntry(directories) {
     const entry = { db, directories, watcher: null, watchTimers: new Map(), batch: null, bootstrapPromise: null };
     entries.set(key, entry);
     return entry;
+}
+
+// For one-off tooling that needs the schema/migrations applied (e.g. a pending NOT NULL backfill) without
+// starting the server's own watcher/bootstrap background work - getEntry() itself starts neither.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function ensureSchemaMigrated(directories) {
+    await getEntry(directories);
 }
 
 // The only place a shallow object's digest_fav/digest_tag_ids/digest_content are computed - buildRow(),
@@ -981,10 +1050,11 @@ function writeShallowJson(db, id, shallow, changeSeq, extraColumns = {}) {
  * @param {string | null} [params.contentIdentityHash]
  * @param {string | null} [params.avatarIdentityHash]
  * @param {string[]} [params.tagIds]
- * @param {string | null} [params.cardJson]
+ * @param {string} params.cardJson
  * @returns {CharacterUpsertRow}
  */
-function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson = null }) {
+function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson }) {
+    if (typeof cardJson !== 'string') throw new TypeError(`buildRow(${id}): cardJson is required (card_json is NOT NULL) - got ${typeof cardJson}`);
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character.data ?? {});
     const shallowSource = {
@@ -1023,7 +1093,7 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         import_poisoned: contentIdentityHash != null ? 0 : 1,
         active_chat: character.chat ?? null,
         active_chat_checked: 1,
-        card_json: cardJson ?? null,
+        card_json: cardJson,
     };
 }
 
@@ -1360,8 +1430,8 @@ export async function getShallowByIds(directories, ids) {
     return result;
 }
 
-// null means "PNG chunk is current, read the file". Deliberately uncached: readCharacterData()'s mtime-keyed
-// cache can't represent a db-only edit since neither path nor mtime moves.
+// null means no row exists for this avatar yet (not yet reconciled, or never existed) - once a row exists,
+// card_json is NOT NULL.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
@@ -1374,14 +1444,15 @@ export async function getCharacterCardJson(directories, avatar) {
     return row?.card_json ?? null;
 }
 
-/**
+/** Every row's card_json in one query, for a caller about to processCharacter() the whole library - one
+ * round trip instead of one getCharacterCardJson() call per character.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<Map<string, string>>}
  */
 export async function getStaleCardJsonMap(directories) {
     const entry = await getEntry(directories);
     if (!entry) return new Map();
-    const rows = (/** @type {{ id: string, card_json: string }[]} */ (entry.db.all('SELECT id, card_json FROM characters WHERE card_json IS NOT NULL')));
+    const rows = (/** @type {{ id: string, card_json: string }[]} */ (entry.db.all('SELECT id, card_json FROM characters')));
     return new Map(rows.map(row => [row.id, row.card_json]));
 }
 
@@ -1579,11 +1650,13 @@ export async function bootstrapIfNeeded(directories) {
             try {
                 const filePath = path.join(directories.characters, file);
                 const stat = await fsPromises.stat(filePath);
-                const imgData = await parseCharacterCard(filePath, 'png');
+                const rawBuffer = await fsPromises.readFile(filePath);
+                const imgData = readCharacterCardFromBuffer(rawBuffer);
+                const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                 const tagIds = tag_map[file] ?? [];
-                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds, cardJson: imgData });
+                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
                 return { row, tagIds };
             } catch (err) {
                 console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, /** @type {any} */ (err).message);
@@ -1919,11 +1992,13 @@ export async function reconcile(directories) {
                 try {
                     const filePath = path.join(directories.characters, file);
                     const stat = await fsPromises.stat(filePath);
-                    const imgData = await parseCharacterCard(filePath, 'png');
+                    const rawBuffer = await fsPromises.readFile(filePath);
+                    const imgData = readCharacterCardFromBuffer(rawBuffer);
+                    const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
                     const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                     const tagIds = getTagIdsFor(directories, file);
-                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds, cardJson: imgData });
+                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
                     return { row, tagIds };
                 } catch (err) {
                     console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, /** @type {any} */ (err).message);
@@ -2032,11 +2107,13 @@ async function handleWatchEvent(entry, filename) {
         return; // Already up to date (e.g. a write-path hook already handled this exact change).
     }
 
-    const imgData = await parseCharacterCard(filePath, 'png');
+    const rawBuffer = await fsPromises.readFile(filePath);
+    const imgData = readCharacterCardFromBuffer(rawBuffer);
+    const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
     const character = getCharaCardV2(JSON.parse(imgData), entry.directories, false);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(entry.directories.chats, filename.replace(/\.png$/, '')));
     const tagIds = getTagIdsFor(entry.directories, filename);
-    const row = buildRow(filename, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, tagIds, cardJson: imgData });
+    const row = buildRow(filename, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
     applyOrBuffer(entry, row, tagIds);
 }
 
@@ -2148,6 +2225,30 @@ export async function findCharacterIdByContentIdentityHash(directories, hash) {
     }
 
     const row = (/** @type {{ id: string } | undefined} */ (entry.db.get('SELECT id FROM characters WHERE content_identity_hash = @hash', { hash })));
+    return row ? row.id : null;
+}
+
+// Matches image bytes (raw IDAT payload) regardless of card content - two characters with different data but
+// the same portrait (e.g. a fork that kept the original image) share this even though content_identity_hash differs.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string | null} hash
+ * @returns {Promise<string | null>}
+ */
+export async function findCharacterIdByAvatarIdentityHash(directories, hash) {
+    if (hash === null) return null;
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    if (entry.batch) {
+        for (const pending of entry.batch.pending.values()) {
+            if (pending.row.avatar_identity_hash === hash) {
+                return pending.row.id;
+            }
+        }
+    }
+
+    const row = (/** @type {{ id: string } | undefined} */ (entry.db.get('SELECT id FROM characters WHERE avatar_identity_hash = @hash', { hash })));
     return row ? row.id : null;
 }
 

@@ -18,7 +18,7 @@ import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.j
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
 import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, color, mapWithConcurrency } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
-import { parse, read, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
+import { parse, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer, reclaimReflinkPrefix } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
@@ -33,7 +33,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsData, getGroupsByIds, stampDbTagIds as stampDbGroupTagIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getStaleCardJsonMap } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getStaleCardJsonMap } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -199,16 +199,15 @@ export async function readCharacterData(inputFile, inputFormat = 'png', precompu
 }
 
 /**
- * Resolves the metadata db vs. the (possibly stale) PNG chunk. Only for characters already in the library - use readCharacterData() directly for arbitrary PNGs.
+ * Reads a character already in the library. card_json is the sole data source (the PNG is never read for an
+ * already-imported character) - use readCharacterData() directly for arbitrary PNGs not yet in the library.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Avatar filename, e.g. `Alice.png`
- * @param {string} [filePath] The card's path, when the caller already built it.
- * @param {fs.Stats} [precomputedStat] Passed through to readCharacterData() on the file branch only.
- * @returns {Promise<string|undefined>} The card JSON, or `undefined` if unreadable.
+ * @param {string} [filePath] The card's path, passed through to correctV1FieldDriftOnRead()'s own stat.
+ * @returns {Promise<string|undefined>} The card JSON, or `undefined` if this avatar has no row.
  */
-export async function readCardContent(directories, avatar, filePath = undefined, precomputedStat = undefined) {
-    const parked = await getCharacterCardJson(directories, avatar);
-    const raw = parked !== null ? parked : await readCharacterData(filePath ?? path.join(directories.characters, avatar), 'png', precomputedStat);
+export async function readCardContent(directories, avatar, filePath = undefined) {
+    const raw = await getCharacterCardJson(directories, avatar) ?? undefined;
     return await correctV1FieldDriftOnRead(directories, avatar, filePath, raw);
 }
 
@@ -269,12 +268,9 @@ async function correctV1FieldDriftOnRead(directories, avatar, filePath, raw) {
 export async function materializeCardPng(directories, avatar, filePath = undefined) {
     const imagePath = filePath ?? path.join(directories.characters, avatar);
     const rawBuffer = await fsPromises.readFile(imagePath);
-    const parked = await getCharacterCardJson(directories, avatar);
-    if (parked === null) {
-        const cardJson = read(rawBuffer);
-        return cardJson === undefined || cardJson === null ? null : { buffer: rawBuffer, cardJson };
-    }
-    return { buffer: write(rawBuffer, parked), cardJson: parked };
+    const cardJson = await getCharacterCardJson(directories, avatar);
+    if (cardJson === null) return null;
+    return { buffer: write(rawBuffer, cardJson), cardJson };
 }
 
 /**
@@ -327,6 +323,55 @@ async function findCrossCharacterReflinkCandidate(directories, selfAvatar, data)
 }
 
 /**
+ * Finds a DIFFERENT on-disk character with a matching `avatar_identity_hash` (image bytes, independent of card
+ * content), as a reflink candidate for a brand-new import/create write. Only a candidate PATH - byte-level
+ * verification still happens in reclaimReflinkPrefix().
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} selfAvatar This write's own avatar filename - excluded from the match.
+ * @param {string} avatarIdentityHash Hash of the image bytes just written.
+ * @returns {Promise<string | null>} Absolute path to a different character's current file, or `null`.
+ */
+async function findCrossCharacterAvatarReflinkCandidate(directories, selfAvatar, avatarIdentityHash) {
+    const matchedId = await findCharacterIdByAvatarIdentityHash(directories, avatarIdentityHash);
+    if (!matchedId || matchedId === selfAvatar) {
+        return null;
+    }
+
+    const candidatePath = path.join(directories.characters, matchedId);
+    try {
+        await fsPromises.access(candidatePath, fs.constants.R_OK);
+    } catch (error) {
+        return null;
+    }
+    return candidatePath;
+}
+
+/**
+ * Converts a just-written, independently-stored import/create PNG into a reflink of a matching existing
+ * character's file when one exists, so a fresh import never leaves its own independent copy of bytes another
+ * character already holds on disk. Tries the avatar-bytes match first (catches same-portrait-different-card
+ * cases content_identity_hash would miss), then the card-content match. Best-effort: any failure just leaves
+ * the file as the independent copy writeCharacterData() already wrote.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} selfAvatar This write's own avatar filename.
+ * @param {string} filePath This write's own file, already on disk.
+ * @param {string} data The Spec-V2 JSON string just written to the metadata store.
+ * @param {string} avatarIdentityHash Hash of the image bytes just written.
+ * @returns {Promise<void>}
+ */
+export async function reflinkAgainstExistingDuplicate(directories, selfAvatar, filePath, data, avatarIdentityHash) {
+    const candidatePath = await findCrossCharacterAvatarReflinkCandidate(directories, selfAvatar, avatarIdentityHash)
+        ?? await findCrossCharacterReflinkCandidate(directories, selfAvatar, data);
+    if (!candidatePath) return;
+
+    try {
+        await reclaimReflinkPrefix(filePath, candidatePath, { expectedAvatarHash: avatarIdentityHash });
+    } catch (error) {
+        console.debug(`[character-import-dedup] reflink attempt failed for "${selfAvatar}" against "${path.basename(candidatePath)}", leaving it as an independent copy:`, /** @type {any} */ (error)?.message ?? error);
+    }
+}
+
+/**
  * Writes the character card to the specified image file.
  * @param {string|Buffer} inputFile - Path to the image file or image buffer
  * @param {string} data - Character card data
@@ -336,9 +381,9 @@ async function findCrossCharacterReflinkCandidate(directories, selfAvatar, data)
  * @param {string|null} [contentHash] - sha256 hex digest of the raw uploaded source-file bytes, when this write came from `/import`.
  * @param {Set<string>|null} [freshFieldPaths] - V2 dot-paths the caller has already confirmed match current on-disk state.
  * @param {boolean} [imageOnly] - true for a brand-new import/create write: the PNG gets image bytes only (any
- * embedded chara/ccv3 chunk stripped), `data` goes to the metadata db exclusively, and no reflink is attempted
- * (there's no durable source file to preserve extent-sharing with - see writeImageOnlyCard() for the local-import
- * background scanner's own path, which does have one and reflinks against it directly, bypassing this function).
+ * embedded chara/ccv3 chunk stripped), `data` goes to the metadata db exclusively, and reflinkAgainstExistingDuplicate()
+ * looks for a byte-identical existing character to share extents with after writing (see writeImageOnlyCard() for
+ * the local-import background scanner's own path, which reflinks against its own durable source file directly).
  * @returns {Promise<true>} Always resolves to `true` on success - a failed write rejects instead.
  */
 async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null, imageOnly = false) {
@@ -402,6 +447,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(outputImage);
             writeFileAtomicSync(outputImagePath, outputImage);
             await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
+            await reflinkAgainstExistingDuplicate(request.user.directories, `${outputFile}.png`, outputImagePath, data, avatarIdentityHash);
             if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
             return true;
         }

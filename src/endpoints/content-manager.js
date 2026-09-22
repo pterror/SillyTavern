@@ -8,7 +8,7 @@ import fetch from 'node-fetch';
 import sanitize from 'sanitize-filename';
 
 import { getConfigValue, color, setPermissionsSync, isValidUrl } from '../util.js';
-import { write, parse, writeImageOnlyCard } from '../character-card-parser.js';
+import { write, parse, writeImageOnlyCard, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
@@ -190,7 +190,8 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
             // imports from this file).
             try {
                 const stat = await fs.promises.stat(targetPath);
-                await upsertCharacterFromWrite(directories, basePath, sourceData, stat.mtimeMs);
+                const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(await fs.promises.readFile(targetPath));
+                await upsertCharacterFromWrite(directories, basePath, sourceData, stat.mtimeMs, null, avatarIdentityHash);
             } catch (err) {
                 console.error(`[character-metadata] Failed to seed the metadata store for "${basePath}":`, err);
             }
