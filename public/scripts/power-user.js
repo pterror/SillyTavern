@@ -2046,6 +2046,7 @@ export async function loadPowerUserSettings(settings, data) {
 function toggleMDHotkeyIconDisplay() {
     if (power_user.enable_md_hotkeys) {
         $('.mdhotkey_location').each(function () {
+            $(this).parent().children('.mdhotkey_icon').remove();
             $(this).parent().append('<i class="fa-brands fa-markdown mdhotkey_icon"></i>');
         });
     } else {
