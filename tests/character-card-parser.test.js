@@ -90,17 +90,16 @@ describe('character-card-parser write() - spec-fidelity (no forced v2->v3 upgrad
         expect(chunks.ccv3).toBeUndefined();
     });
 
-    test('a v3-spec source gets a ccv3 chunk holding the SAME bytes as chara - not a re-derived copy', () => {
+    test('a v3-spec source gets only a chara chunk, no ccv3 mirror', () => {
         const data = JSON.stringify({ spec: 'chara_card_v3', spec_version: '3.0', name: 'Ghost', data: { name: 'Ghost' } });
         const buffer = cardParser.write(BLANK_PNG, data);
         const chunks = readTextChunks(buffer);
 
         expect(chunks.chara).toBeDefined();
-        expect(chunks.ccv3).toBeDefined();
-        expect(chunks.ccv3).toBe(chunks.chara);
+        expect(chunks.ccv3).toBeUndefined();
     });
 
-    test('read() still round-trips a v3 card back through the ccv3 chunk (unaffected by the write-side fix)', () => {
+    test('read() still round-trips a v3 card (via chara - write() no longer produces a ccv3 chunk)', () => {
         const data = JSON.stringify({ spec: 'chara_card_v3', spec_version: '3.0', name: 'Ghost', data: { name: 'Ghost' } });
         const buffer = cardParser.write(BLANK_PNG, data);
         expect(JSON.parse(cardParser.read(buffer))).toEqual(JSON.parse(data));

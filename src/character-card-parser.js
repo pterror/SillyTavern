@@ -51,8 +51,8 @@ export function computeAvatarIdentityHashFromImageBuffer(image) {
 }
 
 /**
- * Writes Character metadata to a PNG image buffer. Always writes a 'chara' chunk holding `data` verbatim; only
- * also writes 'ccv3' when `data` itself already declares `spec: 'chara_card_v3'` (never a synthesized upgrade).
+ * Writes Character metadata to a PNG image buffer. Always writes a 'chara' chunk holding `data` verbatim,
+ * and only that chunk.
  * @param {Buffer} image PNG image buffer
  * @param {string} data Character data to write
  * @returns {Buffer} PNG image buffer with metadata
@@ -63,7 +63,7 @@ export function computeAvatarIdentityHashFromImageBuffer(image) {
  * @param {Array<{name: string, data: Uint8Array}>} chunks Already-extracted chunk list, mutated in place.
  * @param {string} data Character data to write (same contract as write()).
  * @returns {Array<{name: string, data: Uint8Array}>} `chunks`, mutated: existing chara/ccv3 tEXt chunks
- * removed, fresh one(s) inserted immediately before IEND.
+ * removed, a fresh 'chara' chunk inserted immediately before IEND.
  */
 function spliceCardDataIntoChunks(chunks, data) {
     removeCharaChunks(chunks);
@@ -71,16 +71,6 @@ function spliceCardDataIntoChunks(chunks, data) {
     // Add the chara chunk before IEND, holding `data` as-is.
     const base64EncodedData = Buffer.from(data, 'utf8').toString('base64');
     chunks.splice(-1, 0, PNGtext.encode('chara', base64EncodedData));
-
-    // Only mirror into 'ccv3' when the source already declares v3 - never synthesize an upgrade.
-    try {
-        const parsed = JSON.parse(data);
-        if (parsed.spec === 'chara_card_v3') {
-            chunks.splice(-1, 0, PNGtext.encode('ccv3', base64EncodedData));
-        }
-    } catch (error) {
-        // Not valid JSON - `chara` alone is written above.
-    }
 
     return chunks;
 }
@@ -414,30 +404,44 @@ async function writeSharedPrefixThenAppend(sourcePath, destPath, tail, offset) {
  * Retroactively reclaims reflink extent-sharing for a character file already fully written out (independent
  * bytes, no sharing) before writeCardToFile() existed.
  *
- * The caller is expected to have already matched `existingPath`/`sourcePath` by content hash; this function
- * only does the byte-level verification of whether that match is safe to act on — requires `existingPath`'s
- * bytes to be literally identical to `sourcePath`'s for the whole reflinkable prefix, or declines and leaves
- * `existingPath` untouched (e.g. a crop at import time, or a foreign chunk layout).
+ * The caller is expected to have already matched `existingPath`/`sourcePath` some way; this function does the
+ * verification of whether that match is safe to act on before touching anything, one of two ways - see
+ * `options`.
  * @param {string} existingPath Absolute path to the already-imported character file to repair in place.
  * @param {string} sourcePath Absolute path to the believed-original source file, still on disk.
- * @param {{skipByteVerification?: boolean}} [options] `skipByteVerification`: the caller's own match key already
- * guarantees prefix identity (e.g. an IDAT-only hash where the prefix is IDAT-only too), so skip both reading
- * `existingPath`'s prefix bytes and comparing them - only its tail (past the shared prefix) is read, since
- * that's the only part of `existingPath` this function ever uses. Only pass `true` when prefix identity is
- * actually guaranteed some other way - other callers matching on a weaker key still need the default full
- * read-and-compare.
+ * @param {{skipByteVerification?: boolean, expectedAvatarHash?: string}} [options] At most one of the two.
+ * `skipByteVerification`: the caller's own match key already guarantees prefix identity (e.g. an IDAT-only hash
+ * where the prefix is IDAT-only too), so skip both reading `existingPath`'s prefix bytes and comparing them -
+ * only its tail (past the shared prefix) is read, since that's the only part of `existingPath` this function
+ * ever uses. `expectedAvatarHash`: the caller's match isn't independently verified yet (e.g. a provenance
+ * record, not a content match) - checked here against `sourcePath`'s own IDAT hash, computed from the same
+ * chunk list already extracted to find the prefix offset (no extra read), and treated as `skipByteVerification`
+ * on a match; declines immediately on a mismatch, without ever reading `existingPath`. Neither option: full
+ * read-and-compare of both files' prefix bytes, for a match with no independent verification at all.
  * @returns {Promise<{reflinked: boolean, reason?: string}>}
  */
-export async function reclaimReflinkPrefix(existingPath, sourcePath, { skipByteVerification = false } = {}) {
+export async function reclaimReflinkPrefix(existingPath, sourcePath, { skipByteVerification = false, expectedAvatarHash } = {}) {
     const sourceBuf = await fs.promises.readFile(sourcePath);
-    const offset = findReflinkablePrefixOffset(sourceBuf);
+
+    /** @type {Array<{name: string, data: Uint8Array}>} */
+    let chunks;
+    try {
+        chunks = extract(new Uint8Array(sourceBuf));
+    } catch (error) {
+        return { reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' };
+    }
+    const offset = findReflinkablePrefixOffsetFromChunks(chunks);
     if (offset === null) {
         return { reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' };
     }
 
+    if (expectedAvatarHash !== undefined && computeAvatarIdentityHashFromChunks(chunks) !== expectedAvatarHash) {
+        return { reflinked: false, reason: 'avatar-hash-mismatch' };
+    }
+
     /** @type {Buffer | Uint8Array} */
     let existingTail;
-    if (skipByteVerification) {
+    if (skipByteVerification || expectedAvatarHash !== undefined) {
         const existingSize = (await fs.promises.stat(existingPath)).size;
         if (offset > existingSize) {
             return { reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' };
