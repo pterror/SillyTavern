@@ -150,6 +150,43 @@ export function updateCharacterListRow(id) {
     return true;
 }
 
+// Same as updateCharacterListRow(), but for an operation that changed the row's own key (a rename) - looks the
+// row up by its previous avatar and re-renders it in place under the new one. Removal is always safe regardless
+// of sort order (there's no "where does it go" question, unlike an insertion), so a straight DOM removal is
+// exact here too - both skip the pagination widget's own tracked total/page-count, which is then off by one
+// until the current page is next actually queried (a real page turn, or refreshCharacterListCurrentPage()).
+export function renameCharacterListRow(previousId, id) {
+    const character = charactersStore.get(id);
+    if (!character) return false;
+    const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(previousId)}"]`);
+    if (!row) return false;
+    updateCharacterBlock(row, character, id);
+    return true;
+}
+
+export function removeCharacterListRow(id) {
+    const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(id)}"]`);
+    if (!row) return false;
+    row.remove();
+    return true;
+}
+
+// For an operation that adds/removes a row or could move it to a different sort position (create/delete/
+// duplicate) - unlike a same-row edit, correctly reflecting this generally needs to know the row's real sorted
+// position and the corpus's real new count, neither of which is safe to guess client-side (sort can be by name,
+// date, fav, a random seed, or search relevance). Re-fetches only the CURRENTLY VISIBLE PAGE - bounded by page
+// size, not corpus size - through the pagination widget's own async path, rather than printCharacters()'s full
+// reinit (which also repeats the folder-tile scan and the tag-filter reprint on every call). Returns false when
+// the widget isn't already in that async/server-query mode (e.g. the active sort isn't server-queryable) - the
+// caller then still needs a real printCharacters() call to reflect the change.
+export function refreshCharacterListCurrentPage() {
+    if (!canUseServerQueryForEntitiesList()) return false;
+    const pager = document.getElementById('rm_print_characters_pagination');
+    if (!pager || !$(pager).data('pagination')?.initialized) return false;
+    $(pager).pagination('refresh');
+    return true;
+}
+
 /**
  * Prints the global character list, optionally doing a full refresh of the list
  * Use this function whenever the reprinting of the character list is the primary focus, otherwise using `printCharactersDebounced` is preferred for a cleaner, non-blocking experience.
@@ -1306,7 +1343,15 @@ const DELTA_FETCH_MAX_RETRIES = 3;
 const DELTA_FETCH_RETRY_DELAYS_MS = [1000, 3000, 8000];
 
 // Never falls back to an unconditional full-library fetch on exhausted retries; reports the failure and leaves `characters` stale but uncorrupted.
-export async function getCharacters({ silent = false, silentGroups = false } = {}) {
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.silent=false]
+ * @param {boolean} [options.silentGroups=false]
+ * @param {boolean} [options.skipPrint=false] Skip the trailing printCharacters(true)/search-refetch - for a
+ * caller that's about to do its own smaller, targeted DOM update (or its own real requery, like
+ * select_rm_info()'s flash-to-new-character navigation) instead.
+ */
+export async function getCharacters({ silent = false, silentGroups = false, skipPrint = false } = {}) {
     let newCharacters;
     let charactersChanged = true;
     let lastError;
@@ -1383,6 +1428,7 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
     } // end if (charactersChanged)
 
     await getGroups({ silent: silentGroups });
+    if (skipPrint) return;
     await printCharacters(true);
 
     // Server search results were fetched against whatever search index state existed at the time; a change
