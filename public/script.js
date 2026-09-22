@@ -11522,6 +11522,18 @@ jQuery(async function () {
         }
     });
 
+    $('#creator_notes_edit_button').on('click', function (e) {
+        e.stopPropagation();
+        if (!is_advanced_char_open) {
+            $('#advanced_div').trigger('click');
+        }
+        setTimeout(() => {
+            const textarea = document.getElementById('creator_notes_textarea');
+            textarea?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            textarea?.focus();
+        }, animation_duration);
+    });
+
     $('#character_cross').on('click', function () {
         is_advanced_char_open = false;
         $('#character_popup').transition({
