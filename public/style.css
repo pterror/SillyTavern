@@ -3695,12 +3695,6 @@ grammarly-extension {
     padding: 5px 5px 10px 0;
 }
 
-#description_div,
-#first_message_div {
-    display: flex;
-    align-items: center;
-}
-
 .greeting-pager {
     display: flex;
     align-items: center;

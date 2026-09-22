@@ -6289,57 +6289,67 @@
                                 </div>
                             </div>
                             <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
-                                <div id="description_div" class="title_restorable">
-                                    <div class="flex-container alignitemscenter">
-                                        <span data-i18n="Character Description" class="mdhotkey_location">Description</span>
-                                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="description_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                        <i class="macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="description_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
-                                        <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#character-description" class="notes-link" target="_blank">
-                                            <span class="fa-solid fa-circle-question note-link-span"></span>
-                                        </a>
+                                <div id="description_div" class="inline-drawer">
+                                    <div class="inline-drawer-toggle inline-drawer-header">
+                                        <h4>
+                                            <span data-i18n="Character Description" class="mdhotkey_location">Description</span>
+                                            <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                        </h4>
+                                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                                     </div>
-                                    <div id="character_open_media_overrides" class="menu_button menu_button_icon open_media_overrides" title="Click to allow/forbid the use of external media for this character." data-i18n="[title]Click to allow/forbid the use of external media for this character.">
-                                        <i id="character_media_allowed_icon" class="fa-solid fa-fw fa-link"></i>
-                                        <i id="character_media_forbidden_icon" class="fa-solid fa-fw fa-link-slash"></i>
-                                        <span data-i18n="Ext. Media">
-                                            Ext. Media
-                                        </span>
+                                    <div class="inline-drawer-content">
+                                        <div class="flex-container alignitemscenter">
+                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="description_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="description_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#character-description" class="notes-link" target="_blank">
+                                                <span class="fa-solid fa-circle-question note-link-span"></span>
+                                            </a>
+                                        </div>
+                                        <div id="character_open_media_overrides" class="menu_button menu_button_icon open_media_overrides" title="Click to allow/forbid the use of external media for this character." data-i18n="[title]Click to allow/forbid the use of external media for this character.">
+                                            <i id="character_media_allowed_icon" class="fa-solid fa-fw fa-link"></i>
+                                            <i id="character_media_forbidden_icon" class="fa-solid fa-fw fa-link-slash"></i>
+                                            <span data-i18n="Ext. Media">
+                                                Ext. Media
+                                            </span>
+                                        </div>
+                                        <textarea id="description_textarea" class="mdHotkeys" data-macros data-i18n="[placeholder]Describe your character's physical and mental traits here." placeholder="Describe your character's physical and mental traits here." name="description" placeholder=""></textarea>
                                     </div>
-                                </div>
-                                <textarea id="description_textarea" class="mdHotkeys" data-macros data-i18n="[placeholder]Describe your character's physical and mental traits here." placeholder="Describe your character's physical and mental traits here." name="description" placeholder=""></textarea>
-                                <div class="extension_token_counter">
-                                    <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="description_textarea" data-token-permanent="true">counting...</span>
                                 </div>
                             </div>
                             <div id="firstMessageWrapper" class="flex-container flexFlowColumn flex1">
-                                <div id="first_message_div" class="title_restorable">
-                                    <div class="flex-container alignitemscenter flex1">
-                                        <span data-i18n="Greeting" class="mdhotkey_location">Greeting</span>
-                                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                        <i class="macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="greeting_field" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
-                                        <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
-                                            <span class="fa-solid fa-circle-question note-link-span"></span>
-                                        </a>
-                                        <div class="greeting-pager">
-                                            <div class="greeting-pager-btn greeting-pager-prev" title="Previous greeting" data-i18n="[title]Previous greeting">
-                                                <i class="fa-solid fa-chevron-left"></i>
-                                            </div>
-                                            <input type="number" class="greeting-pager-input" min="1" value="1" title="Jump to greeting" data-i18n="[title]Jump to greeting">
-                                            <span class="greeting-pager-total">/1</span>
-                                            <div class="greeting-pager-btn greeting-pager-next" title="Next greeting" data-i18n="[title]Next greeting">
-                                                <i class="fa-solid fa-chevron-right"></i>
+                                <div id="first_message_div" class="inline-drawer">
+                                    <div class="inline-drawer-toggle inline-drawer-header">
+                                        <h4>
+                                            <span data-i18n="Greeting" class="mdhotkey_location">Greeting</span>
+                                            <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                        </h4>
+                                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                                    </div>
+                                    <div class="inline-drawer-content">
+                                        <div class="flex-container alignitemscenter flex1">
+                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="greeting_field" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
+                                                <span class="fa-solid fa-circle-question note-link-span"></span>
+                                            </a>
+                                            <div class="greeting-pager">
+                                                <div class="greeting-pager-btn greeting-pager-prev" title="Previous greeting" data-i18n="[title]Previous greeting">
+                                                    <i class="fa-solid fa-chevron-left"></i>
+                                                </div>
+                                                <input type="number" class="greeting-pager-input" min="1" value="1" title="Jump to greeting" data-i18n="[title]Jump to greeting">
+                                                <span class="greeting-pager-total">/1</span>
+                                                <div class="greeting-pager-btn greeting-pager-next" title="Next greeting" data-i18n="[title]Next greeting">
+                                                    <i class="fa-solid fa-chevron-right"></i>
+                                                </div>
                                             </div>
                                         </div>
+                                        <div class="menu_button menu_button_icon open_alternate_greetings margin0" title="Click to set all greeting messages" data-i18n="[title]Click to set all greeting messages">
+                                            <span data-i18n="Greetings">
+                                                Greetings
+                                            </span>
+                                        </div>
+                                        <textarea id="greeting_field" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
                                     </div>
-                                    <div class="menu_button menu_button_icon open_alternate_greetings margin0" title="Click to set all greeting messages" data-i18n="[title]Click to set all greeting messages">
-                                        <span data-i18n="Greetings">
-                                            Greetings
-                                        </span>
-                                    </div>
-                                </div>
-                                <textarea id="greeting_field" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
-                                <div class="extension_token_counter">
-                                    <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="greeting_field">counting...</span>
                                 </div>
                             </div>
                             <div id="postHistoryInstructionsOverride" class="inline-drawer">
