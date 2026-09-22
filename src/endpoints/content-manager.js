@@ -8,11 +8,12 @@ import fetch from 'node-fetch';
 import sanitize from 'sanitize-filename';
 
 import { getConfigValue, color, setPermissionsSync, isValidUrl } from '../util.js';
-import { write } from '../character-card-parser.js';
+import { write, parse, writeImageOnlyCard } from '../character-card-parser.js';
 import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { importWorldInfoFromRaw } from './worldinfo.js';
+import { upsertCharacterFromWrite } from '../character-metadata-db.js';
 
 const contentDirectory = path.join(serverDirectory, 'default/content');
 const scaffoldDirectory = path.join(serverDirectory, 'default/scaffold');
@@ -130,9 +131,11 @@ export function getDefaultPresetFile(filename) {
  * @param {string} contentLogPath Path to the content log file
  * @param {(type: string) => string | null} resolveTarget Function to resolve the target directory for a content type
  * @param {string[]} [forceCategories] List of categories to force check (even if content check is skipped)
- * @returns {boolean} Whether any content was added
+ * @param {import('../users.js').UserDirectoryList} [directories] Owning user's directories - only needed for
+ * CONTENT_TYPES.CHARACTER (see below); absent for the global seeding pass, which never seeds that type.
+ * @returns {Promise<boolean>} Whether any content was added
  */
-function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategories) {
+async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategories, directories = undefined) {
     let anyContentAdded = false;
     const contentLog = getContentLog(contentLogPath);
     const newLogEntries = [];
@@ -172,7 +175,29 @@ function seedContent(contentIndex, contentLogPath, resolveTarget, forceCategorie
         }
 
         fs.mkdirSync(contentTarget, { recursive: true });
-        fs.cpSync(contentPath, targetPath, { recursive: true, force: false });
+
+        if (contentItem.type === CONTENT_TYPES.CHARACTER && directories) {
+            // Same shape as a first-time local-import landing (external source -> user's characters/, not yet
+            // in the metadata db): strip the shipped file's embedded chunk via a reflinked image-only write
+            // (writeImageOnlyCard(), local-import-worker.js's own path for this case) and upsert the metadata
+            // db row from the chunk directly (parse(), unmodified - reconcile()'s own new-file path also reads
+            // the chunk as-is, no import-style normalization), instead of leaving the embedded chunk in place
+            // for the background reconciler/watcher to pick up on its own time.
+            const sourceData = await parse(contentPath, 'png');
+            await writeImageOnlyCard(contentPath, targetPath);
+            // Inlined rather than importing characters.js's own fireMetadataUpsertHook() wrapper around this
+            // same call, which would create an import cycle (characters.js imports from sprites.js, which
+            // imports from this file).
+            try {
+                const stat = await fs.promises.stat(targetPath);
+                await upsertCharacterFromWrite(directories, basePath, sourceData, stat.mtimeMs);
+            } catch (err) {
+                console.error(`[character-metadata] Failed to seed the metadata store for "${basePath}":`, err);
+            }
+        } else {
+            fs.cpSync(contentPath, targetPath, { recursive: true, force: false });
+        }
+
         setPermissionsSync(targetPath);
         console.info(`Content file ${contentItem.filename} copied to ${contentTarget}`);
         anyContentAdded = true;
@@ -216,7 +241,7 @@ async function seedContentForUser(contentIndex, directories, forceCategories) {
     }
 
     const contentLogPath = path.join(directories.root, 'content.log');
-    return seedContent(contentIndex, contentLogPath, (type) => getUserTargetByType(type, directories), forceCategories);
+    return seedContent(contentIndex, contentLogPath, (type) => getUserTargetByType(type, directories), forceCategories, directories);
 }
 
 /**
