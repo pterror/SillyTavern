@@ -137,6 +137,19 @@ function updateCharacterBlock(node, item, id) {
     return node;
 }
 
+// Updates one character's own row in place, if it's currently rendered, without requerying or reprinting the
+// rest of the (possibly very large) list. Returns false if the row isn't on the current page/filter view - the
+// caller then has nothing to refresh, since an off-screen row needs no DOM update and a filter/search
+// membership change (this character starting/stopping matching) isn't handled by this path.
+export function updateCharacterListRow(id) {
+    const character = charactersStore.get(id);
+    if (!character) return false;
+    const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(id)}"]`);
+    if (!row) return false;
+    updateCharacterBlock(row, character, id);
+    return true;
+}
+
 /**
  * Prints the global character list, optionally doing a full refresh of the list
  * Use this function whenever the reprinting of the character list is the primary focus, otherwise using `printCharactersDebounced` is preferred for a cleaner, non-blocking experience.
@@ -1377,17 +1390,6 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
     const activeSearchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
     if (activeSearchTerm) {
         await fetchServerCharacterSearchResults(activeSearchTerm).then(() => printCharactersDebounced());
-    }
-}
-
-// For callers outside this module that mutate a single resident character in place (skipping getCharacters()'s
-// full delta fetch) and need the printed list/active search results to reflect that change.
-export async function refreshCharacterListAfterEdit() {
-    const activeSearchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
-    if (activeSearchTerm) {
-        await fetchServerCharacterSearchResults(activeSearchTerm).then(() => printCharactersDebounced());
-    } else {
-        printCharactersDebounced();
     }
 }
 
