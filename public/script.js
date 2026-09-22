@@ -13,7 +13,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, setCharacterId } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, refreshCharacterListAfterEdit } from './scripts/character-list.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
@@ -9822,6 +9822,8 @@ export async function createOrEditCharacter(e) {
             $('#create_button').attr('value', 'Save');
             crop_data = undefined;
             await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: getCurrentCharacter() } });
+
+            await refreshCharacterListAfterEdit();
 
             // Recreate the chat if it hasn't been used at least once (i.e. with continue).
             const message = await getFirstMessage();

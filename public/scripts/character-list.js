@@ -1380,6 +1380,17 @@ export async function getCharacters({ silent = false, silentGroups = false } = {
     }
 }
 
+// For callers outside this module that mutate a single resident character in place (skipping getCharacters()'s
+// full delta fetch) and need the printed list/active search results to reflect that change.
+export async function refreshCharacterListAfterEdit() {
+    const activeSearchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
+    if (activeSearchTerm) {
+        await fetchServerCharacterSearchResults(activeSearchTerm).then(() => printCharactersDebounced());
+    } else {
+        printCharactersDebounced();
+    }
+}
+
 // Per-backend UI info for the persistent search-backend indicator icon; null means "hide it, this backend is fully healthy".
 /** @type {Record<string, { icon: string, tone: 'warning' | 'error', tooltip: string } | null>} */
 const SEARCH_BACKEND_INDICATOR = {
