@@ -173,6 +173,7 @@ export const power_user = {
     italics_text_color: `${getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeEmColor').trim()}`,
     underline_text_color: `${getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeUnderlineColor').trim()}`,
     quote_text_color: `${getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeQuoteColor').trim()}`,
+    macro_text_color: `${getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeMacroColor').trim()}`,
     blur_tint_color: `${getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeBlurTintColor').trim()}`,
     chat_tint_color: `${getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeChatTintColor').trim()}`,
     user_mes_blur_tint_color: `${getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeUserMesBlurTintColor').trim()}`,
@@ -1328,6 +1329,9 @@ function applyThemeColor(type) {
     if (type === 'quote') {
         document.documentElement.style.setProperty('--SmartThemeQuoteColor', power_user.quote_text_color);
     }
+    if (type === 'macro') {
+        document.documentElement.style.setProperty('--SmartThemeMacroColor', power_user.macro_text_color);
+    }
     /*     if (type === 'fastUIBG') {
             document.documentElement.style.setProperty('--SmartThemeFastUIBGColor', power_user.fastui_bg_color);
         } */
@@ -1445,6 +1449,7 @@ function applyTheme(name) {
         { key: 'italics_text_color', selector: '#italics-color-picker', type: 'italics' },
         { key: 'underline_text_color', selector: '#underline-color-picker', type: 'underline' },
         { key: 'quote_text_color', selector: '#quote-color-picker', type: 'quote' },
+        { key: 'macro_text_color', selector: '#macro-color-picker', type: 'macro' },
         { key: 'blur_tint_color', selector: '#blur-tint-color-picker', type: 'blurTint' },
         { key: 'chat_tint_color', selector: '#chat-tint-color-picker', type: 'chatTint' },
         { key: 'user_mes_blur_tint_color', selector: '#user-mes-blur-tint-color-picker', type: 'userMesBlurTint' },
@@ -2000,6 +2005,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#italics-color-picker').attr('color', power_user.italics_text_color);
     $('#underline-color-picker').attr('color', power_user.underline_text_color);
     $('#quote-color-picker').attr('color', power_user.quote_text_color);
+    $('#macro-color-picker').attr('color', power_user.macro_text_color);
     $('#blur-tint-color-picker').attr('color', power_user.blur_tint_color);
     $('#chat-tint-color-picker').attr('color', power_user.chat_tint_color);
     $('#user-mes-blur-tint-color-picker').attr('color', power_user.user_mes_blur_tint_color);
@@ -2942,6 +2948,7 @@ export function getThemeObject(name) {
         italics_text_color: power_user.italics_text_color,
         underline_text_color: power_user.underline_text_color,
         quote_text_color: power_user.quote_text_color,
+        macro_text_color: power_user.macro_text_color,
         blur_tint_color: power_user.blur_tint_color,
         chat_tint_color: power_user.chat_tint_color,
         user_mes_blur_tint_color: power_user.user_mes_blur_tint_color,
@@ -3916,6 +3923,12 @@ jQuery(() => {
         power_user.quote_text_color = evt.detail.rgba;
         applyThemeColor('quote');
         saveSettingsDebounced('power_user.quote_text_color');
+    });
+
+    $('#macro-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {
+        power_user.macro_text_color = evt.detail.rgba;
+        applyThemeColor('macro');
+        saveSettingsDebounced('power_user.macro_text_color');
     });
 
     $('#blur-tint-color-picker').on('change', (/** @type {ColorPickerEvent} */ evt) => {

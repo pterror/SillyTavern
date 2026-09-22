@@ -72,6 +72,7 @@
     --SmartThemeEmColor: rgb(145, 145, 145);
     --SmartThemeUnderlineColor: rgb(188, 231, 207);
     --SmartThemeQuoteColor: rgb(225, 138, 36);
+    --SmartThemeMacroColor: rgb(53, 138, 217);
     /* --SmartThemeFastUIBGColor: rgba(0, 0, 0, 0.9); */
     --SmartThemeBlurTintColor: rgba(23, 23, 23, 1);
     --SmartThemeChatTintColor: rgba(23, 23, 23, 1);
@@ -1615,6 +1616,10 @@ textarea.autoSetHeight {
     max-height: 50vh;
     max-height: 50dvh;
     field-sizing: content;
+}
+
+.macro_preview_content .macro-substituted {
+    color: var(--SmartThemeMacroColor);
 }
 
 .macro_preview_content {

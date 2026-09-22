@@ -47,6 +47,7 @@ import {
     convertTextToBase64,
     isSameFile,
     clamp,
+    escapeHtml,
 } from './utils.js';
 import { extension_settings, renderExtensionTemplateAsync, saveMetadataDebounced } from './extensions.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -2392,6 +2393,19 @@ export function initChatUtilities() {
         await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
     });
 
+    /**
+     * Builds the HTML for the inline macro preview, wrapping each substituted macro's value in a styleable span.
+     * @param {string} rawText Raw field content, not yet substituted.
+     * @returns {string} Sanitized HTML with substituted macros wrapped in `.macro-substituted` spans.
+     */
+    function renderMacroPreviewHtml(rawText) {
+        const escapedContent = escapeHtml(rawText);
+        const html = substituteParams(escapedContent, {
+            postProcessFn: value => `<span class="macro-substituted">${escapeHtml(value)}</span>`,
+        });
+        return DOMPurify.sanitize(html, { ALLOWED_TAGS: ['span'], ALLOWED_ATTR: ['class'] });
+    }
+
     $(document).on('click', '.macro_preview_toggle_button', function (e) {
         e.preventDefault();
         e.stopPropagation();
@@ -2411,7 +2425,7 @@ export function initChatUtilities() {
             preview.hide();
             bro.show();
         } else {
-            preview.text(substituteParams(String(bro.val())));
+            preview.html(renderMacroPreviewHtml(String(bro.val())));
             bro.hide();
             preview.show();
         }
