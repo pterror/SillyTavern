@@ -1617,6 +1617,23 @@ textarea.autoSetHeight {
     field-sizing: content;
 }
 
+.macro_preview_content {
+    width: 100%;
+    background-color: var(--black30a);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    color: var(--SmartThemeBodyColor);
+    font-size: var(--mainFontSize);
+    font-family: var(--mainFontFamily);
+    padding: 5px 10px;
+    margin: 2px 0;
+    max-height: 90vh;
+    max-height: 90dvh;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-y: auto;
+}
+
 input,
 select,
 button {
