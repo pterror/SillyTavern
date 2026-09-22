@@ -3,7 +3,7 @@ import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
 import { color, uuidv7, isUuidLike } from '../util.js';
-import { parse as parseCharacterCard } from '../character-card-parser.js';
+import { parse as parseCharacterCard, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { getCharaCardV2 } from '../character-card-normalize.js';
 import { readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import {
@@ -93,7 +93,8 @@ async function migrateOne(directories, oldId, newId, log) {
         const rawJson = parked ?? await parseCharacterCard(newPath, 'png');
         const normalized = JSON.stringify(getCharaCardV2(JSON.parse(rawJson), directories, false));
         const stat = await fsPromises.stat(newPath);
-        await upsertCharacterFromWrite(directories, newId, normalized, stat.mtimeMs, null, null);
+        const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(await fsPromises.readFile(newPath));
+        await upsertCharacterFromWrite(directories, newId, normalized, stat.mtimeMs, null, avatarIdentityHash);
         await renameCharacterRow(directories, oldId, newId);
     } catch (err) {
         log(color.red(`[migrate-character-ids] Failed to update the metadata store for ${oldId} -> ${newId}: ${err.message}`));
