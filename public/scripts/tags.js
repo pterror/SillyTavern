@@ -1520,7 +1520,7 @@ function tagChangeAffectsCurrentView(tagIds) {
  * re-derived by comparing before/after snapshots). Used to skip reprinting the tag filter buttons when a tag's
  * overall status didn't actually change (the common case - toggling a tag that's already used elsewhere).
  */
-function redrawAfterTagChange(tagIds, affectedKeys, usageFlips = new Map()) {
+export function redrawAfterTagChange(tagIds, affectedKeys, usageFlips = new Map()) {
     if (tagChangeAffectsCurrentView(tagIds)) {
         printCharactersDebounced();
         return;
@@ -1561,6 +1561,37 @@ function updateEntityRowTags(keys) {
 
         printTagList($row.find('.tags'), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
     }
+}
+
+/**
+ * Entity keys of currently-rendered character/group list rows carrying the given tag - for a tag-level change
+ * (the tag itself was edited or deleted) where the affected entities aren't already known, unlike
+ * `redrawAfterTagChange`'s per-entity assign/unassign callers.
+ * @param {string} tagId
+ * @returns {string[]}
+ */
+function getRenderedKeysWithTag(tagId) {
+    const keys = [];
+    document.querySelectorAll('#rm_print_characters_block [data-avatar], #rm_print_characters_block [data-grid]').forEach(el => {
+        const key = el.getAttribute('data-avatar') ?? el.getAttribute('data-grid');
+        if (getTagsList(key).some(t => t.id === tagId)) {
+            keys.push(key);
+        }
+    });
+    return keys;
+}
+
+/**
+ * Entity keys of every currently-rendered character/group list row, for a change that can touch any row's own
+ * tag pills (e.g. tag display order) without changing which rows are shown - so patching all of them in place
+ * is enough, and still bounded to the current page rather than the whole list.
+ * @returns {string[]}
+ */
+function getAllRenderedEntityKeys() {
+    return Array.from(
+        document.querySelectorAll('#rm_print_characters_block [data-avatar], #rm_print_characters_block [data-grid]'),
+        el => el.getAttribute('data-avatar') ?? el.getAttribute('data-grid'),
+    );
 }
 
 /**
@@ -2625,8 +2656,12 @@ function makeTagListDraggable(tagContainer) {
             toastr.info('Switched to Manual sorting mode.');
         }
 
-        // If the order of tags in display has changed, we need to redraw some UI elements. Do it debounced so it doesn't block and you can drag multiple tags.
-        printCharactersDebounced();
+        // Sort order only changes pill order within a row (and the filter bar), never which rows/folders are
+        // shown, so patching every currently-rendered row's own pills covers it without a full reprint.
+        printTagFilters(tag_filter_type.character);
+        printTagFilters(tag_filter_type.group_members_list);
+        printTagFilters(tag_filter_type.group_candidates_list);
+        updateEntityRowTags(getAllRenderedEntityKeys());
         saveSettingsDebounced('power_user.tag_sort_mode');
     };
 
@@ -2835,6 +2870,8 @@ async function onTagRestoreFileSelect(e) {
     invalidateTagsFuseIndex();
 
     $('#tag_view_restore_input').val('');
+    // A restore can touch an arbitrary number of tags across an arbitrary number of characters/groups - not a
+    // known small set, so there's no smaller-than-full update to target here.
     printCharactersDebounced();
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
     printViewTagList(tagContainer);
@@ -2886,7 +2923,11 @@ async function onTagsPruneClick() {
         tagsStore.remove(tag.id);
     }
 
-    printCharactersDebounced();
+    // Pruned tags are unused by definition - no character/group row displays one, so only the filter buttons
+    // (which a pruned tag could still be sitting in) need to drop them, not the character list itself.
+    printTagFilters(tag_filter_type.character);
+    printTagFilters(tag_filter_type.group_members_list);
+    printTagFilters(tag_filter_type.group_candidates_list);
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
     printViewTagList(tagContainer);
 
@@ -2902,7 +2943,10 @@ function onTagCreateClick() {
     tagElement[0]?.scrollIntoView();
     flashHighlight(tagElement);
 
-    printCharactersDebounced();
+    // A brand new tag isn't assigned to any character/group yet - nothing in the character list can show it.
+    printTagFilters(tag_filter_type.character);
+    printTagFilters(tag_filter_type.group_members_list);
+    printTagFilters(tag_filter_type.group_candidates_list);
 
     toastr.success('Tag created', 'Create Tag');
 }
@@ -2966,7 +3010,11 @@ function appendViewTagToList(list, tag, count) {
         hideToggle.toggleClass('fa-eye-slash', tag.is_hidden_on_character_card);
         hideToggle.toggleClass('fa-eye', !tag.is_hidden_on_character_card);
         hideToggle.attr('title', getHideTooltip());
-        printCharactersDebounced();
+        if (tagChangeAffectsCurrentView([tag.id])) {
+            printCharactersDebounced();
+        } else {
+            updateEntityRowTags(getRenderedKeysWithTag(tag.id));
+        }
         saveSettingsDebounced('power_user');
     });
 
@@ -2999,6 +3047,9 @@ function onTagAsFolderClick() {
     tagsStore.update(id, { folder_type: types[(currentTypeIndex + 1) % types.length] });
 
     updateDrawTagFolder(element, tag);
+    // Folder type/membership is list-structural (moves rows between folders, or creates/empties one) whenever
+    // "Tags as folders" is on - not a single row's own display, so a full reprint is the correct amount of work
+    // here, not an over-triggering one.
     printCharactersDebounced();
 }
 
@@ -3043,6 +3094,11 @@ async function onTagDeleteClick() {
 
     const mergeTagId = $('#merge_tag_select').val() ? String($('#merge_tag_select').val()) : null;
 
+    // Snapshotted before removeTagIdEverywhere() strips the tag - a row carrying it now is exactly a row whose
+    // pills need repainting once it's gone (or replaced by the merge target).
+    const needsFullRedraw = tagChangeAffectsCurrentView(mergeTagId ? [id, mergeTagId] : [id]);
+    const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithTag(id);
+
     removeTagIdEverywhere(id, { replaceWithId: mergeTagId });
 
     tagsStore.remove(id);
@@ -3051,7 +3107,14 @@ async function onTagDeleteClick() {
 
     toastr.success(`'${tag.name}' deleted${mergeTagId ? ` and merged into '${tagsStore.get(mergeTagId).name}'` : ''}`, 'Delete Tag');
 
-    printCharactersDebounced();
+    printTagFilters(tag_filter_type.character);
+    printTagFilters(tag_filter_type.group_members_list);
+    printTagFilters(tag_filter_type.group_candidates_list);
+    if (needsFullRedraw) {
+        printCharactersDebounced();
+    } else {
+        updateEntityRowTags(affectedRowKeys);
+    }
     applyCharacterTagsToMessageDivs();
 }
 

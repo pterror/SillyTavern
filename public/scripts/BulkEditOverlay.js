@@ -5,7 +5,7 @@ import {
     buildAvatarList,
     deleteCharacter,
 } from '../script.js';
-import { getCharacters, characterToEntity, printCharactersDebounced } from './character-list.js';
+import { getCharacters, characterToEntity } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';
@@ -14,7 +14,7 @@ import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
 import { convertCharacterToPersona } from './personas.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
-import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting, clearEntityTags } from './tags.js';
+import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting, clearEntityTags, redrawAfterTagChange } from './tags.js';
 import { t } from './i18n.js';
 
 /**
@@ -383,14 +383,19 @@ class BulkTagPopupHandler {
      * Empty the tag map for the given characters
      */
     resetTags() {
+        const affectedKeys = new Set();
+        const clearedTagIds = new Set();
         for (const characterId of this.characterIds) {
             const key = getTagKeyForEntity(characterId);
-            if (key) clearEntityTags(key);
+            if (!key) continue;
+            affectedKeys.add(key);
+            for (const tag of getTagsList(key)) clearedTagIds.add(tag.id);
+            clearEntityTags(key);
         }
 
         $('#bulkTagList').empty();
 
-        printCharactersDebounced();
+        redrawAfterTagChange([...clearedTagIds], affectedKeys, new Map([...clearedTagIds].map(id => [id, true])));
     }
 
     /**
@@ -398,6 +403,7 @@ class BulkTagPopupHandler {
      */
     removeMutual() {
         const mutualTags = this.getMutualTags();
+        const affectedKeys = new Set(this.characterIds.map(characterId => getTagKeyForEntity(characterId)).filter(Boolean));
 
         for (const characterId of this.characterIds) {
             for (const tag of mutualTags) {
@@ -407,7 +413,7 @@ class BulkTagPopupHandler {
 
         $('#bulkTagList').empty();
 
-        printCharactersDebounced();
+        redrawAfterTagChange(mutualTags.map(tag => tag.id), affectedKeys, new Map(mutualTags.map(tag => [tag.id, true])));
     }
 }
 
