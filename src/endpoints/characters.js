@@ -2587,21 +2587,18 @@ router.get('/changes/stream', function (request, response) {
         touchBrowserPresence();
     }, PRESENCE_PING_INTERVAL_MS);
 
-    // Debounced: a bulk write can emit 'change' hundreds of times in one synchronous burst, and an
-    // un-debounced response.write() per emission per SSE client would stall the event loop.
-    let notifyTimer = null;
-    const onChange = () => {
-        clearTimeout(notifyTimer);
-        notifyTimer = setTimeout(() => {
-            response.write('data: {}\n\n');
-        }, 500);
-    };
+    // Debounced (trailing, 500ms) so a bulk write emitting 'change' hundreds of times in one synchronous burst
+    // doesn't do an un-debounced response.write() per emission - but capped with maxWait: a sustained stream of
+    // changes closer together than 500ms apart (e.g. a large ongoing local-import batch, one flushBatch() every
+    // few hundred ms) would otherwise keep deferring forever and never actually notify until the whole stream
+    // goes quiet, silencing every connected client for the run's entire duration.
+    const onChange = _.debounce(() => response.write('data: {}\n\n'), 500, { maxWait: 2000 });
 
     characterChangeEmitter.on('change', onChange);
 
     request.on('close', () => {
         characterChangeEmitter.off('change', onChange);
-        clearTimeout(notifyTimer);
+        onChange.cancel();
         clearInterval(presenceInterval);
     });
 });
