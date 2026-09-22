@@ -37,6 +37,7 @@ import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMet
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
+import { copyCharacterFile } from '../local-import-copy.js';
 
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
@@ -3148,21 +3149,15 @@ async function duplicateOneCharacter(request, avatarUrl) {
         newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
     }
 
-    fs.copyFileSync(filename, newFilename);
+    await copyCharacterFile(filename, newFilename);
     console.info(`${filename} was copied to ${newFilename}`);
 
-    // A raw byte copy also copies the source's tEXt chunk, which may be stale - re-stamp the copy with
-    // the source's authoritative content when that's the case, so the duplicate isn't silently a copy of
-    // a pre-edit card. writeCardToFile() only rewrites when there's genuinely something to correct.
-    const sourceParked = await getCharacterCardJson(request.user.directories, path.basename(filename));
-    if (sourceParked !== null) {
-        await writeCardToFile(filename, newFilename, sourceParked, null);
-    }
-
     // /duplicate is a raw file copy, not a re-encode, so it doesn't go through writeCharacterData() and
-    // needs its own metadata-store upsert here.
+    // needs its own metadata-store upsert here. Sourced via readCardContent() (DB-parked value if present,
+    // else the PNG's own chunk - same precedence every other reader uses) and written only to the new row,
+    // never back into the copied file's bytes: canonical PNGs are never written to after creation.
     const newAvatar = path.parse(newFilename).base;
-    const rawData = await readCharacterData(newFilename);
+    const rawData = await readCardContent(request.user.directories, path.basename(filename), filename);
     if (rawData !== undefined) {
         await fireMetadataUpsertHook(request.user.directories, newAvatar, rawData);
     }
