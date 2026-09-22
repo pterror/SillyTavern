@@ -6252,10 +6252,21 @@
                                     </div>
                                 </div>
                             </div>
+                            <div id="creatorInfoWrapper" class="flex-container flexnowrap">
+                                <div class="flex1">
+                                    <h4 data-i18n="Created by">Created by</h4>
+                                    <textarea id="creator_textarea" name="creator" data-i18n="[placeholder](Botmaker's name / Contact Info)" placeholder="(Botmaker's name / Contact info)" form="form_create" class="text_pole" autocomplete="off" rows="1"></textarea>
+                                </div>
+                                <div class="flex1">
+                                    <h4 data-i18n="Character Version">Character Version</h4>
+                                    <textarea id="character_version_textarea" name="character_version" data-i18n="[placeholder](If you want to track character versions)" placeholder="(If you want to track character versions)" form="form_create" class="text_pole" autocomplete="off" rows="1"></textarea>
+                                </div>
+                            </div>
                             <div id="spoiler_free_desc" class="inline-drawer flex-container flexFlowColumn flexNoGap">
                                 <div class="inline-drawer-toggle inline-drawer-header padding0 gap5px standoutHeader">
                                     <div id="creators_notes_div" class="title_restorable flexGap5 wide100p ">
                                         <span class="flex1" data-i18n="Creator's Notes">Creator's Notes</span>
+                                        <div id="creator_notes_edit_button" class="margin0 menu_button fa-solid fa-pencil fa-fw" title="Edit Creator's Notes" data-i18n="[title]Edit Creator's Notes"></div>
                                         <div id="creators_note_styles_button" class="margin0 menu_button fa-solid fa-palette fa-fw" title="Allow / Forbid the use of global styles for this character." data-i18n="[title]Allow / Forbid the use of global styles for this character."></div>
                                         <div id="spoiler_free_desc_button" class="margin0 menu_button fa-solid fa-eye fa-fw" title="Show / Hide Description and Greeting" data-i18n="[title]Show / Hide Description and Greeting"></div>
                                     </div>
@@ -6638,16 +6649,6 @@
                 </div>
                 <div class="inline-drawer-content">
                     <small data-i18n="Everything here is optional">Everything here is optional</small>
-                    <div class="flex-container flexnowrap">
-                        <div class="flex1">
-                            <h4 data-i18n="Created by">Created by</h4>
-                            <textarea id="creator_textarea" name="creator" data-i18n="[placeholder](Botmaker's name / Contact Info)" placeholder="(Botmaker's name / Contact info)" form="form_create" class="text_pole" autocomplete="off" rows="2"></textarea>
-                        </div>
-                        <div class="flex1">
-                            <h4 data-i18n="Character Version">Character Version</h4>
-                            <textarea id="character_version_textarea" name="character_version" data-i18n="[placeholder](If you want to track character versions)" placeholder="(If you want to track character versions)" form="form_create" class="text_pole" autocomplete="off" rows="2"></textarea>
-                        </div>
-                    </div>
                     <div class="flex-container flexnowrap">
                         <div class="flex1">
                             <h4 class="flex-container alignItemsBaseline">
