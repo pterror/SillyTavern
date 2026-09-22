@@ -259,8 +259,14 @@ describe('reclaimReflinkPrefix', () => {
     test('preserves the existing file own current tail bytes verbatim, not a re-derived value', async () => {
         const source = buildSourcePng({ name: 'Original' });
         fs.writeFileSync(sourcePath, source);
-        // A ccv3-carrying import - a second tEXt chunk in the tail that reclaim must preserve exactly.
-        const alreadyImported = cardParser.write(source, JSON.stringify({ name: 'V3 Card', spec: 'chara_card_v3', spec_version: '3.0' }));
+        // A file with two tEXt chunks in the tail (chara + a foreign ccv3, e.g. from a pre-fix write or an
+        // external tool) that reclaim must preserve exactly, byte for byte.
+        const data = JSON.stringify({ name: 'V3 Card', spec: 'chara_card_v3', spec_version: '3.0' });
+        const written = cardParser.write(source, data);
+        const writtenChunks = extract(new Uint8Array(written));
+        const ccv3Chunk = PNGtext.encode('ccv3', Buffer.from(data, 'utf8').toString('base64'));
+        writtenChunks.splice(-1, 0, ccv3Chunk);
+        const alreadyImported = Buffer.from(encode(writtenChunks));
         fs.writeFileSync(existingPath, alreadyImported);
 
         await cardParser.reclaimReflinkPrefix(existingPath, sourcePath);
