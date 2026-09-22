@@ -6235,12 +6235,20 @@
                                             </label>
                                         </div>
                                     </div>
-                                    <div id="tags_div">
-                                        <div class="tag_controls">
-                                            <input id="tagInput" class="text_pole textarea_compact tag_input wide100p margin0" data-i18n="[placeholder]Search / Create Tags" placeholder="Search / Create tags" />
-                                            <div class="tags_view menu_button fa-solid fa-tags" title="View all tags" data-i18n="[title]View all tags"></div>
+                                    <div id="tags_div" class="inline-drawer">
+                                        <div class="inline-drawer-toggle inline-drawer-header">
+                                            <h4>
+                                                <span data-i18n="Tags">Tags</span>
+                                            </h4>
+                                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                                         </div>
-                                        <div id="tagList" class="tags"></div>
+                                        <div class="inline-drawer-content" style="display: none;">
+                                            <div class="tag_controls">
+                                                <input id="tagInput" class="text_pole textarea_compact tag_input wide100p margin0" data-i18n="[placeholder]Search / Create Tags" placeholder="Search / Create tags" />
+                                                <div class="tags_view menu_button fa-solid fa-tags" title="View all tags" data-i18n="[title]View all tags"></div>
+                                            </div>
+                                            <div id="tagList" class="tags"></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
