@@ -34,10 +34,13 @@ export class LocalImportWorkerPool {
         this.slots = [];
         /** @type {WorkerPoolTask[]} */
         this.pending = [];
-        /** @type {Map<number, { id: number, sourcePath: string, format: string, directories: object, allowIdentityFallback: boolean }>} */
+        /** @type {Map<number, { id: number, sourcePath: string, format: string, directories: object, allowIdentityFallback: boolean, allowCrossDeviceCopyFallback: boolean }>} */
         this.taskArgsById = new Map();
         this.nextId = 0;
         this.disposed = false;
+        // Resolved once here (main thread) rather than in the worker: getConfigValue() reads main-thread-only
+        // state and would throw if a worker tried to call it directly (see local-import-copy.js's copyCharacterFile()).
+        this.allowCrossDeviceCopyFallback = getConfigValue('localImport.allowCrossDeviceCopyFallback', true, 'boolean');
         for (let i = 0; i < size; i++) {
             this.slots.push(this._spawnSlot());
         }
@@ -111,7 +114,7 @@ export class LocalImportWorkerPool {
      */
     runPipeline(sourcePath, format, directories, allowIdentityFallback) {
         const id = this.nextId++;
-        this.taskArgsById.set(id, { id, sourcePath, format, directories, allowIdentityFallback });
+        this.taskArgsById.set(id, { id, sourcePath, format, directories, allowIdentityFallback, allowCrossDeviceCopyFallback: this.allowCrossDeviceCopyFallback });
         return new Promise((resolve, reject) => {
             /** @type {WorkerPoolTask} */
             const task = {

@@ -18,7 +18,7 @@ import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.j
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
 import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, color, mapWithConcurrency } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
-import { parse, read, write, writeCardToFile, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
+import { parse, read, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
@@ -334,9 +334,13 @@ async function findCrossCharacterReflinkCandidate(directories, selfAvatar, data)
  * @param {Crop|undefined} crop - Crop parameters
  * @param {string|null} [contentHash] - sha256 hex digest of the raw uploaded source-file bytes, when this write came from `/import`.
  * @param {Set<string>|null} [freshFieldPaths] - V2 dot-paths the caller has already confirmed match current on-disk state.
+ * @param {boolean} [imageOnly] - true for a brand-new import/create write: the PNG gets image bytes only (any
+ * embedded chara/ccv3 chunk stripped), `data` goes to the metadata db exclusively, and no reflink is attempted
+ * (there's no durable source file to preserve extent-sharing with - see writeImageOnlyCard() for the local-import
+ * background scanner's own path, which does have one and reflinks against it directly, bypassing this function).
  * @returns {Promise<true>} Always resolves to `true` on success - a failed write rejects instead.
  */
-async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null) {
+async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null, imageOnly = false) {
     try {
         const oldDiskCacheKey = (useDiskCache && !Buffer.isBuffer(inputFile)) ? getCacheKey(inputFile) : null;
         /**
@@ -388,6 +392,15 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             const stat = await fsPromises.stat(outputImagePath);
             await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, stat.mtimeMs, contentHash, null)
                 .catch(err => console.error('[character-metadata] Failed to persist a metadata-only character write:', err));
+            if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
+            return true;
+        }
+
+        if (imageOnly) {
+            const outputImage = stripCardData(await getInputImage());
+            const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(outputImage);
+            writeFileAtomicSync(outputImagePath, outputImage);
+            await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
             if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
             return true;
         }
@@ -594,7 +607,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'tags': '',
     }, context.request.user.directories);
     omitInstallLocalFields(char);
-    await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash);
+    await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash, null, true);
     return fileName;
 }
 
@@ -641,7 +654,7 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
         }
     }
 
-    await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request, undefined, contentHash);
+    await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request, undefined, contentHash, null, true);
     return fileName;
 }
 
@@ -721,7 +734,7 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
         }
     }
 
-    await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request, undefined, contentHash);
+    await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request, undefined, contentHash, null, true);
 
     return fileName;
 }
@@ -741,7 +754,7 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     const data = buildJsonImportData(rawText, request.user.directories, pngName);
     if (data === null) return '';
 
-    await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash);
+    await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash, null, true);
     return pngName;
 }
 
@@ -839,7 +852,7 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
 
     // Temp upload gets cleaned up whether the write succeeds or throws.
     try {
-        await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash);
+        await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash, null, true);
     } finally {
         fs.unlinkSync(uploadPath);
     }
@@ -922,13 +935,13 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         if (!fs.existsSync(chatsPath)) fs.mkdirSync(chatsPath);
 
         if (!request.file) {
-            await writeCharacterData(DEFAULT_AVATAR_PATH, char, internalName, request);
+            await writeCharacterData(DEFAULT_AVATAR_PATH, char, internalName, request, undefined, null, null, true);
         } else {
             const crop = tryParse(request.query.crop);
             const uploadPath = path.join(request.file.destination, request.file.filename);
             // Temp upload gets cleaned up whether the write succeeds or throws.
             try {
-                await writeCharacterData(uploadPath, char, internalName, request, crop);
+                await writeCharacterData(uploadPath, char, internalName, request, crop, null, null, true);
             } finally {
                 fs.unlinkSync(uploadPath);
             }

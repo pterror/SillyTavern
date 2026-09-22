@@ -242,9 +242,9 @@ describe('POST /api/characters/import - fav/chat no longer written to the card (
         const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
         const data = await response.json();
 
-        const { read } = await import('../src/character-card-parser.js');
-        const stored = fs.readFileSync(path.join(directories.characters, `${data.file_name}.png`));
-        const storedJson = JSON.parse(read(stored));
+        // Post-import canonical PNGs are image-only (no embedded chara/ccv3 chunk - see writeCharacterData()'s
+        // imageOnly write path), so the stored card is verified through the metadata db, the only place it lives.
+        const storedJson = JSON.parse(await metadataDb.getCharacterCardJson(directories, `${data.file_name}.png`));
 
         expect('fav' in storedJson).toBe(false);
         expect('chat' in storedJson).toBe(false);
@@ -255,9 +255,7 @@ describe('POST /api/characters/import - fav/chat no longer written to the card (
         const response = await importJsonCharacter({ name: 'V1 Ghost', fav: true });
         const data = await response.json();
 
-        const { read } = await import('../src/character-card-parser.js');
-        const stored = fs.readFileSync(path.join(directories.characters, `${data.file_name}.png`));
-        const storedJson = JSON.parse(read(stored));
+        const storedJson = JSON.parse(await metadataDb.getCharacterCardJson(directories, `${data.file_name}.png`));
 
         expect('fav' in storedJson).toBe(false);
         expect('chat' in storedJson).toBe(false);

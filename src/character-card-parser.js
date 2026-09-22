@@ -66,15 +66,7 @@ export function computeAvatarIdentityHashFromImageBuffer(image) {
  * removed, fresh one(s) inserted immediately before IEND.
  */
 function spliceCardDataIntoChunks(chunks, data) {
-    const tEXtChunks = chunks.filter(chunk => chunk.name === 'tEXt');
-
-    // Remove existing tEXt chunks
-    for (const tEXtChunk of tEXtChunks) {
-        const decoded = PNGtext.decode(tEXtChunk.data);
-        if (decoded.keyword.toLowerCase() === 'chara' || decoded.keyword.toLowerCase() === 'ccv3') {
-            chunks.splice(chunks.indexOf(tEXtChunk), 1);
-        }
-    }
+    removeCharaChunks(chunks);
 
     // Add the chara chunk before IEND, holding `data` as-is.
     const base64EncodedData = Buffer.from(data, 'utf8').toString('base64');
@@ -99,6 +91,32 @@ export const write = (image, data) => {
     const newBuffer = Buffer.from(encode(chunks));
     return newBuffer;
 };
+
+/**
+ * Removes any 'chara'/'ccv3' tEXt chunks in place, leaving the pure image chunks with no embedded character
+ * data. Shared by stripCardData() and writeImageOnlyCard() below.
+ * @param {Array<{name: string, data: Uint8Array}>} chunks Mutated in place.
+ * @returns {Array<{name: string, data: Uint8Array}>} `chunks`
+ */
+function removeCharaChunks(chunks) {
+    for (const chunk of chunks.filter(c => c.name === 'tEXt')) {
+        const decoded = PNGtext.decode(chunk.data);
+        if (decoded.keyword.toLowerCase() === 'chara' || decoded.keyword.toLowerCase() === 'ccv3') {
+            chunks.splice(chunks.indexOf(chunk), 1);
+        }
+    }
+    return chunks;
+}
+
+/**
+ * @param {Buffer} image
+ * @returns {Buffer} `image` with any embedded chara/ccv3 tEXt chunk removed - pure image bytes.
+ */
+export function stripCardData(image) {
+    const chunks = extract(new Uint8Array(image));
+    removeCharaChunks(chunks);
+    return Buffer.from(encode(chunks));
+}
 
 /**
  * Reads Character metadata from a PNG image buffer.
@@ -327,7 +345,7 @@ export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, 
                 && Buffer.compare(outputImage.subarray(0, crossOffset), crossBuf.subarray(0, crossOffset)) === 0;
 
             if (crossVerified) {
-                await writeSharedPrefixThenAppend(crossReflinkCandidatePath, destPath, outputImage, crossOffset);
+                await writeSharedPrefixThenAppend(crossReflinkCandidatePath, destPath, outputImage.subarray(crossOffset), crossOffset);
                 return { reflinked: true, avatarIdentityHash };
             }
         } catch (error) {
@@ -340,7 +358,7 @@ export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, 
 
     if (prefixVerified) {
         try {
-            await writeSharedPrefixThenAppend(sourcePath, destPath, outputImage, offset);
+            await writeSharedPrefixThenAppend(sourcePath, destPath, outputImage.subarray(offset), offset);
             return { reflinked: true, avatarIdentityHash };
         } catch (error) {
             console.debug(`character-card-parser: reflink-preserving write failed for ${sourcePath} -> ${destPath}, falling back to a full write.`, /** @type {any} */ (error)?.message ?? error);
@@ -358,11 +376,11 @@ export async function writeCardFromChunks(sourcePath, destPath, srcBuf, chunks, 
  * file and rethrows — `destPath` itself is never touched until the final atomic rename.
  * @param {string} sourcePath
  * @param {string} destPath
- * @param {Buffer} outputImage The full rewritten buffer from write(); only its tail from `offset` is written.
+ * @param {Buffer|Uint8Array} tail Bytes to append after truncating the reflinked clone to `offset`.
  * @param {number} offset
  * @returns {Promise<void>}
  */
-async function writeSharedPrefixThenAppend(sourcePath, destPath, outputImage, offset) {
+async function writeSharedPrefixThenAppend(sourcePath, destPath, tail, offset) {
     const reflinkModule = await loadReflinkModule();
     if (!reflinkModule) {
         throw new Error('@reflink/reflink native binding is unavailable on this platform.');
@@ -372,7 +390,7 @@ async function writeSharedPrefixThenAppend(sourcePath, destPath, outputImage, of
     try {
         await reflinkModule.reflinkFile(sourcePath, tempPath);
         await fsPromises.truncate(tempPath, offset);
-        await fsPromises.appendFile(tempPath, outputImage.subarray(offset));
+        await fsPromises.appendFile(tempPath, tail);
 
         // Mirror write-file-atomic's own behavior of preserving an existing target's mode/uid/gid.
         try {
@@ -419,11 +437,43 @@ export async function reclaimReflinkPrefix(existingPath, sourcePath) {
     }
 
     try {
-        await writeSharedPrefixThenAppend(sourcePath, existingPath, existingBuf, offset);
+        await writeSharedPrefixThenAppend(sourcePath, existingPath, existingBuf.subarray(offset), offset);
         return { reflinked: true };
     } catch (error) {
         console.debug(`character-card-parser: reclaimReflinkPrefix failed for ${existingPath} <- ${sourcePath}, leaving it untouched.`, /** @type {any} */ (error)?.message ?? error);
         return { reflinked: false, reason: 'reflink-failed' };
     }
+}
+
+// PNG's IEND chunk always has zero-length data, so its bytes (4-byte length + 4-byte type + 4-byte CRC) are
+// a fixed constant, independent of any character - never per-import content.
+const IEND_CHUNK = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+
+/**
+ * Writes `destPath` as a pure image copy of `sourcePath`: any embedded chara/ccv3 tEXt chunk is dropped, and
+ * nothing character-derived is written in its place. Reflinks the shared image-chunk prefix from `sourcePath`
+ * when the layout allows it (findReflinkablePrefixOffset()) and appends only the fixed IEND_CHUNK - never any
+ * per-character data - so a successful reflink leaves `destPath` sharing every extent with `sourcePath` up to
+ * that prefix. Falls back to a full independent write (still image-only) when reflinking isn't available or
+ * `sourcePath`'s chunk layout is ineligible.
+ * @param {string} sourcePath Absolute path to the source PNG already on disk.
+ * @param {string} destPath Absolute path to write the result to. May already exist.
+ * @returns {Promise<{reflinked: boolean}>}
+ */
+export async function writeImageOnlyCard(sourcePath, destPath) {
+    const srcBuf = await fs.promises.readFile(sourcePath);
+    const offset = findReflinkablePrefixOffset(srcBuf);
+
+    if (offset !== null && offset <= srcBuf.length) {
+        try {
+            await writeSharedPrefixThenAppend(sourcePath, destPath, IEND_CHUNK, offset);
+            return { reflinked: true };
+        } catch (error) {
+            console.debug(`character-card-parser: image-only reflink-preserving write failed for ${sourcePath} -> ${destPath}, falling back to a full write.`, /** @type {any} */ (error)?.message ?? error);
+        }
+    }
+
+    writeFileAtomicSync(destPath, stripCardData(srcBuf));
+    return { reflinked: false };
 }
 
