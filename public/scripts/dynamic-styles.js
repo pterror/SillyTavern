@@ -60,7 +60,12 @@ function applyDynamicFocusStyles(styleSheet, { fromExtension = false } = {}) {
         Array.from(rules).forEach(rule => {
             if (rule instanceof CSSImportRule) {
                 /** @type {WrapperCond[]} */
-                const extra = (rule.media && rule.media.mediaText) ? [{ type: 'media', conditionText: rule.media.mediaText }] : [];
+                let extra = [];
+                try {
+                    extra = (rule.media && rule.media.mediaText) ? [{ type: 'media', conditionText: rule.media.mediaText }] : [];
+                } catch (e) {
+                    // Cross-origin @import rules can throw when reading media info.
+                }
                 processImportedStylesheet(rule.styleSheet, [...wrappers, ...extra]);
             } else if (rule instanceof CSSStyleRule) {
                 const selectors = rule.selectorText.split(',').map(s => s.trim());
@@ -93,8 +98,12 @@ function applyDynamicFocusStyles(styleSheet, { fromExtension = false } = {}) {
      * @param {WrapperCond[]} wrappers - Wrapper conditions inherited from (at)import media
      */
     function processImportedStylesheet(sheet, wrappers = []) {
-        if (sheet && sheet.cssRules) {
-            processRules(sheet.cssRules, wrappers);
+        try {
+            if (sheet && sheet.cssRules) {
+                processRules(sheet.cssRules, wrappers);
+            }
+        } catch (e) {
+            // Cross-origin stylesheets restrict cssRules access.
         }
     }
 
