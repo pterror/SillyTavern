@@ -352,9 +352,8 @@ const SCHEMA_SQL = `
     --
     -- avatar_identity_hash: computeAvatarIdentityHashFromChunks() - sha256 over raw IDAT payload bytes, not a
     -- decoded-pixel hash. Independent from content_identity_hash (same text, different portrait can share one but
-    -- not the other); a real identity match requires both (findCharacterIdByIdentityHashes()). Populated on every
-    -- write, and via a one-time backfill (scripts/backfill-avatar-identity-hashes.mjs) that reads/writes rows
-    -- independently (WHERE avatar_identity_hash IS NULL) so a concurrent live write for the same row just wins.
+    -- not the other); a real identity match requires both (findCharacterIdByIdentityHashes()). Every row-creating
+    -- call site computes and passes it.
 
     CREATE TABLE IF NOT EXISTS character_tags (
         character_id TEXT NOT NULL,
