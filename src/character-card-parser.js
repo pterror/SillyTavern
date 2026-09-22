@@ -421,27 +421,46 @@ async function writeSharedPrefixThenAppend(sourcePath, destPath, tail, offset) {
  * @param {string} existingPath Absolute path to the already-imported character file to repair in place.
  * @param {string} sourcePath Absolute path to the believed-original source file, still on disk.
  * @param {{skipByteVerification?: boolean}} [options] `skipByteVerification`: the caller's own match key already
- * guarantees prefix identity (e.g. an IDAT-only hash where the prefix is IDAT-only too), so skip reading and
- * comparing both files' bytes here. Only pass `true` when that's actually true for the prefix being reflinked -
- * other callers matching on a weaker key still need the default full comparison.
+ * guarantees prefix identity (e.g. an IDAT-only hash where the prefix is IDAT-only too), so skip both reading
+ * `existingPath`'s prefix bytes and comparing them - only its tail (past the shared prefix) is read, since
+ * that's the only part of `existingPath` this function ever uses. Only pass `true` when prefix identity is
+ * actually guaranteed some other way - other callers matching on a weaker key still need the default full
+ * read-and-compare.
  * @returns {Promise<{reflinked: boolean, reason?: string}>}
  */
 export async function reclaimReflinkPrefix(existingPath, sourcePath, { skipByteVerification = false } = {}) {
-    const [existingBuf, sourceBuf] = await Promise.all([
-        fs.promises.readFile(existingPath),
-        fs.promises.readFile(sourcePath),
-    ]);
-
+    const sourceBuf = await fs.promises.readFile(sourcePath);
     const offset = findReflinkablePrefixOffset(sourceBuf);
-    const prefixVerified = offset !== null && offset <= existingBuf.length && offset <= sourceBuf.length
-        && (skipByteVerification || Buffer.compare(existingBuf.subarray(0, offset), sourceBuf.subarray(0, offset)) === 0);
-
-    if (!prefixVerified) {
+    if (offset === null) {
         return { reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' };
     }
 
+    /** @type {Buffer | Uint8Array} */
+    let existingTail;
+    if (skipByteVerification) {
+        const existingSize = (await fs.promises.stat(existingPath)).size;
+        if (offset > existingSize) {
+            return { reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' };
+        }
+        existingTail = Buffer.alloc(existingSize - offset);
+        const handle = await fs.promises.open(existingPath, 'r');
+        try {
+            await handle.read(existingTail, 0, existingTail.length, offset);
+        } finally {
+            await handle.close();
+        }
+    } else {
+        const existingBuf = await fs.promises.readFile(existingPath);
+        const prefixVerified = offset <= existingBuf.length
+            && Buffer.compare(existingBuf.subarray(0, offset), sourceBuf.subarray(0, offset)) === 0;
+        if (!prefixVerified) {
+            return { reflinked: false, reason: 'prefix-mismatch-or-ineligible-layout' };
+        }
+        existingTail = existingBuf.subarray(offset);
+    }
+
     try {
-        await writeSharedPrefixThenAppend(sourcePath, existingPath, existingBuf.subarray(offset), offset);
+        await writeSharedPrefixThenAppend(sourcePath, existingPath, existingTail, offset);
         return { reflinked: true };
     } catch (error) {
         console.debug(`character-card-parser: reclaimReflinkPrefix failed for ${existingPath} <- ${sourcePath}, leaving it untouched.`, /** @type {any} */ (error)?.message ?? error);
