@@ -13,7 +13,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, setCharacterId } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, updateCharacterListRow } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage } from './scripts/character-list.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
@@ -4509,8 +4509,13 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
     toastr.success(t`Character Duplicated`);
     const data = await response.json();
     await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: targetAvatar, newAvatar: data.path });
-    await getCharacters({ silent: true });
+    await getCharacters({ silent: true, skipPrint: true });
     charactersStore.reportCreated(data.path);
+    // The duplicate's sorted position isn't knowable client-side (sort can be by name/date/fav/random/search) -
+    // re-fetch just the current page rather than guess where to insert a new row.
+    if (!refreshCharacterListCurrentPage()) {
+        await printCharacters(true);
+    }
 
     return data.path;
 }
@@ -6102,8 +6107,9 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             // Unload current character
             setCharacterId(undefined);
             // Reload characters list
-            await getCharacters({ silent: true });
+            await getCharacters({ silent: true, skipPrint: true });
             charactersStore.reportRenamed(oldAvatar, newAvatar);
+            renameCharacterListRow(oldAvatar, newAvatar);
 
             // Find newly renamed character
             const renamedEntity = charactersStore.get(data.avatar);
@@ -9655,7 +9661,9 @@ export async function createOrEditCharacter(e) {
 
             console.log(`new avatar id: ${avatarId}`);
             createTagMapFromList('#tagList', avatarId);
-            await getCharacters({ silent: true });
+            // select_rm_info() below does its own real, targeted lookup+page-navigation for 'char_create' (see
+            // its own body) - no separate list refresh needed here first.
+            await getCharacters({ silent: true, skipPrint: true });
             charactersStore.reportCreated(avatarId);
 
             select_rm_info('char_create', avatarId, oldSelectedChar, newCharacterName);
@@ -10521,7 +10529,8 @@ export async function processDroppedFiles(files, data = new Map()) {
     }
 
     if (avatarFileNames.length > 0) {
-        await printCharacters(true);
+        // selectImportedChar() -> select_rm_info('char_import_no_toast', ...) does its own real, targeted
+        // lookup+page-navigation - no separate list refresh needed here first.
         selectImportedChar(avatarFileNames[avatarFileNames.length - 1]);
     }
 
@@ -11016,9 +11025,13 @@ async function removeCharacterFromUI(removedCharacters = []) {
     closeRightMenu('rm_ch_create_block');
     $(document.getElementById('rm_button_selected_ch')).children('h2').text('');
     restoreNeutralChat();
-    await getCharacters({ silent: removedCharacters.length > 0 });
+    // Known exactly which rows to drop when the deletes themselves succeeded - skip getCharacters()'s own
+    // reprint and remove just those rows. On a failed/empty delete, fall back to its full resync instead.
+    const knownRemovals = removedCharacters.length > 0;
+    await getCharacters({ silent: knownRemovals, skipPrint: knownRemovals });
     for (const { avatar, entity } of removedCharacters) {
         charactersStore.reportRemoved(avatar, entity);
+        removeCharacterListRow(avatar);
     }
     await printMessages();
     await eventSource.emit(event_types.CHAT_CHANGED, getCurrentChatId());
