@@ -167,8 +167,9 @@ describe('export still hands out a self-contained, current card', () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
 
-        // Precondition: the stored file really is stale, so this test can't pass vacuously.
-        expect((await chunkOnDisk('Alice.png')).data.description).toBe('original');
+        // Precondition: the stored file carries no character data at all (image-only since creation - see
+        // writeCharacterData()'s imageOnly write path), so this test can't pass vacuously by reading it.
+        await expect(chunkOnDisk('Alice.png')).rejects.toThrow('No PNG metadata.');
 
         const response = await post('export', { avatar_url: 'Alice.png', format: 'png' });
         expect(response.status).toBe(200);
@@ -265,7 +266,9 @@ describe('greeting operations read and write the same place', () => {
         expect((await post('greetings/add', { avatar_url: 'Alice.png', position: 1, text: 'second' })).status).toBe(200);
 
         expect(fileStamp('Alice.png')).toEqual(before);
-        expect((await chunkOnDisk('Alice.png')).data.alternate_greetings).toEqual([]);
+        // Stored file carries no character data at all (image-only since creation), so there's nothing there for
+        // the greeting op to have touched - see the create/export test above for the same invariant.
+        await expect(chunkOnDisk('Alice.png')).rejects.toThrow('No PNG metadata.');
         expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).data.alternate_greetings).toEqual(['second']);
     });
 

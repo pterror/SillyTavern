@@ -4,7 +4,8 @@ import { parentPort } from 'node:worker_threads';
 import extract from 'png-chunks-extract';
 
 import { classifyJsonCandidate, computeCandidateContentIdentityHash, computeContentIdentityHashFromRawText } from './local-import-classify.js';
-import { readFromChunks, writeCardFromChunks, writeCardToFile, computeAvatarIdentityHashFromChunks, computeDefaultAvatarIdentityHash } from './character-card-parser.js';
+import { readFromChunks, writeImageOnlyCard, computeAvatarIdentityHashFromChunks, computeDefaultAvatarIdentityHash } from './character-card-parser.js';
+import { copyCharacterFile } from './local-import-copy.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 
 /**
@@ -15,7 +16,7 @@ import { DEFAULT_AVATAR_PATH } from './constants.js';
  * thread (no WAL/busy_timeout here, and scanDirectory() wraps a pass in one write transaction).
  */
 
-/** @type {Map<number, { sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string }>} */
+/** @type {Map<number, { sourcePath: string, sourceBuffer: Buffer, chunks: Array<{name: string, data: Uint8Array}> | null, format: string, allowCrossDeviceCopyFallback: boolean }>} */
 const pendingTasks = new Map();
 
 /**
@@ -40,7 +41,7 @@ parentPort.on('message', async (msg) => {
         return;
     }
 
-    const { id, sourcePath, format, allowIdentityFallback } = msg;
+    const { id, sourcePath, format, allowIdentityFallback, allowCrossDeviceCopyFallback } = msg;
     try {
         const sourceBuffer = fs.readFileSync(sourcePath);
         const contentHash = crypto.createHash('sha256').update(sourceBuffer).digest('hex');
@@ -70,7 +71,7 @@ parentPort.on('message', async (msg) => {
             : (!jsonClassification && (format === 'json' || format === 'yaml' || format === 'yml')) ? computeDefaultAvatarIdentityHash() : null;
 
         if (decoded) {
-            pendingTasks.set(id, { sourcePath, sourceBuffer, chunks: decoded.chunks, format });
+            pendingTasks.set(id, { sourcePath, sourceBuffer, chunks: decoded.chunks, format, allowCrossDeviceCopyFallback });
             parentPort.postMessage({ id, phase: 'parsed', ok: true, contentHash, jsonClassification, identityHash, avatarIdentityHash, rawText: decoded.rawText });
             return;
         }
@@ -92,11 +93,14 @@ async function finishWrite(msg, pending) {
         return;
     }
     try {
-        const { destPath, data } = msg;
+        const { destPath } = msg;
+        // Card data goes to the metadata db only (see local-import-scan.js's fireMetadataUpsertHook call) -
+        // png gets an image-only reflink of its own source, json/yaml get a plain copy of the shared default
+        // avatar template (no per-character source image to diverge from either way).
         const result = pending.format === 'png'
-            ? await writeCardFromChunks(pending.sourcePath, destPath, pending.sourceBuffer, pending.chunks, data)
-            : await writeCardToFile(DEFAULT_AVATAR_PATH, destPath, data);
-        parentPort.postMessage({ id, phase: 'done', ok: true, outcome: 'write', reflinked: result.reflinked });
+            ? await writeImageOnlyCard(pending.sourcePath, destPath)
+            : await copyCharacterFile(DEFAULT_AVATAR_PATH, destPath, pending.allowCrossDeviceCopyFallback);
+        parentPort.postMessage({ id, phase: 'done', ok: true, outcome: 'write', reflinked: 'method' in result ? result.method !== 'copy' : result.reflinked });
     } catch (err) {
         parentPort.postMessage({ id, phase: 'done', ok: false, error: /** @type {any} */ (err)?.message ?? String(err) });
     }
