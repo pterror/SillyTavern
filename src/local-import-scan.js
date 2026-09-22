@@ -447,6 +447,10 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                 }
             }
 
+            // Passed to markProcessed() below as `duplicateOf`, so local_import_mtimes ends up recording this
+            // source path against whichever character it produced - not only later-detected duplicates.
+            let importedCharacterId = null;
+
             if (pipelineResult.needsWrite) {
                 // Minted up front (rather than after the build call below) so it can be threaded into
                 // buildPngImportData()/buildJsonImportData() as the character's avatar identity - they use it to
@@ -472,6 +476,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     await pipelineResult.finish({ type: 'no-write' });
                     console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
                 } else {
+                    importedCharacterId = `${pngName}.png`;
                     const destPath = path.join(directories.characters, `${pngName}.png`);
                     await pipelineResult.finish({ type: 'write', destPath, data });
                     await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash);
@@ -500,8 +505,10 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                 if (!result) {
                     console.warn(`[local-import] Failed to import ${sourcePath} (unrecognized content or import error) - will retry next pass.`);
                 } else if ('duplicateOf' in result) {
+                    importedCharacterId = result.duplicateOf;
                     console.debug(`[local-import] Skipped ${sourcePath} - duplicate of already-imported character ${result.duplicateOf}.`);
                 } else {
+                    importedCharacterId = `${result.fileName}.png`;
                     console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
                     try {
                         await setCharacterDateAdded(directories, `${result.fileName}.png`, stat.mtimeMs);
@@ -518,7 +525,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                 }
             }
 
-            await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs);
+            await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs, importedCharacterId);
         });
     } catch (err) {
         console.error(`[local-import] Failed to process ${sourcePath}, will retry next pass:`, err);
