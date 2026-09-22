@@ -183,6 +183,7 @@ export const power_user = {
     custom_css: '',
 
     waifuMode: false,
+    forceMobileView: false,
     movingUI: false,
     movingUIState: {},
     movingUIPreset: '',
@@ -1175,6 +1176,11 @@ function switchWaifuMode() {
     scrollChatToBottom();
 }
 
+function switchForceMobileView() {
+    $('body').toggleClass('forceMobileView', power_user.forceMobileView);
+    $('#forceMobileView').prop('checked', power_user.forceMobileView);
+}
+
 function switchSpoilerMode() {
     if (power_user.spoiler_free_mode) {
         $('#descriptionWrapper').hide();
@@ -1914,6 +1920,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#markdown_escape_strings').val(power_user.markdown_escape_strings);
     $('#fast_ui_mode').prop('checked', power_user.fast_ui_mode);
     $('#waifuMode').prop('checked', power_user.waifuMode);
+    $('#forceMobileView').prop('checked', power_user.forceMobileView);
     $('#movingUImode').prop('checked', power_user.movingUI);
     $('#noShadowsmode').prop('checked', power_user.noShadows);
     $('#start_reply_with').text(power_user.user_prompt_bias);
@@ -2036,6 +2043,7 @@ export async function loadPowerUserSettings(settings, data) {
     await loadReasoningTemplates(data);
     loadMaxContextUnlocked();
     switchWaifuMode();
+    switchForceMobileView();
     switchSpoilerMode();
     loadMovingUIState();
     loadCharListState();
@@ -2944,6 +2952,7 @@ export function getThemeObject(name) {
         font_scale: power_user.font_scale,
         fast_ui_mode: power_user.fast_ui_mode,
         waifuMode: power_user.waifuMode,
+        forceMobileView: power_user.forceMobileView,
         avatar_style: power_user.avatar_style,
         chat_display: power_user.chat_display,
         toastr_position: power_user.toastr_position,
@@ -3757,6 +3766,12 @@ jQuery(() => {
         power_user.waifuMode = !!$('#waifuMode').prop('checked');
         switchWaifuMode();
         saveSettingsDebounced('power_user.waifuMode');
+    });
+
+    $('#forceMobileView').on('change', () => {
+        power_user.forceMobileView = !!$('#forceMobileView').prop('checked');
+        switchForceMobileView();
+        saveSettingsDebounced('power_user.forceMobileView');
     });
 
     $('#customCSS').on('input', () => {
