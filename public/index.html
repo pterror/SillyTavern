@@ -6298,9 +6298,10 @@
                                     <small data-i18n="Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.</small>
                                     <h4 class="flex-container alignItemsBaseline">
                                         <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                        <i class="macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="system_prompt_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                        <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="system_prompt_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
                                     </h4>
                                     <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" class="text_pole" autocomplete="off" rows="3"></textarea>
+                                    <pre class="macro_preview_content" data-for="system_prompt_textarea" style="display: none;"></pre>
                                 </div>
                             </div>
                             <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
@@ -6315,7 +6316,7 @@
                                     <div class="inline-drawer-content">
                                         <div class="flex-container alignitemscenter">
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="description_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <i class="macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="description_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="description_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#character-description" class="notes-link" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
                                             </a>
@@ -6328,6 +6329,7 @@
                                             </span>
                                         </div>
                                         <textarea id="description_textarea" class="mdHotkeys" data-macros data-i18n="[placeholder]Describe your character's physical and mental traits here." placeholder="Describe your character's physical and mental traits here." name="description" placeholder=""></textarea>
+                                        <pre class="macro_preview_content" data-for="description_textarea" style="display: none;"></pre>
                                     </div>
                                 </div>
                             </div>
@@ -6343,7 +6345,7 @@
                                     <div class="inline-drawer-content">
                                         <div class="flex-container alignitemscenter flex1">
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <i class="macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="greeting_field" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="greeting_field" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
                                             </a>
@@ -6364,6 +6366,7 @@
                                             </span>
                                         </div>
                                         <textarea id="greeting_field" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
+                                        <pre class="macro_preview_content" data-for="greeting_field" style="display: none;"></pre>
                                     </div>
                                 </div>
                             </div>
@@ -6379,9 +6382,10 @@
                                     <small data-i18n="Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.</small>
                                     <h4 class="flex-container alignItemsBaseline">
                                         <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                        <i class="macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="post_history_instructions_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                        <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="post_history_instructions_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
                                     </h4>
                                     <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" class="text_pole" autocomplete="off" rows="3"></textarea>
+                                    <pre class="macro_preview_content" data-for="post_history_instructions_textarea" style="display: none;"></pre>
                                 </div>
                             </div>
                             <!-- these divs are invisible and used for server communication purposes -->

@@ -2333,6 +2333,14 @@ export function initChatUtilities() {
         });
         wrapper.appendChild(textarea);
 
+        if (textarea.dataset.macros !== undefined) {
+            const previewButton = document.createElement('i');
+            previewButton.className = 'macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button';
+            previewButton.dataset.for = broId;
+            previewButton.title = t`Preview with macros substituted`;
+            wrapper.insertBefore(previewButton, textarea);
+        }
+
         if (withTab) {
             textarea.addEventListener('keydown', (evt) => {
                 if (evt.key == 'Tab' && !evt.shiftKey && !evt.ctrlKey && !evt.altKey) {
@@ -2382,6 +2390,33 @@ export function initChatUtilities() {
         const previewText = substituteParams(rawText);
         const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(previewText);
         await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
+    });
+
+    $(document).on('click', '.macro_preview_toggle_button', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const broId = $(this).attr('data-for');
+        const bro = $(`#${broId}`);
+        const preview = $(`.macro_preview_content[data-for="${broId}"]`);
+
+        if (!bro.length || !preview.length) {
+            console.error('Could not find field to preview macros for', broId);
+            return;
+        }
+
+        const showingPreview = preview.is(':visible');
+
+        if (showingPreview) {
+            preview.hide();
+            bro.show();
+        } else {
+            preview.text(substituteParams(String(bro.val())));
+            bro.hide();
+            preview.show();
+        }
+
+        $(this).toggleClass('fa-wand-magic-sparkles fa-pencil');
     });
 
     $(document).on('click', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {
