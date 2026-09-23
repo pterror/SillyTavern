@@ -5134,6 +5134,10 @@ body .ui-tabs.ui-widget {
     font-size: inherit;
 }
 
+body .ui-tabs.ui-widget-content {
+    border: none !important;
+}
+
 .ui-slider {
     margin: 5px 0;
     outline: 1px solid var(--grey5050a);
