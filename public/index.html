@@ -6362,30 +6362,26 @@
                                     </div>
                                 </div>
                                 <div id="charInfoTab_characterNote" class="char_info_tab_panel">
-                                    <div id="depth_prompt_div" class="flex-container">
+                                    <div id="depth_prompt_div" class="flex-container flexFlowColumn">
+                                        <div class="flex-container wide100p">
+                                            <div class="world_entry_form_control flex1">
+                                                <small class="textAlignCenter" data-i18n="@ Depth">@ Depth</small>
+                                                <input id="depth_prompt_depth" name="depth_prompt_depth" class="text_pole margin0" type="number" min="0" max="9999" value="4" form="form_create" />
+                                            </div>
+                                            <div class="world_entry_form_control flex1">
+                                                <small class="textAlignCenter" data-i18n="Role">Role</small>
+                                                <select id="depth_prompt_role" name="depth_prompt_role" form="form_create" class="text_pole margin0">
+                                                    <option value="system" data-i18n="System">System</option>
+                                                    <option value="user" data-i18n="User">User</option>
+                                                    <option value="assistant" data-i18n="Assistant">Assistant</option>
+                                                </select>
+                                            </div>
+                                        </div>
                                         <div class="flex1">
                                             <h4 class="flex-container alignItemsBaseline">
                                                 <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="depth_prompt_prompt" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             </h4>
                                             <textarea id="depth_prompt_prompt" name="depth_prompt_prompt" data-macros class="text_pole" rows="5" autocomplete="off" form="form_create" data-i18n="[placeholder](Text to be inserted in-chat @ designated depth and role)" placeholder="(Text to be inserted in-chat @ designated depth and role)"></textarea>
-                                        </div>
-                                        <div>
-                                            <h4>
-                                                <span data-i18n="@ Depth">
-                                                    @ Depth
-                                                </span>
-                                            </h4>
-                                            <input id="depth_prompt_depth" name="depth_prompt_depth" class="text_pole textarea_compact m-t-0" type="number" min="0" max="9999" value="4" form="form_create" />
-                                            <h4>
-                                                <span data-i18n="Role">
-                                                    Role
-                                                </span>
-                                            </h4>
-                                            <select id="depth_prompt_role" name="depth_prompt_role" form="form_create" class="text_pole textarea_compact m-t-0">
-                                                <option value="system" data-i18n="System">System</option>
-                                                <option value="user" data-i18n="User">User</option>
-                                                <option value="assistant" data-i18n="Assistant">Assistant</option>
-                                            </select>
                                         </div>
                                     </div>
                                 </div>
