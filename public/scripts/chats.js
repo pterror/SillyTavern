@@ -14,7 +14,6 @@ import {
     neutralCharacterName,
     updateChatMetadata,
     system_message_types,
-    converter,
     substituteParams,
     getSystemMessageByType,
     printMessages,
@@ -25,6 +24,7 @@ import {
     chatElement,
     updateIn,
 } from '../script.js';
+import { renderMarkdown } from './marked-processor.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
@@ -662,7 +662,7 @@ export function formatCreatorNotes(text, avatarId) {
         ADD_TAGS: ['custom-style'],
     };
 
-    let html = converter.makeHtml(substituteParams(text));
+    let html = renderMarkdown(substituteParams(text));
     html = encodeStyleTags(html);
     html = DOMPurify.sanitize(html, config);
     html = decodeStyleTags(html, decodeStyleParam);
@@ -777,7 +777,7 @@ function getStyleContentsFromMarkdown(text) {
         return '';
     }
 
-    const html = converter.makeHtml(substituteParams(text));
+    const html = renderMarkdown(substituteParams(text));
     const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
     const styleElements = Array.from(parsedDocument.querySelectorAll('style'));
     return styleElements
