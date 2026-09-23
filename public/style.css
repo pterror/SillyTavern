@@ -5057,6 +5057,10 @@ body .ui-widget-header a {
     color: inherit;
 }
 
+body .ui-widget-content a {
+    color: inherit;
+}
+
 body .ui-tabs.ui-widget-content {
     border: none !important;
     background: none;
