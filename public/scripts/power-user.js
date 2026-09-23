@@ -1192,10 +1192,14 @@ function switchSpoilerMode() {
         if (creatorNotesTabIndex >= 0) {
             $('#charInfoTabs').tabs('option', 'active', creatorNotesTabIndex);
         }
+        $('#descriptionTabButton').hide();
+        $('#firstMessageTabButton').hide();
     } else {
         $('#descriptionWrapper').show();
         $('#firstMessageWrapper').show();
         $('#creators_note_desc_hidden').hide();
+        $('#descriptionTabButton').show();
+        $('#firstMessageTabButton').show();
     }
 }
 
