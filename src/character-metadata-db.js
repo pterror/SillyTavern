@@ -1455,6 +1455,30 @@ export async function getStaleCardJsonMap(directories) {
     return new Map(rows.map(row => [row.id, row.card_json]));
 }
 
+/** Same shape as getStaleCardJsonMap, but scoped to the given ids via WHERE id IN (...) instead of scanning
+ * every row - for a caller (e.g. /api/characters/batch) that only needs card_json for a known, bounded subset,
+ * where pulling the whole table would mean re-reading the entire corpus's card_json on every call.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, string>>}
+ */
+export async function getCardJsonByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry || !Array.isArray(ids) || ids.length === 0) return new Map();
+
+    /** @type {Map<string, string>} */
+    const result = new Map();
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = (/** @type {{ id: string, card_json: string }[]} */ (entry.db.all(`SELECT id, card_json FROM characters WHERE id IN (${placeholders})`, batch)));
+        for (const row of rows) {
+            result.set(row.id, row.card_json);
+        }
+    }
+    return result;
+}
+
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
