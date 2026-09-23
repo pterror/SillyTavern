@@ -352,6 +352,7 @@ export const power_user = {
     forbid_external_media: true,
     external_media_allowed_overrides: [],
     external_media_forbidden_overrides: [],
+    always_allow_custom_css: false,
     pin_styles: true,
     click_to_edit: false,
     media_display: MEDIA_DISPLAY.LIST,
@@ -2009,6 +2010,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#auto-connect-checkbox').prop('checked', power_user.auto_connect);
     $('#auto-load-chat-checkbox').prop('checked', power_user.auto_load_chat);
     $('#forbid_external_media').prop('checked', power_user.forbid_external_media);
+    $('#always_allow_custom_css').prop('checked', power_user.always_allow_custom_css);
     $('#pin_styles').prop('checked', power_user.pin_styles);
     $('#click_to_edit').prop('checked', power_user.click_to_edit);
     $('#media_display').val(power_user.media_display);
@@ -4534,6 +4536,11 @@ jQuery(() => {
         power_user.forbid_external_media = !!$(this).prop('checked');
         saveSettingsDebounced('power_user.forbid_external_media');
         reloadCurrentChat();
+    });
+
+    $('#always_allow_custom_css').on('input', function () {
+        power_user.always_allow_custom_css = !!$(this).prop('checked');
+        saveSettingsDebounced('power_user.always_allow_custom_css');
     });
 
     $('#pin_styles').on('input', function () {
