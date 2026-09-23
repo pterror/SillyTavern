@@ -3766,9 +3766,17 @@ function restoreSavedTagFilters() {
     }
 }
 
+function updateTagsDivCount() {
+    const count = $('#tagList').children('.tag').length;
+    $('#tags_div_count').text(count > 0 ? `(${count})` : '');
+}
+
 export function initTags() {
     createTagInput('#tagInput', '#tagList', { tagOptions: { removable: true } });
     createTagInput('#groupTagInput', '#groupTagList', { tagOptions: { removable: true } });
+
+    new MutationObserver(updateTagsDivCount).observe(document.getElementById('tagList'), { childList: true });
+    updateTagsDivCount();
 
     $(document).on('click', '#rm_button_create', onCharacterCreateClick);
     $(document).on('click', '#rm_button_group_chats', onGroupCreateClick);
