@@ -2437,6 +2437,20 @@ export function initChatUtilities() {
         $(this).toggleClass('fa-wand-magic-sparkles fa-pencil');
     });
 
+    $(document).on('dblclick', '.macro_preview_content', function () {
+        const broId = $(this).attr('data-for');
+        $(`.macro_preview_toggle_button[data-for="${broId}"]`).trigger('click');
+        $(`#${broId}`).trigger('focus');
+    });
+
+    $(document).on('click', '.macro_preview_content', function () {
+        if (!power_user.click_to_edit) return;
+        if (window.getSelection().toString()) return;
+        const broId = $(this).attr('data-for');
+        $(`.macro_preview_toggle_button[data-for="${broId}"]`).trigger('click');
+        $(`#${broId}`).trigger('focus');
+    });
+
     $(document).on('click', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {
         if (!power_user.click_to_edit) return;
         if (window.getSelection().toString()) return;
