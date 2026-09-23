@@ -218,7 +218,8 @@ export async function RA_CountCharTokens() {
         if (!value) {
             input.data('last-value-hash', '');
             counter.text(0);
-            counter.closest('.inline-drawer, .tab-title').toggleClass('token-count-zero', true);
+            counter.closest('.inline-drawer, .tab-title').add(counter.closest('.tab-contents').prev('.tab-title')).toggleClass('token-count-zero', true);
+            counter.closest('small').toggle(false);
             continue;
         }
 
@@ -243,7 +244,8 @@ export async function RA_CountCharTokens() {
         pending.forEach((p, i) => {
             const tokens = counted[i];
             p.counter.text(tokens);
-            p.counter.closest('.inline-drawer, .tab-title').toggleClass('token-count-zero', tokens === 0);
+            p.counter.closest('.inline-drawer, .tab-title').add(p.counter.closest('.tab-contents').prev('.tab-title')).toggleClass('token-count-zero', tokens === 0);
+            p.counter.closest('small').toggle(tokens !== 0);
             total_tokens += tokens;
             permanent_tokens += p.isPermanent ? tokens : 0;
             p.input.data('last-value-hash', p.valueHash);
