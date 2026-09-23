@@ -6313,6 +6313,58 @@
                                         <div id="creator_notes_preview" class="creator_notes_preview_content"></div>
                                     </div>
                                 </div>
+                                <label id="descriptionTabButton" class="tab-title">
+                                    <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="description">
+                                    <span data-i18n="Character Description" class="mdhotkey_location">Description</span> <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                </label>
+                                <div id="charInfoTab_description" class="char_info_tab_panel tab-contents">
+                                    <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
+                                        <div class="flex-container alignitemscenter">
+                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="description_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="description_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#character-description" class="notes-link" target="_blank">
+                                                <span class="fa-solid fa-circle-question note-link-span"></span>
+                                            </a>
+                                        </div>
+                                        <textarea id="description_textarea" class="mdHotkeys" data-macros data-i18n="[placeholder]Describe your character's physical and mental traits here." placeholder="Describe your character's physical and mental traits here." name="description" placeholder=""></textarea>
+                                        <pre class="macro_preview_content" data-for="description_textarea" style="display: none;"></pre>
+                                    </div>
+                                </div>
+                                <label id="firstMessageTabButton" class="tab-title">
+                                    <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="greeting">
+                                    <span data-i18n="Greeting" class="mdhotkey_location">Greeting</span> <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                </label>
+                                <div id="charInfoTab_greeting" class="char_info_tab_panel tab-contents">
+                                    <div id="firstMessageWrapper" class="flex-container flexFlowColumn flex1">
+                                        <div class="flex-container alignitemscenter flex1">
+                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="greeting_field" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
+                                                <span class="fa-solid fa-circle-question note-link-span"></span>
+                                            </a>
+                                            <div class="greeting-pager">
+                                                <div class="greeting-pager-btn greeting-pager-prev" title="Previous greeting" data-i18n="[title]Previous greeting">
+                                                    <i class="fa-solid fa-chevron-left"></i>
+                                                </div>
+                                                <input type="number" class="greeting-pager-input" min="1" value="1" title="Jump to greeting" data-i18n="[title]Jump to greeting">
+                                                <span class="greeting-pager-total">/1</span>
+                                                <div class="greeting-pager-btn greeting-pager-next" title="Next greeting" data-i18n="[title]Next greeting">
+                                                    <i class="fa-solid fa-chevron-right"></i>
+                                                </div>
+                                                <div class="greeting-pager-btn greeting-pager-add" title="New greeting" data-i18n="[title]New greeting">
+                                                    <i class="fa-solid fa-plus"></i>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="menu_button menu_button_icon open_alternate_greetings margin0" title="Click to set all greeting messages" data-i18n="[title]Click to set all greeting messages">
+                                            <span data-i18n="Greetings">
+                                                Greetings
+                                            </span>
+                                        </div>
+                                        <textarea id="greeting_field" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
+                                        <pre class="macro_preview_content" data-for="greeting_field" style="display: none;"></pre>
+                                    </div>
+                                </div>
                                 <label class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="mainPrompt">
                                     <span data-i18n="System Prompt">System Prompt</span> <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
@@ -6418,58 +6470,6 @@
                                         </div>
                                         <textarea id="mes_example_textarea" class="flexGrow mdHotkeys" name="mes_example" data-macros data-i18n="[placeholder](Examples of chat dialog. Begin each example with START on a new line.)" placeholder="(Examples of chat dialog. Begin each example with &lt;START&gt; on a new line.)" form="form_create" rows="6"></textarea>
                                         <!-- TODO: Example chats handhold-editor concept: https://gist.github.com/Cohee1207/50da02a4001ac1adae9b440f9b8e1079 -->
-                                    </div>
-                                </div>
-                                <label id="descriptionTabButton" class="tab-title">
-                                    <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="description">
-                                    <span data-i18n="Character Description" class="mdhotkey_location">Description</span> <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
-                                </label>
-                                <div id="charInfoTab_description" class="char_info_tab_panel tab-contents">
-                                    <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
-                                        <div class="flex-container alignitemscenter">
-                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="description_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="description_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
-                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#character-description" class="notes-link" target="_blank">
-                                                <span class="fa-solid fa-circle-question note-link-span"></span>
-                                            </a>
-                                        </div>
-                                        <textarea id="description_textarea" class="mdHotkeys" data-macros data-i18n="[placeholder]Describe your character's physical and mental traits here." placeholder="Describe your character's physical and mental traits here." name="description" placeholder=""></textarea>
-                                        <pre class="macro_preview_content" data-for="description_textarea" style="display: none;"></pre>
-                                    </div>
-                                </div>
-                                <label id="firstMessageTabButton" class="tab-title">
-                                    <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="greeting">
-                                    <span data-i18n="Greeting" class="mdhotkey_location">Greeting</span> <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
-                                </label>
-                                <div id="charInfoTab_greeting" class="char_info_tab_panel tab-contents">
-                                    <div id="firstMessageWrapper" class="flex-container flexFlowColumn flex1">
-                                        <div class="flex-container alignitemscenter flex1">
-                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="greeting_field" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
-                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
-                                                <span class="fa-solid fa-circle-question note-link-span"></span>
-                                            </a>
-                                            <div class="greeting-pager">
-                                                <div class="greeting-pager-btn greeting-pager-prev" title="Previous greeting" data-i18n="[title]Previous greeting">
-                                                    <i class="fa-solid fa-chevron-left"></i>
-                                                </div>
-                                                <input type="number" class="greeting-pager-input" min="1" value="1" title="Jump to greeting" data-i18n="[title]Jump to greeting">
-                                                <span class="greeting-pager-total">/1</span>
-                                                <div class="greeting-pager-btn greeting-pager-next" title="Next greeting" data-i18n="[title]Next greeting">
-                                                    <i class="fa-solid fa-chevron-right"></i>
-                                                </div>
-                                                <div class="greeting-pager-btn greeting-pager-add" title="New greeting" data-i18n="[title]New greeting">
-                                                    <i class="fa-solid fa-plus"></i>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="menu_button menu_button_icon open_alternate_greetings margin0" title="Click to set all greeting messages" data-i18n="[title]Click to set all greeting messages">
-                                            <span data-i18n="Greetings">
-                                                Greetings
-                                            </span>
-                                        </div>
-                                        <textarea id="greeting_field" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
-                                        <pre class="macro_preview_content" data-for="greeting_field" style="display: none;"></pre>
                                     </div>
                                 </div>
                             </div>
