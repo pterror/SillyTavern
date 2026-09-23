@@ -4,7 +4,7 @@ import { parentPort } from 'node:worker_threads';
 import extract from 'png-chunks-extract';
 
 import { classifyJsonCandidate, computeCandidateContentIdentityHash, computeContentIdentityHashFromRawText } from './local-import-classify.js';
-import { readFromChunks, writeImageOnlyCard, computeAvatarIdentityHashFromChunks, computeDefaultAvatarIdentityHash } from './character-card-parser.js';
+import { readFromChunks, computeAvatarIdentityHashFromChunks, computeDefaultAvatarIdentityHash } from './character-card-parser.js';
 import { copyCharacterFile } from './local-import-copy.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
 
@@ -94,13 +94,13 @@ async function finishWrite(msg, pending) {
     }
     try {
         const { destPath } = msg;
-        // Card data goes to the metadata db only (see local-import-scan.js's fireMetadataUpsertHook call) -
-        // png gets an image-only reflink of its own source, json/yaml get a plain copy of the shared default
-        // avatar template (no per-character source image to diverge from either way).
-        const result = pending.format === 'png'
-            ? await writeImageOnlyCard(pending.sourcePath, destPath)
-            : await copyCharacterFile(DEFAULT_AVATAR_PATH, destPath, pending.allowCrossDeviceCopyFallback);
-        parentPort.postMessage({ id, phase: 'done', ok: true, outcome: 'write', reflinked: 'method' in result ? result.method !== 'copy' : result.reflinked });
+        // Card data lives in the metadata db (fireMetadataUpsertHook(), local-import-scan.js), so the on-disk
+        // png is never read back for it - it must stay byte-identical to sourcePath.
+        const result = await copyCharacterFile(pending.format === 'png' ? pending.sourcePath : DEFAULT_AVATAR_PATH, destPath, pending.allowCrossDeviceCopyFallback);
+        if (pending.format === 'png' && result.method === 'copy') {
+            console.warn(`[local-import] Neither reflink nor hardlink is available for ${destPath}; fell back to a full copy of ${pending.sourcePath}.`);
+        }
+        parentPort.postMessage({ id, phase: 'done', ok: true, outcome: 'write', reflinked: result.method !== 'copy' });
     } catch (err) {
         parentPort.postMessage({ id, phase: 'done', ok: false, error: /** @type {any} */ (err)?.message ?? String(err) });
     }
