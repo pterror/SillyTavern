@@ -3551,7 +3551,6 @@ export function forceCharacterEditorTokenize() {
         $(document.getElementById($(this).data('token-counter'))).data('last-value-hash', '');
     });
     $('#rm_ch_create_block').trigger('input');
-    $('#character_popup').trigger('input');
 }
 
 jQuery(() => {
