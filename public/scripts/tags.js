@@ -1655,9 +1655,9 @@ function removeTagFromMap(tagId, characterId = null) {
 }
 
 /**
- * Caps autocomplete matches - jquery-ui's stock renderer builds one `<li>` per match with no cap of its own,
- * and focusing the tag input searches '' (matches nearly every tag), so an uncapped result renders thousands
- * of DOM nodes on every focus.
+ * Caps how many tag rows get rendered for a single search term, in the tag input autocomplete and the tag
+ * management view list - both render one DOM element per match with no cap of their own, and an empty
+ * search term matches nearly every tag, so an uncapped result renders thousands of DOM nodes at once.
  */
 const FIND_TAG_RESULT_LIMIT = 50;
 
@@ -2632,6 +2632,9 @@ async function onViewTagsListClick() {
         printViewTagList(tagContainer);
     });
 
+    const $search = html.find('#tag_view_search');
+    $search.on('input', debounce(() => printViewTagList(tagContainer), debounce_timeout.standard));
+
     printViewTagList(tagContainer);
     makeTagListDraggable(tagContainer);
 
@@ -3269,7 +3272,9 @@ function printViewTagList(tagContainer, empty = true) {
             if (counts.has(tagId)) counts.set(tagId, counts.get(tagId) + 1);
         }
     }
-    const sortedTags = sortTags(tags, counts);
+    const searchTerm = $('#tag_view_search').val()?.toString().trim() ?? '';
+    const matchingTags = searchTerm ? tags.filter(tag => includesIgnoreCaseAndAccents(tag.name, searchTerm)) : tags;
+    const sortedTags = sortTags(matchingTags, counts).slice(0, FIND_TAG_RESULT_LIMIT);
     for (const tag of sortedTags) {
         const count = counts.get(tag.id) || 0;
         appendViewTagToList(tagContainer, tag, count);
