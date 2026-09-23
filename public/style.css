@@ -5653,6 +5653,10 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     opacity: 0.5;
 }
 
+.char_info_tab_button.token-count-zero > a {
+    opacity: 0.5;
+}
+
 .drawer25pWidth {
     flex-basis: calc((var(--sheldWidth) / 4) - 16px);
 }
