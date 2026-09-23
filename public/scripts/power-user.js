@@ -1188,9 +1188,10 @@ function switchSpoilerMode() {
         $('#descriptionWrapper').hide();
         $('#firstMessageWrapper').hide();
         $('#creators_note_desc_hidden').show();
-        const creatorNotesTabIndex = $('#charInfoTabsList a[href="#charInfoTab_creatorNotes"]').closest('li').index();
-        if (creatorNotesTabIndex >= 0) {
-            $('#charInfoTabs').tabs('option', 'active', creatorNotesTabIndex);
+        const creatorNotesRadio = document.querySelector('#charInfoTabs input[name="charInfoTabs_tab"][value="creatorNotes"]');
+        if (creatorNotesRadio instanceof HTMLInputElement) {
+            creatorNotesRadio.checked = true;
+            creatorNotesRadio.dispatchEvent(new Event('change', { bubbles: true }));
         }
         $('#descriptionTabButton').hide();
         $('#firstMessageTabButton').hide();
