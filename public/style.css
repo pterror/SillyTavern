@@ -5742,6 +5742,13 @@ body:has(#character_popup.open) #top-settings-holder:has(.drawer-content.openDra
     display: none;
 }
 
+.tags_div_count {
+    opacity: 0.6;
+    font-size: 0.8em;
+    font-weight: normal;
+    margin-left: 5px;
+}
+
 .inline-drawer > .inline-drawer-toggle {
     transition: opacity 0.2s ease-in-out;
 }
