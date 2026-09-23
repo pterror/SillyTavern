@@ -1187,12 +1187,14 @@ function switchSpoilerMode() {
     if (power_user.spoiler_free_mode) {
         $('#descriptionWrapper').hide();
         $('#firstMessageWrapper').hide();
-        $('#spoiler_free_desc').addClass('flex1');
         $('#creators_note_desc_hidden').show();
+        const creatorNotesTabIndex = $('#charInfoTabsList a[href="#charInfoTab_creatorNotes"]').closest('li').index();
+        if (creatorNotesTabIndex >= 0) {
+            $('#charInfoTabs').tabs('option', 'active', creatorNotesTabIndex);
+        }
     } else {
         $('#descriptionWrapper').show();
         $('#firstMessageWrapper').show();
-        $('#spoiler_free_desc').removeClass('flex1');
         $('#creators_note_desc_hidden').hide();
     }
 }

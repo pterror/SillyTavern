@@ -8042,7 +8042,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#description_textarea').val(character.description);
     $('#character_world').val(character.data?.extensions?.world || '');
     $('#creator_notes_textarea').val(character.data?.creator_notes || character.creatorcomment);
-    $('#creator_notes_spoiler').html(formatCreatorNotes(character.data?.creator_notes || character.creatorcomment, character.avatar));
+    $('#creator_notes_preview').html(formatCreatorNotes(character.data?.creator_notes || character.creatorcomment, character.avatar));
     $('#character_version_textarea').val(character.data?.character_version || '');
     $('#system_prompt_textarea').val(character.data?.system_prompt || '');
     $('#post_history_instructions_textarea').val(character.data?.post_history_instructions || '');
@@ -8135,7 +8135,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#description_textarea').val(create_save.description);
     $('#character_world').val(create_save.world);
     $('#creator_notes_textarea').val(create_save.creator_notes);
-    $('#creator_notes_spoiler').html(formatCreatorNotes(create_save.creator_notes, ''));
+    $('#creator_notes_preview').html(formatCreatorNotes(create_save.creator_notes, ''));
     $('#post_history_instructions_textarea').val(create_save.post_history_instructions);
     $('#system_prompt_textarea').val(create_save.system_prompt);
     $('#tags_textarea').val(create_save.tags);
@@ -11689,7 +11689,26 @@ jQuery(async function () {
     $('#creator_notes_textarea').on('input', function () {
         const notes = String($('#creator_notes_textarea').val());
         const avatar = menu_type === 'create' ? '' : getCurrentCharacter()?.avatar;
-        $('#creator_notes_spoiler').html(formatCreatorNotes(notes, avatar));
+        $('#creator_notes_preview').html(formatCreatorNotes(notes, avatar));
+    });
+
+    $(document).on('click', '.creator_notes_preview_toggle_button', function () {
+        const textarea = $('#creator_notes_textarea');
+        const preview = $('#creator_notes_preview');
+        const showingPreview = preview.is(':visible');
+
+        if (showingPreview) {
+            preview.hide();
+            textarea.show();
+        } else {
+            const notes = String(textarea.val());
+            const avatar = menu_type === 'create' ? '' : getCurrentCharacter()?.avatar;
+            preview.html(formatCreatorNotes(notes, avatar));
+            textarea.hide();
+            preview.show();
+        }
+
+        $(this).toggleClass('fa-pencil fa-wand-magic-sparkles');
     });
 
     $('#favorite_button').on('click', async function () {
