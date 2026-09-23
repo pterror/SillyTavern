@@ -1641,17 +1641,9 @@ textarea.autoSetHeight {
 
 .creator_notes_preview_content {
     width: 100%;
-    background-color: var(--black30a);
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 5px;
     color: var(--SmartThemeBodyColor);
     font-size: var(--mainFontSize);
     font-family: var(--mainFontFamily);
-    padding: 5px 10px;
-    margin: 2px 0;
-    max-height: 90vh;
-    max-height: 90dvh;
-    overflow-y: auto;
 }
 
 input,
@@ -2680,6 +2672,13 @@ body[data-stscript-style] .hljs.language-stscript {
 
 .editor_maximize {
     padding: 2px;
+    cursor: pointer;
+    filter: brightness(75%);
+    transition: all var(--animation-duration-3x) ease-in-out;
+}
+
+.editor_maximize:hover {
+    filter: brightness(150%);
 }
 
 .text_pole::placeholder {
@@ -5024,13 +5023,62 @@ body .ui-widget-content {
     color: var(--SmartThemeBodyColor);
 }
 
-body .ui-tabs.ui-widget {
+body .ui-widget,
+body .ui-widget input,
+body .ui-widget select,
+body .ui-widget textarea,
+body .ui-widget button {
     font-family: inherit;
     font-size: inherit;
 }
 
+body .ui-widget-header {
+    background: none;
+    border: none;
+    color: inherit;
+    font-weight: normal;
+}
+
+body .ui-widget-header a {
+    color: inherit;
+}
+
 body .ui-tabs.ui-widget-content {
     border: none !important;
+    background: none;
+}
+
+body .ui-tabs .ui-tabs-panel {
+    background: none;
+    border: none !important;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    padding: 0;
+}
+
+body .ui-state-default,
+body .ui-widget-content .ui-state-default,
+body .ui-widget-header .ui-state-default {
+    border: none;
+    background: none;
+    color: inherit;
+    font-weight: normal;
+}
+
+body .ui-state-hover,
+body .ui-widget-content .ui-state-hover,
+body .ui-widget-header .ui-state-hover,
+body .ui-state-focus,
+body .ui-widget-content .ui-state-focus,
+body .ui-widget-header .ui-state-focus,
+body .ui-state-active,
+body .ui-widget-content .ui-state-active,
+body .ui-widget-header .ui-state-active {
+    border: none;
+    background-color: var(--white30a);
+    color: inherit;
+    font-weight: normal;
 }
 
 .ui-slider {
@@ -5062,8 +5110,8 @@ body .ui-widget-content li {
     transition: opacity var(--animation-duration-2x);
 }
 
-body .ui-widget-content li:hover {
-    /* background-color: var(--SmartThemeEmColor); */
+body .ui-widget-content li:hover,
+body .ui-widget-content li.ui-tabs-active {
     opacity: 1;
 }
 
