@@ -14,6 +14,7 @@ import DiffMatchPatch from 'diff-match-patch';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
 import SVGInject from '@iconfu/svg-inject';
 import showdown from 'showdown';
+import { Marked } from 'marked';
 import moment from 'moment';
 import seedrandom from 'seedrandom';
 import * as Popper from '@popperjs/core';
@@ -95,6 +96,7 @@ export default {
     isProbablyReaderable,
     SVGInject,
     showdown,
+    Marked,
     moment,
     seedrandom,
     Popper,
@@ -123,6 +125,7 @@ export {
     isProbablyReaderable,
     SVGInject,
     showdown,
+    Marked,
     moment,
     seedrandom,
     Popper,
