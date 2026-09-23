@@ -81,6 +81,7 @@
         "node-persist": "^4.0.4",
         "node-sqlite3-wasm": "^0.8.60",
         "open": "^10.2.0",
+        "patch-package": "^8.0.1",
         "png-chunk-text": "^1.0.0",
         "png-chunks-extract": "^1.0.0",
         "proxy-agent": "^6.5.0",
@@ -184,7 +185,6 @@
         "eslint-plugin-jsdoc": "^48.10.0",
         "eslint-plugin-playwright": "^2.3.0",
         "oxlint": "^1.79.0",
-        "patch-package": "^8.0.1",
         "typescript": "^5.9.3"
     }
 }
