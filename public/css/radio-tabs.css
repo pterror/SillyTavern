@@ -41,6 +41,7 @@
 
 .tab-title:hover {
     opacity: 1;
+    background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 15%, var(--SmartThemeBlurTintColor) 85%);
 }
 
 .tab-title:has(.invisible-radio:checked) {
