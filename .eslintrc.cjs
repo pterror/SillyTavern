@@ -82,6 +82,22 @@ module.exports = {
             },
         },
         {
+            // this_chid is a back-compat shim value (index into `characters`) kept only for third-party
+            // extensions and upstream parity - see its declaration site's own comment. Internal code must
+            // use this_avatar/getCurrentCharacter()/charactersStore instead. script.js and the module that
+            // actually defines this_chid are exempt: they're the shim's own plumbing.
+            files: ['public/**/*.js'],
+            excludedFiles: ['public/script.js', 'public/scripts/character-store.js'],
+            rules: {
+                'no-restricted-syntax': ['error',
+                    {
+                        selector: "ImportSpecifier[imported.name='this_chid']",
+                        message: 'this_chid is a back-compat shim for third-party extensions/upstream parity only - use this_avatar/getCurrentCharacter()/charactersStore instead.',
+                    },
+                ],
+            },
+        },
+        {
             // saveChatConditional()/saveChatDebounced() dispatch to _saveTreeChat()'s diff-based
             // persistence, which has no idea what actually happened. A real user action knows what it
             // did - call the matching chatOp*() directly (chat-store.js) instead of asking the whole

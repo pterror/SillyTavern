@@ -12,10 +12,10 @@ import {
 } from './lib.js';
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
-import { characters, charactersStore, this_avatar, setCharacterId, selectCharacterById } from './scripts/character-store.js';
+import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too).
-export { characters, charactersStore, selectCharacterById, setCharacterId };
+export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
