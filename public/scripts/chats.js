@@ -726,25 +726,29 @@ async function checkForCreatorNotesStyles() {
     const preference = new StylesPreference(avatarId);
     const hasPreference = preference.exists();
     if (!hasPreference) {
-        const template = $(await renderTemplateAsync('globalStylesPopup'));
-        template.find('textarea').val(styleContents);
-        const confirmResult = await callGenericPopup(template, POPUP_TYPE.CONFIRM, '', {
-            wide: false,
-            large: false,
-            okButton: t`Just to Creator's Notes`,
-            cancelButton: t`Apply to the entire app`,
-        });
+        if (power_user.always_allow_custom_css) {
+            preference.set(true);
+        } else {
+            const template = $(await renderTemplateAsync('globalStylesPopup'));
+            template.find('textarea').val(styleContents);
+            const confirmResult = await callGenericPopup(template, POPUP_TYPE.CONFIRM, '', {
+                wide: false,
+                large: false,
+                okButton: t`Just to Creator's Notes`,
+                cancelButton: t`Apply to the entire app`,
+            });
 
-        switch (confirmResult) {
-            case POPUP_RESULT.AFFIRMATIVE:
-                preference.set(false);
-                break;
-            case POPUP_RESULT.NEGATIVE:
-                preference.set(true);
-                break;
-            case POPUP_RESULT.CANCELLED:
-                preference.set(false);
-                break;
+            switch (confirmResult) {
+                case POPUP_RESULT.AFFIRMATIVE:
+                    preference.set(false);
+                    break;
+                case POPUP_RESULT.NEGATIVE:
+                    preference.set(true);
+                    break;
+                case POPUP_RESULT.CANCELLED:
+                    preference.set(false);
+                    break;
+            }
         }
 
         $('#rm_button_selected_ch').trigger('click');
