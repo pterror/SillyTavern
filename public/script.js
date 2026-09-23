@@ -9035,15 +9035,19 @@ async function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes
 }
 
 // In-memory state for the sidebar greeting pager; `hashes` is the post-op per-position precondition hash list.
+// `committed[i] === false` marks a just-added, still-blank slot from the New Greeting button - not yet a real
+// array entry server-side, mirroring the Alternate Greetings drawer's pending-row behavior (see addAlternateGreeting()).
 const greetingPagerState = {
     greetings: [''],
     defaultIndex: 0,
     hashes: [],
+    committed: [true],
     index: 0,
 };
 
 /**
  * Replaces the pager's greetings, default pointer, and precondition hashes, and clamps the current index in case the list shrank.
+ * Every position here is confirmed by the server (or is the pre-load placeholder), so all are marked committed.
  * @param {string[]} greetings Stable-order greeting list.
  * @param {number|null} defaultIndex
  * @param {number[]} hashes Position-aligned with `greetings`.
@@ -9052,6 +9056,7 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
     greetingPagerState.defaultIndex = greetings.length > 0 ? defaultIndex : 0;
     greetingPagerState.hashes = greetings.length > 0 ? hashes.slice() : [];
+    greetingPagerState.committed = greetingPagerState.greetings.map(() => true);
     greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
 }
@@ -9062,20 +9067,18 @@ function renderGreetingPager() {
     $('#greeting_field').val(greetings[index] ?? '');
     $('.greeting-pager-input').val(index + 1);
     $('.greeting-pager-total').text(`/${greetings.length}`);
-    $('.greeting-pager-prev').toggleClass('disabled', index === 0);
-    $('.greeting-pager-next').toggleClass('disabled', index === greetings.length - 1);
     // .val() above doesn't fire a native input event, so the token counter needs an explicit nudge.
     RA_CountCharTokens();
 }
 
 /**
- * Commits the visible field into the greetings array before stepping to a (clamped) index.
+ * Commits the visible field into the greetings array before stepping to a wrapped index.
  * @param {number} newIndex
  */
 function navigateGreetingPager(newIndex) {
     const { greetings, index } = greetingPagerState;
     greetings[index] = String($('#greeting_field').val());
-    greetingPagerState.index = Math.max(0, Math.min(newIndex, greetings.length - 1));
+    greetingPagerState.index = ((newIndex % greetings.length) + greetings.length) % greetings.length;
     renderGreetingPager();
 }
 
@@ -11618,7 +11621,7 @@ jQuery(async function () {
     });
 
     // Greeting pager: steps through the stable-order greeting list in the sidebar, editing whichever one is currently shown.
-    $('#greeting_field').on('input', function () {
+    $('#greeting_field').on('input', async function () {
         const value = String($(this).val());
         const { index, defaultIndex } = greetingPagerState;
         greetingPagerState.greetings[index] = value;
@@ -11626,19 +11629,41 @@ jQuery(async function () {
             const fields = greetingsModelToCardFields({ greetings: greetingPagerState.greetings, defaultIndex });
             create_save.first_message = fields.firstMes;
             create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager create-mode input');
-        } else {
-            saveGreetingPagerEditDebounced(index, value);
+            return;
         }
+        if (greetingPagerState.committed[index] === false) {
+            if (value === '') return;
+            const avatar = $('.open_alternate_greetings').data('avatar');
+            const character = avatar ? charactersStore.get(avatar) : null;
+            if (!character) return;
+            const result = await postGreetingOp('add', { avatar_url: avatar, position: index, text: value });
+            if (result.ok) {
+                await applyGreetingOpSuccess(character, greetingPagerState.greetings.slice(), result.defaultPosition, result.hashes);
+                return;
+            }
+            console.error('Greeting add failed', { avatar, position: index, status: result.status, reason: result.reason });
+            toastr.error(t`Failed to save the new greeting. It's still shown here - keep typing in it to retry.`, t`Greeting not saved`);
+            return;
+        }
+        saveGreetingPagerEditDebounced(index, value);
     });
 
     $('.greeting-pager-prev').on('click', function () {
-        if ($(this).hasClass('disabled')) return;
         navigateGreetingPager(greetingPagerState.index - 1);
     });
 
     $('.greeting-pager-next').on('click', function () {
-        if ($(this).hasClass('disabled')) return;
         navigateGreetingPager(greetingPagerState.index + 1);
+    });
+
+    $('.greeting-pager-add').on('click', function () {
+        const { greetings, committed, index } = greetingPagerState;
+        greetings[index] = String($('#greeting_field').val());
+        const newIndex = greetings.length;
+        greetings.push('');
+        committed[newIndex] = false;
+        greetingPagerState.index = newIndex;
+        renderGreetingPager();
     });
 
     function jumpGreetingPager() {
