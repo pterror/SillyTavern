@@ -1196,13 +1196,6 @@ function switchSpoilerMode() {
     }
 }
 
-function peekSpoilerMode() {
-    $('#descriptionWrapper').toggle();
-    $('#firstMessageWrapper').toggle();
-    $('#spoiler_free_desc').toggleClass('flex1');
-    $('#creators_note_desc_hidden').toggle();
-}
-
 function switchMovingUI() {
     $('.drawer-content.maximized').each(function () {
         $(this).find('.inline-drawer-maximize').trigger('click');
@@ -4314,12 +4307,6 @@ jQuery(() => {
         power_user.spoiler_free_mode = !!$(this).prop('checked');
         switchSpoilerMode();
         saveSettingsDebounced('power_user.spoiler_free_mode');
-    });
-
-    $('#spoiler_free_desc_button').on('click', function (e) {
-        e.stopPropagation();
-        peekSpoilerMode();
-        $(this).toggleClass('fa-eye fa-eye-slash');
     });
 
     $('#custom_stopping_strings').on('input', function () {
