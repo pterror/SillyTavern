@@ -12487,6 +12487,11 @@ jQuery(async function () {
         icon.toggleClass('down up');
         icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
         drawer.trigger('inline-drawer-toggle');
+
+        if (drawer.attr('id') === 'tags_div') {
+            return;
+        }
+
         drawerContent.stop().slideToggle({
             complete: () => {
                 $(this).css('height', '');

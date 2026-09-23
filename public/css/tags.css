@@ -31,6 +31,31 @@
     display: none;
 }
 
+#tags_div {
+    position: relative;
+}
+
+#tags_div > .inline-drawer-content {
+    display: block;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    max-height: 50vh;
+    overflow-y: auto;
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 0 0 10px 10px;
+    padding: 5px;
+    clip-path: inset(0 0 100% 0);
+    transition: clip-path var(--animation-duration-2x) ease-in-out;
+}
+
+#tags_div:has(.inline-drawer-icon.up) > .inline-drawer-content {
+    clip-path: inset(0 0 0 0);
+}
+
 .tag_controls {
     display: flex;
     flex-direction: row;
