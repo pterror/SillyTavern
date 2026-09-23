@@ -11719,6 +11719,18 @@ jQuery(async function () {
         $(this).toggleClass('fa-pencil fa-wand-magic-sparkles');
     });
 
+    $(document).on('dblclick', '#creator_notes_preview', function () {
+        $('.creator_notes_preview_toggle_button').trigger('click');
+        $('#creator_notes_textarea').trigger('focus');
+    });
+
+    $(document).on('click', '#creator_notes_preview', function () {
+        if (!power_user.click_to_edit) return;
+        if (window.getSelection().toString()) return;
+        $('.creator_notes_preview_toggle_button').trigger('click');
+        $('#creator_notes_textarea').trigger('focus');
+    });
+
     $('#favorite_button').on('click', async function () {
         const newState = !fav_ch_checked;
         updateFavButtonState(newState);
