@@ -720,14 +720,14 @@ function moveExtensionContainerIntoTab(container) {
     const title = getExtensionTabTitle(container);
     const tabId = `ext_tab_${container.id || Math.random().toString(36).slice(2)}`;
 
-    // Selecting the tab already answers "which extension am I looking at" - auto-expand its own inner
-    // .inline-drawer so its settings are visible immediately, without a second click to un-collapse it.
-    // Runs exactly once per container (guarded above), so no need to check current open/closed state first.
+    // Flatten the container's own .inline-drawer, if any: dropping 'inline-drawer-toggle' from the header
+    // disables the document-level click handler (script.js) that toggles it, so it can't be re-collapsed.
     const drawer = container.querySelector(':scope > .inline-drawer, .inline-drawer');
     if (drawer) {
+        const header = drawer.querySelector(':scope > .inline-drawer-header, .inline-drawer-header');
+        header?.classList.remove('inline-drawer-toggle');
         const icon = drawer.querySelector(':scope > .inline-drawer-header .inline-drawer-icon, .inline-drawer-icon');
-        icon?.classList.replace('down', 'up');
-        icon?.classList.replace('fa-circle-chevron-down', 'fa-circle-chevron-up');
+        icon?.remove();
         const content = /** @type {HTMLElement} */ (drawer.querySelector(':scope > .inline-drawer-content'));
         if (content) content.style.display = 'block';
     }
