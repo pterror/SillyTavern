@@ -1,6 +1,6 @@
 /** Display-only: never import chat-store writers (`updateMessage()` etc.) — display substitutions have previously leaked into stored messages this way. */
 
-import { converter, systemUserName, substituteParams, setMesForShowdownParse } from '../script.js';
+import { systemUserName, substituteParams, setMesForShowdownParse } from '../script.js';
 import { chat } from './chat-state.js';
 import { COMMENT_NAME_DEFAULT } from './slash-commands.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
@@ -9,6 +9,7 @@ import { MessageFormatter } from './message-formatter.js';
 import { fixMarkdown, power_user } from './power-user.js';
 import { escapeRegex, escapeHtml, canUseNegativeLookbehind } from './utils.js';
 import { DOMPurify } from '../lib.js';
+import { renderMarkdown } from './marked-processor.js';
 
 /**
  * @param {number} messageId - Index in the chat array, or -1 for transient messages (e.g. streaming previews).
@@ -138,7 +139,7 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
 
         mes = mes.replaceAll('\\begin{align*}', '$$');
         mes = mes.replaceAll('\\end{align*}', '$$');
-        mes = converter.makeHtml(mes);
+        mes = renderMarkdown(mes);
 
         mes = mes.replace(/<code(.*)>[\s\S]*?<\/code>/g, function (match) {
             // Firefox creates extra newlines from <br>s in code blocks
