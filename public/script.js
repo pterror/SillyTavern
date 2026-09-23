@@ -11741,6 +11741,7 @@ jQuery(async function () {
         committed[newIndex] = false;
         greetingPagerState.index = newIndex;
         renderGreetingPager();
+        $('#greeting_field').trigger('focus');
     });
 
     function jumpGreetingPager() {
