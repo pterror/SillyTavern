@@ -5742,11 +5742,11 @@ body:has(#character_popup.open) #top-settings-holder:has(.drawer-content.openDra
     display: none;
 }
 
-.inline-drawer {
+.inline-drawer > .inline-drawer-toggle {
     transition: opacity 0.2s ease-in-out;
 }
 
-.inline-drawer.token-count-zero {
+.inline-drawer.token-count-zero > .inline-drawer-toggle {
     opacity: 0.5;
 }
 
