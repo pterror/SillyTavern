@@ -8,12 +8,13 @@ import fetch from 'node-fetch';
 import sanitize from 'sanitize-filename';
 
 import { getConfigValue, color, setPermissionsSync, isValidUrl } from '../util.js';
-import { write, parse, writeImageOnlyCard, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
+import { write, parse, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
 import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { importWorldInfoFromRaw } from './worldinfo.js';
 import { upsertCharacterFromWrite } from '../character-metadata-db.js';
+import { copyCharacterFile } from '../local-import-copy.js';
 
 const contentDirectory = path.join(serverDirectory, 'default/content');
 const scaffoldDirectory = path.join(serverDirectory, 'default/scaffold');
@@ -177,14 +178,8 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
         fs.mkdirSync(contentTarget, { recursive: true });
 
         if (contentItem.type === CONTENT_TYPES.CHARACTER && directories) {
-            // Same shape as a first-time local-import landing (external source -> user's characters/, not yet
-            // in the metadata db): strip the shipped file's embedded chunk via a reflinked image-only write
-            // (writeImageOnlyCard(), local-import-worker.js's own path for this case) and upsert the metadata
-            // db row from the chunk directly (parse(), unmodified - reconcile()'s own new-file path also reads
-            // the chunk as-is, no import-style normalization), instead of leaving the embedded chunk in place
-            // for the background reconciler/watcher to pick up on its own time.
             const sourceData = await parse(contentPath, 'png');
-            await writeImageOnlyCard(contentPath, targetPath);
+            await copyCharacterFile(contentPath, targetPath);
             // Inlined rather than importing characters.js's own fireMetadataUpsertHook() wrapper around this
             // same call, which would create an import cycle (characters.js imports from sprites.js, which
             // imports from this file).

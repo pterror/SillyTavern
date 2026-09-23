@@ -84,7 +84,7 @@ export const write = (image, data) => {
 
 /**
  * Removes any 'chara'/'ccv3' tEXt chunks in place, leaving the pure image chunks with no embedded character
- * data. Shared by stripCardData() and writeImageOnlyCard() below.
+ * data.
  * @param {Array<{name: string, data: Uint8Array}>} chunks Mutated in place.
  * @returns {Array<{name: string, data: Uint8Array}>} `chunks`
  */
@@ -470,37 +470,5 @@ export async function reclaimReflinkPrefix(existingPath, sourcePath, { skipByteV
         console.debug(`character-card-parser: reclaimReflinkPrefix failed for ${existingPath} <- ${sourcePath}, leaving it untouched.`, /** @type {any} */ (error)?.message ?? error);
         return { reflinked: false, reason: 'reflink-failed' };
     }
-}
-
-// PNG's IEND chunk always has zero-length data, so its bytes (4-byte length + 4-byte type + 4-byte CRC) are
-// a fixed constant, independent of any character - never per-import content.
-const IEND_CHUNK = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
-
-/**
- * Writes `destPath` as a pure image copy of `sourcePath`: any embedded chara/ccv3 tEXt chunk is dropped, and
- * nothing character-derived is written in its place. Reflinks the shared image-chunk prefix from `sourcePath`
- * when the layout allows it (findReflinkablePrefixOffset()) and appends only the fixed IEND_CHUNK - never any
- * per-character data - so a successful reflink leaves `destPath` sharing every extent with `sourcePath` up to
- * that prefix. Falls back to a full independent write (still image-only) when reflinking isn't available or
- * `sourcePath`'s chunk layout is ineligible.
- * @param {string} sourcePath Absolute path to the source PNG already on disk.
- * @param {string} destPath Absolute path to write the result to. May already exist.
- * @returns {Promise<{reflinked: boolean}>}
- */
-export async function writeImageOnlyCard(sourcePath, destPath) {
-    const srcBuf = await fs.promises.readFile(sourcePath);
-    const offset = findReflinkablePrefixOffset(srcBuf);
-
-    if (offset !== null && offset <= srcBuf.length) {
-        try {
-            await writeSharedPrefixThenAppend(sourcePath, destPath, IEND_CHUNK, offset);
-            return { reflinked: true };
-        } catch (error) {
-            console.debug(`character-card-parser: image-only reflink-preserving write failed for ${sourcePath} -> ${destPath}, falling back to a full write.`, /** @type {any} */ (error)?.message ?? error);
-        }
-    }
-
-    writeFileAtomicSync(destPath, stripCardData(srcBuf));
-    return { reflinked: false };
 }
 
