@@ -7838,6 +7838,67 @@ function activateMobileOverlayPanel(contentId) {
     document.getElementById(contentId)?.classList.add('frontMobileOverlay');
 }
 
+// Desktop layout has 3 zones: left (#left-nav-panel, .zoomed_avatar_container), center (#sheld and most
+// drawers), right (#right-nav-panel, #char-info-panel). galleryFullscreen spans all 3 zones;
+// charInfoFullscreen spans center only. Only pinnable drawers (see doNavbarIconClick's sweep) can survive
+// open behind another zone occupant, but any drawer opening can evict one, so all are zone-aware here.
+const ZONE_DRAWER_IDS = ['left-nav-panel', 'right-nav-panel', 'char-info-panel', 'WorldInfo', 'PersonaManagement', 'rm_extensions_block', 'Backgrounds', 'user-settings-block', 'AdvancedFormatting'];
+function getDrawerZones(id) {
+    const el = document.getElementById(id);
+    if (!el) return [];
+    if (id === 'left-nav-panel') return ['left'];
+    if (id === 'right-nav-panel') return el.classList.contains('galleryFullscreen') ? ['left', 'center', 'right'] : ['right'];
+    if (id === 'char-info-panel') return el.classList.contains('charInfoFullscreen') ? ['center'] : ['right'];
+    return ['center'];
+}
+// Per-zone z-order, most-recently-fronted id last. Maintained solely by activateZoneFront (push, on open/
+// refocus) and closeDrawerContent (pop, on close) below - every place in this file that opens or closes a
+// zone-aware drawer goes through one of those two, so a stack's top is always its zone's current occupant.
+const zoneStacks = { left: [], center: [], right: [] };
+
+// An id is front only if it's the top of every zone it currently occupies (an id spanning multiple zones
+// can't be "half" visible).
+function computeZoneFront() {
+    const topOfZone = {};
+    for (const zone of Object.keys(zoneStacks)) {
+        const stack = zoneStacks[zone];
+        if (stack.length) topOfZone[zone] = stack[stack.length - 1];
+    }
+    for (const id of ZONE_DRAWER_IDS) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const zones = getDrawerZones(id);
+        const isFront = zones.length > 0 && zones.every(zone => topOfZone[zone] === id);
+        el.classList.toggle('frontInZone', isFront);
+    }
+}
+
+// Moves contentId to the top of every zone it currently occupies, then recomputes .frontInZone.
+function activateZoneFront(contentId) {
+    const zones = getDrawerZones(contentId);
+    if (!zones.length) return;
+    for (const zone of zones) {
+        const stack = zoneStacks[zone];
+        const idx = stack.indexOf(contentId);
+        if (idx !== -1) stack.splice(idx, 1);
+        stack.push(contentId);
+    }
+    computeZoneFront();
+}
+
+// The one place "this drawer just closed" has meaning: every closing path (self-close, sweep-on-opening-
+// elsewhere, click-outside autoclose) calls this instead of toggling openDrawer/closedDrawer directly, so
+// whatever a closed zone-aware drawer was eclipsing reliably reappears.
+function closeDrawerContent(content) {
+    content.classList.replace('openDrawer', 'closedDrawer');
+    if (!ZONE_DRAWER_IDS.includes(content.id)) return;
+    for (const zone of Object.keys(zoneStacks)) {
+        const idx = zoneStacks[zone].indexOf(content.id);
+        if (idx !== -1) zoneStacks[zone].splice(idx, 1);
+    }
+    computeZoneFront();
+}
+
 function ensureDrawerOpen(drawerId) {
     const drawer = document.getElementById(drawerId);
     if (!drawer) return;
@@ -7848,7 +7909,7 @@ function ensureDrawerOpen(drawerId) {
         const isFillRight = content.classList.contains('fillRight');
         document.querySelectorAll('.openDrawer:not(.pinnedOpen)').forEach(el => {
             if (isFillRight && el.classList.contains('fillRight')) return;
-            el.classList.replace('openDrawer', 'closedDrawer');
+            closeDrawerContent(el);
         });
         document.querySelectorAll('.openIcon:not(.drawerPinnedOpen)').forEach(el => {
             if (isFillRight && el.classList.contains('fillRightIcon')) return;
@@ -7862,6 +7923,7 @@ function ensureDrawerOpen(drawerId) {
     }
     if (content) {
         activateMobileOverlayPanel(content.id);
+        activateZoneFront(content.id);
     }
 }
 
@@ -11093,7 +11155,7 @@ export async function doNavbarIconClick() {
             $(iconEl).toggleClass('closedIcon openIcon');
         }
         for (const el of $openDrawers) {
-            $(el).toggleClass('closedDrawer openDrawer');
+            closeDrawerContent(el);
         }
         if ($openDrawers.length && animation_duration) {
             await delay(animation_duration);
@@ -11114,6 +11176,7 @@ export async function doNavbarIconClick() {
             activateFillRightDrawer(targetDrawerID);
         }
         activateMobileOverlayPanel(targetDrawerID);
+        activateZoneFront(targetDrawerID);
 
         // Set the height of "autoSetHeight" textareas within the drawer to their scroll height
         if (!CSS.supports('field-sizing', 'content')) {
@@ -11132,8 +11195,14 @@ export async function doNavbarIconClick() {
             activateMobileOverlayPanel(targetDrawerID);
             return;
         }
+        // Same idea as the two checks above, but zone-based: a drawer that's still .openDrawer yet lost
+        // its zone (e.g. a fullscreen panel spanning into it) should re-front on click, not close.
+        if (ZONE_DRAWER_IDS.includes(targetDrawerID) && !drawer.hasClass('frontInZone')) {
+            activateZoneFront(targetDrawerID);
+            return;
+        }
         icon.toggleClass('closedIcon openIcon');
-        drawer.toggleClass('closedDrawer openDrawer');
+        closeDrawerContent(drawer[0]);
     }
 }
 
@@ -12550,7 +12619,9 @@ jQuery(async function () {
             if ($openDrawers.length && targetParentHasOpenDrawer === 0) {
                 // Toggle icon and drawer classes
                 $('.openIcon').not('.drawerPinnedOpen').toggleClass('closedIcon openIcon');
-                $openDrawers.toggleClass('closedDrawer openDrawer');
+                for (const el of $openDrawers) {
+                    closeDrawerContent(el);
+                }
             }
         }
     });
@@ -12972,6 +13043,8 @@ jQuery(async function () {
                 btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
                 btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
             }
+            // Fullscreen changes which zones this panel spans - re-evict/re-front accordingly.
+            activateZoneFront('right-nav-panel');
             saveSettingsDebounced('power_user.charGalleryFullscreen');
         }
     });
@@ -12986,6 +13059,8 @@ jQuery(async function () {
                 btn.classList.toggle('fa-expand', !power_user.charInfoFullscreen);
                 btn.classList.toggle('fa-compress', power_user.charInfoFullscreen);
             }
+            // Fullscreen changes which zones this panel spans - re-evict/re-front accordingly.
+            activateZoneFront('char-info-panel');
             saveSettingsDebounced('power_user.charInfoFullscreen');
         }
     });
