@@ -720,6 +720,13 @@ function moveExtensionContainerIntoTab(container) {
     const title = getExtensionTabTitle(container);
     const tabId = `ext_tab_${container.id || Math.random().toString(36).slice(2)}`;
 
+    // The extension's own name (used as `title` above) already appears in the tab label itself, so hide
+    // it inside the panel content to avoid duplicating it right below the tab bar.
+    const nameHeader = container.querySelector('.inline-drawer-toggle b, .inline-drawer-toggle strong, .inline-drawer-header b, .inline-drawer-header strong');
+    if (nameHeader?.textContent?.trim() === title) {
+        nameHeader.style.display = 'none';
+    }
+
     // Flatten the container's own .inline-drawer, if any: dropping 'inline-drawer-toggle' from the header
     // disables the document-level click handler (script.js) that toggles it, so it can't be re-collapsed.
     const drawer = container.querySelector(':scope > .inline-drawer, .inline-drawer');
