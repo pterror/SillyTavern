@@ -382,8 +382,7 @@ export async function reflinkAgainstExistingDuplicate(directories, selfAvatar, f
  * @param {Set<string>|null} [freshFieldPaths] - V2 dot-paths the caller has already confirmed match current on-disk state.
  * @param {boolean} [imageOnly] - true for a brand-new import/create write: the PNG gets image bytes only (any
  * embedded chara/ccv3 chunk stripped), `data` goes to the metadata db exclusively, and reflinkAgainstExistingDuplicate()
- * looks for a byte-identical existing character to share extents with after writing (see writeImageOnlyCard() for
- * the local-import background scanner's own path, which reflinks against its own durable source file directly).
+ * looks for a byte-identical existing character to share extents with after writing.
  * @returns {Promise<true>} Always resolves to `true` on success - a failed write rejects instead.
  */
 async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null, imageOnly = false) {
