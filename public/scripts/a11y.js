@@ -52,11 +52,11 @@ const toolbarSelectors = [
 ].join(', ');
 
 const tabListSelectors = [
-    '#bg_tabs .bg_tabs_list',
+    '.tab-titles',
 ].join(', ');
 
 const tabItemSelectors = [
-    '#bg_tabs .bg_tabs_list .bg_tab_button',
+    '.tab-titles .tab-title',
 ].join(', ');
 
 /** @type {Record<string, (element: Element) => void>} */
@@ -78,11 +78,33 @@ const a11yRules = {
     },
     [tabItemSelectors]: (element) => {
         element.setAttribute('role', 'tab');
+        const radio = element.querySelector('.invisible-radio');
+        const content = element.nextElementSibling;
+        if (content?.id) {
+            element.setAttribute('aria-controls', content.id);
+        }
+        if (radio instanceof HTMLInputElement) {
+            element.setAttribute('aria-selected', String(radio.checked));
+        }
     },
     '#toast-container .toast': (element) => {
         element.setAttribute('role', 'status');
     },
 };
+
+/**
+ * Keeps aria-selected in sync with which radio in a tab group is checked.
+ * @param {Event} event The change event from an `.invisible-radio`.
+ */
+function onTabRadioChange(event) {
+    const radio = event.target;
+    if (!(radio instanceof HTMLInputElement) || !radio.classList.contains('invisible-radio') || !radio.name) {
+        return;
+    }
+    for (const groupRadio of document.querySelectorAll(`input.invisible-radio[name="${CSS.escape(radio.name)}"]`)) {
+        groupRadio.closest('.tab-title')?.setAttribute('aria-selected', String(groupRadio.checked));
+    }
+}
 
 /**
  * Apply accessibility rules to an element.
@@ -128,4 +150,5 @@ function setAccessibilityObserver() {
 
 export function initAccessibility() {
     setAccessibilityObserver();
+    document.addEventListener('change', onTabRadioChange);
 }

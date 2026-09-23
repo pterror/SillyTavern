@@ -20,7 +20,6 @@ const interactableSelectors = [
     '.stscript_btn',
     '.select2_choice_clickable+span.select2-container .select2-selection__choice__display', // Only the clickable variant
     '.avatar_load_preview',
-    '.bg_tabs_list .bg_tab_button',
     '.select_chat_block',
     '.select_chat_block .exportRawChatButton',
     '.select_chat_block .exportChatButton',
