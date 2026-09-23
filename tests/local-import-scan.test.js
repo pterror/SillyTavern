@@ -313,13 +313,13 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
 
         const files = fs.readdirSync(charactersDir);
         expect(files.length).toBe(1);
-        // The one character that DID get written is a real, complete import - not a half-finished write. Post-
-        // import canonical PNGs are image-only (no embedded chara/ccv3 chunk - see writeImageOnlyCard()), so the
-        // card data itself is verified through the metadata db, the only place it's written.
+        // The one character that DID get written is a real, complete import - not a half-finished write. The db
+        // row is still the source of truth for card data, but the on-disk png is an untouched copy of the
+        // source file (reflink/hardlink), embedded chunk and all - never stripped or rewritten.
         const row = await metadataDb.getCharacterMetadataRow(directories, files[0]);
         expect(row).toBeDefined();
         expect(row.name).toBe('Ghost');
-        await expect(cardParser.parse(path.join(charactersDir, files[0]), 'png')).rejects.toThrow('No PNG metadata.');
+        expect(fs.readFileSync(path.join(charactersDir, files[0]))).toEqual(cardBuffer);
     });
 
     test('a source directory that does not exist is skipped without throwing', async () => {
