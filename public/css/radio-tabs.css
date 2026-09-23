@@ -1,0 +1,63 @@
+/* Requires each `label.tab-title` (wrapping an `input.invisible-radio`) to be the
+ * immediate preceding sibling of its own `div.tab-contents`. */
+
+.invisible-radio {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+.tab-titles {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.tab-title {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: var(--SmartThemeBodyColor);
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    padding: 3px 5px;
+    cursor: pointer;
+    font-weight: 600;
+    margin: 0;
+    filter: none;
+    opacity: 0.8;
+    transition: opacity var(--animation-duration-2x);
+}
+
+.tab-title:hover {
+    opacity: 1;
+}
+
+.tab-title:has(.invisible-radio:checked) {
+    opacity: 1;
+    background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 33%, var(--SmartThemeBlurTintColor) 66%);
+}
+
+.tab-title:has(.invisible-radio:focus-visible) {
+    outline: 1px solid var(--interactable-outline-color);
+}
+
+.tab-contents {
+    display: none;
+    order: 1;
+}
+
+.tab-title:has(.invisible-radio:checked) + .tab-contents {
+    display: block;
+    order: 1;
+}
