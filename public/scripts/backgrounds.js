@@ -1659,11 +1659,7 @@ const debouncedOnBackgroundFilterInput = debounce(onBackgroundFilterInput, debou
  * @returns {BG_SOURCES} Active background tab source
  */
 export function getActiveBackgroundTab() {
-    const tabs = $('#bg_tabs');
-    if (!tabs.length || !tabs.data('ui-tabs')) {
-        return BG_SOURCES.GLOBAL;
-    }
-    return tabs.tabs('option', 'active');
+    return Number(document.querySelector('#bg_tabs input[name="bg_tabs_tab"]:checked')?.value ?? BG_SOURCES.GLOBAL);
 }
 
 export function initBackgrounds() {
@@ -1829,8 +1825,7 @@ export function initBackgrounds() {
         });
     });
 
-    $('#bg_tabs').tabs();
-    $('#bg_tabs').on('tabsactivate', () => updateGroupFolderControlsVisibility());
+    $('#bg_tabs').on('change', 'input.invisible-radio', () => updateGroupFolderControlsVisibility());
     updateGroupFolderControlsVisibility();
     syncGroupSelectionUi();
 }
