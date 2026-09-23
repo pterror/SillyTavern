@@ -1186,7 +1186,7 @@ function switchForceMobileView() {
 function switchSpoilerMode() {
     if (power_user.spoiler_free_mode) {
         $('#descriptionWrapper').hide();
-        $('#firstMessageWrapper').hide();
+        $('#first_message_div').hide();
         $('#creators_note_desc_hidden').show();
         const creatorNotesRadio = document.querySelector('#charInfoTabs input[name="charInfoTabs_tab"][value="creatorNotes"]');
         if (creatorNotesRadio instanceof HTMLInputElement) {
@@ -1197,7 +1197,7 @@ function switchSpoilerMode() {
         $('#firstMessageTabButton').hide();
     } else {
         $('#descriptionWrapper').show();
-        $('#firstMessageWrapper').show();
+        $('#first_message_div').show();
         $('#creators_note_desc_hidden').hide();
         $('#descriptionTabButton').show();
         $('#firstMessageTabButton').show();
