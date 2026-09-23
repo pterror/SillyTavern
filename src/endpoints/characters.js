@@ -32,7 +32,7 @@ import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
-import { getGroupsData, getGroupsByIds, stampDbTagIds as stampDbGroupTagIds } from './groups.js';
+import { getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getStaleCardJsonMap, getCardJsonByIds } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
@@ -1804,84 +1804,6 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
 });
 
 /**
- * Fields a shallow (and full) character carries that are cheap/stable enough to sort the list by
- * without having to hydrate anything extra. Keys are the accepted `sortField` values.
- * @type {{[sortField: string]: (character: object) => (string|number)}}
- */
-const SORT_FIELD_GETTERS = {
-    name: (c) => (c.data?.name ?? c.name ?? '').toLowerCase(),
-    date_added: (c) => c.date_added ?? 0,
-    date_last_chat: (c) => c.date_last_chat ?? 0,
-    chat_size: (c) => c.chat_size ?? 0,
-};
-
-/**
- * Applies optional sort/offset/limit to an already-fully-read character array. `{}` is a no-op.
- * @param {object[]} data Full array of processed characters (already filtered to `c.name` truthy)
- * @param {object} params
- * @param {string} [params.sortField] One of SORT_FIELD_GETTERS' keys. Unknown/omitted -> no sort applied.
- * @param {string} [params.sortOrder] 'asc' (default) or 'desc'.
- * @param {number} [params.offset] Slice start. Omitted/NaN -> 0.
- * @param {number} [params.limit] Slice length. Omitted/NaN -> no limit (rest of the array).
- * @returns {{ items: object[], total: number }} `total` is the count before offset/limit.
- */
-function paginateCharacters(data, { sortField, sortOrder, offset, limit } = {}) {
-    const total = data.length;
-    const getter = SORT_FIELD_GETTERS[sortField];
-    if (getter) {
-        const direction = sortOrder === 'desc' ? -1 : 1;
-        // Stable sort so same-key entries keep their on-disk relative order across identical requests.
-        data = [...data].sort((a, b) => {
-            const av = getter(a), bv = getter(b);
-            if (av < bv) return -1 * direction;
-            if (av > bv) return 1 * direction;
-            return 0;
-        });
-    }
-
-    const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
-    const end = Number.isFinite(limit) && limit >= 0 ? start + limit : undefined;
-    const items = (start > 0 || end !== undefined) ? data.slice(start, end) : data;
-    return { items, total };
-}
-
-/**
- * Like paginateCharacters(), but merges in a groups array before sorting/slicing, producing one sorted list
- * of characters and groups together. SORT_FIELD_GETTERS' getters work unmodified on group objects.
- * @param {object[]} characters
- * @param {object[]} groups
- * @param {object} params Same shape as paginateCharacters()'s params
- * @param {string} [params.sortField]
- * @param {string} [params.sortOrder]
- * @param {number} [params.offset]
- * @param {number} [params.limit]
- * @returns {{ items: {type: 'character'|'group', item: object}[], total: number }}
- */
-function paginateEntities(characters, groups, { sortField, sortOrder, offset, limit } = {}) {
-    let combined = [
-        ...characters.map(item => ({ type: 'character', item })),
-        ...groups.map(item => ({ type: 'group', item })),
-    ];
-
-    const getter = SORT_FIELD_GETTERS[sortField];
-    if (getter) {
-        const direction = sortOrder === 'desc' ? -1 : 1;
-        combined = combined.sort((a, b) => {
-            const av = getter(a.item), bv = getter(b.item);
-            if (av < bv) return -1 * direction;
-            if (av > bv) return 1 * direction;
-            return 0;
-        });
-    }
-
-    const total = combined.length;
-    const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
-    const end = Number.isFinite(limit) && limit >= 0 ? start + limit : undefined;
-    const items = (start > 0 || end !== undefined) ? combined.slice(start, end) : combined;
-    return { items, total };
-}
-
-/**
  * Merges pre-scored character/group Fuse search results (best-first, ascending score) into one paginated,
  * still best-first result.
  * @param {import('fuse.js').FuseResult<object>[]} characterResults
@@ -1906,7 +1828,10 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit, 
 }
 
 /**
- * Accepts optional `sortField`/`sortOrder`/`offset`/`limit`/`search`/`includeGroups`/`fav` in the body for a paginated/searched page; no body returns every character in on-disk order (sort/offset/limit still reads every file, it only slices the response). `fav` with `search` is applied inside the search query itself, not as a post-fetch filter, so it can't miss a favorite ranked outside the fetched page.
+ * Accepts an optional `search`/`includeGroups`/`fav` in the body for a searched page; no `search` returns every
+ * character in on-disk order (streamed, not materialized). `fav` with `search` is applied inside the search
+ * query itself, not as a post-fetch filter, so it can't miss a favorite ranked outside the fetched page.
+ * Non-search pagination (`sortField`/`sortOrder`/`offset`/`limit`) lives at `POST /api/characters/query` instead.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -2002,16 +1927,16 @@ async function stampDbAllowGlobalStyles(directories, characters) {
 
 router.post('/all', async function (request, response) {
     try {
-        const { sortField, sortOrder, offset, limit, search, includeGroups, fav } = request.body ?? {};
+        const { offset, limit, search, includeGroups, fav } = request.body ?? {};
         const favOnly = fav === true;
 
-        if (sortField === undefined && offset === undefined && limit === undefined && !search && !includeGroups) {
-            // No pagination params at all: preserve the exact pre-existing response shape (a bare array), but
-            // stream it - a real library's worth of characters (300k+ rows) can't be held in memory as one array
-            // nor buffered whole before response.send(). Everything that can fail without having written a byte
-            // yet (reading the directory, resolving stale cards) still happens before any write, so it still
-            // reaches the catch block below and gets a normal 500; a failure after that point can't un-send the
-            // 200 and partial body already on the wire, so it just ends the connection and logs server-side.
+        if (!search) {
+            // No `search`: respond with the bare-array shape, streamed - a real library's worth of characters
+            // (300k+ rows) can't be held in memory as one array nor buffered whole before response.send().
+            // Everything that can fail without having written a byte yet (reading the directory, resolving stale
+            // cards) still happens before any write, so it still reaches the catch block below and gets a normal
+            // 500; a failure after that point can't un-send the 200 and partial body already on the wire, so it
+            // just ends the connection and logs server-side.
             const files = fs.readdirSync(request.user.directories.characters);
             const pngFiles = files.filter(file => file.endsWith('.png'));
             const staleCards = await getStaleCardJsonMap(request.user.directories);
@@ -2045,67 +1970,38 @@ router.post('/all', async function (request, response) {
         const numericOffset = Number.isFinite(Number(offset)) ? Number(offset) : 0;
         const numericLimit = Number.isFinite(Number(limit)) ? Number(limit) : DEFAULT_PAGE_LIMIT;
 
-        if (search) {
-            const handle = request.user.profile.handle;
-            // 'tantivy', not 'native': placeholder for "not searched" that never wins BACKEND_SEVERITY's worse-of comparison.
-            const emptySearch = { results: [], total: 0, backend: 'tantivy' };
-            // Each source fetches only its own top (offset + limit) rows; paginateSearchResults() below does the real merge.
-            const searchFetchLimit = numericOffset + numericLimit;
-            // favOnly is applied inside the query itself so it can't drop a match ranked outside searchFetchLimit.
-            const [characterSearch, groupSearch] = await Promise.all([
-                searchCharacters(handle, request.user.directories, search, searchFetchLimit, favOnly),
-                includeGroups ? searchGroups(handle, request.user.directories, search, searchFetchLimit, favOnly) : emptySearch,
-            ]);
-            // The search index is built from full character data - trim to shallow fields to match this server's normal response shape.
-            const finalCharacterResults = useShallowCharacters
-                ? characterSearch.results.map(r => ({ ...r, item: toShallow(r.item) }))
-                : characterSearch.results;
-            // The search index's own `fav` copy can lag a db-only fav toggle (which never touches the card file).
-            await stampDbFav(request.user.directories, finalCharacterResults.map(r => r.item));
-            await stampDbActiveChat(request.user.directories, finalCharacterResults.map(r => r.item));
-            await stampDbTagIds(request.user.directories, finalCharacterResults.map(r => r.item));
-            await stampDbAllowGlobalStyles(request.user.directories, finalCharacterResults.map(r => r.item));
+        const handle = request.user.profile.handle;
+        // 'tantivy', not 'native': placeholder for "not searched" that never wins BACKEND_SEVERITY's worse-of comparison.
+        const emptySearch = { results: [], total: 0, backend: 'tantivy' };
+        // Each source fetches only its own top (offset + limit) rows; paginateSearchResults() below does the real merge.
+        const searchFetchLimit = numericOffset + numericLimit;
+        // favOnly is applied inside the query itself so it can't drop a match ranked outside searchFetchLimit.
+        const [characterSearch, groupSearch] = await Promise.all([
+            searchCharacters(handle, request.user.directories, search, searchFetchLimit, favOnly),
+            includeGroups ? searchGroups(handle, request.user.directories, search, searchFetchLimit, favOnly) : emptySearch,
+        ]);
+        // The search index is built from full character data - trim to shallow fields to match this server's normal response shape.
+        const finalCharacterResults = useShallowCharacters
+            ? characterSearch.results.map(r => ({ ...r, item: toShallow(r.item) }))
+            : characterSearch.results;
+        // The search index's own `fav` copy can lag a db-only fav toggle (which never touches the card file).
+        await stampDbFav(request.user.directories, finalCharacterResults.map(r => r.item));
+        await stampDbActiveChat(request.user.directories, finalCharacterResults.map(r => r.item));
+        await stampDbTagIds(request.user.directories, finalCharacterResults.map(r => r.item));
+        await stampDbAllowGlobalStyles(request.user.directories, finalCharacterResults.map(r => r.item));
 
-            const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
-                offset: numericOffset, limit: numericLimit,
-                trueTotal: characterSearch.total + groupSearch.total,
-            });
-            // Lets the client show an indicator when search runs on anything other than the fastest engine tier.
-            const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
-            const searchBackend = BACKEND_SEVERITY[groupSearch.backend] > BACKEND_SEVERITY[characterSearch.backend]
-                ? groupSearch.backend
-                : characterSearch.backend;
-            const payload = includeGroups ? { items, total } : { items: items.map(x => x.item), total };
-            payload.searchBackend = searchBackend;
-            return response.send(payload);
-        }
-
-        const files = fs.readdirSync(request.user.directories.characters);
-        const pngFiles = files.filter(file => file.endsWith('.png'));
-        const staleCards = await getStaleCardJsonMap(request.user.directories);
-        const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
-        const data = (await Promise.all(processingPromises)).filter(c => c.name);
-        await stampDbFav(request.user.directories, data);
-        await stampDbActiveChat(request.user.directories, data);
-        await stampDbTagIds(request.user.directories, data);
-        await stampDbAllowGlobalStyles(request.user.directories, data);
-
-        if (includeGroups) {
-            const groupsData = getGroupsData(request.user.directories);
-            await stampDbGroupTagIds(request.user.directories, groupsData);
-            const { items, total } = paginateEntities(data, groupsData, {
-                sortField, sortOrder, offset: numericOffset, limit: numericLimit,
-            });
-            return response.send({ items, total });
-        }
-
-        const { items, total } = paginateCharacters(data, {
-            sortField,
-            sortOrder,
-            offset: numericOffset,
-            limit: numericLimit,
+        const { items, total } = paginateSearchResults(finalCharacterResults, groupSearch.results, {
+            offset: numericOffset, limit: numericLimit,
+            trueTotal: characterSearch.total + groupSearch.total,
         });
-        return response.send({ items, total });
+        // Lets the client show an indicator when search runs on anything other than the fastest engine tier.
+        const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
+        const searchBackend = BACKEND_SEVERITY[groupSearch.backend] > BACKEND_SEVERITY[characterSearch.backend]
+            ? groupSearch.backend
+            : characterSearch.backend;
+        const payload = includeGroups ? { items, total } : { items: items.map(x => x.item), total };
+        payload.searchBackend = searchBackend;
+        return response.send(payload);
     } catch (err) {
         console.error(err);
         const isRangeError = err instanceof RangeError;
