@@ -11738,6 +11738,20 @@ jQuery(async function () {
         }
     });
 
+    $('#talkativeness_button').on('click', async function () {
+        const talkativenessDiv = document.getElementById('talkativeness_div');
+        const originalParent = talkativenessDiv.parentElement;
+        const originalNextSibling = talkativenessDiv.nextElementSibling;
+
+        talkativenessDiv.classList.remove('displayNone');
+        await callGenericPopup(talkativenessDiv, POPUP_TYPE.DISPLAY, '', {
+            onClose: () => {
+                talkativenessDiv.classList.add('displayNone');
+                originalParent.insertBefore(talkativenessDiv, originalNextSibling);
+            },
+        });
+    });
+
     /* $("#renameCharButton").on('click', renameCharacter); */
 
     $(document).on('click', '.renameChatButton', async function (e) {
