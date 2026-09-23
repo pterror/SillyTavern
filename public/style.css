@@ -5129,6 +5129,11 @@ body .ui-widget-content {
     color: var(--SmartThemeBodyColor);
 }
 
+body .ui-tabs.ui-widget {
+    font-family: inherit;
+    font-size: inherit;
+}
+
 .ui-slider {
     margin: 5px 0;
     outline: 1px solid var(--grey5050a);
