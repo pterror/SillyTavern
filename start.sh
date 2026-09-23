@@ -10,7 +10,15 @@ fi
 
 echo "Installing Node Modules..."
 export NODE_ENV=production
-npm install --no-save --no-audit --no-fund --loglevel=error --no-progress --omit=dev --ignore-scripts
+# typescript/eslint in node_modules means a developer installed the dev dependencies on purpose - don't prune them.
+# --include=dev overrides the dev omission NODE_ENV=production implies, so the server still runs as production.
+if [ -d "node_modules/typescript" ] || [ -d "node_modules/eslint" ]
+then
+    NPM_DEV_FLAG="--include=dev"
+else
+    NPM_DEV_FLAG="--omit=dev"
+fi
+npm install --no-save --no-audit --no-fund --loglevel=error --no-progress "$NPM_DEV_FLAG" --ignore-scripts
 
 # --ignore-scripts above means better-sqlite3's native .node addon never gets auto-built/rebuilt on install,
 # so a missing/broken binding would otherwise stay silently broken forever (search falls back to slower

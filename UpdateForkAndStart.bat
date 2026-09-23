@@ -102,7 +102,13 @@ if %errorlevel% neq 0 (
 
 echo Installing npm packages and starting server
 set NODE_ENV=production
-call npm install --no-save --no-audit --no-fund --loglevel=error --no-progress --omit=dev --ignore-scripts
+rem typescript/eslint in node_modules means a developer installed the dev dependencies on purpose - don't prune them.
+rem --include=dev overrides the dev omission NODE_ENV=production implies, so the server still runs as production.
+set NPM_DEV_FLAG=--omit=dev
+if exist "node_modules\typescript\" set NPM_DEV_FLAG=--include=dev
+if exist "node_modules\eslint\" set NPM_DEV_FLAG=--include=dev
+call npm install --no-save --no-audit --no-fund --loglevel=error --no-progress %NPM_DEV_FLAG% --ignore-scripts
+set NPM_DEV_FLAG=
 node server.js %*
 
 :end
