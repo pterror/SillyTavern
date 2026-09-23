@@ -3766,17 +3766,21 @@ function restoreSavedTagFilters() {
     }
 }
 
-function updateTagsDivCount() {
-    const count = $('#tagList').children('.tag').length;
-    $('#tags_div_count').text(count > 0 ? `(${count})` : '');
+function updateTagsDivPreview() {
+    const preview = $('#tags_div_preview').empty();
+    for (const tag of $('#tagList').children('.tag')) {
+        const clone = $(tag).clone();
+        clone.find('.tag_remove, .tag_delete').remove();
+        preview.append(clone);
+    }
 }
 
 export function initTags() {
     createTagInput('#tagInput', '#tagList', { tagOptions: { removable: true } });
     createTagInput('#groupTagInput', '#groupTagList', { tagOptions: { removable: true } });
 
-    new MutationObserver(updateTagsDivCount).observe(document.getElementById('tagList'), { childList: true });
-    updateTagsDivCount();
+    new MutationObserver(updateTagsDivPreview).observe(document.getElementById('tagList'), { childList: true });
+    updateTagsDivPreview();
 
     $(document).on('click', '#rm_button_create', onCharacterCreateClick);
     $(document).on('click', '#rm_button_group_chats', onGroupCreateClick);

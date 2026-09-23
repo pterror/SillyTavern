@@ -3,6 +3,34 @@
     min-width: 0;
 }
 
+#tags_div > .inline-drawer-header {
+    flex-wrap: nowrap;
+}
+
+#tags_div > .inline-drawer-header h4 {
+    display: flex;
+    align-items: center;
+    margin: 0;
+    flex-shrink: 0;
+}
+
+#tags_div > .inline-drawer-header .tag_controls {
+    flex: 1;
+    min-width: 0;
+    margin: 0 10px;
+}
+
+.tags_div_preview {
+    max-height: calc(var(--mainFontSize) * 2);
+    overflow: hidden;
+    align-items: flex-start;
+    pointer-events: none;
+}
+
+#tags_div:has(.inline-drawer-icon.up) .tags_div_preview {
+    display: none;
+}
+
 .tag_controls {
     display: flex;
     flex-direction: row;
