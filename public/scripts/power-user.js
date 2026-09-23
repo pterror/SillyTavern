@@ -2063,7 +2063,7 @@ function toggleMDHotkeyIconDisplay() {
     if (power_user.enable_md_hotkeys) {
         $('.mdhotkey_location').each(function () {
             $(this).parent().children('.mdhotkey_icon').remove();
-            $(this).parent().append('<i class="fa-brands fa-markdown mdhotkey_icon"></i>');
+            $(this).parent().append('<i class="fa-brands fa-markdown mdhotkey_icon" title="Enable hotkeys for inserting markdown format characters in certain text input boxes. See \'/help hotkeys\'." data-i18n="[title]markdown_hotkeys_desc"></i>');
         });
     } else {
         $('.mdhotkey_icon').remove();

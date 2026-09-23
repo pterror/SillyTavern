@@ -6315,7 +6315,7 @@
                                 </div>
                                 <label id="descriptionTabButton" class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="description">
-                                    <span data-i18n="Character Description" class="mdhotkey_location">Description</span> <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    <span data-i18n="Character Description">Description</span>
                                 </label>
                                 <div id="charInfoTab_description" class="char_info_tab_panel tab-contents">
                                     <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
@@ -6325,6 +6325,8 @@
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#character-description" class="notes-link" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
                                             </a>
+                                            <span class="mdhotkey_location" style="display: none;"></span>
+                                            <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </div>
                                         <textarea id="description_textarea" class="mdHotkeys" data-macros data-i18n="[placeholder]Describe your character's physical and mental traits here." placeholder="Describe your character's physical and mental traits here." name="description" placeholder=""></textarea>
                                         <pre class="macro_preview_content" data-for="description_textarea" style="display: none;"></pre>
@@ -6332,7 +6334,7 @@
                                 </div>
                                 <label id="firstMessageTabButton" class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="greeting">
-                                    <span data-i18n="Greeting" class="mdhotkey_location">Greeting</span> <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    <span data-i18n="Greeting">Greeting</span>
                                 </label>
                                 <div id="charInfoTab_greeting" class="char_info_tab_panel tab-contents">
                                     <div id="firstMessageWrapper" class="flex-container flexFlowColumn flex1">
@@ -6342,6 +6344,8 @@
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
                                             </a>
+                                            <span class="mdhotkey_location" style="display: none;"></span>
+                                            <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                             <div class="greeting-pager">
                                                 <div class="greeting-pager-btn greeting-pager-prev" title="Previous greeting" data-i18n="[title]Previous greeting">
                                                     <i class="fa-solid fa-chevron-left"></i>
@@ -6367,7 +6371,7 @@
                                 </div>
                                 <label class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="mainPrompt">
-                                    <span data-i18n="System Prompt">System Prompt</span> <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    <span data-i18n="System Prompt">System Prompt</span>
                                 </label>
                                 <div id="charInfoTab_mainPrompt" class="char_info_tab_panel tab-contents">
                                     <div id="mainPromptOverride">
@@ -6375,6 +6379,7 @@
                                         <h4 class="flex-container alignItemsBaseline">
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="system_prompt_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
                                         <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" class="text_pole" autocomplete="off" rows="3"></textarea>
                                         <pre class="macro_preview_content" data-for="system_prompt_textarea" style="display: none;"></pre>
@@ -6382,7 +6387,7 @@
                                 </div>
                                 <label class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="postHistoryInstructions">
-                                    <span data-i18n="Post-History Instructions">Post-History Instructions</span> <small>(<span data-token-counter="post_history_instructions_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    <span data-i18n="Post-History Instructions">Post-History Instructions</span>
                                 </label>
                                 <div id="charInfoTab_postHistoryInstructions" class="char_info_tab_panel tab-contents">
                                     <div id="postHistoryInstructionsOverride">
@@ -6390,6 +6395,7 @@
                                         <h4 class="flex-container alignItemsBaseline">
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="post_history_instructions_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <small>(<span data-token-counter="post_history_instructions_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
                                         <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" class="text_pole" autocomplete="off" rows="3"></textarea>
                                         <pre class="macro_preview_content" data-for="post_history_instructions_textarea" style="display: none;"></pre>
@@ -6397,20 +6403,21 @@
                                 </div>
                                 <label class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="personality">
-                                    <span data-i18n="Personality summary">Personality summary</span> <small>(<span data-token-counter="personality_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    <span data-i18n="Personality summary">Personality summary</span>
                                 </label>
                                 <div id="charInfoTab_personality" class="char_info_tab_panel tab-contents">
                                     <div id="personality_div">
                                         <h4 class="flex-container alignItemsBaseline">
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="personality_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#personality-summary" class="notes-link" target="_blank"><span class="fa-solid fa-circle-question note-link-span"></span></a>
+                                            <small>(<span data-token-counter="personality_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
                                         <textarea id="personality_textarea" name="personality" data-macros data-i18n="[placeholder](A brief description of the personality)" placeholder="(A brief description of the personality)" form="form_create" class="text_pole" autocomplete="off" rows="4"></textarea>
                                     </div>
                                 </div>
                                 <label class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="scenario">
-                                    <span data-i18n="Scenario">Scenario</span> <small>(<span data-token-counter="scenario_pole" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    <span data-i18n="Scenario">Scenario</span>
                                 </label>
                                 <div id="charInfoTab_scenario" class="char_info_tab_panel tab-contents">
                                     <div id="scenario_div">
@@ -6419,13 +6426,14 @@
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#scenario" class="notes-link" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
                                             </a>
+                                            <small>(<span data-token-counter="scenario_pole" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
                                         <textarea id="scenario_pole" name="scenario" data-macros data-i18n="[placeholder](Circumstances and context of the interaction)" placeholder="(Circumstances and context of the interaction)" class="text_pole" value="" autocomplete="off" form="form_create" rows="4"></textarea>
                                     </div>
                                 </div>
                                 <label class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="characterNote">
-                                    <span data-i18n="Character's Note">Character's Note</span> <small>(<span data-token-counter="depth_prompt_prompt" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    <span data-i18n="Character's Note">Character's Note</span>
                                 </label>
                                 <div id="charInfoTab_characterNote" class="char_info_tab_panel tab-contents">
                                     <div id="depth_prompt_div" class="flex-container flexFlowColumn">
@@ -6446,6 +6454,7 @@
                                         <div class="flex1">
                                             <h4 class="flex-container alignItemsBaseline">
                                                 <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="depth_prompt_prompt" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                                <small>(<span data-token-counter="depth_prompt_prompt" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                             </h4>
                                             <textarea id="depth_prompt_prompt" name="depth_prompt_prompt" data-macros class="text_pole" rows="5" autocomplete="off" form="form_create" data-i18n="[placeholder](Text to be inserted in-chat @ designated depth and role)" placeholder="(Text to be inserted in-chat @ designated depth and role)"></textarea>
                                         </div>
@@ -6453,13 +6462,14 @@
                                 </div>
                                 <label class="tab-title">
                                     <input type="radio" class="invisible-radio" name="charInfoTabs_tab" value="exampleMessages">
-                                    <span data-i18n="Example Messages">Example Messages</span> <small>(<span data-token-counter="mes_example_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
+                                    <span data-i18n="Example Messages">Example Messages</span>
                                 </label>
                                 <div id="charInfoTab_exampleMessages" class="char_info_tab_panel tab-contents">
                                     <div id="mes_example_div" class="flex-container flexFlowColumn">
                                         <div>
                                             <h4 class="flex-container alignItemsBaseline">
                                                 <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="mes_example_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                                <small>(<span data-token-counter="mes_example_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                             </h4>
                                             <h5>
                                                 <span data-i18n="Important to set the character's writing style.">Important to set the character's writing style.</span>
