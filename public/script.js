@@ -12,8 +12,11 @@ import {
 } from './lib.js';
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
-import { characters, charactersStore, this_avatar, setCharacterId } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage } from './scripts/character-list.js';
+import { characters, charactersStore, this_avatar, setCharacterId, selectCharacterById } from './scripts/character-store.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+// Re-exported for existing importers (upstream's script.js exports these too).
+export { characters, charactersStore, selectCharacterById, setCharacterId };
+export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
@@ -191,6 +194,7 @@ import {
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
+import { reloadMarkedProcessor } from './scripts/marked-processor.js';
 import { markdownUnderscoreExt } from './scripts/showdown-underscore.js';
 import { NOTE_MODULE_NAME, initAuthorsNote, metadata_keys, shouldWIAddPrompt } from './scripts/authors-note.js';
 import { registerPromptManagerMigration } from './scripts/PromptManager.js';
@@ -261,6 +265,8 @@ import { token, setToken, getRequestHeaders } from './scripts/request-headers.js
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
+// Re-exported for existing importers (upstream's script.js exports these too).
+export { event_types, eventSource, getRequestHeaders, token, chat, chat_metadata, active_character, active_group, name1, amount_gen, max_context, main_api, setActiveCharacter, setActiveGroup };
 import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
@@ -630,6 +636,8 @@ export function reloadMarkdownProcessor() {
     // Inject the dinkus extension after creating the converter
     // Maybe move this into power_user init?
     converter.addExtension(markdownExclusionExt(), 'exclusion');
+
+    reloadMarkedProcessor(power_user.markdown_escape_strings, substituteParams);
 
     return converter;
 }
