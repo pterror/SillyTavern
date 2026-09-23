@@ -6302,10 +6302,10 @@
                                     <li class="char_info_tab_button"><a href="#charInfoTab_creatorNotes" data-i18n="Creator's Notes">Creator's Notes</a></li>
                                     <li class="char_info_tab_button"><a href="#charInfoTab_mainPrompt"><span data-i18n="System Prompt">System Prompt</span> <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
                                     <li class="char_info_tab_button"><a href="#charInfoTab_postHistoryInstructions"><span data-i18n="Post-History Instructions">Post-History Instructions</span> <small>(<span data-token-counter="post_history_instructions_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
-                                    <li class="char_info_tab_button"><a href="#charInfoTab_personality" data-i18n="Personality summary">Personality summary</a></li>
-                                    <li class="char_info_tab_button"><a href="#charInfoTab_scenario" data-i18n="Scenario">Scenario</a></li>
-                                    <li class="char_info_tab_button"><a href="#charInfoTab_characterNote" data-i18n="Character's Note">Character's Note</a></li>
-                                    <li class="char_info_tab_button"><a href="#charInfoTab_exampleMessages" data-i18n="Example Messages">Example Messages</a></li>
+                                    <li class="char_info_tab_button"><a href="#charInfoTab_personality"><span data-i18n="Personality summary">Personality summary</span> <small>(<span data-token-counter="personality_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
+                                    <li class="char_info_tab_button"><a href="#charInfoTab_scenario"><span data-i18n="Scenario">Scenario</span> <small>(<span data-token-counter="scenario_pole" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
+                                    <li class="char_info_tab_button"><a href="#charInfoTab_characterNote"><span data-i18n="Character's Note">Character's Note</span> <small>(<span data-token-counter="depth_prompt_prompt" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
+                                    <li class="char_info_tab_button"><a href="#charInfoTab_exampleMessages"><span data-i18n="Example Messages">Example Messages</span> <small>(<span data-token-counter="mes_example_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
                                     <li id="descriptionTabButton" class="char_info_tab_button"><a href="#charInfoTab_description"><span data-i18n="Character Description" class="mdhotkey_location">Description</span> <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
                                     <li id="firstMessageTabButton" class="char_info_tab_button"><a href="#charInfoTab_greeting"><span data-i18n="Greeting" class="mdhotkey_location">Greeting</span> <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
                                 </ul>
@@ -6348,9 +6348,6 @@
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#personality-summary" class="notes-link" target="_blank"><span class="fa-solid fa-circle-question note-link-span"></span></a>
                                         </h4>
                                         <textarea id="personality_textarea" name="personality" data-macros data-i18n="[placeholder](A brief description of the personality)" placeholder="(A brief description of the personality)" form="form_create" class="text_pole" autocomplete="off" rows="4"></textarea>
-                                        <div class="extension_token_counter">
-                                            <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="personality_textarea" data-token-permanent="true">counting...</span>
-                                        </div>
                                     </div>
                                 </div>
                                 <div id="charInfoTab_scenario" class="char_info_tab_panel">
@@ -6362,9 +6359,6 @@
                                             </a>
                                         </h4>
                                         <textarea id="scenario_pole" name="scenario" data-macros data-i18n="[placeholder](Circumstances and context of the interaction)" placeholder="(Circumstances and context of the interaction)" class="text_pole" value="" autocomplete="off" form="form_create" rows="4"></textarea>
-                                        <div class="extension_token_counter">
-                                            <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="scenario_pole" data-token-permanent="true">counting...</span>
-                                        </div>
                                     </div>
                                 </div>
                                 <div id="charInfoTab_characterNote" class="char_info_tab_panel">
@@ -6392,9 +6386,6 @@
                                                 <option value="user" data-i18n="User">User</option>
                                                 <option value="assistant" data-i18n="Assistant">Assistant</option>
                                             </select>
-                                            <div class="extension_token_counter">
-                                                <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="depth_prompt_prompt" data-token-permanent="true">counting...</span>
-                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -6412,9 +6403,6 @@
                                             </h5>
                                         </div>
                                         <textarea id="mes_example_textarea" class="flexGrow mdHotkeys" name="mes_example" data-macros data-i18n="[placeholder](Examples of chat dialog. Begin each example with START on a new line.)" placeholder="(Examples of chat dialog. Begin each example with &lt;START&gt; on a new line.)" form="form_create" rows="6"></textarea>
-                                        <div class="extension_token_counter">
-                                            <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="mes_example_textarea">counting...</span>
-                                        </div>
                                         <!-- TODO: Example chats handhold-editor concept: https://gist.github.com/Cohee1207/50da02a4001ac1adae9b440f9b8e1079 -->
                                     </div>
                                 </div>
