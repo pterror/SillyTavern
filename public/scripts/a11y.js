@@ -52,11 +52,11 @@ const toolbarSelectors = [
 ].join(', ');
 
 const tabListSelectors = [
-    '.tab-titles',
+    '.tab-container',
 ].join(', ');
 
 const tabItemSelectors = [
-    '.tab-titles .tab-title',
+    '.tab-container .tab-title',
 ].join(', ');
 
 /** @type {Record<string, (element: Element) => void>} */
