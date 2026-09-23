@@ -28,7 +28,9 @@
 }
 
 #tags_div:has(.inline-drawer-icon.up) .tags_div_preview {
-    display: none;
+    /* visibility, not display: must keep reserving height or #tags_div's
+       own box shrinks and reflows the sidebar below it. */
+    visibility: hidden;
 }
 
 #tags_div {
@@ -45,6 +47,8 @@
     max-height: 50vh;
     overflow-y: auto;
     background-color: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
+    -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 0 0 10px 10px;
     padding: 5px;
