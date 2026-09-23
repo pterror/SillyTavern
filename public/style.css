@@ -3544,6 +3544,19 @@ input[type=search]:focus::-webkit-search-cancel-button {
     padding: 0 2px;
 }
 
+#charInfoTabs {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+#charInfoTabs .char_info_tab_panel {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
 .avatar_div {
     display: flex;
     width: 100%;
