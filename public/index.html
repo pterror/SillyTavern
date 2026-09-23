@@ -6300,17 +6300,18 @@
                             <div id="charInfoTabs" class="wide100p">
                                 <ul id="charInfoTabsList">
                                     <li class="char_info_tab_button"><a href="#charInfoTab_creatorNotes" data-i18n="Creator's Notes">Creator's Notes</a></li>
-                                    <li class="char_info_tab_button"><a href="#charInfoTab_mainPrompt" data-i18n="Main Prompt">Main Prompt</a></li>
-                                    <li class="char_info_tab_button"><a href="#charInfoTab_postHistoryInstructions" data-i18n="Post-History Instructions">Post-History Instructions</a></li>
+                                    <li class="char_info_tab_button"><a href="#charInfoTab_mainPrompt"><span data-i18n="System Prompt">System Prompt</span> <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
+                                    <li class="char_info_tab_button"><a href="#charInfoTab_postHistoryInstructions"><span data-i18n="Post-History Instructions">Post-History Instructions</span> <small>(<span data-token-counter="post_history_instructions_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
                                     <li class="char_info_tab_button"><a href="#charInfoTab_personality" data-i18n="Personality summary">Personality summary</a></li>
                                     <li class="char_info_tab_button"><a href="#charInfoTab_scenario" data-i18n="Scenario">Scenario</a></li>
                                     <li class="char_info_tab_button"><a href="#charInfoTab_characterNote" data-i18n="Character's Note">Character's Note</a></li>
                                     <li class="char_info_tab_button"><a href="#charInfoTab_exampleMessages" data-i18n="Example Messages">Example Messages</a></li>
+                                    <li id="descriptionTabButton" class="char_info_tab_button"><a href="#charInfoTab_description"><span data-i18n="Character Description" class="mdhotkey_location">Description</span> <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
+                                    <li id="firstMessageTabButton" class="char_info_tab_button"><a href="#charInfoTab_greeting"><span data-i18n="Greeting" class="mdhotkey_location">Greeting</span> <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small></a></li>
                                 </ul>
                                 <div id="charInfoTab_creatorNotes" class="char_info_tab_panel">
                                     <div id="creator_notes_div">
                                         <h4 class="flex-container alignItemsBaseline">
-                                            <span data-i18n="Creator's Notes">Creator's Notes</span>
                                             <i class="creator_notes_preview_toggle_button fa-solid fa-pencil right_menu_button" data-for="creator_notes_textarea" title="Edit raw text" data-i18n="[title]Edit raw text"></i>
                                             <i class="editor_maximize fa-solid fa-maximize" data-for="creator_notes_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                         </h4>
@@ -6319,49 +6320,30 @@
                                     </div>
                                 </div>
                                 <div id="charInfoTab_mainPrompt" class="char_info_tab_panel">
-                                    <div id="mainPromptOverride" class="inline-drawer">
-                                        <div class="inline-drawer-toggle inline-drawer-header">
-                                            <h4>
-                                                <span data-i18n="Main Prompt">Main Prompt</span>
-                                                <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
-                                            </h4>
-                                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-up up"></div>
-                                        </div>
-                                        <div class="inline-drawer-content" style="display: block;">
-                                            <small data-i18n="Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.</small>
-                                            <h4 class="flex-container alignItemsBaseline">
-                                                <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                                <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="system_prompt_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
-                                            </h4>
-                                            <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" class="text_pole" autocomplete="off" rows="3"></textarea>
-                                            <pre class="macro_preview_content" data-for="system_prompt_textarea" style="display: none;"></pre>
-                                        </div>
+                                    <div id="mainPromptOverride">
+                                        <small data-i18n="Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.</small>
+                                        <h4 class="flex-container alignItemsBaseline">
+                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="system_prompt_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                        </h4>
+                                        <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" class="text_pole" autocomplete="off" rows="3"></textarea>
+                                        <pre class="macro_preview_content" data-for="system_prompt_textarea" style="display: none;"></pre>
                                     </div>
                                 </div>
                                 <div id="charInfoTab_postHistoryInstructions" class="char_info_tab_panel">
-                                    <div id="postHistoryInstructionsOverride" class="inline-drawer">
-                                        <div class="inline-drawer-toggle inline-drawer-header">
-                                            <h4>
-                                                <span data-i18n="Post-History Instructions">Post-History Instructions</span>
-                                                <small>(<span data-token-counter="post_history_instructions_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
-                                            </h4>
-                                            <div class="inline-drawer-icon fa-solid fa-circle-chevron-up up"></div>
-                                        </div>
-                                        <div class="inline-drawer-content" style="display: block;">
-                                            <small data-i18n="Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.</small>
-                                            <h4 class="flex-container alignItemsBaseline">
-                                                <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                                <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="post_history_instructions_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
-                                            </h4>
-                                            <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" class="text_pole" autocomplete="off" rows="3"></textarea>
-                                            <pre class="macro_preview_content" data-for="post_history_instructions_textarea" style="display: none;"></pre>
-                                        </div>
+                                    <div id="postHistoryInstructionsOverride">
+                                        <small data-i18n="Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.</small>
+                                        <h4 class="flex-container alignItemsBaseline">
+                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="post_history_instructions_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                        </h4>
+                                        <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" class="text_pole" autocomplete="off" rows="3"></textarea>
+                                        <pre class="macro_preview_content" data-for="post_history_instructions_textarea" style="display: none;"></pre>
                                     </div>
                                 </div>
                                 <div id="charInfoTab_personality" class="char_info_tab_panel">
                                     <div id="personality_div">
                                         <h4 class="flex-container alignItemsBaseline">
-                                            <span data-i18n="Personality summary">Personality summary</span>
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="personality_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#personality-summary" class="notes-link" target="_blank"><span class="fa-solid fa-circle-question note-link-span"></span></a>
                                         </h4>
@@ -6374,7 +6356,6 @@
                                 <div id="charInfoTab_scenario" class="char_info_tab_panel">
                                     <div id="scenario_div">
                                         <h4 class="flex-container alignItemsBaseline">
-                                            <span data-i18n="Scenario">Scenario</span>
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="scenario_pole" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#scenario" class="notes-link" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
@@ -6390,9 +6371,6 @@
                                     <div id="depth_prompt_div" class="flex-container">
                                         <div class="flex1">
                                             <h4 class="flex-container alignItemsBaseline">
-                                                <span data-i18n="Character's Note">
-                                                    Character's Note
-                                                </span>
                                                 <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="depth_prompt_prompt" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             </h4>
                                             <textarea id="depth_prompt_prompt" name="depth_prompt_prompt" data-macros class="text_pole" rows="5" autocomplete="off" form="form_create" data-i18n="[placeholder](Text to be inserted in-chat @ designated depth and role)" placeholder="(Text to be inserted in-chat @ designated depth and role)"></textarea>
@@ -6424,7 +6402,6 @@
                                     <div id="mes_example_div" class="flex-container flexFlowColumn">
                                         <div>
                                             <h4 class="flex-container alignItemsBaseline">
-                                                <span data-i18n="Example Messages" class="mdhotkey_location">Example Messages</span>
                                                 <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="mes_example_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             </h4>
                                             <h5>
@@ -6441,17 +6418,8 @@
                                         <!-- TODO: Example chats handhold-editor concept: https://gist.github.com/Cohee1207/50da02a4001ac1adae9b440f9b8e1079 -->
                                     </div>
                                 </div>
-                            </div>
-                            <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
-                                <div id="description_div" class="inline-drawer">
-                                    <div class="inline-drawer-toggle inline-drawer-header">
-                                        <h4>
-                                            <span data-i18n="Character Description" class="mdhotkey_location">Description</span>
-                                            <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
-                                        </h4>
-                                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                                    </div>
-                                    <div class="inline-drawer-content">
+                                <div id="charInfoTab_description" class="char_info_tab_panel">
+                                    <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
                                         <div class="flex-container alignitemscenter">
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="description_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="description_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
@@ -6463,17 +6431,8 @@
                                         <pre class="macro_preview_content" data-for="description_textarea" style="display: none;"></pre>
                                     </div>
                                 </div>
-                            </div>
-                            <div id="firstMessageWrapper" class="flex-container flexFlowColumn flex1">
-                                <div id="first_message_div" class="inline-drawer">
-                                    <div class="inline-drawer-toggle inline-drawer-header">
-                                        <h4>
-                                            <span data-i18n="Greeting" class="mdhotkey_location">Greeting</span>
-                                            <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
-                                        </h4>
-                                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                                    </div>
-                                    <div class="inline-drawer-content">
+                                <div id="charInfoTab_greeting" class="char_info_tab_panel">
+                                    <div id="firstMessageWrapper" class="flex-container flexFlowColumn flex1">
                                         <div class="flex-container alignitemscenter flex1">
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="greeting_field" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
