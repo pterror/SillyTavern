@@ -190,8 +190,6 @@ $('#rm_button_create').on('click', function () {                 //when "+New Ch
 });
 //when any input is made to the create/edit character form textareas
 $('#rm_ch_create_block').on('input', function () { countTokensDebounced(); });
-//when any input is made to the advanced editing popup textareas
-$('#character_popup').on('input', function () { countTokensDebounced(); });
 //function:
 export async function RA_CountCharTokens() {
     counterNonce = Date.now();
@@ -1186,7 +1184,6 @@ export function initRossMods() {
                 isSwipingAllowed() &&
                 !isNanogallery2LightboxActive() &&
                 $('#send_textarea').val() === '' &&
-                $('#character_popup').css('display') === 'none' &&
                 $('#shadow_select_chat_popup').css('display') === 'none' &&
                 !isInputElementInFocus() &&
                 !(document.activeElement instanceof HTMLVideoElement)
@@ -1207,7 +1204,6 @@ export function initRossMods() {
                 isSwipingAllowed() &&
                 !isNanogallery2LightboxActive() &&
                 $('#send_textarea').val() === '' &&
-                $('#character_popup').css('display') === 'none' &&
                 $('#shadow_select_chat_popup').css('display') === 'none' &&
                 !isInputElementInFocus() &&
                 !(document.activeElement instanceof HTMLVideoElement)
@@ -1230,7 +1226,6 @@ export function initRossMods() {
                 hotkeyTargets.send_textarea.value === '' &&
                 chatbarInFocus === true &&
                 ($('.swipe_right:last').css('display') === 'flex' || $('.last_mes').attr('is_system') === 'true') &&
-                $('#character_popup').css('display') === 'none' &&
                 $('#shadow_select_chat_popup').css('display') === 'none'
             ) {
                 const isUserMesList = document.querySelectorAll('div[is_user="true"]');
@@ -1249,7 +1244,6 @@ export function initRossMods() {
                 chatbarInFocus === true &&
                 //$('.swipe_right:last').css('display') === 'flex' &&
                 $('.last_mes .mes_buttons').is(':visible') &&
-                $('#character_popup').css('display') === 'none' &&
                 $('#shadow_select_chat_popup').css('display') === 'none'
             ) {
                 const lastMes = document.querySelector('.last_mes');
@@ -1281,11 +1275,6 @@ export function initRossMods() {
 
             if ($('#select_chat_popup').is(':visible')) {
                 $('#select_chat_cross').trigger('click');
-                return;
-            }
-
-            if ($('#character_popup').is(':visible')) {
-                $('#character_cross').trigger('click');
                 return;
             }
 

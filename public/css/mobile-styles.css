@@ -209,8 +209,7 @@
         display: unset;
     }
 
-    #persona-management-block,
-    #character_popup .flex-container {
+    #persona-management-block {
         flex-direction: column;
     }
 
@@ -300,7 +299,6 @@
 
 
     #sheld,
-    #character_popup,
     .drawer-content {
         width: 100dvw !important;
         margin: 0 auto;
@@ -328,12 +326,10 @@
         display: block !important;
     }
 
-    #character_popup,
     #world_popup {
         overflow-y: auto;
     }
 
-    #character_popup,
     #send_form {
         border: 1px solid var(--SmartThemeBorderColor);
         backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
@@ -402,8 +398,7 @@
     body:has(#left-nav-panel.openDrawer) #sheld,
     body:has(#right-nav-panel.openDrawer) #sheld,
     body:has(#char-info-panel.openDrawer) #sheld,
-    body:has(.drawer-content.openDrawer) #sheld,
-    body:has(#character_popup.open) #sheld {
+    body:has(.drawer-content.openDrawer) #sheld {
         visibility: hidden;
     }
 
@@ -429,13 +424,6 @@
 
     #result_info {
         font-size: calc(var(--mainFontSize) - .1rem);
-    }
-
-    #character_popup {
-        width: 100%;
-        border-radius: 0 0 20px 20px;
-        margin-top: 0px;
-        height: calc(100% - var(--topBarBlockSize));
     }
 
     .drawer25pWidth {
@@ -724,8 +712,7 @@ body.forceMobileView .zoomed_avatar .dragClose {
         display: unset;
     }
 
-body.forceMobileView #persona-management-block,
-body.forceMobileView #character_popup .flex-container {
+body.forceMobileView #persona-management-block {
         flex-direction: column;
     }
 
@@ -814,7 +801,6 @@ body.forceMobileView #bg_custom {
     }
 
 body.forceMobileView #sheld,
-body.forceMobileView #character_popup,
 body.forceMobileView .drawer-content {
         width: 100dvw !important;
         margin: 0 auto;
@@ -842,12 +828,10 @@ body.forceMobileView .WIEntryHeaderTitleMobile {
         display: block !important;
     }
 
-body.forceMobileView #character_popup,
 body.forceMobileView #world_popup {
         overflow-y: auto;
     }
 
-body.forceMobileView #character_popup,
 body.forceMobileView #send_form {
         border: 1px solid var(--SmartThemeBorderColor);
         backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
@@ -917,8 +901,7 @@ body.forceMobileView #char-info-panel:not(.openDrawer) {
 body.forceMobileView:has(#left-nav-panel.openDrawer) #sheld,
 body.forceMobileView:has(#right-nav-panel.openDrawer) #sheld,
 body.forceMobileView:has(#char-info-panel.openDrawer) #sheld,
-body.forceMobileView:has(.drawer-content.openDrawer) #sheld,
-body.forceMobileView:has(#character_popup.open) #sheld {
+body.forceMobileView:has(.drawer-content.openDrawer) #sheld {
         visibility: hidden;
     }
 
@@ -944,13 +927,6 @@ body.forceMobileView #char-info-panel h4 {
 
 body.forceMobileView #result_info {
         font-size: calc(var(--mainFontSize) - .1rem);
-    }
-
-body.forceMobileView #character_popup {
-        width: 100%;
-        border-radius: 0 0 20px 20px;
-        margin-top: 0px;
-        height: calc(100% - var(--topBarBlockSize));
     }
 
 body.forceMobileView .drawer25pWidth {
@@ -1130,7 +1106,6 @@ body.forceMobileView select[multiple] {
 
     }
 
-    #character_popup,
     #world_popup,
     #left-nav-panel,
     #right-nav-panel,
@@ -1155,7 +1130,6 @@ body.forceMobileView select[multiple] {
 
     }
 
-    #character_popup,
     #world_popup,
     .drawer-content {
         margin-top: 36px;

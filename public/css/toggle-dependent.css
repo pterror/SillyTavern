@@ -230,8 +230,7 @@ body:has(#PersonaManagement.openDrawer) #sheld,
 body:has(#rm_extensions_block.openDrawer) #sheld,
 body:has(#Backgrounds.openDrawer) #sheld,
 body:has(#user-settings-block.openDrawer) #sheld,
-body:has(#AdvancedFormatting.openDrawer) #sheld,
-body:has(#character_popup.open) #sheld {
+body:has(#AdvancedFormatting.openDrawer) #sheld {
     visibility: hidden;
 }
 

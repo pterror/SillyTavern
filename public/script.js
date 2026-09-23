@@ -676,8 +676,6 @@ export const depth_prompt_depth_default = 4;
 export const depth_prompt_role_default = 'system';
 export const per_page_default = 50;
 
-var is_advanced_char_open = false;
-
 /**
  * The type of the right menu
  * @typedef {'characters' | 'character_edit' | 'create' | 'group_edit' | 'group_create' | '' } MenuType
@@ -8040,7 +8038,6 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     $('#add_avatar_button').val('');
 
-    $('#character_popup-button-h3').text(character.name);
     $('#character_name_pole').val(character.name);
     $('#description_textarea').val(character.description);
     $('#character_world').val(character.data?.extensions?.world || '');
@@ -8134,7 +8131,6 @@ function select_rm_create({ switchMenu = true } = {}) {
     //create text poles
     $('#rm_button_back').css('display', '');
     $('#character_import_button').css('display', '');
-    $('#character_popup-button-h3').text('Create character');
     $('#character_name_pole').val(create_save.name);
     $('#description_textarea').val(create_save.description);
     $('#character_world').val(create_save.world);
@@ -9606,7 +9602,6 @@ export async function createOrEditCharacter(e) {
 
             const avatarId = await fetchResult.text();
 
-            $('#character_cross').trigger('click'); //closes the advanced character editing popup
             const fields = [
                 { id: '#character_name_pole', callback: value => create_save.name = value },
                 { id: '#description_textarea', callback: value => create_save.description = value },
@@ -9645,8 +9640,6 @@ export async function createOrEditCharacter(e) {
                 saveSettingsDebounced('world_info_settings');
             }
             create_save.extra_books = [];
-
-            $('#character_popup-button-h3').text('Create character');
 
             create_save.avatar = null;
 
@@ -11010,7 +11003,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
 
 /**
  * Function to delete a character from UI after character deletion API success.
- * It manages necessary UI changes such as closing advanced editing popup, unsetting
+ * It manages necessary UI changes such as unsetting
  * character ID, resetting characters array and chat metadata, deselecting character's tab
  * panel, removing character name from navigation tabs, clearing chat, fetching updated list of characters.
  * It also ensures to save the settings after all the operations.
@@ -11019,7 +11012,6 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
 async function removeCharacterFromUI(removedCharacters = []) {
     preserveNeutralChat();
     await clearChat();
-    $('#character_cross').trigger('click');
     resetChatState();
     // A real close, not just switching the visible menu away - the panel's character no longer exists.
     closeRightMenu('rm_ch_create_block');
@@ -11516,51 +11508,6 @@ jQuery(async function () {
         if (result === POPUP_RESULT.AFFIRMATIVE) {
             await handleDeleteChat(deleteFileName, selected_group, false, row);
         }
-    });
-
-    function closeCharacterPopup() {
-        is_advanced_char_open = false;
-        $('#character_popup').css('display', 'none').removeClass('open');
-    }
-
-    $('#advanced_div').on('click', function () {
-        if (!is_advanced_char_open) {
-            is_advanced_char_open = true;
-            $('#character_popup').css({ 'display': 'flex', 'opacity': 0.0 }).addClass('open');
-            $('#character_popup').transition({
-                opacity: 1.0,
-                duration: animation_duration,
-                easing: animation_easing,
-            });
-        } else {
-            closeCharacterPopup();
-        }
-    });
-
-    $('#creator_notes_edit_button').on('click', function (e) {
-        e.stopPropagation();
-        if (!is_advanced_char_open) {
-            $('#advanced_div').trigger('click');
-        }
-        setTimeout(() => {
-            const textarea = document.getElementById('creator_notes_textarea');
-            textarea?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            textarea?.focus();
-        }, animation_duration);
-    });
-
-    $('#character_cross').on('click', function () {
-        is_advanced_char_open = false;
-        $('#character_popup').transition({
-            opacity: 0,
-            duration: animation_duration,
-            easing: animation_easing,
-        });
-        setTimeout(closeCharacterPopup, animation_duration);
-    });
-
-    $('#character_popup_ok').on('click', function () {
-        closeCharacterPopup();
     });
 
     $('#dialogue_popup_ok').on('click', async function (_e) {
@@ -12502,7 +12449,6 @@ jQuery(async function () {
         }
 
         const forbiddenTargets = [
-            '#character_cross',
             '#avatar-and-name-block',
             '#shadow_popup',
             '.popup',

@@ -6188,7 +6188,6 @@
                                                 <!-- <div id="renameCharButton" class="menu_button fa-solid fa-user-pen" title="Rename Character"></div> -->
                                                 <div id="favorite_button" class="menu_button fa-solid fa-star" title="Add to Favorites" data-i18n="[title]Add to Favorites"></div>
                                                 <input type="hidden" id="fav_checkbox" name="fav" />
-                                                <div id="advanced_div" class="menu_button fa-solid fa-book " title="Advanced Definitions" data-i18n="[title]Advanced Definition"></div>
                                                 <div id="world_button" class="menu_button fa-solid fa-globe" title="Character Lore&#10;&#10;Click to load&#10;Shift/Alt-click or long-press to open 'Link to World Info' popup" data-i18n="[title]world_button_title"></div>
                                                 <div class="chat_lorebook_button menu_button fa-solid fa-passport" title="Chat Lore&#10;&#10;Click to load&#10;Shift/Alt-click or long-press to open 'Link to Chat Lorebook' popup" data-i18n="[title]chat_lorebook_button_title"></div>
                                                 <div id="char_connections_button" class="menu_button fa-solid fa-face-smile" title="Connected Personas" data-i18n="[title]Connected Personas"></div>
@@ -6279,11 +6278,22 @@
                                     <input id="character_version_textarea" name="character_version" type="text" data-i18n="[placeholder](If you want to track character versions)" placeholder="(If you want to track character versions)" form="form_create" class="text_pole" autocomplete="off" />
                                 </div>
                             </div>
+                            <div id="talkativeness_div">
+                                <h4><span data-i18n="Talkativeness">Talkativeness</span></h4>
+                                <h5 data-i18n="How often the character speaks in group chats!"><!-- This data-i18n attribute on the left is kept for backward compatibility, use the ones below when translating -->
+                                    <span data-i18n="How often the character speaks in">How often the character speaks in</span>&nbsp;<span class="warning" data-i18n="group chats!">group chats!</span>
+                                </h5>
+                                <input id="talkativeness_slider" name="talkativeness" type="range" min="0" max="1" step="0.05" value="0.5" form="form_create">
+                                <div class="slider_hint">
+                                    <span data-i18n="Shy">Shy</span>
+                                    <span data-i18n="Normal">Normal</span>
+                                    <span data-i18n="Chatty">Chatty</span>
+                                </div>
+                            </div>
                             <div id="spoiler_free_desc" class="inline-drawer flex-container flexFlowColumn flexNoGap">
                                 <div class="inline-drawer-toggle inline-drawer-header padding0 gap5px standoutHeader">
                                     <div id="creators_notes_div" class="title_restorable flexGap5 wide100p ">
                                         <span class="flex1" data-i18n="Creator's Notes">Creator's Notes</span>
-                                        <div id="creator_notes_edit_button" class="margin0 menu_button fa-solid fa-pencil fa-fw" title="Edit Creator's Notes" data-i18n="[title]Edit Creator's Notes"></div>
                                         <div id="creators_note_styles_button" class="margin0 menu_button fa-solid fa-palette fa-fw" title="Allow / Forbid the use of global styles for this character." data-i18n="[title]Allow / Forbid the use of global styles for this character."></div>
                                     </div>
                                     <div class="flex-container widthFitContent">
@@ -6498,6 +6508,20 @@
                                         <textarea id="greeting_field" class="mdHotkeys" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
                                         <pre class="macro_preview_content" data-for="greeting_field" style="display: none;"></pre>
                                     </div>
+                                </div>
+                            </div>
+                            <div id="tagsToEmbedWrapper" class="inline-drawer">
+                                <div class="inline-drawer-toggle inline-drawer-header">
+                                    <h4>
+                                        <span data-i18n="Tags to Embed">Tags to Embed</span>
+                                    </h4>
+                                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                                </div>
+                                <div class="inline-drawer-content" style="display: none;">
+                                    <h4 class="flex-container alignItemsBaseline">
+                                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="tags_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                    </h4>
+                                    <textarea id="tags_textarea" name="tags" data-i18n="[placeholder](Write a comma-separated list of tags)" placeholder="(Write a comma-separated list of tags)" class="text_pole" autocomplete="off" rows="4"></textarea>
                                 </div>
                             </div>
                             <!-- these divs are invisible and used for server communication purposes -->
@@ -6753,49 +6777,6 @@
                 </div>
             </div>
         </div>
-        <div id="character_popup" class="flex-container flexFlowColumn flexNoGap">
-            <div id="character_popup_text">
-                <h3 id="character_popup-button-h3" class="margin0"></h3> <span data-i18n="Advanced Definitions">- Advanced
-                    Definitions</span>
-            </div>
-            <div id="character_cross" class="fa-solid fa-circle-xmark"></div>
-            <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header">
-                    <h4 data-i18n="Creator's Metadata (Not sent with the AI prompt)"><!-- This data-i18n attribute on the left is kept for backward compatibility, use the ones below when translating -->
-                        <span data-i18n="Creator's Metadata">Creator's Metadata</span>
-                        <small data-i18n="(Not sent with the AI Prompt)">(Not sent with the AI Prompt)</small>
-                    </h4>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                </div>
-                <div class="inline-drawer-content">
-                    <small data-i18n="Everything here is optional">Everything here is optional</small>
-                    <div class="flex-container flexnowrap">
-                        <div class="flex1">
-                            <h4 class="flex-container alignItemsBaseline">
-                                <span data-i18n="Tags to Embed">Tags to Embed</span>
-                                <i class="editor_maximize fa-solid fa-maximize" data-for="tags_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                            </h4>
-                            <textarea id="tags_textarea" name="tags" data-i18n="[placeholder](Write a comma-separated list of tags)" placeholder="(Write a comma-separated list of tags)" form="form_create" class="text_pole" autocomplete="off" rows="4"></textarea>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <hr>
-            <div id="talkativeness_div">
-                <h4><span data-i18n="Talkativeness">Talkativeness</span></h4>
-                <h5 data-i18n="How often the character speaks in group chats!"><!-- This data-i18n attribute on the left is kept for backward compatibility, use the ones below when translating -->
-                    <span data-i18n="How often the character speaks in">How often the character speaks in</span>&nbsp;<span class="warning" data-i18n="group chats!">group chats!</span>
-                </h5>
-                <input id="talkativeness_slider" name="talkativeness" type="range" min="0" max="1" step="0.05" value="0.5" form="form_create">
-                <div class="slider_hint">
-                    <span data-i18n="Shy">Shy</span>
-                    <span data-i18n="Normal">Normal</span>
-                    <span data-i18n="Chatty">Chatty</span>
-                </div>
-            </div>
-            <div id="character_popup_ok" class="menu_button" data-i18n="Save">Save</div>
-        </div>
-
         <div id="shadow_select_chat_popup">
             <div id="select_chat_popup">
                 <div name="selectChatPopupHeader" class="flex-container alignitemscenter justifySpaceBetween flexGap10">
