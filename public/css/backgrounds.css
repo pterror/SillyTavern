@@ -363,10 +363,6 @@
     background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 33%, var(--SmartThemeBlurTintColor) 66%);
 }
 
-#bg_tabs.ui-widget-content {
-    border: none !important;
-}
-
 #bg_tabs .bg_tabs_list::before,
 #bg_tabs .bg_tabs_list::after {
     display: none;
