@@ -6296,22 +6296,6 @@
                                     <span data-i18n="Chatty">Chatty</span>
                                 </div>
                             </div>
-                            <div id="spoiler_free_desc" class="inline-drawer flex-container flexFlowColumn flexNoGap">
-                                <div class="inline-drawer-toggle inline-drawer-header padding0 gap5px standoutHeader">
-                                    <div id="creators_notes_div" class="title_restorable flexGap5 wide100p ">
-                                        <span class="flex1" data-i18n="Creator's Notes">Creator's Notes</span>
-                                    </div>
-                                    <div class="flex-container widthFitContent">
-                                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down interactable"></div>
-                                    </div>
-                                </div>
-                                <div class="inline-drawer-content">
-                                    <div id="creator_notes_spoiler"></div>
-                                    <div id="creator_notes_empty" data-i18n="No Creator's Notes provided.">
-                                        No Creator's Notes provided.
-                                    </div>
-                                </div>
-                            </div>
                             <small id="creators_note_desc_hidden" data-i18n="Character details are hidden.">Character details are hidden.</small>
                             <div id="charInfoTabs" class="wide100p">
                                 <ul id="charInfoTabsList">
@@ -6327,9 +6311,11 @@
                                     <div id="creator_notes_div">
                                         <h4 class="flex-container alignItemsBaseline">
                                             <span data-i18n="Creator's Notes">Creator's Notes</span>
+                                            <i class="creator_notes_preview_toggle_button fa-solid fa-pencil right_menu_button" data-for="creator_notes_textarea" title="Edit raw text" data-i18n="[title]Edit raw text"></i>
                                             <i class="editor_maximize fa-solid fa-maximize" data-for="creator_notes_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                         </h4>
-                                        <textarea id="creator_notes_textarea" name="creator_notes" data-i18n="[placeholder](Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" placeholder="(Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" form="form_create" class="text_pole" autocomplete="off" rows="4"></textarea>
+                                        <textarea id="creator_notes_textarea" name="creator_notes" data-i18n="[placeholder](Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" placeholder="(Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" form="form_create" class="text_pole" autocomplete="off" rows="4" style="display: none;"></textarea>
+                                        <div id="creator_notes_preview" class="creator_notes_preview_content"></div>
                                     </div>
                                 </div>
                                 <div id="charInfoTab_mainPrompt" class="char_info_tab_panel">

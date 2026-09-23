@@ -652,7 +652,7 @@ async function migrateAllowGlobalStylesToDb() {
 export function formatCreatorNotes(text, avatarId) {
     const preference = new StylesPreference(avatarId);
     const sanitizeStyles = !preference.get();
-    const decodeStyleParam = { prefix: sanitizeStyles ? '#creator_notes_spoiler ' : '' };
+    const decodeStyleParam = { prefix: sanitizeStyles ? '#creator_notes_preview ' : '' };
     /** @type {DOMPurify.Config} */
     const config = {
         RETURN_DOM: false,
