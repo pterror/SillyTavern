@@ -114,11 +114,11 @@ router.post('/install', async (request, response) => {
             fs.mkdirSync(path.join(request.user.directories.extensions));
         }
 
-        if (!fs.existsSync(PUBLIC_DIRECTORIES.globalExtensions)) {
-            fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
+        if (!fs.existsSync(globalThis.GLOBAL_EXTENSIONS_PATH)) {
+            fs.mkdirSync(globalThis.GLOBAL_EXTENSIONS_PATH);
         }
 
-        const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
+        const basePath = global ? globalThis.GLOBAL_EXTENSIONS_PATH : request.user.directories.extensions;
         const extensionNameSanitized = sanitize(path.basename(parsedUrl.pathname, '.git'));
         if (!extensionNameSanitized) {
             return response.status(400).send('Could not determine the extension name from the URL. Please provide a valid git repository URL.');
@@ -183,7 +183,7 @@ router.post('/update', async (request, response) => {
             return response.status(403).send('Forbidden: No permission to update global extensions.');
         }
 
-        const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
+        const basePath = global ? globalThis.GLOBAL_EXTENSIONS_PATH : request.user.directories.extensions;
         const extensionPath = path.join(basePath, extensionNameSanitized);
 
         if (!fs.existsSync(extensionPath)) {
@@ -231,7 +231,7 @@ router.post('/branches', async (request, response) => {
             return response.status(403).send('Forbidden: No permission to list branches of global extensions.');
         }
 
-        const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
+        const basePath = global ? globalThis.GLOBAL_EXTENSIONS_PATH : request.user.directories.extensions;
         const extensionPath = path.join(basePath, extensionNameSanitized);
 
         if (!fs.existsSync(extensionPath)) {
@@ -280,7 +280,7 @@ router.post('/switch', async (request, response) => {
             return response.status(403).send('Forbidden: No permission to switch branches of global extensions.');
         }
 
-        const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
+        const basePath = global ? globalThis.GLOBAL_EXTENSIONS_PATH : request.user.directories.extensions;
         const extensionPath = path.join(basePath, extensionNameSanitized);
 
         if (!fs.existsSync(extensionPath)) {
@@ -343,8 +343,8 @@ router.post('/move', async (request, response) => {
             return response.status(403).send('Forbidden: No permission to move extensions.');
         }
 
-        const sourceDirectory = source === 'global' ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
-        const destinationDirectory = destination === 'global' ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
+        const sourceDirectory = source === 'global' ? globalThis.GLOBAL_EXTENSIONS_PATH : request.user.directories.extensions;
+        const destinationDirectory = destination === 'global' ? globalThis.GLOBAL_EXTENSIONS_PATH : request.user.directories.extensions;
         const sourcePath = path.join(sourceDirectory, extensionNameSanitized);
         const destinationPath = path.join(destinationDirectory, extensionNameSanitized);
 
@@ -396,7 +396,7 @@ router.post('/version', async (request, response) => {
             return response.status(400).send('Bad Request: A valid extensionName is required in the request body.');
         }
 
-        const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
+        const basePath = global ? globalThis.GLOBAL_EXTENSIONS_PATH : request.user.directories.extensions;
         const extensionPath = path.join(basePath, extensionNameSanitized);
 
         if (!fs.existsSync(extensionPath)) {
@@ -455,7 +455,7 @@ router.post('/delete', async (request, response) => {
             return response.status(403).send('Forbidden: No permission to delete global extensions.');
         }
 
-        const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
+        const basePath = global ? globalThis.GLOBAL_EXTENSIONS_PATH : request.user.directories.extensions;
         const extensionPath = path.join(basePath, extensionNameSanitized);
 
         if (!fs.existsSync(extensionPath)) {
@@ -481,8 +481,8 @@ router.get('/discover', function (request, response) {
         fs.mkdirSync(path.join(request.user.directories.extensions));
     }
 
-    if (!fs.existsSync(PUBLIC_DIRECTORIES.globalExtensions)) {
-        fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
+    if (!fs.existsSync(globalThis.GLOBAL_EXTENSIONS_PATH)) {
+        fs.mkdirSync(globalThis.GLOBAL_EXTENSIONS_PATH);
     }
 
     // Skips folders without manifest.json (e.g. leftovers from a manual delete) so the client doesn't
@@ -513,9 +513,9 @@ router.get('/discover', function (request, response) {
     // Get all folders in global extensions folder
     // In case of a conflict, the extension will be loaded from the user folder
     const globalExtensions = fs
-        .readdirSync(PUBLIC_DIRECTORIES.globalExtensions)
-        .filter(f => fs.statSync(path.join(PUBLIC_DIRECTORIES.globalExtensions, f)).isDirectory())
-        .filter(f => hasManifest(PUBLIC_DIRECTORIES.globalExtensions, f))
+        .readdirSync(globalThis.GLOBAL_EXTENSIONS_PATH)
+        .filter(f => fs.statSync(path.join(globalThis.GLOBAL_EXTENSIONS_PATH, f)).isDirectory())
+        .filter(f => hasManifest(globalThis.GLOBAL_EXTENSIONS_PATH, f))
         .map(f => ({ type: 'global', name: `third-party/${f}` }))
         .filter(f => !userExtensions.some(e => e.name === f.name));
 

@@ -22,6 +22,7 @@ describe('extensions discover', () => {
 
     beforeAll(async () => {
         userExtensionsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-extensions-'));
+        globalThis.GLOBAL_EXTENSIONS_PATH = fs.mkdtempSync(path.join(os.tmpdir(), 'st-global-extensions-'));
 
         // A valid extension with a manifest
         fs.mkdirSync(path.join(userExtensionsDir, 'Valid-Extension'));
@@ -50,6 +51,7 @@ describe('extensions discover', () => {
     afterAll(async () => {
         await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
         fs.rmSync(userExtensionsDir, { recursive: true, force: true });
+        fs.rmSync(globalThis.GLOBAL_EXTENSIONS_PATH, { recursive: true, force: true });
     });
 
     test('lists folders with a manifest and skips folders without one', async () => {

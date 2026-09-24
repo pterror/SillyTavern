@@ -113,7 +113,7 @@ const STORAGE_KEYS = {
  * @returns {Promise<import('./users.js').UserDirectoryList[]>} - The list of user directories
  */
 export async function ensurePublicDirectoriesExist() {
-    for (const dir of Object.values(PUBLIC_DIRECTORIES)) {
+    for (const dir of [...Object.values(PUBLIC_DIRECTORIES), globalThis.GLOBAL_EXTENSIONS_PATH]) {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
@@ -1103,13 +1103,13 @@ function createExtensionsRouteHandler(directoryFn) {
                 return res.sendFile(filePath, { root: directory });
             }
 
-            const globalPath = path.join(PUBLIC_DIRECTORIES.globalExtensions, filePath);
-            if (!isPathUnderParent(PUBLIC_DIRECTORIES.globalExtensions, path.resolve(globalPath))) {
+            const globalPath = path.join(globalThis.GLOBAL_EXTENSIONS_PATH, filePath);
+            if (!isPathUnderParent(globalThis.GLOBAL_EXTENSIONS_PATH, path.resolve(globalPath))) {
                 return res.sendStatus(403);
             }
             const existsGlobal = fs.existsSync(globalPath);
             if (existsGlobal) {
-                return res.sendFile(filePath, { root: PUBLIC_DIRECTORIES.globalExtensions });
+                return res.sendFile(filePath, { root: globalThis.GLOBAL_EXTENSIONS_PATH });
             }
 
             return res.sendStatus(404);
