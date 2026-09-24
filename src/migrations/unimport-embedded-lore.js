@@ -164,14 +164,11 @@ async function unimportOne(directories, candidate, log) {
         const updated = JSON.stringify(card);
         if (parked !== null) {
             // Card lives in the db - don't rewrite the PNG (would retire the parked copy via the
-            // default upsert). Keep the row's mtime as the file's current one, or the watcher reads
-            // this as external drift and rolls the card back to the stale chunk.
+            // default upsert).
             const stat = await fsPromises.stat(avatarPath);
             await upsertCharacterFromWrite(directories, avatar, updated, stat.mtimeMs, null, null);
         } else {
             await writeCardToFile(avatarPath, avatarPath, updated);
-            // Stat after the write - stat'ing before records the pre-write mtime, which permanently
-            // disagrees with disk and flags this row as externally modified on every later pass.
             const stat = await fsPromises.stat(avatarPath);
             await upsertCharacterFromWrite(directories, avatar, updated, stat.mtimeMs);
         }
