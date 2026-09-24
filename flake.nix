@@ -20,6 +20,9 @@
 	      # ship prebuilt binaries and never needed this, `inotify` has none and requires a from-source build.
 	      python3
             ];
+            # Playwright's downloaded browsers can't run on NixOS. tests/package.json pins @playwright/test
+            # to this nixpkgs' playwright-driver version so the browser revisions match.
+            PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
           });
     };
 }
