@@ -85,15 +85,10 @@ const BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS = 5000;
 // Backfilling identity hashes requires reading every poisoned row's PNG off disk; this lets an install opt out.
 export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean');
 
-// Coalesces duplicate raw fs events (e.g. a rename-over-target firing both 'rename' and 'change') per filename.
-const WATCH_DEBOUNCE_MS = 300;
-
 /**
  * @typedef {object} MetadataDbEntry
  * @property {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @property {import('./users.js').UserDirectoryList} directories
- * @property {import('node:fs').FSWatcher | null} watcher
- * @property {Map<string, NodeJS.Timeout>} watchTimers
  * @property {{ pending: Map<string, PendingRow> } | null} batch Non-null while batch-import mode is active
  * @property {Promise<void> | null} bootstrapPromise
  * @property {{ tagNameToId: Map<string, string>, tagIdToDefinition: Map<string, object> } | null} [tagCache]
@@ -507,7 +502,7 @@ const UPSERT_SQL = `
         content_identity_hash = COALESCE(excluded.content_identity_hash, characters.content_identity_hash),
         avatar_identity_hash = COALESCE(excluded.avatar_identity_hash, characters.avatar_identity_hash),
         -- import_poisoned is NOT NULL so there's no NULL "no signal" value: a genuine write (0) always clears
-        -- poison; reconcile/watch/bootstrap bind 1 as their no-signal value and leave the existing state alone.
+        -- poison; reconcile/bootstrap bind 1 as their no-signal value and leave the existing state alone.
         import_poisoned = CASE WHEN excluded.import_poisoned = 0 THEN 0 ELSE characters.import_poisoned END,
         -- Plain overwrite: writeRowSync() already pre-resolves the correct value before this SQL runs.
         active_chat = excluded.active_chat,
@@ -982,13 +977,13 @@ async function getEntry(directories) {
     // composing with LIMIT/OFFSET pagination instead of a JS-side sort over every row.
     db.defineFunction('RANDHASH', (id, seed) => getStringHash(String(id ?? ''), Number(seed ?? 0)));
     /** @type {MetadataDbEntry} */
-    const entry = { db, directories, watcher: null, watchTimers: new Map(), batch: null, bootstrapPromise: null };
+    const entry = { db, directories, batch: null, bootstrapPromise: null };
     entries.set(key, entry);
     return entry;
 }
 
 // For one-off tooling that needs the schema/migrations applied (e.g. a pending NOT NULL backfill) without
-// starting the server's own watcher/bootstrap background work - getEntry() itself starts neither.
+// starting the server's own bootstrap background work - getEntry() itself starts neither.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */
@@ -1615,10 +1610,9 @@ function flushBatch(entry) {
     });
 }
 
-// Suspends the directory watcher (a burst import can overflow inotify's queue) for the whole pass, and buffers
-// writes - but only up to BATCH_IMPORT_FLUSH_SIZE rows at a time; flushBatch() commits and clears the buffer
-// well before endBatchImport(), so a crash mid-pass loses at most one still-open buffer, not the whole pass.
-// Idempotent.
+// Buffers writes - but only up to BATCH_IMPORT_FLUSH_SIZE rows at a time; flushBatch() commits and clears the
+// buffer well before endBatchImport(), so a crash mid-pass loses at most one still-open buffer, not the whole
+// pass. Idempotent.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */
@@ -1627,7 +1621,6 @@ export async function beginBatchImport(directories) {
     if (!entry || entry.batch) return;
 
     entry.batch = { pending: new Map() };
-    stopWatcher(entry);
 }
 
 /**
@@ -1639,7 +1632,6 @@ export async function endBatchImport(directories) {
 
     flushBatch(entry);
     entry.batch = null;
-    startWatcher(entry);
 }
 
 // One-time backfill for a library predating this metadata store. Seeds date_added from ctimeMs, recorded in meta so it runs once.
@@ -1969,7 +1961,7 @@ export async function resyncTags(directories) {
     });
 }
 
-// Content-only changes to existing files are the watcher's job, not this function's.
+// Existing files are never re-read: card_json is authoritative, so only files with no row are parsed.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */
@@ -1991,15 +1983,7 @@ export async function reconcile(directories) {
     }
 
     const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
-    const onDisk = new Set(files);
     const existingIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id));
-
-    // Rows whose file no longer exists on disk.
-    for (const id of existingIds) {
-        if (!onDisk.has(id)) {
-            entry.db.transaction(() => deleteRowSync(entry.db, id));
-        }
-    }
 
     const newFiles = files.filter(f => !existingIds.has(f));
 
@@ -2069,77 +2053,6 @@ export async function reconcile(directories) {
     );
 }
 
-/**
- * @param {MetadataDbEntry} entry
- */
-function startWatcher(entry) {
-    if (entry.watcher || !fs.existsSync(entry.directories.characters)) return;
-
-    try {
-        entry.watcher = fs.watch(entry.directories.characters, (_eventType, filename) => {
-            if (filename === null || !filename.endsWith('.png')) return;
-
-            const existingTimer = entry.watchTimers.get(filename);
-            if (existingTimer) clearTimeout(existingTimer);
-            entry.watchTimers.set(filename, setTimeout(() => {
-                entry.watchTimers.delete(filename);
-                handleWatchEvent(entry, filename).catch(err => {
-                    console.error(`[character-metadata] Watcher-triggered update failed for ${filename} (the reconciler will catch it next pass):`, err.message);
-                });
-            }, WATCH_DEBOUNCE_MS));
-        });
-        entry.watcher.on('error', (err) => {
-            console.error('[character-metadata] Directory watcher error (the reconciler remains the source of truth):', err.message);
-        });
-    } catch (err) {
-        console.error('[character-metadata] Failed to start directory watcher (the reconciler remains the source of truth):', /** @type {any} */ (err).message);
-    }
-}
-
-/**
- * @param {MetadataDbEntry} entry
- */
-function stopWatcher(entry) {
-    if (entry.watcher) {
-        entry.watcher.close();
-        entry.watcher = null;
-    }
-    for (const timer of entry.watchTimers.values()) clearTimeout(timer);
-    entry.watchTimers.clear();
-}
-
-/**
- * @param {MetadataDbEntry} entry
- * @param {string} filename
- */
-async function handleWatchEvent(entry, filename) {
-    const filePath = path.join(entry.directories.characters, filename);
-    let stat;
-    try {
-        stat = await fsPromises.stat(filePath);
-    } catch (err) {
-        if (/** @type {any} */ (err).code === 'ENOENT') {
-            entry.db.transaction(() => deleteRowSync(entry.db, filename));
-            return;
-        }
-        throw err;
-    }
-
-    const existing = (/** @type {{ file_mtime: number } | undefined} */ (entry.db.get('SELECT file_mtime FROM characters WHERE id = @id', { id: filename })));
-    if (existing && Number(existing.file_mtime) === stat.mtimeMs) {
-        return; // Already up to date (e.g. a write-path hook already handled this exact change).
-    }
-
-    const rawBuffer = await fsPromises.readFile(filePath);
-    const imgData = readCharacterCardFromBuffer(rawBuffer);
-    const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
-    const character = getCharaCardV2(JSON.parse(imgData), entry.directories, false);
-    const { chatSize, dateLastChat } = calculateChatSize(path.join(entry.directories.chats, filename.replace(/\.png$/, '')));
-    const tagIds = getTagIdsFor(entry.directories, filename);
-    const row = buildRow(filename, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
-    applyOrBuffer(entry, row, tagIds);
-}
-
 // Bootstrap runs in the background so a large corpus doesn't delay the server listening.
 /**
  * @param {import('./users.js').UserDirectoryList[]} directoriesList
@@ -2149,8 +2062,6 @@ export async function initializeMetadataStores(directoriesList) {
         const entry = await getEntry(directories);
         if (!entry) continue;
         if (entry.bootstrapPromise) continue;
-
-        startWatcher(entry);
 
         const __chainStart = process.hrtime.bigint();
         /**
@@ -2183,7 +2094,6 @@ export async function initializeMetadataStores(directoriesList) {
 
 export function disposeMetadataStores() {
     for (const entry of entries.values()) {
-        stopWatcher(entry);
         try {
             entry.db.close();
         } catch {
@@ -3777,7 +3687,7 @@ export async function getCharactersWithLinkedWorld(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    return (/** @type {{ id: string, world: string }[]} */ (entry.db.all("SELECT id, world FROM characters WHERE world IS NOT NULL AND world != ''")));
+    return (/** @type {{ id: string, world: string }[]} */ (entry.db.all('SELECT id, world FROM characters WHERE world IS NOT NULL AND world != \'\'')));
 }
 
 // A boot-time migration reading this store must check this first - bootstrapIfNeeded() runs in the

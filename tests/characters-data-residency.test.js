@@ -3,8 +3,7 @@
  *
  * The property under test: a metadata-only edit - description, greetings, a rename, anything that is not
  * image pixels - must NOT rewrite the character's PNG. The new content is parked in the metadata db's
- * `card_json` column and becomes authoritative; the file keeps its old bytes AND its old mtime, which is what
- * stops the watcher and reconciler from reading the edit as external drift and rolling it back.
+ * `card_json` column and becomes authoritative; the file keeps its old bytes AND its old mtime.
  *
  * The hard requirement it must not break: anything handed to a user as a standalone file (export, duplicate)
  * still carries a CURRENT embedded chunk, because that is all other tools can read.
@@ -99,8 +98,7 @@ describe('metadata-only edits do not touch the PNG', () => {
 
         expect((await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' })).status).toBe(200);
 
-        // The file did not move at all - not its bytes, not its mtime. The mtime matters as much as the bytes:
-        // the watcher treats a changed mtime as external drift and would re-derive the row from the stale chunk.
+        // The file did not move at all - not its bytes, not its mtime.
         expect(fileStamp('Alice.png')).toEqual(before);
 
         // The PNG still holds the pre-edit text...

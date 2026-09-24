@@ -541,9 +541,8 @@ const SCAN_BATCH_SIZE = 2000;
 /**
  * One full pass over one configured directory: streams it in fixed-size batches, bulk-prefetching each batch's
  * persisted mtimes before dispatching through processFile(). Wrapped in beginBatchImport()/endBatchImport() so
- * the watcher-suspension window spans the whole pass; DB commits happen more often than that, every
- * BATCH_IMPORT_FLUSH_SIZE buffered rows (character-metadata-db.js), so a mid-pass restart only loses the
- * still-open buffer, not the whole pass.
+ * writes are buffered; DB commits happen every BATCH_IMPORT_FLUSH_SIZE buffered rows (character-metadata-db.js),
+ * so a mid-pass restart only loses the still-open buffer, not the whole pass.
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<void>}

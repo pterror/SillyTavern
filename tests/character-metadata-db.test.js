@@ -18,7 +18,7 @@ let directories;
 
 /**
  * Builds and writes a real (parseable) character card PNG to `charactersDir`, the same way write() (used by
- * characters.js's writeCharacterData()) would - so bootstrap/reconcile/watch, which read arbitrary PNGs straight
+ * characters.js's writeCharacterData()) would - so bootstrap/reconcile, which read arbitrary PNGs straight
  * off disk, can be exercised against a real file rather than a stub.
  * @param {string} avatar Filename, e.g. 'Alice.png'
  * @param {object} cardOverrides Shallow-merged onto a minimal valid Spec V2 card
@@ -102,7 +102,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-    // Closes every open db handle/watcher/interval this test's calls opened - each test uses a fresh tempDir
+    // Closes every open db handle this test's calls opened - each test uses a fresh tempDir
     // (a fresh cache key), so this never affects another test's state, it just keeps native SQLite handles from
     // accumulating across the whole suite.
     metadataDb.disposeMetadataStores();
@@ -303,15 +303,17 @@ describe('reconcile', () => {
         expect(row.date_added).not.toBe(Math.round(stat.ctimeMs));
     });
 
-    test('removes rows whose file was deleted from disk', async () => {
+    test('keeps the row and card_json when the PNG is missing', async () => {
         await writeCardFile('Alice.png');
         await metadataDb.bootstrapIfNeeded(directories);
-        expect(await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).toBeDefined();
+        const before = await metadataDb.getCharacterCardJson(directories, 'Alice.png');
+        expect(before).not.toBeNull();
 
         fs.unlinkSync(path.join(charactersDir, 'Alice.png'));
         await metadataDb.reconcile(directories);
 
-        expect(await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).toBeUndefined();
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).toBeDefined();
+        expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).toBe(before);
     });
 
     test('leaves an unchanged file\'s date_added untouched across repeated passes', async () => {
@@ -386,9 +388,6 @@ describe('reconcile', () => {
 
 describe('batch import mode', () => {
     test('buffers writes until endBatchImport flushes them', async () => {
-        // endBatchImport() forces a reconcile pass (see its own doc comment), which would otherwise treat a
-        // buffered-but-not-yet-real file as an orphaned row and delete it - matching real usage, where the
-        // write-path hook only ever fires after the PNG itself has already been written to disk.
         await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
 
         await metadataDb.beginBatchImport(directories);
@@ -1386,7 +1385,7 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         const dbPath = path.join(tempDir, 'character-metadata.sqlite');
         const rawDb = new Database(dbPath);
         rawDb.exec('CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL);');
-        rawDb.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key, value) VALUES ('groups_bootstrap_completed', '1');");
+        rawDb.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', \'1\');');
         rawDb.prepare('INSERT INTO groups (id, name) VALUES (@id, @name)').run({ id: 'OldGroup', name: 'Old Group' });
         rawDb.close();
 

@@ -16,7 +16,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, color, mapWithConcurrency } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, mapWithConcurrency } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer, reclaimReflinkPrefix } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
@@ -427,7 +427,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             // Can't compare - don't block the write on the guard itself.
         }
 
-        // Must not touch the PNG's mtime, or the watcher/reconciler treats it as external drift and rolls it back to the stale chunk.
+        // The DB is authoritative, so a metadata edit never rewrites the PNG.
         const isMetadataOnlyWrite = !Buffer.isBuffer(inputFile)
             && crop === undefined
             && path.resolve(inputFile) === path.resolve(outputImagePath)
@@ -2026,7 +2026,7 @@ router.post('/metadata/rescan', async function (request, response) {
 });
 
 /**
- * Wrap a scripted bulk import in `begin`/`end` to avoid one SQLite transaction and one directory-watcher event per file.
+ * Wrap a scripted bulk import in `begin`/`end` to avoid one SQLite transaction per file.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
