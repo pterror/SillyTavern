@@ -1603,20 +1603,26 @@ textarea {
     display: block;
     background-color: var(--black30a);
     outline: none;
-    border: 1px solid var(--SmartThemeBorderColor);
+    /* Vertical padding and border width, as custom properties so textarea.autoSetHeight's
+     * rows-derived min-height stays correct for whatever padding a class sets. */
+    --field-padding-block: 5px;
+    --field-border-width: 1px;
+    border: var(--field-border-width) solid var(--SmartThemeBorderColor);
     border-radius: 5px;
     color: var(--SmartThemeBodyColor);
     font-size: var(--mainFontSize);
     font-family: var(--mainFontFamily);
-    padding: 5px 10px;
+    padding: var(--field-padding-block) 10px;
     max-height: 90vh;
     max-height: 90dvh;
 }
 
+/* Grows with its content, without limit; `rows` sets the minimum (field-sizing: content
+ * ignores it on its own). Browsers without field-sizing or typed attr() get the JS fallback. */
 textarea.autoSetHeight {
-    max-height: 50vh;
-    max-height: 50dvh;
+    max-height: none;
     field-sizing: content;
+    min-height: calc(attr(rows type(<number>), 2) * 1lh + 2 * (var(--field-padding-block) + var(--field-border-width)));
 }
 
 .macro_preview_content .macro-substituted {
@@ -2701,20 +2707,12 @@ textarea::placeholder {
 @media screen and (max-width: 1000px) {
     #form_create textarea {
         flex-grow: 1;
-        min-height: 20dvh;
     }
 }
 
 @media screen and (min-width: 1001px) {
-    #description_textarea {
-        height: 29vh;
-        height: 29dvh;
-    }
-
     #greeting_field {
         resize: none;
-        height: 29vh;
-        height: 29dvh;
     }
 }
 
@@ -2727,10 +2725,12 @@ textarea::placeholder {
 .text_pole {
     background-color: var(--black30a);
     color: var(--SmartThemeBodyColor);
-    border: 1px solid var(--SmartThemeBorderColor);
+    --field-padding-block: 3px;
+    --field-border-width: 1px;
+    border: var(--field-border-width) solid var(--SmartThemeBorderColor);
     border-radius: 5px;
     font-family: var(--mainFontFamily);
-    padding: 3px 5px;
+    padding: var(--field-padding-block) 5px;
     width: 100%;
     margin: 5px 0;
     height: fit-content;
@@ -3770,7 +3770,7 @@ grammarly-extension {
 
 .alternate_greeting textarea {
     field-sizing: content;
-    max-height: 50dvh;
+    max-height: none;
 }
 
 .alternate_greeting summary::marker,
