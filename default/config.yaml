@@ -1,6 +1,8 @@
 # -- DATA CONFIGURATION --
 # Root directory for user data storage
 dataRoot: ./data
+# Directory for global (all-user) third-party extensions
+globalExtensionsPath: ./public/scripts/extensions/third-party
 # -- SERVER CONFIGURATION --
 # Listen for incoming connections
 listen: false

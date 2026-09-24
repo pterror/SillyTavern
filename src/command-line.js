@@ -11,6 +11,7 @@ import { initConfig, getDefaultYamlConfig } from './config-init.js';
  * @typedef {object} CommandLineArguments Parsed command line arguments
  * @property {string} configPath Path to the config file
  * @property {string} dataRoot Data root directory
+ * @property {string} globalExtensionsPath Global third-party extensions directory
  * @property {number} port Port number
  * @property {boolean} listen If SillyTavern is listening on all network interfaces
  * @property {string} listenAddressIPv6 IPv6 address to listen to
@@ -58,6 +59,7 @@ export class CommandLineParser {
         return Object.freeze({
             configPath: configPath,
             dataRoot: dataPath,
+            globalExtensionsPath: yamlDefaults.globalExtensionsPath,
             port: yamlDefaults.port,
             listen: yamlDefaults.listen,
             listenAddressIPv6: yamlDefaults.listenAddress.ipv6,
@@ -217,6 +219,11 @@ export class CommandLineParser {
                 default: null,
                 describe: 'Root directory for data storage (only for standalone mode)',
             })
+            .option('globalExtensionsPath', {
+                type: 'string',
+                default: null,
+                describe: 'Directory for global (all-user) third-party extensions',
+            })
             .option('basicAuthMode', {
                 type: 'boolean',
                 default: null,
@@ -303,6 +310,7 @@ export class CommandLineParser {
         const result = {
             configPath: configPath,
             dataRoot: dataRoot,
+            globalExtensionsPath: cliArguments.globalExtensionsPath ?? getConfigValue('globalExtensionsPath', defaultConfig.globalExtensionsPath),
             port: cliArguments.port ?? getConfigValue('port', defaultConfig.port, 'number'),
             listen: cliArguments.listen ?? getConfigValue('listen', defaultConfig.listen, 'boolean'),
             listenAddressIPv6: cliArguments.listenAddressIPv6 ?? getConfigValue('listenAddress.ipv6', defaultConfig.listenAddressIPv6),

@@ -67,6 +67,11 @@ declare global {
     var DATA_ROOT: string;
 
     /**
+     * The directory for global (all-user) third-party extensions.
+     */
+    var GLOBAL_EXTENSIONS_PATH: string;
+
+    /**
      * Parsed command line arguments.
      */
     var COMMAND_LINE_ARGS: CommandLineArguments;
