@@ -1456,21 +1456,8 @@ export async function getCharacterCardJson(directories, avatar) {
     return row?.card_json ?? null;
 }
 
-/** Every row's card_json in one query, for a caller about to processCharacter() the whole library - one
- * round trip instead of one getCharacterCardJson() call per character.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<Map<string, string>>}
- */
-export async function getStaleCardJsonMap(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return new Map();
-    const rows = (/** @type {{ id: string, card_json: string }[]} */ (entry.db.all('SELECT id, card_json FROM characters')));
-    return new Map(rows.map(row => [row.id, row.card_json]));
-}
-
-/** Same shape as getStaleCardJsonMap, but scoped to the given ids via WHERE id IN (...) instead of scanning
- * every row - for a caller (e.g. /api/characters/batch) that only needs card_json for a known, bounded subset,
- * where pulling the whole table would mean re-reading the entire corpus's card_json on every call.
+/** card_json for the given ids via WHERE id IN (...), never scanning every row - callers pass a bounded
+ * subset (one request's ids, one batch of a stream), so only that subset's card_json is ever in memory.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} ids
  * @returns {Promise<Map<string, string>>}

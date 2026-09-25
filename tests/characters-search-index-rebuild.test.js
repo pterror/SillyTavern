@@ -236,4 +236,35 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
             expect(result.ids).toEqual([`${name}.png`]);
         }
     }, 120000);
+
+    test('a catch-up indexes a changed character from its db card_json, not its PNG chunk', async () => {
+        // The catch-up reads card_json only for the changed ids (per batch), not a map of every row; the db's
+        // copy is authoritative, so text that only exists there must be what gets indexed.
+        const engine = await searchEngine.resolveSearchEngine();
+        if (engine.tier !== 'tantivy') {
+            return;
+        }
+
+        await writeCard('Rosalind');
+        await metadataDb.bootstrapIfNeeded(directories);
+
+        const parked = {
+            name: 'Rosalind',
+            spec: 'chara_card_v2',
+            spec_version: '2.0',
+            data: {
+                name: 'Rosalind',
+                description: 'quixotebramble', personality: '', scenario: '', first_mes: '', mes_example: '',
+                tags: [], creator: '', character_version: '', creator_notes: '',
+                extensions: { fav: false, world: '' },
+            },
+        };
+        await metadataDb.upsertCharacterFromWrite(directories, 'Rosalind.png', JSON.stringify(parked));
+
+        const buildResult = await searchIndex.rebuildCharacterSearchIndex('parked-card-handle', directories);
+        expect(buildResult).toEqual({ ok: true, backend: 'tantivy' });
+
+        const result = await searchIndex.searchCharacterIds('parked-card-handle', directories, 'quixotebramble');
+        expect(result.ids).toEqual(['Rosalind.png']);
+    }, 20000);
 });
