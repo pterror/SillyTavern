@@ -101,4 +101,12 @@ describe('openWasmDatabase()', () => {
         expect(rows).toEqual([]);
         db.close();
     });
+
+    test('get() returns undefined when no row matches', () => {
+        const db = openWasmDatabase(WasmDatabase, tmpDbPath());
+        db.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)');
+
+        expect(db.get('SELECT value FROM meta WHERE key = @key', { key: 'absent' })).toBeUndefined();
+        db.close();
+    });
 });

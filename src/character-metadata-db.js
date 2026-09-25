@@ -2073,12 +2073,19 @@ export async function reconcile(directories) {
 // Bootstrap runs in the background so a large corpus doesn't delay the server listening.
 /**
  * @param {import('./users.js').UserDirectoryList[]} directoriesList
+ * @returns {Promise<Promise<void>[]>} Each store's bootstrap chain, rejecting if it failed. Failures are also
+ *   logged, so callers may ignore these.
  */
 export async function initializeMetadataStores(directoriesList) {
+    /** @type {Promise<void>[]} */
+    const chains = [];
     for (const directories of directoriesList) {
         const entry = await getEntry(directories);
         if (!entry) continue;
-        if (entry.bootstrapPromise) continue;
+        if (entry.bootstrapPromise) {
+            chains.push(entry.bootstrapPromise);
+            continue;
+        }
 
         const __chainStart = process.hrtime.bigint();
         /**
@@ -2104,9 +2111,11 @@ export async function initializeMetadataStores(directoriesList) {
             .then(() => __stage('reconcile', () => reconcile(directories)))
             // After reconcile() so this pass sees any rows reconcile() itself just inserted.
             .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
-            .then(() => __stage('backfillActiveChatFromCards', () => backfillActiveChatFromCards(directories)))
-            .catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
+            .then(() => __stage('backfillActiveChatFromCards', () => backfillActiveChatFromCards(directories)));
+        entry.bootstrapPromise.catch(err => console.error(`[character-metadata] Bootstrap failed for ${directories.root}:`, err));
+        chains.push(entry.bootstrapPromise);
     }
+    return chains;
 }
 
 export function disposeMetadataStores() {

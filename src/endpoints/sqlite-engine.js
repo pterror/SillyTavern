@@ -288,7 +288,8 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
         query: (sql, param) => prepare(sql).all(param),
         // Reads are not retried here either - same reasoning as the native adapter above.
         run: (sql, params) => { assertNoOpenIterator(); return runWithBusyRetry(() => prepare(sql).run(prefixNamedParamsForWasm(params) ?? {}), 'run'); },
-        get: (sql, params) => prepare(sql).get(prefixNamedParamsForWasm(params) ?? {}),
+        // node-sqlite3-wasm returns null for no row; the handle contract is undefined.
+        get: (sql, params) => prepare(sql).get(prefixNamedParamsForWasm(params) ?? {}) ?? undefined,
         all: (sql, params) => prepare(sql).all(prefixNamedParamsForWasm(params) ?? {}),
         iterate,
         // No native transaction() API on this engine - BEGIN IMMEDIATE/COMMIT/ROLLBACK is equivalent.
