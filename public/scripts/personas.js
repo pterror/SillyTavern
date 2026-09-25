@@ -1,8 +1,6 @@
 import {
     buildAvatarList,
     getCurrentCharacter,
-    getSelectionState,
-    insertFirstMessageIntoEmptyChat,
     default_user_avatar,
     getCurrentChatId,
     getThumbnailUrl,
@@ -14,6 +12,7 @@ import {
     saveSettingsDebounced,
     setUserName,
     updateMessage,
+    updateMessageBlock,
     chatOpEditMany,
 } from '../script.js';
 import { characterToEntity, groupToEntity } from './character-list.js';
@@ -158,7 +157,8 @@ export async function setUserAvatar(imgfile, { toastPersonaNameChange = true, na
     reloadUserAvatar();
     updatePersonaUIStates({ navigateToCurrent: navigateToCurrent });
     selectCurrentPersona({ toastPersonaNameChange: toastPersonaNameChange });
-    await retriggerFirstMessageOnEmptyChat();
+    // Macros in the opening are substituted at draw time, so the new persona only needs a redraw.
+    if (chat[0]) updateMessageBlock(0, chat[0]);
     saveSettingsDebounced('user_avatar');
     $('.zoomed_avatar[forchar]').remove();
     await eventSource.emit(event_types.PERSONA_CHANGED, user_avatar);
@@ -1896,21 +1896,6 @@ async function syncUserNameToPersona({ start = 0, end = chat.length - 1, quiet =
     await chatOpEditMany(changed).catch(error =>
         console.error('Could not attribute those messages to this persona:', error));
     await reloadCurrentChat();
-}
-
-/**
- * Retriggers the first message to reload it from the char definition.
- */
-export async function retriggerFirstMessageOnEmptyChat() {
-    if (chat_metadata.tainted) {
-        return;
-    }
-    if (selected_group) {
-        await reloadCurrentChat();
-    }
-    if (getSelectionState().type === 'character' && chat.length === 1) {
-        await insertFirstMessageIntoEmptyChat();
-    }
 }
 
 /**
