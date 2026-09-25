@@ -11,7 +11,6 @@ import https from 'node:https';
 import cors from 'cors';
 import { csrfSync } from 'csrf-sync';
 import express from 'express';
-import compression from 'compression';
 import cookieSession from 'cookie-session';
 import multer from 'multer';
 import responseTime from 'response-time';
@@ -55,6 +54,7 @@ import cacheBuster from './middleware/cacheBuster.js';
 import corsProxyMiddleware from './middleware/corsProxy.js';
 import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
 import userCssMiddleware from './middleware/userCss.js';
+import compressionMiddleware from './middleware/compression.js';
 import {
     getVersion,
     color,
@@ -111,7 +111,7 @@ const app = express();
 app.use(helmet({
     contentSecurityPolicy: false,
 }));
-app.use(compression());
+app.use(compressionMiddleware);
 app.use(responseTime());
 
 app.use(bodyParser.json({ limit: '500mb' }));
