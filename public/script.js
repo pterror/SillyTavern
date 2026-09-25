@@ -11563,10 +11563,6 @@ jQuery(async function () {
         selected_button = 'settings';
         selectRightMenuWithAnimation('rm_api_block');
     });
-    $('#rm_button_characters').on('click', function () {
-        selected_button = 'characters';
-        select_rm_characters();
-    });
     $('#rm_button_back').on('click', function () {
         selected_button = 'characters';
         select_rm_characters();
