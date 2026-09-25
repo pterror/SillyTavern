@@ -263,4 +263,39 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
         const result = await searchIndex.searchCharacterIds('parked-card-handle', directories, 'quixotebramble');
         expect(result.ids).toEqual(['Rosalind.png']);
     }, 20000);
+
+    test('a character whose PNG is missing is indexed from its card_json', async () => {
+        const engine = await searchEngine.resolveSearchEngine();
+        if (engine.tier !== 'tantivy') {
+            return;
+        }
+
+        const card = {
+            name: 'Wraithling',
+            spec: 'chara_card_v2',
+            spec_version: '2.0',
+            data: {
+                name: 'Wraithling',
+                description: 'pnglessmarker', personality: '', scenario: '', first_mes: '', mes_example: '',
+                tags: [], creator: '', character_version: '', creator_notes: '',
+                extensions: { fav: false, world: '' },
+            },
+        };
+        await metadataDb.upsertCharacterFromWrite(directories, 'Wraithling.png', JSON.stringify(card));
+        expect(fs.existsSync(path.join(charactersDir, 'Wraithling.png'))).toBe(false);
+
+        // processCharacter() stats DEFAULT_AVATAR_PATH (repo-root-relative) for a PNG-less character.
+        const originalCwd = process.cwd();
+        process.chdir(path.resolve(originalCwd, '..'));
+        let buildResult;
+        try {
+            buildResult = await searchIndex.rebuildCharacterSearchIndex('pngless-handle', directories);
+        } finally {
+            process.chdir(originalCwd);
+        }
+        expect(buildResult).toEqual({ ok: true, backend: 'tantivy' });
+
+        const result = await searchIndex.searchCharacterIds('pngless-handle', directories, 'pnglessmarker');
+        expect(result.ids).toEqual(['Wraithling.png']);
+    }, 20000);
 });

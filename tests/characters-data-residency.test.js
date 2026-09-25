@@ -307,6 +307,17 @@ describe('/edit\'s content-hash conflict check survives the residency split', ()
     });
 });
 
+describe('a character whose PNG is missing', () => {
+    test('/batch still returns it from card_json, never reading the PNG', async () => {
+        await post('create', { ch_name: 'Alice', description: 'from-db', file_name: 'Alice' });
+        fs.rmSync(path.join(directories.characters, 'Alice.png'));
+
+        const batch = await (await post('batch', { avatars: ['Alice.png'] })).json();
+        expect(batch).toHaveLength(1);
+        expect(batch[0].data.description).toBe('from-db');
+    });
+});
+
 describe('/all without search reads card_json per batch', () => {
     test('returns the db\'s content for an edited character and the file\'s for an untouched one', async () => {
         await post('create', { ch_name: 'Alice', description: 'a', file_name: 'Alice' });
