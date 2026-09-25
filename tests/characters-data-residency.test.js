@@ -226,8 +226,7 @@ describe('a real image write retires the parked copy', () => {
         // path does. It must clear the column, not COALESCE around it - otherwise a card would keep serving
         // pre-replacement content forever with no way to retire it.
         const cardJson = await metadataDb.getCharacterCardJson(directories, 'Alice.png');
-        const stat = fs.statSync(path.join(directories.characters, 'Alice.png'));
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson, stat.mtimeMs);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson);
 
         expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).toBeNull();
     });

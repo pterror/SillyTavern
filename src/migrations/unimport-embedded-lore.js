@@ -165,12 +165,10 @@ async function unimportOne(directories, candidate, log) {
         if (parked !== null) {
             // Card lives in the db - don't rewrite the PNG (would retire the parked copy via the
             // default upsert).
-            const stat = await fsPromises.stat(avatarPath);
-            await upsertCharacterFromWrite(directories, avatar, updated, stat.mtimeMs, null, null);
+            await upsertCharacterFromWrite(directories, avatar, updated, null, null);
         } else {
             await writeCardToFile(avatarPath, avatarPath, updated);
-            const stat = await fsPromises.stat(avatarPath);
-            await upsertCharacterFromWrite(directories, avatar, updated, stat.mtimeMs);
+            await upsertCharacterFromWrite(directories, avatar, updated);
         }
 
         log(color.green(`[unimport-embedded-lore] ${avatar}: unlinked from "${worldName}"${action === 'restore-and-unlink' ? ' and restored its embedded lorebook' : ''}.`));

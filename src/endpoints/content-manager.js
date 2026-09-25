@@ -184,9 +184,8 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
             // same call, which would create an import cycle (characters.js imports from sprites.js, which
             // imports from this file).
             try {
-                const stat = await fs.promises.stat(targetPath);
                 const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(await fs.promises.readFile(targetPath));
-                await upsertCharacterFromWrite(directories, basePath, sourceData, stat.mtimeMs, null, avatarIdentityHash);
+                await upsertCharacterFromWrite(directories, basePath, sourceData, null, avatarIdentityHash);
             } catch (err) {
                 console.error(`[character-metadata] Failed to seed the metadata store for "${basePath}":`, err);
             }

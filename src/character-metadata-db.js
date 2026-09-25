@@ -118,7 +118,6 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {number} date_last_chat Epoch ms
  * @property {number} chat_size
  * @property {number} data_size
- * @property {number} file_mtime
  * @property {string | null} world
  * @property {string | null} creator
  * @property {string | null} version
@@ -299,7 +298,6 @@ const SCHEMA_SQL = `
         date_last_chat INTEGER NOT NULL,
         chat_size      INTEGER NOT NULL,
         data_size      INTEGER NOT NULL,
-        file_mtime     INTEGER NOT NULL,
         world          TEXT,
         creator        TEXT,
         version        TEXT,
@@ -468,12 +466,12 @@ const SCHEMA_SQL = `
 const UPSERT_SQL = `
     INSERT INTO characters (
         id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size,
-        file_mtime, world, creator, version, creator_notes, shallow_json, digest_fav, digest_tag_ids, digest_content,
+        world, creator, version, creator_notes, shallow_json, digest_fav, digest_tag_ids, digest_content,
         content_hash, content_identity_hash, avatar_identity_hash, import_poisoned, active_chat, active_chat_checked,
         change_seq, card_json
     ) VALUES (
         @id, @name, @name_fold, @fav, @date_added, @create_date, @date_last_chat, @chat_size, @data_size,
-        @file_mtime, @world, @creator, @version, @creator_notes, @shallow_json, @digest_fav, @digest_tag_ids, @digest_content,
+        @world, @creator, @version, @creator_notes, @shallow_json, @digest_fav, @digest_tag_ids, @digest_content,
         @content_hash, @content_identity_hash, @avatar_identity_hash, @import_poisoned, @active_chat, @active_chat_checked,
         @changeSeq, @card_json
     )
@@ -487,7 +485,6 @@ const UPSERT_SQL = `
         -- the tree, so including it here would reset a freshly bumped row back to a stale timestamp on rescan.
         chat_size = excluded.chat_size,
         data_size = excluded.data_size,
-        file_mtime = excluded.file_mtime,
         world = excluded.world,
         creator = excluded.creator,
         version = excluded.version,
@@ -653,6 +650,16 @@ function migrateCreateDateColumn(db) {
     db.exec('ALTER TABLE characters DROP COLUMN create_date');
     db.exec('ALTER TABLE characters RENAME COLUMN create_date_ms TO create_date');
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_create_date ON characters(create_date)');
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateDropFileMtimeColumn(db) {
+    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    if (columns.some(c => c.name === 'file_mtime')) {
+        db.exec('ALTER TABLE characters DROP COLUMN file_mtime');
+    }
 }
 
 // deleteRowSync() cascades a character deletion into deleting rows that named it as duplicate_of, so a stale
@@ -964,6 +971,7 @@ async function getEntry(directories) {
     migrateAvatarIdentityColumn(db);
     migrateActiveChatColumn(db);
     migrateCreateDateColumn(db);
+    migrateDropFileMtimeColumn(db);
     migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateChangesFieldsColumn(db);
     migrateRevToSeqColumns(db);
@@ -1037,7 +1045,6 @@ function writeShallowJson(db, id, shallow, changeSeq, extraColumns = {}) {
  * @param {HoistedCharacterCard} character
  * @param {object} params
  * @param {number} params.dateAddedCandidate
- * @param {number} params.fileMtime
  * @param {number} params.chatSize
  * @param {number} params.dateLastChat
  * @param {string | null} [params.contentHash]
@@ -1047,7 +1054,7 @@ function writeShallowJson(db, id, shallow, changeSeq, extraColumns = {}) {
  * @param {string} params.cardJson
  * @returns {CharacterUpsertRow}
  */
-function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson }) {
+function buildRow(id, character, { dateAddedCandidate, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson }) {
     if (typeof cardJson !== 'string') throw new TypeError(`buildRow(${id}): cardJson is required (card_json is NOT NULL) - got ${typeof cardJson}`);
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character.data ?? {});
@@ -1073,7 +1080,6 @@ function buildRow(id, character, { dateAddedCandidate, fileMtime, chatSize, date
         date_last_chat: dateLastChat,
         chat_size: chatSize,
         data_size: dataSize,
-        file_mtime: fileMtime,
         // Card `data.*` extension fields are genuinely caller-arbitrary (Spec-V2), hence the `any` cast here.
         world: _.get(/** @type {any} */ (character), 'data.extensions.world', '') || null,
         creator: _.get(/** @type {any} */ (character), 'data.creator', '') || null,
@@ -1170,9 +1176,8 @@ function getTagIdsFor(directories, avatar) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {string} cardJson
- * @param {number} fileMtimeMs
  */
-export async function upsertCharacterFromWrite(directories, avatar, cardJson, fileMtimeMs, contentHash = null, avatarIdentityHash = null) {
+export async function upsertCharacterFromWrite(directories, avatar, cardJson, contentHash = null, avatarIdentityHash = null) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
@@ -1187,7 +1192,7 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, fi
     const contentIdentityHash = computeContentIdentityHash(character);
     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
     const tagIds = getTagIdsFor(directories, avatar);
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), fileMtime: fileMtimeMs, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson });
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson });
 
     applyOrBuffer(entry, row, tagIds);
 }
@@ -1671,7 +1676,7 @@ export async function bootstrapIfNeeded(directories) {
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                 const tagIds = tag_map[file] ?? [];
-                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), fileMtime: stat.mtimeMs, chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
+                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
                 return { row, tagIds };
             } catch (err) {
                 console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, /** @type {any} */ (err).message);
@@ -1998,14 +2003,13 @@ export async function reconcile(directories) {
             const chunkResults = await mapWithConcurrency(chunkFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
                 try {
                     const filePath = path.join(directories.characters, file);
-                    const stat = await fsPromises.stat(filePath);
                     const rawBuffer = await fsPromises.readFile(filePath);
                     const imgData = readCharacterCardFromBuffer(rawBuffer);
                     const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
                     const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                     const tagIds = getTagIdsFor(directories, file);
-                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), fileMtime: stat.mtimeMs, chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
+                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
                     return { row, tagIds };
                 } catch (err) {
                     console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, /** @type {any} */ (err).message);

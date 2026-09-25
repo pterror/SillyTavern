@@ -244,14 +244,12 @@ describe('migrateCharacterIds - a batch left in mixed mid-migration states resum
 describe('migrateCharacterIds - date_added preservation across the migration', () => {
     test('date_added is carried forward to the new id, not reset to "now"', async () => {
         await writeCardFile('Eve.png');
-        const filePath = path.join(charactersDir, 'Eve.png');
-        const stat = await fs.promises.stat(filePath);
 
         // Seed a metadata row the way bootstrapIfNeeded() would for a pre-existing library, with a real
         // (older) date_added rather than whatever "now" would be at migration time.
         await metadataDb.upsertCharacterFromWrite(directories, 'Eve.png', JSON.stringify({
             name: 'Eve', data: { name: 'Eve', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } },
-        }), stat.mtimeMs);
+        }));
         const beforeRow = await metadataDb.getCharacterMetadataRow(directories, 'Eve.png');
 
         await new Promise(resolve => setTimeout(resolve, 5));

@@ -88,9 +88,8 @@ async function postJson(urlPath, body) {
  * seed at for these tests.
  * @param {string} avatar
  * @param {object} overrides Shallow-merged onto a minimal valid Spec V2 card
- * @param {number} [fileMtime]
  */
-async function seedCharacter(avatar, overrides = {}, fileMtime = 1000) {
+async function seedCharacter(avatar, overrides = {}) {
     const card = {
         name: avatar.replace(/\.png$/, ''),
         fav: false,
@@ -104,7 +103,7 @@ async function seedCharacter(avatar, overrides = {}, fileMtime = 1000) {
         },
         ...overrides,
     };
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), fileMtime);
+    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
 }
 
 /**
@@ -114,9 +113,8 @@ async function seedCharacter(avatar, overrides = {}, fileMtime = 1000) {
  * character-metadata-db.test.js's writeCardFile().
  * @param {string} avatar
  * @param {object} overrides Shallow-merged onto a minimal valid Spec V2 card
- * @param {number} [fileMtime]
  */
-async function seedCharacterWithFile(avatar, overrides = {}, fileMtime = 1000) {
+async function seedCharacterWithFile(avatar, overrides = {}) {
     const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
     const name = avatar.replace(/\.png$/, '');
     const card = {
@@ -134,7 +132,7 @@ async function seedCharacterWithFile(avatar, overrides = {}, fileMtime = 1000) {
     };
     const buffer = cardParser.write(baseImage, JSON.stringify(card));
     await fs.promises.writeFile(path.join(directories.characters, avatar), buffer);
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), fileMtime);
+    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
 }
 
 /**
@@ -212,7 +210,7 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
     });
 
     test('each sort field orders characters and groups together: date_added', async () => {
-        await seedCharacter('Old.png', { name: 'Old', data: { name: 'Old', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }, 1000);
+        await seedCharacter('Old.png', { name: 'Old', data: { name: 'Old', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await seedGroup('g-mid');
         await new Promise(resolve => setTimeout(resolve, 5));
         await seedCharacter('New.png', { name: 'New', data: { name: 'New', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
@@ -567,10 +565,10 @@ describe('POST /api/characters/query', () => {
     });
 
     test('a rename does not change the row\'s date_added, and seq advances', async () => {
-        await seedCharacter('Old.png', {}, 1000);
+        await seedCharacter('Old.png', {});
         const before = await (await postJson('/api/characters/query', { filter: { ids: ['Old.png'] } })).json();
 
-        await metadataDb.upsertCharacterFromWrite(directories, 'New.png', JSON.stringify({ name: 'New', data: { name: 'New', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'New.png', JSON.stringify({ name: 'New', data: { name: 'New', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
         await metadataDb.renameCharacterRow(directories, 'Old.png', 'New.png');
 
         const after = await (await postJson('/api/characters/query', { filter: { ids: ['New.png'] } })).json();

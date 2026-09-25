@@ -111,7 +111,7 @@ afterEach(() => {
 describe('upsertCharacterFromWrite', () => {
     test('creates a row with the given date_added on first insert', async () => {
         const before = Date.now();
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         expect(row).toBeDefined();
@@ -123,22 +123,21 @@ describe('upsertCharacterFromWrite', () => {
     });
 
     test('never recomputes date_added on a later write to the same avatar', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const firstRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         await new Promise(resolve => setTimeout(resolve, 5));
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['x'], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['x'], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
         const secondRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         expect(secondRow.date_added).toBe(firstRow.date_added);
-        expect(secondRow.file_mtime).toBe(2000);
         expect(JSON.parse(secondRow.shallow_json).data.tags).toEqual(['x']);
     });
 });
 
 describe('deleteCharacterRow', () => {
     test('removes the row and logs a delete change', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.deleteCharacterRow(directories, 'Bob.png');
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row).toBeUndefined();
@@ -147,14 +146,14 @@ describe('deleteCharacterRow', () => {
 
 describe('renameCharacterRow', () => {
     test('carries date_added over from the old id to the new one', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const oldRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         await new Promise(resolve => setTimeout(resolve, 5));
         // Simulates writeCharacterData()'s own embedded hook, which by the time characters.js's /rename route
         // calls renameCharacterRow() has already generically upserted a row for the new filename (see that
         // function's doc comment for why renameCharacterRow() only needs to correct date_added afterward).
-        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert', data: { name: 'Robert', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 3000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert', data: { name: 'Robert', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
         await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
 
         const oldAfter = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
@@ -171,11 +170,11 @@ describe('renameCharacterRow', () => {
         // reading date_added through the shallow projection (as /query does - see characters.js) rather than the
         // raw column would otherwise see the wrong value after a rename, even though the column itself was
         // correctly patched.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const oldRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         await new Promise(resolve => setTimeout(resolve, 5));
-        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert', data: { name: 'Robert', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 3000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert', data: { name: 'Robert', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
         await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
 
         const newRow = await metadataDb.getCharacterMetadataRow(directories, 'Robert.png');
@@ -185,7 +184,7 @@ describe('renameCharacterRow', () => {
 
 describe('setCharacterDateAdded', () => {
     test('overwrites date_added on an existing row, both the column and shallow_json\'s embedded copy', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
 
         await metadataDb.setCharacterDateAdded(directories, 'Bob.png', 5000);
 
@@ -201,7 +200,7 @@ describe('setCharacterDateAdded', () => {
 
     test('patches a row still sitting in the batch-import pending buffer, not yet flushed to the table', async () => {
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Carol.png', cardJson({ name: 'Carol', data: { name: 'Carol', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Carol.png', cardJson({ name: 'Carol', data: { name: 'Carol', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
 
         await metadataDb.setCharacterDateAdded(directories, 'Carol.png', 7000);
         await metadataDb.endBatchImport(directories);
@@ -355,7 +354,6 @@ describe('reconcile', () => {
         for (let i = 0; i < existingNames.length; i++) {
             const row = await metadataDb.getCharacterMetadataRow(directories, existingNames[i]);
             expect(row.date_added).toBe(before[i].date_added);
-            expect(row.file_mtime).toBe(before[i].file_mtime);
         }
         // New files: discovered and inserted.
         for (const name of newNames) {
@@ -391,7 +389,7 @@ describe('batch import mode', () => {
         await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
 
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
 
         // Not written yet - still buffered.
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
@@ -409,7 +407,7 @@ describe('batch import mode', () => {
 
         const total = 520;
         for (let i = 0; i < total; i++) {
-            await metadataDb.upsertCharacterFromWrite(directories, `Bulk${i}.png`, cardJson({ name: `Bulk${i}`, data: { name: `Bulk${i}`, tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000 + i);
+            await metadataDb.upsertCharacterFromWrite(directories, `Bulk${i}.png`, cardJson({ name: `Bulk${i}`, data: { name: `Bulk${i}`, tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
         }
 
         // Never called endBatchImport() yet - if flushing only ever happened there, none of this would be
@@ -435,7 +433,7 @@ describe('batch import mode', () => {
         await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
 
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
 
         // Still buffered, not in the table yet - the exact moment the client's post-import tag assign lands.
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
@@ -458,13 +456,13 @@ describe('batch import mode', () => {
 
 describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplicate dedup)', () => {
     test('a write with no contentHash leaves content_hash NULL', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.content_hash).toBeNull();
     });
 
     test('a write with a contentHash records it, and findCharacterIdByContentHash finds it', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef');
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.content_hash).toBe('deadbeef');
 
@@ -473,15 +471,15 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
     });
 
     test('an unknown hash resolves to null', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef');
         const found = await metadataDb.findCharacterIdByContentHash(directories, 'not-a-real-hash');
         expect(found).toBeNull();
     });
 
     test('a later ordinary write (no contentHash) does not clobber a previously-recorded hash', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef');
         // Simulates an unrelated edit (e.g. /edit, /rename's generic hook) that has no source-file hash to offer.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob Renamed', data: { name: 'Bob Renamed', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob Renamed', data: { name: 'Bob Renamed', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.name).toBe('Bob Renamed');
@@ -489,8 +487,8 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
     });
 
     test('a write that reuses an id with a fresh hash (preserved-name replace) overwrites the old hash', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 2000, 'cafef00d');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'cafef00d');
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.content_hash).toBe('cafef00d');
@@ -502,7 +500,7 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
         await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
 
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef');
 
         // Not flushed to the SQL table yet - a lookup that only checked `characters` would miss this.
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
@@ -516,7 +514,7 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
     });
 
     test('an empty/falsy hash never matches anything', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null);
         expect(await metadataDb.findCharacterIdByContentHash(directories, '')).toBeNull();
     });
 
@@ -561,7 +559,7 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
         expect(preexisting.content_hash).toBeNull();
 
         // And the column is now usable for a subsequent write.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, 'deadbeef');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef');
         expect(await metadataDb.findCharacterIdByContentHash(directories, 'deadbeef')).toBe('Bob.png');
     });
 });
@@ -635,13 +633,13 @@ describe('migrateCreateDateColumn (2026-08: create_date TEXT -> INTEGER epoch ms
         expect(col.type).toBe('INTEGER');
         checkDb.close();
 
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const bobRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(bobRow.create_date).toBe(Date.parse('2024-01-01T00:00:00.000Z'));
     });
 
     test('a second migration pass on an already-migrated table is a no-op (idempotent)', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         // Forces a fresh getEntry() call (and therefore a fresh migrateCreateDateColumn() run) against the same
@@ -653,22 +651,83 @@ describe('migrateCreateDateColumn (2026-08: create_date TEXT -> INTEGER epoch ms
     });
 });
 
+describe('migrateDropFileMtimeColumn', () => {
+    test('migrates an existing (pre-drop) database in place: file_mtime is gone and rows are kept', async () => {
+        const { default: Database } = await import('better-sqlite3');
+        const dbPath = path.join(tempDir, 'character-metadata.sqlite');
+        const rawDb = new Database(dbPath);
+        rawDb.exec(`
+            CREATE TABLE characters (
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                name_fold      TEXT NOT NULL,
+                fav            INTEGER NOT NULL,
+                date_added     INTEGER NOT NULL,
+                create_date    TEXT,
+                date_last_chat INTEGER NOT NULL,
+                chat_size      INTEGER NOT NULL,
+                data_size      INTEGER NOT NULL,
+                file_mtime     INTEGER NOT NULL,
+                world          TEXT,
+                creator        TEXT,
+                version        TEXT,
+                creator_notes  TEXT,
+                shallow_json   TEXT NOT NULL,
+                change_seq            INTEGER NOT NULL
+            );
+            CREATE INDEX idx_characters_create_date ON characters(create_date);
+        `);
+        rawDb.prepare(`
+            INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
+            VALUES ('Old.png', 'Old', 'old', 0, 500, '2024-07-12T01:31:37.123Z', 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
+        `).run();
+        rawDb.close();
+
+        // Any exported call routes through getEntry(), which runs migrateDropFileMtimeColumn() before returning.
+        const oldRow = await metadataDb.getCharacterMetadataRow(directories, 'Old.png');
+        expect(oldRow.name).toBe('Old');
+        expect(oldRow.date_added).toBe(500);
+        expect(oldRow).not.toHaveProperty('file_mtime');
+
+        const { default: Database2 } = await import('better-sqlite3');
+        const checkDb = new Database2(dbPath, { readonly: true });
+        const columnNames = checkDb.prepare('PRAGMA table_info(characters)').all().map(c => c.name);
+        expect(columnNames).not.toContain('file_mtime');
+        checkDb.close();
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeDefined();
+    });
+
+    test('a second migration pass on an already-migrated table is a no-op (idempotent)', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+
+        // Forces a fresh getEntry() (and so a fresh migrateDropFileMtimeColumn() run) against the same on-disk
+        // file, rather than reusing the cached handle.
+        metadataDb.disposeMetadataStores();
+        const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+
+        expect(after).toEqual(before);
+    });
+});
+
 describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware identity dedup)', () => {
     test('a write with an avatarIdentityHash records it', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null, 'avatarhash1');
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.avatar_identity_hash).toBe('avatarhash1');
     });
 
     test('a write with no avatarIdentityHash leaves avatar_identity_hash NULL', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.avatar_identity_hash).toBeNull();
     });
 
     test('a later ordinary write (no avatarIdentityHash) does not clobber a previously-recorded value - same COALESCE posture as content_hash', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob Renamed', data: { name: 'Bob Renamed', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null, 'avatarhash1');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob Renamed', data: { name: 'Bob Renamed', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.name).toBe('Bob Renamed');
@@ -676,7 +735,7 @@ describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware i
     });
 
     test('findCharacterIdByIdentityHashes requires BOTH hashes to agree - a content-only match is not enough', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null, 'avatarhash1');
         const contentHash = (await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).content_identity_hash;
 
         // Same content_identity_hash, DIFFERENT avatar_identity_hash - a real "same text, different portrait"
@@ -687,7 +746,7 @@ describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware i
     });
 
     test('findCharacterIdByIdentityHashes fails open (null) when the candidate avatar hash is unknown, never falls back to a content-only match', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null, 'avatarhash1');
         const contentHash = (await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).content_identity_hash;
 
         expect(await metadataDb.findCharacterIdByIdentityHashes(directories, contentHash, null)).toBeNull();
@@ -697,7 +756,7 @@ describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware i
         // A real PNG on disk whose row was written WITHOUT an avatarIdentityHash (e.g. bootstrap/reconcile on an
         // install predating this column) - avatar_identity_hash stays NULL exactly like an unbackfilled row.
         const filePath = await writeCardFile('Bob.png');
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.avatar_identity_hash).toBeNull();
 
@@ -718,7 +777,7 @@ describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware i
 
     test('when the MATCHING ROW has NULL avatar_identity_hash but the candidate is genuinely a DIFFERENT portrait, the fallback does not falsely merge them', async () => {
         await writeCardFile('Bob.png');
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.avatar_identity_hash).toBeNull();
 
@@ -769,14 +828,14 @@ describe('avatar_identity_hash / findCharacterIdByIdentityHashes (avatar-aware i
         expect(preexisting).toBeDefined();
         expect(preexisting.avatar_identity_hash).toBeNull();
 
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000, null, 'avatarhash1');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null, 'avatarhash1');
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toEqual(expect.objectContaining({ avatar_identity_hash: 'avatarhash1' }));
     });
 });
 
 describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedup groundwork)', () => {
     test('upsertCharacterFromWrite always computes a content_identity_hash and clears import_poisoned', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.content_identity_hash).toEqual(expect.any(String));
         expect(row.content_identity_hash.length).toBe(64); // sha256 hex digest
@@ -784,8 +843,8 @@ describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedu
     });
 
     test('two writes of semantically-identical content (fav/chat/create_date differ) hash the same', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ fav: true, create_date: '2020-01-01T00:00:00.000Z' }), 1000);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false, chat: 'some-other-chat', create_date: '2024-06-01T00:00:00.000Z' }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ fav: true, create_date: '2020-01-01T00:00:00.000Z' }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false, chat: 'some-other-chat', create_date: '2024-06-01T00:00:00.000Z' }));
 
         const alice = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
         const bob = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
@@ -793,8 +852,8 @@ describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedu
     });
 
     test('a genuinely different character hashes differently', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }), 1000);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob' }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ name: 'Bob' }));
 
         const alice = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
         const bob = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
@@ -811,7 +870,7 @@ describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedu
     });
 
     test('reconcile re-observing an already-written row leaves import_poisoned/content_identity_hash untouched', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(before.import_poisoned).toBe(0);
 
@@ -829,7 +888,7 @@ describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedu
         await metadataDb.reconcile(directories);
         expect((await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).import_poisoned).toBe(1);
 
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.import_poisoned).toBe(0);
         expect(row.content_identity_hash).toEqual(expect.any(String));
@@ -972,7 +1031,7 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
         const normalized = cardNormalize.getCharaCardV2(JSON.parse(JSON.stringify(data)), directories, false);
         normalized.fav = true;
         normalized.create_date = '2020-01-01T00:00:00.000Z';
-        await metadataDb.upsertCharacterFromWrite(directories, 'Fresh.png', JSON.stringify(normalized), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Fresh.png', JSON.stringify(normalized));
         const fresh = await metadataDb.getCharacterMetadataRow(directories, 'Fresh.png');
 
         expect(poisoned.content_identity_hash).toBe(fresh.content_identity_hash);
@@ -1028,7 +1087,7 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
     });
 
     test('a row that is not poisoned (already has a trustworthy hash) is left untouched by backfill', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         await metadataDb.backfillContentIdentityHashes(directories);
@@ -1041,7 +1100,7 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
 
 describe('phase 3: character_tags as source of truth (not a tags.json mirror)', () => {
     test('assignEntityTag/unassignEntityTag are single-row writes reflected by getCharacterTagIds and tag_usage', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
 
         expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
         expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
@@ -1066,8 +1125,8 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
     });
 
     test('getEntityTagIdsForMany batches getCharacterTagIds over multiple ids, [] for untagged/unknown ids', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }));
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag2');
 
@@ -1078,8 +1137,8 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
     });
 
     test('getAllTagUsage returns the whole trigger-maintained tag_usage table', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }));
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag2');
@@ -1092,45 +1151,45 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
         // treated as a read-only mirror of tags.json and every ordinary write unconditionally deleted+reinserted
         // a character's tag rows from tags.json's (now-stale, since assignments no longer write there) tag_map -
         // silently reverting any direct assignment.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
 
         // Simulate an ordinary edit (fav toggled, name unchanged) - tags.json has no entry for Bob.png at all,
         // which is the expected post-phase-3 steady state (assignments never get written there anymore).
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: true }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: true }));
 
         expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
     });
 
-    test('reconcile() finding a changed file does not revert direct tag assignments back to tags.json', async () => {
-        // Regression test for the periodic-clobber bug: reconcile() used to call resyncTags() at the end of
-        // every pass (including the automatic 5-minute interval), which would mirror tags.json's tag_map - stale
-        // for characters, post-phase-3 - back over character_tags, undoing direct /assign|/unassign writes.
-        const filePath = await writeCardFile('Alice.png');
+    test('reconcile() leaves an existing character\'s row and direct tag assignments untouched when its file changes', async () => {
+        await writeCardFile('Alice.png');
         await metadataDb.bootstrapIfNeeded(directories);
         await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag1');
-        expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual(['tag1']);
 
-        // tags.json (if anything even still writes it) disagrees - no tag1 for Alice.
+        // tags.json disagrees with the db - no tag1 for Alice.
         fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: {} }));
 
-        // Touch the file's mtime so reconcile() treats it as changed and re-upserts its row.
+        const rowBefore = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        const tagsBefore = await metadataDb.getCharacterTagIds(directories, 'Alice.png');
+
+        const filePath = await writeCardFile('Alice.png', { name: 'Changed', data: { name: 'Changed', description: 'changed on disk', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: true, world: '' } } });
         const future = new Date(Date.now() + 60_000);
         fs.utimesSync(filePath, future, future);
         await metadataDb.reconcile(directories);
 
-        expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual(['tag1']);
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).toEqual(rowBefore);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual(tagsBefore);
     });
 
     test('renameCharacterRow carries tag assignments over from the old id to the new one', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag2');
 
         // Same shape the real /rename route hits: writeCharacterData()'s embedded hook already generically
         // upserted a (tagless) row for the new filename before renameCharacterRow() runs.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert' }), 3000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert' }));
         expect(await metadataDb.getCharacterTagIds(directories, 'Robert.png')).toEqual([]);
 
         await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
@@ -1140,12 +1199,12 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
     });
 
     test('renameCharacterRow unions carried-forward tags with anything the new id was already seeded with', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
 
         // The new-id row happens to have already picked up a tag of its own (e.g. a legacy tags.json entry
         // keyed by the new name, or a race with a direct /assign call) before the rename hook runs.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert' }), 3000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', cardJson({ name: 'Robert' }));
         await metadataDb.assignEntityTag(directories, 'Robert.png', 'tag2');
 
         await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
@@ -1181,7 +1240,7 @@ describe('phase 3 extension: groups (owner decision - tags.json removal includes
     });
 
     test('getEntityTagIdsForMany resolves a mix of character and group ids in one call', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'group1', 'tag2');
@@ -1191,7 +1250,7 @@ describe('phase 3 extension: groups (owner decision - tags.json removal includes
     });
 
     test('tag_usage counts characters and groups together for the same tag', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'shared-tag');
         await metadataDb.assignEntityTag(directories, 'group1', 'shared-tag');
@@ -1237,7 +1296,7 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         // comments) - it hashes the `tags` (definitions) table, which an assignment never writes to, so it's
         // provably unchanged either way. Regression coverage for the perf fix: a hot per-assign O(library-wide
         // tag count) SELECT+hash used to run here for a value that could never have moved.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await new Promise(resolve => setTimeout(resolve, 2));
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         const afterAssign = await metadataDb.getTagsHash(directories);
@@ -1255,8 +1314,8 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         // second call's tagDefinitions entry for the shared tag is the SAME object getTagCache() built (and the
         // first call already returned) - without caching, each call would JSON.parse() its own fresh copy, and
         // object identity would differ even though the VALUES are equal.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
 
         const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
         const second = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');
@@ -1267,7 +1326,7 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
     });
 
     test('saveTagDefinitions invalidates the tag cache so a later seed sees the rename, not a stale name->id mapping', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
         const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
         const mintedId = first.tagIds[0];
 
@@ -1275,7 +1334,7 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         // look up 'renamed'; this proves the cache was rebuilt from the post-rename table instead.
         await metadataDb.saveTagDefinitions(directories, [{ id: mintedId, name: 'Renamed' }]);
 
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Renamed'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Renamed'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
         const second = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');
 
         expect(second.tagIds).toEqual([mintedId]);
@@ -1284,7 +1343,7 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
 
 describe('phase 3 extension: tags.json removal (migration + settings-snapshot round trip)', () => {
     test('migrateTagsJsonIfNeeded seeds definitions + character_tags + group_tags, then renames tags.json out of the way', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         fs.writeFileSync(path.join(groupsDir, 'group1.json'), JSON.stringify({ id: 'group1', name: 'G', members: [] }));
         await metadataDb.bootstrapGroupsIfNeeded(directories);
 
@@ -1318,7 +1377,7 @@ describe('phase 3 extension: tags.json removal (migration + settings-snapshot ro
     });
 
     test('getFullTagMapExport/restoreTagMap round-trip a settings snapshot\'s tag_map across both entity types', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.upsertGroupRow(directories, 'group1', 'G');
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'group1', 'tag2');
@@ -1345,8 +1404,8 @@ describe('phase 3 extension: tags.json removal (migration + settings-snapshot ro
 
 describe('resyncTags / tag_usage', () => {
     test('mirrors tags.json\'s tag_map into character_tags and maintains tag_usage via trigger', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
 
         fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({
             tags: [{ id: 'tag1', name: 'Funny' }],
@@ -1515,20 +1574,20 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
     });
 
     test('an ordinary re-upsert of an already-tracked row (upsertCharacterFromWrite) ignores the card\'s embedded fav entirely - the db value wins', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: true }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: true }));
         let row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.fav).toBe(1);
 
         // A later write for the SAME avatar carries a different embedded fav (e.g. a stale reconcile pass, or
         // an /edit save whose card - post omitFavField() - never should have carried fav at all in the first
         // place). Either way, this must not clobber the db's own value.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }));
         row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(row.fav).toBe(1);
     });
 
     test('setCharacterFav() is the only thing that can change fav after a row exists, and it patches shallow_json to match', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }));
 
         const updated = await metadataDb.setCharacterFav(directories, 'Bob.png', true);
         expect(updated).toBe(true);
@@ -1544,7 +1603,7 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
 
         // And a subsequent ordinary card write still must not revert it (same guarantee as the test above,
         // now exercised after a genuine setCharacterFav() toggle rather than only after the initial insert).
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }));
         const rowAfter = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(rowAfter.fav).toBe(1);
     });
@@ -1555,8 +1614,8 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
     });
 
     test('getCharacterFavsByIds() bulk-reads fav for a known set of ids, omitting untracked ones', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', fav: true, data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: true, world: '' } } }), 1000);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', fav: true, data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: true, world: '' } } }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ fav: false }));
 
         const favs = await metadataDb.getCharacterFavsByIds(directories, ['Alice.png', 'Bob.png', 'Ghost.png']);
         expect(favs).toEqual({ 'Alice.png': true, 'Bob.png': false });
@@ -1567,7 +1626,7 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
         for (let i = 0; i < 1500; i++) {
             const id = `Char${i}.png`;
             ids.push(id);
-            await metadataDb.upsertCharacterFromWrite(directories, id, cardJson({ fav: i % 2 === 0 }), 1000 + i);
+            await metadataDb.upsertCharacterFromWrite(directories, id, cardJson({ fav: i % 2 === 0 }));
         }
 
         const favs = await metadataDb.getCharacterFavsByIds(directories, ids);
@@ -1577,20 +1636,21 @@ describe('fav is db-authoritative once a character row exists (owner decision - 
         expect(favs['Char1499.png']).toBe(false);
     });
 
-    test('reconcile() picking up an externally-touched file does not revert a fav toggle made through setCharacterFav()', async () => {
-        const filePath = await writeCardFile('Alice.png', { name: 'Alice', fav: false, data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+    test('reconcile() leaves an existing character\'s row, including a setCharacterFav() toggle, untouched when its file changes', async () => {
+        await writeCardFile('Alice.png', { name: 'Alice', fav: false, data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await metadataDb.bootstrapIfNeeded(directories);
-
         await metadataDb.setCharacterFav(directories, 'Alice.png', true);
 
-        // Touch the file's mtime so reconcile() treats it as changed and re-upserts its row - same trigger the
-        // existing tag-assignment regression test above uses. The card on disk still says fav: false.
+        const rowBefore = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        const tagsBefore = await metadataDb.getCharacterTagIds(directories, 'Alice.png');
+
+        const filePath = await writeCardFile('Alice.png', { name: 'Changed', fav: false, data: { name: 'Changed', description: 'changed on disk', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         const future = new Date(Date.now() + 60_000);
         fs.utimesSync(filePath, future, future);
         await metadataDb.reconcile(directories);
 
-        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
-        expect(row.fav).toBe(1);
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).toEqual(rowBefore);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual(tagsBefore);
     });
 });
 
@@ -1604,7 +1664,7 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
     });
 
     test('setCharacterActiveChat() updates active_chat, patches shallow_json.chat, and bumps change_seq for a tracked row', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         const updated = await metadataDb.setCharacterActiveChat(directories, 'Bob.png', 'Bob - New Chat');
@@ -1628,35 +1688,33 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
         // active_chat, or one first-touched before the column had any value) - upsertCharacterFromWrite() with a
         // card carrying no `chat` field at all leaves active_chat NULL on insert (buildRow(): character.chat ??
         // null).
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const inserted = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(inserted.active_chat).toBeNull();
 
         // A later write for the same avatar DOES carry a chat - this must be allowed to seed the still-NULL
         // column, exactly like a genuine first INSERT would.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Bob - First Real Chat' }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Bob - First Real Chat' }));
         const seeded = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(seeded.active_chat).toBe('Bob - First Real Chat');
         expect(JSON.parse(seeded.shallow_json).chat).toBe('Bob - First Real Chat');
     });
 
     test('writeRowSync(): a NON-NULL existing active_chat is preserved even when a later write\'s card carries a different value (db wins, matching fav exactly)', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Bob - Original Chat' }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Bob - Original Chat' }));
         const inserted = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(inserted.active_chat).toBe('Bob - Original Chat');
 
-        // A later ordinary re-upsert (reconcile picking up an externally-touched file, a stale card, etc.)
-        // carries a DIFFERENT embedded chat - this must not clobber the db's own value.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Some Stale Value' }), 2000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ chat: 'Some Stale Value' }));
         const after = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(after.active_chat).toBe('Bob - Original Chat');
         expect(JSON.parse(after.shallow_json).chat).toBe('Bob - Original Chat');
     });
 
     test('getCharacterActiveChatsByIds() bulk-reads active_chat for a known set of ids, omitting both untracked ids and tracked-but-NULL ids', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', chat: 'Alice - Chat', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', chat: 'Alice - Chat', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
         // Bob is tracked but has never had a chat pointer at all (active_chat stays NULL).
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
 
         const chats = await metadataDb.getCharacterActiveChatsByIds(directories, ['Alice.png', 'Bob.png', 'Ghost.png']);
         expect(chats).toEqual({ 'Alice.png': 'Alice - Chat' });
@@ -1956,12 +2014,12 @@ describe('active_chat_checked (regression: a genuinely chatless card must conver
     });
 
     test('buildRow()/writeRowSync(): an ordinary write always leaves the row checked=1 (real writes always resolve active_chat one way or the other)', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         const noChatRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
         expect(noChatRow.active_chat).toBeNull();
         expect(noChatRow.active_chat_checked).toBe(1);
 
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', chat: 'Alice - Chat', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }), 1000);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', chat: 'Alice - Chat', data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
         const hasChatRow = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
         expect(hasChatRow.active_chat).toBe('Alice - Chat');
         expect(hasChatRow.active_chat_checked).toBe(1);
