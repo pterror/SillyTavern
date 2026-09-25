@@ -177,6 +177,76 @@ export function buildSearchQuery(tantivy, schema, searchTerm, fieldWeights, fiel
     ]);
 }
 
+/**
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ * @param {import('@oxdev03/node-tantivy-binding').Schema} schema
+ * @param {import('@oxdev03/node-tantivy-binding').Query} query
+ * @param {boolean|undefined} fav
+ * @returns {import('@oxdev03/node-tantivy-binding').Query}
+ */
+export function withFavFilter(tantivy, schema, query, fav) {
+    if (typeof fav !== 'boolean') return query;
+    return tantivy.Query.booleanQuery([
+        { occur: tantivy.Occur.Must, query },
+        { occur: fav ? tantivy.Occur.Must : tantivy.Occur.MustNot, query: tantivy.Query.termQuery(schema, FAV_FIELD, true) },
+    ]);
+}
+
+const U64_MAX = (1n << 64n) - 1n;
+
+/**
+ * The `order` the binding reports on a fast-field-sorted hit whose field holds `value`: the value itself when
+ * descending, `u64::MAX - value` rounded to a JS number when ascending. Hits always come back in descending
+ * `order`, so comparing against this value (rounding included) places an outside item where tantivy would.
+ * @param {number} value A non-negative integer.
+ * @param {'asc'|'desc'} order
+ * @returns {number}
+ */
+export function fastFieldOrderValue(value, order) {
+    return order === 'asc' ? Number(U64_MAX - BigInt(value)) : value;
+}
+
+/**
+ * Merges a window of the characters' sorted matches with every matching group, and returns the merged ranks
+ * [offset, offset + count). Both lists are in descending `order`; on equal `order` characters come first.
+ *
+ * `chars` must hold the character matches from rank `charStart`, where `charStart` is at most
+ * `offset - groups.length` (or 0), and must reach `offset + count - charStart` entries unless `charsExhausted`
+ * (no further character matches exist). When `chars` is empty, `charStart` must be 0.
+ * @template {{ id: string, order: number }} T
+ * @param {{ chars: T[], charStart: number, charsExhausted: boolean, groups: T[], offset: number, count: number }} params
+ * @returns {{ type: 'character'|'group', id: string }[]}
+ */
+export function mergeSortedWindow({ chars, charStart, charsExhausted, groups, offset, count }) {
+    let firstRank = 0;
+    let g = 0;
+    if (charStart > 0) {
+        // Groups sorting before the window's first character sit at ranks below it.
+        while (g < groups.length && groups[g].order > chars[0].order) g++;
+        firstRank = charStart + g;
+    }
+    /** @type {{ type: 'character'|'group', id: string }[]} */
+    const merged = [];
+    const end = offset - firstRank + count;
+    let c = 0;
+    while (merged.length < end) {
+        const charLeft = c < chars.length;
+        if (!charLeft && !charsExhausted) break;
+        if (g < groups.length && (!charLeft || groups[g].order > chars[c].order)) {
+            merged.push({ type: 'group', id: groups[g++].id });
+        } else if (charLeft) {
+            merged.push({ type: 'character', id: chars[c++].id });
+        } else {
+            break;
+        }
+    }
+    return merged.slice(offset - firstRank);
+}
+
+export function buildIdsQuery(tantivy, schema, ids) {
+    return tantivy.Query.termSetQuery(schema, DATA_FIELD, ids);
+}
+
 export function buildExcludeIdsQuery(tantivy, schema, excludeIds) {
     return tantivy.Query.termSetQuery(schema, DATA_FIELD, excludeIds);
 }
@@ -218,8 +288,9 @@ export function buildTagFilterQuery(tantivy, schema, tags, fieldName) {
  * @param {number} [options.offset]
  * @param {boolean} [options.count]
  * @param {string} [options.timingLabel] Records `<label>_tantivy_search` and `<label>_hit_docs` search-timing phases.
- * @returns {{ results: { raw: string, score: number }[], total: number }} `raw` is DATA_FIELD's stored value,
- * un-parsed - caller decides what it means (full JSON vs. id-only).
+ * @returns {{ results: { raw: string, score: number, order?: number }[], total: number }} `raw` is DATA_FIELD's
+ * stored value, un-parsed - caller decides what it means (full JSON vs. id-only). `order` is set only with
+ * `orderByField` - see fastFieldOrderValue().
  */
 export function runSearch(index, query, maxRows, { orderByField, order, offset: searchOffset = 0, count = true, timingLabel } = {}) {
     const timed = (phase, fn) => timingLabel ? timePhase(`${timingLabel}_${phase}`, fn) : fn();
@@ -234,7 +305,7 @@ export function runSearch(index, query, maxRows, { orderByField, order, offset: 
     const results = timed('hit_docs', () => result.hits.map(hit => {
         const doc = searcher.doc(hit.docAddress);
         const raw = doc.getFirst(DATA_FIELD);
-        return { raw, score: orderByField ? 0 : -(hit.score ?? 0) };
+        return orderByField ? { raw, score: 0, order: hit.order } : { raw, score: -(hit.score ?? 0) };
     }));
     return { results, total: result.count ?? results.length };
 }

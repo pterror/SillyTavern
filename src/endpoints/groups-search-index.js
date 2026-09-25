@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { getTagDefinitions, getEntityTagIdsForMany, getTagsHash } from '../character-metadata-db.js';
 import { getGroupsData } from './groups.js';
-import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey } from './tantivy-search.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery, fastFieldOrderValue } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 import { timePhase } from '../search-timing.js';
@@ -21,7 +21,8 @@ const TANTIVY_FIELD_WEIGHTS = Object.fromEntries(BM25_INDEXED_COLUMNS.map((name,
 const TANTIVY_FAST_FIELDS = ['date_added', 'date_last_chat', 'chat_size'];
 const TANTIVY_COLLATION_FIELDS = ['name_sort_key', 'fav_name_sort_key'];
 const ALL_FAST_FIELDS = [...TANTIVY_FAST_FIELDS, ...TANTIVY_COLLATION_FIELDS];
-const TANTIVY_FILTER_TEXT_FIELDS = [{ name: 'tag_ids', tokenizerName: 'whitespace' }];
+const TAG_IDS_FIELD = 'tag_ids';
+const TANTIVY_FILTER_TEXT_FIELDS = [{ name: TAG_IDS_FIELD, tokenizerName: 'whitespace' }];
 
 const TANTIVY_FIELD_LABELS = {
     name: ['name'],
@@ -139,6 +140,73 @@ export async function searchGroups(handle, directories, searchTerm, maxRows, fav
     }
 
     return { results: [], total: 0, backend: 'unavailable' };
+}
+
+/**
+ * A group's value for a characters-index sort field, encoded the way characterToTantivyDoc()
+ * (characters-search-index.js) encodes a character's. create_date is the group's date_added (as in
+ * queryEntities()); a group has no data_size.
+ * @param {object} group
+ * @param {string} sortField
+ * @returns {number}
+ */
+function groupSortValue(group, sortField) {
+    switch (sortField) {
+        case 'create_date':
+        case 'date_added': return Math.max(0, Number(group.date_added) || 0);
+        case 'date_last_chat': return Math.max(0, Number(group.date_last_chat) || 0);
+        case 'chat_size': return Math.max(0, Number(group.chat_size) || 0);
+        case 'data_size': return 0;
+        case 'name': return stringToSortKey(group.name ?? '');
+        case 'fav': return (group.fav ? 0 : 1) * (2 ** 48) + stringToSortKey(group.name ?? '', 6);
+        default: throw new Error(`no group sort value for ${sortField}`);
+    }
+}
+
+/**
+ * Every matching group, in the order tantivy would sort them among characters: descending
+ * fastFieldOrderValue(), ties by id. A user's groups are few, so all of them are read and sorted here.
+ * @param {'asc'|'desc'} order The order tantivy sorts characters in (tantivySortOrder()).
+ * @param {{ fav?: boolean, tags?: object, excludeIds?: string[], ids?: string[] }} [filter]
+ * @returns {Promise<{ groups: { id: string, order: number }[], backend: 'tantivy' | 'unavailable' }>}
+ */
+export async function searchGroupsSorted(handle, directories, searchTerm, sortField, order, filter = {}) {
+    const { fav, tags, excludeIds, ids } = filter;
+    const signature = await timePhase('groups_freshness', () => getFreshnessSignature(directories));
+    const engine = await timePhase('groups_index_get', () => resolveSearchEngine());
+    if (engine.tier === 'unavailable') {
+        return { groups: [], backend: 'unavailable' };
+    }
+    const tantivyIndex = await timePhase('groups_index_get', () => indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy)));
+    const query = timePhase('groups_query_build', () => {
+        const { tantivy } = engine;
+        const { schema } = tantivyIndex;
+        let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
+        if (!q) return null;
+        q = withFavFilter(tantivy, schema, q, fav);
+        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD) : null;
+        if (tagQuery) {
+            q = tantivy.Query.booleanQuery([
+                { occur: tantivy.Occur.Must, query: q },
+                { occur: tantivy.Occur.Must, query: tagQuery },
+            ]);
+        }
+        return q;
+    });
+    if (!query) {
+        return { groups: [], backend: 'tantivy' };
+    }
+    const { results } = runTantivySearch(tantivyIndex.index, query, undefined, { timingLabel: 'groups' });
+    const groups = timePhase('groups_ids', () => {
+        const allowed = Array.isArray(ids) ? new Set(ids) : null;
+        const excluded = new Set(Array.isArray(excludeIds) ? excludeIds : []);
+        return results
+            .map(r => JSON.parse(r.raw))
+            .filter(group => (!allowed || allowed.has(group.id)) && !excluded.has(group.id))
+            .map(group => ({ id: String(group.id), order: fastFieldOrderValue(groupSortValue(group, sortField), order) }))
+            .sort((a, b) => b.order - a.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    });
+    return { groups, backend: 'tantivy' };
 }
 
 /** Id-only counterpart to searchGroups() - just discards `item` from its already-in-memory result rather than

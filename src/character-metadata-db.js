@@ -4063,62 +4063,10 @@ function mergeSortedRows(a, b, comparator) {
 }
 
 /**
- * `filter.includeGroups: true` half of `POST /api/characters/query` - see the doc comment above
- * buildGroupWhereClause() for why groups get their own where-clause builder.
+ * @param {{ db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }} entry
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {object} [params]
- * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [params.tags]
- * @param {boolean} [params.fav]
- * @param {string} [params.world] Applies to the characters arm only.
- * @param {string[]} [params.excludeIds]
- * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" - same rule as queryCharacters().
- * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random'. Never 'search'.
- * @param {'asc'|'desc'} [params.sortOrder]
- * @param {number} [params.seed]
- * @param {number} [params.offset]
- * @param {number} [params.limit]
- * @param {string} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq) cache.
- * @param {boolean} [params.wantRows]
- * @param {boolean} [params.wantTotal]
- * @param {boolean} [params.wantHashes]
- * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, seq: number } | null>}
- * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
  */
-export async function queryEntities(directories, params = {}) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    const {
-        tags, fav, world, excludeIds, ids,
-        sortField, sortOrder, seed,
-        offset, limit, handle,
-        wantRows = true, wantTotal = true,
-        wantHashes = false,
-    } = params;
-
-    const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
-    const seq = Number(seqRow?.seq ?? 0);
-
-    if (Array.isArray(ids) && ids.length === 0) {
-        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
-    }
-
-    const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids });
-    const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids });
-
-    let total;
-    if (wantTotal) {
-        const countRow = /** @type {{ total: number } | undefined} */ (entry.db.get(
-            `SELECT COUNT(*) as total FROM (
-                SELECT id FROM characters ${charWhere.where}
-                UNION ALL
-                SELECT id FROM groups ${groupWhere.where}
-            )`,
-            [...charWhere.args, ...groupWhere.args],
-        ));
-        total = Number(countRow?.total ?? 0);
-    }
-
+function makeEntityHashRowMapper(entry, directories) {
     // Character rows' digest_fav/digest_tag_ids/digest_content are plain column reads - writeShallowJson() is the
     // sole writer of shallow_json outside buildRow()/writeRowSync()'s own row construction, and always writes
     // these three columns in the same statement, so they can't be stale relative to shallow_json (see that
@@ -4175,6 +4123,131 @@ export async function queryEntities(directories, params = {}) {
             }
         }
     };
+    return { toHashRow, resolveFileFallbackHashes };
+}
+
+/**
+ * @param {EntityRow} r
+ */
+function toEntityWireRow(r) {
+    return {
+        type: r.type,
+        id: r.id,
+        fav: !!r.fav,
+        date_added: Number(r.date_added),
+        date_last_chat: Number(r.date_last_chat),
+        chat_size: Number(r.chat_size),
+        item: r.type === 'character' ? JSON.parse(/** @type {string} */ (r.shallow_json)) : null,
+    };
+}
+
+const ENTITY_CHARACTER_COLUMNS = 'id, \'character\' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json, digest_fav, digest_tag_ids, digest_content';
+const ENTITY_GROUP_COLUMNS = 'id, \'group\' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content';
+
+/**
+ * queryEntities()'s row shapes for an already-ordered page of entities, in that order. An entity whose row no
+ * longer exists is left out.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ type: 'character'|'group', id: string }[]} entities
+ * @param {{ wantRows?: boolean, wantHashes?: boolean }} [options]
+ * @returns {Promise<{ rows: ReturnType<typeof toEntityWireRow>[] | undefined, hashRows: EntityHashRow[] | undefined, seq: number } | null>}
+ */
+export async function getEntityRowsByIds(directories, entities, { wantRows = true, wantHashes = false } = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
+    const seq = Number(seqRow?.seq ?? 0);
+
+    const characterIds = entities.filter(e => e.type === 'character').map(e => e.id);
+    const groupIds = entities.filter(e => e.type === 'group').map(e => e.id);
+    /** @type {Map<string, EntityRow>} */
+    const characterRows = new Map();
+    /** @type {Map<string, EntityRow>} */
+    const groupRows = new Map();
+    if (characterIds.length > 0) {
+        for (const r of entry.db.iterate(`SELECT ${ENTITY_CHARACTER_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
+            characterRows.set(/** @type {EntityRow} */ (r).id, /** @type {EntityRow} */ (r));
+        }
+    }
+    if (groupIds.length > 0) {
+        for (const r of entry.db.iterate(`SELECT ${ENTITY_GROUP_COLUMNS} FROM groups WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(groupIds)])) {
+            groupRows.set(/** @type {EntityRow} */ (r).id, /** @type {EntityRow} */ (r));
+        }
+    }
+    const rawRows = /** @type {EntityRow[]} */ (entities
+        .map(e => (e.type === 'group' ? groupRows : characterRows).get(e.id))
+        .filter(r => r !== undefined));
+
+    let rows, hashRows;
+    if (wantHashes) {
+        const { toHashRow, resolveFileFallbackHashes } = makeEntityHashRowMapper(entry, directories);
+        hashRows = rawRows.map(toHashRow);
+        resolveFileFallbackHashes(hashRows);
+    } else if (wantRows) {
+        rows = rawRows.map(toEntityWireRow);
+    }
+    return { rows, hashRows, seq };
+}
+
+/**
+ * `filter.includeGroups: true` half of `POST /api/characters/query` - see the doc comment above
+ * buildGroupWhereClause() for why groups get their own where-clause builder.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} [params]
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [params.tags]
+ * @param {boolean} [params.fav]
+ * @param {string} [params.world] Applies to the characters arm only.
+ * @param {string[]} [params.excludeIds]
+ * @param {string[]} [params.ids] Present-but-empty means "resolve nothing" - same rule as queryCharacters().
+ * @param {string} [params.sortField] One of QUERYABLE_SORT_COLUMNS' keys, or 'random'. Never 'search'.
+ * @param {'asc'|'desc'} [params.sortOrder]
+ * @param {number} [params.seed]
+ * @param {number} [params.offset]
+ * @param {number} [params.limit]
+ * @param {string} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq) cache.
+ * @param {boolean} [params.wantRows]
+ * @param {boolean} [params.wantTotal]
+ * @param {boolean} [params.wantHashes]
+ * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, seq: number } | null>}
+ * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
+ */
+export async function queryEntities(directories, params = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const {
+        tags, fav, world, excludeIds, ids,
+        sortField, sortOrder, seed,
+        offset, limit, handle,
+        wantRows = true, wantTotal = true,
+        wantHashes = false,
+    } = params;
+
+    const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
+    const seq = Number(seqRow?.seq ?? 0);
+
+    if (Array.isArray(ids) && ids.length === 0) {
+        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
+    }
+
+    const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids });
+    const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids });
+
+    let total;
+    if (wantTotal) {
+        const countRow = /** @type {{ total: number } | undefined} */ (entry.db.get(
+            `SELECT COUNT(*) as total FROM (
+                SELECT id FROM characters ${charWhere.where}
+                UNION ALL
+                SELECT id FROM groups ${groupWhere.where}
+            )`,
+            [...charWhere.args, ...groupWhere.args],
+        ));
+        total = Number(countRow?.total ?? 0);
+    }
+
+    const { toHashRow, resolveFileFallbackHashes } = makeEntityHashRowMapper(entry, directories);
 
     let rows, hashRows;
     if (wantRows || wantHashes) {
@@ -4230,12 +4303,12 @@ export async function queryEntities(directories, params = {}) {
             } else {
                 const pageIdsJson = JSON.stringify(pageIds);
                 const charPageRows = /** @type {EntityRow[]} */ (entry.db.all(
-                    `SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json, digest_fav, digest_tag_ids, digest_content
+                    `SELECT ${ENTITY_CHARACTER_COLUMNS}
                     FROM characters WHERE id IN (SELECT value FROM json_each(?))`,
                     [pageIdsJson],
                 ));
                 const groupPageRows = /** @type {EntityRow[]} */ (entry.db.all(
-                    `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content
+                    `SELECT ${ENTITY_GROUP_COLUMNS}
                     FROM groups WHERE id IN (SELECT value FROM json_each(?))`,
                     [pageIdsJson],
                 ));
@@ -4246,15 +4319,7 @@ export async function queryEntities(directories, params = {}) {
                     hashRows = rawRows.map(toHashRow);
                     resolveFileFallbackHashes(hashRows);
                 } else {
-                    rows = rawRows.map(r => ({
-                        type: r.type,
-                        id: r.id,
-                        fav: !!r.fav,
-                        date_added: Number(r.date_added),
-                        date_last_chat: Number(r.date_last_chat),
-                        chat_size: Number(r.chat_size),
-                        item: r.type === 'character' ? JSON.parse(/** @type {string} */ (r.shallow_json)) : null,
-                    }));
+                    rows = rawRows.map(toEntityWireRow);
                 }
             }
         } else {
@@ -4268,7 +4333,7 @@ export async function queryEntities(directories, params = {}) {
 
             const charArgs = [...charWhere.args, ...orderArgs, fetchLimit];
             const charRawRows = /** @type {EntityRow[]} */ (entry.db.all(
-                `SELECT id, 'character' as type, name_fold, fav, date_added, date_last_chat, chat_size, create_date, data_size, shallow_json, digest_fav, digest_tag_ids, digest_content
+                `SELECT ${ENTITY_CHARACTER_COLUMNS}
                 FROM characters ${charWhere.where}
                 ${orderBy}
                 LIMIT ?`,
@@ -4277,7 +4342,7 @@ export async function queryEntities(directories, params = {}) {
 
             const groupArgs = [...groupWhere.args, ...orderArgs, fetchLimit];
             const groupRawRows = /** @type {EntityRow[]} */ (entry.db.all(
-                `SELECT id, 'group' as type, name_fold, fav, date_added, date_last_chat, chat_size, date_added as create_date, NULL as data_size, NULL as shallow_json, digest_fav, digest_tag_ids, digest_content
+                `SELECT ${ENTITY_GROUP_COLUMNS}
                 FROM groups ${groupWhere.where}
                 ${groupOrderBy}
                 LIMIT ?`,
@@ -4292,15 +4357,7 @@ export async function queryEntities(directories, params = {}) {
                 hashRows = rawRows.map(toHashRow);
                 resolveFileFallbackHashes(hashRows);
             } else {
-                rows = rawRows.map(r => ({
-                    type: r.type,
-                    id: r.id,
-                    fav: !!r.fav,
-                    date_added: Number(r.date_added),
-                    date_last_chat: Number(r.date_last_chat),
-                    chat_size: Number(r.chat_size),
-                    item: r.type === 'character' ? JSON.parse(/** @type {string} */ (r.shallow_json)) : null,
-                }));
+                rows = rawRows.map(toEntityWireRow);
             }
         }
     }

@@ -704,6 +704,80 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
     });
 });
 
+describe('POST /api/characters/query - filter.search with a fast-field sort (tantivy sorts, groups merged in)', () => {
+    /** @param {string} name */
+    const cardFor = (name, extra = {}) => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } }, ...extra });
+
+    async function seedMixed() {
+        await seedCharacterWithFile('a.png', cardFor('Alpha vampire'));
+        await seedCharacterWithFile('c.png', cardFor('Charlie vampire'));
+        await seedCharacterWithFile('e.png', cardFor('Echo vampire'));
+        await seedCharacterWithFile('g.png', cardFor('Golf vampire'));
+        await seedCharacterWithFile('x.png', cardFor('Xray werewolf'));
+        await seedGroup('grp-b', { name: 'Bravo vampire' });
+        await seedGroup('grp-f', { name: 'Foxtrot vampire' });
+        await seedGroup('grp-z', { name: 'Zulu vampire' });
+        await seedGroup('grp-w', { name: 'Whiskey werewolf' });
+    }
+
+    const byNameAsc = ['a.png', 'grp-b', 'c.png', 'e.png', 'grp-f', 'g.png', 'grp-z'];
+    const rowId = (r) => r.type === 'group' ? r.item.id : r.item.avatar;
+
+    test('every page of a name-sorted search is the merged order of characters and groups, with the real total', async () => {
+        await seedMixed();
+        for (const [order, expected] of [['asc', byNameAsc], ['desc', [...byNameAsc].reverse()]]) {
+            for (const pageSize of [1, 2, 3, 10]) {
+                const ids = [];
+                for (let page = 1; page <= Math.ceil(expected.length / pageSize) + 1; page++) {
+                    const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order }, page, pageSize });
+                    expect(response.status).toBe(200);
+                    const body = await response.json();
+                    expect(body.total).toBe(expected.length);
+                    ids.push(...body.rows.map(rowId));
+                }
+                expect(ids).toEqual(expected);
+            }
+        }
+    });
+
+    test('filter.fav false keeps only non-favorites on both sides', async () => {
+        await seedMixed();
+        await seedCharacterWithFile('d.png', cardFor('Delta vampire'));
+        await metadataDb.setCharacterFav(directories, 'd.png', true);
+        await seedGroup('grp-h', { name: 'Hotel vampire', fav: true });
+
+        let body;
+        for (let attempt = 0; attempt < 20; attempt++) {
+            body = await (await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire', fav: false }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 })).json();
+            if (!body.rows.some(r => rowId(r) === 'd.png')) break;
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(body.rows.map(rowId)).toEqual(byNameAsc);
+        expect(body.total).toBe(byNameAsc.length);
+    });
+
+    test('an index hit whose row no longer exists is omitted and the page still fills', async () => {
+        await seedMixed();
+        // Prime both indexes, then remove rows without touching the indexes: the group row directly (the groups
+        // index follows the groups directory, not the metadata db), the character row without a change-log entry.
+        await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 });
+        await metadataDb.deleteGroupRow(directories, 'grp-b');
+        metadataDb.disposeMetadataStores();
+        const Database = (await import('better-sqlite3')).default;
+        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        raw.prepare('DELETE FROM characters WHERE id = ?').run('c.png');
+        raw.close();
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 3 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.rows.map(rowId)).toEqual(['a.png', 'e.png', 'grp-f']);
+
+        const hashes = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 3, want: ['hashes', 'total'] });
+        expect(hashes.status).toBe(200);
+    });
+});
+
 describe('POST /api/characters/search-index/rebuild (design doc §3.2 explicit repair endpoint)', () => {
     test('forces a rebuild and reports which engine tier served it', async () => {
         await seedCharacterWithFile('Rebuildable.png');

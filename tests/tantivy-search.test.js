@@ -1,7 +1,7 @@
 import { describe, test, expect } from '@jest/globals';
 import tantivy from '@oxdev03/node-tantivy-binding';
 
-import { buildSchema, buildSearchQuery, runSearch, DATA_FIELD, FAV_FIELD } from '../src/endpoints/tantivy-search.js';
+import { buildSchema, buildSearchQuery, runSearch, DATA_FIELD, FAV_FIELD, fastFieldOrderValue, mergeSortedWindow } from '../src/endpoints/tantivy-search.js';
 
 // Exercises buildSchema()/buildSearchQuery()/runSearch() against a real in-memory tantivy index, not a mock -
 // this module's whole reason to exist is a handful of confirmed-by-direct-testing behaviors (prefix matching
@@ -201,4 +201,89 @@ describe('tantivy-search.js: favOnly restricts matches before maxRows caps them 
         expect(matched).toEqual([]);
         expect(total).toBe(0);
     });
+});
+
+describe('tantivy-search.js: fast-field sort order values', () => {
+    const values = [0, 5, 1727000000000, 2 ** 48 + 123456789012, 2 ** 49 + 7, 2 ** 49 + 7, 2 ** 49 + 4100];
+
+    function makeSortIndex() {
+        const schema = buildSchema(tantivy, ['name'], ['k']);
+        const index = new tantivy.Index(schema);
+        const writer = index.writer();
+        values.forEach((k, i) => writer.addDocument(tantivy.Document.fromDict({ name: 'doc', k, [DATA_FIELD]: `id${i}`, [FAV_FIELD]: false }, schema)));
+        writer.commit();
+        index.reload();
+        return { index, schema };
+    }
+
+    test.each(['asc', 'desc'])('fastFieldOrderValue() equals the order tantivy reports on each hit (%s)', (order) => {
+        const { index, schema } = makeSortIndex();
+        const query = buildSearchQuery(tantivy, schema, 'doc', { name: 1 }, { name: ['name'] });
+        const { results } = runSearch(index, query, 100, { orderByField: 'k', order, count: false });
+        expect(results).toHaveLength(values.length);
+        for (const r of results) {
+            expect(r.order).toBe(fastFieldOrderValue(values[Number(r.raw.slice(2))], order));
+        }
+        const orders = results.map(r => r.order);
+        expect(orders).toEqual([...orders].sort((a, b) => b - a));
+    });
+});
+
+describe('tantivy-search.js: mergeSortedWindow()', () => {
+    /** Reference: the whole merged list, characters before groups on equal order. */
+    function fullMerge(chars, groups) {
+        const all = [
+            ...chars.map((c, i) => ({ type: 'character', id: c.id, order: c.order, t: 0, i })),
+            ...groups.map((g, i) => ({ type: 'group', id: g.id, order: g.order, t: 1, i })),
+        ];
+        all.sort((a, b) => b.order - a.order || a.t - b.t || a.i - b.i);
+        return all.map(({ type, id }) => ({ type, id }));
+    }
+
+    function windowFor(chars, groups, offset, count) {
+        const charStart = Math.max(0, offset - groups.length);
+        const limit = offset + count - charStart;
+        const slice = chars.slice(charStart, charStart + limit);
+        if (slice.length === 0 && charStart > 0) {
+            return chars.length > 0
+                ? { chars: chars.slice(-1), charStart: chars.length - 1, charsExhausted: true }
+                : { chars: [], charStart: 0, charsExhausted: true };
+        }
+        return { chars: slice, charStart, charsExhausted: slice.length < limit };
+    }
+
+    const cases = {
+        'groups interleaved': {
+            chars: [100, 90, 90, 80, 70, 60, 50, 40, 30, 20, 10].map((order, i) => ({ id: `c${i}`, order })),
+            groups: [95, 90, 55, 5].map((order, i) => ({ id: `g${i}`, order })),
+        },
+        'groups all first': {
+            chars: [10, 9, 8, 7, 6, 5].map((order, i) => ({ id: `c${i}`, order })),
+            groups: [50, 40, 30].map((order, i) => ({ id: `g${i}`, order })),
+        },
+        'groups all last': {
+            chars: [10, 9, 8, 7, 6, 5].map((order, i) => ({ id: `c${i}`, order })),
+            groups: [3, 2, 1].map((order, i) => ({ id: `g${i}`, order })),
+        },
+        'no groups': {
+            chars: [10, 9, 8, 7, 6, 5].map((order, i) => ({ id: `c${i}`, order })),
+            groups: [],
+        },
+        'no characters': {
+            chars: [],
+            groups: [3, 2, 1].map((order, i) => ({ id: `g${i}`, order })),
+        },
+    };
+
+    for (const [name, { chars, groups }] of Object.entries(cases)) {
+        test(`every page matches the full merge: ${name}`, () => {
+            const expected = fullMerge(chars, groups);
+            for (const count of [1, 2, 3, 7]) {
+                for (let offset = 0; offset <= expected.length + 2; offset++) {
+                    const merged = mergeSortedWindow({ ...windowFor(chars, groups, offset, count), groups, offset, count });
+                    expect(merged).toEqual(expected.slice(offset, offset + count));
+                }
+            }
+        });
+    }
 });
