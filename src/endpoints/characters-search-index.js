@@ -323,14 +323,17 @@ async function addCharacterDocs(directories, tantivy, schema, writer, ids) {
     }
 }
 
-// Adds a doc per id as one unit: tag/fav lookups cover exactly these ids.
-async function addCharacterBatch(directories, tantivy, schema, writer, ids, cardJsonById) {
+// Adds a doc per id as one unit: tag/fav lookups cover exactly these ids. An id with no card_json has no row -
+// it was deleted after the change being applied - so it isn't indexed.
+async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById) {
+    const ids = batchIds.filter(id => cardJsonById.has(id));
+    if (ids.length === 0) return;
     const tagNamesFor = await makeTagNamesResolver(directories, ids);
     const favFor = await makeFavResolver(directories, ids);
     const tagIdsFor = await makeTagIdsResolver(directories, ids);
     const characters = await mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
         try {
-            return await processCharacter(id, directories, { shallow: false, cardJson: cardJsonById.get(id) ?? null });
+            return await processCharacter(id, directories, { shallow: false, cardJson: cardJsonById.get(id) });
         } catch {
             // File gone or corrupt - leave it deleted rather than throwing the whole pass away.
             return null;

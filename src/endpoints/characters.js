@@ -575,6 +575,7 @@ async function tryReadImage(imgPath, crop) {
  * @param  {import('../users.js').UserDirectoryList} directories User directories
  * @param  {object} options Options for the character processing
  * @param  {boolean} options.shallow If true, only return the core character's metadata
+ * @param  {string|null} [options.cardJson] The row's card_json when the caller already read it; otherwise it is read here
  * @return {Promise<object>}     A Promise that resolves when the character processing is done.
  */
 export const processCharacter = async (item, directories, { shallow, cardJson = undefined }) => {
@@ -588,10 +589,8 @@ export const processCharacter = async (item, directories, { shallow, cardJson = 
             if (err.code !== 'ENOENT') throw err;
             charStat = fs.statSync(DEFAULT_AVATAR_PATH);
         }
-        // `cardJson`: `undefined` means resolve it here; `null` means the caller already resolved it (file is current); a value is a prefetched hit.
-        const imgData = cardJson === undefined
-            ? await readCardContent(directories, item)
-            : (cardJson ?? await readCharacterData(imgFile, 'png', charStat));
+        // card_json is the only source of card content - the PNG is never read for it.
+        const imgData = cardJson ?? await readCardContent(directories, item);
         if (imgData === undefined) throw new Error('Failed to read character file');
 
         let jsonObject = getCharaCardV2(JSON.parse(imgData), directories, false);
