@@ -54,7 +54,7 @@ The shipped `fav` pattern, piece by piece:
   for an already-migrated row, nothing at all), both get corrected post-hoc by `stampDbFav()`
   (`characters.js:1519-1543`), called at `characters.js:1555` and `:1597`. It stamps the db's `fav` value
   over the card-derived one for every already-tracked row, and leaves untracked rows (not yet seen by
-  bootstrap/watcher/reconciler) alone.
+  bootstrap/reconciler) alone.
 - **Migration / carry-forward**: `writeRowSync()` (`character-metadata-db.js:688-709`) reads whatever
   `fav` a legacy card had **once**, at the row's first INSERT (`existed` false) — via `buildRow()`
   (`character-metadata-db.js:607-651`, `fav: character.fav ? 1 : 0`, computed straight from whatever JSON

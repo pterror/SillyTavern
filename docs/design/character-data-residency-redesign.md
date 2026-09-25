@@ -20,7 +20,7 @@ implementation superseded or diverged from them.
 | 0b — versioned immutable thumbnail caching | `afbd83b9b` | **shipped half-done** — server-side only; no client emits a version, so every thumbnail takes an uncacheable 302 first. Currently worse than what it replaced |
 | 0c — `/duplicate` server wedge | `ade258e49` | **partly fixed** — parse corrected, loop still unbounded, wedge still reachable |
 | 0d — `writeExtensionField` dual-accept | — | not started |
-| 1 — SQLite metadata store | `f872377eb` | shipped; schema and all three freshness mechanisms as specced, with deviations listed in §9 |
+| 1 — SQLite metadata store | `f872377eb` | shipped; schema as specced, with deviations listed in §9. Two of the three freshness mechanisms remain: write hooks and a boot-time reconciler that only inserts rows for new files. The directory watcher was removed in `9ae4ef934` (§9) |
 | 2 — browse pagination | `6ac50dca2` | **shipped in part** — `/query`, `/exists`, `/changes` exist but reject search and random sort, and nothing is wired to the client. The whole tantivy sub-scope is outstanding |
 | 3 onward | — | not started |
 
@@ -158,6 +158,10 @@ invalidated three of the claims below; each is marked inline. Everything unmarke
   **Superseded by phase 1:** `character-metadata-db.js` now has all three — write hooks, a
   non-recursive `fs.watch`, and an interval reconciler — feeding a real `changes` log. `/manifest`
   itself is unchanged and still serves the UI.
+  **Removed in `9ae4ef934`:** the `fs.watch` watcher is gone. It treated the PNG as authoritative
+  over `card_json`, which conflicts with the DB being the source of truth, and every write to that
+  directory goes through the app. The interval was already removed in `86646763a`; the reconciler
+  now runs only at boot and on `/metadata/rescan` (§9).
 - `/api/tags/save` (`src/endpoints/tags.js:68`) rewrites the entire `tags.json` — 16 MB today —
   synchronously, on every tag mutation.
 - Thumbnails (`src/endpoints/thumbnails.js:249`) are served by a bare `response.sendFile` with no
@@ -566,7 +570,8 @@ characters(
   date_last_chat INTEGER NOT NULL,
   chat_size     INTEGER NOT NULL,
   data_size     INTEGER NOT NULL,
-  file_mtime    INTEGER NOT NULL,   -- drives the client delta feed
+  file_mtime    INTEGER NOT NULL,   -- REMOVED in fc12a174a. It never drove the delta feed (the changes
+                                    -- log does); its only reader was the watcher, removed in 9ae4ef934
   world         TEXT,               -- data.extensions.world, for the reverse index in §4.3
   creator       TEXT,
   version       TEXT,
@@ -632,6 +637,12 @@ Three mechanisms, in order of latency:
 2. A single non-recursive `fs.watch` on the characters directory, with the understanding that it
    is a latency optimization and never a correctness mechanism.
 
+   **Removed in `9ae4ef934`.** The shipped watcher treated the PNG as authoritative over
+   `card_json`: an mtime mismatch re-parsed the file and overwrote the row, and a missing file
+   deleted the row. That conflicts with the DB being the source of truth, and every write to the
+   characters directory already goes through the app, so there is nothing for a watcher to catch.
+   The inotify measurements below are kept as measurements.
+
    Measured on this machine rather than assumed. The good half: a non-recursive watch on a flat
    directory costs exactly one inotify watch regardless of file count, confirmed by
    counting `inotify wd:` lines in `/proc/<pid>/fdinfo/` before and after creating 200k files in the
@@ -658,6 +669,14 @@ Three mechanisms, in order of latency:
    rescan endpoint. This replaces the current design where the *only* freshness mechanism is a
    synchronous `statSync` of the directory on every search request, whose only remedy is nuking and
    rebuilding the entire index.
+
+   **Superseded by `86646763a` and `9ae4ef934`.** "See the silent-overflow finding in (2)" no longer
+   has a referent: (2) was removed, so the overflow finding motivates nothing here. The interval is
+   gone (`86646763a`): the reconciler runs at boot and on `/metadata/rescan`, and both skip the pass
+   when the directory's mtime equals the one recorded after the last pass. It no longer compares
+   directory contents and mtimes or emits `changes` rows for drift. It never re-reads a file that
+   already has a row, and since `9ae4ef934` it never deletes a row either; it only inserts rows
+   for `.png` files that have none. §9 has the current behaviour.
 
 The existing full-rebuild path stays, demoted to a repair tool behind an explicit endpoint rather
 than something a directory mtime change can trigger implicitly.
@@ -709,6 +728,8 @@ never once per request.* Concretely:
 2. Freshness comes from the watcher and the reconciler (§3.2), not from stat-on-read. One stat
    per file per change event, in the background, off the request path. The per-search-request
    `statSync` of the characters directory is deleted.
+   **Superseded by `9ae4ef934`:** the watcher half is removed (§3.2 item 2). Freshness comes from
+   the write-path hooks, plus the reconciler inserting rows for new files.
 3. The index build becomes incremental, driven by the same `changes` log: a changed card is one
    delete-plus-add, not a rebuild. `Index.open()` is used so the persisted index survives restarts.
    Full rebuild survives only as an explicit repair endpoint. This is the change that makes bulk
@@ -733,6 +754,12 @@ never once per request.* Concretely:
    the watcher, accumulates rows into one transaction per N files, and does a single index commit at
    the end is required, not optional, for the owner's near-term task. The reconciler is what
    makes it safe: an interrupted batch is found as drift on the next pass.
+   **Superseded by `86646763a` and `9ae4ef934`:** there is no watcher to suspend and no watcher
+   events (§3.2 item 2), so batch mode only buffers rows and flushes them in 500-row transactions.
+   The reconciler no longer finds drift. What it still does is insert a row for any `.png` that has
+   none, at the next boot whose directory mtime differs from the one recorded after the last pass.
+   That picks up files whose buffered rows an interrupted batch never flushed, with discovery time
+   as their `date_added`.
 
    The batch mode must also carry an optional per-record `date_added` through to the metadata
    insert (§3.1), falling back to discovery time when absent. This is the one place a caller can set
@@ -1676,14 +1703,52 @@ application code touches it. Deviations:
 - The `tag_usage` delete trigger decrements to zero and leaves the row, so zero-count rows
   accumulate.
 
-Freshness: all three mechanisms shipped. Write hooks fire from inside `writeCharacterData()`, so
-every create/edit/edit-avatar/edit-attribute/merge/import funnels through one path, with separate
-hooks for delete and rename. The watcher is a single non-recursive `fs.watch`, PNG-filtered, with a
-300 ms per-filename debounce. The reconciler runs at boot after bootstrap and on an interval
-(`performance.characterMetadataReconcileIntervalMs`, default 5 min, unref'd), disposed in
-`server-main.js`. The change log and `rev` are real: `rev` is the `changes` table's autoincrement
-rowid, and `/query` returns `MAX(rev)`. Batch import mode is real — it suspends the watcher, buffers
-into 500-row transactions, then flushes, forces a reconcile, and restarts the watcher.
+Freshness, as of `e5bb93d74`: write hooks, a boot-time reconciler, `/metadata/rescan`, and a batch
+mode that only buffers. There is no watcher.
+
+- Write hooks fire from inside `writeCharacterData()`, so every create/edit/edit-avatar/
+  edit-attribute/merge/import funnels through one path, with separate hooks for delete and rename.
+- The reconciler runs once at boot, after bootstrap. It skips the pass entirely when the characters
+  directory's mtime equals the one recorded in `meta` (`last_reconcile_dir_mtime_ms`) after the
+  last pass. Otherwise it inserts rows only for `.png` files that have no row. It never re-reads a
+  file that already has a row, because `card_json` is authoritative. It never deletes a row: a
+  missing PNG leaves the character in place, shown with the default avatar (below). The interval
+  (`performance.characterMetadataReconcileIntervalMs`) was removed in `86646763a`, and the
+  missing-file delete in `9ae4ef934`.
+- `POST /metadata/rescan` runs the same pass on demand, including the directory-mtime skip.
+- Batch import mode buffers rows and flushes them in 500-row transactions. It suspends nothing and
+  does not run a reconcile.
+- The `fs.watch` watcher was removed in `9ae4ef934`. It treated the PNG as authoritative over
+  `card_json`: an mtime mismatch re-parsed the file and overwrote the row, and a missing file
+  deleted the row. The `file_mtime` column, which only the watcher read, was dropped in `fc12a174a`.
+- The change log and `rev` are real: `rev` is the `changes` table's autoincrement rowid, and
+  `/query` returns `MAX(rev)`.
+
+PNG-less characters (`e5bb93d74`): a character exists iff its row exists; its PNG is only its image.
+When the PNG is missing, the server treats the image as the default avatar (`DEFAULT_AVATAR_PATH`)
+everywhere it reads one, and the client does nothing special. Concretely:
+
+- Metadata edits (rename, edit, edit-attribute, greeting ops, merge-attributes without an upload)
+  are DB-only and never write a PNG, whether or not the file exists.
+- `/edit-avatar`, `/delete`, `/duplicate`, `/export` and `/get` check the row
+  (`characterRowExists`), not the file. Delete unlinks the file only if it exists. Duplicate copies
+  the default avatar when the source file is missing, and treats a suffix as taken if its file or
+  its row exists. PNG export embeds the card in the default avatar image.
+- `processCharacter` stats `DEFAULT_AVATAR_PATH` when the file is missing.
+- `mintCharacterId` treats an id as taken if its file exists or, with a metadata store open, if
+  its row exists or it is pending in the batch-import buffer.
+- `/characters/<avatar>.png` (top-level, row exists) and `/thumbnail?type=avatar` serve the default
+  avatar instead of 404. The thumbnail check runs before the thumbnail cache. Sprites, charx assets,
+  and PNGs with no row still 404.
+- `migrate-character-ids` migrates a row whose file is gone, hashing the default avatar for its
+  identity.
+
+Not covered yet, deferred to the `.all()` sweep: a PNG-less character does not appear in bulk
+merge-attributes, `/all` without `search`, `/manifest`, the search index, or stats; data-maid may
+still report its chats as loose; and `migrate-character-ids` discovery only finds characters that
+have a PNG on disk. Each of these walks the whole library, and the scale rule (nothing O(total
+cards) on any path, no `.all()`) forbids that walk in any form, so they were not replaced with a
+DB-backed version of the same walk.
 
 Divergences that matter:
 
@@ -1714,8 +1779,7 @@ Divergences that matter:
 - The disk cache's `verify()` boot scan (`characters.js:131`) is still running, alongside the
   reconciler that was supposed to subsume it.
 - §3.3 item 4 did not ship: `chats.js` and `stats.js` do not know the metadata store exists, so
-  `date_last_chat` and `chat_size` only refresh when the card file changes or the reconciler happens
-  to re-read.
+  `date_last_chat` and `chat_size` only refresh when the card file changes.
 
 ### Phase 2 — browse pagination — SHIPPED IN PART (`6ac50dca2`)
 
@@ -2457,6 +2521,8 @@ design rather than confirming it:
 - inotify takes one watch per flat directory regardless of file count (measured), but queue overflow
   at 16,384 events is silent: no `error` event, no way to distinguish complete from lossy. The
   reconciler is therefore mandatory, not a backstop. §3.2.
+  **Superseded by `9ae4ef934`:** the watcher was removed, so the overflow finding no longer bears on
+  anything. The measurement stands.
 - `QuotaExceededError`'s numeric fields do not exist in Safari or Firefox and are `null` even in
   Chrome 138+ for IndexedDB (MDN browser-compat data, read 2026-08). Detect by `.name` only. And
   `persist()` can never succeed in a plain iOS Safari tab — structural, verified in WebKit source,
