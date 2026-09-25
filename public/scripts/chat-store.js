@@ -1,7 +1,7 @@
 // Writer side of the chat store: writes should go through the named actions below rather than
 // mutating `chat` directly and asking for a whole-conversation save.
 
-import { getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
+import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, updateViewMessageIds, refreshSwipeButtons, updateMessageBlock, _messageSnapshots } from '../script.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
@@ -117,6 +117,8 @@ const _openingRowInFlight = new Map();
 /** @typedef {object} OpeningsResponse
  * @property {number} [total]
  * @property {number} [stored]
+ * @property {number} [offset]
+ * @property {string|null} [default_node_id]
  * @property {OpeningAlternative[]} [alternatives]
  */
 
@@ -251,14 +253,18 @@ export async function ensureOpeningRow(mesId = 0) {
 // Brings the card's current greetings into an already-open chat's opening alternatives. Nothing is
 // written here: an appended slot carries a provisional id, marking it as card-only text; it gains a
 // row only if someone uses it.
-export async function _mergeCardGreetingsIntoOpening() {
+/**
+ * @param {object} [options]
+ * @param {{from: string, to: string}|null} [options.greetingEdit] The one card greeting whose text just changed, if that's what happened.
+ */
+export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null } = {}) {
     const opening = _chatAt(0);
     const character = getCurrentCharacter();
     if (opening?.node_id == null || opening.node_id === '' || character?.avatar == null || character.avatar === '') return;
     const speaker = character.name;
 
     /**
-     * @param {{offset?: number, limit?: number}} body
+     * @param {{offset?: number, limit?: number, around?: object}} body
      * @returns {Promise<OpeningsResponse|null>}
      */
     const ask = async (body) => {
@@ -277,13 +283,12 @@ export async function _mergeCardGreetingsIntoOpening() {
 
     const head = await ask({});
     if (!head) return;
+    const storedCount = head.stored ?? 0;
 
-    const cardOnlyCount = (head.total ?? 0) - (head.stored ?? 0);
-    if (cardOnlyCount <= 0) return;
-
-    const tail = await ask({ offset: head.stored, limit: cardOnlyCount });
+    const cardOnlyCount = (head.total ?? 0) - storedCount;
+    const tail = cardOnlyCount > 0 ? await ask({ offset: storedCount, limit: cardOnlyCount }) : null;
+    if (cardOnlyCount > 0 && !tail) return;
     const extras = (tail?.alternatives ?? []).filter(a => a.node_id == null || a.node_id === '');
-    if (!extras.length) return;
 
     const current = _chatAt(0);
     if (current?.node_id == null || current.node_id === '' || current.node_id !== opening.node_id) return;
@@ -296,18 +301,16 @@ export async function _mergeCardGreetingsIntoOpening() {
         ? [...current.swipe_info]
         : [{ send_date: current.send_date, extra: current.extra ?? {}, node_id: current.node_id }];
 
-    // Rebuild the card-only tail instead of appending — otherwise edited/removed card text lingers.
+    // Stored openings come first, at the same positions as on the server, so a slot here can be
+    // addressed by the server's index; the card-only tail after them is rebuilt from the card.
     /** @type {string[]} */
     const keptSwipes = [];
     /** @type {(SwipeInfoWithSpeaker|null)[]} */
     const keptInfo = [];
-    for (let k = 0; k < swipes.length; k++) {
-        const isStored = isStoredNodeId(swipeInfo[k]?.node_id);
-        const isHole = typeof swipes[k] !== 'string';
-        if (isStored || isHole) {
-            keptSwipes.push(swipes[k]);
-            keptInfo.push(swipeInfo[k] ?? null);
-        }
+    for (let k = 0; k < storedCount; k++) {
+        const isStored = isStoredNodeId(swipeInfo[k]?.node_id) && typeof swipes[k] === 'string';
+        keptSwipes.push(isStored ? swipes[k] : null);
+        keptInfo.push(isStored ? swipeInfo[k] : null);
     }
 
     const known = new Set(keptSwipes.filter(x => typeof x === 'string'));
@@ -327,31 +330,84 @@ export async function _mergeCardGreetingsIntoOpening() {
         && keptSwipes.every((x, k) => x === swipes[k]);
     if (unchanged) return;
 
-    swipes.length = 0;
-    swipes.push(...keptSwipes);
-    swipeInfo.length = 0;
-    swipeInfo.push(...keptInfo);
-
     // Whatever is being shown must survive the rebuild.
     const shownWas = current.swipe_id ?? 0;
-    const shownText = current.swipes?.[shownWas];
-    let shownAt = typeof shownText === 'string' ? swipes.indexOf(shownText) : -1;
+    const shownText = Array.isArray(current.swipes) ? current.swipes[shownWas] : current.mes;
+    const shownAt = typeof shownText === 'string' ? keptSwipes.indexOf(shownText) : -1;
+
+    /**
+     * Where `alt` sits in keptSwipes, filling its slot if it's a hole; -1 if it has no slot.
+     * @param {OpeningAlternative} alt
+     * @param {number} serverIndex
+     * @returns {number}
+     */
+    const placeOpening = (alt, serverIndex) => {
+        if (!isStoredNodeId(alt.node_id)) return keptSwipes.indexOf(alt.mes);
+        if (serverIndex >= storedCount) return -1;
+        if (typeof keptSwipes[serverIndex] !== 'string') {
+            keptSwipes[serverIndex] = alt.mes;
+            keptInfo[serverIndex] = {
+                send_date: alt.send_date, extra: alt.extra ?? {},
+                name: alt.name, is_user: alt.is_user,
+                node_id: alt.node_id,
+            };
+        }
+        return keptSwipes[serverIndex] === alt.mes ? serverIndex : -1;
+    };
+
+    // The fallback picks exactly what a fresh load (script.js's _openingFromTree()) would.
+    const placeDefault = () => {
+        const alternatives = head.alternatives ?? [];
+        let k = alternatives.findIndex(a => isStoredNodeId(a.node_id) && a.node_id === head.default_node_id);
+        if (k < 0) {
+            const { greetings, defaultIndex } = cardToGreetingsModel(character);
+            const preferredText = greetings.filter(text => typeof text === 'string' && text.length > 0)[defaultIndex ?? 0];
+            k = alternatives.findIndex(a => a.mes === preferredText);
+        }
+        if (k < 0) k = 0;
+        return k < alternatives.length ? placeOpening(alternatives[k], (head.offset ?? 0) + k) : -1;
+    };
+
+    /** @param {string} text */
+    const placeText = async (text) => {
+        const at = keptSwipes.indexOf(text);
+        if (at >= 0) return at;
+        // A stored opening outside the loaded window: ask for the window around it.
+        const around = await ask({ around: { name: speaker, is_user: false, mes: text } });
+        const k = (around?.alternatives ?? []).findIndex(a => isStoredNodeId(a.node_id) && a.mes === text);
+        return k < 0 ? -1 : placeOpening(around.alternatives[k], (around.offset ?? 0) + k);
+    };
+
+    let landAt = shownAt;
+    if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
+        // The card greeting on screen is gone: follow it to its new text if it was edited, otherwise
+        // show the default.
+        if (greetingEdit && greetingEdit.from === shownText) landAt = await placeText(greetingEdit.to);
+        if (landAt < 0) landAt = placeDefault();
+        if (_chatAt(0) !== current) return;
+    }
+
+    if (landAt < 0 && !isStoredNodeId(current.node_id)) {
+        if ((head.total ?? 0) > 0) return;
+        // No greeting left to open on, the same as loading a chat for a card with none.
+        _messageSnapshots.delete(current.node_id);
+        chat.splice(0, chat.length);
+        await redisplayChat();
+        return;
+    }
 
     /** @type {Partial<ChatMessage>} */
-    const updates = { swipes, swipe_info: /** @type {SwipeInfo[]} */ (swipeInfo) };
-
-    if (shownAt >= 0) {
-        updates.swipe_id = shownAt;
-    } else if (!isStoredNodeId(current.node_id) && swipes.length) {
-        // Card-only greeting on screen was edited/removed elsewhere; keep the position and sync
-        // mes/slot to match rather than guessing which new greeting it became.
-        shownAt = Math.min(shownWas, swipes.length - 1);
-        if (typeof swipes[shownAt] === 'string') {
-            updates.swipe_id = shownAt;
-            updates.mes = swipes[shownAt];
-            updates.name = swipeInfo[shownAt]?.name ?? speaker;
-            updates.node_id = swipeInfo[shownAt]?.node_id
-                ?? provisionalNodeId(updates.name, swipes[shownAt]);
+    const updates = { swipes: keptSwipes, swipe_info: /** @type {SwipeInfo[]} */ (keptInfo) };
+    if (landAt >= 0) {
+        updates.swipe_id = landAt;
+        if (landAt !== shownAt) {
+            const info = keptInfo[landAt];
+            updates.mes = keptSwipes[landAt];
+            updates.name = info?.name ?? speaker;
+            updates.is_user = info?.is_user === true;
+            updates.send_date = info?.send_date ?? current.send_date;
+            updates.extra = info?.extra ?? {};
+            updates.node_id = info?.node_id ?? provisionalNodeId(updates.name, updates.mes);
         }
     }
 

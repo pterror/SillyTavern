@@ -9206,7 +9206,7 @@ const GREETING_DEFAULT_POSITION_KEY = 'greeting_default_position';
  * @param {{first_mes?: string, data?: {alternate_greetings?: string[], extensions?: Record<string, any>}}} card
  * @returns {GreetingsModel}
  */
-function cardToGreetingsModel(card) {
+export function cardToGreetingsModel(card) {
     const firstMes = card?.first_mes ?? '';
     const altGreetings = Array.isArray(card?.data?.alternate_greetings) ? card.data.alternate_greetings : [];
 
@@ -9331,9 +9331,23 @@ function applyGreetingsModelToCharacter(character, model) {
  * @param {number[]} hashes
  */
 async function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes) {
+    const before = cardToGreetingsModel(character).greetings;
     applyGreetingsModelToCharacter(character, { greetings, defaultIndex });
     setGreetingPagerGreetings(greetings, defaultIndex, hashes);
-    await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character } });
+    const greetingEdit = findGreetingEdit(before, cardToGreetingsModel(character).greetings);
+    await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character, greetingEdit } });
+}
+
+/**
+ * The one greeting whose text changed in place; null for anything else (add, delete, move, default change).
+ * @param {string[]} before
+ * @param {string[]} after
+ * @returns {{from: string, to: string}|null}
+ */
+function findGreetingEdit(before, after) {
+    if (before.length !== after.length) return null;
+    const changed = after.flatMap((text, i) => (text === before[i] ? [] : [i]));
+    return changed.length === 1 ? { from: before[changed[0]], to: after[changed[0]] } : null;
 }
 
 // In-memory state for the sidebar greeting pager; `hashes` is the post-op per-position precondition hash list.
@@ -10085,28 +10099,6 @@ async function saveCharacterAvatar(avatar, file) {
         toastr.error(t`Something went wrong while saving the avatar, or the image file provided was in an invalid format. Double check that the image is not a webp.`);
         return false;
     }
-}
-
-/**
- * Puts the current character's greeting into the open chat, but only when that chat is empty - an
- * existing chat's messages are never regenerated.
- */
-export async function insertFirstMessageIntoEmptyChat() {
-    const message = await getFirstMessage();
-    if (!message.mes || selected_group || chat.length !== 0) {
-        return;
-    }
-
-    if (power_user.message_token_count_enabled) {
-        message.extra.token_count = await getTokenCountAsync(message.mes, 0);
-    }
-    chat.splice(0, chat.length, message);
-    const messageId = (chat.length - 1);
-    await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'first_message');
-    await clearChat();
-    await printMessages();
-    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
-    await ensureOpeningRow(0);
 }
 
 /**
@@ -11473,7 +11465,7 @@ jQuery(async function () {
     eventSource.on(event_types.CHARACTER_EDITED, async (event) => {
         const edited = event?.detail?.character?.avatar;
         if (!edited || edited !== getCurrentCharacter()?.avatar) return;
-        await _mergeCardGreetingsIntoOpening();
+        await _mergeCardGreetingsIntoOpening({ greetingEdit: event.detail.greetingEdit });
     });
 
     // Restores the draft for whatever chat just became current; no-op when none exists for this exact context.
