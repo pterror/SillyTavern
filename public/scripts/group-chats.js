@@ -82,7 +82,7 @@ import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
-import { _setCurrentTarget } from './chat-store.js';
+import { _setCurrentTarget, updateMessage } from './chat-store.js';
 import { provisionalNodeId } from './node-identity.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
@@ -805,10 +805,13 @@ function resetSelectedGroup() {
  * whole array. `chat[]` here carries no node_id at all yet (getGroupChat()'s freshChat branch just
  * pushed plain message objects) - the shape is one linear chain (each member's greeting is the next
  * turn), not alternatives, so this is: mint the first turn via /openings/ensure (which also creates the
- * group's anchor), point the anchor at it, label it with the group's own pre-assigned chat_id (a group's
- * chat_id is decided at group/chat creation, unlike a fresh solo chat's - it can't become the new node's
- * own id the way a character's `.chat` pointer does, since group.chats/branch-switching already
- * resolves other chats by that pre-assigned string), then append every remaining turn after it.
+ * group's anchor), point the anchor at it, append every remaining turn after it, then label the first
+ * turn with the group's own pre-assigned chat_id (a group's chat_id is decided at group/chat creation,
+ * unlike a fresh solo chat's - it can't become the new node's own id the way a character's `.chat`
+ * pointer does, since group.chats/branch-switching already resolves other chats by that pre-assigned
+ * string).
+ * The label is what makes the chat reachable, so it goes last: a failure before it leaves the chat
+ * unreachable, and the next open bootstraps it again from scratch.
  * @param {string} groupId
  * @param {string} chatName group.chat_id - the name this chat needs to be reachable under
  * @returns {Promise<boolean>} Whether every message in `chat[]` now carries a real node_id.
@@ -826,45 +829,50 @@ async function _bootstrapGroupChat(groupId, chatName) {
         body: JSON.stringify({ group_id: groupId, ...body }),
     });
 
-    const ensureResponse = await post('/api/chats/openings/ensure', { contents: [contentOf(chat[0])] });
-    if (!ensureResponse.ok) return false;
-    const firstId = (await ensureResponse.json().catch(() => null))?.node_ids?.[0];
-    if (!firstId) return false;
-    chat[0].node_id = firstId;
+    try {
+        const ensureResponse = await post('/api/chats/openings/ensure', { contents: [contentOf(chat[0])] });
+        if (!ensureResponse.ok) return false;
+        const firstId = (await ensureResponse.json().catch(() => null))?.node_ids?.[0];
+        if (!firstId) return false;
+        updateMessage(0, { node_id: firstId });
 
-    const selectResponse = await post('/api/chats/message/select', { node_id: firstId });
-    if (!selectResponse.ok) return false;
+        const selectResponse = await post('/api/chats/message/select', { node_id: firstId });
+        if (!selectResponse.ok) return false;
 
-    // /label always answers 200 even on refusal (e.g. unknown node) - the real result is in the body.
-    const labelResponse = await fetch('/api/chats/label', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ node_id: firstId, label: chatName }),
-    });
-    const labeled = labelResponse.ok && (await labelResponse.json().catch(() => null))?.ok;
-    if (!labeled) return false;
-
-    if (chat.length > 1) {
-        const appendResponse = await post('/api/chats/message/append', { after_node_id: firstId, messages: chat.slice(1) });
-        if (!appendResponse.ok) return false;
-        const nodeIds = (await appendResponse.json().catch(() => null))?.node_ids ?? [];
-        nodeIds.forEach((node_id, offset) => {
-            if (chat[offset + 1]) chat[offset + 1].node_id = node_id;
-        });
-        if (nodeIds.length !== chat.length - 1) return false;
-    }
-
-    // The label carries this chat's identity; metadata (integrity, __is_group) is a separate write onto
-    // that same labeled node, same as every later metadata-only edit (saveMetadata()) makes.
-    const metaResponse = await post('/api/chats/metadata', {
-        file_name: chatName,
-        metadata: { ...chat_metadata, __is_group: true },
-    });
-    if (metaResponse.ok) {
-        const meta = await metaResponse.json().catch(() => ({}));
-        if (typeof meta.integrity === 'string') {
-            _setCurrentTarget(chatName, meta.integrity, { group_id: groupId });
+        if (chat.length > 1) {
+            const appendResponse = await post('/api/chats/message/append', { after_node_id: firstId, messages: chat.slice(1) });
+            if (!appendResponse.ok) return false;
+            const nodeIds = (await appendResponse.json().catch(() => null))?.node_ids ?? [];
+            nodeIds.forEach((node_id, offset) => {
+                if (chat[offset + 1]) updateMessage(offset + 1, { node_id });
+            });
+            if (nodeIds.length !== chat.length - 1) return false;
         }
+
+        // /label always answers 200 even on refusal (e.g. unknown node) - the real result is in the body.
+        const labelResponse = await fetch('/api/chats/label', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ node_id: firstId, label: chatName }),
+        });
+        const labeled = labelResponse.ok && (await labelResponse.json().catch(() => null))?.ok;
+        if (!labeled) return false;
+
+        // The label carries this chat's identity; metadata (integrity, __is_group) is a separate write onto
+        // that same labeled node, same as every later metadata-only edit (saveMetadata()) makes.
+        const metaResponse = await post('/api/chats/metadata', {
+            file_name: chatName,
+            metadata: { ...chat_metadata, __is_group: true },
+        });
+        if (metaResponse.ok) {
+            const meta = await metaResponse.json().catch(() => ({}));
+            if (typeof meta.integrity === 'string') {
+                _setCurrentTarget(chatName, meta.integrity, { group_id: groupId });
+            }
+        }
+    } catch (error) {
+        console.error('Could not bootstrap the new group chat:', error);
+        return false;
     }
 
     return true;
