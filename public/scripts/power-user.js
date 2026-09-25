@@ -350,6 +350,7 @@ export const power_user = {
     auto_connect: false,
     auto_load_chat: false,
     forbid_external_media: true,
+    forbid_linked_lorebooks: true,
     external_media_allowed_overrides: [],
     external_media_forbidden_overrides: [],
     always_allow_custom_css: false,
@@ -2017,6 +2018,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#auto-connect-checkbox').prop('checked', power_user.auto_connect);
     $('#auto-load-chat-checkbox').prop('checked', power_user.auto_load_chat);
     $('#forbid_external_media').prop('checked', power_user.forbid_external_media);
+    $('#forbid_linked_lorebooks').prop('checked', power_user.forbid_linked_lorebooks);
     $('#always_allow_custom_css').prop('checked', power_user.always_allow_custom_css);
     $('#pin_styles').prop('checked', power_user.pin_styles);
     $('#click_to_edit').prop('checked', power_user.click_to_edit);
@@ -4542,6 +4544,11 @@ jQuery(() => {
         power_user.forbid_external_media = !!$(this).prop('checked');
         saveSettingsDebounced('power_user.forbid_external_media');
         reloadCurrentChat();
+    });
+
+    $('#forbid_linked_lorebooks').on('input', function () {
+        power_user.forbid_linked_lorebooks = !!$(this).prop('checked');
+        saveSettingsDebounced('power_user.forbid_linked_lorebooks');
     });
 
     $('#always_allow_custom_css').on('input', function () {
