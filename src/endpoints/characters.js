@@ -31,10 +31,11 @@ import { migrateOwnerOnTouch } from '../message-tree-migration.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
-import { searchGroups, searchGroupIds } from './groups-search-index.js';
+import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, tantivySortOrder } from './characters-search-index.js';
+import { mergeSortedWindow } from './tantivy-search.js';
+import { searchGroups, searchGroupIds, searchGroupsSorted } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -2165,6 +2166,59 @@ function sendHashQueryResponse(response, params) {
     return response.send(timePhase('serialize', () => serializeQueryHashesBinary(params)));
 }
 
+/**
+ * Extra matches fetched past a page, so a page whose index hits include rows that no longer exist (dropped
+ * during hydration) still fills.
+ * @param {number} pageSize
+ */
+function pageOverFetch(pageSize) {
+    return Math.max(5, Math.ceil(pageSize * 0.1));
+}
+
+/**
+ * The entities at merged ranks [offset, offset + count) of a search sorted by a tantivy fast field: characters
+ * sorted by tantivy, groups merged in by the same key. Only index data is read, never metadata rows.
+ * @param {string} handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {{ searchTerm: string, sortField: string, sortOrder: string, filter: object, includeGroups: boolean, offset: number, count: number }} params
+ * @returns {Promise<{ entities: { type: 'character'|'group', id: string }[], total: number, backend: string } | null>}
+ * null when the sort field has no fast field.
+ */
+async function searchSortedPage(handle, directories, { searchTerm, sortField, sortOrder, filter, includeGroups, offset, count }) {
+    const order = tantivySortOrder(sortField, sortOrder);
+    const filterOptions = {
+        fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
+        tags: filter.tags,
+        excludeIds: filter.excludeIds,
+        ids: Array.isArray(filter.ids) ? filter.ids : undefined,
+    };
+    const { groups, backend: groupsBackend } = includeGroups
+        ? await searchGroupsSorted(handle, directories, searchTerm, sortField, order, filterOptions)
+        : { groups: [], backend: 'tantivy' };
+
+    // Each group can push the page's first character back by one rank, so the character window starts that far
+    // earlier; mergeSortedWindow() then places it exactly.
+    const charStart = Math.max(0, offset - groups.length);
+    const charLimit = offset + count - charStart;
+    const chars = await searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, charStart, charLimit, filterOptions);
+    if (chars === null) return null;
+
+    let window = { chars: chars.hits, charStart, charsExhausted: chars.hits.length < charLimit };
+    if (chars.hits.length === 0 && charStart > 0) {
+        // The page lies past the last character, among trailing groups: anchor the merge on that last character.
+        const last = chars.total > 0
+            ? await searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, chars.total - 1, 1, filterOptions)
+            : null;
+        window = last && last.hits.length > 0
+            ? { chars: last.hits, charStart: chars.total - 1, charsExhausted: true }
+            : { chars: [], charStart: 0, charsExhausted: true };
+    }
+
+    const entities = timePhase('merge_ids', () => mergeSortedWindow({ ...window, groups, offset, count }));
+    const backend = chars.backend === 'unavailable' || groupsBackend === 'unavailable' ? 'unavailable' : chars.backend;
+    return { entities, total: chars.total + groups.length, backend };
+}
+
 async function handleQuery(request, response) {
     try {
         const body = request.body ?? {};
@@ -2242,53 +2296,49 @@ async function handleQuery(request, response) {
         if (hasSearch) {
             const handle = request.user.profile.handle;
 
-            // Fast path: tantivy sorts/paginates natively when the sort field has a fast field, returning
-            // just the page window - no match-set materialization, no SQL sort. Falls back to SQL otherwise.
-            if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !includeGroups) {
-                const favOnly = filter.fav === true;
-                const sortedResult = await searchCharacterIdsSorted(
-                    handle, request.user.directories, searchTerm,
-                    sort.field, sort.order === 'asc' ? 'asc' : 'desc',
-                    offset, pageSize, favOnly,
-                    { tags: filter.tags, excludeIds: filter.excludeIds },
-                );
-                if (sortedResult !== null) {
-                    searchBackend = sortedResult.backend;
-                    if (sortedResult.ids.length === 0) {
-                        const seq = (await timePhase('query_characters', () => queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? 0;
-                        if (wantHashes) {
-                            return sendHashQueryResponse(response, { seq, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
+            // tantivy sorts natively when the sort field has a fast field, and only the page is hydrated. The index
+            // has no world field, so a world-filtered search takes the SQL path below.
+            if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world) {
+                const sortedPage = await searchSortedPage(handle, request.user.directories, {
+                    searchTerm, sortField: sort.field, sortOrder: sort.order, filter, includeGroups,
+                    offset, count: pageSize + pageOverFetch(pageSize),
+                });
+                if (sortedPage !== null) {
+                    searchBackend = sortedPage.backend;
+                    const total = wantTotal ? sortedPage.total : undefined;
+                    if (includeGroups) {
+                        const result = await timePhase('page_rows', () => getEntityRowsByIds(request.user.directories, sortedPage.entities, { wantRows, wantHashes }));
+                        if (result === null) {
+                            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
                         }
-                        const payload = { seq, searchBackend };
-                        if (wantRows) payload.rows = [];
-                        if (wantTotal) payload.total = 0;
+                        if (wantHashes) {
+                            return sendHashQueryResponse(response, { seq: result.seq, total, approxTotal: false, hashRows: result.hashRows.slice(0, pageSize), searchBackend });
+                        }
+                        const payload = { seq: result.seq, searchBackend };
+                        if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows.slice(0, pageSize)));
+                        if (wantTotal) payload.total = total;
                         return response.send(payload);
                     }
-                    // Hydrate just the page-sized id set - no sorting, no counting in SQL.
-                    const result = await timePhase('query_characters', () => queryCharacters(request.user.directories, {
-                        ids: sortedResult.ids,
-                        wantRows, wantHashes, wantTotal: false,
-                    }));
+                    const ids = sortedPage.entities.map(e => e.id);
+                    const result = await timePhase('page_rows', () => queryCharacters(request.user.directories, { ids, wantRows, wantHashes, wantTotal: false }));
                     if (result === null) {
                         return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
                     }
                     if (wantHashes) {
                         // queryCharacters returns hashRows in id order; re-order to match tantivy's sort.
                         const idToHashRow = new Map(result.hashRows.map(r => [r.id, r]));
-                        const orderedHashRows = sortedResult.ids.map(id => idToHashRow.get(id)).filter(Boolean);
-                        return sendHashQueryResponse(response, { seq: result.seq, total: wantTotal ? sortedResult.total : undefined, approxTotal: false, hashRows: orderedHashRows, searchBackend });
+                        const orderedHashRows = ids.map(id => idToHashRow.get(id)).filter(Boolean).slice(0, pageSize);
+                        return sendHashQueryResponse(response, { seq: result.seq, total, approxTotal: false, hashRows: orderedHashRows, searchBackend });
                     }
-                    const payload = { seq: result.seq };
-                    if (wantTotal) payload.total = sortedResult.total;
+                    const payload = { seq: result.seq, searchBackend };
+                    if (wantTotal) payload.total = total;
                     if (wantRows) {
                         // Rows here are always plain toShallow() projections, so the id lives at `.avatar`.
                         const idToRow = new Map(result.rows.map(r => [r.avatar, r]));
-                        payload.rows = sortedResult.ids.map(id => idToRow.get(id)).filter(Boolean);
+                        payload.rows = ids.map(id => idToRow.get(id)).filter(Boolean).slice(0, pageSize);
                     }
-                    if (searchBackend !== undefined) payload.searchBackend = searchBackend;
                     return response.send(payload);
                 }
-                // sortedResult === null: fast field not available on this index, fall through to SQL path.
             }
 
             // 'search' sort only needs a relevance-ordered page-sized window; any other sort needs the full
