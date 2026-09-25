@@ -96,7 +96,9 @@ test.describe('field-scoped character saves', () => {
             await setUnsavedInput(page, '#scenario_pole', 'UNSAVED SCENARIO');
             await setUnsavedInput(page, '#personality_textarea', 'UNSAVED PERSONALITY');
             await openInfoTab(page, 'description');
+            await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
             await page.locator('#description_textarea').fill('saved description');
+            await page.locator('.field_edit_done[data-for="description_textarea"]').click();
 
             await expect.poll(() => mergeBodies.length, { timeout: 10000 }).toBe(1);
             await expect.poll(async () => (await fetchStoredCharacter(page, avatar)).data.description).toBe('saved description');
@@ -122,7 +124,9 @@ test.describe('field-scoped character saves', () => {
             const mergeBodies = recordMergeRequests(page);
 
             await openInfoTab(page, 'description');
+            await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
             await page.locator('#description_textarea').fill('first field');
+            await page.locator('.field_edit_done[data-for="description_textarea"]').click();
             await openInfoTab(page, 'personality');
             await page.locator('#personality_textarea').fill('second field');
 
@@ -172,7 +176,9 @@ test.describe('field-scoped character saves', () => {
         await page.locator('#rm_button_create').click();
         await page.locator('#character_name_pole').fill(name);
         await openInfoTab(page, 'description');
+        await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
         await page.locator('#description_textarea').fill('typed description');
+        await page.locator('.field_edit_done[data-for="description_textarea"]').click();
         await setUnsavedInput(page, '#personality_textarea', 'UNSAVED PERSONALITY');
 
         const createResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));

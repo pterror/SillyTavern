@@ -74,7 +74,7 @@ async function createTestCharacter(page) {
     // types description/personality/etc into, and the one that emits CHARACTER_EDITED on edit).
     await page.locator('.character_select', { hasText: name }).first().click();
     await openInfoTab(page, 'description');
-    await page.locator('#description_textarea').waitFor({ state: 'visible', timeout: 10000 });
+    await page.locator('.field_preview[data-for="description_textarea"]').waitFor({ state: 'visible', timeout: 10000 });
     // Selecting the character fires its own CHAT_LOADED-driven settings save (prompt order setup
     // for a character that has none yet) - let that settle before a caller starts listening for
     // saves under test.
@@ -100,10 +100,12 @@ test.describe('prompt manager character-edit settings save', () => {
 
             // The flow the owner actually hits: type in a definitions-panel field, then click
             // away (blur) - mirroring "type a message, then click away" for the chatbar.
+            await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
             await page.locator('#description_textarea').fill('A test character used to check for a stray settings save.');
+            await page.locator('.field_edit_done[data-for="description_textarea"]').click();
             await page.locator('#creator_textarea').click();
 
-            // Wait out the description field's save debounce, so a settings save it set off would be caught.
+            // Wait out the description field's save, so a settings save it set off would be caught.
             await page.waitForTimeout(2000);
 
             expect(saveRequests).toEqual([]);

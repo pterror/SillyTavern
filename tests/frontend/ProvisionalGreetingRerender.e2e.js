@@ -318,7 +318,9 @@ test.describe('provisional greeting follows greeting saves', () => {
         await page.locator('.greeting-pager-next').click();
         await expect(page.locator('#greeting_field')).toHaveValue(g1);
         const response = greetingOpResponse(page, 'edit');
+        await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
         await page.locator('#greeting_field').fill(edited);
+        await page.locator('.field_edit_done[data-for="greeting_field"]').click();
         expect((await response).ok()).toBe(true);
 
         await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(edited);

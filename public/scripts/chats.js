@@ -25,6 +25,7 @@ import {
     updateIn,
 } from '../script.js';
 import { renderMarkdown } from './marked-processor.js';
+import { insertMacroSpans, substituteMacrosWithPlaceholders } from './character-field-editor.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
@@ -47,7 +48,6 @@ import {
     convertTextToBase64,
     isSameFile,
     clamp,
-    escapeHtml,
 } from './utils.js';
 import { extension_settings, renderExtensionTemplateAsync, saveMetadataDebounced } from './extensions.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -662,12 +662,13 @@ export function formatCreatorNotes(text, avatarId) {
         ADD_TAGS: ['custom-style'],
     };
 
-    let html = renderMarkdown(substituteParams(text));
+    const { text: substituted, values } = substituteMacrosWithPlaceholders(text, substituteParams);
+    let html = renderMarkdown(substituted);
     html = encodeStyleTags(html);
     html = DOMPurify.sanitize(html, config);
     html = decodeStyleTags(html, decodeStyleParam);
 
-    return html;
+    return insertMacroSpans(html, values);
 }
 
 async function openGlobalStylesPreferenceDialog() {
@@ -2395,60 +2396,6 @@ export function initChatUtilities() {
         const previewText = substituteParams(rawText);
         const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(previewText);
         await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
-    });
-
-    /**
-     * Builds the HTML for the inline macro preview, wrapping each substituted macro's value in a styleable span.
-     * @param {string} rawText Raw field content, not yet substituted.
-     * @returns {string} Sanitized HTML with substituted macros wrapped in `.macro-substituted` spans.
-     */
-    function renderMacroPreviewHtml(rawText) {
-        const escapedContent = escapeHtml(rawText);
-        const html = substituteParams(escapedContent, {
-            postProcessFn: value => `<span class="macro-substituted">${escapeHtml(value)}</span>`,
-        });
-        return DOMPurify.sanitize(html, { ALLOWED_TAGS: ['span'], ALLOWED_ATTR: ['class'] });
-    }
-
-    $(document).on('click', '.macro_preview_toggle_button', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        const broId = $(this).attr('data-for');
-        const bro = $(`#${broId}`);
-        const preview = $(`.macro_preview_content[data-for="${broId}"]`);
-
-        if (!bro.length || !preview.length) {
-            console.error('Could not find field to preview macros for', broId);
-            return;
-        }
-
-        const showingPreview = preview.is(':visible');
-
-        if (showingPreview) {
-            preview.hide();
-            bro.show();
-        } else {
-            preview.html(renderMacroPreviewHtml(String(bro.val())));
-            bro.hide();
-            preview.show();
-        }
-
-        $(this).toggleClass('fa-wand-magic-sparkles fa-pencil');
-    });
-
-    $(document).on('dblclick', '.macro_preview_content', function () {
-        const broId = $(this).attr('data-for');
-        $(`.macro_preview_toggle_button[data-for="${broId}"]`).trigger('click');
-        $(`#${broId}`).trigger('focus');
-    });
-
-    $(document).on('click', '.macro_preview_content', function () {
-        if (!power_user.click_to_edit) return;
-        if (window.getSelection().toString()) return;
-        const broId = $(this).attr('data-for');
-        $(`.macro_preview_toggle_button[data-for="${broId}"]`).trigger('click');
-        $(`#${broId}`).trigger('focus');
     });
 
     $(document).on('click', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {

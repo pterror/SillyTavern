@@ -1,3 +1,4 @@
+import { blockWhileFieldEditing } from './character-field-editor.js';
 import {
     moment,
 } from '../lib.js';
@@ -1283,6 +1284,10 @@ function setReasoningEventHandlers() {
         }
 
         if (messageBlock.find('.reasoning_edit_textarea').length > 0) {
+            return;
+        }
+
+        if (blockWhileFieldEditing()) {
             return;
         }
 

@@ -1,3 +1,4 @@
+import { handleFieldEditKey } from './character-field-editor.js';
 import { DOMPurify, Bowser } from '../lib.js';
 
 import {
@@ -1114,6 +1115,9 @@ export function initRossMods() {
         // Deliberately unscoped: only one message can be in edit mode at a time, so this always
         // matches the message actually being edited, not necessarily the last one.
         if (event.ctrlKey && event.key == 'Enter') {
+            if (handleFieldEditKey('confirm')) {
+                return;
+            }
             const editMesDone = $('.mes_edit_done:visible');
             const reasoningMesDone = $('.mes_reasoning_edit_done:visible');
             if (editMesDone.length > 0) {

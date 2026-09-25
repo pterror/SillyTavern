@@ -6310,11 +6310,13 @@
                                 <div id="charInfoTab_creatorNotes" class="char_info_tab_panel tab-contents">
                                     <div id="creator_notes_div">
                                         <h4 class="flex-container alignItemsBaseline">
-                                            <i class="creator_notes_preview_toggle_button fa-solid fa-pencil right_menu_button" data-for="creator_notes_textarea" title="Edit raw text" data-i18n="[title]Edit raw text"></i>
-                                            <i class="editor_maximize fa-solid fa-maximize" data-for="creator_notes_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="creator_notes_textarea" title="Edit" data-i18n="[title]Edit"></i>
+                                            <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="creator_notes_textarea" title="Confirm" data-i18n="[title]Confirm"></i>
+                                            <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="creator_notes_textarea" title="Cancel" data-i18n="[title]Cancel"></i>
+                                            <i class="field_maximize fa-solid fa-maximize" data-for="creator_notes_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                         </h4>
-                                        <textarea id="creator_notes_textarea" name="creator_notes" data-i18n="[placeholder](Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" placeholder="(Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" form="form_create" class="text_pole autoSetHeight" autocomplete="off" rows="4" style="display: none;"></textarea>
-                                        <div id="creator_notes_preview" class="creator_notes_preview_content"></div>
+                                        <textarea id="creator_notes_textarea" name="creator_notes" data-i18n="[placeholder](Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" placeholder="(Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" form="form_create" class="field_edit_textarea text_pole autoSetHeight" autocomplete="off" rows="4"></textarea>
+                                        <div id="creator_notes_preview" class="field_preview creator_notes_preview_content" data-for="creator_notes_textarea"></div>
                                     </div>
                                 </div>
                                 <label id="descriptionTabButton" class="tab-title">
@@ -6324,16 +6326,18 @@
                                 <div id="charInfoTab_description" class="char_info_tab_panel tab-contents">
                                     <div id="descriptionWrapper" class="flex-container flexFlowColumn flex1">
                                         <div class="flex-container alignitemscenter">
-                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="description_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="description_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
-                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#character-description" class="notes-link" target="_blank">
+                                            <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="description_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="description_textarea" title="Edit" data-i18n="[title]Edit"></i>
+                                            <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="description_textarea" title="Confirm" data-i18n="[title]Confirm"></i>
+                                            <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="description_textarea" title="Cancel" data-i18n="[title]Cancel"></i>
+                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#character-description" class="notes-link field_edit_nav" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
                                             </a>
                                             <span class="mdhotkey_location" style="display: none;"></span>
                                             <small>(<span data-token-counter="description_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </div>
-                                        <textarea id="description_textarea" class="mdHotkeys autoSetHeight" rows="6" data-macros data-i18n="[placeholder]Describe your character's physical and mental traits here." placeholder="Describe your character's physical and mental traits here." name="description" placeholder=""></textarea>
-                                        <pre class="macro_preview_content" data-for="description_textarea" style="display: none;"></pre>
+                                        <textarea id="description_textarea" class="field_edit_textarea mdHotkeys autoSetHeight" rows="6" data-macros data-i18n="[placeholder]Describe your character's physical and mental traits here." placeholder="Describe your character's physical and mental traits here." name="description" placeholder=""></textarea>
+                                        <div class="field_preview macro_preview_content" data-for="description_textarea"></div>
                                     </div>
                                 </div>
                                 <label id="firstMessageTabButton" class="tab-title">
@@ -6343,14 +6347,16 @@
                                 <div id="charInfoTab_greeting" class="char_info_tab_panel tab-contents">
                                     <div id="first_message_div" class="flex-container flexFlowColumn flex1">
                                         <div class="flex-container alignitemscenter flex1">
-                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="greeting_field" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
-                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link" target="_blank">
+                                            <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="greeting_field" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="greeting_field" title="Edit" data-i18n="[title]Edit"></i>
+                                            <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="greeting_field" title="Confirm" data-i18n="[title]Confirm"></i>
+                                            <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="greeting_field" title="Cancel" data-i18n="[title]Cancel"></i>
+                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#first-message" class="notes-link field_edit_nav" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
                                             </a>
                                             <span class="mdhotkey_location" style="display: none;"></span>
                                             <small>(<span data-token-counter="greeting_field">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
-                                            <div class="greeting-pager">
+                                            <div class="greeting-pager field_edit_nav">
                                                 <div class="greeting-pager-btn greeting-pager-prev" title="Previous greeting" data-i18n="[title]Previous greeting">
                                                     <i class="fa-solid fa-chevron-left"></i>
                                                 </div>
@@ -6364,13 +6370,13 @@
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="menu_button menu_button_icon open_alternate_greetings margin0" title="Open all greetings" data-i18n="[title]Open all greetings">
+                                        <div class="menu_button menu_button_icon open_alternate_greetings field_edit_nav margin0" title="Open all greetings" data-i18n="[title]Open all greetings">
                                             <span data-i18n="Greetings">
                                                 Greetings
                                             </span>
                                         </div>
-                                        <textarea id="greeting_field" class="mdHotkeys autoSetHeight" rows="6" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
-                                        <pre class="macro_preview_content" data-for="greeting_field" style="display: none;"></pre>
+                                        <textarea id="greeting_field" class="field_edit_textarea mdHotkeys autoSetHeight" rows="6" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
+                                        <div class="field_preview macro_preview_content mes_text" data-for="greeting_field"></div>
                                     </div>
                                 </div>
                                 <label class="tab-title">
@@ -6381,12 +6387,14 @@
                                     <div id="mainPromptOverride">
                                         <small data-i18n="Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.</small>
                                         <h4 class="flex-container alignItemsBaseline">
-                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="system_prompt_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="system_prompt_textarea" title="Edit" data-i18n="[title]Edit"></i>
+                                            <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="system_prompt_textarea" title="Confirm" data-i18n="[title]Confirm"></i>
+                                            <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="system_prompt_textarea" title="Cancel" data-i18n="[title]Cancel"></i>
                                             <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
-                                        <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" class="text_pole autoSetHeight" autocomplete="off" rows="3"></textarea>
-                                        <pre class="macro_preview_content" data-for="system_prompt_textarea" style="display: none;"></pre>
+                                        <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" class="field_edit_textarea text_pole autoSetHeight" autocomplete="off" rows="3"></textarea>
+                                        <div class="field_preview macro_preview_content" data-for="system_prompt_textarea"></div>
                                     </div>
                                 </div>
                                 <label class="tab-title">
@@ -6397,12 +6405,14 @@
                                     <div id="postHistoryInstructionsOverride">
                                         <small data-i18n="Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Post-History Instructions from system settings. For Chat Completion and Instruct Mode.</small>
                                         <h4 class="flex-container alignItemsBaseline">
-                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <i class="macro_preview_toggle_button fa-solid fa-wand-magic-sparkles right_menu_button" data-for="post_history_instructions_textarea" title="Preview with macros substituted" data-i18n="[title]Preview with macros substituted"></i>
+                                            <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="post_history_instructions_textarea" title="Edit" data-i18n="[title]Edit"></i>
+                                            <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="post_history_instructions_textarea" title="Confirm" data-i18n="[title]Confirm"></i>
+                                            <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="post_history_instructions_textarea" title="Cancel" data-i18n="[title]Cancel"></i>
                                             <small>(<span data-token-counter="post_history_instructions_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
-                                        <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" class="text_pole autoSetHeight" autocomplete="off" rows="3"></textarea>
-                                        <pre class="macro_preview_content" data-for="post_history_instructions_textarea" style="display: none;"></pre>
+                                        <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" class="field_edit_textarea text_pole autoSetHeight" autocomplete="off" rows="3"></textarea>
+                                        <div class="field_preview macro_preview_content" data-for="post_history_instructions_textarea"></div>
                                     </div>
                                 </div>
                                 <label class="tab-title">

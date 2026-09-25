@@ -52,7 +52,7 @@ async function createAndSelectTestCharacter(page) {
     await page.locator('#create_button_label').click();
     await page.locator('.character_select', { hasText: name }).first().click();
     await openInfoTab(page, 'description');
-    await page.locator('#description_textarea').waitFor({ state: 'visible', timeout: 10000 });
+    await page.locator('.field_preview[data-for="description_textarea"]').waitFor({ state: 'visible', timeout: 10000 });
     // Selecting a character for the first time legitimately dirties active_character (and, via
     // CHAT_LOADED, may seed a default prompt order) - let that real save settle before a caller
     // starts listening for saves under test.
@@ -77,7 +77,7 @@ test.describe('character editor reopen settings save', () => {
 
             // The owner's actual flow: click into the description field, then click away - zero
             // keystrokes.
-            await page.locator('#description_textarea').click();
+            await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
             await page.locator('#creator_textarea').click();
 
             await page.waitForTimeout(2000);
