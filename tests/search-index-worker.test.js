@@ -1,8 +1,13 @@
-import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
+
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const ORIGINAL_CWD = process.cwd();
+const HANDLE = 'h';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -19,6 +24,11 @@ let tantivySearch;
 let directories;
 /** @type {ReturnType<typeof coordinatorModule.createSearchIndexCoordinator>[]} */
 let coordinators;
+/** @type {{ at: number, seq: number }[]} HANDLE's 'search-index-updated' events this test, in arrival order. */
+let indexUpdates;
+const onSearchIndexUpdated = (handle, seq) => {
+    if (handle === HANDLE) indexUpdates.push({ at: performance.now(), seq });
+};
 
 const TANTIVY_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
 
@@ -38,25 +48,20 @@ function cardJson(name) {
 
 /** A character with a real card PNG and a metadata row, so the worker can index it from any cwd. */
 async function seedCharacter(name) {
-    const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
+    const baseImage = await fs.promises.readFile(path.join(REPO_ROOT, 'public', 'img', 'ai4.png'));
     await fs.promises.writeFile(path.join(directories.characters, `${name}.png`), cardParser.write(baseImage, cardJson(name)));
     await metadataDb.upsertCharacterFromWrite(directories, `${name}.png`, cardJson(name));
 }
 
-/**
- * A coordinator whose 'committed' messages are recorded with the time they arrived.
- * @param {object} [workerOptions]
- */
+/** @param {object} [workerOptions] */
 function makeCoordinator(workerOptions = {}) {
-    /** @type {{ at: number, msg: any }[]} */
-    const commits = [];
-    const coordinator = coordinatorModule.createSearchIndexCoordinator({
-        workerOptions,
-        onCharactersCommitted: (msg) => commits.push({ at: performance.now(), msg }),
-    });
+    const coordinator = coordinatorModule.createSearchIndexCoordinator({ workerOptions });
     coordinators.push(coordinator);
-    return { coordinator, commits };
+    return coordinator;
 }
+
+/** Whether a 'search-index-updated' event has said the index covers the change log up to `seq`. */
+const indexCovers = (seq) => indexUpdates.some(update => update.seq >= seq);
 
 /** @returns {string[]} The ids whose name matches `word`. */
 function searchNames(reader, word) {
@@ -81,6 +86,11 @@ beforeAll(async () => {
     searchEngine = await import('../src/endpoints/search-engine.js');
     coordinatorModule = await import('../src/endpoints/search-index-coordinator.js');
     tantivySearch = await import('../src/endpoints/tantivy-search.js');
+    metadataDb.characterChangeEmitter.on('search-index-updated', onSearchIndexUpdated);
+});
+
+afterAll(() => {
+    metadataDb.characterChangeEmitter.off('search-index-updated', onSearchIndexUpdated);
 });
 
 beforeEach(() => {
@@ -96,9 +106,12 @@ beforeEach(() => {
         fs.mkdirSync(dir, { recursive: true });
     }
     coordinators = [];
+    indexUpdates = [];
 });
 
 afterEach(async () => {
+    // A test that timed out never reaches its own finally.
+    process.chdir(ORIGINAL_CWD);
     await Promise.all(coordinators.map(c => c.dispose()));
     metadataDb.disposeMetadataStores();
 });
@@ -110,8 +123,8 @@ describe('search-index-worker.js (real worker thread)', () => {
         await seedCharacter('Doomed');
         await seedCharacter('Keeper');
         // One change-log page per tick, so the backlog below takes several ticks to drain.
-        const { coordinator } = makeCoordinator({ tickBudgetMs: 0 });
-        const reader = await coordinator.getIndex('h', directories, 'characters');
+        const coordinator = makeCoordinator({ tickBudgetMs: 0 });
+        const reader = await coordinator.getIndex(HANDLE, directories, 'characters');
         expect(searchNames(reader, 'Doomed')).toEqual(['Doomed.png']);
 
         const keeperJson = await metadataDb.getCharacterCardJson(directories, 'Keeper.png');
@@ -123,50 +136,55 @@ describe('search-index-worker.js (real worker thread)', () => {
         const deletedAt = Date.now();
 
         await waitFor(async () => {
-            const current = await coordinator.getIndex('h', directories, 'characters');
+            const current = await coordinator.getIndex(HANDLE, directories, 'characters');
             return searchNames(current, 'Doomed').length === 0;
         });
         expect(Date.now() - deletedAt).toBeLessThan(2500);
 
         // The upsert backlog in front of the delete was not drained yet.
         expect(Number(await metadataDb.getMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY))).toBeLessThan(deleteSeq);
-        expect(searchNames(await coordinator.getIndex('h', directories, 'characters'), 'Keeper')).toEqual(['Keeper.png']);
+        expect(searchNames(await coordinator.getIndex(HANDLE, directories, 'characters'), 'Keeper')).toEqual(['Keeper.png']);
     }, 30000);
 
     test('searches are answered while a catch-up tick is running', async () => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
 
         await seedCharacter('Anchor');
-        const { coordinator, commits } = makeCoordinator({ tickBudgetMs: 60000 });
-        await coordinator.getIndex('h', directories, 'characters');
+        const coordinator = makeCoordinator({ tickBudgetMs: 60000 });
+        await coordinator.getIndex(HANDLE, directories, 'characters');
 
         // PNG-less characters: processCharacter() stats DEFAULT_AVATAR_PATH, which is repo-root-relative.
-        const originalCwd = process.cwd();
-        process.chdir(path.resolve(originalCwd, '..'));
+        process.chdir(REPO_ROOT);
         try {
             for (let i = 0; i < 3000; i++) {
                 await metadataDb.upsertCharacterFromWrite(directories, `Bulk${i}.png`, cardJson(`Bulk${i}`));
             }
+            const lastSeq = await metadataDb.getCurrentSeq(directories);
+            const writtenAt = performance.now();
 
+            // Every search between the last write and the event saying the index covers it runs while the catch-up
+            // of that backlog is in progress.
             /** @type {{ start: number, end: number }[]} */
             const searches = [];
-            // A tick may already have taken part of the backlog while it was being written.
-            while (commits.reduce((sum, c) => sum + c.msg.upserts, 0) < 3000) {
+            const deadline = Date.now() + 50000;
+            while (!indexCovers(lastSeq)) {
+                if (Date.now() > deadline) throw new Error('timed out waiting for the search index worker');
                 const start = performance.now();
-                const reader = await coordinator.getIndex('h', directories, 'characters');
+                const reader = await coordinator.getIndex(HANDLE, directories, 'characters');
                 searchNames(reader, 'Anchor');
                 searches.push({ start, end: performance.now() });
                 await new Promise(resolve => setTimeout(resolve, 5));
             }
 
-            const duringTick = searches.filter(s => commits.some(({ at, msg }) => s.start >= at - msg.ms && s.end <= at));
-            expect(duringTick.length).toBeGreaterThan(3);
-            for (const s of duringTick) {
+            const coveredAt = indexUpdates.find(update => update.seq >= lastSeq).at;
+            const duringCatchUp = searches.filter(s => s.start >= writtenAt && s.end <= coveredAt);
+            expect(duringCatchUp.length).toBeGreaterThan(3);
+            for (const s of duringCatchUp) {
                 expect(s.end - s.start).toBeLessThan(100);
             }
-            expect(searchNames(await coordinator.getIndex('h', directories, 'characters'), 'Bulk1234')).toEqual(['Bulk1234.png']);
+            expect(searchNames(await coordinator.getIndex(HANDLE, directories, 'characters'), 'Bulk1234')).toEqual(['Bulk1234.png']);
         } finally {
-            process.chdir(originalCwd);
+            process.chdir(ORIGINAL_CWD);
         }
     }, 60000);
 
@@ -176,15 +194,17 @@ describe('search-index-worker.js (real worker thread)', () => {
         const errors = jest.spyOn(console, 'error');
         try {
             await seedCharacter('First');
-            const { coordinator, commits } = makeCoordinator();
-            await coordinator.getIndex('h', directories, 'characters');
+            const coordinator = makeCoordinator();
+            await coordinator.getIndex(HANDLE, directories, 'characters');
 
             await seedCharacter('Second');
-            await waitFor(() => commits.length >= 1);
+            const secondSeq = await metadataDb.getCurrentSeq(directories);
+            await waitFor(() => indexCovers(secondSeq));
             await seedCharacter('Third');
-            await waitFor(() => commits.length >= 2);
+            const thirdSeq = await metadataDb.getCurrentSeq(directories);
+            await waitFor(() => indexCovers(thirdSeq));
 
-            const reader = await coordinator.getIndex('h', directories, 'characters');
+            const reader = await coordinator.getIndex(HANDLE, directories, 'characters');
             expect(searchNames(reader, 'Second')).toEqual(['Second.png']);
             expect(searchNames(reader, 'Third')).toEqual(['Third.png']);
             expect(errors.mock.calls.filter(args => String(args[0]).includes('[search]'))).toEqual([]);
@@ -193,18 +213,35 @@ describe('search-index-worker.js (real worker thread)', () => {
         }
     }, 30000);
 
+    test('a rebuild-and-swap emits search-index-updated with the seq the rebuilt index covers', async () => {
+        if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+
+        await seedCharacter('Rebuilt');
+        const coordinator = makeCoordinator();
+        await coordinator.getIndex(HANDLE, directories, 'characters');
+        const seq = await metadataDb.getCurrentSeq(directories);
+        // Past the once-per-second window of anything the startup emitted.
+        await new Promise(resolve => setTimeout(resolve, 1100));
+        indexUpdates = [];
+
+        await expect(coordinator.rebuild(HANDLE, directories)).resolves.toBe(true);
+        await waitFor(() => indexUpdates.length > 0, 2000);
+        expect(indexUpdates.map(update => update.seq)).toEqual([seq]);
+    }, 30000);
+
     test('dispose releases the writer, so a new worker on the same index can take it', async () => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
 
         await seedCharacter('Before');
         const first = makeCoordinator();
-        await first.coordinator.getIndex('h', directories, 'characters');
-        await first.coordinator.dispose('h');
+        await first.getIndex(HANDLE, directories, 'characters');
+        await first.dispose(HANDLE);
 
         const second = makeCoordinator();
-        expect(searchNames(await second.coordinator.getIndex('h', directories, 'characters'), 'Before')).toEqual(['Before.png']);
+        expect(searchNames(await second.getIndex(HANDLE, directories, 'characters'), 'Before')).toEqual(['Before.png']);
         await seedCharacter('After');
-        await waitFor(() => second.commits.length >= 1);
-        expect(searchNames(await second.coordinator.getIndex('h', directories, 'characters'), 'After')).toEqual(['After.png']);
+        const afterSeq = await metadataDb.getCurrentSeq(directories);
+        await waitFor(() => indexCovers(afterSeq));
+        expect(searchNames(await second.getIndex(HANDLE, directories, 'characters'), 'After')).toEqual(['After.png']);
     }, 30000);
 });

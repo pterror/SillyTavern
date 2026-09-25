@@ -8,6 +8,7 @@ import { getTantivyModule } from './tantivy-engine.js';
 const WORKER_MODULE_PATH = fileURLToPath(new URL('./search-index-worker.js', import.meta.url));
 const TARGETS = /** @type {const} */ (['characters', 'groups']);
 const DISPOSE_TIMEOUT_MS = 10000;
+const SEARCH_INDEX_UPDATED_INTERVAL_MS = 1000;
 
 /**
  * @typedef {'characters' | 'groups'} SearchIndexTarget
@@ -36,21 +37,59 @@ function spawnSearchIndexWorker(workerData) {
  * @param {object} [options]
  * @param {(workerData: object) => SearchIndexWorker} [options.spawnWorker]
  * @param {(dir: string) => SearchIndexReader} [options.openIndex] Defaults to tantivy's Index.open().
- * @param {(msg: object) => void} [options.onCharactersCommitted] Gets the worker's 'committed' message.
- * Defaults to emitting characterChangeEmitter's 'change'.
+ * @param {(handle: string, seq: number) => void} [options.onSearchIndexUpdated] Called when a commit or a
+ * rebuild-and-swap changed a handle's characters index, with the change-log seq the index now covers. At most once
+ * per SEARCH_INDEX_UPDATED_INTERVAL_MS per handle: the first change in a quiet period is passed on at once, later
+ * ones in the interval are coalesced into one call at its end, with the latest seq. Defaults to emitting
+ * characterChangeEmitter's 'search-index-updated' (handle, seq).
  * @param {object} [options.workerOptions] Extra workerData (tickIntervalMs, tickBudgetMs).
  */
 export function createSearchIndexCoordinator({
     spawnWorker = spawnSearchIndexWorker,
     openIndex = undefined,
-    onCharactersCommitted = () => characterChangeEmitter.emit('change'),
+    onSearchIndexUpdated = (handle, seq) => characterChangeEmitter.emit('search-index-updated', handle, seq),
     workerOptions = {},
 } = {}) {
     /** @type {Map<string, WorkerEntry>} */
     const entries = new Map();
+    /**
+     * Per handle, kept across worker respawns so the interval holds for the handle.
+     * @type {Map<string, { lastSentAt: number, timer: NodeJS.Timeout | null, seq: number }>}
+     */
+    const indexUpdates = new Map();
     let nextRequestId = 0;
     /** @type {any} */
     let tantivy = null;
+
+    /**
+     * @param {string} handle
+     * @param {number} seq
+     */
+    function searchIndexUpdated(handle, seq) {
+        let state = indexUpdates.get(handle);
+        if (!state) {
+            state = { lastSentAt: -Infinity, timer: null, seq };
+            indexUpdates.set(handle, state);
+        }
+        state.seq = seq;
+        if (state.timer) return;
+        const send = () => {
+            state.timer = null;
+            state.lastSentAt = Date.now();
+            try {
+                onSearchIndexUpdated(handle, state.seq);
+            } catch (err) {
+                console.error(color.red(`[search] search-index-updated for ${handle} failed: ${err.message}`));
+            }
+        };
+        const wait = state.lastSentAt + SEARCH_INDEX_UPDATED_INTERVAL_MS - Date.now();
+        if (wait <= 0) {
+            send();
+            return;
+        }
+        state.timer = setTimeout(send, wait);
+        state.timer.unref?.();
+    }
 
     /** @param {string} dir */
     function open(dir) {
@@ -89,7 +128,7 @@ export function createSearchIndexCoordinator({
 
         worker.on('message', (msg) => {
             try {
-                handleMessage(entry, msg);
+                handleMessage(handle, entry, msg);
             } catch (err) {
                 console.error(color.red(`[search] handling a search index worker message failed: ${err.message}`));
             }
@@ -119,7 +158,12 @@ export function createSearchIndexCoordinator({
         return entry;
     }
 
-    function handleMessage(entry, msg) {
+    /**
+     * @param {string} handle
+     * @param {WorkerEntry} entry
+     * @param {any} msg
+     */
+    function handleMessage(handle, entry, msg) {
         switch (msg?.type) {
             case 'ready': {
                 const target = entry.targets[msg.target];
@@ -138,12 +182,15 @@ export function createSearchIndexCoordinator({
             case 'committed': {
                 entry.targets[msg.target].reader?.index.reload();
                 if (msg.target === 'characters') {
-                    onCharactersCommitted(msg);
+                    searchIndexUpdated(handle, msg.seq);
                 }
                 return;
             }
             case 'swapped': {
                 entry.targets[msg.target].reader = open(msg.dir);
+                if (msg.target === 'characters') {
+                    searchIndexUpdated(handle, msg.seq);
+                }
                 return;
             }
             case 'reply': {

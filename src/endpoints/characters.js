@@ -2570,7 +2570,9 @@ router.post('/changes', async function (request, response) {
 
 /**
  * SSE endpoint that pushes an empty "something changed, go ask" notification whenever the metadata store's
- * `changes` table gets a new row, so a client can call `/changes` instead of polling. Also carries the former
+ * `changes` table gets a new row, so a client can call `/changes` instead of polling, and a
+ * `{ type: 'search-index-updated', seq }` message when a commit or a rebuild-and-swap changed this user's characters
+ * search index (seq: the change-log seq the index now covers). Also carries the former
  * `/api/browser-heartbeat` job (touches browser-presence on connect/ping) - merged in because the browser's
  * per-origin connection pool is shared across tabs, and two permanent per-tab SSE connections each was enough
  * to exhaust it at only ~3 tabs open and stall every other request.
@@ -2602,8 +2604,17 @@ router.get('/changes/stream', function (request, response) {
 
     characterChangeEmitter.on('change', onChange);
 
+    // Already at most once a second per handle (search-index-coordinator.js).
+    const handle = request.user.profile.handle;
+    const onSearchIndexUpdated = (updatedHandle, seq) => {
+        if (updatedHandle !== handle) return;
+        response.write(`data: ${JSON.stringify({ type: 'search-index-updated', seq })}\n\n`);
+    };
+    characterChangeEmitter.on('search-index-updated', onSearchIndexUpdated);
+
     request.on('close', () => {
         characterChangeEmitter.off('change', onChange);
+        characterChangeEmitter.off('search-index-updated', onSearchIndexUpdated);
         onChange.cancel();
         clearInterval(presenceInterval);
     });
