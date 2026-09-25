@@ -11,6 +11,8 @@ let metadataDb;
 let cardParser;
 /** @type {typeof import('../src/endpoints/search-engine.js')} */
 let searchEngine;
+/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
+let searchCoordinator;
 
 let tempDir;
 let charactersDir;
@@ -50,6 +52,7 @@ beforeAll(async () => {
     metadataDb = await import('../src/character-metadata-db.js');
     cardParser = await import('../src/character-card-parser.js');
     searchEngine = await import('../src/endpoints/search-engine.js');
+    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
 });
 
 beforeEach(() => {
@@ -68,25 +71,17 @@ beforeEach(() => {
     fs.mkdirSync(directories.groupChats, { recursive: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
+    await searchCoordinator.disposeSearchWorkers();
     metadataDb.disposeMetadataStores();
 });
 
 /**
- * These tests exercise the real fix (search-index-coordinator.js's `openStale` cold-start path, wired into
- * characters-search-index.js via openPersistedTantivyIndexStale()) end to end: real on-disk tantivy index, real
- * character-metadata-db change log, real character cards - no mocks. They only mean anything on an install where
- * tantivy is actually the resolved engine (this repo's - see tantivy-engine.js); on an install where it fell back
- * to SQLite, the cold-start fix doesn't apply (SQLite's buildSqliteIndex() has no persisted-index-reopen path at
- * all - see this file's own header on why), so they skip rather than asserting something the current engine tier
- * was never meant to do.
- *
- * Coordinator-level guarantees this fix depends on (serve-stale-immediately, coalesce concurrent cold starts into
- * one background build) are unit-tested directly against fake db handles in search-index-coordinator.test.js -
- * that's the right layer for "exactly one build ran" assertions (jest.fn call counts), which a real tantivy Index
- * doesn't expose a way to observe. What's real-tested here is the actual production shape: a boot-time bulk
- * import (reconcile() discovering a batch of new cards, exactly what a boot-time import scan does) landing before
- * any search, followed by the first search after it.
+ * End to end, with a real search index worker, on-disk tantivy index, change log and character cards: a cold
+ * search reopens the persisted index and is answered before the worker's first catch-up tick, which then brings
+ * the index up to date in the background. They only mean anything on an install where tantivy is the resolved
+ * engine, so they skip otherwise. Coordinator-level guarantees (ready gating, one worker per handle) are
+ * unit-tested against a fake worker in search-index-coordinator.test.js.
  */
 describe('characters-search-index.js: cold-start search does not block on catching up a stale persisted index', () => {
     test('a cold search after a bulk import returns fast, serves the stale (pre-import) result set immediately, then background catch-up makes a later search see the new characters', async () => {
@@ -103,6 +98,8 @@ describe('characters-search-index.js: cold-start search does not block on catchi
         await metadataDb.bootstrapIfNeeded(directories);
         const buildResult = await searchIndex.rebuildCharacterSearchIndex('warm-handle', directories);
         expect(buildResult).toEqual({ ok: true, backend: 'tantivy' });
+        // Its worker holds the index's writer; the cold handle's worker needs it.
+        await searchCoordinator.disposeSearchWorkers('warm-handle');
 
         // Phase 2: a bulk import lands - twenty new characters - entirely through the metadata store's own
         // discovery path (reconcile(), the same mechanism a boot-time import scan drives), never touching search
@@ -118,21 +115,18 @@ describe('characters-search-index.js: cold-start search does not block on catchi
         // directories as the warm build above (a fresh handle, not a fresh install: this reuses the persisted
         // index files under directories.root/search-index, which is what makes it a genuine "reopen what was
         // last persisted" cold start rather than a from-scratch first-ever build).
+        // Both answered as soon as the persisted index is open, before the worker's first catch-up tick.
         const start = Date.now();
-        const alphaResult = await searchIndex.searchCharacterIds('cold-handle', directories, 'Alpha');
+        const [alphaResult, bravoResultImmediately] = await Promise.all([
+            searchIndex.searchCharacterIds('cold-handle', directories, 'Alpha'),
+            searchIndex.searchCharacterIds('cold-handle', directories, 'Bravo'),
+        ]);
         const elapsedMs = Date.now() - start;
 
         expect(alphaResult.backend).toBe('tantivy');
         expect(alphaResult.ids.sort()).toEqual(['Alpha0.png', 'Alpha1.png', 'Alpha2.png', 'Alpha3.png', 'Alpha4.png'].sort());
-        // Generous bound - this is a correctness assertion (it must not be paying the catch-up cost inline), not
-        // a tight performance benchmark; a synchronous catch-up of 20 changed characters would still likely clear
-        // this, so the real proof is the very next assertion.
+        // Generous bound: a correctness assertion, not a benchmark. The proof no catch-up ran first is the next one.
         expect(elapsedMs).toBeLessThan(3000);
-
-        // The real proof it's serving the STALE state rather than having silently caught up already: queried
-        // immediately afterward (no `await` of anything that could let the background catch-up's real disk I/O
-        // finish), the newly bulk-imported characters must not be visible yet.
-        const bravoResultImmediately = await searchIndex.searchCharacterIds('cold-handle', directories, 'Bravo');
         expect(bravoResultImmediately.ids).toEqual([]);
 
         // Phase 4: the background catch-up this cold start kicked off eventually lands - poll a later search on
@@ -157,6 +151,7 @@ describe('characters-search-index.js: cold-start search does not block on catchi
         }
         await metadataDb.bootstrapIfNeeded(directories);
         await searchIndex.rebuildCharacterSearchIndex('warm-handle-2', directories);
+        await searchCoordinator.disposeSearchWorkers('warm-handle-2');
 
         for (let i = 0; i < 10; i++) {
             await writeCard(`Delta${i}`);
@@ -178,7 +173,7 @@ describe('characters-search-index.js: cold-start search does not block on catchi
         expect(r3.ids.sort()).toEqual(expected);
     }, 20000);
 
-    test('a cold search against a directory that was never indexed before falls back to the original blocking full build, and still returns correct results', async () => {
+    test('a cold search against a directory that was never indexed before waits for the worker\'s first full build, and still returns correct results', async () => {
         const engine = await searchEngine.resolveSearchEngine();
         if (engine.tier !== 'tantivy') {
             return;

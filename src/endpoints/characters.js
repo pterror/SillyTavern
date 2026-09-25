@@ -1973,8 +1973,9 @@ router.post('/all', async function (request, response) {
         const handle = request.user.profile.handle;
         // 'tantivy', not 'native': placeholder for "not searched" that never wins BACKEND_SEVERITY's worse-of comparison.
         const emptySearch = { results: [], total: 0, backend: 'tantivy' };
-        // Each source fetches only its own top (offset + limit) rows; paginateSearchResults() below does the real merge.
-        const searchFetchLimit = numericOffset + numericLimit;
+        // Each source fetches only its own top (offset + limit) rows, plus a margin for hits whose row is gone
+        // (dropped, since the index can lag a delete); paginateSearchResults() below does the real merge.
+        const searchFetchLimit = numericOffset + numericLimit + pageOverFetch(numericLimit);
         // favOnly is applied inside the query itself so it can't drop a match ranked outside searchFetchLimit.
         const [characterSearch, groupSearch] = await Promise.all([
             searchCharacters(handle, request.user.directories, search, searchFetchLimit, favOnly),
@@ -2341,9 +2342,10 @@ async function handleQuery(request, response) {
                 }
             }
 
-            // 'search' sort only needs a relevance-ordered page-sized window; any other sort needs the full
+            // 'search' sort only needs a relevance-ordered page-sized window, plus a margin for hits whose row is
+            // gone (the rows read below drop them, since the index can lag a delete); any other sort needs the full
             // matched set since ordering comes from SQL. Undefined tells the search engine to return all matches.
-            const idFetchCap = sort.field === 'search' ? offset + pageSize : undefined;
+            const idFetchCap = sort.field === 'search' ? offset + pageSize + pageOverFetch(pageSize) : undefined;
             const favOnly = filter.fav === true;
             // tags is applied inside the search engine itself (runIdSearch/buildTagFilterQuery) so the ranked id
             // list this returns is already tags-filtered - queryCharacters()'s search-sort branch can then page
@@ -2435,6 +2437,11 @@ async function handleQuery(request, response) {
             }
 
             queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
+            if (sort.field === 'search') {
+                // queryCharacters() pages the ranked ids before reading rows, so hits whose row is gone would
+                // leave the page short; it reads the margin too, and the page is trimmed back below.
+                queryParams.limit = pageSize + pageOverFetch(pageSize);
+            }
         }
 
         // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly.
@@ -2463,6 +2470,11 @@ async function handleQuery(request, response) {
 
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+
+        if (hasSearch && sort.field === 'search') {
+            if (result.rows) result.rows = result.rows.slice(0, pageSize);
+            if (result.hashRows) result.hashRows = result.hashRows.slice(0, pageSize);
         }
 
         // includeGroups is always false here - both includeGroups branches already returned above.

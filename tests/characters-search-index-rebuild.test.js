@@ -11,13 +11,15 @@ let metadataDb;
 let cardParser;
 /** @type {typeof import('../src/endpoints/search-engine.js')} */
 let searchEngine;
+/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
+let searchCoordinator;
 
 let tempDir;
 let charactersDir;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
-// The on-disk layout characters-search-index.js's tantivyIndexDir()/tantivyIndexTempDir() build - duplicated here
+// The on-disk layout characters-search-index.js's tantivyIndexDir()/rebuildTempDir() build - duplicated here
 // (rather than imported, since this module deliberately exports no internals) so these tests can inspect the real
 // on-disk artifacts a rebuild produces/consumes, the same way the tests exercise everything else: through real
 // files, not mocks.
@@ -61,6 +63,7 @@ beforeAll(async () => {
     metadataDb = await import('../src/character-metadata-db.js');
     cardParser = await import('../src/character-card-parser.js');
     searchEngine = await import('../src/endpoints/search-engine.js');
+    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
 });
 
 beforeEach(() => {
@@ -79,7 +82,8 @@ beforeEach(() => {
     fs.mkdirSync(directories.groupChats, { recursive: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
+    await searchCoordinator.disposeSearchWorkers();
     metadataDb.disposeMetadataStores();
 });
 
@@ -111,9 +115,11 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
         // written. The persisted index files themselves are untouched; only the recorded schema-version meta
         // value is wrong.
         await metadataDb.setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, '999');
+        // Its worker holds the index's writer; the next handle's worker needs it.
+        await searchCoordinator.disposeSearchWorkers('warm-handle');
 
-        // A handle that has never touched the in-process coordinator, so this goes through
-        // openPersistedTantivyIndexStale()'s cold-start reopen path - the schema-version check under test.
+        // A handle with no worker yet, so its worker reopens the persisted index - the schema-version check under
+        // test.
         const result = await searchIndex.searchCharacterIds('never-before-seen-handle', directories, 'Vera');
 
         expect(result.backend).toBe('tantivy');
@@ -149,8 +155,8 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
         const dirEntriesBefore = fs.readdirSync(dbDir).sort();
 
         // Deny write access to search-index/ itself - createEmptyTantivyIndexAt()'s fs.mkdirSync(tempDir, ...)
-        // (the very first disk write rebuildTantivyIndexFromScratch() performs) fails immediately, before a
-        // single byte of the new index is written anywhere, and long before swapTantivyIndexIntoPlace() would
+        // (the very first disk write a rebuild performs) fails immediately, before a
+        // single byte of the new index is written anywhere, and long before swapIndexIntoPlace() would
         // ever be reached. Readdir/stat (r-x) still work, so the rest of the rebuild's read-only bookkeeping
         // isn't what's under test here - only that a failure this early can't have touched `indexDir`.
         fs.chmodSync(dbDir, 0o555);
@@ -166,11 +172,11 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
         expect(fs.readdirSync(dbDir).sort()).toEqual(dirEntriesBefore);
         expect(fs.existsSync(tantivyRealIndexDir())).toBe(true);
 
-        // Still fully queryable - both via the same handle's still-live in-process coordinator entry (the failed
-        // forceRebuild() never replaced it, since the build rejected before the coordinator swaps anything in)
-        // and, for good measure, via a brand-new handle that has to reopen the persisted index from scratch.
+        // Still fully queryable - both via the same handle's reader (the failed rebuild never swapped anything
+        // in) and via a brand-new handle whose worker has to reopen the persisted index.
         const afterSameHandle = await searchIndex.searchCharacterIds('crash-handle', directories, 'Ophelia');
         expect(afterSameHandle.ids).toEqual(['Ophelia.png']);
+        await searchCoordinator.disposeSearchWorkers('crash-handle');
         const afterFreshHandle = await searchIndex.searchCharacterIds('crash-handle-fresh-reader', directories, 'Ophelia');
         expect(afterFreshHandle.ids).toEqual(['Ophelia.png']);
     }, 20000);
@@ -185,9 +191,9 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
         await metadataDb.bootstrapIfNeeded(directories);
         await searchIndex.rebuildCharacterSearchIndex('leftover-handle', directories);
 
-        // Simulate debris from a process that crashed mid-build, after tantivyIndexTempDir() created its temp
-        // directory but before swapTantivyIndexIntoPlace() ever ran to clean it up - the exact shape
-        // cleanupStaleTantivyRebuildTempDirs() exists to sweep up.
+        // Simulate debris from a process that crashed mid-build, after rebuildTempDir()'s temp directory was
+        // created but before swapIndexIntoPlace() ever ran to clean it up - the exact shape
+        // cleanupStaleRebuildDirs() exists to sweep up.
         const dbDir = searchIndexDbDir();
         const staleTempDir = path.join(dbDir, 'characters-tantivy.rebuild-leftover-from-a-crash');
         fs.mkdirSync(staleTempDir, { recursive: true });

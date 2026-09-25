@@ -1,109 +1,257 @@
-import { color } from '../util.js';
+import { Worker } from 'node:worker_threads';
+import { fileURLToPath } from 'node:url';
+
+import { characterChangeEmitter } from '../character-metadata-db.js';
+import { color, getConfigFilePath } from '../util.js';
+import { getTantivyModule } from './tantivy-engine.js';
+
+const WORKER_MODULE_PATH = fileURLToPath(new URL('./search-index-worker.js', import.meta.url));
+const TARGETS = /** @type {const} */ (['characters', 'groups']);
+const DISPOSE_TIMEOUT_MS = 10000;
 
 /**
- * Shared per-handle coordinator keeping a persistent search index fresh without blocking a request behind a
- * rebuild: at most one rebuild in flight per handle, and a stale index is served immediately while the rebuild
- * runs in the background. Safe because every query here runs fully synchronously (better-sqlite3/wasm), so a
- * caller that already grabbed the old live entry finishes its query before any swap can happen underneath it.
- *
- * `openStale` handles cold start (no entry yet, e.g. right after a restart): without it, the first request
- * after a large boot-time import blocks on a full incremental catch-up. `openStale` opens the last-persisted
- * state fast (no replay) to serve immediately, with `build()` catching up in the background. Omit it (or have
- * it resolve empty) to fall back to blocking - there's nothing to serve either way.
- * @template TDb
+ * @typedef {'characters' | 'groups'} SearchIndexTarget
+ * @typedef {{ index: any, schema: any }} SearchIndexReader
+ * @typedef {{ postMessage(msg: object): void, on(event: string, listener: (...args: any[]) => void): any, terminate(): Promise<number> | void, unref?(): void }} SearchIndexWorker
+ * @typedef {{ promise: Promise<any>, resolve: (value?: any) => void, reject: (reason?: any) => void }} Deferred
+ * @typedef {{
+ *   worker: SearchIndexWorker,
+ *   targets: Record<SearchIndexTarget, { ready: Deferred, reader: SearchIndexReader | null }>,
+ *   pending: Map<number, Deferred>,
+ *   exited: Deferred,
+ *   disposing: boolean,
+ * }} WorkerEntry
  */
-export function createIndexCoordinator() {
-    /** @type {Map<string, { db: TDb, signature: string | null }>} */
-    const indexes = new Map();
-    /** @type {Map<string, Promise<{ db: TDb, signature: string }>>} */
-    const pendingBuilds = new Map();
-    /** At most one cold-start sequence (openStale attempt, or blocking fallback build) per handle. Kept
-     * separate from `pendingBuilds` so a concurrent cold-start caller can't slip through in the gap between
-     * `openStale()` resolving and its background `build()` starting.
-     * @type {Map<string, Promise<TDb>>} */
-    const coldStarts = new Map();
 
-    function startBuild(handle, signature, build, previousDb) {
-        const promise = Promise.resolve()
-            .then(() => build(previousDb))
-            .then(db => ({ db, signature }))
-            .finally(() => pendingBuilds.delete(handle));
-        pendingBuilds.set(handle, promise);
-        return promise;
+/** @param {object} workerData */
+function spawnSearchIndexWorker(workerData) {
+    return new Worker(WORKER_MODULE_PATH, { workerData });
+}
+
+/**
+ * The request-process side of the search indexes. Per handle it runs one search-index-worker.js, which owns the
+ * only writer of that user's indexes and does every build and catch-up. Searches run here, on read-only readers
+ * that reload when the worker reports a commit, so nothing on the request path waits for index maintenance -
+ * only a handle's very first request waits for its index to be openable.
+ * @param {object} [options]
+ * @param {(workerData: object) => SearchIndexWorker} [options.spawnWorker]
+ * @param {(dir: string) => SearchIndexReader} [options.openIndex] Defaults to tantivy's Index.open().
+ * @param {(msg: object) => void} [options.onCharactersCommitted] Gets the worker's 'committed' message.
+ * Defaults to emitting characterChangeEmitter's 'change'.
+ * @param {object} [options.workerOptions] Extra workerData (tickIntervalMs, tickBudgetMs).
+ */
+export function createSearchIndexCoordinator({
+    spawnWorker = spawnSearchIndexWorker,
+    openIndex = undefined,
+    onCharactersCommitted = () => characterChangeEmitter.emit('change'),
+    workerOptions = {},
+} = {}) {
+    /** @type {Map<string, WorkerEntry>} */
+    const entries = new Map();
+    let nextRequestId = 0;
+    /** @type {any} */
+    let tantivy = null;
+
+    /** @param {string} dir */
+    function open(dir) {
+        if (openIndex) return openIndex(dir);
+        const index = tantivy.Index.open(dir);
+        return { index, schema: index.schema };
     }
 
-    /** Runs `build()` in the background, then swaps the live entry and closes the old handle - unless
-     * `build()` updated `previousDb` in place (same reference), in which case there's nothing to close. */
-    function scheduleBackgroundBuild(handle, signature, build, previousDb) {
-        startBuild(handle, signature, build, previousDb)
-            .then(newEntry => {
-                const previous = indexes.get(handle);
-                indexes.set(handle, newEntry);
-                if (previous?.db !== newEntry.db) {
-                    previous?.db?.close?.();
+    /** @returns {Deferred} */
+    function deferred() {
+        let resolve, reject;
+        const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+        // A rejection nobody awaits yet must not surface as an unhandled one.
+        promise.catch(() => { });
+        return { promise, resolve, reject };
+    }
+
+    /**
+     * @param {string} handle
+     * @param {import('../users.js').UserDirectoryList} directories
+     * @returns {WorkerEntry}
+     */
+    function spawn(handle, directories) {
+        const worker = spawnWorker({ handle, directories, configPath: getConfigFilePath(), ...workerOptions });
+        worker.unref?.();
+        const targets = /** @type {WorkerEntry['targets']} */ (
+            Object.fromEntries(TARGETS.map(target => [target, { ready: deferred(), reader: null }])));
+        /** @type {WorkerEntry} */
+        const entry = {
+            worker,
+            targets,
+            pending: new Map(),
+            exited: deferred(),
+            disposing: false,
+        };
+
+        worker.on('message', (msg) => {
+            try {
+                handleMessage(entry, msg);
+            } catch (err) {
+                console.error(color.red(`[search] handling a search index worker message failed: ${err.message}`));
+            }
+        });
+        worker.on('error', (err) => {
+            console.error(color.red(`[search] search index worker for ${handle} failed: ${err?.message ?? err}`));
+        });
+        worker.on('exit', (code) => {
+            if (!entry.disposing) {
+                console.error(color.red(`[search] search index worker for ${handle} exited (code ${code})`));
+            }
+            if (entries.get(handle) === entry) {
+                entries.delete(handle);
+            }
+            const gone = new Error('search index worker exited');
+            for (const target of TARGETS) {
+                entry.targets[target].ready.reject(gone);
+            }
+            for (const request of entry.pending.values()) {
+                request.reject(gone);
+            }
+            entry.pending.clear();
+            entry.exited.resolve();
+        });
+
+        entries.set(handle, entry);
+        return entry;
+    }
+
+    function handleMessage(entry, msg) {
+        switch (msg?.type) {
+            case 'ready': {
+                const target = entry.targets[msg.target];
+                if (msg.error) {
+                    target.ready.reject(new Error(msg.error));
+                    return;
                 }
-            })
-            .catch(err => {
-                console.error(color.red(`[search] background rebuild of the search index failed for ${handle}:`));
-                console.error(color.red(`[search]   ${err.message}`));
-            });
+                try {
+                    target.reader = msg.dir ? open(msg.dir) : null;
+                    target.ready.resolve(target.reader);
+                } catch (err) {
+                    target.ready.reject(err);
+                }
+                return;
+            }
+            case 'committed': {
+                entry.targets[msg.target].reader?.index.reload();
+                if (msg.target === 'characters') {
+                    onCharactersCommitted(msg);
+                }
+                return;
+            }
+            case 'swapped': {
+                entry.targets[msg.target].reader = open(msg.dir);
+                return;
+            }
+            case 'reply': {
+                const request = entry.pending.get(msg.id);
+                entry.pending.delete(msg.id);
+                request?.resolve(msg);
+                return;
+            }
+            case 'error': {
+                console.error(color.red(`[search] ${msg.message}`));
+                return;
+            }
+        }
+    }
+
+    function request(entry, msg) {
+        const id = ++nextRequestId;
+        const reply = deferred();
+        entry.pending.set(id, reply);
+        entry.worker.postMessage({ ...msg, id });
+        return reply.promise;
+    }
+
+    /**
+     * @param {string} handle
+     * @param {import('../users.js').UserDirectoryList} directories
+     */
+    async function getEntry(handle, directories) {
+        if (!openIndex && !tantivy) {
+            tantivy = await getTantivyModule();
+        }
+        // No await between the get and spawn()'s set, so concurrent first calls share one worker.
+        return entries.get(handle) ?? spawn(handle, directories);
     }
 
     return {
         /**
-         * Returns the live index entry for `handle`, kicking off a rebuild if missing or stale. Only blocks
-         * when there's no existing entry AND `openStale` is absent or comes up empty.
-         * @param {() => (TDb | null | undefined | Promise<TDb | null | undefined>)} [openStale] Must be fast
-         * (no catch-up work) and must not persist any watermark itself - `build()` does that once it catches up.
+         * The reader for a handle's index, once the worker has it openable. null when the index can't exist
+         * (the metadata store is unavailable).
+         * @param {string} handle
+         * @param {import('../users.js').UserDirectoryList} directories
+         * @param {SearchIndexTarget} target
+         * @returns {Promise<SearchIndexReader | null>}
          */
-        async getIndex(handle, signature, build, openStale) {
-            const entry = indexes.get(handle);
-
-            if (entry) {
-                if (entry.signature !== signature && !pendingBuilds.has(handle)) {
-                    scheduleBackgroundBuild(handle, signature, build, entry.db);
-                }
-                // Either already fresh, or stale with a rebuild now in flight (started just above, or already
-                // running from a previous call) - either way, serve what's currently live rather than waiting.
-                return entry.db;
-            }
-
-            // No live entry yet; the get-then-set below has no `await` between them, so every concurrent
-            // caller for this handle joins the same promise instead of racing its own openStale()/build().
-            let coldStart = coldStarts.get(handle);
-            if (!coldStart) {
-                coldStart = (async () => {
-                    if (openStale) {
-                        const staleDb = await openStale();
-                        if (staleDb) {
-                            // signature: null never equals a real signature, so this is always treated as
-                            // stale on the next call, correctly, until the background build catches it up.
-                            indexes.set(handle, { db: staleDb, signature: null });
-                            scheduleBackgroundBuild(handle, signature, build, staleDb);
-                            return staleDb;
-                        }
-                    }
-                    const built = await startBuild(handle, signature, build, undefined);
-                    indexes.set(handle, built);
-                    return built.db;
-                })().finally(() => coldStarts.delete(handle));
-                coldStarts.set(handle, coldStart);
-            }
-            return coldStart;
+        async getIndex(handle, directories, target) {
+            const entry = await getEntry(handle, directories);
+            await entry.targets[target].ready.promise;
+            return entry.targets[target].reader;
         },
+
         /**
-         * Forces an immediate, blocking rebuild for `handle` regardless of signature - the explicit repair
-         * path. Joins an already-in-flight build rather than starting a second one, preserving the
-         * at-most-one-build-per-handle invariant `getIndex()` relies on.
+         * A full characters rebuild-and-swap in the handle's worker. Resolves once searches read the new index.
+         * @returns {Promise<boolean>} false when the metadata store is unavailable.
          */
-        async forceRebuild(handle, signature, rebuild) {
-            const newEntry = await (pendingBuilds.get(handle) ?? startBuild(handle, signature, () => rebuild(), undefined));
-            const previous = indexes.get(handle);
-            indexes.set(handle, newEntry);
-            if (previous?.db !== newEntry.db) {
-                previous?.db?.close?.();
+        async rebuild(handle, directories) {
+            const entry = await getEntry(handle, directories);
+            const reply = await request(entry, { type: 'rebuild' });
+            if (reply.error) {
+                throw new Error(reply.error);
             }
-            return newEntry.db;
+            return reply.ok;
+        },
+
+        /**
+         * Stops the worker of `handle` (or of every handle): it finishes its current step, releases its writer's
+         * lock and exits. Terminated if it hasn't exited within DISPOSE_TIMEOUT_MS.
+         * @param {string} [handle]
+         */
+        async dispose(handle) {
+            const handles = handle === undefined ? [...entries.keys()] : [handle];
+            await Promise.all(handles.map(async (h) => {
+                const entry = entries.get(h);
+                if (!entry) return;
+                entries.delete(h);
+                entry.disposing = true;
+                request(entry, { type: 'close' }).catch(() => { });
+                let timer;
+                const timedOut = new Promise(resolve => { timer = setTimeout(() => resolve(true), DISPOSE_TIMEOUT_MS); });
+                const outcome = await Promise.race([entry.exited.promise.then(() => false), timedOut]);
+                clearTimeout(timer);
+                if (outcome) {
+                    await entry.worker.terminate();
+                }
+            }));
         },
     };
+}
+
+const searchIndexCoordinator = createSearchIndexCoordinator();
+
+/**
+ * @param {string} handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {SearchIndexTarget} target
+ */
+export function getSearchIndex(handle, directories, target) {
+    return searchIndexCoordinator.getIndex(handle, directories, target);
+}
+
+/**
+ * @param {string} handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ */
+export function rebuildSearchIndex(handle, directories) {
+    return searchIndexCoordinator.rebuild(handle, directories);
+}
+
+/** @param {string} [handle] Every handle's worker when omitted. */
+export function disposeSearchWorkers(handle) {
+    return searchIndexCoordinator.dispose(handle);
 }

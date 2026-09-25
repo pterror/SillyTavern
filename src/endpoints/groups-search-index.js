@@ -5,11 +5,12 @@ import { getTagDefinitions, getEntityTagIdsForMany, getTagsHash } from '../chara
 import { getGroupsData } from './groups.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery, fastFieldOrderValue } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
-import { createIndexCoordinator } from './search-index-coordinator.js';
+import { getSearchIndex } from './search-index-coordinator.js';
+import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { timePhase } from '../search-timing.js';
 
-/** Fast full-content group search, mirroring characters-search-index.js. Rebuild coordination is shared with
- * it via search-index-coordinator.js. */
+/** Fast full-content group search, mirroring characters-search-index.js. The index is maintained by the same
+ * per-handle search index worker (search-index-coordinator.js). */
 
 // Column order/weights mirror fuzzySearchGroups() in public/scripts/power-user.js exactly.
 const BM25_INDEXED_COLUMNS = ['name', 'resolved_tags', 'members', 'id'];
@@ -35,11 +36,11 @@ const TANTIVY_FIELD_LABELS = {
 
 const DEFAULT_TANTIVY_MAX_ROWS = 500;
 
-const indexCoordinator = createIndexCoordinator();
+const INDEX_DIR_NAME = 'groups-tantivy';
 
 /** @returns {Promise<string>} A cheap fingerprint that changes whenever a group is added/removed/edited or a
  * tag definition/assignment changes. */
-async function getFreshnessSignature(directories) {
+async function getGroupsSignature(directories) {
     const groupsDirMtime = fs.existsSync(directories.groups) ? fs.statSync(directories.groups).mtimeMs : 0;
     const tagsHash = await getTagsHash(directories);
     return `${groupsDirMtime}:${tagsHash}`;
@@ -67,18 +68,20 @@ async function makeTagNamesResolver(directories, groupIds) {
 const INDEX_BUILD_BATCH_SIZE = 500;
 const CHECKPOINT_EVERY_N_BATCHES = 20;
 
-/** (Re)builds the persistent on-disk tantivy index for a user's groups. */
+/** Builds a user's groups index into a temp dir and swaps it into place, so a reader open on the old one never
+ * sits under a removed dir. @returns {Promise<string>} The index dir. */
 async function buildTantivyIndex(directories, tantivy) {
     const dbDir = path.join(directories.root, 'search-index');
     if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
     }
-    const indexDir = path.join(dbDir, 'groups-tantivy');
-    fs.rmSync(indexDir, { recursive: true, force: true });
-    fs.mkdirSync(indexDir, { recursive: true });
+    const indexDir = path.join(dbDir, INDEX_DIR_NAME);
+    cleanupStaleRebuildDirs(dbDir, INDEX_DIR_NAME);
+    const tempDir = rebuildTempDir(dbDir, INDEX_DIR_NAME);
+    fs.mkdirSync(tempDir, { recursive: true });
 
     const schema = buildTantivySchema(tantivy, BM25_INDEXED_COLUMNS, ALL_FAST_FIELDS, TANTIVY_FILTER_TEXT_FIELDS);
-    const index = new tantivy.Index(schema, indexDir, false);
+    const index = new tantivy.Index(schema, tempDir, false);
     const writer = index.writer();
 
     const groups = getGroupsData(directories);
@@ -113,9 +116,42 @@ async function buildTantivyIndex(directories, tantivy) {
     }
 
     writer.commit();
-    index.reload();
+    // commit() alone does not release the writer's on-disk lock; waitMergingThreads() does.
+    writer.waitMergingThreads();
 
-    return { index, schema, close: () => { /* no explicit close API on this binding's Index */ } };
+    swapIndexIntoPlace(indexDir, tempDir);
+    return indexDir;
+}
+
+/**
+ * Keeps a user's groups index current by a full rebuild whenever the groups signature moves. Runs in
+ * search-index-worker.js, never in the request process. Groups are few, so a full rebuild is cheap.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
+ */
+export function createGroupIndexMaintainer(directories, tantivy) {
+    /** @type {string | null} */
+    let builtSignature = null;
+
+    /** @returns {Promise<string>} The index dir. */
+    async function build() {
+        // Read before the build, so a change made during it moves the signature again.
+        const signature = await getGroupsSignature(directories);
+        const dir = await buildTantivyIndex(directories, tantivy);
+        builtSignature = signature;
+        return dir;
+    }
+
+    return {
+        build,
+        /** @returns {Promise<string | null>} The index dir when it was rebuilt, else null. */
+        async tick() {
+            if (await getGroupsSignature(directories) === builtSignature) {
+                return null;
+            }
+            return build();
+        },
+    };
 }
 
 /**
@@ -124,11 +160,13 @@ async function buildTantivyIndex(directories, tantivy) {
  * `total` is the true match count, independent of `maxRows`.
  */
 export async function searchGroups(handle, directories, searchTerm, maxRows, favOnly) {
-    const signature = await timePhase('groups_freshness', () => getFreshnessSignature(directories));
     const engine = await timePhase('groups_index_get', () => resolveSearchEngine());
 
     if (engine.tier !== 'unavailable') {
-        const tantivyIndex = await timePhase('groups_index_get', () => indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy)));
+        const tantivyIndex = await timePhase('groups_index_get', () => getSearchIndex(handle, directories, 'groups'));
+        if (!tantivyIndex) {
+            return { results: [], total: 0, backend: 'unavailable' };
+        }
         const query = timePhase('groups_query_build', () => buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly }));
         if (!query) {
             return { results: [], total: 0, backend: 'tantivy' };
@@ -172,12 +210,14 @@ function groupSortValue(group, sortField) {
  */
 export async function searchGroupsSorted(handle, directories, searchTerm, sortField, order, filter = {}) {
     const { fav, tags, excludeIds, ids } = filter;
-    const signature = await timePhase('groups_freshness', () => getFreshnessSignature(directories));
     const engine = await timePhase('groups_index_get', () => resolveSearchEngine());
     if (engine.tier === 'unavailable') {
         return { groups: [], backend: 'unavailable' };
     }
-    const tantivyIndex = await timePhase('groups_index_get', () => indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy)));
+    const tantivyIndex = await timePhase('groups_index_get', () => getSearchIndex(handle, directories, 'groups'));
+    if (!tantivyIndex) {
+        return { groups: [], backend: 'unavailable' };
+    }
     const query = timePhase('groups_query_build', () => {
         const { tantivy } = engine;
         const { schema } = tantivyIndex;

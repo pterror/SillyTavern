@@ -49,6 +49,14 @@ export function setConfigFilePath(configFilePath) {
 }
 
 /**
+ * The config file path set by setConfigFilePath(), so a worker thread can set the same one.
+ * @returns {string | null}
+ */
+export function getConfigFilePath() {
+    return CONFIG_PATH;
+}
+
+/**
  * Returns the config object from the config.yaml file.
  * @returns {object} Config object
  */
