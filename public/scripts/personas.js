@@ -2,7 +2,7 @@ import {
     buildAvatarList,
     getCurrentCharacter,
     getSelectionState,
-    createOrEditCharacter,
+    insertFirstMessageIntoEmptyChat,
     default_user_avatar,
     getCurrentChatId,
     getThumbnailUrl,
@@ -1909,7 +1909,7 @@ export async function retriggerFirstMessageOnEmptyChat() {
         await reloadCurrentChat();
     }
     if (getSelectionState().type === 'character' && chat.length === 1) {
-        await createOrEditCharacter();
+        await insertFirstMessageIntoEmptyChat();
     }
 }
 

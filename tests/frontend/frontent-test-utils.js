@@ -48,3 +48,23 @@ export const testSetup = {
         return await page.locator('body.login').count() > 0;
     },
 };
+
+/**
+ * Opens the character management drawer unless it is already open (a fresh data root starts with it closed).
+ * @param {import('@playwright/test').Page} page
+ */
+export async function openCharacterManagementDrawer(page) {
+    if (!(await page.locator('#rm_button_create').isVisible())) {
+        await page.locator('#rightNavDrawerIcon').click();
+        await page.locator('#rm_button_create').waitFor({ state: 'visible', timeout: 10000 });
+    }
+}
+
+/**
+ * Shows one tab of the character info panel, e.g. 'description'.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} tab The tab's `charInfoTabs_tab` radio value.
+ */
+export async function openInfoTab(page, tab) {
+    await page.locator(`label:has(> input[name="charInfoTabs_tab"][value="${tab}"])`).click();
+}

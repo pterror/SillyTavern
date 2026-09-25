@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
 
 // NixOS host: the Playwright-managed Chromium download is missing system libs, so fall back
 // to the system-provided Chrome (only when explicitly pointed at it) rather than requiring a
@@ -46,10 +46,12 @@ async function dismissWelcomePopupIfPresent(page) {
  */
 async function createAndSelectTestCharacter(page) {
     const name = `CharacterEditorReopenTest-${Date.now()}`;
+    await openCharacterManagementDrawer(page);
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
-    await page.locator('#create_button').click();
+    await page.locator('#create_button_label').click();
     await page.locator('.character_select', { hasText: name }).first().click();
+    await openInfoTab(page, 'description');
     await page.locator('#description_textarea').waitFor({ state: 'visible', timeout: 10000 });
     // Selecting a character for the first time legitimately dirties active_character (and, via
     // CHAT_LOADED, may seed a default prompt order) - let that real save settle before a caller
@@ -76,7 +78,7 @@ test.describe('character editor reopen settings save', () => {
             // The owner's actual flow: click into the description field, then click away - zero
             // keystrokes.
             await page.locator('#description_textarea').click();
-            await page.locator('#personality_textarea').click();
+            await page.locator('#creator_textarea').click();
 
             await page.waitForTimeout(2000);
 
@@ -92,6 +94,7 @@ test.describe('character editor reopen settings save', () => {
 
     test('re-clicking the already-open character in the list does not trigger a settings save', async ({ page }) => {
         const name = await createAndSelectTestCharacter(page);
+        await page.locator('#rightNavDrawerIcon').click();
 
         try {
             const saveRequests = [];

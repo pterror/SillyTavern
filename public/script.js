@@ -504,42 +504,288 @@ const FORM_TO_CARD = {
     '#character_book_json': { v2: 'data.character_book', transform: 'json' },
 };
 
-// A field counts as dirty once its input/change event fires; setting a value programmatically must `.trigger('input')` itself.
-/** @type {Set<string>} */
-const _dirtyCharacterFields = new Set();
-
 // Per-field hash of the value as it stood when the editor was populated, keyed by v2 path. Captured
 // once at load time so a later change-feed sync of the character store can't mask a real conflict.
+// Only ever describes the character the editor currently has loaded (`_loadedCharacterFieldHashesAvatar`).
 /** @type {Map<string, number>} */
 const _loadedCharacterFieldHashes = new Map();
+/** @type {string|null} */
+let _loadedCharacterFieldHashesAvatar = null;
 
 /**
+ * Same hash the server computes for its per-field conflict check.
  * @param {object} character
- * @param {Object<string, number>|null} [serverHashes] Per-field hashes the server just issued (the `hashes` object
- * from a successful `/api/characters/merge-attributes` response) for whichever fields that request touched. Those
- * are used verbatim, never recomputed. Any FORM_TO_CARD field not covered - including every field on the very
- * first populate, when this is omitted entirely - still needs a baseline, computed locally from the loaded value:
- * the character-load endpoint doesn't hand back a hash for every field, only merge-attributes does for the fields
- * it just wrote, so this mirrors the greeting pager's own accepted "seed once locally, then only ever echo a
- * server-issued value" pattern (see hashGreetingText()).
+ * @param {string} v2Path
+ * @returns {number}
  */
-function snapshotLoadedCharacterFieldHashes(character, serverHashes = null) {
-    if (!serverHashes) {
-        _loadedCharacterFieldHashes.clear();
-    }
+function hashCharacterFieldValue(character, v2Path) {
+    const value = lodash.get(character, v2Path);
+    return getStringHash(JSON.stringify(value !== undefined ? value : null));
+}
+
+/**
+ * Seeds the conflict baseline for every field from the character just loaded into the editor; each field
+ * save afterwards replaces its own entry with the hash the server hands back.
+ * @param {object} character
+ */
+function snapshotLoadedCharacterFieldHashes(character) {
+    _loadedCharacterFieldHashes.clear();
+    _loadedCharacterFieldHashesAvatar = character?.avatar ?? null;
     for (const mapping of Object.values(FORM_TO_CARD)) {
-        if (serverHashes && Object.prototype.hasOwnProperty.call(serverHashes, mapping.v2)) {
-            _loadedCharacterFieldHashes.set(mapping.v2, serverHashes[mapping.v2]);
-            continue;
-        }
-        const loadedValue = lodash.get(character, mapping.v2);
-        _loadedCharacterFieldHashes.set(mapping.v2, getStringHash(JSON.stringify(loadedValue !== undefined ? loadedValue : null)));
+        _loadedCharacterFieldHashes.set(mapping.v2, hashCharacterFieldValue(character, mapping.v2));
     }
 }
 
-$(document).on('input change', Object.keys(FORM_TO_CARD).join(', '), function () {
-    _dirtyCharacterFields.add(`#${this.id}`);
-});
+/**
+ * Converts a form field's string value into the value stored on the card.
+ * @param {string} formId
+ * @param {{transform?: string}} mapping
+ * @param {string} value
+ * @returns {{ok: true, value: any}|{ok: false}}
+ */
+function characterFieldValueToCardValue(formId, mapping, value) {
+    if (mapping.transform === 'tags') {
+        return { ok: true, value: value.split(',').map(x => x.trim()).filter(x => x) };
+    }
+    if (mapping.transform === 'number') {
+        return { ok: true, value: Number(value) || 0 };
+    }
+    if (mapping.transform === 'int') {
+        const n = Number(value);
+        return { ok: true, value: !isNaN(n) ? n : 4 };
+    }
+    if (mapping.transform === 'json') {
+        // '' means "no value" - unset the card path entirely rather than write an empty string/null over it.
+        if (!value) {
+            return { ok: true, value: UNSET_VALUE };
+        }
+        try {
+            return { ok: true, value: JSON.parse(value) };
+        } catch (err) {
+            console.error(`saveCharacterField: failed to parse JSON for ${formId}, not saving it`, err);
+            return { ok: false };
+        }
+    }
+    return { ok: true, value };
+}
+
+/**
+ * Field saves waiting out their debounce, keyed per character + field so a pending edit to one field is
+ * never cancelled or absorbed by an edit to another.
+ * @type {Map<string, {timer: ReturnType<typeof setTimeout>, avatar: string, formId: string, value: string}>}
+ */
+const pendingCharacterFieldSaves = new Map();
+
+/**
+ * Field saves in flight, serialized per character + field. `hash` is that field's current server-side
+ * conflict baseline for this character, carried from one save to the next in the chain.
+ * @type {Map<string, {tail: Promise<boolean>, hash: number|undefined}>}
+ */
+const characterFieldSaveChains = new Map();
+
+/**
+ * @param {string} avatar
+ * @param {string} formId
+ */
+function characterFieldSaveKey(avatar, formId) {
+    return `${avatar}\n${formId}`;
+}
+
+/**
+ * Saves exactly one character field - only this field is sent, through `/api/characters/merge-attributes`,
+ * with its own per-field conflict check. Never reads the form.
+ * @param {string} avatar Avatar filename of the character being edited.
+ * @param {string} formId A FORM_TO_CARD key, e.g. `'#description_textarea'`.
+ * @param {string} value The field's value, in the form's own string representation.
+ * @returns {Promise<boolean>} Whether the value was saved.
+ */
+export function saveCharacterField(avatar, formId, value) {
+    const mapping = FORM_TO_CARD[formId];
+    if (!mapping) {
+        throw new Error(`saveCharacterField: ${formId} is not a character card field`);
+    }
+    if (!avatar) {
+        throw new Error(`saveCharacterField: no character to save ${formId} to`);
+    }
+
+    const key = characterFieldSaveKey(avatar, formId);
+    let chain = characterFieldSaveChains.get(key);
+    if (!chain) {
+        // Read synchronously, before any await: callers that switch the editor to another character
+        // flush first (see flushCharacterFieldSaves()), so the baseline here is still this character's.
+        if (_loadedCharacterFieldHashesAvatar !== avatar) {
+            throw new Error(`saveCharacterField: ${avatar} is not the character loaded in the editor`);
+        }
+        chain = { tail: Promise.resolve(true), hash: _loadedCharacterFieldHashes.get(mapping.v2) };
+        characterFieldSaveChains.set(key, chain);
+    }
+
+    const run = async () => {
+        const converted = characterFieldValueToCardValue(formId, mapping, value);
+        if (!converted.ok) {
+            return false;
+        }
+
+        const mergeData = { avatar };
+        if (mapping.v1) lodash.set(mergeData, mapping.v1, converted.value);
+        lodash.set(mergeData, mapping.v2, converted.value);
+        mergeData._loadedFieldHashes = { [mapping.v2]: chain.hash };
+
+        try {
+            const fetchResult = await fetch('/api/characters/merge-attributes', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify(mergeData),
+            });
+
+            // The server's fresh post-write hash for this field, on a plain (non-conflict) success.
+            let savedHash;
+
+            if (fetchResult.status === 409) {
+                let errorData;
+                try { errorData = await fetchResult.json(); } catch { /* ignore parse errors */ }
+                if (errorData?.error !== 'conflict') {
+                    throw new Error('Field save refused');
+                }
+                const fieldName = mapping.v2.replace(/^data\.extensions\.depth_prompt\./, 'Depth Prompt ')
+                    .replace(/^data\.extensions\./, '')
+                    .replace(/^data\./, '')
+                    .replace(/_/g, ' ');
+
+                const confirmOverwrite = await callGenericPopup(
+                    t`<h3>Character edited in another session</h3>
+                      <p>The following fields were changed by another session:</p>
+                      <p><strong>${fieldName}</strong></p>
+                      <p>Overwrite with your version, or discard your changes?</p>`,
+                    POPUP_TYPE.CONFIRM,
+                    '',
+                    { okButton: t`Overwrite with mine`, cancelButton: t`Discard my changes` },
+                );
+                if (confirmOverwrite !== POPUP_RESULT.AFFIRMATIVE) {
+                    window.location.reload();
+                    return false;
+                }
+                delete mergeData._loadedFieldHashes;
+                const retryResult = await fetch('/api/characters/merge-attributes', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify(mergeData),
+                });
+                if (!retryResult.ok) {
+                    throw new Error('Force save after conflict failed');
+                }
+            } else if (!fetchResult.ok) {
+                throw new Error('Fetch result is not ok');
+            } else {
+                try {
+                    const payload = await fetchResult.json();
+                    savedHash = payload?.hashes?.[mapping.v2];
+                } catch { /* no body, or not JSON - the fallback below covers it */ }
+            }
+
+            await getOneCharacter(avatar);
+            const character = charactersStore.get(avatar);
+
+            // Server-issued when it gave one; otherwise (forced overwrite) computed off the reloaded card.
+            chain.hash = Number.isFinite(savedHash) ? savedHash : hashCharacterFieldValue(character, mapping.v2);
+            if (_loadedCharacterFieldHashesAvatar === avatar) {
+                _loadedCharacterFieldHashes.set(mapping.v2, chain.hash);
+            }
+
+            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character } });
+            updateCharacterListRow(avatar);
+            return true;
+        } catch (error) {
+            console.error(`Failed to save ${formId} for ${avatar}`, error);
+            toastr.error(t`Something went wrong while saving the character. Your edit is still shown here, but it was not saved.`);
+            return false;
+        }
+    };
+
+    const tail = chain.tail.then(run);
+    chain.tail = tail;
+    tail.finally(() => {
+        if (characterFieldSaveChains.get(key)?.tail === tail) {
+            characterFieldSaveChains.delete(key);
+        }
+    });
+    return tail;
+}
+
+/**
+ * Debounced {@link saveCharacterField}: one debounce per character + field.
+ * @param {string} avatar
+ * @param {string} formId
+ * @param {string} value
+ */
+export function saveCharacterFieldDebounced(avatar, formId, value) {
+    if (!avatar) return;
+    const key = characterFieldSaveKey(avatar, formId);
+    const pending = pendingCharacterFieldSaves.get(key);
+    if (pending) {
+        clearTimeout(pending.timer);
+    }
+    const timer = setTimeout(() => {
+        pendingCharacterFieldSaves.delete(key);
+        void saveCharacterField(avatar, formId, value);
+    }, DEFAULT_SAVE_EDIT_TIMEOUT);
+    pendingCharacterFieldSaves.set(key, { timer, avatar, formId, value });
+}
+
+/**
+ * Starts every debounced field save now, then resolves once every field save (including ones already in
+ * flight) has finished. The debounced ones are started synchronously, before this returns.
+ * @returns {Promise<void>}
+ */
+export async function flushCharacterFieldSaves() {
+    const pending = [...pendingCharacterFieldSaves.values()];
+    pendingCharacterFieldSaves.clear();
+    for (const save of pending) {
+        clearTimeout(save.timer);
+        saveCharacterField(save.avatar, save.formId, save.value);
+    }
+    await Promise.all([...characterFieldSaveChains.values()].map(chain => chain.tail));
+}
+
+/** @returns {string} Avatar filename of the character loaded in the editor, or '' when none is. */
+function getEditorCharacterAvatar() {
+    return String($('#avatar_url_pole').val() ?? '');
+}
+
+/**
+ * In create mode the value goes into `create_save`, which is what Create builds the new character from.
+ * @param {string} formId
+ * @param {keyof typeof create_save} createSaveKey
+ * @param {string} value
+ * @returns {Promise<boolean>}
+ */
+async function saveTextField(formId, createSaveKey, value) {
+    if (menu_type === 'create') {
+        create_save[createSaveKey] = value;
+        return true;
+    }
+    return await saveCharacterField(getEditorCharacterAvatar(), formId, value);
+}
+
+/** @param {string} value @returns {Promise<boolean>} */
+export function saveCreatorNotesField(value) {
+    return saveTextField('#creator_notes_textarea', 'creator_notes', value);
+}
+
+/** @param {string} value @returns {Promise<boolean>} */
+export function saveDescriptionField(value) {
+    return saveTextField('#description_textarea', 'description', value);
+}
+
+/** @param {string} value @returns {Promise<boolean>} */
+export function saveSystemPromptField(value) {
+    return saveTextField('#system_prompt_textarea', 'system_prompt', value);
+}
+
+/** @param {string} value @returns {Promise<boolean>} */
+export function savePostHistoryInstructionsField(value) {
+    return saveTextField('#post_history_instructions_textarea', 'post_history_instructions', value);
+}
 
 let is_delete_mode = false;
 let fav_ch_checked = false;
@@ -559,7 +805,6 @@ export function saveSettingsDebounced(...keys) {
     }
     _debouncedSaveImpl();
 }
-export const saveCharacterDebounced = debounce(() => $('#create_button').trigger('click'), DEFAULT_SAVE_EDIT_TIMEOUT);
 
 
 const getCharactersDebounced = debounce(() => getCharacters(), 2000);
@@ -6253,10 +6498,10 @@ async function read_avatar_load(input) {
             return;
         }
 
-        await createOrEditCharacter();
-
-        const formData = new FormData(/** @type {HTMLFormElement} */($('#form_create').get(0)));
-        const avatarKey = formData.get('avatar_url').toString();
+        const avatarKey = getEditorCharacterAvatar();
+        if (!await saveCharacterAvatar(avatarKey, file)) {
+            return;
+        }
 
         // Bust cache for the avatar thumbnail and character image
         const thumbnailUrl = getThumbnailUrl('avatar', avatarKey);
@@ -8136,8 +8381,6 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     $('#form_create').attr('actiontype', 'editcharacter');
 
-    // Fields were just populated programmatically (.val(), no .trigger()), so none of that counts as a real edit.
-    _dirtyCharacterFields.clear();
     snapshotLoadedCharacterFieldHashes(character);
     $('.form_create_bottom_buttons_block .chat_lorebook_button').show();
 
@@ -8163,6 +8406,9 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
  * @param {boolean} [options.switchMenu=true] Whether to switch the menu
  */
 function select_rm_create({ switchMenu = true } = {}) {
+    // Must start before the editor is repopulated: a pending field save reads its conflict baseline
+    // from the character currently loaded.
+    void flushCharacterFieldSaves();
     switchMenu && setMenuType('create');
 
     //console.log('select_rm_Create() -- selected button: '+selected_button);
@@ -8220,8 +8466,8 @@ function select_rm_create({ switchMenu = true } = {}) {
     checkEmbeddedWorld();
 
     $('#form_create').attr('actiontype', 'createcharacter');
-    _dirtyCharacterFields.clear(); // No dirty-tracking in create mode - the whole form is sent on create.
     _loadedCharacterFieldHashes.clear();
+    _loadedCharacterFieldHashesAvatar = null;
     $('.form_create_bottom_buttons_block .chat_lorebook_button').hide();
     $('#character_open_media_overrides').hide();
 }
@@ -9144,32 +9390,87 @@ function navigateGreetingPager(newIndex) {
 const greetingPagerEditDebouncers = new Map();
 
 /**
+ * Saves an edit to an already-committed pager greeting.
+ * @param {number} position
+ * @param {string} text
+ * @returns {Promise<boolean>} Whether the edit was saved.
+ */
+async function saveGreetingPagerEdit(position, text) {
+    const avatar = $('.open_alternate_greetings').data('avatar');
+    const character = avatar ? charactersStore.get(avatar) : null;
+    if (!character) return false;
+    const expectedHash = greetingPagerState.hashes[position];
+    if (!Number.isFinite(expectedHash)) return false; // Position out of range of what the server last confirmed.
+
+    const result = await postGreetingOp('edit', { avatar_url: avatar, position, expected_hash: expectedHash, text });
+    if (result.ok) {
+        await applyGreetingOpSuccess(character, greetingPagerState.greetings.slice(), result.defaultPosition, result.hashes);
+        return true;
+    }
+    console.error('Greeting save failed', { avatar, position, status: result.status, reason: result.reason });
+    if (result.status === 409) {
+        toastr.error(t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`, t`Greeting not saved`);
+        return false;
+    }
+    toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+    return false;
+}
+
+/**
  * @param {number} position
  * @param {string} text
  */
 function saveGreetingPagerEditDebounced(position, text) {
     if (!greetingPagerEditDebouncers.has(position)) {
-        greetingPagerEditDebouncers.set(position, debounce(async (pos, txt) => {
-            const avatar = $('.open_alternate_greetings').data('avatar');
-            const character = avatar ? charactersStore.get(avatar) : null;
-            if (!character) return;
-            const expectedHash = greetingPagerState.hashes[pos];
-            if (!Number.isFinite(expectedHash)) return; // Position out of range of what the server last confirmed.
-
-            const result = await postGreetingOp('edit', { avatar_url: avatar, position: pos, expected_hash: expectedHash, text: txt });
-            if (result.ok) {
-                await applyGreetingOpSuccess(character, greetingPagerState.greetings.slice(), result.defaultPosition, result.hashes);
-                return;
-            }
-            console.error('Greeting save failed', { avatar, position: pos, status: result.status, reason: result.reason });
-            if (result.status === 409) {
-                toastr.error(t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`, t`Greeting not saved`);
-                return;
-            }
-            toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-        }, DEFAULT_SAVE_EDIT_TIMEOUT));
+        greetingPagerEditDebouncers.set(position, debounce(saveGreetingPagerEdit, DEFAULT_SAVE_EDIT_TIMEOUT));
     }
     greetingPagerEditDebouncers.get(position)(position, text);
+}
+
+/**
+ * Commits a value for the greeting currently shown in the pager: a still-pending (uncommitted) slot is
+ * added once it has text, a committed one is edited in place; in create mode it goes to `create_save`.
+ * @param {string} value
+ * @param {{debounced: boolean}} options `debounced` delays a committed slot's edit (per slot).
+ * @returns {Promise<boolean|null>} Whether the value was saved; null when a debounced edit was only scheduled.
+ */
+async function commitGreetingFieldValue(value, { debounced }) {
+    const { index, defaultIndex } = greetingPagerState;
+    greetingPagerState.greetings[index] = value;
+    if (menu_type === 'create') {
+        const fields = greetingsModelToCardFields({ greetings: greetingPagerState.greetings, defaultIndex });
+        create_save.first_message = fields.firstMes;
+        create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager create-mode input');
+        return true;
+    }
+    if (greetingPagerState.committed[index] === false) {
+        if (value === '') return false;
+        const avatar = $('.open_alternate_greetings').data('avatar');
+        const character = avatar ? charactersStore.get(avatar) : null;
+        if (!character) return false;
+        const result = await postGreetingOp('add', { avatar_url: avatar, position: index, text: value });
+        if (result.ok) {
+            await applyGreetingOpSuccess(character, greetingPagerState.greetings.slice(), result.defaultPosition, result.hashes);
+            return true;
+        }
+        console.error('Greeting add failed', { avatar, position: index, status: result.status, reason: result.reason });
+        toastr.error(t`Failed to save the new greeting. It's still shown here - keep typing in it to retry.`, t`Greeting not saved`);
+        return false;
+    }
+    if (debounced) {
+        saveGreetingPagerEditDebounced(index, value);
+        return null;
+    }
+    return await saveGreetingPagerEdit(index, value);
+}
+
+/**
+ * Saves the greeting currently shown in the pager with this value.
+ * @param {string} value
+ * @returns {Promise<boolean>} Whether the value was saved.
+ */
+export async function saveGreetingField(value) {
+    return Boolean(await commitGreetingFieldValue(value, { debounced: false }));
 }
 
 /**
@@ -9598,319 +9899,214 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
 }
 
 /**
- * Creates or edits a character based on the form data.
- * @param {Event} [e] Event that triggered the function call.
+ * Builds the `/api/characters/create` request body from the confirmed create-mode values in `create_save`.
+ * @returns {Promise<FormData>}
  */
-export async function createOrEditCharacter(e) {
+async function createSaveToFormData() {
+    const formData = new FormData();
+    formData.set('ch_name', create_save.name);
+    formData.set('description', create_save.description);
+    formData.set('personality', create_save.personality);
+    formData.set('scenario', create_save.scenario);
+    formData.set('first_mes', create_save.first_message);
+    for (const value of stripEmptyAlternateGreetings(create_save.alternate_greetings, 'create character')) {
+        formData.append('alternate_greetings', value);
+    }
+    formData.set('mes_example', create_save.mes_example);
+    formData.set('creator_notes', create_save.creator_notes);
+    formData.set('system_prompt', create_save.system_prompt);
+    formData.set('post_history_instructions', create_save.post_history_instructions);
+    formData.set('creator', create_save.creator);
+    formData.set('character_version', create_save.character_version);
+    formData.set('tags', create_save.tags);
+    formData.set('talkativeness', String(create_save.talkativeness));
+    formData.set('world', create_save.world);
+    formData.set('depth_prompt_prompt', create_save.depth_prompt_prompt);
+    formData.set('depth_prompt_depth', String(create_save.depth_prompt_depth));
+    formData.set('depth_prompt_role', create_save.depth_prompt_role);
+    formData.set('fav', String(fav_ch_checked));
+    formData.set('extensions', JSON.stringify(create_save.extensions));
+    const avatarFile = create_save.avatar?.[0];
+    if (avatarFile) {
+        formData.set('avatar', await ensureImageFormatSupported(avatarFile));
+    }
+    return formData;
+}
+
+/**
+ * Creates a new character from the confirmed create-mode values in `create_save`.
+ */
+export async function createCharacterFromCreateSave() {
     if (!settingsReady) {
-        console.warn('Settings not ready, aborting character creation/editing.');
+        console.warn('Settings not ready, aborting character creation.');
         return;
     }
 
     $('#rm_info_avatar').html('');
-    const formData = new FormData(/** @type {HTMLFormElement} */($('#form_create').get(0)));
-    formData.set('fav', String(fav_ch_checked));
     // Captured before the post-save field-clearing loop resets create_save.name to '', for the "Character Created" toast.
-    const newCharacterName = String(formData.get('ch_name') || '');
-    const isNewChat = e instanceof CustomEvent && e.type === 'newChat';
-
-    const rawFile = formData.get('avatar');
-    if (rawFile instanceof File) {
-        const convertedFile = await ensureImageFormatSupported(rawFile);
-        formData.set('avatar', convertedFile);
-    }
-
+    const newCharacterName = create_save.name;
     const headers = getRequestHeaders({ omitContentType: true });
 
-    if ($('#form_create').attr('actiontype') == 'createcharacter') {
-        if (String($('#character_name_pole').val()).length === 0) {
-            toastr.error(t`Name is required`);
-            return;
-        }
-        if (is_group_generating || is_send_press) {
-            toastr.error(t`Cannot create characters while generating. Stop the request and try again.`, t`Creation aborted`);
-            return;
-        }
-        try {
-            //if the character name text area isn't empty (only posible when creating a new character)
-            let url = '/api/characters/create';
-
-            if (crop_data != undefined) {
-                url += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
-            }
-
-            // #firstmessage_textarea is gone; create_save.first_message is the source now.
-            formData.set('first_mes', create_save.first_message);
-
-            formData.delete('alternate_greetings');
-            for (const value of stripEmptyAlternateGreetings(create_save.alternate_greetings, 'create character')) {
-                formData.append('alternate_greetings', value);
-            }
-
-            formData.append('extensions', JSON.stringify(create_save.extensions));
-
-            const fetchResult = await fetch(url, {
-                method: 'POST',
-                headers: headers,
-                body: formData,
-                cache: 'no-cache',
-            });
-
-            if (!fetchResult.ok) {
-                throw new Error('Fetch result is not ok');
-            }
-
-            const avatarId = await fetchResult.text();
-
-            const fields = [
-                { id: '#character_name_pole', callback: value => create_save.name = value },
-                { id: '#description_textarea', callback: value => create_save.description = value },
-                { id: '#creator_notes_textarea', callback: value => create_save.creator_notes = value },
-                { id: '#character_version_textarea', callback: value => create_save.character_version = value },
-                { id: '#post_history_instructions_textarea', callback: value => create_save.post_history_instructions = value },
-                { id: '#system_prompt_textarea', callback: value => create_save.system_prompt = value },
-                { id: '#tags_textarea', callback: value => create_save.tags = value },
-                { id: '#creator_textarea', callback: value => create_save.creator = value },
-                { id: '#personality_textarea', callback: value => create_save.personality = value },
-                { id: '#alternate_greetings_template', callback: value => create_save.alternate_greetings = value, defaultValue: [] },
-                { id: '#talkativeness_slider', callback: value => create_save.talkativeness = value, defaultValue: talkativeness_default },
-                { id: '#scenario_pole', callback: value => create_save.scenario = value },
-                { id: '#depth_prompt_prompt', callback: value => create_save.depth_prompt_prompt = value },
-                { id: '#depth_prompt_depth', callback: value => create_save.depth_prompt_depth = value, defaultValue: depth_prompt_depth_default },
-                { id: '#depth_prompt_role', callback: value => create_save.depth_prompt_role = value, defaultValue: depth_prompt_role_default },
-                { id: '#mes_example_textarea', callback: value => create_save.mes_example = value },
-                { id: '#character_json_data', callback: () => { } },
-                { id: '#character_world', callback: value => create_save.world = value },
-                { id: '#_character_extensions_fake', callback: value => create_save.extensions = {} },
-            ];
-
-            fields.forEach(field => {
-                const fieldValue = field.defaultValue !== undefined ? field.defaultValue : '';
-                $(field.id).val(fieldValue);
-                field.callback && field.callback(fieldValue);
-            });
-            create_save.first_message = ''; // was reset via the #firstmessage_textarea fields-loop entry above
-            setGreetingPagerGreetings([''], 0, []);
-
-            if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
-                const fileName = getCharaFilename(null, { manualAvatarKey: avatarId });
-                const charLore = world_info.charLore ?? [];
-                charLore.push({ name: fileName, extraBooks: create_save.extra_books });
-                Object.assign(world_info, { charLore: charLore });
-                saveSettingsDebounced('world_info_settings');
-            }
-            create_save.extra_books = [];
-
-            create_save.avatar = null;
-
-            $('#add_avatar_button').replaceWith(
-                $('#add_avatar_button').val('').clone(true),
-            );
-
-            let oldSelectedChar = null;
-            if (getSelectionState().type === 'character') {
-                oldSelectedChar = getCurrentCharacter().avatar;
-            }
-
-            console.log(`new avatar id: ${avatarId}`);
-            createTagMapFromList('#tagList', avatarId);
-            // select_rm_info() below does its own real, targeted lookup+page-navigation for 'char_create' (see
-            // its own body) - no separate list refresh needed here first.
-            await getCharacters({ silent: true, skipPrint: true });
-            charactersStore.reportCreated(avatarId);
-
-            select_rm_info('char_create', avatarId, oldSelectedChar, newCharacterName);
-
-            crop_data = undefined;
-        } catch (error) {
-            console.error('Error creating character', error);
-            toastr.error(t`Failed to create character`);
-        }
-    } else {
-        try {
-            const previousFav = getCurrentCharacter()?.fav;
-
-            // No-op guard: skip the save if no tracked field's input/change event has fired since load.
-            const avatarInput = formData.get('avatar');
-            const hasNewAvatar = avatarInput instanceof File && avatarInput.size > 0;
-            if (!hasNewAvatar && _dirtyCharacterFields.size === 0) {
-                return;
-            }
-
-            const avatarUrl = String(formData.get('avatar_url'));
-
-            // Sent first, fields second: an explicitly picked avatar isn't part of the merge-attributes conflict below, so it shouldn't risk not landing depending on how that's resolved.
-            if (hasNewAvatar) {
-                let avatarEditUrl = '/api/characters/edit-avatar';
-                if (crop_data != undefined) {
-                    avatarEditUrl += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
-                }
-
-                const avatarFormData = new FormData();
-                avatarFormData.append('avatar', avatarInput);
-                avatarFormData.append('avatar_url', avatarUrl);
-
-                const avatarFetchResult = await fetch(avatarEditUrl, {
-                    method: 'POST',
-                    headers: getRequestHeaders({ omitContentType: true }),
-                    body: avatarFormData,
-                    cache: 'no-cache',
-                });
-
-                if (!avatarFetchResult.ok) {
-                    toastr.error(t`Failed to upload the new avatar image. Nothing was saved - your other edits are still shown here, try saving again.`, t`Avatar not saved`);
-                    return;
-                }
-            }
-
-            // Only sends fields actually marked dirty; conflict detection stays per-field so an untouched field's concurrent change is never flagged.
-            const mergeData = { avatar: avatarUrl };
-            const loadedFieldHashes = {};
-
-            for (const formId of _dirtyCharacterFields) {
-                const mapping = FORM_TO_CARD[formId];
-                if (!mapping) continue; // Stale entry from a field since removed from FORM_TO_CARD - ignore, don't crash.
-                const currentValue = String($(formId).val() ?? '');
-
-                // Transform the form value to match card format
-                let cardValue = currentValue;
-                if (mapping.transform === 'tags') {
-                    cardValue = currentValue.split(',').map(x => x.trim()).filter(x => x);
-                } else if (mapping.transform === 'number') {
-                    cardValue = Number(currentValue) || 0;
-                } else if (mapping.transform === 'int') {
-                    const n = Number(currentValue);
-                    cardValue = !isNaN(n) ? n : 4;
-                } else if (mapping.transform === 'json') {
-                    // '' means "no value" - unset the card path entirely rather than write an empty string/null over it.
-                    if (!currentValue) {
-                        cardValue = UNSET_VALUE;
-                    } else {
-                        try {
-                            cardValue = JSON.parse(currentValue);
-                        } catch (err) {
-                            console.error(`createOrEditCharacter: failed to parse JSON for ${formId}, leaving this field out of the save`, err);
-                            continue;
-                        }
-                    }
-                }
-
-                // Set both V1 and V2 paths in the merge payload
-                if (mapping.v1) lodash.set(mergeData, mapping.v1, cardValue);
-                if (mapping.v2) lodash.set(mergeData, mapping.v2, cardValue);
-
-                if (_loadedCharacterFieldHashes.has(mapping.v2)) {
-                    loadedFieldHashes[mapping.v2] = _loadedCharacterFieldHashes.get(mapping.v2);
-                }
-            }
-
-            mergeData._loadedFieldHashes = loadedFieldHashes;
-
-            const fetchResult = await fetch('/api/characters/merge-attributes', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify(mergeData),
-            });
-
-            // Populated from the response's `hashes` on a plain (non-conflict) success - the server's fresh
-            // post-write hash for each field it just wrote, echoed straight into the next round's baseline
-            // instead of being recomputed here. Left null on every other path (409, force-overwrite retry,
-            // no body): the fallback in snapshotLoadedCharacterFieldHashes() below covers those.
-            let savedFieldHashes = null;
-
-            if (fetchResult.status === 409) {
-                let errorData;
-                try { errorData = await fetchResult.json(); } catch { /* ignore parse errors */ }
-                if (errorData?.error === 'conflict' && errorData.conflictingFields) {
-                    const fieldNames = errorData.conflictingFields.map(path =>
-                        path.replace(/^data\.extensions\.depth_prompt\./, 'Depth Prompt ')
-                            .replace(/^data\.extensions\./, '')
-                            .replace(/^data\./, '')
-                            .replace(/_/g, ' '),
-                    );
-
-                    const confirmOverwrite = await callGenericPopup(
-                        t`<h3>Character edited in another session</h3>
-                          <p>The following fields were changed by another session:</p>
-                          <p><strong>${fieldNames.join(', ')}</strong></p>
-                          ${hasNewAvatar ? t`<p>The new avatar image has already been saved.</p>` : ''}
-                          <p>Overwrite with your version, or discard your changes?</p>`,
-                        POPUP_TYPE.CONFIRM,
-                        '',
-                        { okButton: t`Overwrite with mine`, cancelButton: t`Discard my changes` },
-                    );
-                    if (confirmOverwrite === POPUP_RESULT.AFFIRMATIVE) {
-                        delete mergeData._loadedFieldHashes;
-                        const retryResult = await fetch('/api/characters/merge-attributes', {
-                            method: 'POST',
-                            headers: getRequestHeaders(),
-                            body: JSON.stringify(mergeData),
-                        });
-                        if (!retryResult.ok) {
-                            throw new Error('Force save after conflict failed');
-                        }
-                    } else {
-                        window.location.reload();
-                        return;
-                    }
-                }
-            } else if (!fetchResult.ok) {
-                if (hasNewAvatar) {
-                    toastr.error(t`The new avatar image was saved, but your other changes could not be saved. Try saving again.`, t`Save incomplete`);
-                    return;
-                }
-                throw new Error('Fetch result is not ok');
-            } else {
-                try {
-                    const payload = await fetchResult.json();
-                    savedFieldHashes = payload?.hashes ?? null;
-                } catch { /* no body, or not JSON - fine, the fallback below covers it */ }
-            }
-
-            // ─── Common post-save logic ────────────────────────────────────
-            await getOneCharacter(avatarUrl);
-
-            _dirtyCharacterFields.clear();
-            snapshotLoadedCharacterFieldHashes(charactersStore.get(avatarUrl), savedFieldHashes);
-
-            if (Boolean(previousFav) !== Boolean(fav_ch_checked)) {
-                favsToHotswap();
-            }
-
-            $('#add_avatar_button').replaceWith(
-                $('#add_avatar_button').val('').clone(true),
-            );
-            $('#create_button').attr('value', 'Save');
-            crop_data = undefined;
-            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: getCurrentCharacter() } });
-
-            updateCharacterListRow(avatarUrl);
-
-            // Recreate the chat if it hasn't been used at least once (i.e. with continue).
-            const message = await getFirstMessage();
-            const shouldRegenerateMessage =
-                !isNewChat &&
-                message.mes &&
-                !selected_group &&
-                chat.length === 0;
-
-            if (shouldRegenerateMessage) {
-                if (power_user.message_token_count_enabled) {
-                    message.extra.token_count = await getTokenCountAsync(message.mes, 0);
-                }
-                chat.splice(0, chat.length, message);
-                const messageId = (chat.length - 1);
-                await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'first_message');
-                await clearChat();
-                await printMessages();
-                await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
-                await ensureOpeningRow(0);
-            }
-        } catch (error) {
-            console.log(error);
-            toastr.error(t`Something went wrong while saving the character, or the image file provided was in an invalid format. Double check that the image is not a webp.`);
-        }
+    if (newCharacterName.length === 0) {
+        toastr.error(t`Name is required`);
+        return;
     }
+    if (is_group_generating || is_send_press) {
+        toastr.error(t`Cannot create characters while generating. Stop the request and try again.`, t`Creation aborted`);
+        return;
+    }
+    try {
+        //if the character name text area isn't empty (only posible when creating a new character)
+        let url = '/api/characters/create';
+
+        if (crop_data != undefined) {
+            url += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
+        }
+
+        const fetchResult = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: await createSaveToFormData(),
+            cache: 'no-cache',
+        });
+
+        if (!fetchResult.ok) {
+            throw new Error('Fetch result is not ok');
+        }
+
+        const avatarId = await fetchResult.text();
+
+        const fields = [
+            { id: '#character_name_pole', callback: value => create_save.name = value },
+            { id: '#description_textarea', callback: value => create_save.description = value },
+            { id: '#creator_notes_textarea', callback: value => create_save.creator_notes = value },
+            { id: '#character_version_textarea', callback: value => create_save.character_version = value },
+            { id: '#post_history_instructions_textarea', callback: value => create_save.post_history_instructions = value },
+            { id: '#system_prompt_textarea', callback: value => create_save.system_prompt = value },
+            { id: '#tags_textarea', callback: value => create_save.tags = value },
+            { id: '#creator_textarea', callback: value => create_save.creator = value },
+            { id: '#personality_textarea', callback: value => create_save.personality = value },
+            { id: '#alternate_greetings_template', callback: value => create_save.alternate_greetings = value, defaultValue: [] },
+            { id: '#talkativeness_slider', callback: value => create_save.talkativeness = value, defaultValue: talkativeness_default },
+            { id: '#scenario_pole', callback: value => create_save.scenario = value },
+            { id: '#depth_prompt_prompt', callback: value => create_save.depth_prompt_prompt = value },
+            { id: '#depth_prompt_depth', callback: value => create_save.depth_prompt_depth = value, defaultValue: depth_prompt_depth_default },
+            { id: '#depth_prompt_role', callback: value => create_save.depth_prompt_role = value, defaultValue: depth_prompt_role_default },
+            { id: '#mes_example_textarea', callback: value => create_save.mes_example = value },
+            { id: '#character_json_data', callback: () => { } },
+            { id: '#character_world', callback: value => create_save.world = value },
+            { id: '#_character_extensions_fake', callback: value => create_save.extensions = {} },
+        ];
+
+        fields.forEach(field => {
+            const fieldValue = field.defaultValue !== undefined ? field.defaultValue : '';
+            $(field.id).val(fieldValue);
+            field.callback && field.callback(fieldValue);
+        });
+        create_save.first_message = ''; // was reset via the #firstmessage_textarea fields-loop entry above
+        setGreetingPagerGreetings([''], 0, []);
+
+        if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
+            const fileName = getCharaFilename(null, { manualAvatarKey: avatarId });
+            const charLore = world_info.charLore ?? [];
+            charLore.push({ name: fileName, extraBooks: create_save.extra_books });
+            Object.assign(world_info, { charLore: charLore });
+            saveSettingsDebounced('world_info_settings');
+        }
+        create_save.extra_books = [];
+
+        create_save.avatar = null;
+
+        $('#add_avatar_button').replaceWith(
+            $('#add_avatar_button').val('').clone(true),
+        );
+
+        let oldSelectedChar = null;
+        if (getSelectionState().type === 'character') {
+            oldSelectedChar = getCurrentCharacter().avatar;
+        }
+
+        console.log(`new avatar id: ${avatarId}`);
+        createTagMapFromList('#tagList', avatarId);
+        // select_rm_info() below does its own real, targeted lookup+page-navigation for 'char_create' (see
+        // its own body) - no separate list refresh needed here first.
+        await getCharacters({ silent: true, skipPrint: true });
+        charactersStore.reportCreated(avatarId);
+
+        select_rm_info('char_create', avatarId, oldSelectedChar, newCharacterName);
+
+        crop_data = undefined;
+    } catch (error) {
+        console.error('Error creating character', error);
+        toastr.error(t`Failed to create character`);
+    }
+}
+
+/**
+ * Saves a new avatar image for an existing character - only the image, through `/api/characters/edit-avatar`.
+ * @param {string} avatar Avatar filename of the character.
+ * @param {File} file The picked image; cropped server-side by the current `crop_data`, if any.
+ * @returns {Promise<boolean>} Whether the image was saved.
+ */
+async function saveCharacterAvatar(avatar, file) {
+    try {
+        let avatarEditUrl = '/api/characters/edit-avatar';
+        if (crop_data != undefined) {
+            avatarEditUrl += `?crop=${encodeURIComponent(JSON.stringify(crop_data))}`;
+        }
+
+        const avatarFormData = new FormData();
+        avatarFormData.append('avatar', await ensureImageFormatSupported(file));
+        avatarFormData.append('avatar_url', avatar);
+
+        const avatarFetchResult = await fetch(avatarEditUrl, {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+            body: avatarFormData,
+            cache: 'no-cache',
+        });
+
+        if (!avatarFetchResult.ok) {
+            toastr.error(t`Failed to upload the new avatar image.`, t`Avatar not saved`);
+            return false;
+        }
+
+        $('#add_avatar_button').replaceWith(
+            $('#add_avatar_button').val('').clone(true),
+        );
+        crop_data = undefined;
+
+        await getOneCharacter(avatar);
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: charactersStore.get(avatar) } });
+        updateCharacterListRow(avatar);
+        return true;
+    } catch (error) {
+        console.error('Failed to save the avatar image', error);
+        toastr.error(t`Something went wrong while saving the avatar, or the image file provided was in an invalid format. Double check that the image is not a webp.`);
+        return false;
+    }
+}
+
+/**
+ * Puts the current character's greeting into the open chat, but only when that chat is empty - an
+ * existing chat's messages are never regenerated.
+ */
+export async function insertFirstMessageIntoEmptyChat() {
+    const message = await getFirstMessage();
+    if (!message.mes || selected_group || chat.length !== 0) {
+        return;
+    }
+
+    if (power_user.message_token_count_enabled) {
+        message.extra.token_count = await getTokenCountAsync(message.mes, 0);
+    }
+    chat.splice(0, chat.length, message);
+    const messageId = (chat.length - 1);
+    await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'first_message');
+    await clearChat();
+    await printMessages();
+    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
+    await ensureOpeningRow(0);
 }
 
 /**
@@ -10851,7 +11047,6 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
             // rather than clearing to unknown (see _setCurrentTarget()'s own doc comment).
             _setCurrentTarget(newFileName, chat_metadata.integrity);
             $('#selected_chat_pole').val(charactersStore.get(characterAvatar).chat);
-            // merge-attributes instead of createOrEditCharacter(), which would do a full-card save.
             await fetch('/api/characters/merge-attributes', {
                 method: 'POST',
                 headers: getRequestHeaders(),
@@ -11608,7 +11803,12 @@ jQuery(async function () {
         read_avatar_load(inputElement);
     });
 
-    $('#form_create').on('submit', (e) => createOrEditCharacter(e.originalEvent));
+    // An existing character's fields each save themselves; submitting the form only ever creates.
+    $('#form_create').on('submit', () => {
+        if ($('#form_create').attr('actiontype') === 'createcharacter') {
+            createCharacterFromCreateSave();
+        }
+    });
 
     $('#delete_button').on('click', async function () {
         if (!getCurrentCharacter()) {
@@ -11658,37 +11858,14 @@ jQuery(async function () {
             if (menu_type == 'create') {
                 elementsToUpdate[id]();
             } else {
-                saveCharacterDebounced();
+                saveCharacterFieldDebounced(getEditorCharacterAvatar(), id, String($(id).val()));
             }
         });
     });
 
     // Greeting pager: steps through the stable-order greeting list in the sidebar, editing whichever one is currently shown.
-    $('#greeting_field').on('input', async function () {
-        const value = String($(this).val());
-        const { index, defaultIndex } = greetingPagerState;
-        greetingPagerState.greetings[index] = value;
-        if (menu_type === 'create') {
-            const fields = greetingsModelToCardFields({ greetings: greetingPagerState.greetings, defaultIndex });
-            create_save.first_message = fields.firstMes;
-            create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager create-mode input');
-            return;
-        }
-        if (greetingPagerState.committed[index] === false) {
-            if (value === '') return;
-            const avatar = $('.open_alternate_greetings').data('avatar');
-            const character = avatar ? charactersStore.get(avatar) : null;
-            if (!character) return;
-            const result = await postGreetingOp('add', { avatar_url: avatar, position: index, text: value });
-            if (result.ok) {
-                await applyGreetingOpSuccess(character, greetingPagerState.greetings.slice(), result.defaultPosition, result.hashes);
-                return;
-            }
-            console.error('Greeting add failed', { avatar, position: index, status: result.status, reason: result.reason });
-            toastr.error(t`Failed to save the new greeting. It's still shown here - keep typing in it to retry.`, t`Greeting not saved`);
-            return;
-        }
-        saveGreetingPagerEditDebounced(index, value);
+    $('#greeting_field').on('input', function () {
+        void commitGreetingFieldValue(String($(this).val()), { debounced: true });
     });
 
     $('.greeting-pager-prev').on('click', function () {
@@ -12448,8 +12625,7 @@ jQuery(async function () {
         isExportPopupOpen = false;
         exportPopper.update();
 
-        // Save before exporting
-        await createOrEditCharacter();
+        await flushCharacterFieldSaves();
         const body = { format, avatar_url: getCurrentCharacter().avatar };
 
         const response = await fetch('/api/characters/export', {
@@ -12774,7 +12950,6 @@ jQuery(async function () {
                 break;
             case 'import_character_info':
                 await importEmbeddedWorldInfo();
-                saveCharacterDebounced();
                 break;
             case 'edit_embedded_lore':
                 await openEmbeddedLoreEditor();
