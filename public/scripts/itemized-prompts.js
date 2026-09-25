@@ -223,12 +223,20 @@ export async function saveItemizedPrompts(chatId) {
 
 let allChatsMigrationStarted = false;
 
+// Safe to persist permanently: every promptStorage write (loadItemizedPrompts, saveItemizedPrompts) happens only
+// after the server already has the same data, so nothing written to promptStorage is ever unmigrated backlog.
+const ALL_CHATS_MIGRATED_KEY = 'AllItemizedPrompts_migrated_to_server';
+
 /** One-time upload of this browser's local backlog to server storage; scans the whole store since loadItemizedPrompts() only mirrors chats that get reopened, and batches uploads since a backlog can run to tens of thousands of chats. */
 export async function migrateAllItemizedPrompts() {
     if (allChatsMigrationStarted) {
         return;
     }
     allChatsMigrationStarted = true;
+
+    if (localStorage.getItem(ALL_CHATS_MIGRATED_KEY) === '1') {
+        return;
+    }
 
     /** @type {[string, object[]|object][]} */
     const local = [];
@@ -247,6 +255,7 @@ export async function migrateAllItemizedPrompts() {
     }
 
     if (local.length === 0) {
+        localStorage.setItem(ALL_CHATS_MIGRATED_KEY, '1');
         return;
     }
 
@@ -311,6 +320,10 @@ export async function migrateAllItemizedPrompts() {
 
     await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, batches.length) }, () => worker()));
     console.log(`[itemized-prompts] Server migration pass complete (${migratedCount}/${local.length} chat(s) migrated across ${batches.length} batch(es)).`);
+
+    if (migratedCount === local.length) {
+        localStorage.setItem(ALL_CHATS_MIGRATED_KEY, '1');
+    }
 }
 
 export async function replaceItemizedPromptText(mesId, promptText) {
