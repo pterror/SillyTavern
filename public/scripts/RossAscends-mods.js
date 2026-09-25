@@ -12,6 +12,7 @@ import {
     userInputGenerateMutex,
     doNavbarIconClick,
     frontDrawer,
+    readSavedPanelOpenStates,
     isSwipingAllowed,
 } from '../script.js';
 import { getEntitiesList, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
@@ -492,28 +493,6 @@ function RA_autoconnect(PrevApi) {
     }
 }
 
-function OpenNavPanels() {
-    if (!isMobile()) {
-        //auto-open R nav if locked and previously open
-        if (accountStorage.getItem('NavLockOn') == 'true' && accountStorage.getItem('NavOpened') == 'true') {
-            //console.log("RA -- clicking right nav to open");
-            $('#rightNavDrawerIcon').trigger('click');
-        }
-
-        //auto-open L nav if locked and previously open
-        if (accountStorage.getItem('LNavLockOn') == 'true' && accountStorage.getItem('LNavOpened') == 'true') {
-            console.debug('RA -- clicking left nav to open');
-            $('#leftNavDrawerIcon').trigger('click');
-        }
-
-        //auto-open WI if previously open
-        if (accountStorage.getItem('WINavOpened') == 'true') {
-            console.debug('RA -- clicking WI to open');
-            $('#WIDrawerIcon').trigger('click');
-        }
-    }
-}
-
 const getUserInputKey = () => getCurrentUserHandle() + '_userInput';
 
 function restoreUserInput() {
@@ -831,75 +810,35 @@ export function initRossMods() {
         }
     });
 
+    const wasOpen = readSavedPanelOpenStates();
     if (!isMobile()) {
-        // read the state of right Nav Lock and apply to rightnav classlist
-        $(RPanelPin).prop('checked', accountStorage.getItem('NavLockOn') == 'true');
-        if ($(RPanelPin).prop('checked')) {
-            $(RightNavPanel).addClass('pinnedOpen openDrawer').removeClass('closedDrawer');
-            $(RightNavDrawerIcon).addClass('drawerPinnedOpen openIcon').removeClass('closedIcon');
-        }
-        // read the state of left Nav Lock and apply to leftnav classlist
-        $(LPanelPin).prop('checked', accountStorage.getItem('LNavLockOn') === 'true');
-        if (accountStorage.getItem('LNavLockOn') == 'true') {
-            //console.log('setting pin class via local var');
-            $(LeftNavPanel).addClass('pinnedOpen');
-            $(LeftNavDrawerIcon).addClass('drawerPinnedOpen');
-        }
-        if ($(LPanelPin).prop('checked')) {
-            console.debug('setting pin class via checkbox state');
-            $(LeftNavPanel).addClass('pinnedOpen');
-            $(LeftNavDrawerIcon).addClass('drawerPinnedOpen');
-        }
-
-        // read the state of left Nav Lock and apply to leftnav classlist
-        $(WIPanelPin).prop('checked', accountStorage.getItem('WINavLockOn') === 'true');
-        if (accountStorage.getItem('WINavLockOn') == 'true') {
-            //console.log('setting pin class via local var');
-            $(WorldInfo).addClass('pinnedOpen');
-            $(WIDrawerIcon).addClass('drawerPinnedOpen');
+        // A reload restores each pinned panel as it was left; unpinned panels start closed.
+        const pinnable = [
+            { panel: RightNavPanel, icon: RightNavDrawerIcon, pin: RPanelPin, lockKey: 'NavLockOn' },
+            { panel: CharInfoPanel, icon: CharInfoDrawerIcon, pin: CharInfoPanelPin, lockKey: 'CharInfoNavLockOn' },
+            { panel: LeftNavPanel, icon: LeftNavDrawerIcon, pin: LPanelPin, lockKey: 'LNavLockOn' },
+            { panel: WorldInfo, icon: WIDrawerIcon, pin: WIPanelPin, lockKey: 'WINavLockOn' },
+        ];
+        const reopened = [];
+        for (const { panel, icon, pin, lockKey } of pinnable) {
+            const pinned = accountStorage.getItem(lockKey) === 'true';
+            $(pin).prop('checked', pinned);
+            if (!pinned) continue;
+            $(panel).addClass('pinnedOpen');
+            $(icon).addClass('drawerPinnedOpen');
+            if (wasOpen[panel.id]) {
+                $(panel).addClass('openDrawer').removeClass('closedDrawer');
+                $(icon).addClass('openIcon').removeClass('closedIcon');
+                reopened.push(panel);
+            }
         }
 
-        if ($(WIPanelPin).prop('checked')) {
-            console.debug('setting pin class via checkbox state');
-            $(WorldInfo).addClass('pinnedOpen');
-            $(WIDrawerIcon).addClass('drawerPinnedOpen');
-        }
-
-        // read the state of Character Info Lock and apply to char-info-panel classlist
-        $(CharInfoPanelPin).prop('checked', accountStorage.getItem('CharInfoNavLockOn') === 'true');
-        if ($(CharInfoPanelPin).prop('checked')) {
-            $(CharInfoPanel).addClass('pinnedOpen openDrawer').removeClass('closedDrawer');
-            $(CharInfoDrawerIcon).addClass('drawerPinnedOpen openIcon').removeClass('closedIcon');
-        }
-
-        // The pinned panels reopened above, with whichever was last in front put back on top.
+        // Fronted .fillRight panels first (the one last in front goes on top of the other), then the rest in list order.
         const savedFront = accountStorage.getItem('FillRightFront');
-        const reopened = [RightNavPanel, CharInfoPanel].filter(el => el.classList.contains('openDrawer'));
-        reopened.sort((x, y) => Number(x.id === savedFront) - Number(y.id === savedFront));
+        const fillRightFirst = el => Number(!el.classList.contains('fillRight'));
+        reopened.sort((x, y) => fillRightFirst(x) - fillRightFirst(y) || Number(x.id === savedFront) - Number(y.id === savedFront));
         reopened.forEach(el => frontDrawer(el.id));
     }
-
-
-    //save state of Right nav being open or closed
-    $('#rightNavDrawerIcon').on('click', function () {
-        if (!$('#rightNavDrawerIcon').hasClass('openIcon')) {
-            accountStorage.setItem('NavOpened', 'true');
-        } else { accountStorage.setItem('NavOpened', 'false'); }
-    });
-
-    //save state of Left nav being open or closed
-    $('#leftNavDrawerIcon').on('click', function () {
-        if (!$('#leftNavDrawerIcon').hasClass('openIcon')) {
-            accountStorage.setItem('LNavOpened', 'true');
-        } else { accountStorage.setItem('LNavOpened', 'false'); }
-    });
-
-    //save state of WI nav being open or closed
-    $('#WIDrawerIcon').on('click', function () {
-        if (!$('#WIDrawerIcon').hasClass('openIcon')) {
-            accountStorage.setItem('WINavOpened', 'true');
-        } else { accountStorage.setItem('WINavOpened', 'false'); }
-    });
 
     var chatbarInFocus = false;
     $('#send_textarea').on('focus', function () {
@@ -909,10 +848,6 @@ export function initRossMods() {
     $('#send_textarea').on('blur', function () {
         chatbarInFocus = false;
     });
-
-    setTimeout(() => {
-        OpenNavPanels();
-    }, 300);
 
     $(SelectedCharacterTab).on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_selected_ch'); });
 
