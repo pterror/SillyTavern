@@ -1,9 +1,6 @@
 import { describe, test, expect, jest, beforeEach, beforeAll } from '@jest/globals';
 
 global.toastr = { warning: jest.fn(), error: jest.fn(), info: jest.fn(), success: jest.fn() };
-// branchSwipe() scrolls the fork message into view after switching chats - a real DOM lookup, not
-// something these tests exercise, so a no-op stand-in is enough.
-global.document = { querySelector: jest.fn(() => null) };
 
 // bookmarks.js pulls in script.js and a wide swath of UI modules (jQuery/DOM assumptions
 // throughout), none of which are safely importable in a plain node test env - so, same pattern as
@@ -16,9 +13,6 @@ global.document = { querySelector: jest.fn(() => null) };
 // references and mutated *in place* between tests (never reassigned), which is what makes sharing
 // them this way work: reassigning `chatState.chat = [...]` would only rebind this file's local
 // variable, not what bookmarks.js sees.
-// Same reasoning is why there's no per-test `selected_group` toggle here: it's a primitive, so it
-// can't be live-mutated the way an array/object can - the group-chat-specific cases live in their
-// own file (branch-nav-group.test.js) with `selected_group` baked in from that file's first import.
 const chatState = await import('../public/scripts/chat-state.js');
 const openCharacterChatMock = jest.fn(async () => {});
 const openGroupChatMock = jest.fn(async () => {});
@@ -193,7 +187,7 @@ jest.unstable_mockModule('../public/scripts/i18n.js', () => ({
 // utils.js is real code, but importing it for real drags in power-user.js/world-info.js/etc (the
 // whole app's module graph, DOM assumptions and all) just for uuidv4()/getUniqueName(). Stubbed with
 // the same pure logic instead, since bookmarks.js only uses these two plus isTrueBoolean (unused by
-// the branch-nav paths these tests cover).
+// the createBranch() paths these tests cover).
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     getUniqueName: (baseName, exists, { nameBuilder = null, maxTries = 1000, startIndex = 0 } = {}) => {
         const build = nameBuilder ?? ((name, i) => (i === 0 ? name : `${name} (${i})`));
@@ -223,7 +217,7 @@ beforeEach(() => {
     openGroupChatMock.mockClear();
     saveChatMock.mockClear();
     // Default: no existing chats found (createBranch's getExistingChatNames call, also read by
-    // saveChatMock's own unique-naming above) / no fork data. Individual tests override this when
+    // saveChatMock's own unique-naming above). Individual tests override this when
     // they need a specific fetch response.
     global.fetch = jest.fn(async () => ({ ok: false }));
 });
@@ -240,132 +234,36 @@ function makeMessage({ swipe_id = 0, branches = undefined } = {}) {
     };
 }
 
-describe('createBranch() - sibling data model', () => {
-    test('keys the new sibling under the message\'s active swipe id, not a flat list', async () => {
+describe('createBranch() - legacy (non-tree) chat', () => {
+    test('records the new branch name on the forked message as a flat list', async () => {
         setChat([makeMessage({ swipe_id: 2 })]);
 
         const name = await bookmarks.createBranch(0);
 
         expect(name).toBe('current-chat - Branch #1');
-        expect(chatState.chat[0].extra.branches).toEqual({ '2': ['current-chat - Branch #1'] });
+        expect(chatState.chat[0].extra.branches).toEqual(['current-chat - Branch #1']);
     });
 
-    test('forking a specific swipe id (not the active one) keys under that swipe, independently', async () => {
-        setChat([makeMessage({ swipe_id: 0, branches: { '0': ['already-there - Branch #1'] } })]);
+    test('forking a non-active swipe appends to the same list', async () => {
+        setChat([makeMessage({ swipe_id: 0, branches: ['already-there - Branch #1'] })]);
         chatState.chat[0].swipes = ['hello', 'alt swipe'];
         // getExistingChatNames() reads real chat files on disk (via this fetch), not extra.branches -
-        // that's a name-collision check, separate from sibling tracking. Mocked here so the new
-        // branch's auto-generated name realistically avoids the one that's already on disk.
+        // mocked so the new branch's generated name avoids the one already on disk.
         global.fetch.mockResolvedValue({ ok: true, json: async () => [{ file_name: 'current-chat - Branch #1.jsonl' }] });
 
         const name = await bookmarks.createBranch(0, { swipeId: 1 });
 
         expect(name).toBe('current-chat - Branch #2');
-        // Swipe 0's sibling group is untouched; swipe 1 gets its own, independent group (#branch-nav
-        // treats each (mesId, swipeId) as its own fork point, per the owner's tree framing).
-        expect(chatState.chat[0].extra.branches).toEqual({
-            '0': ['already-there - Branch #1'],
-            '1': ['current-chat - Branch #2'],
-        });
+        expect(chatState.chat[0].extra.branches).toEqual(['already-there - Branch #1', 'current-chat - Branch #2']);
     });
 
-    test('records the fork point (mesId + resolved swipeId) on the new branch\'s own metadata', async () => {
+    test('records the origin chat on the new branch\'s own metadata', async () => {
         setChat([makeMessage(), makeMessage({ swipe_id: 3 })]);
 
         await bookmarks.createBranch(1);
 
         expect(saveChatMock).toHaveBeenCalledTimes(1);
         const { withMetadata } = saveChatMock.mock.calls[0][0];
-        expect(withMetadata.main_chat).toBe('current-chat');
-        expect(withMetadata.fork_point).toEqual({ mesId: 1, swipeId: 3 });
-    });
-
-    test('appends to an existing sibling group instead of clobbering it', async () => {
-        setChat([makeMessage({ swipe_id: 0, branches: { '0': ['first - Branch #1'] } })]);
-        global.fetch.mockResolvedValue({ ok: true, json: async () => [{ file_name: 'current-chat - Branch #1.jsonl' }] });
-
-        await bookmarks.createBranch(0);
-
-        expect(chatState.chat[0].extra.branches['0']).toEqual(['first - Branch #1', 'current-chat - Branch #2']);
-    });
-});
-
-describe('resolveForkRing()', () => {
-    test('returns null for a message that was never forked', async () => {
-        setChat([makeMessage()]);
-        expect(await bookmarks.resolveForkRing(0, 0)).toBeNull();
-    });
-
-    test('origin chat: ring is [self, ...siblings] with selfIndex 0, no network fetch needed', async () => {
-        setChat([makeMessage({ swipe_id: 0, branches: { '0': ['sib-a', 'sib-b'] } })]);
-
-        const result = await bookmarks.resolveForkRing(0, 0);
-
-        expect(result).toEqual({ ring: ['current-chat', 'sib-a', 'sib-b'], selfIndex: 0 });
-        expect(global.fetch).not.toHaveBeenCalled();
-    });
-
-    test('a different swipe id on the same message shares the same fork point siblings (swipe-agnostic, per getLocalForkSiblings())', async () => {
-        setChat([makeMessage({ swipe_id: 0, branches: { '0': ['sib-a'] } })]);
-        expect(await bookmarks.resolveForkRing(0, 1)).toEqual({ ring: ['current-chat', 'sib-a'], selfIndex: 0 });
-    });
-
-    test('sibling branch: fetches the canonical list from the origin file and locates itself in it', async () => {
-        setChat([makeMessage({ swipe_id: 0 })]);
-        setChatMetadata({ main_chat: 'origin-chat', fork_point: { mesId: 0, swipeId: 0 } });
-        getCurrentCharacterMock.mockReturnValue({ avatar: 'char.png', name: 'Char', chat: 'sib-a' });
-
-        global.fetch.mockResolvedValue({
-            ok: true,
-            json: async () => [
-                { chat_metadata: {} }, // header row
-                { name: 'Char', extra: { branches: { '0': ['sib-a', 'sib-b'] } } },
-            ],
-        });
-
-        const result = await bookmarks.resolveForkRing(0, 0);
-
-        expect(result).toEqual({ ring: ['origin-chat', 'sib-a', 'sib-b'], selfIndex: 1 });
-        expect(global.fetch).toHaveBeenCalledWith('/api/chats/get', expect.objectContaining({
-            body: JSON.stringify({ ch_name: 'Char', file_name: 'origin-chat', avatar_url: 'char.png' }),
-        }));
-    });
-
-    test('sibling branch at a message that is not its own recorded fork point: no ring, no fetch', async () => {
-        setChat([makeMessage(), makeMessage()]);
-        setChatMetadata({ main_chat: 'origin-chat', fork_point: { mesId: 0, swipeId: 0 } });
-
-        expect(await bookmarks.resolveForkRing(1, 0)).toBeNull();
-        expect(global.fetch).not.toHaveBeenCalled();
-    });
-});
-
-// Group-chat cases (selected_group truthy) live in branch-nav-group.test.js: `selected_group` is a
-// primitive export snapshotted once at import, so it can't be toggled between tests in this file -
-// see the note above chatState.
-
-describe('branchSwipe()', () => {
-    test('opens the next sibling in the ring', async () => {
-        setChat([makeMessage({ swipe_id: 0, branches: { '0': ['sib-a', 'sib-b'] } })]);
-
-        await bookmarks.branchSwipe(0, 1);
-
-        expect(openCharacterChatMock).toHaveBeenCalledWith('sib-a');
-    });
-
-    test('wraps around past the last sibling back to the origin', async () => {
-        setChat([makeMessage({ swipe_id: 0, branches: { '0': ['sib-a', 'sib-b'] } })]);
-
-        await bookmarks.branchSwipe(0, -1);
-
-        expect(openCharacterChatMock).toHaveBeenCalledWith('sib-b');
-    });
-
-    test('does nothing when the message has no sibling group', async () => {
-        setChat([makeMessage()]);
-
-        await bookmarks.branchSwipe(0, 1);
-
-        expect(openCharacterChatMock).not.toHaveBeenCalled();
+        expect(withMetadata).toEqual({ main_chat: 'current-chat' });
     });
 });

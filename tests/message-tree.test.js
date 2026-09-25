@@ -116,7 +116,7 @@ describe('branch creation and loading', () => {
 });
 
 describe('forking', () => {
-    test('forkBranch() at a mid-chain node creates a branch whose path stops there, and getForkRing() groups the siblings that diverge after it', async () => {
+    test('forkBranch() at a mid-chain node creates a branch whose path stops there', async () => {
         const directories = makeDirectories();
         const header = { chat_metadata: {} };
         const chatData = [
@@ -152,14 +152,6 @@ describe('forking', () => {
         const db = await treeDb.getDbHandle(directories);
         const children = db.all('SELECT id FROM messages WHERE parent_id = @parentId', { parentId: m1.node_id });
         expect(children).toHaveLength(2);
-
-        // getForkRing() groups branches by which child of m1 they descend through.
-        const ring = await treeDb.getForkRing(directories, m1.node_id);
-        expect(ring).toHaveLength(2);
-        const branchNamesByGroup = ring.map(group => group.branches.map(b => b.name).sort());
-        expect(branchNamesByGroup).toEqual(
-            expect.arrayContaining([['main'], ['fork-a']]),
-        );
     });
 });
 

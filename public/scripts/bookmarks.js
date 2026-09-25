@@ -210,8 +210,6 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
         return;
     }
 
-    const resolvedSwipeId = selectedSwipeId ?? Number(lastMes.swipe_id ?? 0);
-
     // A card-only greeting has no node yet - being branched at is what earns it one.
     const branchNodeId = await ensureOpeningRow(mesId);
 
@@ -261,7 +259,6 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
             return;
         }
 
-        // Kept as a flat list, not grouped by swipe id - the tree has no per-branch swipe context to key by.
         const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
         const branches = Array.isArray(extra.branches) ? [...extra.branches] : [];
         if (!branches.includes(name)) branches.push(name);
@@ -273,7 +270,7 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     // Legacy JSONL path: copy the chat prefix into a new file. Uniqueness is minted server-side (same
     // "<name> - Branch #N" scheme /api/chats/label's unique:true already uses for the tree path above),
     // not by asserting a name uniquified against a client-fetched chat list.
-    const newMetadata = { main_chat: mainChatName, fork_point: { mesId: Number(mesId), swipeId: resolvedSwipeId } };
+    const newMetadata = { main_chat: mainChatName };
 
     const branchChatSnapshot = await getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
     if (!branchChatSnapshot) {
@@ -292,184 +289,12 @@ export async function createBranch(mesId, { swipeId = null } = {}) {
     }
 
     const extra = typeof lastMes.extra === 'object' ? { ...lastMes.extra } : {};
-    const branches = (typeof extra.branches === 'object' && !Array.isArray(extra.branches)) ? { ...extra.branches } : {};
-    const groupKey = String(resolvedSwipeId);
-    branches[groupKey] = [...(Array.isArray(branches[groupKey]) ? branches[groupKey] : []), name];
+    const branches = Array.isArray(extra.branches) ? [...extra.branches] : [];
+    if (!branches.includes(name)) branches.push(name);
     extra.branches = branches;
     updateMessage(mesId, { extra });
     return name;
 }
-
-/**
- * Reads the local sibling list for a fork point, without touching the network. Not scoped by swipe id -
- * all siblings at a fork point share one parent row, so they're returned together regardless of which
- * swipe is currently selected. Also flattens the older swipe-id-keyed object shape for chats forked
- * before `extra.branches` became a flat array.
- * @param {ChatMessage} message
- * @returns {string[]} Sibling branch names, in creation order (deduped). Empty if none.
- */
-function getLocalForkSiblings(message) {
-    const branches = message?.extra?.branches;
-    if (Array.isArray(branches)) {
-        return [...branches];
-    }
-    if (branches && typeof branches === 'object') {
-        const seen = [];
-        for (const group of Object.values(branches)) {
-            if (Array.isArray(group)) {
-                for (const name of group) {
-                    if (!seen.includes(name)) seen.push(name);
-                }
-            }
-        }
-        return seen;
-    }
-    return [];
-}
-
-/**
- * Whether a message has fork branches, i.e. branch navigation arrows should be shown for it.
- * @param {number} mesId
- * @param {ChatMessage} [message]
- * @returns {boolean}
- */
-export function hasForkBranches(mesId, message) {
-    message ??= chat[mesId];
-    if (!message) return false;
-
-    const localSiblings = getLocalForkSiblings(message);
-    if (localSiblings.length > 0) return true;
-
-    const swipeId = Number(message.swipe_id ?? 0);
-    const forkPoint = chat_metadata?.fork_point;
-    if (forkPoint && forkPoint.mesId === mesId && forkPoint.swipeId === swipeId) return true;
-
-    return false;
-}
-
-/**
- * Fetches a single message from another chat file, without loading it into the active session.
- * Solo character chats only - group chats don't have an equivalent lightweight lookup endpoint.
- * @param {string} chatName
- * @param {number} mesId
- * @returns {Promise<ChatMessage?>}
- */
-async function fetchChatMessage(chatName, mesId) {
-    try {
-        const character = getCurrentCharacter();
-        const response = await fetch('/api/chats/get', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: character?.name,
-                file_name: chatName,
-                avatar_url: character?.avatar,
-            }),
-        });
-        if (!response.ok) {
-            return null;
-        }
-        const data = await response.json();
-        // Row 0 is the chat header (chat_metadata); messages start at row 1, same offset as getChatData().
-        return Array.isArray(data) ? (data[mesId + 1] ?? null) : null;
-    } catch (error) {
-        console.error('Failed to fetch fork sibling data', error);
-        return null;
-    }
-}
-
-/**
- * Resolves the full sibling ring for a fork point: [originChatName, ...branchNames], in creation
- * order, plus which position in that ring is the currently open chat. The origin chat is the single
- * source of truth for the sibling list, fetched on demand when the current chat is a branch rather
- * than the origin itself.
- * @param {number} mesId
- * @param {number} swipeId
- * @returns {Promise<{ring: string[], selfIndex: number}?>} null when this isn't a recognized fork point
- */
-export async function resolveForkRing(mesId, swipeId) {
-    const message = chat[mesId];
-    if (!message) {
-        return null;
-    }
-
-    const currentChatName = selected_group ? groupsStore.get(selected_group)?.chat_id : getCurrentCharacter()?.chat;
-    if (!currentChatName) {
-        return null;
-    }
-
-    const localSiblings = getLocalForkSiblings(message, swipeId);
-    if (localSiblings.length > 0) {
-        return { ring: [currentChatName, ...localSiblings], selfIndex: 0 };
-    }
-
-    // Group chats don't have a lightweight single-message fetch, so cross-file lookup is solo-only.
-    if (selected_group) {
-        return null;
-    }
-
-    const forkPoint = chat_metadata?.fork_point;
-    const originChatName = chat_metadata?.main_chat;
-    if (!forkPoint || !originChatName || forkPoint.mesId !== mesId || forkPoint.swipeId !== swipeId) {
-        return null;
-    }
-
-    const originMessage = await fetchChatMessage(originChatName, mesId);
-    const originSiblings = getLocalForkSiblings(originMessage, swipeId);
-    if (originSiblings.length === 0) {
-        return null;
-    }
-
-    const ring = [originChatName, ...originSiblings];
-    const selfIndex = ring.indexOf(currentChatName);
-    return selfIndex === -1 ? null : { ring, selfIndex };
-}
-
-/**
- * Cycles to the next/previous sibling branch at a fork point, in place - the swipe equivalent for
- * whole branch files instead of alternate generations of one message.
- * @param {number} mesId
- * @param {1|-1} direction
- */
-export async function branchSwipe(mesId, direction) {
-    const message = chat[mesId];
-    if (!message) {
-        return;
-    }
-
-    const swipeId = Number(message.swipe_id ?? 0);
-    const resolved = await resolveForkRing(mesId, swipeId);
-    if (!resolved || resolved.ring.length < 2) {
-        return;
-    }
-
-    const { ring, selfIndex } = resolved;
-    const targetIndex = (selfIndex + direction + ring.length) % ring.length;
-    const targetName = ring[targetIndex];
-    if (targetIndex === selfIndex) {
-        return;
-    }
-
-    const loaderHandle = loader.show({
-        slug: 'chat-load',
-        title: t`Chat History`,
-        message: t`Loading chat…`,
-        toastMode: loader.ToastMode.STATIC,
-    });
-
-    try {
-        if (selected_group) {
-            await openGroupChat(selected_group, targetName);
-        } else {
-            await openCharacterChat(targetName);
-        }
-    } finally {
-        await loaderHandle.hide();
-    }
-
-    document.querySelector(`.mes[mesid="${mesId}"]`)?.scrollIntoView({ block: 'center' });
-}
-
 
 /**
  * Creates a new bookmark for a message.
