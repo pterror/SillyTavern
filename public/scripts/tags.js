@@ -3780,7 +3780,114 @@ function updateTagsDivPreview() {
     }
 }
 
+/**
+ * Resolves a computed `inset()` clip-path into pixel insets for a box of the given size.
+ * @param {string} clipPath Computed clip-path value
+ * @param {number} width Border-box width
+ * @param {number} height Border-box height
+ * @returns {{top: number, right: number, bottom: number, left: number}}
+ */
+function resolveInsetClipPath(clipPath, width, height) {
+    const match = /^inset\(([^)]*)\)/.exec(clipPath);
+    if (!match) {
+        return { top: 0, right: 0, bottom: 0, left: 0 };
+    }
+    const values = match[1].trim().split(/\s+/);
+    const [top, right = top, bottom = top, left = right] = values;
+    const resolve = (/** @type {string} */ value, /** @type {number} */ basis) =>
+        value.endsWith('%') ? parseFloat(value) / 100 * basis : parseFloat(value) || 0;
+    return {
+        top: resolve(top, height),
+        right: resolve(right, width),
+        bottom: resolve(bottom, height),
+        left: resolve(left, width),
+    };
+}
+
+/**
+ * The open tags panel overlays the form without reflowing it and is see-through, so everything it
+ * covers is clipped away by cutting the panel's currently visible rectangle out of each covered
+ * element - frame by frame while the panel's clip-path transition runs.
+ */
+function initTagsDrawerUnderlayClip() {
+    const drawer = document.getElementById('tags_div');
+    const panel = drawer?.querySelector(':scope > .inline-drawer-content');
+    const icon = drawer?.querySelector(':scope > .inline-drawer-header .inline-drawer-icon');
+    if (!(panel instanceof HTMLElement) || !icon) {
+        return;
+    }
+
+    /** @type {Set<HTMLElement>} */
+    const clipped = new Set();
+    let frame = 0;
+
+    const scrollContainer = (() => {
+        for (let el = drawer.parentElement; el; el = el.parentElement) {
+            if (getComputedStyle(el).overflowY !== 'visible') {
+                return el;
+            }
+        }
+        return document.documentElement;
+    })();
+
+    function update() {
+        const box = panel.getBoundingClientRect();
+        const inset = resolveInsetClipPath(getComputedStyle(panel).clipPath, box.width, box.height);
+        const cover = {
+            top: box.top + inset.top,
+            right: box.right - inset.right,
+            bottom: box.bottom - inset.bottom,
+            left: box.left + inset.left,
+        };
+        const covering = cover.bottom > cover.top && cover.right > cover.left;
+
+        /** @type {Set<HTMLElement>} */
+        const covered = new Set();
+        if (covering) {
+            for (let path = /** @type {HTMLElement} */ (panel); path !== scrollContainer && path.parentElement; path = path.parentElement) {
+                for (const sibling of path.parentElement.children) {
+                    if (sibling === path || !(sibling instanceof HTMLElement)) {
+                        continue;
+                    }
+                    const rect = sibling.getBoundingClientRect();
+                    const top = Math.max(rect.top, cover.top) - rect.top;
+                    const bottom = Math.min(rect.bottom, cover.bottom) - rect.top;
+                    const left = Math.max(rect.left, cover.left) - rect.left;
+                    const right = Math.min(rect.right, cover.right) - rect.left;
+                    if (bottom <= top || right <= left) {
+                        continue;
+                    }
+                    sibling.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${left}px ${top}px, ${right}px ${top}px, ${right}px ${bottom}px, ${left}px ${bottom}px, ${left}px ${top}px)`;
+                    covered.add(sibling);
+                }
+            }
+        }
+        for (const el of clipped) {
+            if (!covered.has(el)) {
+                el.style.clipPath = '';
+            }
+        }
+        clipped.clear();
+        covered.forEach(el => clipped.add(el));
+    }
+
+    function track() {
+        cancelAnimationFrame(frame);
+        const step = () => {
+            update();
+            frame = panel.getAnimations().length > 0 ? requestAnimationFrame(step) : 0;
+        };
+        frame = requestAnimationFrame(step);
+    }
+
+    new MutationObserver(track).observe(icon, { attributes: true, attributeFilter: ['class'] });
+    const resizeObserver = new ResizeObserver(() => icon.classList.contains('up') && update());
+    resizeObserver.observe(panel);
+    resizeObserver.observe(scrollContainer);
+}
+
 export function initTags() {
+    initTagsDrawerUnderlayClip();
     createTagInput('#tagInput', '#tagList', { tagOptions: { removable: true } });
     createTagInput('#groupTagInput', '#groupTagList', { tagOptions: { removable: true } });
 

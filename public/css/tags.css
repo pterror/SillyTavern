@@ -33,14 +33,25 @@
     visibility: hidden;
 }
 
+/* The preview row and the open panel share grid row 2, so the panel starts
+   exactly where the collapsed row is instead of below its reserved space. */
 #tags_div {
     position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+}
+
+#tags_div > .tags_div_preview {
+    grid-row: 2;
+    grid-column: 1;
 }
 
 #tags_div > .inline-drawer-content {
     display: block;
     position: absolute;
-    top: 100%;
+    grid-row: 2;
+    grid-column: 1;
+    top: 0;
     left: 0;
     right: 0;
     z-index: 10;
