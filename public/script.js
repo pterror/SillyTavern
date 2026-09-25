@@ -150,7 +150,6 @@ import {
     getCharaFilename,
     waitUntilCondition,
     escapeRegex,
-    resetScrollHeight,
     onlyUnique,
     getBase64Async,
     humanFileSize,
@@ -243,6 +242,7 @@ import { DragAndDropHandler } from './scripts/dragdrop.js';
 import { INTERACTABLE_CONTROL_CLASS, initKeyboard } from './scripts/keyboard.js';
 import { initDynamicStyles } from './scripts/dynamic-styles.js';
 import { initInputMarkdown } from './scripts/input-md-formatting.js';
+import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-textareas.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
@@ -957,6 +957,7 @@ async function firstLoadInit() {
     initCfg();
     initLogprobs();
     initInputMarkdown();
+    initAutosizeTextareas();
     initServerHistory();
     initSettingsSearch();
     initBulkEdit();
@@ -7879,6 +7880,7 @@ export function frontDrawer(contentId) {
         accountStorage.setItem('FillRightFront', contentId);
     }
     recomputeDrawerFronts();
+    autosizeTextareas(document.getElementById(contentId) ?? document);
 }
 
 function closeDrawerContent(content) {
@@ -8203,6 +8205,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#depth_prompt_depth').val(create_save.depth_prompt_depth);
     $('#depth_prompt_role').val(create_save.depth_prompt_role);
     $('#mes_example_textarea').val(create_save.mes_example);
+    autosizeTextareas(document.getElementById('form_create'));
     $('#character_json_data').val('');
     $('#character_book_json').val('');
     $('#avatar_div').css('display', 'flex');
@@ -9118,6 +9121,7 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
 function renderGreetingPager() {
     const { greetings, index } = greetingPagerState;
     $('#greeting_field').val(greetings[index] ?? '');
+    autosizeTextareas(document.getElementById('greeting_field'));
     $('.greeting-pager-input').val(index + 1);
     $('.greeting-pager-total').text(`/${greetings.length}`);
     // .val() above doesn't fire a native input event, so the token counter needs an explicit nudge.
@@ -11157,14 +11161,6 @@ export async function doNavbarIconClick() {
         }
 
         frontDrawer(targetDrawerID);
-
-        // Set the height of "autoSetHeight" textareas within the drawer to their scroll height
-        if (!CSS.supports('field-sizing', 'content')) {
-            const textareas = $(this).closest('.drawer').find('.drawer-content textarea.autoSetHeight');
-            for (const textarea of textareas) {
-                await resetScrollHeight($(textarea));
-            }
-        }
     } else if (drawerWasOpenAlready) {
         // Open but hidden behind another drawer: the click brings it forward rather than closing it.
         if (getComputedStyle(drawer[0]).visibility === 'hidden') {
@@ -12618,13 +12614,7 @@ jQuery(async function () {
             },
         });
 
-        // Set the height of "autoSetHeight" textareas within the inline-drawer to their scroll height
-        if (!CSS.supports('field-sizing', 'content')) {
-            const textareas = drawerContent.find('textarea.autoSetHeight');
-            for (const textarea of textareas) {
-                await resetScrollHeight($(textarea));
-            }
-        }
+        autosizeTextareas(drawerContent[0]);
     });
 
     $(document).on('click', '.inline-drawer-maximize', function () {
