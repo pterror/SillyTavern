@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 // NixOS host: the Playwright-managed Chromium download is missing system libs.
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -27,10 +27,7 @@ async function dismissWelcomePopupIfPresent(page) {
  */
 async function openCharacterWithTags(page) {
     const name = `TagsDrawerOverlayTest-${Date.now()}`;
-    if (!(await page.locator('#rm_button_create').isVisible())) {
-        await page.locator('#rightNavDrawerIcon').click();
-        await page.locator('#rm_button_create').waitFor({ state: 'visible', timeout: 10000 });
-    }
+    await openCharacterManagementDrawer(page);
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();

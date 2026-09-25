@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterDebounced, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, select_selected_character } from '../script.js';
+import { saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterField, saveCharacterFieldDebounced, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, select_selected_character } from '../script.js';
 import { getOneCharacter } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat_metadata } from './chat-state.js';
@@ -2402,8 +2402,8 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
 
             const avatar = embeddedLoreCharacterAvatar;
             if (avatar && $('#avatar_url_pole').val() === avatar) {
-                $('#character_book_json').val('').trigger('input');
-                await createOrEditCharacter();
+                $('#character_book_json').val('');
+                await saveCharacterField(avatar, '#character_book_json', '');
             }
 
             await hideWorldEditor();
@@ -4583,10 +4583,10 @@ export async function deleteWorldInfo(worldInfoName) {
     $('#world_editor_select').trigger('change');
 
     if ($('#character_world').val() === worldInfoName) {
-        $('#character_world').val('').trigger('change');
+        $('#character_world').val('');
         setWorldInfoButtonClass(undefined, false);
         if (menu_type != 'create') {
-            saveCharacterDebounced();
+            saveCharacterFieldDebounced(String($('#avatar_url_pole').val()), '#character_world', '');
         }
     }
 
@@ -5968,8 +5968,9 @@ async function saveEmbeddedLore(data) {
     }
 
     try {
-        $('#character_book_json').val(JSON.stringify(convertToCharacterBook(data))).trigger('input');
-        await createOrEditCharacter();
+        const characterBookJson = JSON.stringify(convertToCharacterBook(data));
+        $('#character_book_json').val(characterBookJson);
+        await saveCharacterField(avatar, '#character_book_json', characterBookJson);
     } catch (error) {
         console.error('[WI] Failed to save embedded lorebook changes.', error);
     }
@@ -6071,7 +6072,8 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
 
     await saveWorldInfo(bookName, convertedBook, true);
     await updateWorldInfoList();
-    $('#character_world').val(bookName).trigger('change');
+    $('#character_world').val(bookName);
+    saveCharacterFieldDebounced(avatar, '#character_world', bookName);
 
     toastr.success(t`The world '${bookName}' has been imported and linked to the character successfully.`, t`World/Lorebook imported`);
 
@@ -6390,7 +6392,7 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
  * @param {string} name - The name of the world info to link to the character.
  */
 export async function charUpdatePrimaryWorld(name) {
-    $('#character_world').val(name).trigger('input');
+    $('#character_world').val(name);
 
     console.debug('Character world selected:', name);
 
@@ -6401,7 +6403,7 @@ export async function charUpdatePrimaryWorld(name) {
 
     // Unlinking doesn't touch character_book - getCharacterLore() falls back to it directly.
 
-    await createOrEditCharacter();
+    await saveCharacterField(String($('#avatar_url_pole').val()), '#character_world', name);
 
     setWorldInfoButtonClass(undefined, !!name);
 }
@@ -6676,7 +6678,6 @@ export function initWorldInfo() {
             openWorldInfoEditor(worldName);
         } else if (hasEmbed && !event.shiftKey && !event.altKey) {
             await importEmbeddedWorldInfo();
-            saveCharacterDebounced();
         } else {
             openSetWorldMenu();
         }

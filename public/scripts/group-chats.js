@@ -2347,7 +2347,7 @@ async function createGroup() {
         const data = await createGroupResponse.json();
         createTagMapFromList('#groupTagList', data.id);
         // The new group's id is already known (data.id) - report it specifically instead of the reload's
-        // generic reset(), same as characters' duplicateCharacter/createOrEditCharacter create branch.
+        // generic reset(), same as characters' duplicateCharacter/createCharacterFromCreateSave.
         await getCharacters({ silentGroups: true });
         groupsStore.reportCreated(String(data.id));
         select_rm_info('group_create', data.id);

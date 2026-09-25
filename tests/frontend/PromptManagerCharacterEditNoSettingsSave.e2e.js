@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
 
 // NixOS host: the Playwright-managed Chromium download is missing system libs, so fall back
 // to the system-provided Chrome (only when explicitly pointed at it) rather than requiring a
@@ -65,13 +65,15 @@ async function switchToChatCompletionApi(page) {
  */
 async function createTestCharacter(page) {
     const name = `PromptManagerCharacterEditTest-${Date.now()}`;
+    await openCharacterManagementDrawer(page);
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
-    await page.locator('#create_button').click();
+    await page.locator('#create_button_label').click();
     // Creation closes the advanced editing popup and returns to the character list - select the
     // newly created character to reopen the definitions panel on it (the panel a user actually
     // types description/personality/etc into, and the one that emits CHARACTER_EDITED on edit).
     await page.locator('.character_select', { hasText: name }).first().click();
+    await openInfoTab(page, 'description');
     await page.locator('#description_textarea').waitFor({ state: 'visible', timeout: 10000 });
     // Selecting the character fires its own CHAT_LOADED-driven settings save (prompt order setup
     // for a character that has none yet) - let that settle before a caller starts listening for
@@ -99,10 +101,9 @@ test.describe('prompt manager character-edit settings save', () => {
             // The flow the owner actually hits: type in a definitions-panel field, then click
             // away (blur) - mirroring "type a message, then click away" for the chatbar.
             await page.locator('#description_textarea').fill('A test character used to check for a stray settings save.');
-            await page.locator('#character_name_pole').click();
+            await page.locator('#creator_textarea').click();
 
-            // Give saveCharacterDebounced (and, transitively, the old unconditional
-            // saveServiceSettings() call) its full debounce window to fire.
+            // Wait out the description field's save debounce, so a settings save it set off would be caught.
             await page.waitForTimeout(2000);
 
             expect(saveRequests).toEqual([]);

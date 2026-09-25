@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -36,13 +36,7 @@ test.describe('embedded lorebook activates with no linked World', () => {
         const name = `EmbeddedLoreActivationTest-${Date.now()}`;
         let avatar = null;
 
-        // A fresh page load resumes whatever chat/character panel was last open server-side for
-        // this account - the character management drawer (which holds #rm_button_create) may not
-        // already be open.
-        if (!(await page.locator('#rm_button_create').isVisible())) {
-            await page.locator('#rightNavDrawerIcon').click();
-            await page.locator('#rm_button_create').waitFor({ state: 'visible', timeout: 10000 });
-        }
+        await openCharacterManagementDrawer(page);
         await page.locator('#rm_button_create').click();
         await page.locator('#character_name_pole').fill(name);
 
@@ -64,7 +58,7 @@ test.describe('embedded lorebook activates with no linked World', () => {
         try {
             const result = await page.evaluate(async (avatar) => {
                 const { getSortedEntries, EMBEDDED_WORLD_NAME } = await import('./scripts/world-info.js');
-                const { selectCharacterByAvatar, createOrEditCharacter, getCurrentCharacter, eventSource, event_types } = await import('./script.js');
+                const { selectCharacterByAvatar, saveCharacterField, getCurrentCharacter, eventSource, event_types } = await import('./script.js');
 
                 await selectCharacterByAvatar(avatar);
 
@@ -77,8 +71,9 @@ test.describe('embedded lorebook activates with no linked World', () => {
                         { id: 0, keys: ['embeddedlorekeyword'], content: 'embedded lore content', enabled: true, insertion_order: 0, extensions: {} },
                     ],
                 };
-                $('#character_book_json').val(JSON.stringify(characterBook)).trigger('input');
-                await createOrEditCharacter();
+                const characterBookJson = JSON.stringify(characterBook);
+                $('#character_book_json').val(characterBookJson);
+                await saveCharacterField(avatar, '#character_book_json', characterBookJson);
 
                 const character = getCurrentCharacter();
                 const savedBookEntryCount = character?.data?.character_book?.entries?.length ?? 0;
