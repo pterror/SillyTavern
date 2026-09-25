@@ -43,6 +43,28 @@ export function markdownExclusionExt(escapeStrings, substituteParamsFn = identit
 
 export let markedProcessor = new Marked();
 
+/** Same configuration as {@link markedProcessor}, except raw HTML tokens are shown as literal text. */
+let markedLiteralTagsProcessor = new Marked();
+
+/** @param {string} text @returns {string} */
+function escapeHtmlText(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+/** @type {import('marked').MarkedExtension} */
+const literalTagsExt = {
+    renderer: {
+        html({ text }) {
+            return escapeHtmlText(text);
+        },
+    },
+};
+
 /**
  * @param {string} [escapeStrings] power_user.markdown_escape_strings; pass the real value when calling this from a module that already imports power_user (e.g. on power_user.markdown_escape_strings change), same as the old reloadMarkdownProcessor() was called.
  * @param {(text: string) => string} [substituteParamsFn] The real `substituteParams` from script.js, from a module that already imports it.
@@ -53,11 +75,28 @@ export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identi
         breaks: true,
     });
     markedProcessor.use(markdownExclusionExt(escapeStrings, substituteParamsFn));
+
+    markedLiteralTagsProcessor = new Marked({
+        gfm: true,
+        breaks: true,
+    });
+    markedLiteralTagsProcessor.use(markdownExclusionExt(escapeStrings, substituteParamsFn));
+    markedLiteralTagsProcessor.use(literalTagsExt);
     return markedProcessor;
 }
 
 export function renderMarkdown(text) {
     return markedProcessor.parse(text);
+}
+
+/**
+ * Renders markdown with raw HTML (block and inline tags) shown as literal text; code spans, code blocks
+ * and blockquotes render as usual.
+ * @param {string} text
+ * @returns {string}
+ */
+export function renderMarkdownLiteralTags(text) {
+    return String(markedLiteralTagsProcessor.parse(text));
 }
 
 reloadMarkedProcessor();

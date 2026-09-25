@@ -1,3 +1,4 @@
+import { blockWhileFieldEditing } from './character-field-editor.js';
 import { Fuse } from '../lib.js';
 
 import { groups, groupsStore, setGroups, rebuildGroupsStoreCore } from './group-store.js';
@@ -2246,6 +2247,10 @@ function updateFavButtonState(state) {
  * @returns {Promise<boolean>} Whether the group was opened
  */
 export async function openGroupById(groupId) {
+    if (blockWhileFieldEditing()) {
+        return false;
+    }
+
     if (isChatSaving) {
         toastr.info(t`Please wait until the chat is saved before switching characters.`, t`Your chat is still saving...`);
         return false;

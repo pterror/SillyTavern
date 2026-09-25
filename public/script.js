@@ -231,6 +231,7 @@ import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
+import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, handleFieldEditKey, initCharacterFieldEditor, setFieldValue } from './scripts/character-field-editor.js';
 import { initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
@@ -1144,6 +1145,19 @@ async function firstLoadInit() {
     setStage('Loading locales');
     await initLocales();
     initChatUtilities();
+    initCharacterFieldEditor({
+        substituteParams,
+        messageFormatting,
+        formatCreatorNotes: text => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar),
+        power_user,
+        t,
+        autoSaveTimeout: DEFAULT_SAVE_EDIT_TIMEOUT,
+        saveCreatorNotesField,
+        saveDescriptionField,
+        saveGreetingField,
+        saveSystemPromptField,
+        savePostHistoryInstructionsField,
+    });
     initDefaultSlashCommands();
     initTextGenModels();
     initOpenAI();
@@ -1337,6 +1351,9 @@ export async function selectCharacterByAvatar(avatar, { switchMenu = true } = {}
 
     if (selected_group || String(this_avatar) !== String(avatar)) {
         //if clicked on a different character from what was currently selected
+        if (blockWhileFieldEditing()) {
+            return;
+        }
         if (!is_send_press) {
             setCharacterId(undefined);
             setCharacterName('');
@@ -6295,6 +6312,9 @@ export function setSendButtonState(value) {
  */
 
 export async function renameCharacter(name = null, { silent = false, renameChats = null } = {}) {
+    if (blockWhileFieldEditing()) {
+        return false;
+    }
     if (!name && silent) {
         toastr.warning(t`No character name provided.`, t`Rename Character`);
         return false;
@@ -7651,6 +7671,10 @@ export async function messageEdit(editMessageId) {
         return;
     }
 
+    if (blockWhileFieldEditing()) {
+        return;
+    }
+
     this_edit_mes_id = editMessageId;
     this_edit_mes_chname = editMessage.name || (editMessage.is_user ? name1 : name2);
 
@@ -8339,13 +8363,12 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#add_avatar_button').val('');
 
     $('#character_name_pole').val(character.name);
-    $('#description_textarea').val(character.description);
+    setFieldValue('description_textarea', character.description);
     $('#character_world').val(character.data?.extensions?.world || '');
-    $('#creator_notes_textarea').val(character.data?.creator_notes || character.creatorcomment);
-    $('#creator_notes_preview').html(formatCreatorNotes(character.data?.creator_notes || character.creatorcomment, character.avatar));
+    setFieldValue('creator_notes_textarea', character.data?.creator_notes || character.creatorcomment);
     $('#character_version_textarea').val(character.data?.character_version || '');
-    $('#system_prompt_textarea').val(character.data?.system_prompt || '');
-    $('#post_history_instructions_textarea').val(character.data?.post_history_instructions || '');
+    setFieldValue('system_prompt_textarea', character.data?.system_prompt || '');
+    setFieldValue('post_history_instructions_textarea', character.data?.post_history_instructions || '');
     $('#tags_textarea').val(Array.isArray(character.data?.tags) ? character.data.tags.join(', ') : '');
     $('#creator_textarea').val(character.data?.creator);
     $('#character_version_textarea').val(character.data?.character_version || '');
@@ -8433,12 +8456,11 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#rm_button_back').css('display', '');
     $('#character_import_button').css('display', '');
     $('#character_name_pole').val(create_save.name);
-    $('#description_textarea').val(create_save.description);
+    setFieldValue('description_textarea', create_save.description);
     $('#character_world').val(create_save.world);
-    $('#creator_notes_textarea').val(create_save.creator_notes);
-    $('#creator_notes_preview').html(formatCreatorNotes(create_save.creator_notes, ''));
-    $('#post_history_instructions_textarea').val(create_save.post_history_instructions);
-    $('#system_prompt_textarea').val(create_save.system_prompt);
+    setFieldValue('creator_notes_textarea', create_save.creator_notes);
+    setFieldValue('post_history_instructions_textarea', create_save.post_history_instructions);
+    setFieldValue('system_prompt_textarea', create_save.system_prompt);
     $('#tags_textarea').val(create_save.tags);
     $('#creator_textarea').val(create_save.creator);
     $('#character_version_textarea').val(create_save.character_version);
@@ -9380,7 +9402,7 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
 /** Redraws the pager controls and the visible greeting field from the current pager state. */
 function renderGreetingPager() {
     const { greetings, index } = greetingPagerState;
-    $('#greeting_field').val(greetings[index] ?? '');
+    setFieldValue('greeting_field', greetings[index] ?? '');
     autosizeTextareas(document.getElementById('greeting_field'));
     $('.greeting-pager-input').val(index + 1);
     $('.greeting-pager-total').text(`/${greetings.length}`);
@@ -9398,10 +9420,6 @@ function navigateGreetingPager(newIndex) {
     greetingPagerState.index = ((newIndex % greetings.length) + greetings.length) % greetings.length;
     renderGreetingPager();
 }
-
-// One debounce instance per pager slot - a shared debounce would let switching slots mid-type cancel a still-pending call and silently lose that edit.
-/** @type {Map<number, (position: number, text: string) => void>} */
-const greetingPagerEditDebouncers = new Map();
 
 /**
  * Saves an edit to an already-committed pager greeting.
@@ -9431,24 +9449,12 @@ async function saveGreetingPagerEdit(position, text) {
 }
 
 /**
- * @param {number} position
- * @param {string} text
- */
-function saveGreetingPagerEditDebounced(position, text) {
-    if (!greetingPagerEditDebouncers.has(position)) {
-        greetingPagerEditDebouncers.set(position, debounce(saveGreetingPagerEdit, DEFAULT_SAVE_EDIT_TIMEOUT));
-    }
-    greetingPagerEditDebouncers.get(position)(position, text);
-}
-
-/**
  * Commits a value for the greeting currently shown in the pager: a still-pending (uncommitted) slot is
  * added once it has text, a committed one is edited in place; in create mode it goes to `create_save`.
  * @param {string} value
- * @param {{debounced: boolean}} options `debounced` delays a committed slot's edit (per slot).
- * @returns {Promise<boolean|null>} Whether the value was saved; null when a debounced edit was only scheduled.
+ * @returns {Promise<boolean>} Whether the value was saved.
  */
-async function commitGreetingFieldValue(value, { debounced }) {
+async function commitGreetingFieldValue(value) {
     const { index, defaultIndex } = greetingPagerState;
     greetingPagerState.greetings[index] = value;
     if (menu_type === 'create') {
@@ -9468,12 +9474,8 @@ async function commitGreetingFieldValue(value, { debounced }) {
             return true;
         }
         console.error('Greeting add failed', { avatar, position: index, status: result.status, reason: result.reason });
-        toastr.error(t`Failed to save the new greeting. It's still shown here - keep typing in it to retry.`, t`Greeting not saved`);
+        toastr.error(t`Failed to save the new greeting. It's still shown here - confirm it again to retry.`, t`Greeting not saved`);
         return false;
-    }
-    if (debounced) {
-        saveGreetingPagerEditDebounced(index, value);
-        return null;
     }
     return await saveGreetingPagerEdit(index, value);
 }
@@ -9484,7 +9486,7 @@ async function commitGreetingFieldValue(value, { debounced }) {
  * @returns {Promise<boolean>} Whether the value was saved.
  */
 export async function saveGreetingField(value) {
-    return Boolean(await commitGreetingFieldValue(value, { debounced: false }));
+    return await commitGreetingFieldValue(value);
 }
 
 /**
@@ -9502,6 +9504,9 @@ function stripEmptyAlternateGreetings(alternateGreetings, context) {
 }
 
 function openAlternateGreetings() {
+    if (blockWhileFieldEditing()) {
+        return;
+    }
     const avatar = $('.open_alternate_greetings').data('avatar');
     // Every use below reads/mutates this character's own fields directly - no index required.
     const greetingsCharacter = charactersStore.get(avatar);
@@ -9951,6 +9956,9 @@ async function createSaveToFormData() {
  * Creates a new character from the confirmed create-mode values in `create_save`.
  */
 export async function createCharacterFromCreateSave() {
+    if (blockWhileFieldEditing()) {
+        return;
+    }
     if (!settingsReady) {
         console.warn('Settings not ready, aborting character creation.');
         return;
@@ -11082,6 +11090,9 @@ export async function renameChat(oldFileName, newName, { byNode = false } = {}) 
  * @returns {Promise<boolean>} True if the chat was successfully closed, false otherwise.
  */
 export async function closeCurrentChat() {
+    if (blockWhileFieldEditing()) {
+        return false;
+    }
     if (is_send_press == false) {
         await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
         await clearChat({ clearData: true });
@@ -11156,6 +11167,9 @@ export async function handleDeleteCharacter(characterId, delete_chats) {
  * @return {Promise<boolean>} - A promise that resolves when the character is successfully deleted
  */
 export async function deleteCharacter(characterKey, { deleteChats = true } = {}) {
+    if (blockWhileFieldEditing()) {
+        return false;
+    }
     if (!Array.isArray(characterKey)) {
         characterKey = [characterKey];
     }
@@ -11556,10 +11570,16 @@ jQuery(async function () {
         selectRightMenuWithAnimation('rm_api_block');
     });
     $('#rm_button_back').on('click', function () {
+        if (blockWhileFieldEditing()) {
+            return;
+        }
         selected_button = 'characters';
         select_rm_characters();
     });
     $('#rm_button_create').on('click', function () {
+        if (blockWhileFieldEditing()) {
+            return;
+        }
         selected_button = 'create';
         select_rm_create();
     });
@@ -11825,11 +11845,7 @@ jQuery(async function () {
     });
 
     const elementsToUpdate = {
-        '#description_textarea': function () { create_save.description = String($('#description_textarea').val()); },
-        '#creator_notes_textarea': function () { create_save.creator_notes = String($('#creator_notes_textarea').val()); },
         '#character_version_textarea': function () { create_save.character_version = String($('#character_version_textarea').val()); },
-        '#system_prompt_textarea': function () { create_save.system_prompt = String($('#system_prompt_textarea').val()); },
-        '#post_history_instructions_textarea': function () { create_save.post_history_instructions = String($('#post_history_instructions_textarea').val()); },
         '#creator_textarea': function () { create_save.creator = String($('#creator_textarea').val()); },
         '#tags_textarea': function () { create_save.tags = String($('#tags_textarea').val()); },
         '#personality_textarea': function () { create_save.personality = String($('#personality_textarea').val()); },
@@ -11852,10 +11868,6 @@ jQuery(async function () {
     });
 
     // Greeting pager: steps through the stable-order greeting list in the sidebar, editing whichever one is currently shown.
-    $('#greeting_field').on('input', function () {
-        void commitGreetingFieldValue(String($(this).val()), { debounced: true });
-    });
-
     $('.greeting-pager-prev').on('click', function () {
         navigateGreetingPager(greetingPagerState.index - 1);
     });
@@ -11865,6 +11877,9 @@ jQuery(async function () {
     });
 
     $('.greeting-pager-add').on('click', function () {
+        if (blockFieldEditStart()) {
+            return;
+        }
         const { greetings, committed, index } = greetingPagerState;
         greetings[index] = String($('#greeting_field').val());
         const newIndex = greetings.length;
@@ -11872,7 +11887,7 @@ jQuery(async function () {
         committed[newIndex] = false;
         greetingPagerState.index = newIndex;
         renderGreetingPager();
-        $('#greeting_field').trigger('focus');
+        beginEdit('greeting_field');
     });
 
     function jumpGreetingPager() {
@@ -11893,43 +11908,6 @@ jQuery(async function () {
 
     $('.greeting-pager-input').on('blur', function () {
         jumpGreetingPager();
-    });
-
-    $('#creator_notes_textarea').on('input', function () {
-        const notes = String($('#creator_notes_textarea').val());
-        const avatar = menu_type === 'create' ? '' : getCurrentCharacter()?.avatar;
-        $('#creator_notes_preview').html(formatCreatorNotes(notes, avatar));
-    });
-
-    $(document).on('click', '.creator_notes_preview_toggle_button', function () {
-        const textarea = $('#creator_notes_textarea');
-        const preview = $('#creator_notes_preview');
-        const showingPreview = preview.is(':visible');
-
-        if (showingPreview) {
-            preview.hide();
-            textarea.show();
-        } else {
-            const notes = String(textarea.val());
-            const avatar = menu_type === 'create' ? '' : getCurrentCharacter()?.avatar;
-            preview.html(formatCreatorNotes(notes, avatar));
-            textarea.hide();
-            preview.show();
-        }
-
-        $(this).toggleClass('fa-pencil fa-wand-magic-sparkles');
-    });
-
-    $(document).on('dblclick', '#creator_notes_preview', function () {
-        $('.creator_notes_preview_toggle_button').trigger('click');
-        $('#creator_notes_textarea').trigger('focus');
-    });
-
-    $(document).on('click', '#creator_notes_preview', function () {
-        if (!power_user.click_to_edit) return;
-        if (window.getSelection().toString()) return;
-        $('.creator_notes_preview_toggle_button').trigger('click');
-        $('#creator_notes_textarea').trigger('focus');
     });
 
     $('#favorite_button').on('click', async function () {
@@ -12900,6 +12878,9 @@ jQuery(async function () {
 
     $(document).on('keydown', function (e) {
         if (e.key === 'Escape' && !e.originalEvent.isComposing) {
+            if (handleFieldEditKey('escape')) {
+                return;
+            }
             const isEditVisible = $('#curEditTextarea').is(':visible') || $('.reasoning_edit_textarea').length > 0;
             if (isEditVisible && power_user.auto_save_msg_edits === false) {
                 closeMessageEditor('all');
