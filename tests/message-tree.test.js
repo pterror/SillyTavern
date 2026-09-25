@@ -1070,3 +1070,52 @@ describe('chat metadata: safety of skipping a content-unchanged /api/chats/metad
         expect(afterDegraft.metadata.integrity).toBe(saved.integrity);
     });
 });
+
+describe('getOpeningAlternatives() `around`', () => {
+    const opening = mes => ({ name: 'Char', is_user: false, is_system: false, send_date: 'd0', mes, extra: {} });
+
+    /** Stores `count` openings for one owner and returns the full, unwindowed list. */
+    async function storeOpenings(directories, count) {
+        const contents = Array.from({ length: count }, (_, i) => opening(`greeting ${i}`));
+        const added = await treeDb.addOpeningAlternatives(directories, 'owner-1', contents);
+        expect(added.ok).toBe(true);
+        const full = await treeDb.getOpeningAlternatives(directories, 'owner-1', { offset: 0, limit: count });
+        expect(full.alternatives).toHaveLength(count);
+        return full;
+    }
+
+    test('with more than 11 openings, centers the window on the stored opening matching speaker and text, not the default', async () => {
+        const directories = makeDirectories();
+        const full = await storeOpenings(directories, 20);
+        // Far enough from the default that the default window can't contain it.
+        const targetIndex = full.default_index < 10 ? 19 : 0;
+        const target = full.alternatives[targetIndex];
+
+        const byDefault = await treeDb.getOpeningAlternatives(directories, 'owner-1');
+        expect(byDefault.alternatives.map(a => a.node_id)).not.toContain(target.node_id);
+
+        const around = await treeDb.getOpeningAlternatives(directories, 'owner-1', { around: opening(target.mes) });
+        expect(around.offset).toBe(Math.max(0, targetIndex - 5));
+        expect(around.alternatives[targetIndex - around.offset].node_id).toBe(target.node_id);
+        expect(around.total).toBe(20);
+        expect(around.default_node_id).toBe(full.default_node_id);
+    });
+
+    test('a different speaker with the same text is not a match, so the window stays on the default', async () => {
+        const directories = makeDirectories();
+        const full = await storeOpenings(directories, 20);
+        const targetIndex = full.default_index < 10 ? 19 : 0;
+        const target = full.alternatives[targetIndex];
+
+        const byDefault = await treeDb.getOpeningAlternatives(directories, 'owner-1');
+        const around = await treeDb.getOpeningAlternatives(directories, 'owner-1', { around: { ...opening(target.mes), name: 'Someone else' } });
+        expect(around.offset).toBe(byDefault.offset);
+    });
+
+    test('an explicit offset still wins over `around`', async () => {
+        const directories = makeDirectories();
+        const full = await storeOpenings(directories, 20);
+        const around = await treeDb.getOpeningAlternatives(directories, 'owner-1', { offset: 3, around: opening(full.alternatives[19].mes) });
+        expect(around.offset).toBe(3);
+    });
+});
