@@ -1471,8 +1471,7 @@ export async function getCardJsonByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = (/** @type {{ id: string, card_json: string }[]} */ (entry.db.all(`SELECT id, card_json FROM characters WHERE id IN (${placeholders})`, batch)));
-        for (const row of rows) {
+        for (const row of /** @type {Generator<{ id: string, card_json: string }>} */ (entry.db.iterate(`SELECT id, card_json FROM characters WHERE id IN (${placeholders})`, batch))) {
             result.set(row.id, row.card_json);
         }
     }
