@@ -17,7 +17,6 @@ test.describe('Character Gallery View', () => {
 
         // Open the character panel via the standard drawer icon.
         await page.locator('#rightNavDrawerIcon').click();
-        await page.locator('#rm_button_characters').click();
         await expect(page.locator('#rm_print_characters_block .character_select').first()).toBeVisible();
 
         // Panel goes fullscreen when the character list is the active sub-view.
