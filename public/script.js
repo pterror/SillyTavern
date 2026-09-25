@@ -13,7 +13,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too).
 export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
@@ -804,14 +804,25 @@ export function saveSettingsDebounced(...keys) {
 }
 
 
-const getCharactersDebounced = debounce(() => getCharacters(), 2000);
+// With a search term the list isn't re-queried here; the visible page is, on 'search-index-updated'.
+const getCharactersDebounced = debounce(() => getCharacters({ skipPrint: hasActiveCharacterSearch() }), 2000);
 
 // One SSE connection per tab, doubling as change notification and presence heartbeat - avoids exhausting the per-origin connection pool.
 function setupCharacterChangeStream() {
     if (typeof EventSource === 'undefined') return;
     const source = new EventSource('/api/characters/changes/stream');
-    source.onmessage = () => {
-        if (menu_type === 'characters') {
+    source.onmessage = (event) => {
+        let message;
+        try {
+            message = JSON.parse(event.data);
+        } catch {
+            message = null;
+        }
+        if (message?.type === 'search-index-updated') {
+            onSearchIndexUpdated();
+            return;
+        }
+        if (isCharacterListShowing()) {
             getCharactersDebounced();
         } else {
             _charactersDirty = true;
@@ -8523,7 +8534,12 @@ function select_rm_characters() {
     selectRightMenuWithAnimation('rm_characters_block');
     if (_charactersDirty) {
         _charactersDirty = false;
-        getCharacters();
+        if (hasActiveCharacterSearch()) {
+            // Only the page fetch, without getCharacters()' extra search query.
+            getCharacters({ skipPrint: true }).then(() => printCharacters(doFullRefresh));
+        } else {
+            getCharacters();
+        }
     } else {
         printCharacters(doFullRefresh);
     }

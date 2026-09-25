@@ -187,6 +187,47 @@ export function refreshCharacterListCurrentPage() {
     return true;
 }
 
+// Page fetches of the characters list still running: printCharacters()'s page-1 probe through to the pager it
+// builds, and every pager ajaxFunction call. pagination.js drops a refresh while its own fetch runs, so a
+// search-index-updated arriving meanwhile waits here for the last one to settle.
+let pageFetchesInFlight = 0;
+let searchIndexRefreshPending = false;
+// Whether the pager was last built in server-query mode (renderLocalPaginated() has no server page).
+let serverPagedList = false;
+
+function pageFetchSettled() {
+    pageFetchesInFlight--;
+    if (pageFetchesInFlight === 0 && searchIndexRefreshPending) {
+        searchIndexRefreshPending = false;
+        onSearchIndexUpdated();
+    }
+}
+
+// #right-nav-panel holds only the characters list. An open drawer that another panel covers is hidden by CSS
+// (visibility), so openDrawer alone doesn't mean it is showing.
+export function isCharacterListShowing() {
+    const panel = document.getElementById('right-nav-panel');
+    return Boolean(panel?.classList.contains('openDrawer')) && getComputedStyle(panel).visibility !== 'hidden';
+}
+
+// Same test as /query's hasSearch: only a non-blank term reaches the search index.
+export function hasActiveCharacterSearch() {
+    return String(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '').trim().length > 0;
+}
+
+// For /changes/stream's 'search-index-updated'. Without a search term the page doesn't come from the index, so
+// there is nothing to re-query.
+export function onSearchIndexUpdated() {
+    if (!isCharacterListShowing()) return;
+    if (!hasActiveCharacterSearch()) return;
+    if (pageFetchesInFlight > 0) {
+        searchIndexRefreshPending = true;
+        return;
+    }
+    if (!serverPagedList) return;
+    refreshCharacterListCurrentPage();
+}
+
 /**
  * Prints the global character list, optionally doing a full refresh of the list
  * Use this function whenever the reprinting of the character list is the primary focus, otherwise using `printCharactersDebounced` is preferred for a cleaner, non-blocking experience.
@@ -316,6 +357,7 @@ export async function printCharacters(fullRefresh = false) {
     // Fallback when canUseServerQueryForEntitiesList() declines: the whole filtered/sorted set is materialized
     // client-side and the plugin slices it in memory on page turn.
     async function renderLocalPaginated() {
+        serverPagedList = false;
         const entities = await getEntitiesList({ doFilter: true });
 
         // entities.length is capped by the page-fetch limit during search; use serverSearchResults.total for the displayed total instead.
@@ -340,6 +382,20 @@ export async function printCharacters(fullRefresh = false) {
     }
 
     if (canUseServerQueryForEntitiesList()) {
+        pageFetchesInFlight++;
+        try {
+            await printServerPaginated();
+        } finally {
+            pageFetchSettled();
+        }
+    } else {
+        await renderLocalPaginated();
+    }
+
+    favsToHotswap();
+    updatePersonaConnectionsAvatarList();
+
+    async function printServerPaginated() {
         // Bogus-folder tag tiles are computed locally and prepended to page 1 only (never paginated), so page 1 can exceed pageSize.
         const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
 
@@ -365,6 +421,7 @@ export async function printCharacters(fullRefresh = false) {
             let pendingFirstPage = firstPage;
 
             const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
+            serverPagedList = true;
             $('#rm_print_characters_pagination').pagination({
                 ...sharedPaginationOptions,
                 dataSource: SERVER_PAGINATED_DATA_SOURCE,
@@ -386,6 +443,7 @@ export async function printCharacters(fullRefresh = false) {
                     return Number.isFinite(parsed) ? parsed : 0;
                 },
                 ajaxFunction: function (ajaxParams) {
+                    pageFetchesInFlight++;
                     const page = ajaxParams.data.pageNumber;
                     const requestedPageSize = ajaxParams.data.pageSize;
                     const resultPromise = (page === 1 && requestedPageSize === pageSize && pendingFirstPage)
@@ -405,17 +463,13 @@ export async function printCharacters(fullRefresh = false) {
                         .catch(error => {
                             console.error('[printCharacters] server-paginated /query failed:', error);
                             ajaxParams.error(error);
-                        });
+                        })
+                        .finally(pageFetchSettled);
                 },
                 callback: makePageCallback(() => matchTotal),
             });
         }
-    } else {
-        await renderLocalPaginated();
     }
-
-    favsToHotswap();
-    updatePersonaConnectionsAvatarList();
 }
 
 // Auto-selects the "Search" sort option only when the search term first becomes active, preserving a manual switch away from it.
