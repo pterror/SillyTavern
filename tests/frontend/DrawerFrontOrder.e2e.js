@@ -116,4 +116,47 @@ test.describe('Drawer front order', () => {
             return el.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
         })).toBe(true);
     });
+
+    test('pinned character management stays open after reload and one click closes it', async ({ page }) => {
+        await page.locator('#rightNavDrawerIcon').click();
+        await setPin(page, '#rm_button_panel_pin', true);
+        await expect(page.locator('#right-nav-panel')).toBeVisible();
+
+        await page.reload();
+        await awaitAppReady(page);
+        await expect(page.locator('#right-nav-panel')).toBeVisible();
+
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(page.locator('#right-nav-panel')).toBeHidden();
+    });
+
+    test('pinned character info opened by selecting a character stays open after reload', async ({ page }) => {
+        const name = await openChatWithCharacterMessage(page);
+        await page.locator('#charInfoDrawerIcon').click();
+        await setPin(page, '#charInfo_button_panel_pin', true);
+        await page.locator('#charInfoDrawerIcon').click();
+        await expect(page.locator('#char-info-panel')).toBeHidden();
+
+        await page.locator('#rightNavDrawerIcon').click();
+        await page.locator('.character_select', { hasText: name }).first().click();
+        await expect(page.locator('#char-info-panel')).toBeVisible();
+
+        await page.reload();
+        await awaitAppReady(page);
+        await expect(page.locator('#char-info-panel')).toBeVisible();
+    });
+
+    test('pinned character management closed before reload stays closed', async ({ page }) => {
+        await page.locator('#rightNavDrawerIcon').click();
+        await setPin(page, '#rm_button_panel_pin', true);
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(page.locator('#right-nav-panel')).toBeHidden();
+
+        await page.reload();
+        await awaitAppReady(page);
+        await expect(page.locator('#right-nav-panel')).toBeHidden();
+
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(page.locator('#right-nav-panel')).toBeVisible();
+    });
 });

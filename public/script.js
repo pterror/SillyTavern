@@ -8109,6 +8109,26 @@ function getDrawerZones(id) {
 // so a drawer opened without frontDrawer() (e.g. by an extension) still counts, ranked behind all fronted ones.
 const drawerFrontOrder = [];
 
+// accountStorage keys holding whether each pinnable panel was open, so a reload can restore it.
+const PANEL_OPEN_STATE_KEYS = {
+    'right-nav-panel': 'NavOpened',
+    'char-info-panel': 'CharInfoNavOpened',
+    'left-nav-panel': 'LNavOpened',
+    'WorldInfo': 'WINavOpened',
+};
+// Startup can open and close drawers before the saved state is read; recording is held off until then.
+let panelOpenStatesRead = false;
+
+/**
+ * Reads which pinnable panels were open when the page was last left, and starts recording changes from here on.
+ * @returns {Record<string, boolean>} Open state by panel id.
+ */
+export function readSavedPanelOpenStates() {
+    const states = Object.fromEntries(Object.entries(PANEL_OPEN_STATE_KEYS).map(([id, key]) => [id, accountStorage.getItem(key) === 'true']));
+    panelOpenStatesRead = true;
+    return states;
+}
+
 // Derives every "which open drawer is on top" class from drawerFrontOrder, each over its own overlap group:
 // .frontFillRight (the two .fillRight panels), .frontMobileOverlay (MOBILE_OVERLAY_PANEL_IDS), and
 // .frontInZone (per zone; an id spanning several zones must be on top of all of them).
@@ -8131,6 +8151,12 @@ function recomputeDrawerFronts() {
     for (const id of zoneDrawerIds) {
         const zones = getDrawerZones(id);
         document.getElementById(id).classList.toggle('frontInZone', zones.length > 0 && zones.every(zone => zoneTop[zone] === id));
+    }
+
+    if (panelOpenStatesRead) {
+        for (const [id, key] of Object.entries(PANEL_OPEN_STATE_KEYS)) {
+            accountStorage.setItem(key, String(Boolean(document.getElementById(id)?.classList.contains('openDrawer'))));
+        }
     }
 }
 
