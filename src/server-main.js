@@ -29,6 +29,8 @@ import {
     getCookieSessionName,
     ensurePublicDirectoriesExist,
     getUserDirectoriesList,
+    getAllUserHandles,
+    getUserDirectories,
     migrateSystemPrompts,
     migrateUserData,
     requireLoginMiddleware,
@@ -75,6 +77,7 @@ import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
 import { initializeMetadataStores, disposeMetadataStores } from './character-metadata-db.js';
+import { startSearchWorkerIfIndexed } from './endpoints/characters-search-index.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { disposeMessageTreeStores } from './message-tree-db.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
@@ -329,6 +332,12 @@ async function preSetupTasks() {
     // library doesn't delay the server from listening.
     await initializeMetadataStores(directories);
     __mark('initializeMetadataStores');
+
+    // Fire-and-forget, so a user's first search doesn't wait for their search index worker to start.
+    for (const handle of await getAllUserHandles()) {
+        startSearchWorkerIfIndexed(handle, getUserDirectories(handle))
+            .catch(err => console.error(color.red(`[search] Starting the search index worker for ${handle} failed:`), err));
+    }
 
     // Fire-and-forget: waits internally for that user's bootstrap backfill, so it can block for a
     // while on a large library. Marks itself complete per-user, so later boots are a no-op lookup.
