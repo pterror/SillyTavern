@@ -536,16 +536,14 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
     });
     if (!query) return { hits: [], total: 0, backend: 'tantivy' };
 
-    // count:false: combining an exact count with a fast-field-sorted, offset-paginated collector is far more
-    // expensive than either alone, so total comes from a separate plain-relevance count-only search below.
-    const { results } = runTantivySearch(tantivyIndex.index, query, limit, {
+    // The exact count costs about 1 ms on top of the sorted window; the binding offers no cheaper estimate.
+    const { results, total } = runTantivySearch(tantivyIndex.index, query, limit, {
         orderByField: tantivySortField,
         order: tantivySortOrder(sortField, sortOrder),
         offset,
-        count: false,
+        count: true,
         timingLabel: 'chars',
     });
-    const { total } = runTantivySearch(tantivyIndex.index, query, 1, { timingLabel: 'chars_count' });
     return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, order: /** @type {number} */ (r.order) }))), total, backend: 'tantivy' };
 }
 
