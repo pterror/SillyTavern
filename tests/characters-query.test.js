@@ -9,6 +9,8 @@ let router;
 let metadataDb;
 /** @type {typeof import('../src/character-card-parser.js')} */
 let cardParser;
+/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
+let searchCoordinator;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -29,19 +31,15 @@ beforeAll(async () => {
     ({ router } = await import('../src/endpoints/characters.js'));
     metadataDb = await import('../src/character-metadata-db.js');
     cardParser = await import('../src/character-card-parser.js');
+    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
 
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
         // Handle derived from the current test's tempDir (unique per test via mkdtempSync's random suffix), not
-        // a fixed string - characters-search-index.js's indexCoordinator is a module-level singleton keyed by
-        // handle, so a shared 'test-user' handle across tests that each get a *different* `directories` (a fresh
-        // tempDir per beforeEach) would let one test's stale in-memory tantivy index handle leak into the next
-        // test's incremental-update path (loadOrUpdateTantivyIndex() now uses the coordinator's `previous` param
-        // to update an index in place, unlike the old always-rebuild-from-scratch behavior, so this cross-test
-        // reuse became observable in a way it wasn't before - a real production user's handle never remaps to a
-        // different `directories` mid-process, so this is a test-only hazard, not a product one).
+        // a fixed string: search index workers are keyed by handle, and each one maintains the index of the
+        // `directories` it was spawned with. A real user's handle never remaps to different `directories`.
         req.user = { directories, profile: { handle: `test-user-${path.basename(directories.root)}` } };
         next();
     });
@@ -66,7 +64,9 @@ beforeEach(() => {
     directories = { root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir, groupChats: groupChatsDir };
 });
 
-afterEach(() => {
+afterEach(async () => {
+    // Each test's handle has its own search index worker, holding its own connection to this test's db.
+    await searchCoordinator.disposeSearchWorkers();
     // Fresh tempDir (and therefore a fresh SQLite cache key - character-metadata-db.js keys its per-user entry
     // map by directories.root) every test, so this just closes whatever this test's calls opened rather than
     // leaking a growing set of open db handles across the whole suite.
@@ -648,23 +648,22 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         const updated = await metadataDb.setCharacterFav(directories, 'Vampire.png', true);
         expect(updated).toBe(true);
 
-        // search-index-coordinator.js serves a stale-but-present index immediately on the request that first
-        // observes the new revision, kicking off the incremental catch-up in the background rather than blocking
-        // this request on it (that module's own header: "no request pays the rebuild cost except the
-        // unavoidable first one") - so the fix is verified by polling a few follow-up requests, the same way a
-        // real client's next render/search would eventually observe it, never by calling the explicit
-        // POST /api/characters/search-index/rebuild repair endpoint.
+        // The search index worker catches up on its own tick (about once a second) and no request waits for it,
+        // so the fix is verified by polling follow-up requests, the same way a real client's next render/search
+        // would eventually observe it, never by calling the explicit POST /api/characters/search-index/rebuild
+        // repair endpoint.
         let body;
-        for (let attempt = 0; attempt < 20; attempt++) {
+        const deadline = Date.now() + 5000;
+        do {
             const response = await postJson('/api/characters/query', { filter: { search: 'vampire', fav: true }, page: 1, pageSize: 10 });
             expect(response.status).toBe(200);
             body = await response.json();
             if (body.rows.length > 0) break;
-            await new Promise(resolve => setTimeout(resolve, 10));
-        }
+            await new Promise(resolve => setTimeout(resolve, 50));
+        } while (Date.now() < deadline);
         expect(body.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
         expect(body.total).toBe(1);
-    });
+    }, 20000);
 
     test('a search term composes with an ordinary column sort, not just sort.field "search"', async () => {
         await seedCharacterWithFile('AVampire.png', { name: 'A Vampire', data: { name: 'A Vampire', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
@@ -775,6 +774,63 @@ describe('POST /api/characters/query - filter.search with a fast-field sort (tan
 
         const hashes = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 3, want: ['hashes', 'total'] });
         expect(hashes.status).toBe(200);
+    });
+});
+
+describe('search hits whose row no longer exists (the index can lag a delete)', () => {
+    const cardFor = (name) => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+    const deletedIds = ['gone0.png', 'gone1.png', 'gone2.png'];
+
+    /** Five live matches, and three rows deleted without a change-log entry after the index was built, so their
+     * docs stay in the index. The shorter names rank the deleted docs first. */
+    async function seedWithGhosts(prime) {
+        for (const id of deletedIds) {
+            await seedCharacterWithFile(id, cardFor('Vampire'));
+        }
+        for (let i = 0; i < 5; i++) {
+            await seedCharacterWithFile(`live${i}.png`, cardFor(`Vampire lord number ${i}`));
+        }
+        await prime();
+        metadataDb.disposeMetadataStores();
+        const Database = (await import('better-sqlite3')).default;
+        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        for (const id of deletedIds) {
+            raw.prepare('DELETE FROM characters WHERE id = ?').run(id);
+        }
+        raw.close();
+    }
+
+    const rowId = (r) => r.type === 'group' ? r.item.id : (r.avatar ?? r.item?.avatar);
+
+    test('/query with the search sort omits them and still fills the page', async () => {
+        const body = { filter: { search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 5 };
+        await seedWithGhosts(() => postJson('/api/characters/query', body));
+
+        const response = await postJson('/api/characters/query', body);
+        expect(response.status).toBe(200);
+        const ids = (await response.json()).rows.map(rowId);
+        expect(ids.sort()).toEqual(['live0.png', 'live1.png', 'live2.png', 'live3.png', 'live4.png']);
+    });
+
+    test('/query with the search sort and includeGroups omits them and still fills the page', async () => {
+        await seedGroup('grp-v', { name: 'Vampire coven of the long night' });
+        const body = { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 6 };
+        await seedWithGhosts(() => postJson('/api/characters/query', body));
+
+        const response = await postJson('/api/characters/query', body);
+        expect(response.status).toBe(200);
+        const ids = (await response.json()).rows.map(rowId);
+        expect(ids.sort()).toEqual(['grp-v', 'live0.png', 'live1.png', 'live2.png', 'live3.png', 'live4.png']);
+    });
+
+    test('/all with a search omits them and still fills the page', async () => {
+        const body = { search: 'vampire', offset: 0, limit: 5 };
+        await seedWithGhosts(() => postJson('/api/characters/all', body));
+
+        const response = await postJson('/api/characters/all', body);
+        expect(response.status).toBe(200);
+        const ids = (await response.json()).items.map(item => item.avatar);
+        expect(ids.sort()).toEqual(['live0.png', 'live1.png', 'live2.png', 'live3.png', 'live4.png']);
     });
 });
 

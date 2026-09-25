@@ -1,237 +1,198 @@
-import { describe, test, expect, jest } from '@jest/globals';
+import { describe, test, expect, jest, beforeAll } from '@jest/globals';
+import { EventEmitter } from 'node:events';
+import path from 'node:path';
 
-import { createIndexCoordinator } from '../src/endpoints/search-index-coordinator.js';
+/** @type {typeof import('../src/endpoints/search-index-coordinator.js').createSearchIndexCoordinator} */
+let createSearchIndexCoordinator;
 
-/** A promise plus its resolve function, so a test can control exactly when a "build" finishes. */
-function deferred() {
-    let resolve;
-    const promise = new Promise(r => { resolve = r; });
-    return { promise, resolve };
-}
+beforeAll(async () => {
+    const { setConfigFilePath } = await import('../src/util.js');
+    setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+    ({ createSearchIndexCoordinator } = await import('../src/endpoints/search-index-coordinator.js'));
+});
 
-function fakeDb(label) {
-    return { label, close: jest.fn() };
-}
+const directories = /** @type {any} */ ({ root: '/nonexistent-search-coordinator-test' });
 
-/** Lets any already-queued microtasks (the coordinator's internal `.then()` chain) run before continuing. */
-async function flushMicrotasks(times = 4) {
-    for (let i = 0; i < times; i++) {
-        await Promise.resolve();
+/** Stands in for search-index-worker.js: records what the coordinator posts, and lets a test post back. */
+class FakeWorker extends EventEmitter {
+    constructor(workerData) {
+        super();
+        this.workerData = workerData;
+        /** @type {any[]} */
+        this.posted = [];
+        this.terminate = jest.fn(async () => {
+            this.emit('exit', 1);
+            return 1;
+        });
+        this.unref = jest.fn();
+    }
+
+    postMessage(msg) {
+        this.posted.push(msg);
+    }
+
+    /** A message from the worker to the coordinator. */
+    send(msg) {
+        this.emit('message', msg);
     }
 }
 
-/** Polls `check` until it returns true or `flushMicrotasks` has run `maxRounds` times, to avoid hardcoding the
- * exact microtask-chain depth (Promise-returning `.then()` callbacks add extra adoption ticks) in the tests. */
-async function waitUntil(check, maxRounds = 20) {
-    for (let i = 0; i < maxRounds && !check(); i++) {
-        await flushMicrotasks(1);
-    }
+function fakeReader(dir) {
+    return { dir, index: { reload: jest.fn() }, schema: {} };
 }
 
-describe('createIndexCoordinator()', () => {
-    test('a fresh handle blocks on the build and returns its result', async () => {
-        const coordinator = createIndexCoordinator();
-        const db = fakeDb('first');
-        const build = jest.fn(() => db);
+function setup() {
+    /** @type {FakeWorker[]} */
+    const workers = [];
+    const onCharactersCommitted = jest.fn();
+    const openIndex = jest.fn(fakeReader);
+    const coordinator = createSearchIndexCoordinator({
+        spawnWorker: (workerData) => {
+            const worker = new FakeWorker(workerData);
+            workers.push(worker);
+            return worker;
+        },
+        openIndex,
+        onCharactersCommitted,
+    });
+    return { coordinator, workers, onCharactersCommitted, openIndex };
+}
 
-        const result = await coordinator.getIndex('user1', 'sig-a', build);
+/** Lets pending promise callbacks run. */
+async function flush() {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+}
 
-        expect(result).toBe(db);
-        expect(build).toHaveBeenCalledTimes(1);
+describe('createSearchIndexCoordinator()', () => {
+    test('a first request spawns an unref\'d worker and waits only for its own target\'s ready', async () => {
+        const { coordinator, workers } = setup();
+        let resolved = null;
+        const pending = coordinator.getIndex('user1', directories, 'groups').then(r => { resolved = r; });
+        await flush();
+
+        expect(workers).toHaveLength(1);
+        expect(workers[0].unref).toHaveBeenCalled();
+        expect(workers[0].workerData).toMatchObject({ handle: 'user1', directories });
+
+        workers[0].send({ type: 'ready', target: 'characters', dir: '/chars' });
+        await flush();
+        expect(resolved).toBeNull();
+
+        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups' });
+        await pending;
+        expect(resolved.dir).toBe('/groups');
     });
 
-    test('concurrent first-time requests for the same handle share one build, not one each', async () => {
-        const coordinator = createIndexCoordinator();
-        const { promise, resolve } = deferred();
-        const build = jest.fn(() => promise);
+    test('concurrent first requests for a handle share one worker', async () => {
+        const { coordinator, workers } = setup();
+        const calls = [1, 2, 3].map(() => coordinator.getIndex('user1', directories, 'characters'));
+        await flush();
+        expect(workers).toHaveLength(1);
 
-        const call1 = coordinator.getIndex('user1', 'sig-a', build);
-        const call2 = coordinator.getIndex('user1', 'sig-a', build);
-
-        await flushMicrotasks();
-        expect(build).toHaveBeenCalledTimes(1);
-
-        const db = fakeDb('shared');
-        resolve(db);
-        const [result1, result2] = await Promise.all([call1, call2]);
-
-        expect(result1).toBe(db);
-        expect(result2).toBe(db);
-        expect(build).toHaveBeenCalledTimes(1);
+        workers[0].send({ type: 'ready', target: 'characters', dir: '/chars' });
+        const [a, b, c] = await Promise.all(calls);
+        expect(a).toBe(b);
+        expect(b).toBe(c);
     });
 
-    test('a stale signature does not block the request - it returns the existing db immediately', async () => {
-        const coordinator = createIndexCoordinator();
-        const oldDb = fakeDb('old');
-        await coordinator.getIndex('user1', 'sig-a', () => oldDb);
-
-        const { promise: rebuildPromise } = deferred(); // never resolved within this test - simulates a slow rebuild
-        const build = jest.fn(() => rebuildPromise);
-
-        const result = await coordinator.getIndex('user1', 'sig-b', build);
-
-        // Stale, but the request got the OLD db back immediately rather than hanging on the new build.
-        expect(result).toBe(oldDb);
-        expect(build).toHaveBeenCalledTimes(1);
-        expect(oldDb.close).not.toHaveBeenCalled();
+    test('different handles get their own workers', async () => {
+        const { coordinator, workers } = setup();
+        coordinator.getIndex('userA', directories, 'characters').catch(() => { });
+        coordinator.getIndex('userB', directories, 'characters').catch(() => { });
+        await flush();
+        expect(workers.map(w => w.workerData.handle)).toEqual(['userA', 'userB']);
     });
 
-    test('a background rebuild swaps in the new db and closes the old one once it finishes', async () => {
-        const coordinator = createIndexCoordinator();
-        const oldDb = fakeDb('old');
-        await coordinator.getIndex('user1', 'sig-a', () => oldDb);
+    test('"committed" reloads the reader; for characters it also fires onCharactersCommitted', async () => {
+        const { coordinator, workers, onCharactersCommitted } = setup();
+        const charsPending = coordinator.getIndex('user1', directories, 'characters');
+        await flush();
+        workers[0].send({ type: 'ready', target: 'characters', dir: '/chars' });
+        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups' });
+        const chars = await charsPending;
+        const groups = await coordinator.getIndex('user1', directories, 'groups');
 
-        const { promise, resolve } = deferred();
-        await coordinator.getIndex('user1', 'sig-b', () => promise); // kicks off the background rebuild, returns oldDb
+        workers[0].send({ type: 'committed', target: 'characters', changed: true, seq: 5 });
+        expect(chars.index.reload).toHaveBeenCalledTimes(1);
+        expect(onCharactersCommitted).toHaveBeenCalledTimes(1);
 
-        const newDb = fakeDb('new');
-        resolve(newDb);
-        await waitUntil(() => oldDb.close.mock.calls.length > 0); // let the coordinator's swap-and-close chain run
-
-        const result = await coordinator.getIndex('user1', 'sig-b', () => {
-            throw new Error('should not rebuild again - signature now matches the swapped-in entry');
-        });
-
-        expect(result).toBe(newDb);
-        expect(oldDb.close).toHaveBeenCalledTimes(1);
+        workers[0].send({ type: 'committed', target: 'groups', changed: true });
+        expect(groups.index.reload).toHaveBeenCalledTimes(1);
+        expect(onCharactersCommitted).toHaveBeenCalledTimes(1);
     });
 
-    test('concurrent requests observing the same stale signature only start one background rebuild', async () => {
-        const coordinator = createIndexCoordinator();
-        const oldDb = fakeDb('old');
-        await coordinator.getIndex('user1', 'sig-a', () => oldDb);
+    test('"swapped" replaces the reader with one opened on the new dir', async () => {
+        const { coordinator, workers } = setup();
+        const pending = coordinator.getIndex('user1', directories, 'characters');
+        await flush();
+        workers[0].send({ type: 'ready', target: 'characters', dir: '/chars' });
+        const before = await pending;
 
-        const { promise, resolve } = deferred();
-        const build = jest.fn(() => promise);
-
-        const result1 = await coordinator.getIndex('user1', 'sig-b', build);
-        const result2 = await coordinator.getIndex('user1', 'sig-b', build);
-        const result3 = await coordinator.getIndex('user1', 'sig-b', build);
-
-        expect(result1).toBe(oldDb);
-        expect(result2).toBe(oldDb);
-        expect(result3).toBe(oldDb);
-        expect(build).toHaveBeenCalledTimes(1); // not 3 - the race this coordinator exists to close
-
-        resolve(fakeDb('new'));
+        workers[0].send({ type: 'swapped', target: 'characters', dir: '/chars-rebuilt' });
+        const after = await coordinator.getIndex('user1', directories, 'characters');
+        expect(after).not.toBe(before);
+        expect(after.dir).toBe('/chars-rebuilt');
     });
 
-    test('different handles get fully independent indexes and builds', async () => {
-        const coordinator = createIndexCoordinator();
-        const dbA = fakeDb('a');
-        const dbB = fakeDb('b');
-
-        const resultA = await coordinator.getIndex('userA', 'sig-1', () => dbA);
-        const resultB = await coordinator.getIndex('userB', 'sig-1', () => dbB);
-
-        expect(resultA).toBe(dbA);
-        expect(resultB).toBe(dbB);
+    test('ready with dir null resolves to null; ready with an error rejects', async () => {
+        const { coordinator, workers } = setup();
+        const chars = coordinator.getIndex('user1', directories, 'characters');
+        const groups = coordinator.getIndex('user1', directories, 'groups');
+        await flush();
+        workers[0].send({ type: 'ready', target: 'characters', dir: null });
+        workers[0].send({ type: 'ready', target: 'groups', error: 'disk full' });
+        await expect(chars).resolves.toBeNull();
+        await expect(groups).rejects.toThrow('disk full');
     });
 
-    test('a failed background rebuild does not throw out of getIndex() and leaves the old db serving', async () => {
-        const coordinator = createIndexCoordinator();
-        const oldDb = fakeDb('old');
-        await coordinator.getIndex('user1', 'sig-a', () => oldDb);
+    test('a worker that exits is dropped: waiting requests reject and the next request spawns a fresh worker', async () => {
+        const { coordinator, workers } = setup();
+        const pending = coordinator.getIndex('user1', directories, 'characters');
+        await flush();
+        workers[0].emit('exit', 1);
+        await expect(pending).rejects.toThrow();
 
-        const result = await coordinator.getIndex('user1', 'sig-b', () => Promise.reject(new Error('disk full')));
-        await flushMicrotasks(20);
-
-        expect(result).toBe(oldDb);
-        expect(oldDb.close).not.toHaveBeenCalled();
+        const next = coordinator.getIndex('user1', directories, 'characters');
+        await flush();
+        expect(workers).toHaveLength(2);
+        workers[1].send({ type: 'ready', target: 'characters', dir: '/chars' });
+        await expect(next).resolves.toMatchObject({ dir: '/chars' });
     });
 
-    describe('cold start with openStale (the fix for the boot-time-bulk-import block)', () => {
-        test('a cold start with a usable openStale() serves it immediately instead of blocking on build()', async () => {
-            const coordinator = createIndexCoordinator();
-            const staleDb = fakeDb('stale');
-            const openStale = jest.fn(() => staleDb);
-            const { promise: buildPromise } = deferred(); // never resolved in this test - would hang if awaited
-            const build = jest.fn(() => buildPromise);
+    test('rebuild() posts a rebuild request and maps the reply', async () => {
+        const { coordinator, workers } = setup();
+        const answer = async (reply) => {
+            const result = coordinator.rebuild('user1', directories);
+            await flush();
+            const request = workers[0].posted.at(-1);
+            expect(request.type).toBe('rebuild');
+            workers[0].send({ type: 'reply', id: request.id, ...reply });
+            return result;
+        };
+        await expect(answer({ ok: true })).resolves.toBe(true);
+        await expect(answer({ ok: false })).resolves.toBe(false);
+        await expect(answer({ ok: false, error: 'mkdir failed' })).rejects.toThrow('mkdir failed');
+        expect(workers).toHaveLength(1);
+    });
 
-            const result = await coordinator.getIndex('user1', 'sig-a', build, openStale);
+    test('dispose() posts close, resolves once the worker exits, and drops the handle', async () => {
+        const { coordinator, workers } = setup();
+        // Rejected once the worker exits.
+        coordinator.getIndex('user1', directories, 'characters').catch(() => { });
+        await flush();
 
-            expect(result).toBe(staleDb);
-            expect(openStale).toHaveBeenCalledTimes(1);
-            // build() was kicked off (in the background, catching the stale db up to 'sig-a') but getIndex()
-            // did not wait on it - the deferred build promise above is still unresolved.
-            expect(build).toHaveBeenCalledTimes(1);
-            expect(build).toHaveBeenCalledWith(staleDb);
-        });
+        let disposed = false;
+        const disposing = coordinator.dispose().then(() => { disposed = true; });
+        await flush();
+        expect(workers[0].posted.at(-1).type).toBe('close');
+        expect(disposed).toBe(false);
 
-        test('the background catch-up kicked off after openStale() swaps in the new db once it resolves', async () => {
-            const coordinator = createIndexCoordinator();
-            const staleDb = fakeDb('stale');
-            const { promise, resolve } = deferred();
+        workers[0].emit('exit', 0);
+        await disposing;
+        expect(workers[0].terminate).not.toHaveBeenCalled();
 
-            await coordinator.getIndex('user1', 'sig-a', () => promise, () => staleDb);
-
-            const caughtUpDb = fakeDb('caught-up');
-            resolve(caughtUpDb);
-            await waitUntil(() => staleDb.close.mock.calls.length > 0);
-
-            const result = await coordinator.getIndex('user1', 'sig-a', () => {
-                throw new Error('should not rebuild again - already caught up');
-            });
-            expect(result).toBe(caughtUpDb);
-            expect(staleDb.close).toHaveBeenCalledTimes(1);
-        });
-
-        test('an in-place-updated stale db (build() returns the same reference) is not closed out from under itself', async () => {
-            const coordinator = createIndexCoordinator();
-            const staleDb = fakeDb('stale');
-
-            await coordinator.getIndex('user1', 'sig-a', (previous) => previous, () => staleDb);
-            await flushMicrotasks(20);
-
-            const result = await coordinator.getIndex('user1', 'sig-a', () => {
-                throw new Error('should not rebuild again');
-            });
-            expect(result).toBe(staleDb);
-            expect(staleDb.close).not.toHaveBeenCalled();
-        });
-
-        test('openStale() returning nothing falls back to blocking on build(), same as no openStale at all', async () => {
-            const coordinator = createIndexCoordinator();
-            const db = fakeDb('built');
-            const openStale = jest.fn(() => null);
-            const build = jest.fn(() => db);
-
-            const result = await coordinator.getIndex('user1', 'sig-a', build, openStale);
-
-            expect(result).toBe(db);
-            expect(openStale).toHaveBeenCalledTimes(1);
-            expect(build).toHaveBeenCalledTimes(1);
-        });
-
-        test('concurrent cold-start requests for the same handle share one openStale() call and one background build, not one each', async () => {
-            const coordinator = createIndexCoordinator();
-            const staleDb = fakeDb('stale');
-            const openStale = jest.fn(() => staleDb);
-            const { promise: buildPromise } = deferred();
-            const build = jest.fn(() => buildPromise);
-
-            const [result1, result2, result3] = await Promise.all([
-                coordinator.getIndex('user1', 'sig-a', build, openStale),
-                coordinator.getIndex('user1', 'sig-a', build, openStale),
-                coordinator.getIndex('user1', 'sig-a', build, openStale),
-            ]);
-
-            expect(result1).toBe(staleDb);
-            expect(result2).toBe(staleDb);
-            expect(result3).toBe(staleDb);
-            expect(openStale).toHaveBeenCalledTimes(1); // not 3
-            expect(build).toHaveBeenCalledTimes(1); // not 3 - the exact race this coordinator has to close
-        });
-
-        test('a cold start with no openStale at all still blocks on build(), unchanged from before this option existed', async () => {
-            const coordinator = createIndexCoordinator();
-            const db = fakeDb('built');
-            const build = jest.fn(() => db);
-
-            const result = await coordinator.getIndex('user1', 'sig-a', build);
-
-            expect(result).toBe(db);
-            expect(build).toHaveBeenCalledTimes(1);
-        });
+        coordinator.getIndex('user1', directories, 'characters').catch(() => { });
+        await flush();
+        expect(workers).toHaveLength(2);
     });
 });

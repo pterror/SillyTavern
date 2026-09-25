@@ -1,4 +1,39 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
 import { color } from '../util.js';
+
+/** A sibling of `<parentDir>/<name>` on the same filesystem, so swapIndexIntoPlace() can rename atomically. */
+export function rebuildTempDir(parentDir, name) {
+    return path.join(parentDir, `${name}.rebuild-${crypto.randomUUID()}`);
+}
+
+/** Removes the rebuild-/old- dirs of `name` left behind by a build that crashed before its swap ran. */
+export function cleanupStaleRebuildDirs(parentDir, name) {
+    if (!fs.existsSync(parentDir)) {
+        return;
+    }
+    for (const entry of fs.readdirSync(parentDir)) {
+        if (entry.startsWith(`${name}.rebuild-`) || entry.startsWith(`${name}.old-`)) {
+            fs.rmSync(path.join(parentDir, entry), { recursive: true, force: true });
+        }
+    }
+}
+
+/** Swaps a fully built tempDir index into place at indexDir (old aside, new in, old removed), so a build that
+ * crashes partway never leaves indexDir missing or half-written. An Index still open on tempDir must not be
+ * written to afterwards: it silently no-ops instead of erroring. */
+export function swapIndexIntoPlace(indexDir, tempDir) {
+    if (fs.existsSync(indexDir)) {
+        const oldDir = `${indexDir}.old-${crypto.randomUUID()}`;
+        fs.renameSync(indexDir, oldDir);
+        fs.renameSync(tempDir, indexDir);
+        fs.rmSync(oldDir, { recursive: true, force: true });
+    } else {
+        fs.renameSync(tempDir, indexDir);
+    }
+}
 
 /**
  * Resolves whether the tantivy search backend (@oxdev03/node-tantivy-binding) is usable on this install.

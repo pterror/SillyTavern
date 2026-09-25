@@ -11,6 +11,8 @@ let metadataDb;
 let cardParser;
 /** @type {typeof import('../src/endpoints/search-engine.js')} */
 let searchEngine;
+/** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
+let searchCoordinator;
 
 let tempDir;
 let charactersDir;
@@ -41,11 +43,8 @@ async function writeCard(name) {
 }
 
 /**
- * Polls `searchCharacterIds(handle, directories, term)` until `predicate` is satisfied or the attempt budget
- * runs out - the same idiom characters-query.test.js's fav-toggle catch-up test and
- * chat-content-search-index.test.js's pollUntil() use, since search-index-coordinator.js deliberately serves a
- * stale-but-present index immediately and runs incremental catch-up in the background rather than blocking the
- * request that first observes a new freshness signature.
+ * Polls `searchCharacterIds(handle, directories, term)` until `predicate` is satisfied or 5 s pass: the search
+ * index worker catches up on its own tick (about once a second), and no request waits for it.
  * @param {string} handle
  * @param {string} term
  * @param {(ids: string[]) => boolean} predicate
@@ -53,11 +52,12 @@ async function writeCard(name) {
  */
 async function pollSearch(handle, term, predicate) {
     let ids = [];
-    for (let attempt = 0; attempt < 40; attempt++) {
+    const deadline = Date.now() + 5000;
+    do {
         ids = (await searchIndex.searchCharacterIds(handle, directories, term)).ids;
         if (predicate(ids)) break;
-        await new Promise(resolve => setTimeout(resolve, 25));
-    }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    } while (Date.now() < deadline);
     return ids;
 }
 
@@ -69,6 +69,7 @@ beforeAll(async () => {
     metadataDb = await import('../src/character-metadata-db.js');
     cardParser = await import('../src/character-card-parser.js');
     searchEngine = await import('../src/endpoints/search-engine.js');
+    searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
 });
 
 beforeEach(() => {
@@ -87,12 +88,13 @@ beforeEach(() => {
     fs.mkdirSync(directories.groupChats, { recursive: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
+    await searchCoordinator.disposeSearchWorkers();
     metadataDb.disposeMetadataStores();
 });
 
 /**
- * Regression coverage for applyIncrementalTantivyChanges() (characters-search-index.js) scoping a tag-definition
+ * Regression coverage for the search index worker's catch-up (createCharacterIndexMaintainer()'s tick()) scoping a tag-definition
  * rename to only the characters actually carrying the renamed tag id, instead of every tagged character in the
  * library - the previous behavior re-indexed the entire tagged population on ANY tag-definition-table write,
  * including one that only added a brand-new tag id (exactly what a bulk import does constantly), never renamed
@@ -125,7 +127,7 @@ describe('characters-search-index.js: tag-rename incremental catch-up is scoped 
 
         // UntouchedChar's own card file is now gone. A character that genuinely needs re-indexing tolerates
         // this (processCharacter() throwing is caught and treated as "leave it deleted" - see
-        // applyIncrementalTantivyChanges()'s own comment on that), so if the scoped rename below wrongly swept
+        // addCharacterBatch()), so if the scoped rename below wrongly swept
         // UntouchedChar in anyway, it would vanish from the index; if it's correctly left untouched, deleting a
         // file nothing is about to re-read has no effect on it at all.
         fs.unlinkSync(path.join(charactersDir, 'UntouchedChar.png'));

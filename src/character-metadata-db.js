@@ -2106,6 +2106,9 @@ export async function initializeMetadataStores(directoriesList) {
 }
 
 export function disposeMetadataStores() {
+    // The random-order cache holds these connections; its warm timer must not run on a closed one.
+    clearTimeout(randomCacheWarmTimer);
+    randomSortCache.clear();
     for (const entry of entries.values()) {
         try {
             entry.db.close();
@@ -4430,6 +4433,25 @@ export async function* streamCharacterCardJsonBatches(directories) {
         params: {},
         keyColumn: 'id',
     }));
+}
+
+/** Ids of the change log's delete rows with afterSeq < seq <= uptoSeq, in seq order, in batches - so the search
+ * index can apply every pending delete ahead of an upsert backlog.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} afterSeq
+ * @param {number} uptoSeq
+ * @returns {AsyncGenerator<string[], void, undefined>}
+ */
+export async function* streamDeletedIdsBetween(directories, afterSeq, uptoSeq) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    for await (const rows of streamRows(entry.db, {
+        readSql: 'SELECT seq, id FROM changes WHERE op = \'delete\' AND seq > @lo AND seq <= @hi AND (@after IS NULL OR seq > @after) ORDER BY seq LIMIT @limit',
+        params: { lo: afterSeq, hi: uptoSeq },
+        keyColumn: 'seq',
+    })) {
+        yield rows.map(row => row.id);
+    }
 }
 
 /**
