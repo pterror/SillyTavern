@@ -17,27 +17,30 @@ implementation superseded or diverged from them.
 | Phase | Commit | State |
 |---|---|---|
 | 0a — keyed DOM diff in `printCharacters` | `16f460b82` | shipped, matches spec |
-| 0b — versioned immutable thumbnail caching | `afbd83b9b` | **shipped half-done** — server-side only; no client emits a version, so every thumbnail takes an uncacheable 302 first. Currently worse than what it replaced |
-| 0c — `/duplicate` server wedge | `ade258e49` | **partly fixed** — parse corrected, loop still unbounded, wedge still reachable |
+| 0b — versioned immutable thumbnail caching | `afbd83b9b` | **shipped in part** — the client emits `?v=` when it knows a version (`a057fe43f`). Backgrounds and personas get versions from their list endpoints. Character avatars don't, because only `/manifest` returns them and no client calls it, so avatar thumbnails still take the uncacheable 302 first |
+| 0c — `/duplicate` server wedge | `ade258e49` | fixed — parse corrected; the suffix parse is capped at 15 digits and the loop at 10,000 attempts (`0b0ed9fd5`) |
 | 0d — `writeExtensionField` dual-accept | — | not started |
 | 1 — SQLite metadata store | `f872377eb` | shipped; schema as specced, with deviations listed in §9. Two of the three freshness mechanisms remain: write hooks and a boot-time reconciler that only inserts rows for new files. The directory watcher was removed in `9ae4ef934` (§9) |
-| 2 — browse pagination | `6ac50dca2` | **shipped in part** — `/query`, `/exists`, `/changes` exist but reject search and random sort, and nothing is wired to the client. The whole tantivy sub-scope is outstanding |
+| 2 — browse pagination | `6ac50dca2` | **shipped in part** — `/query` (with search and seeded random sort), `/exists` and `/changes` exist, and the client uses all three. The tantivy index is id-keyed, persisted and maintained incrementally from the change log. Not implemented: `facets` and `rank` in `/query`, estimated totals, and change-log pruning (§9) |
 | 3 onward | — | not started |
 
 Three things anyone implementing from here should know:
 
-1. **Nothing user-visible has changed on the server side.** `/all` and `/manifest` still serve the UI,
-   and `/all`'s no-parameter path is still a full-directory `readdirSync` plus `processCharacter`.
-   All six new endpoints are wired to zero client code.
-2. **Line references were re-resolved against `11ee9c303`.** Eighty were updated. Four could not be:
-   `toShallow()` and `calculateChatSize()` moved out of `characters.js` into `src/character-shallow.js`
-   (so their paths are wrong, not just their numbers), and one reference to the `printCharacters`
-   pagination callback describes code that phase 0a replaced. Those four are flagged where they
-   appear.
-3. **Three phase-0/1/2 items shipped in a state that still needs work**: the client half of 0b, the
-   loop bound in 0c, and caller-supplied `date_added` in phase 1 — the last of which was skipped on
-   the stated but incorrect grounds that this document left it open. It does not; decision 17 settles
-   it.
+1. **The client runs on the new endpoints.** The character list pages through `/query`, syncs its
+   cache through `/changes`, and refetches on `/changes/stream` events. Destructive existence checks
+   go through `/exists`, and imports are wrapped in `/metadata/batch-import/begin`/`end`. No client
+   code calls `/all` or `/manifest`. Both routes still exist, and `/all`'s no-parameter path is still
+   a full-directory `readdirSync` plus `processCharacter`.
+2. **Line references into this repo were checked at `0b4d1e592`.** Each `file:line` into a tracked
+   file points at the code as it stands at that commit. Where the referenced code no longer
+   exists, the reference says so in place. References into third-party extension code (mostly §9.4)
+   point outside this repo and were not re-checked: they are as surveyed, and the installed copies
+   are no stable reference.
+3. **Two phase-0/1 items shipped in a state that still needs work**: the client half of 0b, which
+   now covers backgrounds and personas but not character avatars; and decision 17's per-record
+   `date_added`. Local import sets `date_added` from the source file's mtime, through a setter that
+   overwrites unconditionally. No route accepts a caller-supplied value, and nothing validates it.
+   0c's loop is now bounded (`0b0ed9fd5`).
 
 Claims about browser and library behaviour were checked against current sources or measured directly.
 Where something could not be pinned down, the document says so inline.
@@ -93,26 +96,26 @@ on which figure is exact.
   (`public/scripts/entity-store.js`) is an `EntityStore` wrapping *that same array in place*, keyed
   by `avatar`. It gives O(1) keyed reads and change notification, but it does not reduce residency:
   `getAll()` returns the array, and `has()` means "present in the resident array"
-  (`entity-store.js:40-68`).
+  (`entity-store.js:25-48`).
 - Boot goes through a delta cache: `POST /api/characters/manifest` returns `{avatar, mtime}` for
   every character, diffed against IndexedDB (`public/scripts/character-cache.js`), misses fetched
   via `POST /api/characters/batch`. The transport is already incremental and avatar-keyed; it
   still materializes the full array at the end, more cheaply.
-- Shallow/unshallow already exists: `toShallow()` (moved by phase 1 to `src/character-shallow.js:58`) projects a
+- Shallow/unshallow already exists: `toShallow()` (moved by phase 1 to `src/character-shallow.js:121`) projects a
   card down to name/avatar/fav/dates/tags/creator, and `unshallowCharacter(avatar)`
-  (`script.js:7916`) hydrates on demand. So a two-tier "list row vs full card" model is already the
+  (`script.js:6611`) hydrates on demand. So a two-tier "list row vs full card" model is already the
   shape of the code, not a new idea.
-- `getEntitiesList()` (`script.js:1294`) materializes one entity per character in the whole library
+- `getEntitiesList()` (`character-list.js:580`) materializes one entity per character in the whole library
   — `characters.map((item, index) => characterToEntity(item, index))` — then filters and sorts that
   whole list, and pagination consumes the result. Pagination is downstream of the full scan, not a
   bound on it.
 - Client-side fuzzy search builds a Fuse index over every character's full text
-  (`power-user.js:2427-2477`, 11 weighted keys including `description`, `mes_example`,
+  (`power-user.js:2443-2493`, 11 weighted keys including `description`, `mes_example`,
   `first_mes`), rebuilt wholesale whenever a dirty flag is set.
 - Server search already exists and is good: `fetchServerCharacterSearchResults()`
-  (`script.js:11471`) hits `/api/characters/all` with a `search` term and gets avatar-keyed hits
+  (`character-list.js:1479`) hits `/api/characters/all` with a `search` term and gets avatar-keyed hits
   back, then throws the avatar identity away by `characters.findIndex()`-ing each hit into an array
-  index (`script.js:11502`) because that is what `searchFilter()` consumes.
+  index (`script.js:11502` (gone: server hits are now keyed by avatar in `fetchServerCharacterSearchResults()`; no `findIndex`)) because that is what `searchFilter()` consumes.
 
 ### 1.2 What the server does today
 
@@ -120,23 +123,23 @@ This subsection is the "before" picture, read at `29b01e194`. Phases 0–2 have 
 invalidated three of the claims below; each is marked inline. Everything unmarked still holds at
 `11ee9c303`.
 
-- `/api/characters/all` browse path (`src/endpoints/characters.js:1369`, `:1429`) is fake
+- `/api/characters/all` browse path (`src/endpoints/characters.js:1943`, `:1429` (gone: the paginated `/all` branch was removed)) is fake
   pagination: `readdirSync` over the whole directory → `processCharacter()` per file → sort → slice.
-  `processCharacter` (`:394`) does a PNG tEXt parse + `JSON.parse`, a `statSync` on the card, and
-  `calculateChatSize()` (moved by phase 1 to `src/character-shallow.js:23`) which `readdirSync`s that character's chat directory and `statSync`s
+  `processCharacter` (`:580`) does a PNG tEXt parse + `JSON.parse`, a `statSync` on the card, and
+  `calculateChatSize()` (moved by phase 1 to `src/character-shallow.js:16`) which `readdirSync`s that character's chat directory and `statSync`s
   every chat file. So the per-card cost is one PNG read plus 1+N stat calls. An LRU keyed
   `path-mtimeMs` plus a node-persist disk cache sits in front of the parse; the stats still run.
 - The search path is index-native for content but not for paging: the engine is called with
   `offset` hardcoded to 0 and ordering always BM25, so it fetches the top `offset+limit` hits and
-  discards the front in JS (`paginateSearchResults`, `:1292`). No file reads on this path — full
+  discards the front in JS (`paginateSearchResults`, `:1820`). No file reads on this path — full
   character objects come out of the index.
-- Sort fields are exactly four (`SORT_FIELD_GETTERS`, `:1184`): `name`, `date_added`,
+- Sort fields are exactly four (`SORT_FIELD_GETTERS`, `:1184` (gone: `SORT_FIELD_GETTERS` was removed)): `name`, `date_added`,
   `date_last_chat`, `chat_size`. The UI exposes those plus `fav`, `random`, and search-rank
-  (`public/index.html:6385-6392`). Provenance splits three ways: `name` lives only in the PNG
+  (`public/index.html:6095-6102`). Provenance splits three ways: `name` lives only in the PNG
   payload; `date_added` is the PNG's `ctimeMs` (not mtime — a chmod or rename moves it);
   `date_last_chat` and `chat_size` come from scanning the chats directory. There is no sidecar for
   any of it.
-- Search engine tiers resolve once per process (`src/endpoints/search-engine.js:32`): native tantivy
+- Search engine tiers resolve once per process (`src/endpoints/search-engine.js:16`): native tantivy
   (`@oxdev03/node-tantivy-binding`, prebuilts for macOS / Windows / linux-x64-gnu only) → SQLite
   FTS5 via `better-sqlite3` → `node-sqlite3-wasm` → `unavailable`. `better-sqlite3` and the wasm
   fallback are already hard dependencies (`package.json:35`, `src/endpoints/sqlite-engine.js`).
@@ -149,10 +152,10 @@ invalidated three of the claims below; each is marked inline. Everything unmarke
   preceded by `rmSync` of the index directory. `Index.open()` is never called, so the persisted
   index is never reused across boots. Incremental update was declined in a code comment
   on the grounds that ~6 s at 24k cards is acceptable.
-- The write path (`writeCharacterData`, `:259`; delete; `/rename`, `:769`; the import handlers)
+- The write path (`writeCharacterData`, `:390`; delete; `/rename`, `:1013`; the import handlers)
   invalidates the in-memory LRU and queues a disk-cache sync. Nothing calls into the search index;
   that omission is intentional, to avoid a circular import.
-- `/api/characters/manifest` (`:1680`) is `readdirSync` + one `statSync` per file, no parse. There
+- `/api/characters/manifest` (`:2730`) is `readdirSync` + one `statSync` per file, no parse. There
   is no file watcher anywhere in `src/` — no `fs.watch`, no chokidar — and no write-path hook
   that could feed a change log.
   **Superseded by phase 1:** `character-metadata-db.js` now has all three — write hooks, a
@@ -162,12 +165,12 @@ invalidated three of the claims below; each is marked inline. Everything unmarke
   over `card_json`, which conflicts with the DB being the source of truth, and every write to that
   directory goes through the app. The interval was already removed in `86646763a`; the reconciler
   now runs only at boot and on `/metadata/rescan` (§9).
-- `/api/tags/save` (`src/endpoints/tags.js:68`) rewrites the entire `tags.json` — 16 MB today —
+- `/api/tags/save` (`src/endpoints/tags.js:24`) rewrites the entire `tags.json` — 16 MB today —
   synchronously, on every tag mutation.
-- Thumbnails (`src/endpoints/thumbnails.js:249`) are served by a bare `response.sendFile` with no
+- Thumbnails (`src/endpoints/thumbnails.js:271`) are served by a bare `response.sendFile` with no
   `maxAge`, no `immutable`, no explicit `Cache-Control`; only Express's default ETag and
   Last-Modified. The one header set is `invalidateFirefoxCache()`
-  (`src/util.js:1595`), which applies `must-understand, no-store` to image responses on Firefox
+  (`src/util.js:1699`), which applies `must-understand, no-store` to image responses on Firefox
   only. The cache key is the URL `/thumbnail?type=avatar&file=<name>` — no hash, no mtime.
   **Superseded by phase 0b**, though not in the way this document specified — the route now serves
   `immutable` when a version matches and 302-redirects when it does not, and no client emits a
@@ -180,11 +183,11 @@ tickets:
 
 - `src/endpoints/stats.js` `init()` reads `stats.json` as one blob per user at boot and, if it is
   missing or corrupt, walks every chat of every character. Re-saved every 5 minutes.
-- `/api/chats/recent` (`src/endpoints/chats.js:1047`) readdirs the character directory then stats
+- `/api/chats/recent` (`src/endpoints/chats.js:1732`) readdirs the character directory then stats
   every chat file of every character, per request. It backs the welcome screen.
-- The disk-cache `verify()` (`characters.js:131`) readdirs every user's character directory and
+- The disk-cache `verify()` (`characters.js:111`) readdirs every user's character directory and
   stats every file at boot.
-- `/merge-attributes` with an empty avatars array (`:1074`) rewrites every card in the library in
+- `/merge-attributes` with an empty avatars array (`:1375`) rewrites every card in the library in
   one request.
 - `getPngName()` probes `existsSync` up to 10,000 times for a name collision on every create and
   import.
@@ -192,7 +195,7 @@ tickets:
   synchronous fs on the request thread.
 
 And one that is not a scaling issue but a live server-wedge bug, found while verifying something
-else. `/duplicate` (`characters.js:1874-1893`) guards its suffix parse with
+else. `/duplicate` (`characters.js:3067-3095`) guards its suffix parse with
 `!isNaN(Number(lastPart))` but then uses `parseInt(lastPart)`. Those disagree: for `foo_.png`,
 `foo_ .png`, or `foo_Infinity.png`, `Number` yields `0`/`Infinity` and passes the guard while
 `parseInt` yields `NaN`. The first duplicate silently produces `foo_NaN.png` and returns fine. The
@@ -225,7 +228,7 @@ avatar; the FTS5 index uses `avatar UNINDEXED` as its row key; the chats directo
 it; group `members` are avatars; `active_character` is an avatar. Adopting it is not a question;
 it is adopted. The only question is whether its defects get fixed.
 
-**Uniqueness:** yes, by construction, with two escape hatches. `getPngName()` (`characters.js:1793`)
+**Uniqueness:** yes, by construction, with two escape hatches. `getPngName()` (`characters.js:1793` (gone: `getPngName()` was removed in `3c5e3bae3`))
 → `getUniqueName()` suffixes `base`, `base1`, `base2`… checking `fs.existsSync`. The filesystem
 *is* the uniqueness constraint. But `maxTries` is 10,000, and on exhaustion it returns null and the
 caller falls back to `?? file`, i.e. overwrites. 10k identically-named cards is not absurd
@@ -235,7 +238,7 @@ which bypasses uniqueness as an intended overwrite-in-place path. `/duplicate` h
 `Number`-guard/`parseInt`-use mismatch is a server-wedging bug (see §1.3). All of this becomes
 moot under §2.2's minted ids, which is part of the case for them.
 
-**Stability:** no. Rename changes it. `/rename` (`characters.js:769`) derives a new filename from
+**Stability:** no. Rename changes it. `/rename` (`characters.js:1013`) derives a new filename from
 the new display name, writes the PNG there, unlinks the old, and `cpSync`+`rm`s the chats folder to
 a new path. The client-side consequence is the proof of cost (`script.js` ~7441): after a rename it
 hand-migrates `renameTagKey`, `world_info.charLore` by name, `extension_settings.note.chara` by
@@ -255,7 +258,7 @@ the same `avatar_url`-derived filename.
 **Can a character lack an avatar?** Not in practice — `processCharacter()` assigns
 `jsonObject.avatar = item` (the filename) over whatever the card claimed. The `avatar: 'none'` seen
 in import paths is overwritten at listing time, and client `!= 'none'` checks are display fallbacks.
-One caveat: `tags.js:935` carries a comment recording a real malformed character on this install
+One caveat: `tags.js:935` (gone: the comment was removed in `0368698cf`) carries a comment recording a real malformed character on this install
 with a falsy `avatar`, guarded against because `tag_map[undefined] = []` silently creates a
 permanent `"undefined"` string key. So the guard is load-bearing and must survive any migration.
 
@@ -283,7 +286,7 @@ Two follow-ons from that unification:
 
 - `character.avatar` keeps its name in the card payload for upstream compatibility, but it stops
   being a *name-derived* value. Anything deriving a display string from the filename (title
-  attributes at `script.js:1043`, the `show_card_avatar_urls` display at `:1045`) now shows a uuid
+  attributes at `character-list.js:91`, the `show_card_avatar_urls` display at `:93`) now shows a uuid
   and has to read `character.name` instead.
 - The `data-avatar` DOM attribute becomes uuid-valued, which incidentally removes the CSS-selector
   escaping hazard noted in §2.3: a uuid is a valid CSS identifier fragment, unlike a filename with
@@ -365,29 +368,29 @@ The distinct shapes, and their replacements:
 
 | Shape | Where | Replacement |
 |---|---|---|
-| DOM round-trip | `script.js:1030` writes both `data-chid` and `data-avatar`; readers at `script.js:11741`, `RossAscends-mods.js:850`, `tags.js:965`, `BulkEditOverlay.js:652`, `group-chats.js:2112` already prefer avatar with chid as fallback | Delete the `data-chid` write and the fallback branches. One orphan: `public/index.html:7245` has a bare `chid=""` attribute (different attribute name, missed by the earlier sweep) and `tags.js:887` builds a selector off it. Also `id="CharID${id}"` (`script.js:1030`): under Option A the value is a uuid, which *is* a safe CSS identifier fragment, so `CharID${uuid}` would work; drop it anyway and select on `[data-avatar="…"]`, so there is one way to find a card rather than two. |
-| `this_chid === undefined` as "nothing selected" | ~56 of the ~110 hits, almost always `&& !selected_group`: `cfg-scale.js:116`, `bookmarks.js:64`, `regex/index.js:676`, `stable-diffusion/index.js:877` | 1:1 swap to `this_avatar === undefined`. But it is a *tristate* — character / group / temp-chat (`name2 === neutralCharacterName`, `chats.js:1858`) — so introduce one selection accessor returning a tagged value and route all of these through it rather than repeating the conjunction. |
-| `Number(this_chid) >= 0` | `personas.js:1938` | Not a swap. It only works because `Number(undefined)` is `NaN`. Rewrite against the selection accessor. |
-| `indexOf` to manufacture an index for a callee | largest `indexOf` bucket; `utils.js:2783` `getCharIndex`, `group-chats.js:437`/`:472`, `welcome-screen.js:533` | Every one of these already holds the avatar. Change the callee signature to take an avatar; the `indexOf` deletes itself. |
-| Belt-and-suspenders `this_chid !== undefined && getCurrentCharacter()` | `script.js:6331`, `slash-commands.js:5334` | Delete the first conjunct. |
-| Group generation cursor | `group-chats.js:1116-1164`: `activatedMembers` is an array of chids while `group.members` is already avatars, so `:1211`/`:1264`/`:1280` convert avatar→index→avatar | Make `activatedMembers` an array of avatars. Pure round-trip removal. |
+| DOM round-trip | `character-list.js:88` writes both `data-chid` and `data-avatar`; readers at `script.js:11584`, `RossAscends-mods.js:920`, `tags.js:1394`, `BulkEditOverlay.js:718`, `group-chats.js:2216` already prefer avatar with chid as fallback | Delete the `data-chid` write and the fallback branches. One orphan: `public/index.html:7245` (gone: the orphan `chid` attribute was removed) has a bare `chid=""` attribute (different attribute name, missed by the earlier sweep) and `tags.js:1324` builds a selector off it. Also `id="CharID${id}"` (`character-list.js:88`): under Option A the value is a uuid, which *is* a safe CSS identifier fragment, so `CharID${uuid}` would work; drop it anyway and select on `[data-avatar="…"]`, so there is one way to find a card rather than two. |
+| `this_chid === undefined` as "nothing selected" | ~56 of the ~110 hits, almost always `&& !selected_group`: `cfg-scale.js:116` (gone: the `this_chid === undefined` check no longer exists in this file), `bookmarks.js:64` (gone: the `this_chid === undefined` check no longer exists in this file), `regex/index.js:676` (gone: the `this_chid === undefined` check no longer exists in this file), `stable-diffusion/index.js:877` (gone: the `this_chid === undefined` check no longer exists in this file) | 1:1 swap to `this_avatar === undefined`. But it is a *tristate* — character / group / temp-chat (`name2 === neutralCharacterName`, `chats.js:1858` (gone: the `this_chid === undefined` check no longer exists in this file)) — so introduce one selection accessor returning a tagged value and route all of these through it rather than repeating the conjunction. |
+| `Number(this_chid) >= 0` | `personas.js:1938` (gone: `Number(this_chid) >= 0` no longer exists in this file) | Not a swap. It only works because `Number(undefined)` is `NaN`. Rewrite against the selection accessor. |
+| `indexOf` to manufacture an index for a callee | largest `indexOf` bucket; `utils.js:2783` (gone: `getCharIndex` no longer exists) `getCharIndex`, `group-chats.js:437` (gone: no `characters.indexOf` left in `group-chats.js`)/`:472` (gone: no `characters.indexOf` left in `group-chats.js`), `welcome-screen.js:533` (gone: no `characters.indexOf` left in `welcome-screen.js`) | Every one of these already holds the avatar. Change the callee signature to take an avatar; the `indexOf` deletes itself. |
+| Belt-and-suspenders `this_chid !== undefined && getCurrentCharacter()` | `script.js:6331` (gone: the `this_chid !== undefined` conjunct no longer exists in this file), `slash-commands.js:5334` (gone: the `this_chid !== undefined` conjunct no longer exists in this file) | Delete the first conjunct. |
+| Group generation cursor | `group-chats.js:1206-1249`: `activatedMembers` is an array of chids while `group.members` is already avatars, so `:1211` (gone: no `characters.indexOf` left in `group-chats.js`)/`:1264` (gone: no `characters.indexOf` left in `group-chats.js`)/`:1280` (gone: no `characters.indexOf` left in `group-chats.js`) convert avatar→index→avatar | Make `activatedMembers` an array of avatars. Pure round-trip removal. |
 
 Sentinels do not unify, and the migration must keep them distinct:
 
 - `undefined` = no selection (never `-1`).
 - `-1` from `indexOf`, which degrades quietly because `characters[-1] === undefined`
-  (`script.js:9874` has a comment admitting this). Under a keyed store this must become an explicit
+  (`script.js:9874` (gone: the comment no longer exists) has a comment admitting this). Under a keyed store this must become an explicit
   miss, not a quiet undefined.
 - `null` / `''` for the persisted `active_character`.
-- `this_chid` is a string, so `'0'` is truthy. `power-user.js:3141`'s `if (!characterId)` only
+- `this_chid` is a string, so `'0'` is truthy. `power-user.js:3141`'s (gone: the `if (!characterId)` check no longer exists) `if (!characterId)` only
   survives because `getRandomCharacterId` stringifies at both returns. Anything that starts
   returning a number there makes index 0 mean "no characters". Avatar strings are never `'0'`, so
   this hazard disappears, but only if no intermediate step reintroduces a numeric id.
 
 Ordering and adjacency: index does not encode sort order. `sortEntitiesList`
-(`power-user.js:2704`) sorts on `sortFunc(a.item, b.item)`, never on id; the index is `readdirSync`
+(`power-user.js:2729`) sorts on `sortFunc(a.item, b.item)`, never on id; the index is `readdirSync`
 order. There is no next/prev character navigation anywhere. The only adjacency is shift-click range
-select (`BulkEditOverlay.js:761`), which already walks the rendered DOM node list — the correct
+select (`BulkEditOverlay.js:808`), which already walks the rendered DOM node list — the correct
 thing under pagination — and compares numeric ids inside, which is a local fix.
 
 ### 2.4 The three sites with no clean 1:1 replacement
@@ -396,9 +399,9 @@ These are the actual work: each needed a decision rather than a rename. All thre
 (i) and (ii) as approved fixes and (iii) as a deletion, but the reasoning is kept because it is what
 the implementation has to preserve.
 
-**(i) `entity.id` as a cross-structure join key.** `getEntitiesList` (`script.js:1296`) builds
-`characterToEntity(item, index)`; `filters.js:384` caches fuzzy scores keyed by Fuse's positional
-`refIndex`; `power-user.js:2726` reads them back as `${a.type}.${a.id}`. Three structures agreeing
+**(i) `entity.id` as a cross-structure join key.** `getEntitiesList` (`character-list.js:594`) builds
+`characterToEntity(item, index)`; `filters.js:349` caches fuzzy scores keyed by Fuse's positional
+`refIndex`; `power-user.js:2752` reads them back as `${a.type}.${a.id}`. Three structures agreeing
 on a number that none of them owns. Groups already use a real `group.id` string here, so characters
 are the odd one out. Under pagination `refIndex` becomes page-local and the join silently mismatches
 instead of erroring: a wrong result, not a crash. Fix: `characterToEntity` takes the avatar as `id`;
@@ -406,7 +409,7 @@ the score cache is keyed `character.<avatar>`; Fuse's positional `refIndex` stop
 (it disappears anyway with §7's index replacement).
 
 **(ii) the same seam server-side.** `fetchServerCharacterSearchResults()` receives avatar-keyed hits
-and `findIndex`es them into a `Map<number, number>` (`script.js:11502`) purely because
+and `findIndex`es them into a `Map<number, number>` (`script.js:11502` (gone: server hits are now keyed by avatar in `fetchServerCharacterSearchResults()`; no `findIndex`)) purely because
 `searchFilter()` eats indices. Avatar identity survives the entire server pipeline and is discarded
 at the final step, and any avatar not currently resident drops silently via `findIndex → -1`. Fix
 falls out of (i): keep the map avatar-keyed end to end.
@@ -424,7 +427,7 @@ wrong. What the code says:
   Preserving it is what costs compatibility.
 - The branch it lives in has been unreachable since 2023. Every `legacyId` write is inside the
   `'character' === strategy` branch. There is exactly one `new PromptManager()` in the codebase
-  (`openai.js:681`) and it hardcodes `strategy: 'global'` (`openai.js:697`), hardcoded by commit
+  (`chat-completion-settings.js:680`) and it hardcodes `strategy: 'global'` (`chat-completion-settings.js:695`), hardcoded by commit
   `b0158bd72` in August 2023. Nothing in `public/` sets `'character'`.
 - There is no data to migrate on this install. `settings.json` has exactly two `character_id`
   entries, `100000` and `100001`, both dummy ids. Same across all six presets in
@@ -438,7 +441,7 @@ wrong. What the code says:
   *in 2023*". Anyone who has since deleted a character gets a confidently incorrect answer rather
   than a missing one.
 - There is an inbound channel bounded residency cannot close. `prompt_order` also lives in every
-  chat-completion preset file (`openai.js:377`), so numeric ids can arrive from a downloaded preset
+  chat-completion preset file (`chat-completion-settings.js:378`), so numeric ids can arrive from a downloaded preset
   at any future time. No one-shot migration covers that.
 
 **SETTLED:** option (d) — delete it. The options below are kept for the reasoning trail. What
@@ -456,7 +459,7 @@ wrong. What the code says:
 
 One thing the deletion does not cover, and it should be recorded rather than quietly dropped:
 numeric `character_id` values can still arrive from a downloaded chat-completion preset
-(`openai.js:377`), because presets are a separate inbound channel from settings. After (d) those
+(`chat-completion-settings.js:378`), because presets are a separate inbound channel from settings. After (d) those
 entries never match and the character falls back to the default order, which is the same outcome as
 today for any preset written against someone else's library, so this is not a regression. Option (e)
 below remains available later if unresolvable entries ever turn out to be a live nuisance; it is
@@ -482,7 +485,7 @@ additive and does not depend on (d) having been done differently.
   hold such entries, *and* run a build that re-enables `'character'` strategy — currently nobody.
   Upstream-compat: strictly best; the file returns to upstream's one-liner.
 - **(e) Normalize rather than reconstruct, inside the existing migration hook.**
-  `migrateChatCompletionSettings()` (`openai.js:4246`) already runs on both settings load *and*
+  `migrateChatCompletionSettings()` (`chat-completion-settings.js:4282`) already runs on both settings load *and*
   preset load, i.e. it already covers both channels `prompt_order` travels on. A shape-level rule
   there could prune or neutralize entries whose `character_id` is neither a dummy id nor id-shaped.
   This recovers nothing (nothing can), but it stops unresolvable entries being a live hazard, and it
@@ -496,10 +499,10 @@ migration that silently mis-assigns is worse than no migration.
 
 Two more sites:
 
-- `power-user.js:3119` picks a random character via `Math.floor(Math.random() * characters.length)`.
+- `power-user.js:3119` (gone: the random pick is now a seeded-random `/query` in `getRandomCharacterAvatar()`) picks a random character via `Math.floor(Math.random() * characters.length)`.
   "The nth of all characters" has no id equivalent; it becomes a server query — see §5.3, which also
   covers the separate random-*sort* problem.
-- `st-context.js:188` exposes `context.characterId` as a lazy getter doing a full `findIndex` per
+- `st-context.js:147` exposes `context.characterId` as a lazy getter doing a full `findIndex` per
   read, on the public extension API. Correct with respect to staleness, O(n) per access at 10M. And
   `context.characters` is exported raw to every extension for back-compat. So bounded residency is
   an *extension API break*, not just an internal change — see §9.4.
@@ -541,7 +544,7 @@ Three findings that change how it must be used:
 - The delete key must be a `tokenizerName: 'raw'` field. Deleting by a `default`-tokenized field
   matches on a single token and destroyed an unintended document in the probe. This is not
   hypothetical.
-- There is no per-document identity field in the current schema at all. `tantivy-search.js:80-82`
+- There is no per-document identity field in the current schema at all. `tantivy-search.js:42-50`
   builds per-column text fields plus one stored blob; nothing is keyable. So incremental maintenance
   requires adding a raw-tokenized id field first, a schema change, which forces exactly one final
   full rebuild before incremental takes over. Schedule that as part of phase 2, not as a surprise.
@@ -595,7 +598,7 @@ Indexes: `(name_fold)`, `(date_added)`, `(date_last_chat)`, `(chat_size)`, `(fav
 `(world)`, `character_tags(tag_id, character_id)`, `changes(id)`.
 
 `shallow_json` is the key economy: today the tantivy index stores the *entire* character JSON (13 KB mean)
-and `toShallow()` throws most of it away per hit (`characters.js:422`). Storing the shallow
+and `toShallow()` throws most of it away per hit (`characters.js:610`). Storing the shallow
 projection directly means a 500-row page parses ~500 KB instead of ~12 MB.
 
 `create_date` stays TEXT because it is the card's own ISO string.
@@ -635,7 +638,7 @@ implement:
 
 Three mechanisms, in order of latency:
 
-1. Write-path hooks. `writeCharacterData()` (`characters.js:259`), the delete handler,
+1. Write-path hooks. `writeCharacterData()` (`characters.js:390`), the delete handler,
    `/rename`, and the import handlers each upsert/delete the metadata row and append a `changes`
    entry, in one transaction. This is where the circular-import concern that currently keeps
    `characters.js` away from the index is resolved: the metadata module has no dependency on the
@@ -694,18 +697,18 @@ performance detail, it is the dominant cost of the whole system. The manifest/mt
 in §5.2 and §7 does nothing for it, because that is a cache on the *other* side of the wire. This
 section is the server's own answer, and it was a gap in the first draft.
 
-What is already memoized, and what is not. `readCharacterData()` (`characters.js:200`) is
+What is already memoized, and what is not. `readCharacterData()` (`characters.js:175`) is
 mtime-keyed: `getCacheKey()` returns `` `${path}-${mtimeMs}` ``, checked against an in-memory
 `MemoryLimitedMap` and then a node-persist disk cache under `_cache/`. The PNG tEXt extraction is
 not repeated for an unchanged file. That part is right and it stays.
 
-Everything around it is unmemoized, and `processCharacter()` (`characters.js:394`) runs all of it
+Everything around it is unmemoized, and `processCharacter()` (`characters.js:580`) runs all of it
 per character per request:
 
 - `getCacheKey()` itself does an `existsSync` plus a `statSync`, two syscalls before the cache
   can even be consulted.
 - A second `statSync` on the same file for `date_added`.
-- `calculateChatSize()` (`src/character-shallow.js:23`): an `existsSync`, a `readdirSync` of that character's chat
+- `calculateChatSize()` (`src/character-shallow.js:16`): an `existsSync`, a `readdirSync` of that character's chat
   directory, and a `statSync` per chat file, every time.
 - `JSON.parse` of the card string (13 KB mean, 96 KB p99). Only the *string* is cached, never the parsed object, so
   the parse is paid on every hit.
@@ -713,7 +716,7 @@ per character per request:
 
 At 300k characters, one plain browse request is on the order of 1.5M syscalls and 3.9 GB of
 `JSON.parse`, to display 50 rows. The memory cache is also mis-sized for the target: 1000 MB is
-configured (`config.yaml:98`) and the code's own comment puts that at roughly 30k characters, so at
+configured (`config.yaml:98` (gone: the memory cache and its setting were removed in `c0790f4f3`)) and the code's own comment puts that at roughly 30k characters, so at
 300k it holds a tenth of the library and thrashes, pushing everything onto per-character
 node-persist files.
 
@@ -774,7 +777,7 @@ never once per request.* Concretely:
    per record rather than once per batch if "now" is to mean anything within a long-running import,
    and validation of supplied values belongs here rather than in the DB layer, so a bad value fails
    the record rather than the transaction.
-8. The disk cache's `verify()` boot scan (`characters.js:131`, readdir plus stat of every file
+8. The disk cache's `verify()` boot scan (`characters.js:111`, readdir plus stat of every file
    for every user) is subsumed by the reconciler and should be deleted rather than run alongside it.
 
 The residual cost: the first pass over the 504 GB corpus has to happen once, to populate the
@@ -793,12 +796,12 @@ New/changed endpoints:
 
 - `POST /api/tags/for` `{ ids: string[] }` → `{ [id]: tagId[] }`. Called once per rendered page.
 - `POST /api/tags/assign` / `POST /api/tags/unassign` `{ id, tagId }`. Single-row writes replacing
-  the current full-file rewrite at `src/endpoints/tags.js:68`.
+  the current full-file rewrite at `src/endpoints/tags.js:24`.
 - `GET /api/tags/usage` → `{ [tagId]: count }`, read straight from `tag_usage`. This one aggregate
   subsumes three separate full scans (§4.3).
 - `/api/tags/save` keeps working for tag *definitions* only.
 
-`RelationStore` (`entity-store.js:399`) already maintains incremental usage counts client-side for
+`RelationStore` (`entity-store.js:399` (gone: `RelationStore` no longer exists)) already maintains incremental usage counts client-side for
 `tag_map`, which is exactly the shape `tag_usage` takes server-side, so the consumer contract does
 not change, only where the number comes from.
 
@@ -814,9 +817,9 @@ The audit sorted every `characters` access. Counts by category:
 - **(b) single-item lookup** — `script.js` ~35, `group-chats.js` ~19, `slash-commands.js` ~7,
   `welcome-screen.js` 8, `world-info.js` ~5, `personas.js` 2, `tags.js` 1, `BulkEditOverlay.js` 1,
   `utils.js` 1. Mostly already `charactersStore.get()`. These become an async-capable keyed get
-  (§6). Two oddities: `script.js:4642` and `group-chats.js:1715` build a full avatar→index `Map` and
+  (§6). Two oddities: `script.js:4642` (gone: the avatar-to-index `Map` no longer exists) and `group-chats.js:1715` (gone: the avatar-to-index `Map` no longer exists) build a full avatar→index `Map` and
   then read a handful of keys out of it, a full-scan costume over N keyed gets.
-  `expressions/index.js:644` is keyed *backwards*, scanning all characters asking whether a message
+  `expressions/index.js:662` is keyed *backwards*, scanning all characters asking whether a message
   URL contains each avatar; it cannot become a `.get()` without first parsing the id out of the URL.
 - **(c) true full-collection scans** — below.
 
@@ -824,17 +827,17 @@ So nobody spends time there: `bookmarks.js`, `stats.js`, `data-maid.js`,
 `tags-cache.js`, `filters.js` and `bulk-edit.js` have zero real `characters` accesses.
 `filters.js` and `bulk-edit.js` only ever touch the array `getEntitiesList()` hands them, which is
 why fixing that one function removes a large part of category (c) by construction.
-`assets/index.js:472`/`:479` is a local variable holding the remote asset list, a false positive.
+`assets/index.js:389`/`:396` is a local variable holding the remote asset list, a false positive.
 
 ### 4.1 The list/query pipeline
 
 | Site | Question it answers | Server query needed |
 |---|---|---|
-| `script.js:1296` `getEntitiesList` | the page of entities to render | (tag filter state, folder state, fav/group flags, search query, sort field+order, page, pageSize) → one page of shallow rows + total match count |
-| `script.js:11502` | re-ranking server hits back into client indices | disappears; keep avatar-keyed end to end (§2.4 ii) |
-| `group-chats.js:1717` `getGroupCharacters` | the entire non-member library, as a pagination dataSource | not-in-member-set + search/tag/fav predicates + sort → page + count |
-| `script.js:1198` | the "N hidden" badge | currently conflates *filtered out* with *not on this page*; needs total-matching-count for the active filter, separate from library total |
-| `script.js:9000`, `:9033` | "which page is this newly-imported character on" | rank of a specific row under the current sort+filter — inherently a live query, cannot be a counter |
+| `character-list.js:594` `getEntitiesList` | the page of entities to render | (tag filter state, folder state, fav/group flags, search query, sort field+order, page, pageSize) → one page of shallow rows + total match count |
+| `script.js:11502` (gone: server hits are now keyed by avatar in `fetchServerCharacterSearchResults()`; no `findIndex`) | re-ranking server hits back into client indices | disappears; keep avatar-keyed end to end (§2.4 ii) |
+| `group-chats.js:1820` `getGroupCharacters` | the entire non-member library, as a pagination dataSource | not-in-member-set + search/tag/fav predicates + sort → page + count |
+| `character-list.js:281` | the "N hidden" badge | currently conflates *filtered out* with *not on this page*; needs total-matching-count for the active filter, separate from library total |
+| `script.js:8246`, `:8279` | "which page is this newly-imported character on" | rank of a specific row under the current sort+filter — inherently a live query, cannot be a counter |
 
 That last one is the awkward one nobody predicted. `SELECT COUNT(*) … WHERE <filter> AND <sort key
 precedes this row's sort key>` gives it, which is a real query but an expensive one at 10M without
@@ -846,15 +849,15 @@ must not be on any hot path.
 This is the cluster to worry about most, because under bounded residency "not resident" reads as
 "deleted" and the code then *writes that conclusion to disk*:
 
-- `group-chats.js:268` → `validateGroup` `:279-290`: unresolvable members are deleted and the
+- `group-chats.js:323` → `validateGroup` `:385-397`: unresolvable members are deleted and the
   group saved.
-- `world-info.js:3652`: an unresolvable character filter binding is deleted and the world info
+- `world-info.js:3767`: an unresolvable character filter binding is deleted and the world info
   saved.
-- `tags.js:2379` (tag-backup restore) and `tags.js:2446` (`onTagsPruneClick`): both ask "does this
+- `tags.js:2815` (tag-backup restore) and `tags.js:2446` (gone: `onTagsPruneClick()` no longer checks entity existence) (`onTagsPruneClick`): both ask "does this
   avatar exist anywhere". K is bounded by the input, not the library.
-- `script.js:12790`: "does a character with this id exist" before zooming a message avatar. Harmless
+- `script.js:12814`: "does a character with this id exist" before zooming a message avatar. Harmless
   if wrong, but same primitive.
-- `assets/index.js:359`: `characters.map(x => x.avatar)` then substring-match, run once per
+- `assets/index.js:305`: `characters.map(x => x.avatar)` then substring-match, run once per
   marketplace character — "does any id contain this string".
 
 All of these need one primitive: `POST /api/characters/exists` `{ ids: string[] }` →
@@ -865,42 +868,42 @@ still doing resident-array checks. The two destructive sites additionally need a
 partial existence check must abort the mutation, never fall through to "delete it". Under Option A
 (§2.2) the answer is also trustworthy in a way it is not today, because ids are never recycled.
 
-`assets/index.js:359` needs a different primitive: a substring/`LIKE` query, or better, invert it
+`assets/index.js:305` needs a different primitive: a substring/`LIKE` query, or better, invert it
 and send the marketplace ids to get back which ones already exist.
 
 ### 4.3 Reverse-index questions
 
-- `world-info.js:4270` — lorebook rename fan-out: which characters point at world `oldName`. The
+- `world-info.js:4517` — lorebook rename fan-out: which characters point at world `oldName`. The
   count drives a confirmation popup, so a wrong count means the user consents to the wrong thing.
   Served by the `world` column's index (§3.1).
-- `tags.js:145` — the question underneath is "which tags have ≥1 non-member character wearing
+- `tags.js:139` — the question underneath is "which tags have ≥1 non-member character wearing
   them", currently computed by materializing every non-member character. Served by `tag_usage` plus
   a group-membership exclusion.
-- `script.js:1355` — "does this tag apply to every entity in the library" (bogus-folder
+- `character-list.js:567` — "does this tag apply to every entity in the library" (bogus-folder
   detection). Per-tag count from `tag_usage` compared against the library total.
 
 ### 4.4 Enumeration and resolution
 
-- `SlashCommandCommonEnumsProvider.js:200` — biggest by fan-in (14 references in `slash-commands.js`
+- `SlashCommandCommonEnumsProvider.js:202` — biggest by fan-in (14 references in `slash-commands.js`
   plus `expressions`, `gallery`, `personas`, `tags`, `world-info`). Every character name, for
   autocomplete. Needs a prefix query with a limit, and the provider API is a synchronous
   `() => SlashCommandEnumValue[]`, so this is an interface change, not a data-source swap. It also
   currently carries no id, so duplicate display names are indistinguishable; the id should be
   attached while this is being touched.
-- `utils.js:2719` `findChar()` — name → character, 14 slash-command call sites. Needs a
+- `utils.js:2695` `findChar()` — name → character, 14 slash-command call sites. Needs a
   case/accent-folded name lookup returning matches plus a count (it warns on ambiguity, so
   first-hit is not enough), plus tag conjunction as a server-side filter; the `filteredByTags` path
   currently materializes a tag-filtered copy of the whole array.
-- `power-user.js:2470` `fuzzySearchCharacters` — the Fuse index over every character's full text.
+- `power-user.js:2486` `fuzzySearchCharacters` — the Fuse index over every character's full text.
   Replaced by §8 locally and by the existing server search remotely; callers read `.score`, so the
   replacement must produce comparable scores.
-- `world-info.js:3108` — an `<option>` per character in a picker. Becomes search-as-you-type plus a
+- `world-info.js:3181` — an `<option>` per character in a picker. Becomes search-as-you-type plus a
   separate resolve for already-bound names.
-- `power-user.js:3120` `doRandomChat` — random pick over the library; the tagged path walks all of
+- `power-user.js:3195` `doRandomChat` — random pick over the library; the tagged path walks all of
   `tag_map`. Becomes `ORDER BY RANDOM() LIMIT 1` with the filter applied.
-- `RossAscends-mods.js:306` `favsToHotswap` — scans everything to fill a 25-slot strip. Becomes
+- `RossAscends-mods.js:373` `favsToHotswap` — scans everything to fill a 25-slot strip. Becomes
   `WHERE fav = 1 LIMIT 25` (the `(fav, name_fold)` index).
-- `tts/index.js:1300` — maps every character name, and it runs on every `/speak`, not only when
+- `tts/index.js:1292` — maps every character name, and it runs on every `/speak`, not only when
   opening settings. Needs to be either lazy or bounded.
 
 ### 4.5 Incremental vs live
@@ -908,16 +911,16 @@ and send the marketplace ids to get back which ones already exist.
 The split falls out cleanly and is worth respecting in the schema:
 
 - **Incrementally maintainable** (a counter or aggregate the write path updates): library totals,
-  per-tag usage counts (subsuming `tags.js:145`, `script.js:1355`, and the tagged half of
+  per-tag usage counts (subsuming `tags.js:139`, `character-list.js:567`, and the tagged half of
   `doRandomChat`), the favourites list, and the world → characters reverse index.
 - **Inherently live** (depends on request-time filter/sort state or user input): the page query,
-  `group-chats.js:1717`, the rank-of-item lookups at `script.js:9000`/`:9033`, and all three
+  `group-chats.js:1820`, the rank-of-item lookups at `script.js:8246`/`:8279`, and all three
   resolution paths (name prefix, exact name, full text).
 - **Neither**: exists-by-key only, the whole §4.2 cluster.
 
 ### 4.6 A semantics gap, not a performance one
 
-Bulk "select all" (`bulk-edit.js:46`) and shift-range select (`BulkEditOverlay.js:763`) both walk
+Bulk "select all" (`bulk-edit.js:44`) and shift-range select (`BulkEditOverlay.js:812`) both walk
 `querySelectorAll` over *rendered rows*. That is already page-bounded, so nothing is slow. But at
 10M, "select all" silently means "select this page", and bulk delete and export then act on that.
 Nothing to fix for performance; the label and the confirmation copy have to stop lying, and a
@@ -950,10 +953,11 @@ POST /api/characters/query
 ```
 
 **Superseded (see §9 phase 2):** the response field specced here as `rev` is `seq` in the code
-(`917e4a636`). The shipped endpoint also takes `ifSeq`, `filter.includeGroups` and `sort.seed`
-(required for random sort). `want` accepts `rows`, `total` and `hashes`, and `facets` and `rank` 400.
-The response has three variants: `{ seq, unchanged: true }` when `ifSeq` matches, the JSON rows
-response above without `facets`, and a binary hashes response for `want: ['hashes']`.
+(`917e4a636`). The shipped endpoint also takes `ifSeq` (`0bc53ad75`), `filter.includeGroups`
+(`3f33c5611`) and `sort.seed` (`96896367a`, required for random sort). `want` accepts `rows`,
+`total` and `hashes` (`49ad5d58c`), and `facets` and `rank` 400. The response has three variants:
+`{ seq, unchanged: true }` when `ifSeq` matches, the JSON rows response above without `facets`, and
+a binary hashes response for `want: ['hashes']`.
 
 Notes on the shape:
 
@@ -966,7 +970,7 @@ Notes on the shape:
   pages of a large result unreachable.
 
   What that rules out: the current search path's behaviour, where the server fetches a bounded
-  window and the client shows "Showing N of M matches" (`script.js:11518`) because `items.length` is
+  window and the client shows "Showing N of M matches" (`script.js:11518` (gone: the "Showing N of M matches" count no longer exists)) because `items.length` is
   a fetch cap rather than a match count. That pattern does not carry forward.
 
   What it permits, in rough order of preference:
@@ -981,7 +985,7 @@ Notes on the shape:
   `want` still exists so a caller that does not need the count can skip paying for it. But when a
   total is returned, it is scope-honest.
 - `sort: 'search'` is only valid with `filter.search`, matching the existing UI rule
-  (`verifyCharactersSearchSortRule`, `script.js:1224`).
+  (`verifyCharactersSearchSortRule`, `character-list.js:422`).
 - `seq` lets the client detect that its cache is stale relative to what it just rendered.
   **Superseded by `917e4a636`:** specced as `rev`; the code names it `seq`.
 - Combining a full-text search with a SQL filter and SQL ordering means one of the two engines has
@@ -1047,21 +1051,21 @@ expectation; that round trip deletes itself.
 
 Random sort order is a UX defect, redesigned here.
 
-What it is: the dropdown option is `data-field="name" data-order="random"` (`index.html:6396`), so
-random rides on `sort_order`, not `sort_field`. `sortEntitiesList` (`power-user.js:2712`) calls
-`shuffle(entities)` — Fisher-Yates over `Math.random()`, in place, no seed (`utils.js:384`).
+What it is: the dropdown option is `data-field="name" data-order="random"` (`index.html:6106`), so
+random rides on `sort_order`, not `sort_field`. `sortEntitiesList` (`power-user.js:2740`) calls
+`shuffle(entities)` — Fisher-Yates over `Math.random()`, in place, no seed (`utils.js:386`).
 
 The defect: the sort *mode* is persisted (`saveSettingsDebounced` on the dropdown change, restored
-at `power-user.js:2059`), but the *ordering* is not. It is re-derived on every render, so the
+at `power-user.js:2045`), but the *ordering* is not. It is re-derived on every render, so the
 library has no stable identity from one render to the next.
 
 What re-renders: every non-search `printCharacters()` / `printCharactersDebounced()`, every tag chip
 toggle (~10 sites in `tags.js`), every filter change (`entitiesFilter` is constructed with
-`printCharactersDebounced` as its callback, `script.js:701`), bulk-edit select/deselect, tag
+`printCharactersDebounced` as its callback, `character-list.js:41`), bulk-edit select/deselect, tag
 create/delete/rename. Two corrections to the original report of the symptom:
 
 - Typing in the search box does not reshuffle. `verifyCharactersSearchSortRule()`
-  (`script.js:1224`) selects the hidden `search` sort option as soon as there is a term, and
+  (`character-list.js:422`) selects the hidden `search` sort option as soon as there is a term, and
   `sortEntitiesList` returns on the `isSearch` branch before reaching random. Cards do move while
   typing, but that is relevance re-ranking. Clearing the box flips back to random and *does*
   reshuffle.
@@ -1070,11 +1074,11 @@ create/delete/rename. Two corrections to the original report of the symptom:
 
 Two further defects found while checking: the random branch `return`s before the `type === 'tag'`
 pin, so bogus folders get shuffled in among the character cards instead of staying at the top; and
-`getGroupCharacters` (`group-chats.js:1677`, `:1705`) goes through the same comparator, so the
+`getGroupCharacters` (`group-chats.js:1770`, `:1798`) goes through the same comparator, so the
 group "add member" list reshuffles too.
 
 The fix: replace the shuffle with a seeded ordering key. Sort by
-`getStringHash(typePrefix + entityId, seed)` instead of shuffling. `getStringHash` (`utils.js:522`,
+`getStringHash(typePrefix + entityId, seed)` instead of shuffling. `getStringHash` (`hash-utils.js:13`,
 cyrb53) already takes a seed, and `seedrandom` is already a dependency re-exported from
 `public/lib.js`, so no new dependency either way. Being a comparator rather than a shuffle, it slots
 into the existing `entities.sort(...)`, so the tag-pin rule applies again and the
@@ -1087,7 +1091,7 @@ every other slot untouched, where a stored permutation would have to be regenera
 (§2.2) ids are immutable, so a rename no longer moves a card either.
 
 The server-pagination wrinkle, which must not be missed. `paginateCharacters`
-(`characters.js:1205`, `:1244`) models sort as `SORT_FIELD_GETTERS[sortField]` plus
+(`characters.js:1205` (gone: `paginateCharacters()` was removed), `:1244` (gone: `paginateEntities()` was removed)) models sort as `SORT_FIELD_GETTERS[sortField]` plus
 `sortOrder: 'asc'|'desc'`. Random does not fit that shape: passing today's state through sends
 `sortField=name&sortOrder=random`, and the server silently falls back to ascending name. Random sort
 would become name sort the moment pagination moves server-side, with no error. Random therefore
@@ -1115,7 +1119,7 @@ rerolled by an explicit button. Concretely:
   and does not remember it. The ordering is a property of the user's view, not of server state, so
   two tabs or two devices can disagree without any coordination.
 - Stored in `accountStorage`, alongside `Characters_PerPage` and the other per-account view
-  preferences (`script.js:1096`, `:1208`). That gets persistence across reloads and restarts, and it
+  preferences (`character-list.js:203`, `:305`). That gets persistence across reloads and restarts, and it
   is per-user on a shared browser in a way `localStorage` would not be. Minted lazily: if no seed is
   stored the first time random sort is used, mint one and store it, so no migration is needed for
   existing installs.
@@ -1147,13 +1151,13 @@ browsing, now extended to search.
 
 What has to change:
 
-- Sort and search become independent inputs. `verifyCharactersSearchSortRule()` (`script.js:1224`)
+- Sort and search become independent inputs. `verifyCharactersSearchSortRule()` (`character-list.js:422`)
   currently force-selects the hidden `search` option whenever a term is present and reverts when it
   clears. That forcing goes away. Relevance becomes an ordinary sort choice the user can pick, not a
   mode the search box imposes.
 - The `search` sort option stops being `hidden` in `index.html`. It is offered whenever a query is
   active and unavailable otherwise, the same rule as today, minus the automatic selection.
-- The client comparator loses its short-circuit. `sortEntitiesList` (`power-user.js:2704`) returns
+- The client comparator loses its short-circuit. `sortEntitiesList` (`power-user.js:2729`) returns
   early on `isSearch` before reaching the random branch. It has to dispatch on the selected sort
   instead: relevance if the user picked it, hash if they picked random, the field comparator
   otherwise, with the search term affecting only which entities are in the list.
@@ -1171,7 +1175,7 @@ What has to change:
 
 ### 5.4 The remaining odd queries
 
-Rank-of-row (`script.js:9000`, "which page did my import land on") is the
+Rank-of-row (`script.js:8246`, "which page did my import land on") is the
 `COUNT(*) WHERE <sort key precedes this row>` query from §4.1. Under random sort it is the same
 query against the hash expression, one more reason the ordering has to be expressible server-side
 rather than being a client-side shuffle.
@@ -1209,7 +1213,7 @@ answer" (everything in §4.2). Anything that cannot be classified gets the async
 becomes a *controller* over server-side paging rather than a slicer over a materialized array. The
 `pagination()` plugin already has the `dataSource`-as-function form needed for that.
 
-Group members: `group-chats.js:388` `getGroupMembers` currently returns `charactersStore.get(member)`
+Group members: `group-chats.js:500` `getGroupMembers` currently returns `charactersStore.get(member)`
 unfiltered into an array typed `Character[]`, so non-resident members become `undefined` holes with
 a lot of downstream consumers. It becomes async and returns a resolved list plus an explicit
 unresolved list, so callers must handle the distinction instead of tripping over holes.
@@ -1221,7 +1225,7 @@ unresolved list, so callers must handle the distinction instead of tripping over
 ### 7.1 What gets cached, and why the sizing changes
 
 Today's cache stores fully-processed character objects keyed by avatar
-(`character-cache.js:72`), via localforage. Measured across 4,000 random cards from the real import
+(`character-cache.js:282`), via localforage. Measured across 4,000 random cards from the real import
 corpus, card JSON runs 13 KB mean and 7.8 KB median, with a long right tail: 24 KB at p90, 96 KB at
 p99, 585 KB at the largest. That is ~3.9 GB at 300k: still far over any browser's quota, so "cache
 everything" never survives contact with the target scale regardless of eviction policy. (The cards
@@ -1367,7 +1371,7 @@ Not a replacement for the server's tantivy/FTS search: that stays authoritative 
 that can search the *whole* library. The local index answers over what is cached, so that on a slow
 link (mobile + VPN) typing produces results immediately instead of after a round trip. Results from
 it must be labelled as covering the cached subset, never presented as complete, and the server result
-supersedes it when it lands. This is the same layering the code already has at `filters.js:373-385`
+supersedes it when it lands. This is the same layering the code already has at `filters.js:342-350`
 (server results when present, client pass while in flight). What changes is which client engine runs,
 and that it is scoped to a bounded set by construction.
 
@@ -1470,7 +1474,7 @@ filtering by default. No `storeFields` were configured, so these are floor numbe
 For the record, on what is currently in the tree: `lunr` is dead (last publish 2020) and is not a
 candidate. `fuse.js` (already a dependency, `public/lib.js:6`) stays for the small collections it
 serves elsewhere, but it is bitap-over-an-array with no inverted index, a different shape entirely,
-and the reason `fuzzySearchCharacters` (`power-user.js:2470`) cannot scale no matter how it is
+and the reason `fuzzySearchCharacters` (`power-user.js:2486`) cannot scale no matter how it is
 tuned.
 
 ### 8.3 What gets indexed, and staying in sync
@@ -1659,38 +1663,36 @@ version, the route serves the file with `public, max-age=31536000, immutable`; o
 
 Three consequences, and the first is a live problem:
 
-- **`getThumbnailUrl` was never touched.** `public/script.js:7853` still emits
-  `/thumbnail?type=…&file=…` with no `v`, so no client call site ever names a version and *every*
-  thumbnail request takes the redirect hop first. The redirect carries `no-cache` and no validator,
-  so it is re-fetched every time, forever. A 500-card page is now 500 redirects — each doing an
-  `existsSync` plus a `statSync` — ahead of 500 cached hits. Before this change it was one request
-  per image with Express's default ETag and Last-Modified. This is half-implemented, not finished:
-  the client half of 0b is still outstanding.
+- **The client half is in place for backgrounds and personas only.** Since `a057fe43f`,
+  `getThumbnailUrl()` appends `&v=` when `thumbnailVersionCache` has a version for that file.
+  `/api/backgrounds/all` and the persona avatar list return versions (`getThumbnailVersion()`), and
+  `backgrounds.js` and `personas.js` feed them into the cache through `setThumbnailVersion()`.
+  Character avatars get none: the only character endpoint that returns `thumbnailVersion` is
+  `/manifest`, and no client code calls it. So every character-avatar thumbnail still takes the
+  redirect hop first. The redirect carries `no-cache` and no validator, so it is re-fetched every
+  time, and a page of N character cards costs N redirects ahead of N cached hits.
 - The version token is the mtime of the **cached thumbnail file**, not of the original as the spec
   said. The argument is that `invalidateThumbnail()` deletes the cached file when the source changes,
   so regeneration re-mints the token.
-- The Firefox `no-store` header was routed around rather than reconciled. `src/util.js:1595` is
+- The Firefox `no-store` header was routed around rather than reconciled. `src/util.js:1699` is
   untouched; the immutable and redirect paths simply avoid calling `invalidateFirefoxCache()`. But
   `serveOriginal()` still calls it, so Firefox still gets `no-store` for GIFs, animated formats, and
   any install with thumbnails disabled.
 - Client-side, `personas.js:241` dropped a Firefox-only `t=Date.now()` cache-buster that would have
-  defeated the new caching. Two other spots (`personas.js:480`, `:2115`) still force
+  defeated the new caching. Two other spots (`personas.js:488`, `:2084`) still force
   `fetch(..., {cache:'reload'})` after upload; different mechanism, still present.
 
-**0c — SHIPPED, incompletely (`ade258e49`).** The parse is fixed as specced: one `/^\d+$/` test with
+**0c — SHIPPED (`ade258e49`, completed in `0b0ed9fd5`).** The parse is fixed as specced: one `/^\d+$/` test with
 `parseInt(lastPart, 10)` only inside that branch, plus a `nameParts.length > 1` guard. `foo_.png` now
 takes the else branch and becomes `foo__1.png`.
 
-**The loop was not bounded, and the wedge survives with a narrower trigger.** It is still
-`while (fs.existsSync(newFilename)) suffix++`, justified by a comment arguing that the suffix is
-always a strictly increasing integer. That argument has a hole: `/^\d+$/` accepts arbitrarily long
-digit strings, so a card named `foo_9999999999999999999999.png` yields `parseInt(...) + 1 === 1e22`,
-`String(1e22)` is `"1e+22"`, and `suffix++` at 1e22 is a no-op in float. The first duplicate produces
-`foo_1e+22.png`; a second duplicate of the original collides and spins forever on a synchronous
-`existsSync`. Same one-request server wedge, same shape, rarer trigger. Bounding the loop is still
-outstanding.
+**The wedge is closed (`0b0ed9fd5`).** The suffix test is now `/^\d{1,15}$/`, so the parsed suffix
+plus one stays inside `Number.MAX_SAFE_INTEGER` and `suffix++` always advances. That removes the
+`foo_9999999999999999999999.png` → `1e+22` float-precision trigger. The loop is also bounded by
+iteration count: `MAX_DUPLICATE_ATTEMPTS = 10000`, after which the duplicate fails with a 500. Since
+`e5bb93d74` a suffix counts as taken if its file or its row exists.
 
-**0d — NOT SHIPPED.** `writeExtensionField` (`public/scripts/extensions.js:2070`) still takes an
+**0d — NOT SHIPPED.** `writeExtensionField` (`public/scripts/extensions.js:2231`) still takes an
 avatar only, still goes straight to `charactersStore.get(characterAvatar)`, and still
 `console.warn`s and returns on a miss. No discriminator, no chid branch, no deprecation warning.
 GroupGreetings is still silently failing to save.
@@ -1795,25 +1797,37 @@ Divergences that matter:
   calls it once, at the end of the one-time bootstrap.
 - Nothing prunes the change log yet, so `truncated` can currently only fire for a nonsense
   `sinceSeq`.
-- **Caller-supplied `date_added` on import was not implemented, and the reason given is wrong.** The
-  module header justifies the omission by saying it is "flagged in the doc's decision log as still an
-  open question, not a settled one". It is not: §3.1 marks it settled and decision 17 lists it under
-  Settled. A vestigial `forceDateAdded` field exists in the `PendingRow` typedef that nothing sets.
-  This is a settled decision skipped on a false premise, and it is the one phase-1 item that should
-  be revisited rather than accepted.
-- The write-once rule itself is enforced structurally — the UPSERT's `ON CONFLICT SET` list simply
-  omits the column. Bootstrap seeds from `ctimeMs` once behind the meta flag; every other discovery
-  path uses `Date.now()`.
+- **Per-record `date_added` on import exists only in local import, and not in decision 17's form.**
+  Since `d94fdab67`, `local-import-scan.js` calls `setCharacterDateAdded(id, source file mtime)`
+  after each import, and after each match against an already-imported duplicate
+  (`maybeCorrectDateAddedFromDuplicateSource`). `setCharacterDateAdded` overwrites unconditionally,
+  in the batch buffer or the row, so a duplicate match moves an existing character's `date_added`.
+  No route or batch-import API accepts a caller-supplied value, and nothing range-validates the
+  value. The vestigial `forceDateAdded` field and the module-header comment calling the question
+  open are both gone.
+- The write-once rule is enforced structurally: the UPSERT's `ON CONFLICT SET` list omits the
+  column. Bootstrap seeds from `ctimeMs` once behind the meta flag. Every other discovery path uses
+  `Date.now()`. Two exceptions write it later: `setCharacterDateAdded` above, and the rename path,
+  which carries the old id's `date_added` over to the new id.
 
-**Most of §3.3's memoization work did not ship**, and the browse path is still the old one:
+**§3.3's memoization work shipped in part.** The browse path is the new one: `/query` reads
+`shallow_json` and the sort columns from SQLite and touches no PNG. `processCharacter` is what
+remains of the old path. It serves `/get`, the full-record mode of `/batch` (the client's
+whole-record delta refetch), the `/import` response, `/all`, and the tantivy index build.
 
-- `processCharacter` still does its own `statSync` and still sets `character.date_added =
-  charStat.ctimeMs`. So decision 5 is honoured in the new table and still violated in what the UI
-  actually receives.
-- `getCacheKey()`'s `existsSync` + `statSync` pair was not collapsed.
-- The parsed object is still not cached, only the JSON string.
-- The disk cache's `verify()` boot scan (`characters.js:131`) is still running, alongside the
-  reconciler that was supposed to subsume it.
+- `processCharacter` does one `statSync`, reused for the cache key and `date_added`, and still sets
+  `character.date_added = charStat.ctimeMs`. So decision 5 is honoured in the table, in `/query`
+  rows and in `/batch`'s field-filtered mode, all of which read the DB value. It is still violated
+  in `/get`, full-record `/batch`, the `/import` response and `/all`. The tantivy `date_added` fast
+  field is also built from `ctimeMs`, so a search sorted natively by tantivy on `date_added` orders
+  by `ctimeMs`.
+- `getCacheKey()` is one `stat` (or a caller's precomputed one) whose `ENOENT` is handled, not an
+  `existsSync` + `statSync` pair.
+- The parsed object is still not cached. Card JSON comes from `card_json` in the DB and is
+  `JSON.parse`d on every `processCharacter` call. The disk cache holds only the PNG-read string, for
+  the path that still reads a PNG.
+- The boot-time disk-cache `verify()` scan was removed in `42f93d5aa`. `verify()` still exists as a
+  manual full-corpus method, and nothing calls it.
 - §3.3 item 4 shipped in part. `chats.js` imports `bumpCharacterDateLastChat`,
   `bumpGroupChatStats`, `getCharacterActiveChatsByIds` and `setCharacterActiveChat` from the store.
   A character chat save bumps the character's `date_last_chat`; a group chat save updates the
@@ -1866,38 +1880,52 @@ Details:
 - 503 `metadata-store-unavailable` when there is no SQLite engine, with no filesystem fallback by
   design.
 
-**All six new endpoints are wired to zero client code.** `/all` and `/manifest` still serve the UI
-unchanged, and `/all`'s no-parameter path is still `readdirSync` plus `processCharacter` over the
-whole library. Nothing a user can observe has changed yet.
+**Client wiring.** Five of the six new endpoints have client callers:
 
-**The tantivy sub-scope of phase 2 is entirely outstanding** — confirmed at HEAD, and none of it was
-touched by either commit:
+- `/query`: the character list (`character-list.js`, through `character-repository.js`) pages
+  through it whenever the current sort is one the server accepts. Relevance sort counts only with a
+  search term. If the server rejects the sort, the list falls back to local pagination. Requests
+  include groups and send `ifSeq` from the client's page cache.
+- `/changes`: `getCharacters()` syncs the local cache through `fetchCharactersDelta()` instead of a
+  full-library fetch.
+- `/exists`: `characterRepository.exists()`, which destructive-existence call sites use
+  (`character-existence-check.js`).
+- `/metadata/batch-import/begin` and `/end`: `script.js` wraps client imports in them.
+- `/metadata/rescan`: no client caller.
 
-- The stored payload is still `stored: true` on the full character JSON, so every hit still pays a
-  full `JSON.parse` and `maxRows` is still load-bearing.
-- There is no id field in the schema at all. A `tokenizerName: 'raw'` field exists, but it is on the
-  data blob for scoring, not a delete key. Nothing is keyable, so delete-by-term is still unavailable
-  in practice.
-- There is no delete path whatsoever: no `deleteDocumentsByTerm`, `deleteDocumentsByQuery` or
-  `deleteAllDocuments` calls anywhere. Deletion is only ever expressed as discarding the directory.
-- The `statSync` freshness signature is still live, stat-ing the characters directory and `tags.json`
-  on every search call. `/metadata/rescan` drives the reconciler, not an index repair — a different
-  subsystem.
+`GET /changes/stream` also shipped, an SSE endpoint the spec didn't have. `script.js` opens one per
+tab and refetches characters on each event. No client code calls `/all` or `/manifest`. Both routes
+still exist, and `/all`'s no-parameter path is still `readdirSync` plus `processCharacter` over the
+whole library.
 
-The freshness story as it actually stands: a signature mismatch goes to
-`search-index-coordinator.js`; the first search per handle after process start blocks; afterwards
-stale results are served immediately while one background rebuild per handle runs and swaps. Always a
-**full** rebuild — `rmSync` the index directory, re-read every PNG at 500 per batch, commit every 20
-batches. So the two freshness systems, the metadata change log and the search index, are completely
-independent, and the metadata module's header states it never touches the search index.
+**Tantivy** (`characters-search-index.js`, `tantivy-search.js`, `search-index-coordinator.js`):
 
-One thing noticed and **not verified**: `buildTantivyIndex` `rmSync`s the index directory as its
-first act, while the coordinator may still be serving off an open `Index` handle on that path. POSIX
-open-fd semantics probably cover the SQLite tier's equivalent; whether tantivy's segment files
-survive it is unchecked. Worth a look before incremental maintenance lands.
+- The stored payload is the character id alone, in a `raw`-tokenized `data` field that is also the
+  delete key. Rows come from SQLite, so a hit costs no `JSON.parse`.
+- The schema has the full-text fields (weighted like the client's fuzzy search), fast fields for
+  native sorting (`create_date`, `date_added`, `date_last_chat`, `chat_size`, `data_size`, plus
+  name and fav-then-name collation keys), a `tag_ids` filter field and an indexed `fav` field. It
+  has no `world` field, so a `world` filter is applied in SQL.
+- Maintenance is incremental. `applyIncrementalTantivyChanges` reads the change log since the
+  index's persisted seq, plus the tag-name-change log (a tag rename writes no `changes` rows for the
+  characters carrying it). It deletes every touched id by term and re-adds the upserted ones.
+- The freshness signature is the change log's current seq plus `tags_hash`. It falls back to the
+  characters directory's mtime only when the metadata store is unavailable. Nothing stats
+  `tags.json` or the directory per search when the store is available.
+- The index persists across restarts. On the first search after a restart, the persisted index is
+  opened as-is (if its schema version matches `TANTIVY_SCHEMA_VERSION`) and served while a
+  background pass catches it up. After that, a stale signature serves the live index while one
+  background update per handle runs. After each update `characterChangeEmitter` fires, so clients
+  on `/changes/stream` refetch.
+- A full rebuild happens only when incremental maintenance can't proceed (no usable persisted index,
+  a schema-version mismatch, or a truncated change log) or on the explicit
+  `POST /search-index/rebuild`. With the metadata store available it replays the change log from 0
+  into a new index. Without it, it scans the characters directory. Either way it builds in a temp
+  directory and swaps it in with renames, so the live index directory is never removed mid-build.
+  That settles the earlier unverified concern about `rmSync` under an open `Index` handle.
 
-*Remaining phase 2 work:* the tantivy items above, plus `filter.search` / random / search-rank sort
-in `/query`, plus wiring any of it to the client.
+*Remaining phase 2 work:* `facets` and `rank` in `/query`, the estimated-total tiers, and change-log
+pruning.
 *Files:* `src/endpoints/characters.js`, `src/endpoints/characters-search-index.js`,
 `src/endpoints/tantivy-search.js`, `src/endpoints/search-index-coordinator.js`.
 
@@ -1922,8 +1950,8 @@ from phase 1, so this phase is the endpoints and the client migration, not the s
   `public/scripts/filters.js`, `public/scripts/power-user.js`,
   `public/scripts/BulkEditOverlay.js`.
 - **4b.** Delete `this_chid` and `data-chid`: the selection accessor and its tristate; the ~56
-  `=== undefined` sites; `personas.js:1938`; the `indexOf`-to-index bucket; the group generation
-  cursor; `index.html:7245`'s orphan `chid` attribute and `tags.js:887`'s selector; the
+  `=== undefined` sites; `personas.js:1938` (gone: `Number(this_chid) >= 0` no longer exists in this file); the `indexOf`-to-index bucket; the group generation
+  cursor; `index.html:7245`'s (gone: the orphan `chid` attribute was removed) orphan `chid` attribute and `tags.js:1324`'s selector; the
   `id="CharID…"` removal.
   *Files:* `public/script.js`, `public/scripts/group-chats.js`, `public/scripts/personas.js`,
   `public/scripts/utils.js`, `public/scripts/tags.js`, `public/scripts/RossAscends-mods.js`,
@@ -1993,7 +2021,7 @@ independently, and doing so fixes the visible jumping before the rest of the pla
 
 Raw-IDB two-tier store; quota detection and the frecency budget (§7); the MiniSearch index at
 shallow scope (§8) with its own capped budget counted against the same byte total, and its sync to
-cache admission/eviction; retire the Fuse index (`power-user.js:2427`).
+cache admission/eviction; retire the Fuse index (`power-user.js:2443`).
 
 *Files:* `public/scripts/character-cache.js` (rewritten), new
 `public/scripts/local-search-index.js`, `public/scripts/power-user.js`,
@@ -2008,14 +2036,14 @@ cache admission/eviction; retire the Fuse index (`power-user.js:2427`).
 id). Bounded residency and uuid identity break both. This was audited against the installed
 extension set rather than in the abstract.
 
-Where they live: `src/endpoints/extensions.js:505-530` scans three sources — bundled
+Where they live: `src/endpoints/extensions.js:498-523` scans three sources — bundled
 (`public/scripts/extensions/`), per-user (`data/default-user/extensions/`, type `local`), and global
 (`public/scripts/extensions/third-party/`, type `global`), with per-user winning name conflicts. The
 per-user directory is easy to miss and holds one extension.
 
 One installed extension is already broken today, which reframes the question (phase 0d fixes it; see
 the settled note below). `writeExtensionField` in this fork now takes an avatar
-(`extensions.js:2070`, commits `8d28455b3` / `a682827c3`), but Extension-GroupGreetings still passes
+(`extensions.js:2231`, commits `8d28455b3` / `a682827c3`), but Extension-GroupGreetings still passes
 an index (`ContextUtil.js:188`). The `charactersStore.get(index)` misses, logs a `console.warn`, and
 no-ops, so group greeting mode has been silently failing to save since that change landed. The
 extension API's index contract is already partially broken and nobody noticed, which is evidence
@@ -2071,8 +2099,8 @@ currently disabled).
   chat objects and reads it back later (`useOpenChat.ts:66`), an array index round-tripping through
   persisted-ish data.
 - A pattern not previously on the list, and it is in the *bundled* extensions: a module-level "last
-  chid" compared with `===` to skip work — `quick-reply/index.js:144`,
-  `expressions/index.js:526`/`:534`/`:569`/`:619`, and `memory/index.js:403`, which compares
+  chid" compared with `===` to skip work — `quick-reply/index.js:150`,
+  `expressions/index.js:546`/`:554`/`:589`/`:633`, and `memory/index.js:465`, which compares
   `characterId` across an `await` to decide whether to discard a summary. These have a latent bug
   today: delete a character, the next one slides into the freed index, and `===` matches the wrong
   character. Uuid identity *fixes* them, but they still read `characterId`, so they still have to be
@@ -2087,12 +2115,12 @@ caption, connection-manager, token-counter, translate, vectors.
 everything is already avatar-shaped (SD character prompts via `getCharaFilename`, gallery folder
 overrides, quick-reply `characterConfigs[avatar]`, regex `AlertRegex_${avatar}`, Colorizer's
 `colorOverrides`, Flowchart's `characterAvatar`). Discordia's `setActiveCharacter` looked like a risk
-but `getTagKeyForEntity` (`tags.js:926-931`) resolves whatever it is handed down to an avatar before
+but `getTagKeyForEntity` (`tags.js:1363-1368`) resolves whatever it is handed down to an avatar before
 writing. This removes the single biggest argument for a stable numeric handle: there is no installed
 extension whose persisted data a handle would have to remain compatible with.
 
 **Separate axis, hits regardless of identity:** the array-removal half breaks things that never touch
-chid — `assets/index.js:359`, `tts/index.js:1296`, `expressions/index.js:644`, Flowchart's avatar
+chid — `assets/index.js:305`, `tts/index.js:1288`, `expressions/index.js:662`, Flowchart's avatar
 dropdowns, Colorizer `STCharacter.js:156`/`:188`, and Discordia `GroupAvatar.tsx:6`, which
 destructures `characters` at module scope.
 
@@ -2221,7 +2249,7 @@ continuing to materialize the array: the internal store becomes a repository, an
 
 One wrinkle to handle rather than gloss: those are *shallow* rows, so an extension reading
 `.data.description` off an arbitrary character gets undefined where it used to get text. That is a
-break, and it is already present upstream — `lazyLoadCharacters` (`characters.js:40`) makes the array
+break, and it is already present upstream — `lazyLoadCharacters` (`characters.js:43`) makes the array
 shallow today, defaulting off. Zero breakage means that config must stay off for the extension-facing
 view, or the view must hold full cards, which is not affordable at any of these sizes. So the
 compatibility view is shallow, and full-card fields fault in through `unshallowCharacter()` as they
@@ -2435,7 +2463,7 @@ Capture-then-reuse splits three ways, and only one is dangerous:
   `setTimeout(…, 0)`).
 
 One mitigating detail worth recording: `context.characterId` is a lazy getter recomputed on every
-read (`st-context.js:188`), so it self-heals across awaits, while `ctx.characterAvatar`, `ctx.name2`
+read (`st-context.js:147`), so it self-heals across awaits, while `ctx.characterAvatar`, `ctx.name2`
 and `ctx.chatId` on the same object are plain captured snapshots. That asymmetry is undocumented and
 has already bitten at least one extension.
 
@@ -2550,18 +2578,20 @@ minimum it is not forced by anything, and the wrapper keeps the engine swappable
 
 Not open questions — implementation gaps, listed here so they are not mistaken for either.
 
-- **Decision 17** (import may supply `date_added`): not implemented, and skipped on the stated
-  grounds that this document left it open. It does not. The `PendingRow` typedef has a vestigial
-  `forceDateAdded` nothing sets. Phase 1.
-- **Decision 5** (`date_added` stops being `ctimeMs`): honoured in the metadata table, still violated
-  on the live browse path, where `processCharacter` sets `date_added = charStat.ctimeMs` on what the
-  UI actually receives. Phase 1 / §3.3.
-- **Decisions 13 and 23** (per-query random ordering; random and search compose): `/query` currently
-  400s on `filter.search`, `sort.field: 'random'` and `sort.field: 'search'`. Remaining phase 2 work.
-- **Decision 7** (no unmemoized full-disk reads): most of §3.3 did not ship. The per-request
-  `statSync` calls, the `getCacheKey()` collapse, caching the parsed object, deleting the disk
-  cache's `verify()` boot scan, and wiring the chat write path to `date_last_chat` / `chat_size` are
-  all outstanding. Phase 1 / §3.3.
+- **Decision 17** (import may supply `date_added`): local import sets `date_added` from the source
+  file's mtime through `setCharacterDateAdded`, which overwrites unconditionally, including on an
+  already-imported duplicate. No route accepts a caller-supplied value, and nothing validates it.
+  Phase 1.
+- **Decision 5** (`date_added` stops being `ctimeMs`): honoured in the metadata table and in
+  everything that reads it (`/query` rows, field-filtered `/batch`). Still violated wherever
+  `processCharacter` answers, since it sets `date_added = charStat.ctimeMs`: `/get`, full-record
+  `/batch`, the `/import` response, `/all`, and the tantivy `date_added` fast field. Phase 1 / §3.3.
+- **Decision 7** (no unmemoized full-disk reads): partly honoured. `/query` reads no PNGs,
+  `getCacheKey()` is a single stat, and the boot-time `verify()` scan is gone. Still outstanding:
+  `processCharacter`'s per-call `statSync` and chat-directory walk (`calculateChatSize`), caching
+  the parsed object, and keeping a character's `chat_size` current on chat writes. The chat write
+  path does bump a character's `date_last_chat`, and a group's `date_last_chat` and `chat_size`.
+  Phase 1 / §3.3.
 - **Decision 16** (`writeExtensionField` dual-accept): phase 0d, not started.
 
 One implementation detail wants a decision rather than a fix: the reconciler uses
