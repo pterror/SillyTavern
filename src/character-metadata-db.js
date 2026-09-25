@@ -1559,7 +1559,8 @@ function withPatchedDateAdded(shallowJson, dateAdded) {
     }
 }
 
-/** Overwrites date_added unconditionally - the one exception to it being write-once elsewhere in this module. */
+/** Overwrites date_added unconditionally - one of the two exceptions to it being write-once in this module; the
+ * other is renameCharacterRow(), which carries oldAvatar's date_added over to newAvatar. */
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id
@@ -2474,11 +2475,14 @@ export async function setMetaValue(directories, key, value) {
 
 // Tag ids whose *name* changed since sinceSeq - mirrors getChangesSince()'s truncation handling.
 /**
+ * With `limit`, reads at most that many log rows past sinceSeq: `seq` is then the last row read (pass it back as
+ * sinceSeq for the next page) and `hasMore` says whether rows remain.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceSeq
- * @returns {Promise<{ seq: number, tagIds: string[], truncated: boolean } | null>}
+ * @param {{ limit?: number }} [options]
+ * @returns {Promise<{ seq: number, tagIds: string[], truncated: boolean, hasMore?: boolean } | null>}
  */
-export async function getTagNameChangesSince(directories, sinceSeq) {
+export async function getTagNameChangesSince(directories, sinceSeq, { limit } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -2488,8 +2492,27 @@ export async function getTagNameChangesSince(directories, sinceSeq) {
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
     const truncated = minSeq !== undefined && numericSince < minSeq - 1;
+    const paged = Number.isInteger(limit) && limit > 0;
     if (truncated) {
-        return { seq: maxSeq, tagIds: [], truncated: true };
+        return paged ? { seq: maxSeq, tagIds: [], truncated: true, hasMore: false } : { seq: maxSeq, tagIds: [], truncated: true };
+    }
+
+    if (paged) {
+        /** @type {Set<string>} */
+        const tagIds = new Set();
+        let lastSeq = null;
+        let hasMore = false;
+        let read = 0;
+        for (const row of /** @type {Generator<TagNameChangeRow>} */ (entry.db.iterate('SELECT seq, tag_id FROM tag_name_changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [numericSince, limit + 1]))) {
+            if (read === limit) {
+                hasMore = true;
+                break;
+            }
+            read++;
+            lastSeq = Number(row.seq);
+            tagIds.add(row.tag_id);
+        }
+        return { seq: lastSeq ?? maxSeq, tagIds: [...tagIds], truncated: false, hasMore };
     }
 
     const rows = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT DISTINCT tag_id FROM tag_name_changes WHERE seq > ?', [numericSince])));
@@ -4325,13 +4348,16 @@ export async function getCurrentSeq(directories) {
 }
 
 /**
- * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean } | null>}
+ * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean, hasMore?: boolean } | null>}
  * `truncated: true` means `sinceSeq` predates the oldest change-log row still kept (the log is never pruned
  * today, so this can currently only trigger for a `sinceSeq` from a different store).
+ * With `limit`, reads at most that many log rows past sinceSeq and collapses only those: `seq` is then the last
+ * row read (pass it back as sinceSeq for the next page) and `hasMore` says whether rows remain.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceSeq
+ * @param {{ limit?: number }} [options]
  */
-export async function getChangesSince(directories, sinceSeq) {
+export async function getChangesSince(directories, sinceSeq, { limit } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -4341,16 +4367,29 @@ export async function getChangesSince(directories, sinceSeq) {
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
     const truncated = minSeq !== undefined && numericSince < minSeq - 1;
+    const paged = Number.isInteger(limit) && limit > 0;
     if (truncated) {
-        return { seq: maxSeq, changes: [], truncated: true };
+        return paged ? { seq: maxSeq, changes: [], truncated: true, hasMore: false } : { seq: maxSeq, changes: [], truncated: true };
     }
 
-    const rawChanges = (/** @type {ChangeRow[]} */ (entry.db.all('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC', [numericSince])));
+    let lastSeq = null;
+    let hasMore = false;
+    let read = 0;
+    const rawChanges = paged
+        ? /** @type {Generator<ChangeRow>} */ (entry.db.iterate('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [numericSince, limit + 1]))
+        : (/** @type {ChangeRow[]} */ (entry.db.all('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC', [numericSince])));
     // Collapse to one entry per id: a delete anywhere in the window forces a full refetch even if the id
     // is later re-created, since the client's cached copy predates the delete.
     /** @type {Map<string, { op: 'upsert' | 'delete', hasDelete: boolean, hasNullFields: boolean, fieldSet: Set<string> }>} */
     const collapsedById = new Map();
     for (const row of rawChanges) {
+        // The page's LIMIT is limit + 1: reaching the extra row means more remain, and it isn't part of this page.
+        if (paged && read === limit) {
+            hasMore = true;
+            break;
+        }
+        read++;
+        lastSeq = Number(row.seq);
         let agg = collapsedById.get(row.id);
         if (!agg) {
             agg = { op: row.op, hasDelete: false, hasNullFields: false, fieldSet: new Set() };
@@ -4380,6 +4419,9 @@ export async function getChangesSince(directories, sinceSeq) {
         return { id, op, fields };
     });
 
+    if (paged) {
+        return { seq: lastSeq ?? maxSeq, changes, truncated: false, hasMore };
+    }
     return { seq: maxSeq, changes, truncated: false };
 }
 
