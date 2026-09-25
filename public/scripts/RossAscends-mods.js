@@ -915,7 +915,6 @@ export function initRossMods() {
     }, 300);
 
     $(SelectedCharacterTab).on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_selected_ch'); });
-    $('#rm_button_characters').on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_characters'); });
 
     $(document).on('click', '.character_select', function () {
         // Resolve by avatar (the stable id), the only identifier a character row carries.

@@ -14,10 +14,6 @@
         display: none;
     }
 
-    #rm_button_characters {
-        font-size: var(--topBarIconSize);
-    }
-
     #CharListButtonAndHotSwaps {
         align-items: center;
     }
@@ -515,10 +511,6 @@ body.forceMobileView #InstructSequencesColumn {
 body.forceMobileView #rm_button_panel_pin_div,
 body.forceMobileView #lm_button_panel_pin_div {
         display: none;
-    }
-
-body.forceMobileView #rm_button_characters {
-        font-size: var(--topBarIconSize);
     }
 
 body.forceMobileView #CharListButtonAndHotSwaps {
