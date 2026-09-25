@@ -45,8 +45,9 @@ Three things anyone implementing from here should know:
    are no stable reference.
 3. **Two phase-0/1 items shipped in a state that still needs work**: the client half of 0b, which
    now covers backgrounds and personas but not character avatars; and decision 17's per-record
-   `date_added`. Local import sets `date_added` from the source file's mtime, through a setter that
-   overwrites unconditionally. No route accepts a caller-supplied value, and nothing validates it.
+   `date_added`. Local import sets `date_added` from the source file's mtime on a fresh import only;
+   a duplicate match leaves the existing character's `date_added` alone. No route accepts a
+   caller-supplied value, and nothing validates it.
    0c's loop is now bounded (`0b0ed9fd5`).
 
 Claims about browser and library behaviour were checked against current sources or measured directly.
@@ -1838,16 +1839,18 @@ Divergences that matter:
 - Nothing prunes the change log yet, so `truncated` can currently only fire for a nonsense
   `sinceSeq`.
 - **Per-record `date_added` on import exists only in local import, and not in decision 17's form.**
-  Since `d94fdab67`, `local-import-scan.js` calls `setCharacterDateAdded(id, source file mtime)`
-  after each import, and after each match against an already-imported duplicate
-  (`maybeCorrectDateAddedFromDuplicateSource`). `setCharacterDateAdded` overwrites unconditionally,
-  in the batch buffer or the row, so a duplicate match moves an existing character's `date_added`.
+  `local-import-scan.js` calls `setCharacterDateAdded(id, source file mtime)` after each fresh
+  import, so a new row gets the source file's mtime. `setCharacterDateAdded` overwrites
+  unconditionally, in the batch buffer or the row. A source file that matches an already-imported
+  character (by content hash or identity hash) leaves that character's `date_added` alone, so a
+  re-import keeps the original date.
   No route or batch-import API accepts a caller-supplied value, and nothing range-validates the
   value. The vestigial `forceDateAdded` field and the module-header comment calling the question
   open are both gone.
 - The write-once rule is enforced structurally: the UPSERT's `ON CONFLICT SET` list omits the
   column. Bootstrap seeds from `ctimeMs` once behind the meta flag. Every other discovery path uses
-  `Date.now()`. Two exceptions write it later: `setCharacterDateAdded` above, and the rename path,
+  `Date.now()`. Two exceptions write it later: `setCharacterDateAdded` above (only right after a
+  fresh local import), and the rename path,
   which carries the old id's `date_added` over to the new id.
 
 **§3.3's memoization work shipped in part.** The browse path is the new one: `/query` reads
@@ -2630,8 +2633,8 @@ minimum it is not forced by anything, and the wrapper keeps the engine swappable
 Not open questions — implementation gaps, listed here so they are not mistaken for either.
 
 - **Decision 17** (import may supply `date_added`): local import sets `date_added` from the source
-  file's mtime through `setCharacterDateAdded`, which overwrites unconditionally, including on an
-  already-imported duplicate. No route accepts a caller-supplied value, and nothing validates it.
+  file's mtime through `setCharacterDateAdded`, on a fresh import only; a duplicate match leaves the
+  existing `date_added` alone. No route accepts a caller-supplied value, and nothing validates it.
   Phase 1.
 - **Decision 5** (`date_added` stops being `ctimeMs`): honoured in the metadata table and in
   everything that reads it (`/query` rows, field-filtered `/batch`). Still violated wherever

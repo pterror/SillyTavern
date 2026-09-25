@@ -144,9 +144,8 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         // via stageFile() at all anymore, so the uploads dir may not even exist. What must still hold, either
         // way, is the actual invariant this test is named for: no leaked staged copy of the imported file.
         const uploadsDir = path.join(tempDir, '_uploads');
-        if (fs.existsSync(uploadsDir)) {
-            expect(fs.readdirSync(uploadsDir).length).toBe(0);
-        }
+        const stagedFiles = fs.existsSync(uploadsDir) ? fs.readdirSync(uploadsDir) : [];
+        expect(stagedFiles.length).toBe(0);
     });
 
     test('never deletes or moves the original source file', async () => {
@@ -187,6 +186,25 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         fs.writeFileSync(path.join(sourceDir, 'ghost-again.json'), existingJson);
         await localImportScan.scanDirectory(buildState(), directories);
         expect(fs.readdirSync(charactersDir).length).toBe(1);
+    });
+
+    test('a source file matching an existing character by content hash leaves that character\'s date_added unchanged', async () => {
+        const existingJson = JSON.stringify({ name: 'Ghost', description: 'A local-import test character' });
+        fs.writeFileSync(path.join(sourceDir, 'ghost.json'), existingJson);
+        await localImportScan.scanDirectory(buildState(), directories);
+        const [characterId] = fs.readdirSync(charactersDir);
+        const knownDateAdded = 1_000_000_000_000;
+        await metadataDb.setCharacterDateAdded(directories, characterId, knownDateAdded);
+
+        const duplicatePath = path.join(sourceDir, 'ghost-again.json');
+        fs.writeFileSync(duplicatePath, existingJson);
+        const sourceMtime = new Date(1_500_000_000_000);
+        fs.utimesSync(duplicatePath, sourceMtime, sourceMtime);
+        await localImportScan.scanDirectory(buildState(), directories);
+
+        expect(fs.readdirSync(charactersDir)).toEqual([characterId]);
+        const row = await metadataDb.getCharacterMetadataRow(directories, characterId);
+        expect(row.date_added).toBe(knownDateAdded);
     });
 
     test('a changed file (different mtime, different content) is re-processed on the next pass', async () => {
@@ -417,6 +435,25 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             // Not imported as a second character - the content-identity fallback recognized it as a duplicate of
             // the already-poisoned (but now-backfilled) Poisoned.png.
             expect(fs.readdirSync(charactersDir).sort()).toEqual(['Poisoned.png']);
+        });
+
+        test('flag on: a source file matching an existing character by identity hash leaves that character\'s date_added unchanged', async () => {
+            process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
+
+            const data = poisonedCardData();
+            await seedBackfilledPoisonedRow(data);
+            const knownDateAdded = 1_000_000_000_000;
+            await metadataDb.setCharacterDateAdded(directories, 'Poisoned.png', knownDateAdded);
+
+            const discoveredPath = path.join(sourceDir, 'discovered.png');
+            fs.writeFileSync(discoveredPath, cardParser.write(BLANK_PNG, JSON.stringify(data)));
+            const sourceMtime = new Date(1_500_000_000_000);
+            fs.utimesSync(discoveredPath, sourceMtime, sourceMtime);
+            await localImportScan.scanDirectory(buildState(), directories);
+
+            expect(fs.readdirSync(charactersDir)).toEqual(['Poisoned.png']);
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+            expect(row.date_added).toBe(knownDateAdded);
         });
 
         test('flag off: the same setup is NOT recognized as a duplicate - the file gets imported as a new character', async () => {
