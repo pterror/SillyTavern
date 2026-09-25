@@ -14,6 +14,7 @@ import { beginBatchImport, endBatchImport, findCharacterIdByContentHash, findCha
 import { attachLinuxDirectoryWatch, isWindowsOverflowSignal } from './watch-overflow.js';
 import { detectFormat } from './local-import-classify.js';
 import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-worker-pool.js';
+import { importFailure } from './character-import-error.js';
 
 /**
  * Imports characters from directories listed under `localImport.directories` in config.yaml. This module never
@@ -518,7 +519,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
             await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs, importedCharacterId);
         });
     } catch (err) {
-        console.error(`[local-import] Failed to process ${sourcePath}, will retry next pass:`, err);
+        console.error('[local-import] Will retry next pass:', importFailure(sourcePath, err));
         // lastSeenMtimeMs deliberately not updated on failure, so a transient error gets retried, not skipped forever.
     }
 }

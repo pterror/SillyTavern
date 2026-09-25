@@ -303,6 +303,49 @@ describe('POST /api/characters/import - PNG import no longer re-encodes the avat
     });
 });
 
+describe('POST /api/characters/import - a failed import names the file', () => {
+    const BLANK_PNG = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64',
+    );
+
+    /**
+     * @param {Record<string, string>} [fields]
+     * @returns {Promise<Response>}
+     */
+    function importBlankPng(fields = {}) {
+        const formData = new FormData();
+        formData.append('avatar', new Blob([BLANK_PNG], { type: 'image/png' }), 'not-a-card.png');
+        formData.append('file_type', 'png');
+        for (const [key, value] of Object.entries(fields)) formData.append(key, value);
+        return fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+    }
+
+    test('a plain PNG with no card chunk is a 400 whose error names the uploaded file', async () => {
+        const response = await importBlankPng();
+        expect(response.status).toBe(400);
+        const data = await response.json();
+        expect(data.error).toBe('Failed to import "not-a-card.png": PNG metadata does not contain any text chunks.');
+    });
+
+    test('an upload downloaded from a URL names the URL as well as the file', async () => {
+        const response = await importBlankPng({ source_url: 'https://example.com/cards/42' });
+        expect(response.status).toBe(400);
+        const data = await response.json();
+        expect(data.error).toBe('Failed to import "https://example.com/cards/42 (not-a-card.png)": PNG metadata does not contain any text chunks.');
+    });
+
+    test('an unrecognized JSON shape names the uploaded file', async () => {
+        const formData = new FormData();
+        formData.append('avatar', new Blob(['{"entries":{}}'], { type: 'application/json' }), 'lorebook.json');
+        formData.append('file_type', 'json');
+        const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+        expect(response.status).toBe(400);
+        const data = await response.json();
+        expect(data.error).toBe('Failed to import "lorebook.json": not a recognized character card format');
+    });
+});
+
 // unsetPrivateFields() (src/character-card-normalize.js) strips per-user local state - the favorite flag and the
 // active chat filename - so a shared card doesn't leak the sharer's local state into the importer's library, and
 // an exported card doesn't leak the exporter's. It's called from 5 sites in characters.js; these two tests cover

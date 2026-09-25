@@ -2988,8 +2988,10 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
     }
 
     if (!request.ok) {
-        toastr.info(request.statusText, 'Custom content import failed');
-        console.error('Custom content import failed', request.status, request.statusText);
+        const { error } = await request.json().catch(() => ({}));
+        const message = typeof error === 'string' ? error : `Failed to import "${url}": ${request.statusText}`;
+        toastr.info(message, 'Custom content import failed');
+        console.error('Custom content import failed', request.status, message);
         return;
     }
 
@@ -3007,7 +3009,7 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
 
     switch (customContentType) {
         case 'character': {
-            const avatarFileNames = await processDroppedFiles([file], extraData);
+            const avatarFileNames = await processDroppedFiles([file], extraData, { sourceUrls: new Map([[file, url]]) });
             const lastAvatar = avatarFileNames?.[avatarFileNames.length - 1];
             if (lastAvatar && relatedLorebookPathsHeader) {
                 const paths = relatedLorebookPathsHeader.split(',').filter(Boolean).map(decodeURIComponent);

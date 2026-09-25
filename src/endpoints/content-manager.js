@@ -9,6 +9,7 @@ import sanitize from 'sanitize-filename';
 
 import { getConfigValue, color, setPermissionsSync, isValidUrl } from '../util.js';
 import { write, parse, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
+import { importFailure } from '../character-import-error.js';
 import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
@@ -1039,13 +1040,26 @@ export function isHostWhitelisted(host) {
 
 export const router = express.Router();
 
+/**
+ * Logs and responds with an import failure naming the URL or id that was being imported.
+ * @param {import('express').Response} response
+ * @param {number} status
+ * @param {string} name The URL or id from the request.
+ * @param {unknown} reason
+ */
+function sendImportFailure(response, status, name, reason) {
+    const error = importFailure(name, reason);
+    console.error(error);
+    return response.status(status).send({ error: error.message });
+}
+
 router.post('/importURL', async (request, response) => {
     if (!request.body.url) {
         return response.sendStatus(400);
     }
 
+    const url = request.body.url;
     try {
-        const url = request.body.url;
         const host = getHostFromUrl(url);
         let result;
         let type;
@@ -1061,7 +1075,7 @@ router.post('/importURL', async (request, response) => {
         if (isPygmalionContent) {
             const uuid = getUuidFromUrl(url);
             if (!uuid) {
-                return response.sendStatus(404);
+                return sendImportFailure(response, 404, url, 'no character id found in the URL');
             }
 
             type = 'character';
@@ -1069,7 +1083,7 @@ router.post('/importURL', async (request, response) => {
         } else if (isJannnyContent) {
             const uuid = getUuidFromUrl(url);
             if (!uuid) {
-                return response.sendStatus(404);
+                return sendImportFailure(response, 404, url, 'no character id found in the URL');
             }
 
             type = 'character';
@@ -1077,7 +1091,7 @@ router.post('/importURL', async (request, response) => {
         } else if (isAICharacterCardsContent) {
             const AICCParsed = parseAICC(url);
             if (!AICCParsed) {
-                return response.sendStatus(404);
+                return sendImportFailure(response, 404, url, 'no character id found in the URL');
             }
             type = 'character';
             result = await downloadAICCCharacter(AICCParsed);
@@ -1092,12 +1106,12 @@ router.post('/importURL', async (request, response) => {
                 console.info('Downloading chub lorebook:', chubParsed.id);
                 result = await downloadChubLorebook(chubParsed.id);
             } else {
-                return response.sendStatus(404);
+                return sendImportFailure(response, 404, url, 'not a Chub character or lorebook URL');
             }
         } else if (isRisu) {
             const uuid = parseRisuUrl(url);
             if (!uuid) {
-                return response.sendStatus(404);
+                return sendImportFailure(response, 404, url, 'no character id found in the URL');
             }
 
             type = 'character';
@@ -1105,7 +1119,7 @@ router.post('/importURL', async (request, response) => {
         } else if (isPerchance) {
             const perchanceSlug = parsePerchanceSlug(url);
             if (!perchanceSlug) {
-                return response.sendStatus(404);
+                return sendImportFailure(response, 404, url, 'no character id found in the URL');
             }
             type = 'character';
             result = await downloadPerchanceCharacter(perchanceSlug);
@@ -1114,12 +1128,11 @@ router.post('/importURL', async (request, response) => {
             type = 'character';
             result = await downloadGenericPng(url);
         } else {
-            console.error(`Received an import for "${getHostFromUrl(url)}", but site is not whitelisted. This domain must be added to the config key "whitelistImportDomains" to allow import from this source.`);
-            return response.sendStatus(404);
+            return sendImportFailure(response, 404, url, `site "${host}" is not whitelisted. This domain must be added to the config key "whitelistImportDomains" to allow import from this source.`);
         }
 
         if (!result) {
-            return response.sendStatus(404);
+            return sendImportFailure(response, 404, url, 'nothing to download at this URL');
         }
 
         if (result.fileType) response.set('Content-Type', result.fileType);
@@ -1130,8 +1143,7 @@ router.post('/importURL', async (request, response) => {
         }
         return response.send(result.buffer);
     } catch (error) {
-        console.error('Importing custom content failed', error);
-        return response.sendStatus(500);
+        return sendImportFailure(response, 500, url, error);
     }
 });
 
@@ -1178,8 +1190,8 @@ router.post('/importUUID', async (request, response) => {
         return response.sendStatus(400);
     }
 
+    const uuid = request.body.url;
     try {
-        const uuid = request.body.url;
         let result;
 
         const isJannny = uuid.includes('_character');
@@ -1210,7 +1222,7 @@ router.post('/importUUID', async (request, response) => {
                 console.info('Downloading chub lorebook:', uuid);
                 result = await downloadChubLorebook(uuid);
             } else {
-                return response.sendStatus(404);
+                return sendImportFailure(response, 404, uuid, 'not a character or lorebook id');
             }
         }
 
@@ -1226,7 +1238,6 @@ router.post('/importUUID', async (request, response) => {
         }
         return response.send(result.buffer);
     } catch (error) {
-        console.error('Importing custom content failed', error);
-        return response.sendStatus(500);
+        return sendImportFailure(response, 500, uuid, error);
     }
 });
