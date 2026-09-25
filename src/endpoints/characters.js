@@ -33,7 +33,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, characterRowExists, characterRowOrPendingExistsSync } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -1841,9 +1841,6 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit, 
 // Requests that omit `limit` still need a bound - unbounded search/includeGroups on a large library can OOM.
 const DEFAULT_PAGE_LIMIT = 500;
 
-// The no-param branch of `/all` streams the whole library to the client instead of materializing it - these
-// bound how much of it is ever in memory at once (mirrors characters-search-index.js's readCharacterBatches()).
-const STREAM_ALL_BATCH_SIZE = 500;
 const STREAM_ALL_READ_CONCURRENCY = getConfigValue('performance.characterStreamAllReadConcurrency', 64, 'number');
 
 /**
@@ -1933,25 +1930,23 @@ router.post('/all', async function (request, response) {
         const favOnly = fav === true;
 
         if (!search) {
-            // No `search`: respond with the bare-array shape, streamed - a real library's worth of characters
-            // (300k+ rows) can't be held in memory as one array nor buffered whole before response.send().
-            // Everything that can fail without having written a byte yet (reading the directory) still happens
-            // before any write, so it still reaches the catch block below and gets a normal
-            // 500; a failure after that point can't un-send the 200 and partial body already on the wire, so it
-            // just ends the connection and logs server-side.
-            const files = fs.readdirSync(request.user.directories.characters);
-            const pngFiles = files.filter(file => file.endsWith('.png'));
+            // No `search`: respond with the bare-array shape, streamed from the characters rows one streamRows()
+            // batch at a time - a real library can't be held in memory as one array nor buffered whole before
+            // response.send(). The request is still O(cards) in total work by nature; it's kept for upstream
+            // compat. A failure after the first write can't un-send the 200 and partial body already on the wire,
+            // so it just ends the connection and logs server-side.
+            if (await getCurrentSeq(request.user.directories) === null) {
+                return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+            }
 
             response.set('Content-Type', 'application/json');
             response.status(200);
             let wroteAny = false;
             try {
                 await writeBackpressured(response, '[');
-                for (let i = 0; i < pngFiles.length; i += STREAM_ALL_BATCH_SIZE) {
-                    const batchFiles = pngFiles.slice(i, i + STREAM_ALL_BATCH_SIZE);
-                    const staleCards = await getCardJsonByIds(request.user.directories, batchFiles);
-                    const processed = await mapWithConcurrency(batchFiles, STREAM_ALL_READ_CONCURRENCY, file =>
-                        processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
+                for await (const rows of streamCharacterCardJsonBatches(request.user.directories)) {
+                    const processed = await mapWithConcurrency(rows, STREAM_ALL_READ_CONCURRENCY, row =>
+                        processCharacter(row.id, request.user.directories, { shallow: useShallowCharacters, cardJson: row.card_json }));
                     const batch = processed.filter(c => 'name' in c);
                     await stampDbFav(request.user.directories, batch);
                     await stampDbActiveChat(request.user.directories, batch);
