@@ -11,7 +11,8 @@ import { setConfigFilePath } from '../util.js';
  *   { type: 'ready', target, dir }        target's index is openable at dir (dir null: it can't exist, the
  *                                         metadata store is unavailable); `error` instead when it failed.
  *   { type: 'committed', target, changed: true, seq, deletes, upserts, ms }   a tick committed changes.
- *   { type: 'swapped', target, dir }      target's index was rebuilt and swapped in at dir.
+ *   { type: 'swapped', target, dir, seq? } target's index was rebuilt and swapped in at dir; for characters, seq
+ *                                         is the change-log seq it covers.
  *   { type: 'reply', id, ok, error? }     answer to a request; ok false without error: metadata store unavailable.
  *   { type: 'error', message }
  * Requests from the coordinator: { type: 'rebuild', id } (characters), { type: 'close', id }.
@@ -93,7 +94,7 @@ async function tick() {
             if (!result) {
                 // The metadata store is unavailable.
             } else if ('swapped' in result) {
-                if (result.swapped) post({ type: 'swapped', target: 'characters', dir: result.swapped });
+                if (result.swapped) post({ type: 'swapped', target: 'characters', dir: result.swapped, seq: characters.seq() });
             } else if (result.changed) {
                 console.log(`[search] catch-up: ${result.deletes} deletes, ${result.upserts} upserts, ${result.ms} ms`);
                 post({ type: 'committed', target: 'characters', changed: true, seq: result.seq, deletes: result.deletes, upserts: result.upserts, ms: result.ms });
@@ -137,7 +138,7 @@ parentPort.on('message', (msg) => {
             }
             try {
                 const dir = await characters.rebuild();
-                if (dir) post({ type: 'swapped', target: 'characters', dir });
+                if (dir) post({ type: 'swapped', target: 'characters', dir, seq: characters.seq() });
                 post({ type: 'reply', id: msg.id, ok: Boolean(dir) });
             } catch (err) {
                 post({ type: 'reply', id: msg.id, ok: false, error: errorText(err) });

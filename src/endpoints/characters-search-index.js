@@ -417,6 +417,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         rebuild,
         tick,
         isOpen: () => index !== null,
+        /** The change-log seq the index covers. */
+        seq: () => seqCursor,
         /** Releases the writer's on-disk lock. */
         close() {
             if (writer) {
