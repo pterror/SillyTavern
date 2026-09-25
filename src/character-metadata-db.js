@@ -999,6 +999,19 @@ export async function ensureSchemaMigrated(directories) {
     await getEntry(directories);
 }
 
+// Synchronous so mintCharacterId() can stay synchronous; it only sees a store getEntry() has already opened.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {boolean} `false` when no store is open for `directories`.
+ */
+export function characterRowOrPendingExistsSync(directories, avatar) {
+    const entry = entries.get(directories.root);
+    if (!entry?.db) return false;
+    if (entry.batch?.pending.has(avatar) === true) return true;
+    return Boolean(entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: avatar }));
+}
+
 // The only place a shallow object's digest_fav/digest_tag_ids/digest_content are computed - buildRow(),
 // writeRowSync(), patchPendingRowTagIds(), and writeShallowJson() below all call this rather than hashing
 // shallow's fields themselves, so there is exactly one computation to keep in sync with hash-utils.js.
@@ -2116,6 +2129,17 @@ export async function getCharacterMetadataRow(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return undefined;
     return (/** @type {CharacterRow | undefined} */ (entry.db.get('SELECT * FROM characters WHERE id = @id', { id: avatar })));
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {Promise<boolean>} `false` also when the metadata store is unavailable.
+ */
+export async function characterRowExists(directories, avatar) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    return Boolean(entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: avatar }));
 }
 
 // Also checks the pending batch buffer: a bulk import can drop two identical files in the same

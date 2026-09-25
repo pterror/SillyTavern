@@ -16,11 +16,12 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import sanitize from 'sanitize-filename';
 import ipMatching from 'ip-matching';
 
-import { USER_DIRECTORY_TEMPLATE, DEFAULT_USER, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY } from './constants.js';
+import { USER_DIRECTORY_TEMPLATE, DEFAULT_USER, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY, DEFAULT_AVATAR_PATH } from './constants.js';
 import { getConfigValue, color, delay, generateTimestamp, invalidateFirefoxCache, isPathUnderParent, setPermissionsSync } from './util.js';
 import { readAllSettings } from './settings-store.js';
 import { allowKeysExposure, readSecret, writeSecret, SECRETS_FILE } from './endpoints/secrets.js';
 import { getContentOfType } from './endpoints/content-manager.js';
+import { characterRowExists } from './character-metadata-db.js';
 import { serverDirectory } from './server-directory.js';
 import { filterValidIpPatterns, getIpFromRequest } from './express-common.js';
 import { extensionsEnabledFeatureGuard } from './endpoints/extensions.js';
@@ -1060,9 +1061,10 @@ export async function loginPageMiddleware(request, response) {
 /**
  * Creates a route handler for serving files from a specific directory.
  * @param {(req: import('express').Request) => string} directoryFn A function that returns the directory path to serve files from
+ * @param {(req: import('express').Request, filePath: string) => Promise<string|null>} [missingFileFallbackFn] Absolute path to send in place of a missing file, or null for a 404
  * @returns {import('express').RequestHandler}
  */
-function createRouteHandler(directoryFn) {
+function createRouteHandler(directoryFn, missingFileFallbackFn) {
     return async (req, res) => {
         try {
             const directory = directoryFn(req);
@@ -1073,7 +1075,12 @@ function createRouteHandler(directoryFn) {
             }
             const exists = fs.existsSync(fullPath);
             if (!exists) {
-                return res.sendStatus(404);
+                const fallbackPath = missingFileFallbackFn ? await missingFileFallbackFn(req, filePath) : null;
+                if (!fallbackPath) {
+                    return res.sendStatus(404);
+                }
+                invalidateFirefoxCache(fallbackPath, req, res);
+                return res.sendFile(fallbackPath);
             }
 
             invalidateFirefoxCache(filePath, req, res);
@@ -1082,6 +1089,21 @@ function createRouteHandler(directoryFn) {
             return res.sendStatus(500);
         }
     };
+}
+
+/**
+ * A character whose PNG is missing is served as the default avatar. Only a top-level `<avatar>.png` with a row
+ * qualifies; sprites and charx asset folders under the same directory keep their 404.
+ * @param {import('express').Request} req
+ * @param {string} filePath Relative to the characters directory
+ * @returns {Promise<string|null>}
+ */
+async function missingCharacterAvatarFallback(req, filePath) {
+    const avatar = path.normalize(filePath);
+    if (path.dirname(avatar) !== '.' || !avatar.endsWith('.png')) {
+        return null;
+    }
+    return await characterRowExists(req.user.directories, avatar) ? path.resolve(DEFAULT_AVATAR_PATH) : null;
 }
 
 /**
@@ -1210,7 +1232,7 @@ export async function getAllEnabledUsers() {
  */
 export const router = express.Router();
 router.use('/backgrounds/*', createRouteHandler(req => req.user.directories.backgrounds));
-router.use('/characters/*', createRouteHandler(req => req.user.directories.characters));
+router.use('/characters/*', createRouteHandler(req => req.user.directories.characters, missingCharacterAvatarFallback));
 router.use('/User%20Avatars/*', createRouteHandler(req => req.user.directories.avatars));
 router.use('/assets/*', createRouteHandler(req => req.user.directories.assets));
 router.use('/user/images/*', createRouteHandler(req => req.user.directories.userImages));

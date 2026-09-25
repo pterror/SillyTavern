@@ -8,6 +8,8 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { imageSize as sizeOf } from 'image-size';
 
 import { getConfigValue, invalidateFirefoxCache } from '../util.js';
+import { DEFAULT_AVATAR_PATH } from '../constants.js';
+import { characterRowExists } from '../character-metadata-db.js';
 import { getThumbnailResolution, isAnimatedWebP, isAnimatedApng, thumbnailDimensions as dimensions } from './image-metadata.js';
 import { ResizeStrategy } from '@jimp/plugin-resize';
 
@@ -276,6 +278,11 @@ publicRouter.get('/', async function (request, response) {
 
         const file = sanitize(rawFile);
         if (file !== rawFile) return response.sendStatus(403);
+
+        // Before the cache lookup: a cached thumbnail of a missing PNG would show an image the character no longer has.
+        if (type === 'avatar' && !fs.existsSync(path.join(request.user.directories.characters, file)) && await characterRowExists(request.user.directories, file)) {
+            return response.sendFile(path.resolve(DEFAULT_AVATAR_PATH));
+        }
 
         const serveOriginal = () => {
             const folder = getOriginalFolder(request.user.directories, type);

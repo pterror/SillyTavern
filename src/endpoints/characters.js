@@ -33,7 +33,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getStaleCardJsonMap, getCardJsonByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getStaleCardJsonMap, getCardJsonByIds, characterRowExists, characterRowOrPendingExistsSync } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -264,7 +264,13 @@ async function correctV1FieldDriftOnRead(directories, avatar, raw) {
  */
 export async function materializeCardPng(directories, avatar, filePath = undefined) {
     const imagePath = filePath ?? path.join(directories.characters, avatar);
-    const rawBuffer = await fsPromises.readFile(imagePath);
+    let rawBuffer;
+    try {
+        rawBuffer = await fsPromises.readFile(imagePath);
+    } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        rawBuffer = await fsPromises.readFile(DEFAULT_AVATAR_PATH);
+    }
     const cardJson = await getCharacterCardJson(directories, avatar);
     if (cardJson === null) return null;
     return { buffer: write(rawBuffer, cardJson), cardJson };
@@ -409,7 +415,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             const incomingCard = JSON.parse(data);
             const incomingGreetings = incomingCard?.data?.alternate_greetings;
             const greetingsVerifiedFresh = freshFieldPaths instanceof Set && freshFieldPaths.has('data.alternate_greetings');
-            if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0 && fs.existsSync(outputImagePath)) {
+            if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0) {
                 const existingRaw = await readCardContent(request.user.directories, `${outputFile}.png`);
                 const existingCard = JSON.parse(existingRaw);
                 const existingGreetings = existingCard?.data?.alternate_greetings;
@@ -426,8 +432,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         // The DB is authoritative, so a metadata edit never rewrites the PNG.
         const isMetadataOnlyWrite = !Buffer.isBuffer(inputFile)
             && crop === undefined
-            && path.resolve(inputFile) === path.resolve(outputImagePath)
-            && fs.existsSync(outputImagePath);
+            && path.resolve(inputFile) === path.resolve(outputImagePath);
 
         if (isMetadataOnlyWrite) {
             await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, contentHash, null)
@@ -575,12 +580,13 @@ async function tryReadImage(imgPath, crop) {
 export const processCharacter = async (item, directories, { shallow, cardJson = undefined }) => {
     try {
         const imgFile = path.join(directories.characters, item);
-        // Reused for both the cache key and date_added; left undefined on ENOENT.
+        // Reused for both the cache key and date_added.
         let charStat;
         try {
             charStat = fs.statSync(imgFile);
         } catch (err) {
             if (err.code !== 'ENOENT') throw err;
+            charStat = fs.statSync(DEFAULT_AVATAR_PATH);
         }
         // `cardJson`: `undefined` means resolve it here; `null` means the caller already resolved it (file is current); a value is a prefetched hit.
         const imgData = cardJson === undefined
@@ -1129,9 +1135,8 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
         if (!fs.existsSync(uploadPath)) {
             return response.status(400).send('Error: uploaded file does not exist');
         }
-        const characterPath = path.join(request.user.directories.characters, request.body.avatar_url);
-        if (!fs.existsSync(characterPath)) {
-            return response.status(400).send('Error: character file does not exist');
+        if (!await characterRowExists(request.user.directories, request.body.avatar_url)) {
+            return response.status(400).send('Error: character does not exist');
         }
         const data = await readCardContent(request.user.directories, request.body.avatar_url);
         if (!data) {
@@ -1740,16 +1745,21 @@ async function deleteOneCharacter(request, avatarUrl, deleteChats) {
     }
 
     const avatarPath = path.join(request.user.directories.characters, avatarUrl);
-    if (!fs.existsSync(avatarPath)) {
+    const fileExists = fs.existsSync(avatarPath);
+    if (!fileExists && !await characterRowExists(request.user.directories, avatarUrl)) {
         return { ok: false, status: 400 };
     }
 
     const dir_name = avatarUrl.replace('.png', '');
 
-    fs.unlinkSync(avatarPath);
+    if (fileExists) fs.unlinkSync(avatarPath);
     invalidateThumbnail(request.user.directories, 'avatar', avatarUrl);
-    await deleteCharacterRow(request.user.directories, avatarUrl).catch(err =>
-        console.error('[character-metadata] Failed to update metadata store after a character delete (the reconciler will catch it):', err));
+    try {
+        await deleteCharacterRow(request.user.directories, avatarUrl);
+    } catch (err) {
+        console.error('[character-metadata] Failed to delete the character row:', err);
+        return { ok: false, status: 500 };
+    }
 
     if (deleteChats && dir_name) {
         try {
@@ -2793,9 +2803,8 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
     try {
         if (!request.body) return response.sendStatus(400);
         const item = request.body.avatar_url;
-        const filePath = path.join(request.user.directories.characters, item);
 
-        if (!fs.existsSync(filePath)) {
+        if (!await characterRowExists(request.user.directories, item)) {
             return response.sendStatus(404);
         }
 
@@ -2895,12 +2904,13 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
 /**
  * Mints the immutable id a new character is created/imported under: a UUIDv7, unrelated to the display name. Naming the PNG after this id (rather than a sanitized display name) is what makes `/rename` a pure card-data edit. Throws rather than silently overwriting if collisions persist.
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @returns {string} A UUIDv7 string with no existing `<id>.png` in `directories.characters`
+ * @returns {string} A UUIDv7 string with no existing `<id>.png` in `directories.characters` and no row for `<id>.png`
  */
 export function mintCharacterId(directories) {
     for (let i = 0; i < 5; i++) {
         const id = uuidv7();
-        if (!fs.existsSync(path.join(directories.characters, `${id}.png`))) {
+        const avatar = `${id}.png`;
+        if (!fs.existsSync(path.join(directories.characters, avatar)) && !characterRowOrPendingExistsSync(directories, avatar)) {
             return id;
         }
     }
@@ -3041,8 +3051,8 @@ router.post('/import', async function (request, response) {
  */
 async function duplicateOneCharacter(request, avatarUrl) {
     let filename = path.join(request.user.directories.characters, sanitize(avatarUrl));
-    if (!fs.existsSync(filename)) {
-        console.error('file for dupe not found', filename);
+    if (!await characterRowExists(request.user.directories, path.basename(filename))) {
+        console.error('character for dupe not found', filename);
         return { ok: false, status: 404, error: 'not found' };
     }
 
@@ -3071,7 +3081,7 @@ async function duplicateOneCharacter(request, avatarUrl) {
     // even if `suffix` were somehow to stop advancing.
     const MAX_DUPLICATE_ATTEMPTS = 10000;
     let attempts = 0;
-    while (fs.existsSync(newFilename)) {
+    while (fs.existsSync(newFilename) || await characterRowExists(request.user.directories, path.basename(newFilename))) {
         suffix++;
         attempts++;
         if (attempts > MAX_DUPLICATE_ATTEMPTS) {
@@ -3081,13 +3091,13 @@ async function duplicateOneCharacter(request, avatarUrl) {
         newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
     }
 
-    await copyCharacterFile(filename, newFilename);
-    console.info(`${filename} was copied to ${newFilename}`);
+    const sourceImage = fs.existsSync(filename) ? filename : DEFAULT_AVATAR_PATH;
+    await copyCharacterFile(sourceImage, newFilename);
+    console.info(`${sourceImage} was copied to ${newFilename}`);
 
     // /duplicate is a raw file copy, not a re-encode, so it doesn't go through writeCharacterData() and
-    // needs its own metadata-store upsert here. Sourced via readCardContent() (DB-parked value if present,
-    // else the PNG's own chunk - same precedence every other reader uses) and written only to the new row,
-    // never back into the copied file's bytes: canonical PNGs are never written to after creation.
+    // needs its own metadata-store upsert here. The card is written only to the new row, never into the
+    // copied file's bytes: canonical PNGs are never written to after creation.
     const newAvatar = path.parse(newFilename).base;
     const rawData = await readCardContent(request.user.directories, path.basename(filename));
     if (rawData !== undefined) {
@@ -3144,7 +3154,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
 
         let filename = path.join(request.user.directories.characters, sanitize(request.body.avatar_url));
 
-        if (!fs.existsSync(filename)) {
+        if (!await characterRowExists(request.user.directories, path.basename(filename))) {
             return response.sendStatus(404);
         }
 

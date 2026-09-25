@@ -13,6 +13,8 @@ const BLANK_PNG = Buffer.from(
 
 /** @type {import('../src/character-card-parser.js').write} */
 let writeCard;
+/** @type {import('../src/character-metadata-db.js').upsertCharacterFromWrite} */
+let upsertCharacterFromWrite;
 /** @type {import('express').Router} */
 let router;
 /** @type {import('node:http').Server} */
@@ -39,6 +41,7 @@ beforeAll(async () => {
 
     ({ router } = await import('../src/endpoints/characters.js'));
     ({ write: writeCard } = await import('../src/character-card-parser.js'));
+    ({ upsertCharacterFromWrite } = await import('../src/character-metadata-db.js'));
 
     const express = (await import('express')).default;
     const app = express();
@@ -65,14 +68,12 @@ beforeEach(() => {
 });
 
 /**
- * Writes a real card PNG (BLANK_PNG plus a `chara` tEXt chunk) to `directories.characters/<name>` -
- * /duplicate's handler calls readCharacterData() on the copy it makes, which throws on a PNG with no
- * card chunk, so a plain placeholder buffer isn't enough for a realistic end-to-end request/response
- * assertion.
+ * Writes a card PNG to `directories.characters/<name>` and its row; the row is what makes the character exist.
  */
-function writeTestCharacter(name, data = { name: 'Ghost', spec: 'chara_card_v2' }) {
+async function writeTestCharacter(name, data = { name: 'Ghost', spec: 'chara_card_v2' }) {
     const buffer = writeCard(BLANK_PNG, JSON.stringify(data));
     fs.writeFileSync(path.join(directories.characters, name), buffer);
+    await upsertCharacterFromWrite(directories, name, JSON.stringify(data));
 }
 
 async function duplicate(avatarUrl) {
@@ -85,7 +86,7 @@ async function duplicate(avatarUrl) {
 
 describe('/api/characters/duplicate', () => {
     test('increments a plain numeric suffix', async () => {
-        writeTestCharacter('Ghost_1.png');
+        await writeTestCharacter('Ghost_1.png');
 
         const response = await duplicate('Ghost_1.png');
         expect(response.status).toBe(200);
@@ -99,7 +100,7 @@ describe('/api/characters/duplicate', () => {
         // of this file would collide with a `_1e+22`-style filename produced by the first and spin
         // forever incrementing a suffix stuck in float precision.
         const hugeDigitName = `Ghost_${'9'.repeat(24)}.png`;
-        writeTestCharacter(hugeDigitName);
+        await writeTestCharacter(hugeDigitName);
 
         const first = await duplicate(hugeDigitName);
         expect(first.status).toBe(200);

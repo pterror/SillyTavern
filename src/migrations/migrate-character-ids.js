@@ -3,7 +3,7 @@ import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
 import { color, uuidv7, isUuidLike } from '../util.js';
-import { parse as parseCharacterCard, computeAvatarIdentityHashFromImageBuffer } from '../character-card-parser.js';
+import { parse as parseCharacterCard, computeAvatarIdentityHashFromImageBuffer, computeDefaultAvatarIdentityHash } from '../character-card-parser.js';
 import { getCharaCardV2 } from '../character-card-normalize.js';
 import { readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
 import {
@@ -74,12 +74,17 @@ async function migrateOne(directories, oldId, newId, log) {
 
     const oldExists = fs.existsSync(oldPath);
     const newExists = fs.existsSync(newPath);
+    // The row stays under oldId until renameCharacterRow() below, even if the file was already renamed.
+    // card_json is NOT NULL, so null means there is no row.
+    const cardJson = await getCharacterCardJson(directories, oldId);
 
     if (oldExists && !newExists) {
         await fsPromises.rename(oldPath, newPath);
     } else if (!oldExists && !newExists) {
-        log(color.red(`[migrate-character-ids] Neither ${oldId} nor ${newId} exists on disk - cannot migrate this row, leaving it pending for manual review.`));
-        return false;
+        if (cardJson === null) {
+            log(color.red(`[migrate-character-ids] Neither ${oldId} nor ${newId} exists on disk and ${oldId} has no metadata row - cannot migrate it, leaving it pending for manual review.`));
+            return false;
+        }
     } else if (oldExists && newExists) {
         log(color.yellow(`[migrate-character-ids] Both ${oldId} and ${newId} already exist on disk - leaving both in place and this row pending rather than guessing which is canonical.`));
         return false;
@@ -87,12 +92,12 @@ async function migrateOne(directories, oldId, newId, log) {
     // else: !oldExists && newExists - already renamed by a prior interrupted run; fall through.
 
     try {
-        // parked copy (if any) is still keyed by the OLD id here - rename happened but renameCharacterRow()
-        // below hasn't moved the row yet.
-        const parked = await getCharacterCardJson(directories, oldId);
-        const rawJson = parked ?? await parseCharacterCard(newPath, 'png');
+        const hasFile = oldExists || newExists;
+        const rawJson = cardJson ?? await parseCharacterCard(newPath, 'png');
         const normalized = JSON.stringify(getCharaCardV2(JSON.parse(rawJson), directories, false));
-        const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(await fsPromises.readFile(newPath));
+        const avatarIdentityHash = hasFile
+            ? computeAvatarIdentityHashFromImageBuffer(await fsPromises.readFile(newPath))
+            : computeDefaultAvatarIdentityHash();
         await upsertCharacterFromWrite(directories, newId, normalized, null, avatarIdentityHash);
         await renameCharacterRow(directories, oldId, newId);
     } catch (err) {

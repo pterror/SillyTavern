@@ -157,7 +157,7 @@ describe('migrateCharacterIds - discovery and idempotency', () => {
         expect(pending).toEqual([]);
     });
 
-    test('neither old nor new file existing is reported as a failure, not silently skipped or crashed past', async () => {
+    test('neither old nor new file nor a metadata row existing is reported as a failure, not silently skipped or crashed past', async () => {
         const oldAvatar = 'Ghost.png';
         const newAvatar = `${util.uuidv7()}.png`;
         await metadataDb.recordIdMigrationMapping(directories, oldAvatar, newAvatar);
@@ -170,6 +170,53 @@ describe('migrateCharacterIds - discovery and idempotency', () => {
         expect(result.failed).toBe(1);
         const pending = await metadataDb.getPendingIdMigrations(directories);
         expect(pending.length).toBe(1); // left pending for manual review, not silently dropped
+    });
+
+    test('a character with a metadata row but no file on disk migrates its row and chats without creating a file, with the default avatar\'s identity hash', async () => {
+        const oldAvatar = 'Pngless.png';
+        const newAvatar = `${util.uuidv7()}.png`;
+        const cardJson = JSON.stringify({
+            name: 'Pngless', spec: 'chara_card_v2', spec_version: '2.0',
+            data: {
+                name: 'Pngless',
+                description: 'kept', personality: '', scenario: '', first_mes: '', mes_example: '',
+                tags: [], creator: '', character_version: '', creator_notes: '',
+                extensions: { fav: false, world: '' },
+            },
+        });
+        await metadataDb.upsertCharacterFromWrite(directories, oldAvatar, cardJson);
+        await metadataDb.recordIdMigrationMapping(directories, oldAvatar, newAvatar);
+        const oldChatsDir = path.join(chatsDir, 'Pngless');
+        fs.mkdirSync(oldChatsDir, { recursive: true });
+        fs.writeFileSync(path.join(oldChatsDir, 'chat1.jsonl'), '{}\n');
+
+        const repoRoot = path.resolve(process.cwd(), '..');
+        const expectedHash = cardParser.computeAvatarIdentityHashFromImageBuffer(fs.readFileSync(path.join(repoRoot, 'public', 'img', 'ai4.png')));
+
+        // computeDefaultAvatarIdentityHash() reads DEFAULT_AVATAR_PATH relative to process.cwd(), which is repo-root-relative.
+        const originalCwd = process.cwd();
+        process.chdir(repoRoot);
+        let result;
+        try {
+            result = await migration.migrateCharacterIds(directories, noRebuild);
+        } finally {
+            process.chdir(originalCwd);
+        }
+
+        expect(result.migrated).toBe(1);
+        expect(result.failed).toBe(0);
+        expect(fs.readdirSync(charactersDir)).toEqual([]);
+
+        expect(await metadataDb.getCharacterMetadataRow(directories, oldAvatar)).toBeUndefined();
+        const row = await metadataDb.getCharacterMetadataRow(directories, newAvatar);
+        expect(row).toBeDefined();
+        expect(row.name).toBe('Pngless');
+        expect(JSON.parse(row.card_json).data.description).toBe('kept');
+        expect(row.avatar_identity_hash).toBe(expectedHash);
+
+        expect(fs.existsSync(oldChatsDir)).toBe(false);
+        expect(fs.existsSync(path.join(chatsDir, path.parse(newAvatar).name, 'chat1.jsonl'))).toBe(true);
+        expect(await metadataDb.getPendingIdMigrations(directories)).toEqual([]);
     });
 });
 
