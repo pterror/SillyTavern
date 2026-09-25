@@ -13,7 +13,7 @@ import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readC
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, calculateGroupChatStats, resolveGroupOwner, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
-import { getSqliteEngine } from './endpoints/sqlite-engine.js';
+import { getSqliteEngine, streamRows } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from '../public/scripts/hash-utils.js';
@@ -2519,26 +2519,28 @@ export async function getTagNameChangesSince(directories, sinceSeq, { limit } = 
     return { seq: maxSeq, tagIds: rows.map(row => row.tag_id), truncated: false };
 }
 
-/**
+/** Ids of the characters carrying any of `tagIds`, in batches, each id once. `tagIds` goes into one IN (...), so
+ * the caller bounds it (search-index passes one tag-name-change page).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} tagIds
- * @returns {Promise<string[] | null>}
+ * @returns {AsyncGenerator<string[], void, undefined>}
  */
-export async function getCharacterIdsForTagIds(directories, tagIds) {
+export async function* streamCharacterIdsForTagIds(directories, tagIds) {
     const entry = await getEntry(directories);
-    if (!entry) return null;
+    if (!entry) return;
     const ids = [...new Set(tagIds)];
-    if (!ids.length) return [];
-    const out = new Set();
-    const CHUNK = 500;
-    for (let i = 0; i < ids.length; i += CHUNK) {
-        const slice = ids.slice(i, i + CHUNK);
-        const placeholders = slice.map(() => '?').join(',');
-        for (const row of (/** @type {{ character_id: string }[]} */ (entry.db.all(`SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders})`, slice)))) {
-            out.add(row.character_id);
-        }
+    if (!ids.length) return;
+    /** @type {Record<string, string>} */
+    const params = {};
+    ids.forEach((id, i) => { params[`t${i}`] = id; });
+    const placeholders = ids.map((_id, i) => `@t${i}`).join(',');
+    for await (const rows of streamRows(entry.db, {
+        readSql: `SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders}) AND (@after IS NULL OR character_id > @after) ORDER BY character_id LIMIT @limit`,
+        params,
+        keyColumn: 'character_id',
+    })) {
+        yield rows.map(row => row.character_id);
     }
-    return [...out];
 }
 
 // INSERT OR IGNORE: a resumed migration run reuses the id minted first rather than minting a fresh one.
@@ -4345,6 +4347,32 @@ export async function getCurrentSeq(directories) {
     if (!entry) return null;
     const row = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     return Number(row?.seq ?? 0);
+}
+
+/** getCurrentSeq()'s counterpart for the tag-name change log.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>}
+ */
+export async function getCurrentTagNameChangeSeq(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM tag_name_changes')));
+    return Number(row?.seq ?? 0);
+}
+
+/** Every character's id and card_json, in id order, in batches - for a caller that must visit the whole library
+ * without holding it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {AsyncGenerator<{ id: string, card_json: string }[], void, undefined>}
+ */
+export async function* streamCharacterCardJsonBatches(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    yield* /** @type {AsyncGenerator<{ id: string, card_json: string }[], void, undefined>} */ (streamRows(entry.db, {
+        readSql: 'SELECT id, card_json FROM characters WHERE (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit',
+        params: {},
+        keyColumn: 'id',
+    }));
 }
 
 /**
