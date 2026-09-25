@@ -36,7 +36,7 @@ afterEach(() => {
 async function seed(avatar, name) {
     await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify({
         name, data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } },
-    }), 1000);
+    }));
 }
 
 describe('listCharacterIds', () => {

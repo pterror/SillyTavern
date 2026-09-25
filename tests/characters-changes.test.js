@@ -73,9 +73,8 @@ async function postJson(urlPath, body) {
  * doc comment in character-metadata-db.js).
  * @param {string} avatar
  * @param {object} overrides
- * @param {number} [fileMtime]
  */
-async function seedCharacter(avatar, overrides = {}, fileMtime = 1000) {
+async function seedCharacter(avatar, overrides = {}) {
     const card = {
         name: avatar.replace(/\.png$/, ''),
         fav: false,
@@ -89,7 +88,7 @@ async function seedCharacter(avatar, overrides = {}, fileMtime = 1000) {
         },
         ...overrides,
     };
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), fileMtime);
+    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
 }
 
 describe('POST /api/characters/changes', () => {
@@ -160,7 +159,7 @@ describe('POST /api/characters/changes', () => {
         await seedCharacter('Alice.png');
         const afterCreate = await (await postJson('/api/characters/changes', { sinceSeq: 0 })).json();
 
-        await seedCharacter('Alice.png', { data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }, 2000);
+        await seedCharacter('Alice.png', { data: { name: 'Alice', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
         await metadataDb.deleteCharacterRow(directories, 'Alice.png');
 
         const response = await postJson('/api/characters/changes', { sinceSeq: afterCreate.seq });

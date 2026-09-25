@@ -203,12 +203,11 @@ export async function readCharacterData(inputFile, inputFormat = 'png', precompu
  * already-imported character) - use readCharacterData() directly for arbitrary PNGs not yet in the library.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar Avatar filename, e.g. `Alice.png`
- * @param {string} [filePath] The card's path, passed through to correctV1FieldDriftOnRead()'s own stat.
  * @returns {Promise<string|undefined>} The card JSON, or `undefined` if this avatar has no row.
  */
-export async function readCardContent(directories, avatar, filePath = undefined) {
+export async function readCardContent(directories, avatar) {
     const raw = await getCharacterCardJson(directories, avatar) ?? undefined;
-    return await correctV1FieldDriftOnRead(directories, avatar, filePath, raw);
+    return await correctV1FieldDriftOnRead(directories, avatar, raw);
 }
 
 /**
@@ -220,11 +219,10 @@ export async function readCardContent(directories, avatar, filePath = undefined)
  * otherwise see a stale v1 mirror.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
- * @param {string} [filePath]
  * @param {string|undefined} raw readCardContent()'s own read result
  * @returns {Promise<string|undefined>} `raw`, or the corrected JSON string if a fix was applied
  */
-async function correctV1FieldDriftOnRead(directories, avatar, filePath, raw) {
+async function correctV1FieldDriftOnRead(directories, avatar, raw) {
     if (raw === undefined) return raw;
 
     let card;
@@ -249,8 +247,7 @@ async function correctV1FieldDriftOnRead(directories, avatar, filePath, raw) {
     const corrected = JSON.stringify(card);
 
     try {
-        const stat = await fsPromises.stat(filePath ?? path.join(directories.characters, avatar));
-        await upsertCharacterFromWrite(directories, avatar, corrected, stat.mtimeMs);
+        await upsertCharacterFromWrite(directories, avatar, corrected);
     } catch (err) {
         console.debug(`[v1-field-drift-repair] Could not persist the fix for "${avatar}" (will just retry on its next read):`, err.message);
     }
@@ -284,8 +281,7 @@ export async function materializeCardPng(directories, avatar, filePath = undefin
  */
 export async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null, avatarIdentityHash = null) {
     try {
-        const stat = await fsPromises.stat(path.join(directories.characters, avatar));
-        await upsertCharacterFromWrite(directories, avatar, data, stat.mtimeMs, contentHash, avatarIdentityHash);
+        await upsertCharacterFromWrite(directories, avatar, data, contentHash, avatarIdentityHash);
     } catch (err) {
         // The reconciler only picks up files with no row yet, so a stale existing row is invisible to it.
         console.error(`[character-metadata] Failed to update the metadata store for "${avatar}" after its character write succeeded. The row is now STALE and nothing will repair it automatically - re-save the character, or run POST /api/characters/metadata/rescan.`, err);
@@ -414,7 +410,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             const incomingGreetings = incomingCard?.data?.alternate_greetings;
             const greetingsVerifiedFresh = freshFieldPaths instanceof Set && freshFieldPaths.has('data.alternate_greetings');
             if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0 && fs.existsSync(outputImagePath)) {
-                const existingRaw = await readCardContent(request.user.directories, `${outputFile}.png`, outputImagePath);
+                const existingRaw = await readCardContent(request.user.directories, `${outputFile}.png`);
                 const existingCard = JSON.parse(existingRaw);
                 const existingGreetings = existingCard?.data?.alternate_greetings;
                 if (Array.isArray(existingGreetings) && existingGreetings.length > 0) {
@@ -434,8 +430,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             && fs.existsSync(outputImagePath);
 
         if (isMetadataOnlyWrite) {
-            const stat = await fsPromises.stat(outputImagePath);
-            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, stat.mtimeMs, contentHash, null)
+            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, contentHash, null)
                 .catch(err => console.error('[character-metadata] Failed to persist a metadata-only character write:', err));
             if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
             return true;
@@ -589,7 +584,7 @@ export const processCharacter = async (item, directories, { shallow, cardJson = 
         }
         // `cardJson`: `undefined` means resolve it here; `null` means the caller already resolved it (file is current); a value is a prefetched hit.
         const imgData = cardJson === undefined
-            ? await readCardContent(directories, item, imgFile, charStat)
+            ? await readCardContent(directories, item)
             : (cardJson ?? await readCharacterData(imgFile, 'png', charStat));
         if (imgData === undefined) throw new Error('Failed to read character file');
 
@@ -1019,7 +1014,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
     const avatarPath = path.join(request.user.directories.characters, avatarName);
 
     try {
-        const rawData = await readCardContent(request.user.directories, avatarName, avatarPath);
+        const rawData = await readCardContent(request.user.directories, avatarName);
         if (rawData === undefined) throw new Error('Failed to read character file');
 
         const data = getCharaCardV2(JSON.parse(rawData), request.user.directories);
@@ -1056,8 +1051,7 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
     if (contentHashesHeader) {
         try {
             const clientHashes = JSON.parse(contentHashesHeader);
-            const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
-            const currentCardJson = await readCardContent(request.user.directories, request.body.avatar_url, avatarPath);
+            const currentCardJson = await readCardContent(request.user.directories, request.body.avatar_url);
             if (currentCardJson) {
                 const currentCard = getCharaCardV2(JSON.parse(currentCardJson), request.user.directories, false);
                 const conflicts = [];
@@ -1139,7 +1133,7 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
         if (!fs.existsSync(characterPath)) {
             return response.status(400).send('Error: character file does not exist');
         }
-        const data = await readCardContent(request.user.directories, request.body.avatar_url, characterPath);
+        const data = await readCardContent(request.user.directories, request.body.avatar_url);
         if (!data) {
             return response.status(400).send('Error: failed to read character data');
         }
@@ -1192,7 +1186,7 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
 
     try {
         const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
-        const charJSON = await readCardContent(request.user.directories, request.body.avatar_url, avatarPath);
+        const charJSON = await readCardContent(request.user.directories, request.body.avatar_url);
         if (typeof charJSON !== 'string') throw new Error('Failed to read character file');
 
         const char = JSON.parse(charJSON);
@@ -1244,7 +1238,7 @@ function processUnsetSentinels(target, source) {
  * @returns {Promise<{ok: boolean, error?: string, skipped?: boolean, hashes?: Object<string, number>}>}
  */
 async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, shouldSkip = null, avatarUpload = null) {
-    const pngStringData = await readCardContent(request.user.directories, avatar, avatarPath);
+    const pngStringData = await readCardContent(request.user.directories, avatar);
     if (!pngStringData) {
         return { ok: false, error: 'Invalid character file' };
     }
@@ -1476,7 +1470,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
  */
 async function applyGreetingOperation(request, avatar, op) {
     const avatarPath = path.join(request.user.directories.characters, avatar);
-    const pngStringData = await readCardContent(request.user.directories, avatar, avatarPath);
+    const pngStringData = await readCardContent(request.user.directories, avatar);
     if (!pngStringData) {
         return { ok: false, reason: 'character not found', status: 404 };
     }
@@ -3095,7 +3089,7 @@ async function duplicateOneCharacter(request, avatarUrl) {
     // else the PNG's own chunk - same precedence every other reader uses) and written only to the new row,
     // never back into the copied file's bytes: canonical PNGs are never written to after creation.
     const newAvatar = path.parse(newFilename).base;
-    const rawData = await readCardContent(request.user.directories, path.basename(filename), filename);
+    const rawData = await readCardContent(request.user.directories, path.basename(filename));
     if (rawData !== undefined) {
         await fireMetadataUpsertHook(request.user.directories, newAvatar, rawData);
     }
@@ -3170,7 +3164,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             }
             case 'json': {
                 try {
-                    const json = await readCardContent(request.user.directories, path.basename(filename), filename);
+                    const json = await readCardContent(request.user.directories, path.basename(filename));
                     if (json === undefined) return response.sendStatus(400);
                     const jsonObject = getCharaCardV2(JSON.parse(json), request.user.directories);
                     unsetPrivateFields(jsonObject);

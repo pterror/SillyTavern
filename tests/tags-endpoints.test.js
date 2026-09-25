@@ -81,7 +81,7 @@ async function seedCharacter(avatar) {
         name: avatar.replace(/\.png$/, ''),
         data: { name: avatar.replace(/\.png$/, ''), tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } },
     });
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson, Date.now());
+    await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson);
 }
 
 /** Seeds a bare-minimum `groups` row directly, without needing a real group JSON file on disk. */

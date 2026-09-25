@@ -92,9 +92,8 @@ async function migrateOne(directories, oldId, newId, log) {
         const parked = await getCharacterCardJson(directories, oldId);
         const rawJson = parked ?? await parseCharacterCard(newPath, 'png');
         const normalized = JSON.stringify(getCharaCardV2(JSON.parse(rawJson), directories, false));
-        const stat = await fsPromises.stat(newPath);
         const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(await fsPromises.readFile(newPath));
-        await upsertCharacterFromWrite(directories, newId, normalized, stat.mtimeMs, null, avatarIdentityHash);
+        await upsertCharacterFromWrite(directories, newId, normalized, null, avatarIdentityHash);
         await renameCharacterRow(directories, oldId, newId);
     } catch (err) {
         log(color.red(`[migrate-character-ids] Failed to update the metadata store for ${oldId} -> ${newId}: ${err.message}`));

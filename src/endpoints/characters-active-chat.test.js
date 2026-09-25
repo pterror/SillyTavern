@@ -64,7 +64,7 @@ async function postJson(app, urlPath, body) {
 /** Seeds a tracked metadata-store row for `avatar` without needing a real PNG card on disk. */
 async function seedCharacter(avatar, name) {
     const card = { name, spec: 'chara_card_v2', data: { name } };
-    await upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), Date.now());
+    await upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
 }
 
 test('POST /api/characters/chat sets a real active-chat pointer', async () => {

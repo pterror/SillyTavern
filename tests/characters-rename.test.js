@@ -69,9 +69,8 @@ async function postJson(urlPath, body) {
  * characters-query.test.js's seedCharacterWithFile().
  * @param {string} avatar
  * @param {object} overrides
- * @param {number} [fileMtime]
  */
-async function seedCharacterWithFile(avatar, overrides = {}, fileMtime = 1000) {
+async function seedCharacterWithFile(avatar, overrides = {}) {
     const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
     const name = avatar.replace(/\.png$/, '');
     const card = {
@@ -89,7 +88,7 @@ async function seedCharacterWithFile(avatar, overrides = {}, fileMtime = 1000) {
     };
     const buffer = cardParser.write(baseImage, JSON.stringify(card));
     await fs.promises.writeFile(path.join(directories.characters, avatar), buffer);
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), fileMtime);
+    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
 }
 
 describe('POST /api/characters/rename (design doc §9 phase 4d: collapses to a card-data edit)', () => {

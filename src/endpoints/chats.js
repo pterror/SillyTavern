@@ -885,10 +885,9 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
  */
 async function _cardGreetingsFromDisk(directories, avatar) {
     try {
-        const avatarPath = path.join(directories.characters, avatar);
         // readCardContent(), not readCharacterData(): a greeting edit is persisted to the metadata db
         // without rewriting the PNG, so reading the file directly could show stale greetings.
-        const pngStringData = await readCardContent(directories, avatar, avatarPath);
+        const pngStringData = await readCardContent(directories, avatar);
         if (pngStringData == null || pngStringData === '') return [];
         const character = JSON.parse(pngStringData);
         const { greetings } = cardToGreetingsModel(character);
