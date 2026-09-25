@@ -429,10 +429,6 @@ export const systemUserName = 'SillyTavern System';
 export const neutralCharacterName = 'Assistant';
 export let name2 = systemUserName;
 
-/** @type {((mesId: number, message?: object) => boolean) | null} */
-let _hasForkBranches = null;
-import('./scripts/bookmarks.js').then(m => { _hasForkBranches = m.hasForkBranches; });
-
 /**
  * @type {import('./scripts/constants.js').SWIPE_STATE}
  */
@@ -8902,11 +8898,6 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
             div.classList.remove('swipes_visible', 'last_swipe');
             $(div).find('.mes_swipe_picker').toggle(canOpenSwipePickerForMessage(messageId));
         }
-
-        // Branch navigation: mark messages that have fork siblings
-        if (typeof _hasForkBranches === 'function') {
-            div.classList.toggle('has_branches', _hasForkBranches(messageId, message));
-        }
     });
 }
 /**
@@ -11536,21 +11527,6 @@ jQuery(async function () {
     //limit swiping to only last message clicks
     $(document).on('click', '.mes .swipe_right', async (e, data) => await swipe(e, SWIPE_DIRECTION.RIGHT, data));
     $(document).on('click', '.mes .swipe_left', async (e, data) => await swipe(e, SWIPE_DIRECTION.LEFT, data));
-
-    $(document).on('click', '.branch_left', async function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        const mesId = Number($(this).closest('.mes').attr('mesid'));
-        const { branchSwipe } = await import('./scripts/bookmarks.js');
-        await branchSwipe(mesId, -1);
-    });
-    $(document).on('click', '.branch_right', async function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        const mesId = Number($(this).closest('.mes').attr('mesid'));
-        const { branchSwipe } = await import('./scripts/bookmarks.js');
-        await branchSwipe(mesId, 1);
-    });
 
     initCharacterSearch();
 

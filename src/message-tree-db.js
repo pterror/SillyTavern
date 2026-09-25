@@ -1491,17 +1491,6 @@ export async function selectDefaultChild(directories, childId) {
 }
 
 /**
- * @param {Directories} directories
- * @param {string} nodeId
- * @returns {Promise<ForkRing[] | null>}
- */
-export async function getForkRing(directories, nodeId) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    return getForkSiblingsSync(entry.db, nodeId);
-}
-
-/**
  * @typedef {object} AlternativeEntry
  * @property {string} node_id
  * @property {string} mes

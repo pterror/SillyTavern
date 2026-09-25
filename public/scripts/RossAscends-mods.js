@@ -15,7 +15,6 @@ import {
     isSwipingAllowed,
 } from '../script.js';
 import { getEntitiesList, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
-import { chat } from './chat-state.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { main_api, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
@@ -1178,10 +1177,6 @@ export function initRossMods() {
             return document.body.classList.contains('nGY2_body_scrollbar');
         }
 
-        // Shift+Arrow switches between sibling branches when the last message is a fork point;
-        // plain arrows fall through to the regular text swipe below.
-        const isOnlyShiftModified = event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
-
         if (event.key == 'ArrowLeft') {        //swipes left
             if (
                 isSwipingAllowed() &&
@@ -1191,11 +1186,6 @@ export function initRossMods() {
                 !isInputElementInFocus() &&
                 !(document.activeElement instanceof HTMLVideoElement)
             ) {
-                if (isOnlyShiftModified && chat[chat.length - 1]?.extra?.branches) {
-                    const { branchSwipe } = await import('./bookmarks.js');
-                    await branchSwipe(chat.length - 1, -1);
-                    return;
-                }
                 if (!isModifiedKeyboardEvent(event)) {
                     $('.swipe_left:last').trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated: event.repeat });
                     return;
@@ -1211,11 +1201,6 @@ export function initRossMods() {
                 !isInputElementInFocus() &&
                 !(document.activeElement instanceof HTMLVideoElement)
             ) {
-                if (isOnlyShiftModified && chat[chat.length - 1]?.extra?.branches) {
-                    const { branchSwipe } = await import('./bookmarks.js');
-                    await branchSwipe(chat.length - 1, 1);
-                    return;
-                }
                 if (!isModifiedKeyboardEvent(event)) {
                     $('.swipe_right:last').trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated: event.repeat });
                     return;
