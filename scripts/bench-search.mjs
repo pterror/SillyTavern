@@ -132,7 +132,6 @@ function maxSeq(db, table) {
 const state = {
     opts: null,
     server: null,
-    sseAbort: null,
     dbHandles: new Set(),
     cleanedUp: false,
     errored: false,
@@ -160,9 +159,6 @@ function clearScratch(scratch) {
 async function cleanup() {
     if (state.cleanedUp) return;
     state.cleanedUp = true;
-    if (state.sseAbort) {
-        try { state.sseAbort.abort(); } catch { /* already closed */ }
-    }
     await stopServer();
     for (const db of state.dbHandles) {
         try { db.close(); } catch { /* already closed */ }
@@ -375,32 +371,6 @@ async function openSession(base) {
     return { base, token, cookie };
 }
 
-function openSse(session) {
-    const sse = { times: [] };
-    const controller = new AbortController();
-    state.sseAbort = controller;
-    sse.done = (async () => {
-        const res = await fetch(`${session.base}/api/characters/changes/stream`, {
-            headers: { Cookie: session.cookie },
-            signal: controller.signal,
-        });
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for await (const chunk of res.body) {
-            buffer += decoder.decode(chunk, { stream: true });
-            let nl;
-            while ((nl = buffer.indexOf('\n')) !== -1) {
-                const line = buffer.slice(0, nl);
-                buffer = buffer.slice(nl + 1);
-                if (line.startsWith('data:')) sse.times.push(performance.now());
-            }
-        }
-    })().catch(err => {
-        if (err.name !== 'AbortError') console.log(`SSE stream ended: ${err.message}`);
-    });
-    return sse;
-}
-
 // ---------------------------------------------------------------- request
 
 function parseServerTiming(header) {
@@ -477,20 +447,22 @@ async function query(session, word, shape) {
 
 // ---------------------------------------------------------------- phases
 
-async function waitCaughtUp({ dbPath, sse, deadline, targets }) {
+/**
+ * Resolves (with performance.now()) once the index watermarks cover `targets`, or the current log maxima when
+ * no targets are given.
+ */
+async function waitCaughtUp({ dbPath, deadline, targets }) {
     const Database = await loadDatabase();
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     state.dbHandles.add(db);
     try {
-        let caughtUpAt = null;
         for (;;) {
             if (Date.now() > deadline) throw new Error('timed out waiting for the catch-up');
             const changesMax = targets?.changesMax ?? maxSeq(db, 'changes');
             const tagMax = targets?.tagMax ?? maxSeq(db, 'tag_name_changes');
             const idxSeq = Number(metaValue(db, 'tantivy_char_index_seq') ?? -1);
             const tagSeq = Number(metaValue(db, 'tantivy_char_index_tag_name_change_seq') ?? -1);
-            if (caughtUpAt === null && idxSeq >= changesMax && tagSeq >= tagMax) caughtUpAt = performance.now();
-            if (caughtUpAt !== null && sse.times.some(t => t > caughtUpAt)) return performance.now();
+            if (idxSeq >= changesMax && tagSeq >= tagMax) return performance.now();
             await sleep(1000);
         }
     } finally {
@@ -499,9 +471,10 @@ async function waitCaughtUp({ dbPath, sse, deadline, targets }) {
     }
 }
 
-async function runConcurrency({ session, sse, dbPath, indexDir, primary, deadline, records }) {
+async function runConcurrency({ session, dbPath, indexDir, primary, deadline, run }) {
     const Database = await loadDatabase();
     const tantivy = await loadTantivy();
+    const records = run.records;
 
     const probe = await query(session, WORDS[0], primary);
     if (probe.error) throw new Error(`concurrency probe query failed: ${probe.error}`);
@@ -511,7 +484,8 @@ async function runConcurrency({ session, sse, dbPath, indexDir, primary, deadlin
     state.dbHandles.add(db);
     let T0;
     let targets;
-    let upsertCount = 0;
+    const result = { deleteIds: deleteIds.length, upserts: 0, deleteVisibleMs: null, catchUpDoneMs: null };
+    run.concurrency = result;
     try {
         db.pragma('busy_timeout = 10000');
         const placeholders = deleteIds.map(() => '?').join(', ');
@@ -519,7 +493,7 @@ async function runConcurrency({ session, sse, dbPath, indexDir, primary, deadlin
         for (const row of db.prepare(`SELECT id FROM characters WHERE id NOT IN (${placeholders}) LIMIT 5000`).iterate(...deleteIds)) {
             upsertIds.push(row.id);
         }
-        upsertCount = upsertIds.length;
+        result.upserts = upsertIds.length;
         const insertUpsert = db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'upsert\', NULL)');
         const delChar = db.prepare('DELETE FROM characters WHERE id = ?');
         const delTags = db.prepare('DELETE FROM character_tags WHERE character_id = ?');
@@ -540,10 +514,9 @@ async function runConcurrency({ session, sse, dbPath, indexDir, primary, deadlin
         db.close();
         state.dbHandles.delete(db);
     }
-    console.log(`concurrency burst: ${upsertCount} upserts + ${deleteIds.length} deletes committed`);
+    console.log(`concurrency burst: ${result.upserts} upserts + ${deleteIds.length} deletes committed`);
 
-    let deleteVisibleMs = deleteIds.length === 0 ? 0 : null;
-    let catchUpDoneMs = null;
+    if (deleteIds.length === 0) result.deleteVisibleMs = 0;
     let stop = false;
 
     const queryLoop = (async () => {
@@ -568,7 +541,7 @@ async function runConcurrency({ session, sse, dbPath, indexDir, primary, deadlin
                 if (res.count === 0) pending.delete(id);
             }
             if (pending.size === 0) {
-                deleteVisibleMs = performance.now() - T0;
+                result.deleteVisibleMs = performance.now() - T0;
                 break;
             }
             await sleep(100);
@@ -576,8 +549,8 @@ async function runConcurrency({ session, sse, dbPath, indexDir, primary, deadlin
     })();
 
     const catchUpLoop = (async () => {
-        const doneAt = await waitCaughtUp({ dbPath, sse, deadline, targets });
-        catchUpDoneMs = doneAt - T0;
+        const doneAt = await waitCaughtUp({ dbPath, deadline, targets });
+        result.catchUpDoneMs = doneAt - T0;
     })();
 
     try {
@@ -593,8 +566,6 @@ async function runConcurrency({ session, sse, dbPath, indexDir, primary, deadlin
         r.phase = 'after_concurrency';
         records.push(r);
     }
-
-    return { deleteIds: deleteIds.length, upserts: upsertCount, deleteVisibleMs, catchUpDoneMs, T0 };
 }
 
 // ---------------------------------------------------------------- report
@@ -628,7 +599,55 @@ function reportGroups(records) {
     }
 }
 
+/**
+ * Prints the report and writes `--out` from whatever `run` holds, so an errored run still reports its records.
+ * @returns {boolean} whether the run passed and no request errored
+ */
+function report(run, opts) {
+    const records = run.records;
+    reportGroups(records);
+
+    console.log('');
+    console.log(`initial catch-up (phase C): ${fmt(run.initialCatchUpMs)} ms`);
+    if (run.concurrency) {
+        const during = records.filter(r => r.phase === 'concurrency').map(r => r.e2e);
+        console.log(`concurrency: ${during.length} queries during catch-up, median ${fmt(median(during))}, p95 ${fmt(percentile(during, 95))}, max ${fmt(during.length ? Math.max(...during) : null)} ms`);
+        console.log(`concurrency: ${run.concurrency.deleteIds} deletes visible after ${fmt(run.concurrency.deleteVisibleMs)} ms, catch-up done after ${fmt(run.concurrency.catchUpDoneMs)} ms`);
+    }
+
+    const errors = records.filter(r => r.error);
+    for (const r of errors) console.log(`error: ${r.phase}/${r.shape}/${r.word}: ${r.error}`);
+
+    const slow = new Map();
+    const failedRequests = new Set();
+    for (const r of records) {
+        if (r.phase !== 'steady' || r.shape !== 'primary') continue;
+        if (r.error) failedRequests.add(`${r.word}: error ${r.status}`);
+        else if (r.e2e >= 100) slow.set(r.word, Math.max(slow.get(r.word) ?? 0, r.e2e));
+    }
+    const failures = [...[...slow].map(([w, m]) => `${w} (max ${fmt(m)} ms)`), ...failedRequests];
+    const pass = failures.length === 0;
+    console.log(pass ? 'PASS' : `FAIL ${failures.join(', ')}`);
+
+    if (opts.out) {
+        fs.writeFileSync(opts.out, JSON.stringify({
+            snapshot: run.snapshot,
+            sort: run.sort,
+            pageSize: run.pageSize,
+            initialCatchUpMs: run.initialCatchUpMs,
+            concurrency: run.concurrency,
+            records: records.map(r => ({ ...r, ids: undefined })),
+        }, null, 2));
+        console.log(`raw records: ${opts.out}`);
+    }
+
+    return pass && errors.length === 0;
+}
+
 // ---------------------------------------------------------------- main
+
+/** Set once the full run starts; the error path reports from it. */
+let fullRun = null;
 
 async function main() {
     const opts = parseArgs(process.argv.slice(2));
@@ -647,82 +666,52 @@ async function main() {
         return 0;
     }
 
+    const run = {
+        snapshot: null,
+        sort: null,
+        pageSize: opts.pageSize,
+        initialCatchUpMs: null,
+        concurrency: null,
+        /** @type {object[]} */
+        records: [],
+    };
+    fullRun = run;
+
     const dbPath = await snapshotDb(opts);
     await reflinkIndex(opts, 'characters-tantivy', { verify: true });
     await reflinkIndex(opts, 'groups-tantivy', { verify: false });
     console.log('snapshot:');
-    const snapshot = await printSnapshotNumbers(dbPath);
-    const settingsSort = readSort(opts);
+    run.snapshot = await printSnapshotNumbers(dbPath);
+    run.sort = readSort(opts);
 
     const shapes = {
-        primary: { name: 'primary', sort: settingsSort, pageSize: opts.pageSize },
+        primary: { name: 'primary', sort: run.sort, pageSize: opts.pageSize },
         search_sort: { name: 'search_sort', sort: { field: 'search' }, pageSize: opts.pageSize },
         sidebar: { name: 'sidebar', sort: { field: 'search' }, pageSize: 500 },
     };
 
     const { base } = await startServer(opts);
     const session = await openSession(base);
-    const sse = openSse(session);
     const deadlineFrom = () => Date.now() + opts.timeoutMin * 60_000;
 
-    /** @type {object[]} */
-    const records = [];
-    const push = (r, phase) => { r.phase = phase; records.push(r); return r; };
+    const push = (r, phase) => { r.phase = phase; run.records.push(r); return r; };
 
     const phaseAStart = performance.now();
     push(await query(session, WORDS[0], shapes.primary), 'cold_start');
     for (const word of WORDS) push(await query(session, word, shapes.primary), 'during_initial_catchup');
-    const caughtUpAt = await waitCaughtUp({ dbPath, sse, deadline: deadlineFrom() });
-    const initialCatchUpMs = caughtUpAt - phaseAStart;
-    console.log(`initial catch-up done after ${fmt(initialCatchUpMs)} ms`);
+    const caughtUpAt = await waitCaughtUp({ dbPath, deadline: deadlineFrom() });
+    run.initialCatchUpMs = caughtUpAt - phaseAStart;
+    console.log(`initial catch-up done after ${fmt(run.initialCatchUpMs)} ms`);
     for (const shape of Object.values(shapes)) {
         for (const word of WORDS) {
             for (let i = 0; i < opts.runs; i++) push(await query(session, word, shape), 'steady');
         }
     }
-    let concurrency = null;
     if (!opts.skipConcurrency) {
-        concurrency = await runConcurrency({ session, sse, dbPath, indexDir, primary: shapes.primary, deadline: deadlineFrom(), records });
+        await runConcurrency({ session, dbPath, indexDir, primary: shapes.primary, deadline: deadlineFrom(), run });
     }
 
-    reportGroups(records);
-
-    console.log('');
-    console.log(`initial catch-up (phase C): ${fmt(initialCatchUpMs)} ms`);
-    if (concurrency) {
-        const during = records.filter(r => r.phase === 'concurrency').map(r => r.e2e);
-        console.log(`concurrency: ${during.length} queries during catch-up, median ${fmt(median(during))}, p95 ${fmt(percentile(during, 95))}, max ${fmt(during.length ? Math.max(...during) : null)} ms`);
-        console.log(`concurrency: ${concurrency.deleteIds} deletes visible after ${fmt(concurrency.deleteVisibleMs)} ms, catch-up done after ${fmt(concurrency.catchUpDoneMs)} ms`);
-    }
-
-    const errors = records.filter(r => r.error);
-    for (const r of errors) console.log(`error: ${r.phase}/${r.shape}/${r.word}: ${r.error}`);
-
-    const slow = new Map();
-    const failedRequests = new Set();
-    for (const r of records) {
-        if (r.phase !== 'steady' || r.shape !== 'primary') continue;
-        if (r.error) failedRequests.add(`${r.word}: error ${r.status}`);
-        else if (r.e2e >= 100) slow.set(r.word, Math.max(slow.get(r.word) ?? 0, r.e2e));
-    }
-    const failures = [...[...slow].map(([w, m]) => `${w} (max ${fmt(m)} ms)`), ...failedRequests];
-    const pass = failures.length === 0;
-    console.log(pass ? 'PASS' : `FAIL ${failures.join(', ')}`);
-
-    if (opts.out) {
-        const raw = records.map(r => ({ ...r, ids: undefined }));
-        fs.writeFileSync(opts.out, JSON.stringify({
-            snapshot,
-            sort: settingsSort,
-            pageSize: opts.pageSize,
-            initialCatchUpMs,
-            concurrency,
-            records: raw,
-        }, null, 2));
-        console.log(`raw records: ${opts.out}`);
-    }
-
-    return pass && errors.length === 0 ? 0 : 1;
+    return report(run, opts) ? 0 : 1;
 }
 
 let exitCode = 1;
@@ -731,6 +720,13 @@ try {
 } catch (err) {
     state.errored = true;
     console.error(err);
+    if (fullRun) {
+        try {
+            report(fullRun, state.opts);
+        } catch (reportErr) {
+            console.error(reportErr);
+        }
+    }
     exitCode = 1;
 } finally {
     await cleanup();
