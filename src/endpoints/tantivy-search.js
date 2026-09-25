@@ -1,4 +1,5 @@
 import { tokenizeSearchQuery, parseLabeledToken, unquoteSearchTerm } from './search-query.js';
+import { timePhase } from '../search-timing.js';
 
 /**
  * Builds real tantivy Query objects (reusing search-query.js's tokenizer/label parser) instead of an FTS5 match-string.
@@ -216,22 +217,24 @@ export function buildTagFilterQuery(tantivy, schema, tags, fieldName) {
  * @param {'asc'|'desc'} [options.order] Sort direction when `orderByField` is set; defaults to descending.
  * @param {number} [options.offset]
  * @param {boolean} [options.count]
+ * @param {string} [options.timingLabel] Records `<label>_tantivy_search` and `<label>_hit_docs` search-timing phases.
  * @returns {{ results: { raw: string, score: number }[], total: number }} `raw` is DATA_FIELD's stored value,
  * un-parsed - caller decides what it means (full JSON vs. id-only).
  */
-export function runSearch(index, query, maxRows, { orderByField, order, offset: searchOffset = 0, count = true } = {}) {
-    const searcher = index.searcher();
+export function runSearch(index, query, maxRows, { orderByField, order, offset: searchOffset = 0, count = true, timingLabel } = {}) {
+    const timed = (phase, fn) => timingLabel ? timePhase(`${timingLabel}_${phase}`, fn) : fn();
+    const searcher = timed('tantivy_search', () => index.searcher());
     const limit = Number.isFinite(maxRows) && maxRows >= 0 ? Math.min(Math.trunc(maxRows), searcher.numDocs) : searcher.numDocs;
     if (limit <= 0) {
         return { results: [], total: 0 };
     }
     // Order enum: 0 = Asc, 1 = Desc (from @oxdev03/node-tantivy-binding's Order const enum)
     const tantivyOrder = orderByField ? (order === 'asc' ? 0 : 1) : undefined;
-    const result = searcher.search(query, limit, count, orderByField ?? undefined, searchOffset, tantivyOrder);
-    const results = result.hits.map(hit => {
+    const result = timed('tantivy_search', () => searcher.search(query, limit, count, orderByField ?? undefined, searchOffset, tantivyOrder));
+    const results = timed('hit_docs', () => result.hits.map(hit => {
         const doc = searcher.doc(hit.docAddress);
         const raw = doc.getFirst(DATA_FIELD);
         return { raw, score: orderByField ? 0 : -(hit.score ?? 0) };
-    });
+    }));
     return { results, total: result.count ?? results.length };
 }

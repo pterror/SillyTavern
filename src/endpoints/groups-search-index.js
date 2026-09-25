@@ -6,6 +6,7 @@ import { getGroupsData } from './groups.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
+import { timePhase } from '../search-timing.js';
 
 /** Fast full-content group search, mirroring characters-search-index.js. Rebuild coordination is shared with
  * it via search-index-coordinator.js. */
@@ -122,18 +123,18 @@ async function buildTantivyIndex(directories, tantivy) {
  * `total` is the true match count, independent of `maxRows`.
  */
 export async function searchGroups(handle, directories, searchTerm, maxRows, favOnly) {
-    const signature = await getFreshnessSignature(directories);
-    const engine = await resolveSearchEngine();
+    const signature = await timePhase('groups_freshness', () => getFreshnessSignature(directories));
+    const engine = await timePhase('groups_index_get', () => resolveSearchEngine());
 
     if (engine.tier !== 'unavailable') {
-        const tantivyIndex = await indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy));
-        const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
+        const tantivyIndex = await timePhase('groups_index_get', () => indexCoordinator.getIndex(handle, signature, () => buildTantivyIndex(directories, engine.tantivy)));
+        const query = timePhase('groups_query_build', () => buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly }));
         if (!query) {
             return { results: [], total: 0, backend: 'tantivy' };
         }
         const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
-        const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
-        const items = results.map(r => ({ item: JSON.parse(r.raw), score: r.score }));
+        const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'groups' });
+        const items = timePhase('groups_ids', () => results.map(r => ({ item: JSON.parse(r.raw), score: r.score })));
         return { results: items, total, backend: 'tantivy' };
     }
 
@@ -145,10 +146,10 @@ export async function searchGroups(handle, directories, searchTerm, maxRows, fav
  * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'unavailable' }>} */
 export async function searchGroupIds(handle, directories, searchTerm, maxRows, favOnly) {
     const { results, total, backend } = await searchGroups(handle, directories, searchTerm, maxRows, favOnly);
-    return {
+    return timePhase('groups_ids', () => ({
         ids: results.map(r => r.item.id),
         scoresById: new Map(results.map(r => [r.item.id, r.score])),
         total,
         backend,
-    };
+    }));
 }

@@ -38,6 +38,7 @@ import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigest
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
 import { copyCharacterFile } from '../local-import-copy.js';
+import { withSearchTiming, timePhase, markSinceStart } from '../search-timing.js';
 
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
@@ -2160,10 +2161,10 @@ function serializeQueryHashesBinary({ seq, total, approxTotal, hashRows, searchB
  */
 function sendHashQueryResponse(response, params) {
     response.set('Content-Type', 'application/octet-stream');
-    return response.send(serializeQueryHashesBinary(params));
+    return response.send(timePhase('serialize', () => serializeQueryHashesBinary(params)));
 }
 
-router.post('/query', async function (request, response) {
+async function handleQuery(request, response) {
     try {
         const body = request.body ?? {};
         const filter = body.filter ?? {};
@@ -2236,6 +2237,7 @@ router.post('/query', async function (request, response) {
         // when sort.field === 'search' (no SQL column exists for text relevance).
         let combinedScoresById = null;
 
+        markSinceStart('prologue');
         if (hasSearch) {
             const handle = request.user.profile.handle;
 
@@ -2252,7 +2254,7 @@ router.post('/query', async function (request, response) {
                 if (sortedResult !== null) {
                     searchBackend = sortedResult.backend;
                     if (sortedResult.ids.length === 0) {
-                        const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.seq ?? 0;
+                        const seq = (await timePhase('query_characters', () => queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? 0;
                         if (wantHashes) {
                             return sendHashQueryResponse(response, { seq, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
                         }
@@ -2262,10 +2264,10 @@ router.post('/query', async function (request, response) {
                         return response.send(payload);
                     }
                     // Hydrate just the page-sized id set - no sorting, no counting in SQL.
-                    const result = await queryCharacters(request.user.directories, {
+                    const result = await timePhase('query_characters', () => queryCharacters(request.user.directories, {
                         ids: sortedResult.ids,
                         wantRows, wantHashes, wantTotal: false,
-                    });
+                    }));
                     if (result === null) {
                         return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
                     }
@@ -2301,13 +2303,13 @@ router.post('/query', async function (request, response) {
             // filter.ids and filter.search both restrict the candidate set - when both are present they
             // intersect, not override each other, for both types when includeGroups is active.
             const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
-            const effectiveIds = explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids;
+            const effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
 
             let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy' };
             let effectiveGroupIds = [];
             if (includeGroups) {
                 groupSearchResult = await searchGroupIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly);
-                effectiveGroupIds = explicitIds ? groupSearchResult.ids.filter(id => explicitIds.has(id)) : groupSearchResult.ids;
+                effectiveGroupIds = timePhase('merge_ids', () => explicitIds ? groupSearchResult.ids.filter(id => explicitIds.has(id)) : groupSearchResult.ids);
             }
 
             // Character and group search resolve their engine tier independently but always agree in practice
@@ -2321,7 +2323,7 @@ router.post('/query', async function (request, response) {
             approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap));
 
             if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
-                const seq = (await queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false }))?.seq ?? 0;
+                const seq = (await timePhase('query_characters', () => queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? 0;
                 if (wantHashes) {
                     return sendHashQueryResponse(response, { seq, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
                 }
@@ -2334,8 +2336,8 @@ router.post('/query', async function (request, response) {
             if (includeGroups) {
                 // Groups have their own full-text index - resolve both id sets, then answer from
                 // queryEntities()'s UNION ALL restricted to their union.
-                combinedScoresById = new Map([...searchResult.scoresById, ...groupSearchResult.scoresById]);
-                const combinedIds = [...effectiveIds, ...effectiveGroupIds];
+                combinedScoresById = timePhase('merge_ids', () => new Map([...searchResult.scoresById, ...groupSearchResult.scoresById]));
+                const combinedIds = timePhase('merge_ids', () => [...effectiveIds, ...effectiveGroupIds]);
                 const entityParams = {
                     tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
                     ids: combinedIds, wantRows, wantTotal, wantHashes,
@@ -2352,7 +2354,7 @@ router.post('/query', async function (request, response) {
                     entityParams.offset = offset;
                     entityParams.limit = pageSize;
                 }
-                const result = await queryEntities(request.user.directories, entityParams);
+                const result = await timePhase('query_entities', () => queryEntities(request.user.directories, entityParams));
                 if (result === null) {
                     return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
                 }
@@ -2361,8 +2363,8 @@ router.post('/query', async function (request, response) {
                 let hashRows = result.hashRows;
                 if (sort.field === 'search' && (wantRows || wantHashes)) {
                     // No SQL column for relevance - queryEntities() returned every matched row in id order; reorder by score here.
-                    if (wantRows) rows = rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
-                    if (wantHashes) hashRows = hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize);
+                    if (wantRows) rows = timePhase('js_sort', () => rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
+                    if (wantHashes) hashRows = timePhase('js_sort', () => hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
                 }
 
                 if (wantHashes) {
@@ -2376,7 +2378,7 @@ router.post('/query', async function (request, response) {
                 }
                 const payload = { seq: result.seq };
                 if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
-                if (wantRows) payload.rows = await hydrateEntityRows(request.user.directories, rows);
+                if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, rows));
                 if (searchBackend !== undefined) payload.searchBackend = searchBackend;
                 return response.send(payload);
             }
@@ -2386,7 +2388,7 @@ router.post('/query', async function (request, response) {
 
         // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly.
         if (!hasSearch && includeGroups) {
-            const result = await queryEntities(request.user.directories, queryParams);
+            const result = await timePhase('query_entities', () => queryEntities(request.user.directories, queryParams));
             if (result === null) {
                 return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
             }
@@ -2402,11 +2404,11 @@ router.post('/query', async function (request, response) {
             }
             const payload = { seq: result.seq };
             if (wantTotal) payload.total = result.total;
-            if (wantRows) payload.rows = await hydrateEntityRows(request.user.directories, result.rows);
+            if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows));
             return response.send(payload);
         }
 
-        const result = await queryCharacters(request.user.directories, queryParams);
+        const result = await timePhase('query_characters', () => queryCharacters(request.user.directories, queryParams));
 
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
@@ -2431,7 +2433,9 @@ router.post('/query', async function (request, response) {
         console.error('[characters/query] Query failed:', err);
         return response.status(500).send({ error: true });
     }
-});
+}
+
+router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
 
 /**
  * Explicit repair path for a user's character search index. Forces an immediate full rebuild regardless of the current freshness signature.

@@ -13,6 +13,7 @@ import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuer
 import { resolveSearchEngine } from './search-engine.js';
 import { createIndexCoordinator } from './search-index-coordinator.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
+import { timePhase } from '../search-timing.js';
 
 // Mirrors fuzzySearchCharacters() (public/scripts/power-user.js) so ranking is consistent client/server.
 const BM25_INDEXED_COLUMNS = ['name', 'resolved_tags', 'description', 'mes_example', 'scenario', 'personality', 'first_mes', 'creator_notes', 'creator', 'tags', 'alternate_greetings'];
@@ -419,37 +420,39 @@ function loadOrUpdateTantivyIndexAndNotify(directories, tantivy, previous) {
 // separate DB-side re-check. `world` has no equivalent: no field for it exists in the tantivy schema
 // (buildSchema()'s fast/filter field lists), so it isn't applied here - see this change's commit message.
 async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly, tags) {
-    const signature = await getFreshnessSignature(directories);
-    const engine = await resolveSearchEngine();
+    const signature = await timePhase('chars_freshness', () => getFreshnessSignature(directories));
+    const engine = await timePhase('chars_index_get', () => resolveSearchEngine());
 
     if (engine.tier === 'unavailable') {
         return { hits: [], total: 0, backend: 'unavailable' };
     }
 
-    const tantivyIndex = await indexCoordinator.getIndex(
+    const tantivyIndex = await timePhase('chars_index_get', () => indexCoordinator.getIndex(
         handle, signature,
         (previous) => loadOrUpdateTantivyIndexAndNotify(directories, engine.tantivy, previous),
         () => openPersistedTantivyIndexStale(directories, engine.tantivy),
-    );
+    ));
     if (!tantivyIndex) {
         return { hits: [], total: 0, backend: 'unavailable' };
     }
-    let query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
+    let query = timePhase('chars_query_build', () => buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly }));
     if (!query) {
         return { hits: [], total: 0, backend: 'tantivy' };
     }
     if (tags && (tags.include?.length > 0 || tags.exclude?.length > 0)) {
-        const tagQuery = buildTagFilterQuery(engine.tantivy, tantivyIndex.schema, tags, TAG_IDS_FIELD);
-        if (tagQuery) {
-            query = engine.tantivy.Query.booleanQuery([
-                { occur: engine.tantivy.Occur.Must, query },
-                { occur: engine.tantivy.Occur.Must, query: tagQuery },
-            ]);
-        }
+        timePhase('chars_query_build', () => {
+            const tagQuery = buildTagFilterQuery(engine.tantivy, tantivyIndex.schema, tags, TAG_IDS_FIELD);
+            if (tagQuery) {
+                query = engine.tantivy.Query.booleanQuery([
+                    { occur: engine.tantivy.Occur.Must, query },
+                    { occur: engine.tantivy.Occur.Must, query: tagQuery },
+                ]);
+            }
+        });
     }
     const boundedMaxRows = Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
-    const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows);
-    return { hits: results.map(r => ({ id: r.raw, score: r.score })), total, backend: 'tantivy' };
+    const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'chars' });
+    return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, score: r.score }))), total, backend: 'tantivy' };
 }
 
 // A matched id that can no longer be resolved (deleted, or corrupt) is silently dropped.
@@ -474,7 +477,7 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
 // Id-only counterpart to searchCharacters() - no per-hit disk read, for a caller that resolves rows itself.
 export async function searchCharacterIds(handle, directories, searchTerm, maxRows, favOnly, tags) {
     const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly, tags);
-    return { ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend };
+    return timePhase('chars_ids', () => ({ ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend }));
 }
 
 // Returns null when sortField has no fast-field equivalent; caller uses the SQL sort path for those.
@@ -484,18 +487,18 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
     const tantivySortField = SORT_FIELD_TO_TANTIVY_FIELD[sortField];
     if (!tantivySortField) return null;
 
-    const signature = await getFreshnessSignature(directories);
-    const engine = await resolveSearchEngine();
+    const signature = await timePhase('chars_freshness', () => getFreshnessSignature(directories));
+    const engine = await timePhase('chars_index_get', () => resolveSearchEngine());
     if (engine.tier === 'unavailable') return { ids: [], total: 0, backend: 'unavailable' };
 
-    const tantivyIndex = await indexCoordinator.getIndex(
+    const tantivyIndex = await timePhase('chars_index_get', () => indexCoordinator.getIndex(
         handle, signature,
         (previous) => loadOrUpdateTantivyIndexAndNotify(directories, engine.tantivy, previous),
         () => openPersistedTantivyIndexStale(directories, engine.tantivy),
-    );
+    ));
     if (!tantivyIndex) return { ids: [], total: 0, backend: 'unavailable' };
 
-    const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
+    const query = timePhase('chars_query_build', () => buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly }));
     if (!query) return { ids: [], total: 0, backend: 'tantivy' };
 
     // fav_name_sort_key is encoded so ascending order gives favorites-first-then-alpha, unconditionally.
@@ -503,23 +506,25 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
 
     let fullQuery = query;
 
-    if (tags && (tags.include?.length > 0 || tags.exclude?.length > 0)) {
-        const tagQuery = buildTagFilterQuery(engine.tantivy, tantivyIndex.schema, tags, TAG_IDS_FIELD);
-        if (tagQuery) {
+    timePhase('chars_query_build', () => {
+        if (tags && (tags.include?.length > 0 || tags.exclude?.length > 0)) {
+            const tagQuery = buildTagFilterQuery(engine.tantivy, tantivyIndex.schema, tags, TAG_IDS_FIELD);
+            if (tagQuery) {
+                fullQuery = engine.tantivy.Query.booleanQuery([
+                    { occur: engine.tantivy.Occur.Must, query: fullQuery },
+                    { occur: engine.tantivy.Occur.Must, query: tagQuery },
+                ]);
+            }
+        }
+
+        if (Array.isArray(excludeIds) && excludeIds.length > 0) {
+            const excludeQuery = buildExcludeIdsQuery(engine.tantivy, tantivyIndex.schema, excludeIds);
             fullQuery = engine.tantivy.Query.booleanQuery([
                 { occur: engine.tantivy.Occur.Must, query: fullQuery },
-                { occur: engine.tantivy.Occur.Must, query: tagQuery },
+                { occur: engine.tantivy.Occur.MustNot, query: excludeQuery },
             ]);
         }
-    }
-
-    if (Array.isArray(excludeIds) && excludeIds.length > 0) {
-        const excludeQuery = buildExcludeIdsQuery(engine.tantivy, tantivyIndex.schema, excludeIds);
-        fullQuery = engine.tantivy.Query.booleanQuery([
-            { occur: engine.tantivy.Occur.Must, query: fullQuery },
-            { occur: engine.tantivy.Occur.MustNot, query: excludeQuery },
-        ]);
-    }
+    });
 
     // count:false: combining an exact count with a fast-field-sorted, offset-paginated collector is far more
     // expensive than either alone, so total comes from a separate plain-relevance count-only search below.
@@ -528,9 +533,10 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
         order: effectiveOrder,
         offset,
         count: false,
+        timingLabel: 'chars',
     });
-    const { total } = runTantivySearch(tantivyIndex.index, fullQuery, 1);
-    return { ids: results.map(r => r.raw), total, backend: 'tantivy' };
+    const { total } = runTantivySearch(tantivyIndex.index, fullQuery, 1, { timingLabel: 'chars_count' });
+    return { ids: timePhase('chars_ids', () => results.map(r => r.raw)), total, backend: 'tantivy' };
 }
 
 // Explicit repair endpoint: forces a full rebuild regardless of freshness signature. Not needed for
