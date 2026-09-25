@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
-import { openWasmDatabase } from '../src/endpoints/sqlite-engine.js';
+import { openWasmDatabase, streamRows } from '../src/endpoints/sqlite-engine.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -23,6 +23,7 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
     getSqliteEngine: getSqliteEngineMock,
     openWasmDatabase,
     openNativeDatabase: jest.fn(),
+    streamRows,
 }));
 
 /** @type {typeof import('../src/message-tree-db.js')} */

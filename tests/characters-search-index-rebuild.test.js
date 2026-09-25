@@ -85,7 +85,7 @@ afterEach(() => {
 
 /**
  * These tests exercise characters-search-index.js's "first-ever build, corruption recovery, and the explicit
- * repair endpoint are all the same 'fresh empty index + incremental catch-up from rev 0, built into a temp
+ * repair endpoint are all the same 'fresh empty index filled by streaming every characters row, built into a temp
  * directory and atomically swapped into place' sequence" refactor - real on-disk tantivy index, real
  * character-metadata-db, real character cards, no mocks, matching characters-search-index-cold-start.test.js's own
  * approach. They only mean anything on an install where tantivy is actually the resolved engine, for the same
@@ -207,11 +207,8 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
         expect(afterIds).toEqual(['Percival.png']);
     }, 20000);
 
-    test('a catch-up covering more characters than one INDEX_BUILD_BATCH_SIZE batch indexes every one of them, not just the first/last batch', async () => {
-        // Regression coverage for the OOM-avoidance fix: applyIncrementalTantivyChanges() (the function
-        // rebuildCharacterSearchIndex() drives, per this file's own header - "fresh empty index + incremental
-        // catch-up from rev 0") used to read every upserted character's FULL data into one giant array before
-        // writing any of it - this proves the batched replacement (INDEX_BUILD_BATCH_SIZE-sized chunks) doesn't
+    test('a rebuild covering more characters than one INDEX_BUILD_BATCH_SIZE batch indexes every one of them, not just the first/last batch', async () => {
+        // The rebuild reads and indexes characters in INDEX_BUILD_BATCH_SIZE-sized chunks - this proves it doesn't
         // drop or duplicate characters at a batch boundary, by crossing it for real (more characters than one
         // batch holds) rather than asserting on the implementation's own internal constant.
         const engine = await searchEngine.resolveSearchEngine();
@@ -237,9 +234,8 @@ describe('characters-search-index.js: unified fresh-rebuild path (schema version
         }
     }, 120000);
 
-    test('a catch-up indexes a changed character from its db card_json, not its PNG chunk', async () => {
-        // The catch-up reads card_json only for the changed ids (per batch), not a map of every row; the db's
-        // copy is authoritative, so text that only exists there must be what gets indexed.
+    test('a rebuild indexes a character from its db card_json, not its PNG chunk', async () => {
+        // The db's card_json is authoritative, so text that only exists there must be what gets indexed.
         const engine = await searchEngine.resolveSearchEngine();
         if (engine.tier !== 'tantivy') {
             return;

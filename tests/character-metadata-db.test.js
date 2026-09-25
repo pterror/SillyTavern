@@ -2126,3 +2126,38 @@ describe('getChangesSince / getTagNameChangesSince with { limit }', () => {
         expect(second.hasMore).toBe(false);
     });
 });
+
+describe('streamCharacterCardJsonBatches / streamCharacterIdsForTagIds', () => {
+    const collect = async (gen) => {
+        const batches = [];
+        for await (const batch of gen) batches.push(batch);
+        return batches;
+    };
+
+    test('streamCharacterCardJsonBatches yields every character once, in id order, with its card_json', async () => {
+        for (const name of ['C', 'A', 'B']) {
+            await metadataDb.upsertCharacterFromWrite(directories, `${name}.png`, cardJson({ name }));
+        }
+        const batches = await collect(metadataDb.streamCharacterCardJsonBatches(directories));
+        const rows = batches.flat();
+        expect(rows.map(row => row.id)).toEqual(['A.png', 'B.png', 'C.png']);
+        for (const row of rows) {
+            expect(row.card_json).toBe(await metadataDb.getCharacterCardJson(directories, row.id));
+        }
+        expect(batches.every(batch => batch.length > 0)).toBe(true);
+    });
+
+    test('streamCharacterIdsForTagIds yields each carrier once, even one carrying several of the tags', async () => {
+        for (const name of ['A', 'B', 'C']) {
+            await metadataDb.upsertCharacterFromWrite(directories, `${name}.png`, cardJson({ name }));
+        }
+        await metadataDb.assignEntityTag(directories, 'A.png', 't1');
+        await metadataDb.assignEntityTag(directories, 'A.png', 't2');
+        await metadataDb.assignEntityTag(directories, 'C.png', 't2');
+        await metadataDb.assignEntityTag(directories, 'B.png', 't3');
+
+        const batches = await collect(metadataDb.streamCharacterIdsForTagIds(directories, ['t1', 't2']));
+        expect(batches.flat()).toEqual(['A.png', 'C.png']);
+        expect(await collect(metadataDb.streamCharacterIdsForTagIds(directories, []))).toEqual([]);
+    });
+});
