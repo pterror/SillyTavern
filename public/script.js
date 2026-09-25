@@ -11943,19 +11943,51 @@ jQuery(async function () {
         }
     });
 
-    $('#talkativeness_button').on('click', async function () {
-        const talkativenessDiv = document.getElementById('talkativeness_div');
-        const originalParent = talkativenessDiv.parentElement;
-        const originalNextSibling = talkativenessDiv.nextElementSibling;
+    {
+        const talkativenessButton = document.getElementById('talkativeness_button');
+        const talkativenessPopover = document.getElementById('talkativeness_div');
+        const useCssAnchor = CSS.supports('anchor-name: --x');
 
-        talkativenessDiv.classList.remove('displayNone');
-        await callGenericPopup(talkativenessDiv, POPUP_TYPE.DISPLAY, '', {
-            onClose: () => {
-                talkativenessDiv.classList.add('displayNone');
-                originalParent.insertBefore(talkativenessDiv, originalNextSibling);
-            },
+        if (useCssAnchor) {
+            talkativenessButton.classList.add('talkativeness_anchor');
+            talkativenessPopover.classList.add('talkativeness_anchored');
+        }
+
+        const positionTalkativenessPopover = () => {
+            const rect = talkativenessButton.getBoundingClientRect();
+            talkativenessPopover.style.top = `${rect.bottom}px`;
+            talkativenessPopover.style.right = `${document.documentElement.clientWidth - rect.right}px`;
+        };
+
+        // Light dismiss closes the popover on the pointerup that precedes this click, so the open state is read at pointerdown.
+        let wasOpenAtPointerDown = false;
+        talkativenessButton.addEventListener('pointerdown', () => {
+            wasOpenAtPointerDown = talkativenessPopover.matches(':popover-open');
         });
-    });
+        talkativenessButton.addEventListener('click', () => {
+            talkativenessPopover.togglePopover(!wasOpenAtPointerDown);
+            wasOpenAtPointerDown = false;
+        });
+
+        talkativenessPopover.addEventListener('beforetoggle', (/** @type {ToggleEvent} */ e) => {
+            if (useCssAnchor) return;
+            if (e.newState === 'open') {
+                positionTalkativenessPopover();
+                window.addEventListener('resize', positionTalkativenessPopover);
+                window.addEventListener('scroll', positionTalkativenessPopover, true);
+            } else {
+                window.removeEventListener('resize', positionTalkativenessPopover);
+                window.removeEventListener('scroll', positionTalkativenessPopover, true);
+            }
+        });
+
+        // Runs before the document-level Escape handler so an Escape that closes the popover does nothing else.
+        window.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape' || e.isComposing || !talkativenessPopover.matches(':popover-open')) return;
+            e.stopPropagation();
+            talkativenessPopover.hidePopover();
+        }, true);
+    }
 
     /* $("#renameCharButton").on('click', renameCharacter); */
 

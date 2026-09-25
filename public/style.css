@@ -5162,6 +5162,30 @@ body.big-avatars .missing-avatar {
     width: 100%;
 }
 
+#talkativeness_div[popover] {
+    inset: auto;
+    margin: 0;
+    width: min(20rem, calc(100vw - 1rem));
+    padding: 5px 10px 10px;
+    color: var(--SmartThemeBodyColor);
+    background-color: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
+    -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength));
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+}
+
+/* Only set by script.js when CSS.supports('anchor-name: --x'); otherwise the script positions the popover itself. */
+#talkativeness_button.talkativeness_anchor {
+    anchor-name: --talkativeness-anchor;
+}
+
+#talkativeness_div[popover].talkativeness_anchored {
+    position-anchor: --talkativeness-anchor;
+    top: anchor(bottom);
+    right: anchor(right);
+}
+
 .slider_hint span {
     font-size: calc(var(--mainFontSize) - .25rem);
 }
