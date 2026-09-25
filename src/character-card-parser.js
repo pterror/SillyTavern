@@ -9,6 +9,15 @@ import extract from 'png-chunks-extract';
 import PNGtext from 'png-chunk-text';
 import { loadReflinkModule } from './reflink-support.js';
 import { DEFAULT_AVATAR_PATH } from './constants.js';
+import { NO_CARD_DATA } from './character-import-error.js';
+
+/**
+ * @param {string} message
+ * @returns {Error & { code: string }}
+ */
+function noCardData(message) {
+    return Object.assign(new Error(message), { code: NO_CARD_DATA });
+}
 
 /**
  * sha256 over a PNG's concatenated IDAT chunk payload bytes (still-compressed pixel stream), not a decode-to-
@@ -128,8 +137,7 @@ export function readFromChunks(chunks) {
     const textChunks = chunks.filter((chunk) => chunk.name === 'tEXt').map((chunk) => PNGtext.decode(chunk.data));
 
     if (textChunks.length === 0) {
-        console.error('PNG metadata does not contain any text chunks.');
-        throw new Error('No PNG metadata.');
+        throw noCardData('PNG metadata does not contain any text chunks.');
     }
 
     const ccv3Index = textChunks.findIndex((chunk) => chunk.keyword.toLowerCase() === 'ccv3');
@@ -144,8 +152,7 @@ export function readFromChunks(chunks) {
         return Buffer.from(textChunks[charaIndex].text, 'base64').toString('utf8');
     }
 
-    console.error('PNG metadata does not contain any character data.');
-    throw new Error('No PNG metadata.');
+    throw noCardData('PNG metadata does not contain any character data.');
 }
 
 /**
@@ -166,8 +173,7 @@ export function readCharaChunkPristineFromChunks(chunks) {
     const textChunks = chunks.filter((chunk) => chunk.name === 'tEXt').map((chunk) => PNGtext.decode(chunk.data));
 
     if (textChunks.length === 0) {
-        console.error('PNG metadata does not contain any text chunks.');
-        throw new Error('No PNG metadata.');
+        throw noCardData('PNG metadata does not contain any text chunks.');
     }
 
     const charaIndex = textChunks.findIndex((chunk) => chunk.keyword.toLowerCase() === 'chara');
@@ -180,8 +186,7 @@ export function readCharaChunkPristineFromChunks(chunks) {
         return Buffer.from(textChunks[ccv3Index].text, 'base64').toString('utf8');
     }
 
-    console.error('PNG metadata does not contain any character data.');
-    throw new Error('No PNG metadata.');
+    throw noCardData('PNG metadata does not contain any character data.');
 }
 
 export const readCharaChunkPristine = (image) => readCharaChunkPristineFromChunks(extract(new Uint8Array(image)));

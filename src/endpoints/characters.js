@@ -18,6 +18,7 @@ import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.j
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
 import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, mapWithConcurrency } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
+import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
 import { parse, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer, reclaimReflinkPrefix } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
@@ -2984,6 +2985,8 @@ router.post('/import', async function (request, response) {
     const uploadPath = path.join(request.file.destination, request.file.filename);
     const format = request.body.file_type;
     const preservedFileName = getPreservedName(request);
+    const sourceUrl = typeof request.body.source_url === 'string' && request.body.source_url ? request.body.source_url : null;
+    const importName = sourceUrl ? `${sourceUrl} (${request.file.originalname})` : request.file.originalname;
 
     try {
         const importFunction = formatImportFunctions[format];
@@ -3007,8 +3010,9 @@ router.post('/import', async function (request, response) {
         const fileName = await importFunction(uploadPath, { request, response, contentHash }, preservedFileName);
 
         if (!fileName) {
-            console.warn('Failed to import character');
-            return response.sendStatus(400);
+            const error = importFailure(importName, 'not a recognized character card format');
+            console.warn(error.message);
+            return response.status(400).send({ error: error.message });
         }
 
         if (preservedFileName) {
@@ -3036,8 +3040,9 @@ router.post('/import', async function (request, response) {
 
         response.send({ file_name: fileName, character, tagDefinitions });
     } catch (err) {
-        console.error(err);
-        response.status(500).send({ error: true });
+        const error = importFailure(importName, err);
+        console.error(error);
+        response.status(error.code === NO_CARD_DATA ? 400 : 500).send({ error: error.message });
     }
 });
 

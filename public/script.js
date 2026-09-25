@@ -10698,9 +10698,11 @@ export async function swipe_right(event = null, { source, repeated, message } = 
  * Imports supported files dropped into the app window. Each file is imported, applied to charactersStore, and (per `power_user.tag_import_setting`) has its tags imported before moving to the next file.
  * @param {File[]} files Array of files to process
  * @param {Map<File, string>} [data] Extra data to pass to the import function
+ * @param {object} [options]
+ * @param {Map<File, string>} [options.sourceUrls] URL or id each file was downloaded from, named in import errors
  * @returns {Promise<string[]>} Avatar filenames of the characters actually imported (skips duplicates), in import order
  */
-export async function processDroppedFiles(files, data = new Map()) {
+export async function processDroppedFiles(files, data = new Map(), { sourceUrls = new Map() } = {}) {
     const allowedMimeTypes = [
         'application/json',
         'image/png',
@@ -10740,7 +10742,7 @@ export async function processDroppedFiles(files, data = new Map()) {
     try {
         for (const file of importable) {
             const preservedName = data instanceof Map && data.get(file);
-            const result = await importCharacter(file, { preserveFileName: preservedName });
+            const result = await importCharacter(file, { preserveFileName: preservedName, sourceUrl: sourceUrls.get(file) });
 
             if (!result) {
                 continue;
@@ -10848,9 +10850,10 @@ function selectImportedChar(charId) {
  * @param {File} file File to import
  * @param {object} [options] - Options
  * @param {string} [options.preserveFileName] Whether to preserve original file name
+ * @param {string} [options.sourceUrl] URL or id the file was downloaded from, named in import errors
  * @returns {Promise<{ avatarFileName: string, replaced: boolean, character: object } | { duplicate: true } | undefined>} undefined for an unsupported extension or a hard failure (already toasted); `{ duplicate: true }` for exact byte-identical dedup.
  */
-async function importCharacter(file, { preserveFileName = '' } = {}) {
+async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } = {}) {
     if (is_group_generating || is_send_press) {
         toastr.error(t`Cannot import characters while generating. Stop the request and try again.`, t`Import aborted`);
         throw new Error('Cannot import character while generating');
@@ -10870,6 +10873,7 @@ async function importCharacter(file, { preserveFileName = '' } = {}) {
     formData.append('file_type', format);
     formData.append('user_name', name1);
     if (preserveFileName) formData.append('preserved_name', preserveFileName);
+    if (sourceUrl) formData.append('source_url', sourceUrl);
 
     // ALL/ONLY_EXISTING have no interactive decision to make (unlike ASK), so tell the server the mode up front to seed tags atomically in the same request.
     const effectiveTagSetting = Object.values(tag_import_setting).find(setting => setting === power_user.tag_import_setting) ?? tag_import_setting.ASK;
@@ -10887,14 +10891,13 @@ async function importCharacter(file, { preserveFileName = '' } = {}) {
             cache: 'no-cache',
         });
 
-        if (!result.ok) {
-            throw new Error(`Failed to import character: ${result.statusText}`);
-        }
+        const data = await result.json().catch(() => ({}));
 
-        const data = await result.json();
-
-        if (data.error) {
-            throw new Error(`Server returned an error: ${data.error}`);
+        if (!result.ok || data.error) {
+            const message = typeof data.error === 'string' ? data.error : `Failed to import "${file.name}": ${result.statusText}`;
+            console.error('Error importing character', message);
+            toastr.error(message, t`Could not import character`);
+            return;
         }
 
         if (data.duplicate) {
@@ -10920,7 +10923,7 @@ async function importCharacter(file, { preserveFileName = '' } = {}) {
         }
     } catch (error) {
         console.error('Error importing character', error);
-        toastr.error(t`The file is likely invalid or corrupted.`, t`Could not import character`);
+        toastr.error(`Failed to import "${file.name}": ${error.message}`, t`Could not import character`);
     }
 }
 
