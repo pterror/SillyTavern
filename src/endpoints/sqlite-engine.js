@@ -33,7 +33,7 @@ let engine = undefined;
  * @property {(name: string, fn: (...args: any[]) => any) => void} defineFunction Registers a scalar SQL function.
  * @property {() => SqliteReadHandle} [openReader] Opens a read-only connection on `path`; the caller closes it.
  *   Native only: without WAL (wasm) an open reader would block this handle's writes.
- * @property {() => void} close
+ * @property {() => void} close Native: closes readers from openReader() (a suspended stream then throws on resume), TRUNCATE-checkpoints the WAL, then closes.
  */
 
 /**
@@ -44,6 +44,10 @@ let engine = undefined;
  */
 
 const WRITE_WHILE_ITERATING_MESSAGE = 'write while iterate() is open';
+const HANDLE_CLOSED_MESSAGE = 'database handle is closed';
+
+/** WAL file size SQLite truncates back down to after a checkpoint (native only - wasm has no WAL). */
+const JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
 
 /**
  * Shared iterate() and the no-writes-while-iterating guard, so both engines behave identically.
@@ -52,6 +56,8 @@ const WRITE_WHILE_ITERATING_MESSAGE = 'write while iterate() is open';
  */
 function createRowStreaming(openRows) {
     let openIterators = 0;
+    let closed = false;
+    const finalizers = new Set();
 
     const assertNoOpenIterator = () => {
         if (openIterators > 0) {
@@ -62,19 +68,43 @@ function createRowStreaming(openRows) {
     // Generator body runs on the first next(), so nothing is prepared (or left unfinalized) for an iterator
     // that is never started.
     function* iterate(sql, params) {
+        if (closed) {
+            throw new Error(HANDLE_CLOSED_MESSAGE);
+        }
         const { rows, finalize } = openRows(sql, params);
+        let finalized = false;
+        const finalizeOnce = () => {
+            if (finalized) return;
+            finalized = true;
+            finalizers.delete(finalizeOnce);
+            finalize();
+        };
+        finalizers.add(finalizeOnce);
         openIterators++;
         try {
             for (const row of rows) {
                 yield row;
+                // A consumer suspended at the yield while the connection was closed must not see a silently
+                // shortened result.
+                if (closed) {
+                    throw new Error(HANDLE_CLOSED_MESSAGE);
+                }
             }
         } finally {
             openIterators--;
-            finalize();
+            finalizeOnce();
         }
     }
 
-    return { iterate, assertNoOpenIterator };
+    /** Releases every open iterate()'s statement - the connection can't close while one is mid-iteration. */
+    const closeIterators = () => {
+        closed = true;
+        for (const finalize of [...finalizers]) {
+            finalize();
+        }
+    };
+
+    return { iterate, assertNoOpenIterator, closeIterators };
 }
 
 /** node-sqlite3-wasm requires the bind-parameter prefix in the object key itself (`{'@avatar': ...}`). */
@@ -149,6 +179,11 @@ export function openNativeDatabase(DatabaseCtor, path) {
     const db = new DatabaseCtor(path);
     db.pragma('journal_mode = WAL');
     db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    db.pragma(`journal_size_limit = ${JOURNAL_SIZE_LIMIT_BYTES}`);
+
+    let closed = false;
+    /** Readers from openReader() still open - closed with this handle so none outlives it and keeps the WAL. */
+    const openReaders = new Set();
 
     // Prepared-statement cache keyed by SQL text - avoids recompiling the same SQL on every call in hot loops.
     const stmtCache = new Map();
@@ -193,8 +228,30 @@ export function openNativeDatabase(DatabaseCtor, path) {
         checkpoint: () => { assertNoOpenIterator(); db.pragma('wal_checkpoint(TRUNCATE)'); },
         // deterministic: true is safe - every registered function in this codebase is a pure hash.
         defineFunction: (name, fn) => { db.function(name, { deterministic: true }, fn); },
-        openReader: () => openNativeReadDatabase(DatabaseCtor, path),
-        close: () => db.close(),
+        openReader: () => {
+            if (closed) {
+                throw new Error(HANDLE_CLOSED_MESSAGE);
+            }
+            const reader = openNativeReadDatabase(DatabaseCtor, path);
+            const tracked = {
+                ...reader,
+                close: () => {
+                    openReaders.delete(tracked);
+                    reader.close();
+                },
+            };
+            openReaders.add(tracked);
+            return tracked;
+        },
+        // An ordinary close never shrinks the WAL file; the TRUNCATE checkpoint does (best-effort).
+        close: () => {
+            closed = true;
+            for (const reader of [...openReaders]) {
+                reader.close();
+            }
+            try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best-effort */ }
+            db.close();
+        },
     };
 }
 
@@ -209,6 +266,7 @@ export function openNativeDatabase(DatabaseCtor, path) {
 export function openNativeReadDatabase(DatabaseCtor, path) {
     const db = new DatabaseCtor(path, { readonly: true });
     db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    db.pragma(`journal_size_limit = ${JOURNAL_SIZE_LIMIT_BYTES}`);
 
     const stmtCache = new Map();
     const prepare = (sql) => {
@@ -220,7 +278,7 @@ export function openNativeReadDatabase(DatabaseCtor, path) {
         return stmt;
     };
 
-    const { iterate } = createRowStreaming((sql, params) => {
+    const { iterate, closeIterators } = createRowStreaming((sql, params) => {
         const rows = db.prepare(sql).iterate(params ?? {});
         return { rows, finalize: () => { rows.return(); } };
     });
@@ -228,7 +286,10 @@ export function openNativeReadDatabase(DatabaseCtor, path) {
     return {
         get: (sql, params) => prepare(sql).get(params ?? {}),
         iterate,
-        close: () => db.close(),
+        close: () => {
+            closeIterators();
+            db.close();
+        },
     };
 }
 
