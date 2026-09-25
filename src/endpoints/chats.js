@@ -911,10 +911,13 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
     try {
         const offset = Number.isFinite(Number(request.body.offset)) ? Number(request.body.offset) : undefined;
         const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
+        const around = request.body.around && typeof request.body.around === 'object' && typeof request.body.around.mes === 'string'
+            ? request.body.around
+            : undefined;
         const avatar = String(request.body.avatar_url || '');
         // Group chats have no single card to read greetings off of.
         const cardGreetings = avatar ? await _cardGreetingsFromDisk(request.user.directories, avatar) : [];
-        const result = await getOpeningAlternatives(request.user.directories, ownerOf(request), { offset, limit }, cardGreetings);
+        const result = await getOpeningAlternatives(request.user.directories, ownerOf(request), { offset, limit, around }, cardGreetings);
         if (!result) return response.status(404).send({ error: 'Tree storage unavailable' });
         return response.send(result);
     } catch (error) {

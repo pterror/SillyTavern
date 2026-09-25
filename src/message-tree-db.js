@@ -2152,7 +2152,8 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata, 
  * of these and holds its id. Windowed around the default, with `total` for sizing.
  * @param {Directories} directories
  * @param {string} ownerId
- * @param {{ offset?: number, limit?: number }} [range]
+ * @param {{ offset?: number, limit?: number, around?: TreeChatMessage }} [range] `around` centers the window on the
+ *   stored opening with that speaker and text instead of on the default, when one exists.
  * @param {TreeChatMessage[]} [cardGreetings]
  * @returns {Promise<{ has_saved_chats: boolean, total: number, stored: number, default_index: number, default_node_id: string | null, offset: number, alternatives: OpeningAlternativeEntry[] } | null>}
  */
@@ -2198,10 +2199,14 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
         ...virtual.map(o => ({ node_id: null, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user })),
     ];
 
+    const aroundKey = anchor && range.around ? identity(sanitizeForStorage(range.around)) : null;
+    const aroundIndex = aroundKey === null ? -1 : rows.findIndex(r => identity(r.content) === aroundKey);
+    const center = aroundIndex >= 0 ? aroundIndex : defaultIndex;
+
     const width = Number.isInteger(range.limit) ? /** @type {number} */ (range.limit) : 11;
     const from = Number.isInteger(range.offset)
         ? Math.max(0, /** @type {number} */ (range.offset))
-        : Math.max(0, defaultIndex - Math.floor(width / 2));
+        : Math.max(0, center - Math.floor(width / 2));
     const to = Math.min(all.length, from + width);
 
     return {
