@@ -589,7 +589,6 @@ test.describe('persona switch redraws message 0', () => {
     });
 
     test('group chat whose message 0 was edited to hold a macro', async ({ page }) => {
-        test.fixme(true, 'opening a new group chat throws: _bootstrapGroupChat assigns node_id on a frozen chat[0]');
         const s = stamp();
         const first = await createPersona(page, `PersonaFirst${s}`);
         const second = await createPersona(page, `PersonaSecond${s}`);
@@ -615,12 +614,16 @@ test.describe('persona switch redraws message 0', () => {
         }, { timeout: 10000 }).toBe(true);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(`Plain greeting ${s}`);
 
-        const message0 = page.locator('#chat .mes[mesid="0"]');
-        await message0.hover();
-        await message0.locator('.mes_edit').click();
-        await message0.locator('.edit_textarea').fill('Hello {{user}}!');
+        // Written raw: a UI edit substitutes macros before saving, which would leave nothing to redraw.
         const editResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chats/message/edit', { timeout: 15000 });
-        await message0.locator('.mes_edit_done').click();
+        await page.evaluate(async () => {
+            const { updateMessage, chatOpEdit } = await import('/scripts/chat-store.js');
+            const { updateMessageBlock } = await import('/script.js');
+            const { chat } = await import('/scripts/chat-state.js');
+            updateMessage(0, { mes: 'Hello {{user}}!' });
+            updateMessageBlock(0, chat[0]);
+            await chatOpEdit(0);
+        });
         expect((await editResponse).ok()).toBe(true);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(`Hello PersonaFirst${s}!`);
 
