@@ -2480,10 +2480,9 @@ export {
     ensureAnchorSync, descendDefaultSync, setDefaultChildSync, alternativesFromMessage, branchViewSync,
 };
 
-/** Closes all open DB handles. Checkpoints each in TRUNCATE mode first — an ordinary close never shrinks the WAL file back down. */
+/** Closes all open DB handles (close() also TRUNCATE-checkpoints the WAL). */
 export function disposeMessageTreeStores() {
     for (const entry of entries.values()) {
-        try { entry.db.checkpoint(); } catch { /* best-effort */ }
         try { entry.db.close(); } catch { /* best-effort */ }
     }
     entries.clear();

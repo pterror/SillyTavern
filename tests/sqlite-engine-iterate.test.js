@@ -423,3 +423,85 @@ describe.each([
         expect(() => handle.run('UPDATE t SET v = ? WHERE id = ?', ['after', 1])).not.toThrow();
     });
 });
+
+describe('native WAL housekeeping and close()', () => {
+    let tmpDir;
+    let dbPath;
+    let handle;
+
+    beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-sqlite-close-'));
+        dbPath = path.join(tmpDir, 'db.sqlite');
+        handle = openNativeDatabase(Database, dbPath);
+        handle.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+        handle.insertMany('INSERT INTO t (id, v) VALUES (@id, @v)', Array.from({ length: 2500 }, (_, i) => ({ id: i + 1, v: 'old' })));
+    });
+
+    afterEach(() => {
+        handle.close();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test('journal_size_limit is 64 MiB on the main connection and on readers', () => {
+        expect(handle.get('PRAGMA journal_size_limit').journal_size_limit).toBe(64 * 1024 * 1024);
+        const reader = handle.openReader();
+        try {
+            expect(reader.get('PRAGMA journal_size_limit').journal_size_limit).toBe(64 * 1024 * 1024);
+        } finally {
+            reader.close();
+        }
+    });
+
+    test('close() truncates the WAL even when another connection keeps the file open', () => {
+        const other = new Database(dbPath);
+        other.prepare('SELECT COUNT(*) FROM t').get();
+        try {
+            handle.run('UPDATE t SET v = ?', ['new']);
+            expect(fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
+            handle.close();
+            expect(fs.statSync(`${dbPath}-wal`).size).toBe(0);
+        } finally {
+            other.close();
+        }
+    });
+
+    test('close() closes readers opened with openReader(), including one mid-iteration', () => {
+        const idle = handle.openReader();
+        const busy = handle.openReader();
+        const rows = busy.iterate('SELECT id FROM t ORDER BY id');
+        expect(rows.next().value).toEqual({ id: 1 });
+        handle.close();
+        expect(() => idle.get('SELECT 1 AS x')).toThrow(/not open/);
+        expect(() => busy.get('SELECT 1 AS x')).toThrow(/not open/);
+        expect(() => rows.next()).toThrow('database handle is closed');
+    });
+
+    test('openReader() on a closed handle throws', () => {
+        handle.close();
+        expect(() => handle.openReader()).toThrow('database handle is closed');
+    });
+
+    test('a streamRows() suspended between batches throws when resumed after close()', async () => {
+        const stream = streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' });
+        const first = await stream.next();
+        expect(first.value.length).toBe(1000);
+        handle.close();
+        await expect(stream.next()).rejects.toThrow('database handle is closed');
+    });
+
+    test('a streamWrite() whose onBatch closes the handle throws instead of ending early', () => {
+        let batches = 0;
+        expect(() => streamWrite(handle, {
+            readSql: KEYED_READ_SQL,
+            params: { mod: 1 },
+            keyColumn: 'id',
+            onBatch: () => {
+                batches++;
+                if (batches === 1) {
+                    handle.close();
+                }
+            },
+        })).toThrow();
+        expect(batches).toBe(1);
+    });
+});
