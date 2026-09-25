@@ -6,7 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
 
-import { openNativeDatabase, openNativeReadDatabase, openWasmDatabase, streamWrite } from '../src/endpoints/sqlite-engine.js';
+import { openNativeDatabase, openNativeReadDatabase, openWasmDatabase, streamRows, streamWrite } from '../src/endpoints/sqlite-engine.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -330,5 +330,96 @@ describe('native streamWrite() over more than one read chunk', () => {
         expect(batchSizes.length).toBe(101);
         expect(batchSizes[100]).toBe(1);
         expect(handle.get('SELECT COUNT(*) AS n FROM t WHERE v = \'old\'').n).toBe(0);
+    });
+});
+
+describe.each([
+    ['native', (dbPath) => openNativeDatabase(Database, dbPath), 100001, 2],
+    ['wasm', (dbPath) => openWasmDatabase(WasmDatabase, dbPath), 2500, 0],
+])('%s engine streamRows()', (name, open, rowCount, fullPassReaderOpens) => {
+    let tmpDir;
+    let handle;
+    let readerOpens;
+    let readerCloses;
+
+    beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-sqlite-streamrows-'));
+        handle = open(path.join(tmpDir, 'db.sqlite'));
+        handle.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+        handle.insertMany('INSERT INTO t (id, v) VALUES (@id, @v)', Array.from({ length: rowCount }, (_, i) => ({ id: i + 1, v: 'old' })));
+        readerOpens = 0;
+        readerCloses = 0;
+        if (handle.openReader) {
+            const openReader = handle.openReader;
+            handle.openReader = () => {
+                readerOpens++;
+                const reader = openReader();
+                const close = reader.close;
+                reader.close = () => {
+                    readerCloses++;
+                    close();
+                };
+                return reader;
+            };
+        }
+    });
+
+    afterEach(() => {
+        handle.close();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test('yields every row once, in key order, in batches of at most 1000', async () => {
+        let expectedId = 1;
+        let outOfOrder = 0;
+        let oversized = 0;
+        for await (const rows of streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' })) {
+            if (rows.length === 0 || rows.length > 1000) oversized++;
+            for (const row of rows) {
+                if (row.id !== expectedId) outOfOrder++;
+                expectedId++;
+            }
+        }
+        expect(oversized).toBe(0);
+        expect(outOfOrder).toBe(0);
+        expect(expectedId).toBe(rowCount + 1);
+        expect(readerOpens).toBe(fullPassReaderOpens);
+        expect(readerCloses).toBe(fullPassReaderOpens);
+    });
+
+    test('the main handle is writable while the consumer is suspended between yields', async () => {
+        let batches = 0;
+        for await (const rows of streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' })) {
+            await new Promise(resolve => setImmediate(resolve));
+            handle.transaction(() => {
+                for (const row of rows) {
+                    handle.run('UPDATE t SET v = ? WHERE id = ?', ['new', row.id]);
+                }
+            });
+            batches++;
+        }
+        expect(batches).toBeGreaterThan(1);
+        expect(handle.get('SELECT COUNT(*) AS n FROM t WHERE v = \'old\'').n).toBe(0);
+    });
+
+    test.each([
+        ['break', async (stream) => {
+            for await (const rows of stream) {
+                expect(rows.length).toBe(1000);
+                break;
+            }
+        }],
+        ['throw', async (stream) => {
+            await expect((async () => {
+                for await (const rows of stream) {
+                    throw new Error(`boom after ${rows.length}`);
+                }
+            })()).rejects.toThrow('boom after 1000');
+        }],
+    ])('ending the for-await early by %s closes the reader and leaves the handle writable', async (_how, consume) => {
+        await consume(streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' }));
+        expect(readerCloses).toBe(readerOpens);
+        expect(readerOpens).toBe(name === 'native' ? 1 : 0);
+        expect(() => handle.run('UPDATE t SET v = ? WHERE id = ?', ['after', 1])).not.toThrow();
     });
 });

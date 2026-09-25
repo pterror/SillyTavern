@@ -379,6 +379,58 @@ export function streamWrite(handle, { readSql, params, keyColumn, onBatch }) {
     }
 }
 
+/**
+ * Async stream of row batches (each at most 1000 rows, in keyColumn order) that callers may `await` between,
+ * without holding an iterate() open on `handle` - so `handle` stays writable while the consumer is suspended.
+ * Same readSql contract and chunking as streamWrite(): on native the rows come from handle.openReader(), reopened
+ * per 100000-row chunk; on wasm each 1000-row keyset page is read and its iterate closed before it is yielded.
+ * Ending the for-await early (break/return/throw) closes the reader.
+ * @param {SqliteEngineHandle} handle
+ * @param {{ readSql: string, params?: object, keyColumn: string }} options
+ * @returns {AsyncGenerator<object[], void, undefined>}
+ */
+export async function* streamRows(handle, { readSql, params, keyColumn }) {
+    let after = null;
+    if (handle.openReader) {
+        for (;;) {
+            let chunkRows = 0;
+            const reader = handle.openReader();
+            try {
+                let batch = [];
+                for (const row of reader.iterate(readSql, { ...params, after, limit: STREAM_WRITE_NATIVE_CHUNK_SIZE })) {
+                    chunkRows++;
+                    after = row[keyColumn];
+                    batch.push(row);
+                    if (batch.length === STREAM_WRITE_BATCH_SIZE) {
+                        const rows = batch;
+                        batch = [];
+                        yield rows;
+                    }
+                }
+                if (batch.length > 0) {
+                    yield batch;
+                }
+            } finally {
+                reader.close();
+            }
+            if (chunkRows < STREAM_WRITE_NATIVE_CHUNK_SIZE) {
+                return;
+            }
+        }
+    }
+
+    for (;;) {
+        const rows = Array.from(handle.iterate(readSql, { ...params, after, limit: STREAM_WRITE_BATCH_SIZE }));
+        if (rows.length > 0) {
+            yield rows;
+        }
+        if (rows.length < STREAM_WRITE_BATCH_SIZE) {
+            return;
+        }
+        after = rows[rows.length - 1][keyColumn];
+    }
+}
+
 /** Returns the node-sqlite3-wasm Database constructor, or null if unusable (warning already logged). */
 async function tryLoadWasmEngine() {
     try {
