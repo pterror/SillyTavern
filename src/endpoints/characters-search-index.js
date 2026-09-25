@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import {
     getTagDefinitions, getEntityTagIdsForMany, getTagsHash,
     getChangesSince, getCurrentSeq, getTagNameChangesSince, getCharacterIdsForTagIds,
-    getMetaValue, setMetaValue, getCharacterFavsByIds, getStaleCardJsonMap,
+    getMetaValue, setMetaValue, getCharacterFavsByIds, getCardJsonByIds,
     characterChangeEmitter,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
@@ -100,10 +100,10 @@ const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexB
 async function* readCharacterBatches(directories) {
     const files = fs.readdirSync(directories.characters);
     const pngFiles = files.filter(file => file.endsWith('.png'));
-    // A card edited without its image changing has its authoritative content in the metadata db, not the PNG.
-    const staleCards = await getStaleCardJsonMap(directories);
     for (let i = 0; i < pngFiles.length; i += INDEX_BUILD_BATCH_SIZE) {
         const batchFiles = pngFiles.slice(i, i + INDEX_BUILD_BATCH_SIZE);
+        // The metadata db's card_json is authoritative over the PNG chunk; fetched per batch, never for the whole library.
+        const staleCards = await getCardJsonByIds(directories, batchFiles);
         const processed = await mapWithConcurrency(batchFiles, INDEX_BUILD_READ_CONCURRENCY, file => processCharacter(file, directories, { shallow: false, cardJson: staleCards.get(file) ?? null }));
         const batch = processed.filter(c => c.name);
         for (const character of batch) {
@@ -336,9 +336,10 @@ async function applyIncrementalTantivyChanges(directories, tantivy, index, schem
         }
 
         // Batched: a cold sync or large import backlog can mean idsNeedingData covers the entire library.
-        const staleCards = await getStaleCardJsonMap(directories);
         for (let i = 0; i < idsNeedingData.length; i += INDEX_BUILD_BATCH_SIZE) {
             const batchIds = idsNeedingData.slice(i, i + INDEX_BUILD_BATCH_SIZE);
+            // card_json only for the changed ids in this batch, never a map of every row.
+            const staleCards = await getCardJsonByIds(directories, batchIds);
             const batchCharacters = await mapWithConcurrency(batchIds, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
                 try {
                     return await processCharacter(id, directories, { shallow: false, cardJson: staleCards.get(id) ?? null });

@@ -33,7 +33,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS } from './characters-search-index.js';
 import { searchGroups, searchGroupIds } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getStaleCardJsonMap, getCardJsonByIds, characterRowExists, characterRowOrPendingExistsSync } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, getStateDigest, getBucketMembers, treeDescend, resolveFingerprints, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, characterRowExists, characterRowOrPendingExistsSync } from '../character-metadata-db.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -1936,13 +1936,12 @@ router.post('/all', async function (request, response) {
         if (!search) {
             // No `search`: respond with the bare-array shape, streamed - a real library's worth of characters
             // (300k+ rows) can't be held in memory as one array nor buffered whole before response.send().
-            // Everything that can fail without having written a byte yet (reading the directory, resolving stale
-            // cards) still happens before any write, so it still reaches the catch block below and gets a normal
+            // Everything that can fail without having written a byte yet (reading the directory) still happens
+            // before any write, so it still reaches the catch block below and gets a normal
             // 500; a failure after that point can't un-send the 200 and partial body already on the wire, so it
             // just ends the connection and logs server-side.
             const files = fs.readdirSync(request.user.directories.characters);
             const pngFiles = files.filter(file => file.endsWith('.png'));
-            const staleCards = await getStaleCardJsonMap(request.user.directories);
 
             response.set('Content-Type', 'application/json');
             response.status(200);
@@ -1951,6 +1950,7 @@ router.post('/all', async function (request, response) {
                 await writeBackpressured(response, '[');
                 for (let i = 0; i < pngFiles.length; i += STREAM_ALL_BATCH_SIZE) {
                     const batchFiles = pngFiles.slice(i, i + STREAM_ALL_BATCH_SIZE);
+                    const staleCards = await getCardJsonByIds(request.user.directories, batchFiles);
                     const processed = await mapWithConcurrency(batchFiles, STREAM_ALL_READ_CONCURRENCY, file =>
                         processCharacter(file, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(file) ?? null }));
                     const batch = processed.filter(c => 'name' in c);

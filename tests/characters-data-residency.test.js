@@ -122,7 +122,7 @@ describe('metadata-only edits do not touch the PNG', () => {
 
     test('/batch resolves parked content for multiple characters in one request', async () => {
         // /batch is the route fetchCharactersDelta() (script.js) calls to catch up on changed characters - it
-        // has its own getStaleCardJsonMap() prefetch (mirroring /all's), so this exercises that it still
+        // has its own getCardJsonByIds() prefetch (mirroring /all's per-batch one), so this exercises that it still
         // resolves each avatar's parked content correctly when several ids in the same request are stale.
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'original', file_name: 'Bob' });
@@ -307,18 +307,16 @@ describe('/edit\'s content-hash conflict check survives the residency split', ()
     });
 });
 
-describe('getStaleCardJsonMap', () => {
-    test('holds only the cards whose file is actually stale', async () => {
+describe('/all without search reads card_json per batch', () => {
+    test('returns the db\'s content for an edited character and the file\'s for an untouched one', async () => {
         await post('create', { ch_name: 'Alice', description: 'a', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'b', file_name: 'Bob' });
-
-        // Nothing edited yet - a library nobody has touched costs an empty map.
-        expect((await metadataDb.getStaleCardJsonMap(directories)).size).toBe(0);
-
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'a2' });
 
-        const map = await metadataDb.getStaleCardJsonMap(directories);
-        expect([...map.keys()]).toEqual(['Alice.png']);
-        expect(JSON.parse(map.get('Alice.png')).data.description).toBe('a2');
+        const all = await (await post('all', {})).json();
+        const byAvatar = Object.fromEntries(all.map(c => [c.avatar, c]));
+        expect(Object.keys(byAvatar).sort()).toEqual(['Alice.png', 'Bob.png']);
+        expect(byAvatar['Alice.png'].data.description).toBe('a2');
+        expect(byAvatar['Bob.png'].data.description).toBe('b');
     });
 });
