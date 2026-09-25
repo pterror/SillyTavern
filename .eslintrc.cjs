@@ -18,6 +18,7 @@ module.exports = {
             files: ['src/**/*.js', './*.js', 'plugins/**/*.js'],
             env: {
                 node: true,
+                es2024: true,
             },
             parserOptions: {
                 sourceType: 'module',
