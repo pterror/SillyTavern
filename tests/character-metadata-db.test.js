@@ -2069,3 +2069,60 @@ describe('active_chat_checked (regression: a genuinely chatless card must conver
         expect(after.active_chat_checked).toBe(1);
     });
 });
+
+describe('getChangesSince / getTagNameChangesSince with { limit }', () => {
+    test('pages the change log by seq: each page reads at most `limit` rows and `seq` resumes the next one', async () => {
+        for (const name of ['A', 'B', 'C', 'D', 'E']) {
+            await metadataDb.upsertCharacterFromWrite(directories, `${name}.png`, cardJson({ name, data: { name, tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
+        }
+
+        const seen = [];
+        const pageSizes = [];
+        let since = 0;
+        for (;;) {
+            const page = await metadataDb.getChangesSince(directories, since, { limit: 2 });
+            expect(page.truncated).toBe(false);
+            pageSizes.push(page.changes.length);
+            seen.push(...page.changes.map(c => c.id));
+            since = page.seq;
+            if (!page.hasMore) break;
+        }
+        expect(pageSizes).toEqual([2, 2, 1]);
+        expect(seen.sort()).toEqual(['A.png', 'B.png', 'C.png', 'D.png', 'E.png']);
+        expect(since).toBe(await metadataDb.getCurrentSeq(directories));
+
+        // No limit: the unpaged shape, unchanged.
+        const whole = await metadataDb.getChangesSince(directories, 0);
+        expect(whole).not.toHaveProperty('hasMore');
+        expect(whole.changes).toHaveLength(5);
+    });
+
+    test('collapses per page, so an id changed in two pages shows up in both', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'A.png', cardJson({ name: 'A' }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'A.png', cardJson({ name: 'A', fav: true }));
+        await metadataDb.deleteCharacterRow(directories, 'A.png');
+
+        const first = await metadataDb.getChangesSince(directories, 0, { limit: 2 });
+        expect(first.changes).toEqual([expect.objectContaining({ id: 'A.png', op: 'upsert' })]);
+        expect(first.hasMore).toBe(true);
+
+        const second = await metadataDb.getChangesSince(directories, first.seq, { limit: 2 });
+        expect(second.changes).toEqual([{ id: 'A.png', op: 'delete' }]);
+        expect(second.hasMore).toBe(false);
+    });
+
+    test('pages tag name changes by seq', async () => {
+        for (const id of ['t1', 't2', 't3']) {
+            await metadataDb.upsertTagDefinition(directories, { id, name: `${id}-old` });
+            await metadataDb.upsertTagDefinition(directories, { id, name: `${id}-new` });
+        }
+
+        const first = await metadataDb.getTagNameChangesSince(directories, 0, { limit: 2 });
+        expect(first.tagIds).toEqual(['t1', 't2']);
+        expect(first.hasMore).toBe(true);
+
+        const second = await metadataDb.getTagNameChangesSince(directories, first.seq, { limit: 2 });
+        expect(second.tagIds).toEqual(['t3']);
+        expect(second.hasMore).toBe(false);
+    });
+});

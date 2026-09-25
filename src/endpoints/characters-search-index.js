@@ -92,28 +92,9 @@ const TANTIVY_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
 const TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
 
-const CHECKPOINT_EVERY_N_BATCHES = 20;
-
 const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
-// Streams characters in fixed-size batches rather than materializing the whole library at once.
-async function* readCharacterBatches(directories) {
-    const files = fs.readdirSync(directories.characters);
-    const pngFiles = files.filter(file => file.endsWith('.png'));
-    for (let i = 0; i < pngFiles.length; i += INDEX_BUILD_BATCH_SIZE) {
-        const batchFiles = pngFiles.slice(i, i + INDEX_BUILD_BATCH_SIZE);
-        // The metadata db's card_json is authoritative over the PNG chunk; fetched per batch, never for the whole library.
-        const staleCards = await getCardJsonByIds(directories, batchFiles);
-        const processed = await mapWithConcurrency(batchFiles, INDEX_BUILD_READ_CONCURRENCY, file => processCharacter(file, directories, { shallow: false, cardJson: staleCards.get(file) ?? null }));
-        const batch = processed.filter(c => c.name);
-        for (const character of batch) {
-            delete character.json_data;
-        }
-        yield batch;
-    }
-}
-
-// Fetches tags for all avatars up front so this costs two batched reads total, not one per character.
+// Fetches tags for the given avatars up front so this costs two batched reads total, not one per character.
 async function makeTagNamesResolver(directories, avatars) {
     const [definitions, assignments] = await Promise.all([
         getTagDefinitions(directories),
@@ -220,9 +201,10 @@ function createEmptyTantivyIndexAt(tantivy, dir) {
 
 // Fresh build: applyIncrementalTantivyChanges() from rev 0 against a brand-new empty index, since
 // getChangesSince(directories, 0) already returns the whole library as upserts.
+// Returns null when the metadata store is unavailable: it is the only source of truth, so there is no index.
 async function rebuildTantivyIndexFromScratch(directories, tantivy) {
     if (await getCurrentSeq(directories) === null) {
-        return buildTantivyIndexFromFilesystemScan(directories, tantivy);
+        return null;
     }
 
     const dbDir = path.join(directories.root, 'search-index');
@@ -235,10 +217,11 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
     const tempDir = tantivyIndexTempDir(directories);
     const { index, schema } = createEmptyTantivyIndexAt(tantivy, tempDir);
 
-    // A narrow race: metadata store could have gone away between the getCurrentSeq() check above and here.
+    // null: the metadata store went away since the getCurrentSeq() check above, or its change log is truncated.
     const updated = await applyIncrementalTantivyChanges(directories, tantivy, index, schema, 0, 0);
     if (!updated) {
-        return buildTantivyIndexFromFilesystemScan(directories, tantivy);
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        return null;
     }
 
     swapTantivyIndexIntoPlace(indexDir, tempDir);
@@ -251,116 +234,94 @@ async function rebuildTantivyIndexFromScratch(directories, tantivy) {
     return { ...reopened, close: NOOP_CLOSE, lastSeq: updated.lastSeq, lastTagNameChangeSeq: updated.lastTagNameChangeSeq };
 }
 
-// Used when the metadata store is unavailable, so there's no change log to be incremental against.
-async function buildTantivyIndexFromFilesystemScan(directories, tantivy) {
-    const dbDir = path.join(directories.root, 'search-index');
-    if (!fs.existsSync(dbDir)) {
-        fs.mkdirSync(dbDir, { recursive: true });
-    }
-    cleanupStaleTantivyRebuildTempDirs(directories);
-
-    const indexDir = tantivyIndexDir(directories);
-    const tempDir = tantivyIndexTempDir(directories);
-    const { index, schema } = createEmptyTantivyIndexAt(tantivy, tempDir);
-    const writer = index.writer();
-
-    const avatars = fs.readdirSync(directories.characters).filter(file => file.endsWith('.png'));
-    const tagNamesFor = await makeTagNamesResolver(directories, avatars);
-    const favFor = await makeFavResolver(directories, avatars);
-    const tagIdsFor = await makeTagIdsResolver(directories, avatars);
-
-    let batchIndex = 0;
-    for await (const batch of readCharacterBatches(directories)) {
-        for (const character of batch) {
-            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
-        }
-
-        batchIndex++;
-        if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
-            writer.commit();
-        }
-    }
-
-    writer.commit();
-    index.reload();
-    // commit() alone does not release the writer's on-disk lock; waitMergingThreads() does.
-    writer.waitMergingThreads();
-
-    swapTantivyIndexIntoPlace(indexDir, tempDir);
-    const reopened = reopenTantivyIndexAt(tantivy, indexDir);
-
-    return { ...reopened, close: NOOP_CLOSE, lastSeq: null, lastTagNameChangeSeq: null };
-}
-
 // Delete-then-add for every touched id, including updates: tantivy has no update-in-place.
+// Reads the change log one page at a time and commits each page before reading the next; onPageCommitted, if
+// given, gets that page's watermark(s) right after its commit.
 // Returns null if incremental maintenance isn't possible (store unavailable, or change log truncated
 // past its watermark) - caller must fall back to a full rebuild.
-async function applyIncrementalTantivyChanges(directories, tantivy, index, schema, sinceSeq, sinceTagNameChangeSeq) {
-    const currentSeq = await getCurrentSeq(directories);
-    if (currentSeq === null) {
+async function applyIncrementalTantivyChanges(directories, tantivy, index, schema, sinceSeq, sinceTagNameChangeSeq, onPageCommitted = async () => { }) {
+    if (await getCurrentSeq(directories) === null) {
         return null;
     }
 
-    const changesResult = await getChangesSince(directories, Number.isFinite(sinceSeq) ? sinceSeq : 0);
-    if (!changesResult || changesResult.truncated) {
-        return null;
-    }
+    let writer = null;
+    const getWriter = () => writer ?? (writer = index.writer());
 
-    /** @type {Map<string, 'upsert'|'delete'>} */
-    const idsToReindex = new Map(changesResult.changes.map(({ id, op }) => [id, op]));
-
-    // A tag rename doesn't produce a `changes` row for the characters carrying it, so it's tracked separately.
-    const tagNameChangesResult = await getTagNameChangesSince(directories, Number.isFinite(sinceTagNameChangeSeq) ? sinceTagNameChangeSeq : 0);
-    if (!tagNameChangesResult || tagNameChangesResult.truncated) {
-        return null;
-    }
-    if (tagNameChangesResult.tagIds.length > 0) {
-        const affectedIds = await getCharacterIdsForTagIds(directories, tagNameChangesResult.tagIds);
-        for (const id of affectedIds ?? []) {
-            if (!idsToReindex.has(id)) {
-                idsToReindex.set(id, 'upsert');
+    try {
+        let lastSeq = Number.isFinite(sinceSeq) ? sinceSeq : 0;
+        for (;;) {
+            const page = await getChangesSince(directories, lastSeq, { limit: INDEX_BUILD_BATCH_SIZE });
+            if (!page || page.truncated) {
+                return null;
             }
-        }
-    }
-
-    if (idsToReindex.size > 0) {
-        const writer = index.writer();
-        const idsNeedingData = [...idsToReindex.entries()].filter(([, op]) => op !== 'delete').map(([id]) => id);
-        const tagNamesFor = idsNeedingData.length > 0 ? await makeTagNamesResolver(directories, idsNeedingData) : () => '';
-        const favFor = idsNeedingData.length > 0 ? await makeFavResolver(directories, idsNeedingData) : () => false;
-        const tagIdsFor = idsNeedingData.length > 0 ? await makeTagIdsResolver(directories, idsNeedingData) : () => '';
-
-        // Delete-by-term up front for every touched id; upserts need their old doc gone too.
-        for (const [id] of idsToReindex) {
-            writer.deleteDocumentsByTerm(DATA_FIELD, id);
-        }
-
-        // Batched: a cold sync or large import backlog can mean idsNeedingData covers the entire library.
-        for (let i = 0; i < idsNeedingData.length; i += INDEX_BUILD_BATCH_SIZE) {
-            const batchIds = idsNeedingData.slice(i, i + INDEX_BUILD_BATCH_SIZE);
-            // card_json only for the changed ids in this batch, never a map of every row.
-            const staleCards = await getCardJsonByIds(directories, batchIds);
-            const batchCharacters = await mapWithConcurrency(batchIds, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
-                try {
-                    return await processCharacter(id, directories, { shallow: false, cardJson: staleCards.get(id) ?? null });
-                } catch {
-                    // File gone or corrupt - leave it deleted rather than throwing the whole pass away.
-                    return null;
+            if (page.changes.length > 0) {
+                const w = getWriter();
+                // Delete-by-term up front for every touched id; upserts need their old doc gone too.
+                for (const { id } of page.changes) {
+                    w.deleteDocumentsByTerm(DATA_FIELD, id);
                 }
-            });
-            for (let j = 0; j < batchIds.length; j++) {
-                const character = batchCharacters[j];
-                if (!character?.name) continue;
-                writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
+                await addCharacterDocs(directories, tantivy, schema, w, page.changes.filter(({ op }) => op !== 'delete').map(({ id }) => id));
+                w.commit();
             }
+            lastSeq = page.seq;
+            await onPageCommitted({ lastSeq });
+            if (!page.hasMore) break;
         }
 
-        writer.commit();
-        index.reload();
-        writer.waitMergingThreads();
-    }
+        // A tag rename doesn't produce a `changes` row for the characters carrying it, so it's tracked separately.
+        let lastTagNameChangeSeq = Number.isFinite(sinceTagNameChangeSeq) ? sinceTagNameChangeSeq : 0;
+        for (;;) {
+            const page = await getTagNameChangesSince(directories, lastTagNameChangeSeq, { limit: INDEX_BUILD_BATCH_SIZE });
+            if (!page || page.truncated) {
+                return null;
+            }
+            if (page.tagIds.length > 0) {
+                const affectedIds = await getCharacterIdsForTagIds(directories, page.tagIds) ?? [];
+                if (affectedIds.length > 0) {
+                    const w = getWriter();
+                    for (const id of affectedIds) {
+                        w.deleteDocumentsByTerm(DATA_FIELD, id);
+                    }
+                    await addCharacterDocs(directories, tantivy, schema, w, affectedIds);
+                    w.commit();
+                }
+            }
+            lastTagNameChangeSeq = page.seq;
+            await onPageCommitted({ lastTagNameChangeSeq });
+            if (!page.hasMore) break;
+        }
 
-    return { lastSeq: currentSeq, lastTagNameChangeSeq: tagNameChangesResult.seq };
+        return { lastSeq, lastTagNameChangeSeq };
+    } finally {
+        if (writer) {
+            index.reload();
+            // commit() alone does not release the writer's on-disk lock; waitMergingThreads() does.
+            writer.waitMergingThreads();
+        }
+    }
+}
+
+// Adds a doc per id, INDEX_BUILD_BATCH_SIZE ids at a time; card_json and tag/fav lookups are per batch.
+async function addCharacterDocs(directories, tantivy, schema, writer, ids) {
+    for (let i = 0; i < ids.length; i += INDEX_BUILD_BATCH_SIZE) {
+        const batchIds = ids.slice(i, i + INDEX_BUILD_BATCH_SIZE);
+        const tagNamesFor = await makeTagNamesResolver(directories, batchIds);
+        const favFor = await makeFavResolver(directories, batchIds);
+        const tagIdsFor = await makeTagIdsResolver(directories, batchIds);
+        const staleCards = await getCardJsonByIds(directories, batchIds);
+        const batchCharacters = await mapWithConcurrency(batchIds, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
+            try {
+                return await processCharacter(id, directories, { shallow: false, cardJson: staleCards.get(id) ?? null });
+            } catch {
+                // File gone or corrupt - leave it deleted rather than throwing the whole pass away.
+                return null;
+            }
+        });
+        for (const character of batchCharacters) {
+            if (!character?.name) continue;
+            writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
+        }
+    }
 }
 
 // Opens the persisted index as-is (no catch-up, no watermark write) so a first request can serve whatever
@@ -395,19 +356,23 @@ async function openPersistedTantivyIndexStale(directories, tantivy) {
 }
 
 // Updates an already-open handle in place when possible, else falls back to a full rebuild.
+// Returns null when the metadata store is unavailable.
 async function loadOrUpdateTantivyIndex(directories, tantivy, previous) {
     if (await getCurrentSeq(directories) === null) {
-        return buildTantivyIndexFromFilesystemScan(directories, tantivy);
+        return null;
     }
 
     if (previous?.index) {
-        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastSeq, previous.lastTagNameChangeSeq ?? null);
-        if (updated) {
-            if (updated.lastSeq !== null) {
-                await setMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY, String(updated.lastSeq));
-                await setMetaValue(directories, TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, String(updated.lastTagNameChangeSeq));
-                await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
+        const updated = await applyIncrementalTantivyChanges(directories, tantivy, previous.index, previous.schema, previous.lastSeq, previous.lastTagNameChangeSeq ?? null, async ({ lastSeq, lastTagNameChangeSeq }) => {
+            if (lastSeq !== undefined) {
+                await setMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY, String(lastSeq));
             }
+            if (lastTagNameChangeSeq !== undefined) {
+                await setMetaValue(directories, TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, String(lastTagNameChangeSeq));
+            }
+        });
+        if (updated) {
+            await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
             return { ...previous, ...updated };
         }
     }
@@ -445,6 +410,9 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly, ta
         (previous) => loadOrUpdateTantivyIndexAndNotify(directories, engine.tantivy, previous),
         () => openPersistedTantivyIndexStale(directories, engine.tantivy),
     );
+    if (!tantivyIndex) {
+        return { hits: [], total: 0, backend: 'unavailable' };
+    }
     let query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
     if (!query) {
         return { hits: [], total: 0, backend: 'tantivy' };
@@ -504,6 +472,7 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
         (previous) => loadOrUpdateTantivyIndexAndNotify(directories, engine.tantivy, previous),
         () => openPersistedTantivyIndexStale(directories, engine.tantivy),
     );
+    if (!tantivyIndex) return { ids: [], total: 0, backend: 'unavailable' };
 
     const query = buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly });
     if (!query) return { ids: [], total: 0, backend: 'tantivy' };
@@ -553,6 +522,9 @@ export async function rebuildCharacterSearchIndex(handle, directories) {
     }
 
     const signature = await getFreshnessSignature(directories);
-    await indexCoordinator.forceRebuild(handle, signature, () => rebuildTantivyIndexFromScratch(directories, engine.tantivy));
+    const rebuilt = await indexCoordinator.forceRebuild(handle, signature, () => rebuildTantivyIndexFromScratch(directories, engine.tantivy));
+    if (!rebuilt) {
+        return { ok: false, backend: 'unavailable' };
+    }
     return { ok: true, backend: 'tantivy' };
 }
