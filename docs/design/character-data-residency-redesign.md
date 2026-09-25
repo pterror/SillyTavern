@@ -2643,6 +2643,11 @@ Not open questions — implementation gaps, listed here so they are not mistaken
   the parsed object, and keeping a character's `chat_size` current on chat writes. The chat write
   path does bump a character's `date_last_chat`, and a group's `date_last_chat` and `chat_size`.
   Phase 1 / §3.3.
+- **Decision 3** (`this_chid` / `data-chid` removed completely): `data-chid` is gone, but `this_chid`
+  is still exported from `character-store.js` on purpose, as a back-compat shim for third-party
+  extensions, because breaking them is forbidden. It is recomputed from `this_avatar` on every selection
+  change and every `charactersStore` add or remove, and the root `.eslintrc.cjs` forbids importing it anywhere in `public/` except
+  `script.js` and `character-store.js` (`85ea02557`). Phase 4a/4b / §2.3.
 
 One implementation detail wants a decision rather than a fix: the reconciler uses
 `fsPromises.readdir` rather than the async `opendir` §3.2 specified, materializing the whole filename
