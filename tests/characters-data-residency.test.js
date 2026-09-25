@@ -316,9 +316,20 @@ describe('a character whose PNG is missing', () => {
         expect(batch).toHaveLength(1);
         expect(batch[0].data.description).toBe('from-db');
     });
+
+    test('/all without search still lists it, from its row', async () => {
+        await post('create', { ch_name: 'Alice', description: 'from-db', file_name: 'Alice' });
+        await post('create', { ch_name: 'Bob', description: 'b', file_name: 'Bob' });
+        fs.rmSync(path.join(directories.characters, 'Alice.png'));
+
+        const all = await (await post('all', {})).json();
+        const byAvatar = Object.fromEntries(all.map(c => [c.avatar, c]));
+        expect(Object.keys(byAvatar).sort()).toEqual(['Alice.png', 'Bob.png']);
+        expect(byAvatar['Alice.png'].data.description).toBe('from-db');
+    });
 });
 
-describe('/all without search reads card_json per batch', () => {
+describe('/all without search streams the characters rows', () => {
     test('returns the db\'s content for an edited character and the file\'s for an untouched one', async () => {
         await post('create', { ch_name: 'Alice', description: 'a', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'b', file_name: 'Bob' });
