@@ -1217,8 +1217,10 @@ body .panelControlBar {
     pointer-events: none;
 }
 
-.mes q:before,
-.mes q:after {
+.mes_text q:before,
+.mes_text q:after,
+.mes_reasoning q:before,
+.mes_reasoning q:after {
     content: '';
 
 }
