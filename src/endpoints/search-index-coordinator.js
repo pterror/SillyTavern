@@ -32,8 +32,9 @@ function spawnSearchIndexWorker(workerData) {
 /**
  * The request-process side of the search indexes. Per handle it runs one search-index-worker.js, which owns the
  * only writer of that user's indexes and does every build and catch-up. Searches run here, on read-only readers
- * that reload when the worker reports a commit, so nothing on the request path waits for index maintenance -
- * only a handle's very first request waits for its index to be openable.
+ * that reload when the worker reports a commit, so nothing on the request path waits for index maintenance.
+ * Boot starts the worker of every handle whose index exists (start()); otherwise the first request spawns it,
+ * and a request that arrives before its index is openable waits for that.
  * @param {object} [options]
  * @param {(workerData: object) => SearchIndexWorker} [options.spawnWorker]
  * @param {(dir: string) => SearchIndexReader} [options.openIndex] Defaults to tantivy's Index.open().
@@ -228,6 +229,16 @@ export function createSearchIndexCoordinator({
 
     return {
         /**
+         * Starts the handle's worker if it isn't running. Doesn't wait for its indexes: the readers open when the
+         * worker reports each one ready.
+         * @param {string} handle
+         * @param {import('../users.js').UserDirectoryList} directories
+         */
+        async start(handle, directories) {
+            await getEntry(handle, directories);
+        },
+
+        /**
          * The reader for a handle's index, once the worker has it openable. null when the index can't exist
          * (the metadata store is unavailable).
          * @param {string} handle
@@ -280,6 +291,14 @@ export function createSearchIndexCoordinator({
 }
 
 const searchIndexCoordinator = createSearchIndexCoordinator();
+
+/**
+ * @param {string} handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ */
+export function startSearchWorker(handle, directories) {
+    return searchIndexCoordinator.start(handle, directories);
+}
 
 /**
  * @param {string} handle

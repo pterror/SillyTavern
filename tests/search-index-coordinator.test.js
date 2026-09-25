@@ -101,6 +101,23 @@ describe('createSearchIndexCoordinator()', () => {
         expect(resolved.dir).toBe('/groups');
     });
 
+    test('start() spawns the worker without waiting for ready; readers open on ready, and a later request reuses them', async () => {
+        const { coordinator, workers, openIndex } = setup();
+        await coordinator.start('user1', directories);
+        expect(workers).toHaveLength(1);
+        expect(workers[0].workerData).toMatchObject({ handle: 'user1', directories });
+
+        workers[0].send({ type: 'ready', target: 'characters', dir: '/chars' });
+        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups' });
+        expect(openIndex.mock.calls.map(([dir]) => dir)).toEqual(['/chars', '/groups']);
+
+        await coordinator.start('user1', directories);
+        const reader = await coordinator.getIndex('user1', directories, 'characters');
+        expect(reader.dir).toBe('/chars');
+        expect(workers).toHaveLength(1);
+        expect(openIndex).toHaveBeenCalledTimes(2);
+    });
+
     test('concurrent first requests for a handle share one worker', async () => {
         const { coordinator, workers } = setup();
         const calls = [1, 2, 3].map(() => coordinator.getIndex('user1', directories, 'characters'));

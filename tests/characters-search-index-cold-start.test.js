@@ -173,6 +173,24 @@ describe('characters-search-index.js: cold-start search does not block on catchi
         expect(r3.ids.sort()).toEqual(expected);
     }, 20000);
 
+    test('startSearchWorkerIfIndexed() starts no worker for a never-indexed directory, and starts one for an indexed directory', async () => {
+        const engine = await searchEngine.resolveSearchEngine();
+        if (engine.tier !== 'tantivy') {
+            return;
+        }
+
+        await writeCard('Epsilon0');
+        await metadataDb.bootstrapIfNeeded(directories);
+        expect(await searchIndex.startSearchWorkerIfIndexed('boot-handle', directories)).toBe(false);
+
+        await searchIndex.rebuildCharacterSearchIndex('warm-handle-3', directories);
+        await searchCoordinator.disposeSearchWorkers('warm-handle-3');
+
+        expect(await searchIndex.startSearchWorkerIfIndexed('boot-handle', directories)).toBe(true);
+        const result = await searchIndex.searchCharacterIds('boot-handle', directories, 'Epsilon0');
+        expect(result.ids).toEqual(['Epsilon0.png']);
+    }, 20000);
+
     test('a cold search against a directory that was never indexed before waits for the worker\'s first full build, and still returns correct results', async () => {
         const engine = await searchEngine.resolveSearchEngine();
         if (engine.tier !== 'tantivy') {

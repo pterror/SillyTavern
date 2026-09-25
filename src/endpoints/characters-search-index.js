@@ -9,7 +9,7 @@ import {
 import { processCharacter } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter, stringToSortKey } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
-import { getSearchIndex, rebuildSearchIndex } from './search-index-coordinator.js';
+import { getSearchIndex, rebuildSearchIndex, startSearchWorker } from './search-index-coordinator.js';
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 import { timePhase } from '../search-timing.js';
@@ -551,6 +551,23 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
         timingLabel: 'chars',
     });
     return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, order: /** @type {number} */ (r.order) }))), total, backend: 'tantivy' };
+}
+
+/**
+ * Starts the user's search index worker when their characters index exists, without waiting for the index to be
+ * ready. A user with no index is left to their first search, which builds it.
+ * @param {string} handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {Promise<boolean>} Whether the worker was started.
+ */
+export async function startSearchWorkerIfIndexed(handle, directories) {
+    const engine = await resolveSearchEngine();
+    // tantivy's own Index.exists() check, without its throw on a missing dir.
+    if (engine.tier === 'unavailable' || !fs.existsSync(path.join(tantivyIndexDir(directories), 'meta.json'))) {
+        return false;
+    }
+    await startSearchWorker(handle, directories);
+    return true;
 }
 
 // Explicit repair endpoint: a full rebuild-and-swap in the handle's search index worker. Resolves once the
