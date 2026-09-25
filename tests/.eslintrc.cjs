@@ -1,26 +1,32 @@
 module.exports = {
     root: true,
-    plugins: [
-        'jest',
-        'playwright',
-    ],
     extends: [
         'eslint:recommended',
-        'plugin:jest/recommended',
-        'plugin:playwright/recommended',
     ],
     env: {
         es6: true,
         node: true,
         browser: true,
         jquery: true,
-        'jest/globals': true,
     },
     parserOptions: {
         ecmaVersion: 'latest',
         sourceType: 'module',
     },
     overrides: [
+        {
+            files: ['**/*.test.js'],
+            plugins: ['jest'],
+            extends: ['plugin:jest/recommended'],
+            env: {
+                'jest/globals': true,
+            },
+        },
+        {
+            files: ['**/*.e2e.js', 'frontend/**/*.js'],
+            plugins: ['playwright'],
+            extends: ['plugin:playwright/recommended'],
+        },
     ],
     ignorePatterns: [
         '*.min.js',
