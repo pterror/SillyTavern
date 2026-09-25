@@ -9,8 +9,9 @@ coordination surface.
 
 ## Status, and a warning about staleness
 
-The design body was written against commit `29b01e194`. Phases 0–2 have since been implemented, and
-§9 has been reconciled against the shipped code at `11ee9c303` (150 commits later). Read §9 for what
+The design body was written against commit `29b01e194`. Phases 0–2 were reconciled against the
+shipped code at `11ee9c303` and corrected since. Phases 3, 4, 5 and 5b have also landed; §9 lists
+their commits but does not audit them item by item. Phase 6 has not started. Read §9 for what
 actually exists; the design sections above it describe intent and are marked inline where the
 implementation superseded or diverged from them.
 
@@ -19,10 +20,16 @@ implementation superseded or diverged from them.
 | 0a — keyed DOM diff in `printCharacters` | `16f460b82` | shipped, matches spec |
 | 0b — versioned immutable thumbnail caching | `afbd83b9b` | **shipped in part** — the client emits `?v=` when it knows a version (`a057fe43f`). Backgrounds and personas get versions from their list endpoints. Character avatars don't, because only `/manifest` returns them and no client calls it, so avatar thumbnails still take the uncacheable 302 first |
 | 0c — `/duplicate` server wedge | `ade258e49` | fixed — parse corrected; the suffix parse is capped at 15 digits and the loop at 10,000 attempts (`0b0ed9fd5`) |
-| 0d — `writeExtensionField` dual-accept | — | not started |
+| 0d — `writeExtensionField` dual-accept | `cb594ba0d` | shipped — takes an avatar or a legacy chid; a number or digit string resolves positionally, with a `console.warn` |
 | 1 — SQLite metadata store | `f872377eb` | shipped; schema as specced, with deviations listed in §9. Two of the three freshness mechanisms remain: write hooks and a boot-time reconciler that only inserts rows for new files. The directory watcher was removed in `9ae4ef934` (§9) |
 | 2 — browse pagination | `6ac50dca2` | **shipped in part** — `/query` (with search and seeded random sort), `/exists` and `/changes` exist, and the client uses all three. The tantivy index is id-keyed, persisted and maintained incrementally from the change log. Not implemented: `facets` and `rank` in `/query`, estimated totals, and change-log pruning (§9) |
-| 3 onward | — | not started |
+| 3 — tags server-side | `a309c3814` | landed (`a309c3814`, `93ab7464c`, `d0cdd8a6e`); not audited against §9 |
+| 4a/4b — `entity.id` as avatar; `this_chid`/`data-chid` removal | `53e79d4b0` | landed (`53e79d4b0`, `c1d9b5505`, `05a589f57`, `e92e02b70`, `ab9bf1aa8`); not audited. `this_chid` survives as a back-compat export (§2.3) |
+| 4c — PromptManager legacy path | `e5c307dc8` | landed; not audited |
+| 4d — filename migration | `7452c988e` | landed (`7452c988e`, `3c5e3bae3`, `8aa6ae1f5`, `29eec6c48`); not audited |
+| 5 — client residency | `b37676e74` | landed in parts (`b37676e74`, `2b67cc7df`, `24073de39`, `bac60a4bd`, `6fca6d54c`, `d7ca92b44`, `5825088c4`); not audited |
+| 5b — random sort redesign | `411e91b3e` | landed (`411e91b3e`, `96896367a`, `a235aca34`); not audited |
+| 6 — cache and local search | — | not started: `character-cache.js` still uses localforage, and there is no local search index |
 
 Three things anyone implementing from here should know:
 
@@ -92,6 +99,10 @@ on which figure is exact.
 
 ### 1.1 What the client does today
 
+**Superseded by `5825088c4` and later work:** this is the client at `29b01e194`. The browse list
+now pages through `/query`, the cache syncs through `/changes`, and `entity.id` is the avatar. §9
+describes the current client.
+
 - `characters` (`public/script.js`) is a plain array holding every character. `charactersStore`
   (`public/scripts/entity-store.js`) is an `EntityStore` wrapping *that same array in place*, keyed
   by `avatar`. It gives O(1) keyed reads and change notification, but it does not reduce residency:
@@ -120,8 +131,10 @@ on which figure is exact.
 ### 1.2 What the server does today
 
 This subsection is the "before" picture, read at `29b01e194`. Phases 0–2 have since landed and
-invalidated three of the claims below; each is marked inline. Everything unmarked still holds at
-`11ee9c303`.
+invalidated three of the claims below; each is marked inline. Everything unmarked held at
+`11ee9c303`. **Superseded by `f872377eb` and later work:** the server now answers browse, search and
+change-feed requests from the metadata store and the tantivy index (§9); the unmarked claims below
+have not been re-checked since `11ee9c303`.
 
 - `/api/characters/all` browse path (`src/endpoints/characters.js:1943`, `:1429` (gone: the paginated `/all` branch was removed)) is fake
   pagination: `readdirSync` over the whole directory → `processCharacter()` per file → sort → slice.
@@ -178,6 +191,9 @@ invalidated three of the claims below; each is marked inline. Everything unmarke
 
 ### 1.3 Other scaling landmines found in passing
 
+**Superseded in part by `0b0ed9fd5`, `42f93d5aa` and later work:** the `/duplicate` wedge is fixed
+and the boot-time `verify()` scan is gone. The other items have not been re-checked.
+
 Not in scope for this document, but they will bite at the same scale and should get their own
 tickets:
 
@@ -219,6 +235,10 @@ long-digit-suffix filename — see phase 0c in §9.
 ## 2. Identity
 
 ### 2.1 Is the avatar filename a safe primary key?
+
+**Superseded by `7452c988e` and later work (phase 4d):** ids are minted UUIDv7s at create and import,
+`/rename` is a card-data edit that keeps the id (`3c5e3bae3`), and `getPngName()` is gone. The
+analysis below is of the code at `29b01e194`.
 
 Verified against the code: the answer is partly. It is already the de-facto key
 everywhere, and it has three defects: it mutates on rename, it is recycled after delete, and uniqueness has escape hatches.
@@ -337,6 +357,17 @@ destructive-existence cluster safe: with no id recycling, "not found" means "not
 
 **SETTLED:** this gets finished completely, and it is not a blocker.
 
+**Superseded by `53e79d4b0` and later work:** the migration below has landed, and the table and
+prose describe the code at `29b01e194`. No `data-chid` attribute is written any more, so rows are
+identified by `data-avatar` alone. What remains:
+
+- `this_chid` is still exported from `character-store.js`, as a back-compat shim for extensions.
+  It is recomputed from `this_avatar` whenever the selection or `charactersStore` changes, and an
+  eslint rule forbids first-party use.
+- Group generation is avatar-based: `activatedMembers` holds avatars (`05a589f57`).
+- A few `characters.indexOf` calls remain, in `script.js`, `app-selection-state.js`,
+  `slash-commands/commands/generation.js` and `tags.js`.
+
 The fork is already most of the way through it. `this_avatar` exists in `script.js` and is
 documented as the source of truth for selection; `this_chid` is demoted to a derived cache
 recomputed in `setCharacterId()`; `charactersStore` is `new EntityStore(characters, c => c.avatar)`.
@@ -398,6 +429,9 @@ thing under pagination — and compares numeric ids inside, which is a local fix
 These are the actual work: each needed a decision rather than a rename. All three are now settled,
 (i) and (ii) as approved fixes and (iii) as a deletion, but the reasoning is kept because it is what
 the implementation has to preserve.
+
+**Superseded by `53e79d4b0` and later work:** (i) `entity.id` is the avatar (`53e79d4b0`); (ii) server
+search scores are keyed by avatar; (iii) the PromptManager legacy path is deleted (`e5c307dc8`).
 
 **(i) `entity.id` as a cross-structure join key.** `getEntitiesList` (`character-list.js:594`) builds
 `characterToEntity(item, index)`; `filters.js:349` caches fuzzy scores keyed by Fuse's positional
@@ -809,6 +843,11 @@ not change, only where the number comes from.
 
 ## 4. Full-collection semantics
 
+**Superseded by `b37676e74` and later work (phase 5):** the counts and site lists in §4–§4.4 are
+from the audit at `29b01e194`. The client now reads through `CharacterRepository` (`b37676e74`), plain
+browse pages through `/query` (`24073de39`), and group members resolve asynchronously
+(`bac60a4bd`).
+
 The audit sorted every `characters` access. Counts by category:
 
 - **(a) identity/selection** — `script.js` ~16, `group-chats.js` ~16, `BulkEditOverlay.js` ~7,
@@ -1050,6 +1089,10 @@ tagged path today round-trips avatar → `indexOf` → position purely to satisf
 expectation; that round trip deletes itself.
 
 Random sort order is a UX defect, redesigned here.
+
+**Superseded by `411e91b3e` and later work (phase 5b):** `sortEntitiesList` now orders random by a
+seeded hash (`compareByRandomSeed`) instead of `shuffle()`, and `/random` picks through a
+seeded-random `/query` (`a235aca34`). The description below is of the code at `29b01e194`.
 
 What it is: the dropdown option is `data-field="name" data-order="random"` (`index.html:6106`), so
 random rides on `sort_order`, not `sort_field`. `sortEntitiesList` (`power-user.js:2740`) calls
@@ -1692,14 +1735,11 @@ plus one stays inside `Number.MAX_SAFE_INTEGER` and `suffix++` always advances. 
 iteration count: `MAX_DUPLICATE_ATTEMPTS = 10000`, after which the duplicate fails with a 500. Since
 `e5bb93d74` a suffix counts as taken if its file or its row exists.
 
-**0d — NOT SHIPPED.** `writeExtensionField` (`public/scripts/extensions.js:2231`) still takes an
-avatar only, still goes straight to `charactersStore.get(characterAvatar)`, and still
-`console.warn`s and returns on a miss. No discriminator, no chid branch, no deprecation warning.
-GroupGreetings is still silently failing to save.
-
-The work, unchanged: detect the form (`typeof x === 'number' || /^\d+$/.test(x)` → chid, else id) and
-resolve accordingly, with a deprecation warning on the chid branch. This restores upstream
-compatibility and needs no cooperation from any extension author.
+**0d — SHIPPED (`cb594ba0d`).** `writeExtensionField(characterIdOrAvatar, key, value)`
+(`public/scripts/extensions.js:2231`) detects the form as specified: `typeof x === 'number' ||
+/^\d+$/.test(x)` is a legacy chid, resolved positionally through `context.characters[Number(x)]`
+with a `console.warn` asking for the avatar instead; anything else is an avatar looked up in
+`charactersStore`. A miss on either branch warns and returns.
 *Files:* `public/scripts/extensions.js`.
 
 ### Phase 1 — server metadata store — SHIPPED (`f872377eb`)
@@ -1931,17 +1971,20 @@ pruning.
 
 ### Phase 3 — tags server-side
 
+*Commits:* `a309c3814`, `93ab7464c`, `d0cdd8a6e`. Not audited against the items below.
+
 `tag_map` → `character_tags`; `tag_usage` aggregate; the `/api/tags/for`, `/assign`, `/unassign`,
 `/usage` endpoints; client `tags.js` reads through them. Tag *definitions* stay client-resident.
 
 *Files:* `src/endpoints/tags.js`, `src/character-metadata-db.js`, `public/scripts/tags.js`,
 `public/scripts/tags-cache.js`.
-*Depends on:* phase 1, which has shipped — so phase 3 is unblocked, and it is the next server-side
-work available. Runs parallel with the remaining phase 2 items; disjoint files apart from the
-metadata module. Note `character_tags` and the trigger-maintained `tag_usage` table already exist
-from phase 1, so this phase is the endpoints and the client migration, not the schema.
+*Depends on:* phase 1. Note `character_tags` and the trigger-maintained `tag_usage` table came from
+phase 1, so this phase was the endpoints and the client migration, not the schema.
 
 ### Phase 4 — identity cutover (client-heavy, must be split)
+
+*Commits:* 4a/4b `53e79d4b0`, `c1d9b5505`, `05a589f57`, `e92e02b70`, `ab9bf1aa8`; 4c `e5c307dc8`; 4d
+`7452c988e`, `3c5e3bae3`, `8aa6ae1f5`, `29eec6c48`. Not audited against the items below.
 
 - **4a.** `entity.id` becomes the id string: `characterToEntity`, the filter score cache key, the
   sort comparator's key, `BulkEditOverlay`'s numeric comparisons, and the server-search remap
@@ -1979,6 +2022,9 @@ sequential rather than parallel — or one agent. 4d is server-side and can run 
 
 ### Phase 5 — client residency
 
+*Commits:* `b37676e74`, `2b67cc7df`, `24073de39`, `bac60a4bd`, `6fca6d54c`, `d7ca92b44`, `5825088c4`
+(the last is labelled "client half"). Not audited against the items below.
+
 `CharacterRepository`; `getEntitiesList` inverted to a page query; `printCharacters` as a
 server-paging controller; the §4.2 destructive-existence sites converted to `repo.exists()` with
 abort-on-failure; `getGroupMembers` async with an explicit unresolved list; the §4.4 enumeration
@@ -1989,10 +2035,8 @@ paths.
 `public/scripts/tags.js`, `public/scripts/utils.js`,
 `public/scripts/slash-commands/SlashCommandCommonEnumsProvider.js`,
 `public/scripts/RossAscends-mods.js`, `public/scripts/power-user.js`.
-*Depends on:* phases 2, 3, 4a, 4b. Phase 2 shipped only its browse half, and this phase is where the
-gap bites: `/query` currently 400s on `filter.search`, `sort.field: 'random'` and
-`sort.field: 'search'`, so the remaining phase 2 work is a hard prerequisite rather than a parallel
-track.
+*Depends on:* phases 2, 3, 4a, 4b. `/query` now accepts `filter.search`, `sort.field: 'random'` and
+`sort.field: 'search'` (`96896367a`), which this phase needed.
 
 This is the largest phase and the one where "correctness over diff size" costs the most, because
 every one of the ~150 call sites has to be classified rather than mechanically rewritten.
@@ -2006,6 +2050,8 @@ sites are the same either way.
 
 ### Phase 5b — random sort redesign (small, self-contained)
 
+*Commits:* `411e91b3e`, `96896367a`, `a235aca34`. Not audited against the items below.
+
 Seeded hash comparator replacing `shuffle()`; the `sort: { field: 'random', seed }` wire shape and
 seed-per-request plumbing; the folders-shuffled-in fix that falls out of it; the seed minted lazily
 into `accountStorage` and the reroll button beside the sort dropdown, resetting to page 1 (§5.3; all
@@ -2018,6 +2064,9 @@ reroll control lands there).
 independently, and doing so fixes the visible jumping before the rest of the plan arrives.
 
 ### Phase 6 — cache and local search
+
+Not started: `character-cache.js` still stores through localforage, and there is no local search
+index.
 
 Raw-IDB two-tier store; quota detection and the frecency budget (§7); the MiniSearch index at
 shallow scope (§8) with its own capped budget counted against the same byte total, and its sync to
@@ -2041,11 +2090,13 @@ Where they live: `src/endpoints/extensions.js:498-523` scans three sources — b
 (`public/scripts/extensions/third-party/`, type `global`), with per-user winning name conflicts. The
 per-user directory is easy to miss and holds one extension.
 
-One installed extension is already broken today, which reframes the question (phase 0d fixes it; see
-the settled note below). `writeExtensionField` in this fork now takes an avatar
+One installed extension was broken when this was surveyed, which reframes the question (phase 0d,
+now shipped as `cb594ba0d`, fixes it on the fork's side; see the settled note below).
+`writeExtensionField` in this fork took an avatar
 (`extensions.js:2231`, commits `8d28455b3` / `a682827c3`), but Extension-GroupGreetings still passes
-an index (`ContextUtil.js:188`). The `charactersStore.get(index)` misses, logs a `console.warn`, and
-no-ops, so group greeting mode has been silently failing to save since that change landed. The
+an index (`ContextUtil.js:188`). The `charactersStore.get(index)` missed, logged a `console.warn`,
+and no-oped, so group greeting mode silently failed to save until `cb594ba0d` restored the chid
+branch. The
 extension API's index contract is already partially broken and nobody noticed, which is evidence
 about how loudly these failures announce themselves.
 
@@ -2592,7 +2643,6 @@ Not open questions — implementation gaps, listed here so they are not mistaken
   the parsed object, and keeping a character's `chat_size` current on chat writes. The chat write
   path does bump a character's `date_last_chat`, and a group's `date_last_chat` and `chat_size`.
   Phase 1 / §3.3.
-- **Decision 16** (`writeExtensionField` dual-accept): phase 0d, not started.
 
 One implementation detail wants a decision rather than a fix: the reconciler uses
 `fsPromises.readdir` rather than the async `opendir` §3.2 specified, materializing the whole filename
