@@ -100,4 +100,20 @@ test.describe('Drawer front order', () => {
         await page.locator('#rightNavDrawerIcon').click();
         await expect(page.locator('#right-nav-panel')).toBeVisible();
     });
+
+    test('API connections opened over pinned fullscreen character management is on top', async ({ page }) => {
+        await page.locator('#rightNavDrawerIcon').click();
+        await setPin(page, '#rm_button_panel_pin', true);
+        await expect(page.locator('#right-nav-panel.galleryFullscreen')).toBeVisible();
+
+        await page.locator('#API-status-top').click();
+        const apiBlock = page.locator('#rm_api_block');
+        await expect(apiBlock).toBeVisible();
+        await expect(page.locator('#right-nav-panel')).toBeHidden();
+        // Visible alone doesn't mean on top: the element under the drawer's center must be the drawer's own.
+        await expect.poll(() => apiBlock.evaluate(el => {
+            const rect = el.getBoundingClientRect();
+            return el.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
+        })).toBe(true);
+    });
 });

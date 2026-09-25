@@ -8092,8 +8092,8 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
 // Desktop layout has 3 zones: left (#left-nav-panel, .zoomed_avatar_container), center (#sheld and most
 // drawers), right (#right-nav-panel, #char-info-panel). galleryFullscreen spans all 3 zones;
 // charInfoFullscreen spans center only. Only pinnable drawers (see doNavbarIconClick's sweep) can survive
-// open behind another zone occupant, but any drawer opening can evict one, so all are zone-aware here.
-const ZONE_DRAWER_IDS = ['left-nav-panel', 'right-nav-panel', 'char-info-panel', 'WorldInfo', 'PersonaManagement', 'rm_extensions_block', 'Backgrounds', 'user-settings-block', 'AdvancedFormatting'];
+// open behind another zone occupant, but any drawer opening can evict one, so every top-bar drawer is zone-aware.
+const ZONE_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
 // The 4 pinnable panels, which overlap each other entirely in the mobile layout (see mobile-styles.css).
 const MOBILE_OVERLAY_PANEL_IDS = ['right-nav-panel', 'char-info-panel', 'left-nav-panel', 'WorldInfo'];
 function getDrawerZones(id) {
@@ -8125,11 +8125,12 @@ function recomputeDrawerFronts() {
     const mobileFront = topOf(MOBILE_OVERLAY_PANEL_IDS);
     for (const id of MOBILE_OVERLAY_PANEL_IDS) document.getElementById(id)?.classList.toggle('frontMobileOverlay', id === mobileFront);
 
+    const zoneDrawerIds = Array.from(document.querySelectorAll(ZONE_DRAWER_SELECTOR), el => el.id);
     const zoneTop = {};
-    for (const zone of ['left', 'center', 'right']) zoneTop[zone] = topOf(ZONE_DRAWER_IDS.filter(id => getDrawerZones(id).includes(zone)));
-    for (const id of ZONE_DRAWER_IDS) {
+    for (const zone of ['left', 'center', 'right']) zoneTop[zone] = topOf(zoneDrawerIds.filter(id => getDrawerZones(id).includes(zone)));
+    for (const id of zoneDrawerIds) {
         const zones = getDrawerZones(id);
-        document.getElementById(id)?.classList.toggle('frontInZone', zones.length > 0 && zones.every(zone => zoneTop[zone] === id));
+        document.getElementById(id).classList.toggle('frontInZone', zones.length > 0 && zones.every(zone => zoneTop[zone] === id));
     }
 }
 
