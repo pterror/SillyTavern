@@ -577,12 +577,18 @@ characters(
   version       TEXT,
   creator_notes TEXT,               -- only if shallowCharactersIncludeCreatorNotes
   shallow_json  BLOB NOT NULL,      -- the toShallow() projection, ready to ship
-  rev           INTEGER NOT NULL    -- monotonic, from the change log
+  rev           INTEGER NOT NULL    -- monotonic, from the change log. SUPERSEDED by 917e4a636:
+                                    -- the code calls this column change_seq
 )
 character_tags(character_id TEXT, tag_id TEXT, PRIMARY KEY(character_id, tag_id))
 tag_usage(tag_id TEXT PRIMARY KEY, count INTEGER NOT NULL)   -- maintained by trigger
-changes(rev INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, op TEXT NOT NULL)
-meta(key TEXT PRIMARY KEY, value TEXT)                        -- schema version, oldest retained rev
+changes(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, op TEXT NOT NULL)
+                                    -- SUPERSEDED by 917e4a636: specced as rev; the code names it
+                                    -- seq. It also has a fields TEXT column (71d7d8412): the
+                                    -- changed fields, or NULL for a whole-record change
+meta(key TEXT PRIMARY KEY, value TEXT)                        -- schema version, oldest retained seq
+                                    -- SUPERSEDED by 917e4a636: specced as "oldest retained rev".
+                                    -- Neither value is stored; §9 phase 1 lists what meta holds
 ```
 
 Indexes: `(name_fold)`, `(date_added)`, `(date_last_chat)`, `(chat_size)`, `(fav, name_fold)`,
@@ -940,8 +946,14 @@ POST /api/characters/query
   page: number, pageSize: number,
   want?: ('rows'|'total'|'facets'|'rank')[]
 }
-→ { rows: Shallow[], total: number, facets?: {...}, rev: number, searchBackend?: string }
+→ { rows: Shallow[], total: number, facets?: {...}, seq: number, searchBackend?: string }
 ```
+
+**Superseded (see §9 phase 2):** the response field specced here as `rev` is `seq` in the code
+(`917e4a636`). The shipped endpoint also takes `ifSeq`, `filter.includeGroups` and `sort.seed`
+(required for random sort). `want` accepts `rows`, `total` and `hashes`, and `facets` and `rank` 400.
+The response has three variants: `{ seq, unchanged: true }` when `ifSeq` matches, the JSON rows
+response above without `facets`, and a binary hashes response for `want: ['hashes']`.
 
 Notes on the shape:
 
@@ -970,7 +982,8 @@ Notes on the shape:
   total is returned, it is scope-honest.
 - `sort: 'search'` is only valid with `filter.search`, matching the existing UI rule
   (`verifyCharactersSearchSortRule`, `script.js:1224`).
-- `rev` lets the client detect that its cache is stale relative to what it just rendered.
+- `seq` lets the client detect that its cache is stale relative to what it just rendered.
+  **Superseded by `917e4a636`:** specced as `rev`; the code names it `seq`.
 - Combining a full-text search with a SQL filter and SQL ordering means one of the two engines has
   to feed the other. Both directions are workable: push the FTS hit-id set into SQLite as a
   temporary table and let SQLite do the filtering and ordering (correct, and the only option for
@@ -1002,17 +1015,23 @@ It is still needed for the cache: the client has to learn what changed since it 
 Replace `/api/characters/manifest` with a change feed:
 
 ```
-POST /api/characters/changes { sinceRev: number }
-→ { rev: number, changes: [{ id, op: 'upsert'|'delete' }], truncated: boolean }
+POST /api/characters/changes { sinceSeq: number }
+→ { seq: number, changes: [{ id, op: 'upsert'|'delete', fields?: string[]|null }], truncated: boolean }
 ```
+
+**Superseded by `917e4a636` and `71d7d8412`:** specced as `sinceRev` and `rev`; the code names them
+`sinceSeq` and `seq`. An upsert entry also carries `fields`: the union of fields changed in the
+window, or `null` (refetch the whole record) when any change in the window was a whole-record change
+or a delete.
 
 Shipped in phase 2 to this contract, with one addition the contract should absorb: the response
 collapses to **one entry per id**, latest op winning. Also note nothing prunes the `changes` log yet,
-so `truncated` can currently only fire for a nonsense `sinceRev` — the bounded-window behaviour
+so `truncated` can currently only fire for a nonsense `sinceSeq` — the bounded-window behaviour
 described below is designed but not built. `/api/characters/manifest` is still live and still serving
-the UI.
+the UI. **Superseded:** `/api/characters/manifest` is still a server route, but no client code calls
+it; the client uses `/changes`.
 
-`truncated: true` means `sinceRev` predates the oldest retained `changes` row (the log is pruned to
+`truncated: true` means `sinceSeq` predates the oldest retained `changes` row (the log is pruned to
 a bounded window), and the client must treat its cache as unknown-stale. It does not have to throw
 it away; it can revalidate lazily as rows are touched. `readdirSync` + N `statSync` per boot
 disappears; the cost becomes proportional to what changed, not to library size.
@@ -1688,7 +1707,10 @@ Landed as `src/character-metadata-db.js`, with `src/character-shallow.js` and
 spec did not call for), plus `tests/character-metadata-db.test.js`. `sqlite-engine.js` gained a
 `run`/`get`/`all`/`transaction` surface.
 
-Schema: every column and index §3.1 specified exists under the specified names. `character_tags`,
+Schema: every column and index §3.1 specified exists under the specified names, except that
+`file_mtime` was dropped (`fc12a174a`) and the two `rev` columns are named `characters.change_seq`
+and `changes.seq` (renamed by `migrateRevToSeqColumns`). `changes` also has a `fields` column the
+spec did not have. `character_tags`,
 `tag_usage`, `changes` and `meta` all exist; `tag_usage` is genuinely trigger-maintained, so no
 application code touches it. Deviations:
 
@@ -1697,9 +1719,21 @@ application code touches it. Deviations:
   beside the characters directory.
 - `id` is the avatar filename, not a UUIDv7. Expected — that is phase 4d — but it means every rename
   is a primary-key change, and there is special-case code carrying `date_added` across it.
-- **`meta` only ever holds `bootstrap_completed`.** The spec's other uses for it — schema version,
-  oldest retained rev — were not written. There is no schema version anywhere, so a future migration
-  has nothing to key off. Worth fixing before the table has data worth migrating.
+- **`meta` holds one-shot completion flags and a few persisted values, not the spec's schema version
+  or oldest retained seq.** The keys written, and who writes them:
+  - `character-metadata-db.js`: `bootstrap_completed`, `groups_bootstrap_completed`,
+    `tags_json_migrated`, `card_tags_backfill_completed`, `tag_ids_shallow_json_backfill_completed`,
+    `last_reconcile_dir_mtime_ms`, `tags_hash`.
+  - `characters-search-index.js` (via `setMetaValue`): `tantivy_char_index_seq`,
+    `tantivy_char_index_tag_name_change_seq`, `tantivy_char_index_schema_version`.
+  - `unimport-embedded-lore.js` (via `markMigrationComplete`): `unimport_embedded_lore_completed`.
+  - An older install may also hold `tantivy_char_index_tags_hash`, which `migrateRevToSeqColumns`
+    renames from `tantivy_char_index_tags_rev`. Nothing writes or reads it otherwise.
+
+  The metadata DB itself still has no schema version. Its migrations don't need one: each runs at
+  open, inspects the live schema (`PRAGMA table_info`), and applies only what is missing, so it is
+  idempotent. The tantivy index does have a schema version, `tantivy_char_index_schema_version`
+  above. Nothing records an oldest retained seq, because nothing prunes the change log.
 - The `tag_usage` delete trigger decrements to zero and leaves the row, so zero-count rows
   accumulate.
 
@@ -1721,8 +1755,9 @@ mode that only buffers. There is no watcher.
 - The `fs.watch` watcher was removed in `9ae4ef934`. It treated the PNG as authoritative over
   `card_json`: an mtime mismatch re-parsed the file and overwrote the row, and a missing file
   deleted the row. The `file_mtime` column, which only the watcher read, was dropped in `fc12a174a`.
-- The change log and `rev` are real: `rev` is the `changes` table's autoincrement rowid, and
-  `/query` returns `MAX(rev)`.
+- The change log is real: `changes.seq` is the table's autoincrement rowid, each character row
+  carries the `change_seq` of its latest change, and `/query` and `/changes` return `seq`, which is
+  `MAX(seq)` on `changes`.
 
 PNG-less characters (`e5bb93d74`): a character exists iff its row exists; its PNG is only its image.
 When the PNG is missing, the server treats the image as the default avatar (`DEFAULT_AVATAR_PATH`)
@@ -1755,10 +1790,11 @@ Divergences that matter:
 - **The reconciler uses `fsPromises.readdir`, not the async `opendir` §3.2 specified.** The whole
   filename list is materialized in memory, with a `setImmediate` yield every 500 files for the
   bounded-rate part. Same in `bootstrapIfNeeded`. At 300k this is a real difference from what was
-  designed. It also calls `resyncTags()` — a full `tags.json` read and set-diff — at the end of every
-  pass.
+  designed. The reconciler no longer calls `resyncTags()`: that call was removed in `a309c3814`,
+  when `character_tags` became the source of truth for tag assignments. `bootstrapIfNeeded` still
+  calls it once, at the end of the one-time bootstrap.
 - Nothing prunes the change log yet, so `truncated` can currently only fire for a nonsense
-  `sinceRev`.
+  `sinceSeq`.
 - **Caller-supplied `date_added` on import was not implemented, and the reason given is wrong.** The
   module header justifies the omission by saying it is "flagged in the doc's decision log as still an
   open question, not a settled one". It is not: §3.1 marks it settled and decision 17 lists it under
@@ -1778,8 +1814,12 @@ Divergences that matter:
 - The parsed object is still not cached, only the JSON string.
 - The disk cache's `verify()` boot scan (`characters.js:131`) is still running, alongside the
   reconciler that was supposed to subsume it.
-- §3.3 item 4 did not ship: `chats.js` and `stats.js` do not know the metadata store exists, so
-  `date_last_chat` and `chat_size` only refresh when the card file changes.
+- §3.3 item 4 shipped in part. `chats.js` imports `bumpCharacterDateLastChat`,
+  `bumpGroupChatStats`, `getCharacterActiveChatsByIds` and `setCharacterActiveChat` from the store.
+  A character chat save bumps the character's `date_last_chat`; a group chat save updates the
+  group's `date_last_chat` and `chat_size`. A character's `chat_size` is still only recomputed when
+  its row is rewritten. `stats.js` imports nothing from the store and still does its own chat-file
+  walk.
 
 ### Phase 2 — browse pagination — SHIPPED IN PART (`6ac50dca2`)
 
@@ -1787,22 +1827,42 @@ Divergences that matter:
 covering them. Three endpoints the spec never mentioned also shipped: `POST /metadata/rescan`,
 `/metadata/batch-import/begin`, and `/metadata/batch-import/end`.
 
-What shipped is the browse-only half of `/query`. The request takes the specified
-`{filter, sort, page, pageSize, want}` shape; the response is `{rev, rows?, total?}`. Divergences:
+`/query` takes `{filter, sort, page, pageSize, want, ifSeq?}`. `filter` accepts `search`, `tags`,
+`fav`, `world`, `excludeIds`, `ids` and `includeGroups`; `sort` is `{field, order, seed?}`. The
+response has three variants:
 
-- **No `facets`, no `searchBackend`** — not stubbed, rejected. `want` accepts only `rows` and `total`
-  and 400s on anything else.
-- **`filter.search`, `sort.field: 'random'` and `sort.field: 'search'` all 400.** So decision 23
-  (random and search compose) and decision 13 (per-query hash ordering) are unimplemented, and the
-  endpoint currently rejects the combination the design requires.
-- Sortable fields are name, date_added, date_last_chat, chat_size, fav. `pageSize` defaults to 500,
-  capped at 2000.
-- `total` is always an exact `COUNT(*)`. Decision 6 permits approximation, and the maintained-counter
-  and estimate tiers §5 described are not implemented — acceptable, since exact is the strictest
-  reading, but the cost was not measured.
+- **Unchanged:** `{ seq, unchanged: true }`, when `ifSeq` equals the current `seq`. Nothing is
+  hydrated or searched. Any character or group write invalidates it, not just writes that affect
+  the page.
+- **Rows (JSON):** `{ seq, rows?, total?, searchBackend? }`, with `rows` and `total` present as
+  `want` asks. `searchBackend` is present on search requests.
+- **Hashes (binary):** with `want: ['hashes']`, an `application/octet-stream` body carrying `seq`,
+  `total` (when wanted), `approxTotal`, the hash rows and `searchBackend`.
+
+Details:
+
+- `want` accepts `rows`, `total` and `hashes`, and defaults to `['rows', 'total']`. `rows` and
+  `hashes` are mutually exclusive (400). `facets` and `rank` 400 as not implemented.
+- `filter.search` works. The search engine (tantivy) narrows the candidate set and SQL applies the
+  other filters and the sort. When the sort field is one tantivy can sort natively and groups are
+  not included, tantivy sorts and pages directly. `searchBackend` is `tantivy` or `unavailable`.
+- `sort.field: 'search'` (relevance) requires a non-empty `filter.search` (400 otherwise).
+  `sort.field: 'random'` requires a finite `sort.seed` (400 otherwise) and orders by
+  `RANDHASH(id, seed)`, computed per query (decision 13). Random composes with search (decision 23):
+  search narrows the set and the seeded hash orders it.
+- Sortable fields: name, date_added, date_last_chat, chat_size, fav, create_date, data_size, random,
+  search. `pageSize` defaults to 500, capped at 2000.
+- `total` is exact except under relevance sort, where the search fetch is capped at
+  `offset + pageSize`. If the match count exceeds that cap, the JSON `total` is a `~`-prefixed
+  string and the binary response sets `approxTotal`. The maintained-counter and estimate tiers §5
+  described are not implemented.
+- `filter.includeGroups` answers characters and groups together, with groups searched through their
+  own index.
 - `/exists` returns a flat `{id: bool}` with every requested id present, chunked 500 at a time.
-- `/changes` matches the specified contract except that it collapses to one entry per id, latest op
-  winning. Sensible, and not in the contract as written — the contract should be updated to say so.
+- `/changes` takes `{ sinceSeq }` and returns `{ seq, changes: [{ id, op, fields? }], truncated }`.
+  It collapses to one entry per id, latest op winning. An upsert carries the union of the changed
+  `fields`, or `fields: null` (refetch the whole record) when any change in the window was a
+  whole-record change or a delete.
 - 503 `metadata-store-unavailable` when there is no SQLite engine, with no filesystem fallback by
   design.
 
@@ -2504,10 +2564,12 @@ Not open questions — implementation gaps, listed here so they are not mistaken
   all outstanding. Phase 1 / §3.3.
 - **Decision 16** (`writeExtensionField` dual-accept): phase 0d, not started.
 
-Two implementation details that want a decision rather than a fix: the metadata `meta` table holds
-only `bootstrap_completed`, so there is no schema version to migrate against later; and the
-reconciler uses `fsPromises.readdir` rather than the async `opendir` §3.2 specified, materializing
-the whole filename list. Neither is wrong today; both get worse at 300k.
+One implementation detail wants a decision rather than a fix: the reconciler uses
+`fsPromises.readdir` rather than the async `opendir` §3.2 specified, materializing the whole filename
+list. It is not wrong today, and it gets worse at 300k. The metadata DB has no schema version, but
+its migrations do not key off one: each runs at open, inspects the live schema, and applies only
+what is missing. §9 phase 1 lists what `meta` holds, including the tantivy index's own schema
+version.
 
 ### Verified since the first draft
 
