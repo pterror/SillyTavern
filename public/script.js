@@ -7823,26 +7823,13 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
     }
 }
 
-// Only one .fillRight panel is ever visually "front"; the other stays logically open but hidden via CSS, so translucent panels don't blend together.
-function activateFillRightDrawer(contentId) {
-    document.querySelectorAll('.fillRight').forEach(el => el.classList.remove('frontFillRight'));
-    document.getElementById(contentId)?.classList.add('frontFillRight');
-    accountStorage.setItem('FillRightFront', contentId);
-}
-
-// Mirrors activateFillRightDrawer but for all 4 pinnable panels, mobile-only in effect (see mobile-styles.css).
-const MOBILE_OVERLAY_PANEL_IDS = ['right-nav-panel', 'char-info-panel', 'left-nav-panel', 'WorldInfo'];
-function activateMobileOverlayPanel(contentId) {
-    if (!MOBILE_OVERLAY_PANEL_IDS.includes(contentId)) return;
-    MOBILE_OVERLAY_PANEL_IDS.forEach(id => document.getElementById(id)?.classList.remove('frontMobileOverlay'));
-    document.getElementById(contentId)?.classList.add('frontMobileOverlay');
-}
-
 // Desktop layout has 3 zones: left (#left-nav-panel, .zoomed_avatar_container), center (#sheld and most
 // drawers), right (#right-nav-panel, #char-info-panel). galleryFullscreen spans all 3 zones;
 // charInfoFullscreen spans center only. Only pinnable drawers (see doNavbarIconClick's sweep) can survive
 // open behind another zone occupant, but any drawer opening can evict one, so all are zone-aware here.
 const ZONE_DRAWER_IDS = ['left-nav-panel', 'right-nav-panel', 'char-info-panel', 'WorldInfo', 'PersonaManagement', 'rm_extensions_block', 'Backgrounds', 'user-settings-block', 'AdvancedFormatting'];
+// The 4 pinnable panels, which overlap each other entirely in the mobile layout (see mobile-styles.css).
+const MOBILE_OVERLAY_PANEL_IDS = ['right-nav-panel', 'char-info-panel', 'left-nav-panel', 'WorldInfo'];
 function getDrawerZones(id) {
     const el = document.getElementById(id);
     if (!el) return [];
@@ -7851,52 +7838,52 @@ function getDrawerZones(id) {
     if (id === 'char-info-panel') return el.classList.contains('charInfoFullscreen') ? ['center'] : ['right'];
     return ['center'];
 }
-// Per-zone z-order, most-recently-fronted id last. Maintained solely by activateZoneFront (push, on open/
-// refocus) and closeDrawerContent (pop, on close) below - every place in this file that opens or closes a
-// zone-aware drawer goes through one of those two, so a stack's top is always its zone's current occupant.
-const zoneStacks = { left: [], center: [], right: [] };
 
-// An id is front only if it's the top of every zone it currently occupies (an id spanning multiple zones
-// can't be "half" visible).
-function computeZoneFront() {
-    const topOfZone = {};
-    for (const zone of Object.keys(zoneStacks)) {
-        const stack = zoneStacks[zone];
-        if (stack.length) topOfZone[zone] = stack[stack.length - 1];
-    }
+// Drawer ids, most recently fronted last. Which drawers are open is read from .openDrawer, not from here,
+// so a drawer opened without frontDrawer() (e.g. by an extension) still counts, ranked behind all fronted ones.
+const drawerFrontOrder = [];
+
+// Derives every "which open drawer is on top" class from drawerFrontOrder, each over its own overlap group:
+// .frontFillRight (the two .fillRight panels), .frontMobileOverlay (MOBILE_OVERLAY_PANEL_IDS), and
+// .frontInZone (per zone; an id spanning several zones must be on top of all of them).
+function recomputeDrawerFronts() {
+    const openDrawers = Array.from(document.querySelectorAll('.drawer-content.openDrawer'));
+    const rank = el => drawerFrontOrder.indexOf(el.id);
+    const backToFront = openDrawers.sort((a, b) => rank(a) - rank(b)).map(el => el.id);
+    const topOf = ids => backToFront.filter(id => ids.includes(id)).at(-1);
+
+    const fillRightIds = Array.from(document.querySelectorAll('.fillRight'), el => el.id);
+    const fillRightFront = topOf(fillRightIds);
+    for (const id of fillRightIds) document.getElementById(id).classList.toggle('frontFillRight', id === fillRightFront);
+
+    const mobileFront = topOf(MOBILE_OVERLAY_PANEL_IDS);
+    for (const id of MOBILE_OVERLAY_PANEL_IDS) document.getElementById(id)?.classList.toggle('frontMobileOverlay', id === mobileFront);
+
+    const zoneTop = {};
+    for (const zone of ['left', 'center', 'right']) zoneTop[zone] = topOf(ZONE_DRAWER_IDS.filter(id => getDrawerZones(id).includes(zone)));
     for (const id of ZONE_DRAWER_IDS) {
-        const el = document.getElementById(id);
-        if (!el) continue;
         const zones = getDrawerZones(id);
-        const isFront = zones.length > 0 && zones.every(zone => topOfZone[zone] === id);
-        el.classList.toggle('frontInZone', isFront);
+        document.getElementById(id)?.classList.toggle('frontInZone', zones.length > 0 && zones.every(zone => zoneTop[zone] === id));
     }
 }
 
-// Moves contentId to the top of every zone it currently occupies, then recomputes .frontInZone.
-function activateZoneFront(contentId) {
-    const zones = getDrawerZones(contentId);
-    if (!zones.length) return;
-    for (const zone of zones) {
-        const stack = zoneStacks[zone];
-        const idx = stack.indexOf(contentId);
-        if (idx !== -1) stack.splice(idx, 1);
-        stack.push(contentId);
+/**
+ * Puts a drawer on top of everything it overlaps. Every path that opens or re-fronts a drawer calls this.
+ * @param {string} contentId The .drawer-content element's id.
+ */
+export function frontDrawer(contentId) {
+    const idx = drawerFrontOrder.indexOf(contentId);
+    if (idx !== -1) drawerFrontOrder.splice(idx, 1);
+    drawerFrontOrder.push(contentId);
+    if (document.getElementById(contentId)?.classList.contains('fillRight')) {
+        accountStorage.setItem('FillRightFront', contentId);
     }
-    computeZoneFront();
+    recomputeDrawerFronts();
 }
 
-// The one place "this drawer just closed" has meaning: every closing path (self-close, sweep-on-opening-
-// elsewhere, click-outside autoclose) calls this instead of toggling openDrawer/closedDrawer directly, so
-// whatever a closed zone-aware drawer was eclipsing reliably reappears.
 function closeDrawerContent(content) {
     content.classList.replace('openDrawer', 'closedDrawer');
-    if (!ZONE_DRAWER_IDS.includes(content.id)) return;
-    for (const zone of Object.keys(zoneStacks)) {
-        const idx = zoneStacks[zone].indexOf(content.id);
-        if (idx !== -1) zoneStacks[zone].splice(idx, 1);
-    }
-    computeZoneFront();
+    recomputeDrawerFronts();
 }
 
 function ensureDrawerOpen(drawerId) {
@@ -7918,12 +7905,8 @@ function ensureDrawerOpen(drawerId) {
         content.classList.replace('closedDrawer', 'openDrawer');
         if (icon) icon.classList.replace('closedIcon', 'openIcon');
     }
-    if (content && content.classList.contains('fillRight')) {
-        activateFillRightDrawer(content.id);
-    }
     if (content) {
-        activateMobileOverlayPanel(content.id);
-        activateZoneFront(content.id);
+        frontDrawer(content.id);
     }
 }
 
@@ -11130,8 +11113,9 @@ function doDrawerOpenClick() {
     const targetDrawerID = $(this).attr('data-target');
     const drawer = $(`#${targetDrawerID}`);
     const drawerToggle = drawer.find('.drawer-toggle');
-    const drawerWasOpenAlready = drawerToggle.parent().find('.drawer-content').hasClass('openDrawer');
-    if (drawerWasOpenAlready || drawer.hasClass('resizing')) { return; }
+    const content = drawerToggle.parent().find('.drawer-content')[0];
+    const drawerIsShown = content?.classList.contains('openDrawer') && getComputedStyle(content).visibility !== 'hidden';
+    if (drawerIsShown || drawer.hasClass('resizing')) { return; }
     doNavbarIconClick.call(drawerToggle);
 }
 
@@ -11172,11 +11156,7 @@ export async function doNavbarIconClick() {
             select_rm_create();
         }
 
-        if (drawer.hasClass('fillRight')) {
-            activateFillRightDrawer(targetDrawerID);
-        }
-        activateMobileOverlayPanel(targetDrawerID);
-        activateZoneFront(targetDrawerID);
+        frontDrawer(targetDrawerID);
 
         // Set the height of "autoSetHeight" textareas within the drawer to their scroll height
         if (!CSS.supports('field-sizing', 'content')) {
@@ -11186,19 +11166,9 @@ export async function doNavbarIconClick() {
             }
         }
     } else if (drawerWasOpenAlready) {
-        // For fillRight drawers that are open but behind (not frontFillRight), bring to front
-        // instead of closing - the user is switching between the two right-side panels.
-        if (drawer.hasClass('fillRight') && !drawer.hasClass('frontFillRight')) {
-            activateFillRightDrawer(targetDrawerID);
-        }
-        if (MOBILE_OVERLAY_PANEL_IDS.includes(targetDrawerID) && !drawer.hasClass('frontMobileOverlay')) {
-            activateMobileOverlayPanel(targetDrawerID);
-            return;
-        }
-        // Same idea as the two checks above, but zone-based: a drawer that's still .openDrawer yet lost
-        // its zone (e.g. a fullscreen panel spanning into it) should re-front on click, not close.
-        if (ZONE_DRAWER_IDS.includes(targetDrawerID) && !drawer.hasClass('frontInZone')) {
-            activateZoneFront(targetDrawerID);
+        // Open but hidden behind another drawer: the click brings it forward rather than closing it.
+        if (getComputedStyle(drawer[0]).visibility === 'hidden') {
+            frontDrawer(targetDrawerID);
             return;
         }
         icon.toggleClass('closedIcon openIcon');
@@ -13045,7 +13015,7 @@ jQuery(async function () {
                 btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
             }
             // Fullscreen changes which zones this panel spans - re-evict/re-front accordingly.
-            activateZoneFront('right-nav-panel');
+            frontDrawer('right-nav-panel');
             saveSettingsDebounced('power_user.charGalleryFullscreen');
         }
     });
@@ -13061,7 +13031,7 @@ jQuery(async function () {
                 btn.classList.toggle('fa-compress', power_user.charInfoFullscreen);
             }
             // Fullscreen changes which zones this panel spans - re-evict/re-front accordingly.
-            activateZoneFront('char-info-panel');
+            frontDrawer('char-info-panel');
             saveSettingsDebounced('power_user.charInfoFullscreen');
         }
     });

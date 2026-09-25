@@ -10,6 +10,7 @@ import {
     substituteParams,
     userInputGenerateMutex,
     doNavbarIconClick,
+    frontDrawer,
     isSwipingAllowed,
 } from '../script.js';
 import { getEntitiesList, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
@@ -871,13 +872,11 @@ export function initRossMods() {
             $(CharInfoDrawerIcon).addClass('drawerPinnedOpen openIcon').removeClass('closedIcon');
         }
 
-        // Restore which fillRight panel was last in front (also covers the mobile overlay front-tracking
-        // for that same panel - left-nav-panel/WorldInfo never auto-reopen on load, so they don't need this).
+        // The pinned panels reopened above, with whichever was last in front put back on top.
         const savedFront = accountStorage.getItem('FillRightFront');
-        if (savedFront) {
-            document.querySelectorAll('.fillRight').forEach(el => el.classList.remove('frontFillRight'));
-            document.getElementById(savedFront)?.classList.add('frontFillRight', 'frontMobileOverlay');
-        }
+        const reopened = [RightNavPanel, CharInfoPanel].filter(el => el.classList.contains('openDrawer'));
+        reopened.sort((x, y) => Number(x.id === savedFront) - Number(y.id === savedFront));
+        reopened.forEach(el => frontDrawer(el.id));
     }
 
 
