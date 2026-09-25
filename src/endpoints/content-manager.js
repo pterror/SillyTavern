@@ -15,6 +15,7 @@ import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { importWorldInfoFromRaw } from './worldinfo.js';
 import { upsertCharacterFromWrite } from '../character-metadata-db.js';
 import { copyCharacterFile } from '../local-import-copy.js';
+import { readSettingsAtPaths } from '../settings-store.js';
 
 const contentDirectory = path.join(serverDirectory, 'default/content');
 const scaffoldDirectory = path.join(serverDirectory, 'default/scaffold');
@@ -437,6 +438,16 @@ function getContentLog(contentLogPath) {
 
     const contentLogText = fs.readFileSync(contentLogPath, 'utf8');
     return contentLogText.split('\n');
+}
+
+/**
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @returns {boolean} Whether the user has allowed fetching a character's linked lorebooks on import.
+ * Unset (never toggled) counts as forbidden, matching the client-side default.
+ */
+export function isLinkedLorebookFetchAllowed(directories) {
+    const key = 'power_user.forbid_linked_lorebooks';
+    return readSettingsAtPaths(directories, [key])[key] === false;
 }
 
 export async function downloadChubLorebook(id) {
@@ -1114,7 +1125,7 @@ router.post('/importURL', async (request, response) => {
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${encodeURI(result.fileName)}"`);
         response.set('X-Custom-Content-Type', type);
-        if (Array.isArray(result.relatedLorebookPaths) && result.relatedLorebookPaths.length > 0) {
+        if (Array.isArray(result.relatedLorebookPaths) && result.relatedLorebookPaths.length > 0 && isLinkedLorebookFetchAllowed(request.user.directories)) {
             response.set('X-Related-Lorebook-Paths', result.relatedLorebookPaths.map(encodeURIComponent).join(','));
         }
         return response.send(result.buffer);
@@ -1139,6 +1150,10 @@ router.post('/importChubLorebookByPath', async (request, response) => {
     const path = request.body.path;
     if (typeof path !== 'string' || !path.startsWith('lorebooks/')) {
         return response.sendStatus(400);
+    }
+
+    if (!isLinkedLorebookFetchAllowed(request.user.directories)) {
+        return response.sendStatus(403);
     }
 
     try {
@@ -1206,7 +1221,7 @@ router.post('/importUUID', async (request, response) => {
         if (result.fileType) response.set('Content-Type', result.fileType);
         response.set('Content-Disposition', `attachment; filename="${result.fileName}"`);
         response.set('X-Custom-Content-Type', uuidType);
-        if (Array.isArray(result.relatedLorebookPaths) && result.relatedLorebookPaths.length > 0) {
+        if (Array.isArray(result.relatedLorebookPaths) && result.relatedLorebookPaths.length > 0 && isLinkedLorebookFetchAllowed(request.user.directories)) {
             response.set('X-Related-Lorebook-Paths', result.relatedLorebookPaths.map(encodeURIComponent).join(','));
         }
         return response.send(result.buffer);

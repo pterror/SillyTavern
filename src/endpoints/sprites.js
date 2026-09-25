@@ -8,7 +8,7 @@ import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { getImageBuffers } from '../util.js';
-import { downloadChubLorebook } from './content-manager.js';
+import { downloadChubLorebook, isLinkedLorebookFetchAllowed } from './content-manager.js';
 import { importWorldInfoFromRaw } from './worldinfo.js';
 
 /**
@@ -277,6 +277,10 @@ export function importChubExpressions(directories, data, avatarFileName = null) 
  */
 export function importChubRelatedLorebooks(directories, data) {
     try {
+        if (!isLinkedLorebookFetchAllowed(directories)) {
+            return;
+        }
+
         const chubExt = data?.data?.extensions?.chub;
         if (!chubExt) {
             return;
