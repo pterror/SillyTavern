@@ -180,15 +180,6 @@ async function stageFile(sourcePath) {
     return stagedPath;
 }
 
-async function maybeCorrectDateAddedFromDuplicateSource(sourcePath, characterId, directories) {
-    try {
-        const sourceStat = await fsPromises.stat(sourcePath);
-        await setCharacterDateAdded(directories, characterId, sourceStat.mtimeMs);
-    } catch (err) {
-        console.debug(`[local-import] Failed to update date_added for ${characterId} from source mtime ${sourcePath}:`, /** @type {any} */ (err)?.message ?? err);
-    }
-}
-
 /**
  * @param {DirectoryScanState} state
  * @param {import('./users.js').UserDirectoryList} directories
@@ -297,7 +288,7 @@ function readTagImportSetting(directories) {
  * Per-filename in-flight guard around processFileImpl(): the periodic scan and the watcher (or two watcher
  * events) can land on the same filename concurrently, and withPerHashLock() alone doesn't cover that (a
  * duplicate-of-existing file short-circuits the same way regardless of the lock, so two concurrent calls would
- * each still run the full pipeline and each independently write date_added/markProcessed). A second concurrent
+ * each still run the full pipeline and each independently call markProcessed). A second concurrent
  * call for the same filename just joins the first call's promise instead.
  * @param {DirectoryScanState} state
  * @param {string} filename
@@ -425,7 +416,6 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
             const alreadyImported = await findCharacterIdByContentHash(directories, contentHash);
             if (alreadyImported) {
                 if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
-                await maybeCorrectDateAddedFromDuplicateSource(sourcePath, alreadyImported, directories);
                 // duplicate_of is cascade-cleared if the matched character is later deleted, so the source file
                 // falls through to a fresh dedup-check next pass instead of staying wrongly skipped.
                 await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs, alreadyImported);
@@ -437,7 +427,6 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     const identityMatch = await findCharacterIdByContentIdentityHash(directories, pipelineResult.identityHash);
                     if (identityMatch) {
                         if (pipelineResult.needsWrite) await pipelineResult.finish({ type: 'no-write' });
-                        await maybeCorrectDateAddedFromDuplicateSource(sourcePath, identityMatch, directories);
                         await markProcessed(state, directories, sourcePath, filename, stat.mtimeMs, identityMatch);
                         return;
                     }
