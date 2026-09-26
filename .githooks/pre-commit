@@ -2,6 +2,12 @@
 # Blocks commits that introduce dangling import/export references (Cannot find name / no exported
 # member / declared but not exported) or new circular-import growth.
 #
+# Every check runs against the tree this commit will record (the index git hands the hook, which is
+# GIT_INDEX_FILE's for `commit -a`, `commit <paths>` and caller-supplied temp indexes), checked out
+# into a temp dir. Unstaged edits and untracked files in the work tree are never seen. Configs
+# (tsconfig.precommit.json, .oxlintrc.json, .oxlint-cycle-baseline) are read as staged. The hook
+# never writes to the work tree or the real index.
+#
 # This is deliberately narrow on the type-check side: a full type-check of this codebase produces
 # hundreds of errors (loose `{object}` JSDoc typing, etc.) that aren't worth gating commits on.
 # TS2304/TS2305/TS2459/TS2614 specifically catch real ReferenceError/SyntaxError bugs (a name used
@@ -28,12 +34,47 @@
 #   git config core.hooksPath .githooks
 
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
+
+# A relative GIT_INDEX_FILE is relative to the top of the work tree.
+toplevel="$(git rev-parse --show-toplevel)"
+cd "$toplevel"
+index_file="$(git rev-parse --git-path index)"
+case "$index_file" in
+    /*) ;;
+    *) index_file="$toplevel/$index_file" ;;
+esac
 
 if ! command -v npx >/dev/null 2>&1; then
     echo "pre-commit: npx not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
     exit 1
 fi
+
+if [ ! -d "$toplevel/node_modules" ]; then
+    echo "pre-commit: blocked -- $toplevel/node_modules does not exist, so tsc/oxlint can't run." >&2
+    echo "Run 'npm install' in this repo and try again." >&2
+    exit 1
+fi
+
+# --- build the staged snapshot ---
+# Work on a copy of the index so nothing here can touch the real one. write-tree + read-tree drops
+# intent-to-add (`git add -N`) entries, which aren't committed but which checkout-index would write
+# out as empty files. node_modules is symlinked in so npx, tsc and oxlint resolve packages as they do
+# in the checkout.
+snapshot="$(mktemp -d "${TMPDIR:-/tmp}/st-precommit.XXXXXXXX")"
+trap 'rm -rf "$snapshot"' EXIT
+
+snap_index="$snapshot/.git-index"
+snap_tree="$snapshot/tree"
+mkdir "$snap_tree"
+if [ -e "$index_file" ]; then
+    cp "$index_file" "$snap_index"
+fi
+staged_tree="$(GIT_INDEX_FILE="$snap_index" git write-tree)"
+GIT_INDEX_FILE="$snap_index" git read-tree "$staged_tree"
+GIT_INDEX_FILE="$snap_index" git checkout-index -a -f --ignore-skip-worktree-bits --prefix="$snap_tree/"
+ln -s "$toplevel/node_modules" "$snap_tree/node_modules"
+
+cd "$snap_tree"
 
 # --- verify tsc is the real compiler, not npm's install-prompt placeholder ---
 tsc_version="$(npx tsc --version 2>&1 || true)"
@@ -53,19 +94,20 @@ output="$(npx tsc -p tsconfig.precommit.json --noEmit 2>&1 || true)"
 dangling="$(printf '%s\n' "$output" | grep -E 'error TS(2304|2305|2459|2614):' || true)"
 
 if [ -n "$dangling" ]; then
-    echo "pre-commit: blocked -- dangling import/export reference errors found:" >&2
+    echo "pre-commit: blocked -- dangling import/export reference errors found in the staged snapshot:" >&2
     echo "" >&2
     printf '%s\n' "$dangling" >&2
     echo "" >&2
     echo "TS2304 (cannot find name), TS2305 (module has no exported member), TS2459 (declared locally but" >&2
     echo "not exported), or TS2614 (no default export) - a missing import, a missing/incomplete export, or" >&2
     echo "a call to something that doesn't exist. Fix them or, if this is a false positive, adjust" >&2
-    echo "tsconfig.precommit.json." >&2
+    echo "tsconfig.precommit.json. (Only staged content was checked - if the fix is in an unstaged file," >&2
+    echo "stage it too.)" >&2
     exit 1
 fi
 
 # Blocks commits that grow the circular-import count beyond the checked-in
-# baseline (.oxlint-cycle-baseline).
+# baseline (.oxlint-cycle-baseline, as staged).
 #
 # The codebase has 833 pre-existing import cycles (as of 2026-08-23) --
 # not worth blocking every commit on until someone deliberately works
@@ -75,10 +117,6 @@ fi
 # this one, so new cycles are worth catching before they ship. This is a
 # ratchet, not a full gate: it only blocks the count going UP. If you fix
 # cycles, lower the number in .oxlint-cycle-baseline to lock in the win.
-if ! command -v npx >/dev/null 2>&1; then
-    echo "pre-commit: npx not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
-    exit 1
-fi
 
 # --- verify oxlint is the real linter, same reasoning as the tsc check above ---
 oxlint_version="$(npx oxlint --version 2>&1 || true)"
@@ -98,7 +136,7 @@ cycle_output="$(npx oxlint -c .oxlintrc.json -A all -D import/no-cycle 2>&1 || t
 cycle_count="$(printf '%s\n' "$cycle_output" | grep -c 'import(no-cycle)' || true)"
 
 if [ "$cycle_count" -gt "$baseline" ]; then
-    echo "pre-commit: blocked -- import/no-cycle count went from $baseline to $cycle_count" >&2
+    echo "pre-commit: blocked -- import/no-cycle count in the staged snapshot went from $baseline to $cycle_count" >&2
     echo "" >&2
     echo "This commit appears to introduce a new circular import. Circular imports have caused real TDZ crashes here (ReferenceError: Cannot access '<name>' before initialization) -- run 'npm run lint:cycles' to see the cycle paths and either break the cycle or, if this is intentional/a false positive, raise .oxlint-cycle-baseline to $cycle_count." >&2
     exit 1
