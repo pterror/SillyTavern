@@ -54,6 +54,14 @@ test.describe('prompt manager quick-edit blur save', () => {
 
         const before = await textarea.inputValue();
 
+        // With the prompt's edit form open, the blur handler writes the prompt into the form, so an
+        // unchanged blur would replace the form's unsaved text with the stored prompt.
+        await page.locator('#completion_prompt_manager_list li[data-pm-identifier="main"] .prompt-manager-edit-action').click();
+        const editFormPrompt = page.locator('#completion_prompt_manager_popup_entry_form_prompt');
+        await editFormPrompt.waitFor({ state: 'visible', timeout: 5000 });
+        const unsavedDraft = before + ' (unsaved edit form draft)';
+        await editFormPrompt.fill(unsavedDraft);
+
         // Simulate exactly the "browser tab/window regains focus" scenario: this field had
         // focus, then something else stole it (e.g. the window losing and regaining focus can
         // blur whatever element was previously active) - without the user ever having edited
@@ -67,6 +75,7 @@ test.describe('prompt manager quick-edit blur save', () => {
         await page.waitForTimeout(1500);
 
         await expect(textarea).toHaveValue(before);
+        await expect(editFormPrompt).toHaveValue(unsavedDraft);
         expect(saveRequests).toEqual([]);
     });
 
