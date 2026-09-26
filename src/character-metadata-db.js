@@ -3190,6 +3190,61 @@ export async function upsertTagDefinition(directories, rawTag) {
     return 'ok';
 }
 
+// A tag is in use if tag_usage counts an assignment for it, or a batch-import row not yet flushed into
+// character_tags carries it. `@pending` is that buffer's tag ids as JSON (at most BATCH_IMPORT_FLUSH_SIZE rows).
+const UNUSED_TAGS_WHERE = `
+    NOT EXISTS (SELECT 1 FROM tag_usage u WHERE u.tag_id = t.id AND u.count > 0)
+    AND t.id NOT IN (SELECT value FROM json_each(@pending))`;
+
+/** @param {MetadataDbEntry} entry @returns {string} */
+function pendingImportTagIdsJson(entry) {
+    const ids = new Set();
+    for (const pending of entry.batch?.pending.values() ?? []) {
+        for (const tagId of pending.tagIds) ids.add(tagId);
+    }
+    return JSON.stringify([...ids]);
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>} how many tag definitions no character or group uses
+ */
+export async function countUnusedTags(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = (/** @type {{ n: number }} */ (entry.db.get(
+        `SELECT COUNT(*) AS n FROM tags t WHERE ${UNUSED_TAGS_WHERE}`,
+        { pending: pendingImportTagIdsJson(entry) },
+    )));
+    return Number(row.n);
+}
+
+/**
+ * Deletes up to `limit` tag definitions that no character or group uses. The in-use check and the delete run in
+ * one transaction, so a tag assigned concurrently is never deleted.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} limit
+ * @returns {Promise<string[] | null>} the deleted tag ids
+ */
+export async function pruneUnusedTags(directories, limit) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    /** @type {string[]} */
+    const deleted = [];
+    entry.db.transaction(() => {
+        const params = { pending: pendingImportTagIdsJson(entry), limit };
+        for (const row of /** @type {Generator<{ id: string }>} */ (entry.db.iterate(`SELECT t.id FROM tags t WHERE ${UNUSED_TAGS_WHERE} ORDER BY t.id LIMIT @limit`, params))) {
+            deleted.push(row.id);
+        }
+        if (!deleted.length) return;
+        entry.db.run('DELETE FROM tags WHERE id IN (SELECT value FROM json_each(@ids))', { ids: JSON.stringify(deleted) });
+        updateTagsHashSync(entry.db);
+    });
+    if (deleted.length) entry.tagCache = null;
+    return deleted;
+}
+
 /** Deletes a single tag definition by id. */
 /**
  * @param {import('./users.js').UserDirectoryList} directories
