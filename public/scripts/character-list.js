@@ -152,6 +152,7 @@ export function updateCharacterListRow(id) {
     const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(id)}"]`);
     if (!row) return false;
     updateCharacterBlock(row, character, id);
+    replaceRenderedCharacterEntity(id, character);
     return true;
 }
 
@@ -166,6 +167,7 @@ export function renameCharacterListRow(previousId, id) {
     const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(previousId)}"]`);
     if (!row) return false;
     updateCharacterBlock(row, character, id);
+    replaceRenderedCharacterEntity(previousId, character);
     return true;
 }
 
@@ -173,6 +175,7 @@ export function removeCharacterListRow(id) {
     const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(id)}"]`);
     if (!row) return false;
     row.remove();
+    renderedPageEntities = renderedPageEntities.filter(entity => !(entity.type === 'character' && entity.id === id));
     return true;
 }
 
@@ -245,6 +248,16 @@ export function onSearchIndexUpdated() {
 // `ajaxFunction` fresh on every page turn) for a string `dataSource`. The value itself is never fetched.
 const SERVER_PAGINATED_DATA_SOURCE = '/api/characters/query';
 
+// The entities of the rows on screen. Always reassigned, never mutated: the page callback stores pagination.js's own
+// page array here, which must not change under it.
+/** @type {Entity[]} */
+let renderedPageEntities = [];
+
+function replaceRenderedCharacterEntity(previousId, character) {
+    renderedPageEntities = renderedPageEntities.map(entity =>
+        entity.type === 'character' && entity.id === previousId ? characterToEntity(character) : entity);
+}
+
 export async function printCharacters(fullRefresh = false) {
     const storageKey = 'Characters_PerPage';
     const listId = '#rm_print_characters_block';
@@ -313,6 +326,7 @@ export async function printCharacters(fullRefresh = false) {
             }
 
             list.replaceChildren();
+            renderedPageEntities = data;
             if (power_user.bogus_folders && isBogusFolderOpen()) {
                 $(list).append(getBackBlock());
             }
@@ -363,7 +377,7 @@ export async function printCharacters(fullRefresh = false) {
     // client-side and the plugin slices it in memory on page turn.
     async function renderLocalPaginated() {
         serverPagedList = false;
-        const entities = await getEntitiesList({ doFilter: true });
+        const entities = await queryEntitiesList({ doFilter: true });
 
         // entities.length is capped by the page-fetch limit during search; use serverSearchResults.total for the displayed total instead.
         const searchResults = entitiesFilter.serverSearchResults;
@@ -580,6 +594,17 @@ function queryRowToEntity(row) {
     return type === 'group' ? groupToEntity(item) : characterToEntity(item);
 }
 
+function applyFinalFilterRun(entities) {
+    const beforeFinalEntities = filterByTagState(entities, { globalDisplayFilters: true });
+    let filtered = entitiesFilter.applyFilters(beforeFinalEntities, { clearFuzzySearchCaches: false });
+
+    // Magic for folder filter. If that one is enabled, and no folders are display anymore, we remove that filter to actually show the characters.
+    if (isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FOLDER), FILTER_STATES.SELECTED) && filtered.filter(x => x.type == 'tag').length == 0) {
+        filtered = entitiesFilter.applyFilters(beforeFinalEntities, { tempOverrides: { [FILTER_TYPES.FOLDER]: FILTER_STATES.UNDEFINED }, clearFuzzySearchCaches: false });
+    }
+    return filtered;
+}
+
 // Filter runs must stay in this order: an initial pass, per-folder sub-lists, then the final pass with search filters last.
 function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } = {}) {
     let entities = rawEntities;
@@ -611,13 +636,7 @@ function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } 
 
     // Second run filters, hiding whatever should be filtered later
     if (doFilter) {
-        const beforeFinalEntities = filterByTagState(entities, { globalDisplayFilters: true });
-        entities = entitiesFilter.applyFilters(beforeFinalEntities, { clearFuzzySearchCaches: false });
-
-        // Magic for folder filter. If that one is enabled, and no folders are display anymore, we remove that filter to actually show the characters.
-        if (isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FOLDER), FILTER_STATES.SELECTED) && entities.filter(x => x.type == 'tag').length == 0) {
-            entities = entitiesFilter.applyFilters(beforeFinalEntities, { tempOverrides: { [FILTER_TYPES.FOLDER]: FILTER_STATES.UNDEFINED }, clearFuzzySearchCaches: false });
-        }
+        entities = applyFinalFilterRun(entities);
     }
 
     // Final step, updating some properties after the last filter run
@@ -637,7 +656,7 @@ function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } 
 }
 
 // When eligible, fetches characters+groups already merged/sorted/filtered from the server; the local filter pipeline still runs over the result.
-export async function getEntitiesList({ doFilter = false, doSort = true } = {}) {
+export async function queryEntitiesList({ doFilter = false, doSort = true } = {}) {
     let characterAndGroupEntities;
     if (doFilter && canUseServerQueryForEntitiesList()) {
         try {
@@ -662,6 +681,30 @@ export async function getEntitiesList({ doFilter = false, doSort = true } = {}) 
     ];
 
     return filterAndSortEntities(rawEntities, { doFilter, doSort });
+}
+
+/**
+ * The entities of the character list page on screen, `[]` before the list first renders. Use `queryEntitiesList()`
+ * for the whole filtered list.
+ *
+ * Folder tiles' `entities`, `hidden` and `isUseless` are left as rendered: recomputing them here would only see
+ * this page.
+ *
+ * @param {object} param0 - Optional parameters
+ * @param {boolean} [param0.doFilter] - Whether this entity list should already be filtered based on the global filters
+ * @param {boolean} [param0.doSort] - Whether the entity list should be sorted when returned
+ * @returns {Entity[]} All entities
+ */
+export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
+    let entities = renderedPageEntities.slice();
+    if (doFilter) {
+        entities = applyFinalFilterRun(filterByTagState(entities));
+        entitiesFilter.clearFuzzySearchCaches();
+    }
+    if (doSort) {
+        sortEntitiesList(entities, false);
+    }
+    return entities;
 }
 
 // Folder tiles are never part of a server-paginated page, so this filters the local arrays directly.

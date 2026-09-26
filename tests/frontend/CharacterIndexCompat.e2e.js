@@ -1643,3 +1643,428 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
     });
 
 });
+
+test.describe('getEntitiesList and queryEntitiesList (step 10)', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    // Smaller than the entities setUpList() leaves in the list, so the list has more than one page.
+    const PAGE_SIZE = 10;
+    const LIST_CHARACTERS = 12;
+    // Not one of the server's /query sort fields, so printCharacters() falls back to paging the list locally.
+    const LOCAL_SORT_FIELD = 'avatar';
+    // getEntitiesList()'s argument forms; null stands for no argument.
+    const FLAG_COMBINATIONS = [null, {}, { doSort: false }, { doFilter: true }, { doFilter: true, doSort: false }, { doFilter: false, doSort: true }];
+
+    /**
+     * Defines, in the page: window.__listRows(), the character list's rows on screen in order, as `type:id` keys
+     * (characters by data-avatar, groups by data-grid, folders by tagid); window.__listFavRows(), the same for the
+     * rows marked as favourites; and window.__entityKeys(entities), the same keys for entities.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function installListProbe(page) {
+        await page.evaluate(() => {
+            const rowKey = (/** @type {Element} */ row) => {
+                if (row.hasAttribute('data-avatar')) return `character:${row.getAttribute('data-avatar')}`;
+                if (row.hasAttribute('data-grid')) return `group:${row.getAttribute('data-grid')}`;
+                if (row.hasAttribute('tagid')) return `tag:${row.getAttribute('tagid')}`;
+                return null;
+            };
+            const rows = () => [...document.getElementById('rm_print_characters_block').children].filter(row => rowKey(row) !== null);
+            // @ts-ignore
+            window.__listRows = () => rows().map(rowKey);
+            // @ts-ignore
+            window.__listFavRows = () => rows().filter(row => row.classList.contains('is_fav')).map(rowKey);
+            // @ts-ignore
+            window.__entityKeys = (entities) => entities.map(entity => `${entity.type}:${entity.id}`);
+        });
+    }
+
+    /**
+     * Creates LIST_CHARACTERS characters, every other one a favourite, then renders the list from page 1 at
+     * PAGE_SIZE rows a page, paged by the server or locally.
+     * @param {import('@playwright/test').Page} page
+     * @param {{localPaging?: boolean}} [options]
+     * @returns {Promise<{avatars: string[], favs: string[], originalSortField: string}>}
+     */
+    async function setUpList(page, { localPaging = false } = {}) {
+        const s = stamp();
+        const avatars = [];
+        for (let i = 0; i < LIST_CHARACTERS; i++) {
+            avatars.push(await createCharacter(page, `IdxEntities${String(i).padStart(2, '0')}-${s}`, `description ${i} ${s}`));
+        }
+        const favs = avatars.filter((_, i) => i % 2 === 0);
+        await page.evaluate(async (favs) => {
+            // @ts-ignore
+            const ctx = SillyTavern.getContext();
+            const { getOneCharacter } = await import('/script.js');
+            for (const avatar of favs) {
+                const response = await fetch('/api/characters/fav', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ avatar, fav: true }) });
+                if (!response.ok) throw new Error(`fav failed: ${response.status}`);
+                await getOneCharacter(avatar);
+            }
+            await ctx.getCharacters();
+        }, favs);
+
+        const queryStatuses = [];
+        page.on('response', (response) => {
+            if (new URL(response.url()).pathname === '/api/characters/query') queryStatuses.push(response.status());
+        });
+        await openCharacterManagementDrawer(page);
+        await installListProbe(page);
+        const originalSortField = await page.evaluate(async ({ pageSize, sortField }) => {
+            const { accountStorage } = await import('/scripts/util/AccountStorage.js');
+            const { power_user } = await import('/scripts/power-user.js');
+            const { printCharacters } = await import('/script.js');
+            const original = power_user.sort_field;
+            accountStorage.setItem('Characters_PerPage', String(pageSize));
+            if (sortField) power_user.sort_field = sortField;
+            await printCharacters(true);
+            return original;
+        }, { pageSize: PAGE_SIZE, sortField: localPaging ? LOCAL_SORT_FIELD : null });
+        // @ts-ignore
+        await expect.poll(() => page.evaluate(() => window.__listRows().length)).toBe(PAGE_SIZE);
+
+        // The render took the intended path: the server rejects the local sort field, and serves the others.
+        if (localPaging) {
+            expect(queryStatuses).toContain(400);
+        } else {
+            expect(queryStatuses.length).toBeGreaterThan(0);
+            expect(queryStatuses.every(status => status === 200)).toBe(true);
+        }
+        const favsLoaded = await page.evaluate(async (favs) => {
+            const { normalizeFav } = await import('/scripts/hash-utils.js');
+            // @ts-ignore
+            return favs.every(avatar => normalizeFav(SillyTavern.getContext().getCharacterByAvatar(avatar)?.fav));
+        }, favs);
+        expect(favsLoaded).toBe(true);
+        return { avatars, favs, originalSortField };
+    }
+
+    /**
+     * Restores the sort field setUpList() may have changed, and deletes its characters. The page size lives in
+     * this test's browser context only.
+     * @param {import('@playwright/test').Page} page
+     * @param {{avatars: string[], originalSortField: string}} list
+     */
+    async function tearDownList(page, { avatars, originalSortField }) {
+        await page.evaluate(async (originalSortField) => {
+            const { power_user } = await import('/scripts/power-user.js');
+            power_user.sort_field = originalSortField;
+        }, originalSortField);
+        await deleteCharacters(page, avatars);
+    }
+
+    /**
+     * In one synchronous run: the rows on screen, and getEntitiesList()'s keys for each of FLAG_COMBINATIONS.
+     * @param {import('@playwright/test').Page} page
+     * @returns {Promise<{rows: string[], results: string[][]}>}
+     */
+    async function snapshotList(page) {
+        return page.evaluate(async (combinations) => {
+            const { getEntitiesList } = await import('/script.js');
+            // No await from here on, so the rows and the calls see the same render.
+            // @ts-ignore
+            const rows = window.__listRows();
+            // @ts-ignore
+            const results = combinations.map(options => window.__entityKeys(options === null ? getEntitiesList() : getEntitiesList(options)));
+            return { rows, results };
+        }, FLAG_COMBINATIONS);
+    }
+
+    /**
+     * Turns the character list to its next page and waits for it to render.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function turnPage(page) {
+        // @ts-ignore
+        const firstRow = await page.evaluate(() => window.__listRows()[0]);
+        await page.evaluate(() => {
+            // @ts-ignore
+            $('#rm_print_characters_pagination').pagination('next');
+        });
+        // @ts-ignore
+        await expect.poll(() => page.evaluate(() => window.__listRows()[0])).not.toBe(firstRow);
+    }
+
+    test('getEntitiesList() returns an Array, not a Promise, with and without options', async ({ page }) => {
+        const results = await page.evaluate(async (combinations) => {
+            const { getEntitiesList } = await import('/script.js');
+            return combinations.map((options) => {
+                const result = options === null ? getEntitiesList() : getEntitiesList(options);
+                return { isArray: Array.isArray(result), isPromise: result instanceof Promise, hasThen: typeof result?.['then'] === 'function' };
+            });
+        }, FLAG_COMBINATIONS);
+        expect(results).toEqual(FLAG_COMBINATIONS.map(() => ({ isArray: true, isPromise: false, hasThen: false })));
+    });
+
+    for (const localPaging of [false, true]) {
+        test(`after a ${localPaging ? 'locally' : 'server'} paged render, getEntitiesList() is the page on screen, in order, for every option, and follows a page turn`, async ({ page }) => {
+            const list = await setUpList(page, { localPaging });
+            try {
+                const first = await snapshotList(page);
+                expect(first.rows).toHaveLength(PAGE_SIZE);
+                expect(first.results).toEqual(FLAG_COMBINATIONS.map(() => first.rows));
+                const loaded = await page.evaluate(() => {
+                    // @ts-ignore
+                    const ctx = SillyTavern.getContext();
+                    return ctx.characters.length + ctx.groups.length;
+                });
+                expect(loaded).toBeGreaterThan(PAGE_SIZE);
+
+                await turnPage(page);
+                const second = await snapshotList(page);
+                expect(second.rows.length).toBeGreaterThan(0);
+                expect(second.results).toEqual(FLAG_COMBINATIONS.map(() => second.rows));
+                expect(second.rows.filter(key => first.rows.includes(key))).toEqual([]);
+            } finally {
+                await tearDownList(page, list);
+            }
+        });
+    }
+
+    test('mutating getEntitiesList()\'s result changes neither the page nor a later call\'s result', async ({ page }) => {
+        const list = await setUpList(page);
+        try {
+            const outcome = await page.evaluate(async () => {
+                const { getEntitiesList } = await import('/script.js');
+                // @ts-ignore
+                const keys = window.__entityKeys;
+                // @ts-ignore
+                const rowsBefore = window.__listRows();
+                const first = getEntitiesList();
+                const firstKeys = keys(first);
+                first.reverse();
+                first.push({ type: 'character', id: 'mutated.png', item: { avatar: 'mutated.png', name: 'mutated' } });
+                first.splice(0, 2);
+                const second = getEntitiesList();
+                const secondKeys = keys(second);
+                second.length = 0;
+                const third = getEntitiesList();
+                return {
+                    rowsBefore,
+                    firstKeys,
+                    secondKeys,
+                    thirdKeys: keys(third),
+                    // @ts-ignore
+                    rowsAfter: window.__listRows(),
+                    distinctArrays: first !== second && second !== third && first !== third,
+                };
+            });
+            expect(outcome.rowsBefore).toHaveLength(PAGE_SIZE);
+            expect(outcome.firstKeys).toEqual(outcome.rowsBefore);
+            expect(outcome.secondKeys).toEqual(outcome.rowsBefore);
+            expect(outcome.thirdKeys).toEqual(outcome.rowsBefore);
+            expect(outcome.rowsAfter).toEqual(outcome.rowsBefore);
+            expect(outcome.distinctArrays).toBe(true);
+        } finally {
+            await tearDownList(page, list);
+        }
+    });
+
+    test('before the list first renders, getEntitiesList() returns []', async ({ page }) => {
+        const [avatar] = await createCharacters(page, 'IdxEntitiesBoot', 1);
+        try {
+            // Holds every /query request, the first page's among them, so the reloaded page can't render the list.
+            const held = [];
+            let released = false;
+            await page.route('**/api/characters/query', async (route) => {
+                if (released) {
+                    await route.continue();
+                } else {
+                    held.push(route);
+                }
+            });
+            await page.reload();
+            await expect.poll(() => held.length, { timeout: 60000 }).toBeGreaterThan(0);
+            const beforeRender = await page.evaluate(async (combinations) => {
+                const { getEntitiesList } = await import('/script.js');
+                return {
+                    preloader: document.getElementById('preloader') !== null,
+                    listChildren: document.getElementById('rm_print_characters_block').childElementCount,
+                    results: combinations.map((options) => {
+                        const result = options === null ? getEntitiesList() : getEntitiesList(options);
+                        return { isArray: Array.isArray(result), length: result.length };
+                    }),
+                };
+            }, FLAG_COMBINATIONS);
+            expect(beforeRender).toEqual({
+                preloader: true,
+                listChildren: 0,
+                results: FLAG_COMBINATIONS.map(() => ({ isArray: true, length: 0 })),
+            });
+
+            released = true;
+            for (const route of held) {
+                await route.continue();
+            }
+            await page.waitForFunction('document.getElementById("preloader") === null', null, { timeout: 60000 });
+            await installListProbe(page);
+            // @ts-ignore
+            await expect.poll(() => page.evaluate(() => window.__listRows())).toContain(`character:${avatar}`);
+            const afterRender = await snapshotList(page);
+            expect(afterRender.results).toEqual(FLAG_COMBINATIONS.map(() => afterRender.rows));
+        } finally {
+            await deleteCharacters(page, [avatar]);
+        }
+    });
+
+    test('queryEntitiesList() returns the whole list the old getEntitiesList() computed, not the page', async ({ page }) => {
+        const list = await setUpList(page);
+        try {
+            const outcome = await page.evaluate(async () => {
+                const { queryEntitiesList } = await import('/scripts/character-list.js');
+                const { getEntitiesList, characterToEntity, groupToEntity, tagToEntity, entitiesFilter } = await import('/script.js');
+                const { characters } = await import('/scripts/character-store.js');
+                const { groups } = await import('/scripts/group-chats.js');
+                const { tags, isBogusFolder, compareTagsForSort } = await import('/scripts/tags.js');
+                const { power_user, sortEntitiesList } = await import('/scripts/power-user.js');
+                const { FILTER_TYPES, FILTER_STATES } = await import('/scripts/filters.js');
+                const { normalizeFav } = await import('/scripts/hash-utils.js');
+                // @ts-ignore
+                const keys = window.__entityKeys;
+
+                // The old getEntitiesList()'s input with no server query: every loaded character and group, then
+                // the bogus folders when they are on.
+                const loaded = () => [
+                    ...characters.map(item => characterToEntity(item)),
+                    ...groups.map(item => groupToEntity(item)),
+                    ...(power_user.bogus_folders ? tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)) : []),
+                ];
+                const sorted = (entities) => {
+                    sortEntitiesList(entities, false);
+                    return entities;
+                };
+
+                const pending = queryEntitiesList();
+                const isPromise = pending instanceof Promise;
+                const defaults = await pending;
+
+                const unsorted = await queryEntitiesList({ doFilter: false, doSort: false });
+                const expectedUnsorted = loaded();
+                const sameItems = unsorted.length === expectedUnsorted.length
+                    && unsorted.every((entity, i) => entity.type === 'tag' || entity.item === expectedUnsorted[i].item);
+
+                const filtered = await queryEntitiesList({ doFilter: true });
+
+                const previousFav = entitiesFilter.getFilterData(FILTER_TYPES.FAV);
+                entitiesFilter.setFilterData(FILTER_TYPES.FAV, FILTER_STATES.SELECTED, true);
+                let favFiltered;
+                try {
+                    favFiltered = await queryEntitiesList({ doFilter: true });
+                } finally {
+                    entitiesFilter.setFilterData(FILTER_TYPES.FAV, previousFav, true);
+                }
+
+                return {
+                    isPromise,
+                    bogusFolders: Boolean(power_user.bogus_folders),
+                    loadedCount: characters.length + groups.length,
+                    page: keys(getEntitiesList()),
+                    defaults: keys(defaults),
+                    unsorted: keys(unsorted),
+                    expectedUnsorted: keys(expectedUnsorted),
+                    sameItems,
+                    expectedSorted: keys(sorted(loaded())),
+                    filtered: keys(filtered),
+                    favFiltered: keys(favFiltered),
+                    expectedFav: keys(sorted(loaded().filter(entity => entity.type !== 'tag' && normalizeFav(entity.item.fav)))),
+                };
+            });
+            expect(outcome.isPromise).toBe(true);
+            // The fav expectation leaves folders out; with bogus folders off there are none.
+            expect(outcome.bogusFolders).toBe(false);
+
+            expect(outcome.unsorted).toEqual(outcome.expectedUnsorted);
+            expect(outcome.sameItems).toBe(true);
+            expect(outcome.defaults).toEqual(outcome.expectedSorted);
+            expect(outcome.filtered).toEqual(outcome.expectedSorted);
+            expect(outcome.favFiltered).toEqual(outcome.expectedFav);
+
+            // The whole list, not the page.
+            expect(outcome.expectedSorted).toHaveLength(outcome.loadedCount);
+            expect(outcome.page).toHaveLength(PAGE_SIZE);
+            expect(outcome.filtered.length).toBeGreaterThan(outcome.page.length);
+            for (const avatar of list.avatars) {
+                expect(outcome.filtered).toContain(`character:${avatar}`);
+                expect(outcome.favFiltered.includes(`character:${avatar}`)).toBe(list.favs.includes(avatar));
+            }
+        } finally {
+            await tearDownList(page, list);
+        }
+    });
+
+    test('upstream\'s getEntitiesList() patterns work on the page: a pagination dataSource, .findIndex, and .filter(fav).slice(0, 25)', async ({ page }) => {
+        const list = await setUpList(page);
+        try {
+            const outcome = await page.evaluate(async ({ pageSize, avatars, favs }) => {
+                const { getEntitiesList } = await import('/script.js');
+                // @ts-ignore
+                const keys = window.__entityKeys;
+                // No await until the pagination below, so every call sees the render the rows came from.
+                // @ts-ignore
+                const rows = window.__listRows();
+                // @ts-ignore
+                const favRows = window.__listFavRows();
+
+                // Upstream's select_rm_info post-import page jump.
+                const avatarIndices = avatars.map((avatarFileName) => {
+                    const charData = getEntitiesList({ doFilter: true });
+                    return charData.findIndex((x) => x?.item?.avatar?.startsWith(avatarFileName));
+                });
+                // Upstream's select_rm_info post-create group page jump, for a group not on the page.
+                const groupIndex = getEntitiesList({ doFilter: true }).findIndex((x) => String(x?.item?.id) === String('no-such-group'));
+
+                // Upstream's favsToHotswap.
+                const entities = getEntitiesList({ doFilter: false });
+                const FAVS_LIMIT = 25;
+                const hotswapFavs = keys(entities.filter(x => x.item.fav || x.item.fav == 'true').slice(0, FAVS_LIMIT));
+
+                // Upstream's printCharacters pagination, on a pager of its own.
+                const pagedEntities = getEntitiesList({ doFilter: true });
+                const holder = document.createElement('div');
+                document.body.append(holder);
+                let paged;
+                let pagingError = null;
+                try {
+                    paged = await new Promise((resolve) => {
+                        // @ts-ignore
+                        $(holder).pagination({ dataSource: pagedEntities, pageSize, callback: (data) => resolve(keys(data)) });
+                    });
+                } catch (error) {
+                    pagingError = String(error);
+                } finally {
+                    // @ts-ignore
+                    $(holder).pagination('destroy');
+                    holder.remove();
+                }
+
+                return {
+                    rows,
+                    favRows,
+                    avatarIndices,
+                    expectedAvatarIndices: avatars.map(avatar => rows.indexOf(`character:${avatar}`)),
+                    groupIndex,
+                    hotswapFavs,
+                    favsOffPage: favs.filter(avatar => !rows.includes(`character:${avatar}`)).length,
+                    paged,
+                    pagingError,
+                };
+            }, { pageSize: PAGE_SIZE, avatars: list.avatars, favs: list.favs });
+
+            expect(outcome.rows).toHaveLength(PAGE_SIZE);
+            // A position within the page for an avatar on it, -1 for one elsewhere, and both kinds are here.
+            expect(outcome.avatarIndices).toEqual(outcome.expectedAvatarIndices);
+            expect(outcome.avatarIndices.some(index => index >= 0)).toBe(true);
+            expect(outcome.avatarIndices.some(index => index === -1)).toBe(true);
+            expect(outcome.groupIndex).toBe(-1);
+            // The favourites on the page, and some favourites are on other pages.
+            expect(outcome.favRows.length).toBeGreaterThan(0);
+            expect(outcome.favsOffPage).toBeGreaterThan(0);
+            expect(outcome.hotswapFavs).toEqual(outcome.favRows);
+            expect(outcome.pagingError).toBeNull();
+            expect(outcome.paged).toEqual(outcome.rows);
+        } finally {
+            await tearDownList(page, list);
+        }
+    });
+});

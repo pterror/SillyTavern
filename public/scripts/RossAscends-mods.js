@@ -15,7 +15,7 @@ import {
     readSavedPanelOpenStates,
     isSwipingAllowed,
 } from '../script.js';
-import { getEntitiesList, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
+import { queryEntitiesList, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { main_api, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
@@ -377,7 +377,7 @@ async function favsToHotswapImpl() {
         }
     }
     if (!usedServerQuery) {
-        let entities = await getEntitiesList({ doFilter: false, doSort: false });
+        let entities = await queryEntitiesList({ doFilter: false, doSort: false });
         if (searchTerm) {
             entities = entitiesFilter.searchFilter(entities);
         }

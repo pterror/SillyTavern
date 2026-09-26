@@ -13,7 +13,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, queryEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too).
 export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
@@ -8422,7 +8422,7 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
         if (type === 'char_import' || type === 'char_create' || type === 'char_import_no_toast') {
             // Find the page at which the character is located
             const avatarFileName = charId;
-            const charData = await getEntitiesList({ doFilter: true });
+            const charData = await queryEntitiesList({ doFilter: true });
             const charIndex = charData.findIndex((x) => x?.item?.avatar?.startsWith(avatarFileName));
 
             if (charIndex === -1) {
@@ -8455,7 +8455,7 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
 
         if (type === 'group_create') {
             // Find the page at which the character is located
-            const charData = await getEntitiesList({ doFilter: true });
+            const charData = await queryEntitiesList({ doFilter: true });
             const charIndex = charData.findIndex((x) => String(x?.item?.id) === String(charId));
 
             if (charIndex === -1) {
