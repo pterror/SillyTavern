@@ -8,7 +8,7 @@ import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-f
 
 import { color, tryParse } from '../util.js';
 import { getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { upsertGroupRow, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany } from '../character-metadata-db.js';
+import { writeGroupFileAndRow, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany } from '../character-metadata-db.js';
 import { calculateGroupChatStats } from '../character-shallow.js';
 import { normalizeFav } from '../../public/scripts/hash-utils.js';
 
@@ -96,8 +96,8 @@ export async function migrateGroupChatsMetadataFormat(userDirectories) {
                     }
                     delete groupData.chat_metadata;
                     delete groupData.past_metadata;
-                    groupData.fav = normalizeFav(groupData.fav);
-                    await writeFileAtomic(groupFilePath, JSON.stringify(groupData, null, 4), 'utf8');
+                    // Runs before initializeMetadataStores(), so it must not insert rows ahead of the bootstrap.
+                    await writeGroupFile(userDirs, groupData, { filePath: groupFilePath, createRow: false });
                     console.log(`Migrated group chats metadata for group: ${groupData.id}`);
                     anyDataMigrated = true;
                 } catch (groupError) {
@@ -241,6 +241,18 @@ router.post('/batch', async (request, response) => {
     }
 });
 
+/**
+ * The 500 every route answers when writeGroupFile() throws. writeGroupFile() only throws before the group file
+ * changed, so the save did not happen.
+ * @param {import('express').Response} response
+ * @param {string} id
+ * @param {unknown} error
+ */
+function sendGroupSaveFailed(response, id, error) {
+    console.error(`Could not save group ${id}:`, error);
+    return response.status(500).send({ error: 'The group could not be saved, so the change was not applied. See the server console for details.' });
+}
+
 router.post('/create', async (request, response) => {
     if (!request.body) {
         return response.sendStatus(400);
@@ -264,17 +276,14 @@ router.post('/create', async (request, response) => {
         generation_mode_join_prefix: request.body.generation_mode_join_prefix ?? '',
         generation_mode_join_suffix: request.body.generation_mode_join_suffix ?? '',
     };
-    const pathToFile = path.join(request.user.directories.groups, sanitize(`${id}.json`));
-    const fileData = JSON.stringify(groupMetadata, null, 4);
-
-    if (!fs.existsSync(request.user.directories.groups)) {
-        fs.mkdirSync(request.user.directories.groups);
+    try {
+        if (!fs.existsSync(request.user.directories.groups)) {
+            fs.mkdirSync(request.user.directories.groups);
+        }
+        await writeGroupFile(request.user.directories, groupMetadata);
+    } catch (error) {
+        return sendGroupSaveFailed(response, id, error);
     }
-
-    writeFileAtomicSync(pathToFile, fileData);
-
-    await upsertGroupRow(request.user.directories, groupMetadata.id, groupMetadata.name, { fav: groupMetadata.fav, group: groupMetadata }).catch(err =>
-        console.error(`Could not update group metadata store for ${groupMetadata.id}:`, err));
 
     return response.send(groupMetadata);
 });
@@ -284,15 +293,11 @@ router.post('/edit', getFileNameValidationFunction('id'), async (request, respon
         return response.sendStatus(400);
     }
     warnOnGroupMetadata(request.body);
-    const id = request.body.id;
-    request.body.fav = normalizeFav(request.body.fav);
-    const pathToFile = path.join(request.user.directories.groups, sanitize(`${id}.json`));
-    const fileData = JSON.stringify(request.body, null, 4);
-
-    writeFileAtomicSync(pathToFile, fileData);
-
-    await upsertGroupRow(request.user.directories, id, request.body.name, { fav: request.body.fav, group: request.body }).catch(err =>
-        console.error(`Could not update group metadata store for ${id}:`, err));
+    try {
+        await writeGroupFile(request.user.directories, request.body);
+    } catch (error) {
+        return sendGroupSaveFailed(response, request.body.id, error);
+    }
 
     return response.send({ ok: true });
 });
@@ -319,15 +324,25 @@ export function readGroupFile(directories, id) {
 }
 
 /**
+ * Every group file write goes through here, so the group's row (name, fav, digests) is updated from exactly
+ * what was written and the digests clients compare against can't go stale (see writeGroupFileAndRow()).
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {object} group
+ * @param {object} [options]
+ * @param {string} [options.filePath] For callers that found the file by listing the directory. The row is only
+ * updated when this is the group's own `<id>.json`, the file every reader of the row opens.
+ * @param {boolean} [options.createRow] false: don't insert a missing row (writeGroupFileAndRow()'s createIfMissing).
  */
-export async function writeGroupFile(directories, group) {
+export async function writeGroupFile(directories, group, { filePath, createRow = true } = {}) {
     group.fav = normalizeFav(group.fav);
-    const pathToFile = path.join(directories.groups, sanitize(`${group.id}.json`));
-    writeFileAtomicSync(pathToFile, JSON.stringify(group, null, 4));
-    await upsertGroupRow(directories, group.id, group.name, { fav: group.fav, group }).catch(err =>
-        console.error(`Could not update group metadata store for ${group.id}:`, err));
+    const ownPath = path.join(directories.groups, sanitize(`${group.id}.json`));
+    const pathToFile = filePath ?? ownPath;
+    const writeFile = () => writeFileAtomicSync(pathToFile, JSON.stringify(group, null, 4));
+    if (path.resolve(pathToFile) !== path.resolve(ownPath)) {
+        writeFile();
+        return;
+    }
+    await writeGroupFileAndRow(directories, group, writeFile, { createIfMissing: createRow });
 }
 
 // Top-level Group fields (see public/global.d.ts's `Group` interface) that /save-partial is allowed to
@@ -366,7 +381,11 @@ router.post('/save-partial', getFileNameValidationFunction('id'), async (request
     }
     Object.assign(group, safeProps);
 
-    await writeGroupFile(request.user.directories, group);
+    try {
+        await writeGroupFile(request.user.directories, group);
+    } catch (error) {
+        return sendGroupSaveFailed(response, id, error);
+    }
     return response.send({ ok: true });
 });
 
@@ -386,7 +405,11 @@ router.post('/new-chat', getFileNameValidationFunction('id'), async (request, re
     group.chats = Array.isArray(group.chats) ? [...group.chats, chatId] : [chatId];
     group.chat_id = chatId;
 
-    await writeGroupFile(request.user.directories, group);
+    try {
+        await writeGroupFile(request.user.directories, group);
+    } catch (error) {
+        return sendGroupSaveFailed(response, id, error);
+    }
     return response.send({ chat_id: chatId, chats: group.chats });
 });
 

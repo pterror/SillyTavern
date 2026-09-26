@@ -175,11 +175,15 @@ function setAutoModeWorker() {
  * @returns {Promise<void>}
  */
 async function saveGroupProperty(id, props) {
-    await fetch('/api/groups/save-partial', {
+    const response = await fetch('/api/groups/save-partial', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({ id, props }),
     });
+    if (!response.ok) {
+        toastr.error(t`The change was not saved. Check the server console for details.`, t`Group could not be saved`);
+        console.error('Group property could not be saved', response);
+    }
 }
 
 /**
@@ -2366,6 +2370,9 @@ async function createGroup() {
         await getCharacters({ silentGroups: true });
         groupsStore.reportCreated(String(data.id));
         select_rm_info('group_create', data.id);
+    } else {
+        toastr.error(t`The group was not created. Check the server console for details.`, t`Group could not be created`);
+        console.error('Group could not be created', createGroupResponse);
     }
 }
 
@@ -2389,6 +2396,8 @@ export async function createNewGroupChat(groupId) {
         body: JSON.stringify({ id: group.id }),
     });
     if (!response.ok) {
+        toastr.error(t`The new chat was not created. Check the server console for details.`, t`Group chat could not be created`);
+        console.error('Group chat could not be created', response);
         return;
     }
     const { chat_id, chats } = await response.json();
@@ -2529,6 +2538,9 @@ export async function deleteGroupChatByName(groupId, chatName) {
                 const { chat_id, chats } = await newChatResponse.json();
                 group.chats = chats;
                 _setCurrentTarget(chat_id, null, { group_id: groupId });
+            } else {
+                toastr.error(t`The replacement chat was not created. Check the server console for details.`, t`Group chat could not be created`);
+                console.error('Group chat could not be created', newChatResponse);
             }
         }
     }
