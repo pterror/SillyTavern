@@ -32,6 +32,7 @@ import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInva
 import { getRandomSortSeed } from './random-sort.js';
 import { selected_group, is_group_generating, openGroupById, groups } from './group-chats.js';
 import { applyTagsOnCharacterSelect } from './tags.js';
+import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import {
     SECRET_KEYS,
     secret_state,
@@ -271,6 +272,7 @@ async function RA_autoloadchat() {
         // character directly instead of waiting for the full list.
         if (!activeCharacterEntity) {
             try {
+                const fetchStamp = tagFetchStamp();
                 const resp = await fetch('/api/characters/get', {
                     method: 'POST',
                     headers: getRequestHeaders(),
@@ -279,6 +281,9 @@ async function RA_autoloadchat() {
                 if (resp.ok) {
                     const data = await resp.json();
                     data.shallow = false;
+                    if (!isFetchedTagIdsCurrent(active_character, fetchStamp)) {
+                        delete data.tag_ids;
+                    }
                     if (!charactersStore.has(active_character)) {
                         charactersStore.create(data);
                     } else {

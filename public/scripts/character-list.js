@@ -6,6 +6,7 @@ import { power_user, sortEntitiesList } from './power-user.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { tags, filterByTagState, isBogusFolder, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, tagsStore } from './tags.js';
+import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
 import { getRandomSortSeed } from './random-sort.js';
@@ -109,18 +110,21 @@ function renderCharacterBlock(template, item, id) {
 
     // Keep the resident charactersStore entry's tag_ids from drifting behind this row's fresher fetch - other
     // surfaces still read the resident copy directly. No-op when nothing was actually stale.
-    if (Array.isArray(item.tag_ids)) {
-        const resident = charactersStore.get(id);
+    const resident = charactersStore.get(id);
+    const rowTagIdsCurrent = isFetchedTagIdsCurrent(id, item.tagFetchStamp);
+    if (Array.isArray(item.tag_ids) && rowTagIdsCurrent) {
         if (resident && !arraysHaveSameMembers(resident.tag_ids, item.tag_ids)) {
             charactersStore.update(id, { tag_ids: item.tag_ids });
         }
     }
 
     // `tags` resolves pills from `item.tag_ids` directly rather than printTagList()'s default resident-store
-    // lookup, since `item` here can be fresher than a not-yet-reconciled resident entry.
+    // lookup, since `item` here can be fresher than a not-yet-reconciled resident entry - unless a local tag
+    // change makes the resident entry the fresher one.
     const tagsElement = template.find('.tags');
-    const rowTags = Array.isArray(item.tag_ids)
-        ? item.tag_ids.map(tagId => tagsStore.get(tagId)).filter(Boolean).sort(compareTagsForSort)
+    const rowTagIds = rowTagIdsCurrent ? item.tag_ids : resident?.tag_ids;
+    const rowTags = Array.isArray(rowTagIds)
+        ? rowTagIds.map(tagId => tagsStore.get(tagId)).filter(Boolean).sort(compareTagsForSort)
         : [];
     printTagList(tagsElement, { forEntityOrKey: id, tags: () => rowTags, tagOptions: { isCharacterList: true } });
 }
@@ -672,6 +676,7 @@ async function getFolderTileEntities() {
 }
 
 export async function getOneCharacter(avatarUrl) {
+    const fetchStamp = tagFetchStamp();
     const response = await fetch('/api/characters/get', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -687,6 +692,9 @@ export async function getOneCharacter(avatarUrl) {
         getData.chat = getData.chat ? String(getData.chat) : '';
         // This response is always full data; reset shallow explicitly or a once-shallow entity stays shallow forever.
         getData.shallow = false;
+        if (!isFetchedTagIdsCurrent(avatarUrl, fetchStamp)) {
+            delete getData.tag_ids;
+        }
 
         if (charactersStore.has(avatarUrl)) {
             charactersStore.update(avatarUrl, getData);
@@ -947,6 +955,7 @@ export async function getCharacters({ silent = false, silentGroups = false, skip
     let newCharacters;
     let charactersChanged = true;
     let lastError;
+    const fetchStamp = tagFetchStamp();
     for (let attempt = 0; attempt <= DELTA_FETCH_MAX_RETRIES; attempt++) {
         try {
             const delta = await fetchCharactersDelta();
@@ -984,6 +993,9 @@ export async function getCharacters({ silent = false, silentGroups = false, skip
         for (const existing of characters) {
             const incoming = newByAvatar.get(existing.avatar);
             if (!incoming) continue;
+            if (!isFetchedTagIdsCurrent(existing.avatar, fetchStamp)) {
+                delete incoming.tag_ids;
+            }
             // Don't let an incoming shallow projection downgrade an already-unshallowed entity back to shallow.
             const wasUnshallowed = existing.shallow === false;
             lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);

@@ -33,6 +33,7 @@ import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandE
 import { getCachedTags, setCachedTags } from './tags-cache.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, digestsEqual } from './hash-utils.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
+import { beginLocalTagChange } from './tag-fetch-stamps.js';
 
 export {
     TAG_FOLDER_TYPES,
@@ -446,6 +447,24 @@ function isTagAssignedToKey(key, tagId) {
  * @param {string} key @param {string} tagId
  * @returns {{wasFirstUse: boolean}?} null if `key` doesn't resolve, or it already had `tagId` (no-op)
  */
+/**
+ * Marks a local tag change on `key` as unsaved right away (see tag-fetch-stamps.js), and returns the task that
+ * saves it.
+ * @param {string} key
+ * @param {() => Promise<void>} save
+ * @returns {() => Promise<void>}
+ */
+function queueTagSave(key, save) {
+    const saved = beginLocalTagChange(key);
+    return async () => {
+        try {
+            await save();
+        } finally {
+            saved();
+        }
+    };
+}
+
 function assignTagToKey(key, tagId) {
     const ids = resolveTagIdsArray(key);
     if (!ids || ids.includes(tagId)) return null;
@@ -454,7 +473,7 @@ function assignTagToKey(key, tagId) {
     tagUsageCounts.set(tagId, (tagUsageCounts.get(tagId) ?? 0) + 1);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-    assignTagOnServer(key, tagId);
+    queueTagSave(key, () => assignTagOnServer(key, tagId))();
     return { wasFirstUse };
 }
 
@@ -475,7 +494,7 @@ function unassignTagFromKey(key, tagId) {
     if (wasLastUse) tagUsageCounts.delete(tagId); else tagUsageCounts.set(tagId, count);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-    unassignTagOnServer(key, tagId);
+    queueTagSave(key, () => unassignTagOnServer(key, tagId))();
     return { wasLastUse };
 }
 
@@ -497,8 +516,8 @@ function setKeyTagIds(key, tagIds) {
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     const tasks = [
-        ...addedIds.map(tagId => () => assignTagOnServer(key, tagId)),
-        ...removedIds.map(tagId => () => unassignTagOnServer(key, tagId)),
+        ...addedIds.map(tagId => queueTagSave(key, () => assignTagOnServer(key, tagId))),
+        ...removedIds.map(tagId => queueTagSave(key, () => unassignTagOnServer(key, tagId))),
     ];
     runWithConcurrency(tasks, task => task());
 }
@@ -516,7 +535,7 @@ function removeKeyTagIds(key) {
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     // Usually redundant with the server's own deletion cascade, but harmless (unassign tolerates unknown ids).
-    runWithConcurrency(removedIds, tagId => unassignTagOnServer(key, tagId));
+    runWithConcurrency(removedIds.map(tagId => queueTagSave(key, () => unassignTagOnServer(key, tagId))), task => task());
 }
 
 /**
@@ -544,8 +563,8 @@ function removeTagIdEverywhere(tagId, { replaceWithId } = {}) {
     invalidateGroupsFuseIndex();
     const tasks = [];
     for (const key of affectedKeys) {
-        tasks.push(() => unassignTagOnServer(key, tagId));
-        if (replaceWithId) tasks.push(() => assignTagOnServer(key, replaceWithId));
+        tasks.push(queueTagSave(key, () => unassignTagOnServer(key, tagId)));
+        if (replaceWithId) tasks.push(queueTagSave(key, () => assignTagOnServer(key, replaceWithId)));
     }
     runWithConcurrency(tasks, task => task());
     return affectedKeys;

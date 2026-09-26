@@ -11,6 +11,7 @@
 import { unshallowCharacter } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
+import { tagFetchStamp } from './tag-fetch-stamps.js';
 import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups } from './character-cache.js';
 
 /**
@@ -143,6 +144,22 @@ export function normalizeQueryRow(row) {
         return row;
     }
     return { type: 'character', item: row };
+}
+
+/**
+ * Records on each row's item the tag fetch stamp its data is as fresh as (see isFetchedTagIdsCurrent()).
+ * Non-enumerable, so it never gets copied or persisted along with the row's data.
+ * @param {CharacterQueryResult|undefined} result
+ * @param {number} fetchStamp
+ */
+function stampRowsTagFetch(result, fetchStamp) {
+    if (!Array.isArray(result?.rows)) return;
+    for (const row of result.rows) {
+        const { item } = normalizeQueryRow(row);
+        if (item && typeof item === 'object') {
+            Object.defineProperty(item, 'tagFetchStamp', { value: fetchStamp, writable: true, configurable: true, enumerable: false });
+        }
+    }
 }
 
 /**
@@ -467,12 +484,14 @@ export class CharacterRepository {
         const useHashMode = want.includes('rows');
         const includeGroups = normalizedFilter.includeGroups === true;
 
+        const fetchStamp = tagFetchStamp();
         const result = useHashMode
             ? await this.#queryHashMode(requestShape, cached, includeGroups)
             : await postJson('/api/characters/query', cached ? { ...requestShape, ifSeq: cached.seq } : requestShape);
 
         // Server confirmed nothing changed - reuse the cached response rather than the rows/total-less stub.
         if (result?.unchanged === true && cached) {
+            stampRowsTagFetch(cached, fetchStamp);
             return cached;
         }
 
@@ -481,6 +500,7 @@ export class CharacterRepository {
             queryResponseCache.set(signature, result);
         }
 
+        stampRowsTagFetch(result, fetchStamp);
         return result;
     }
 
