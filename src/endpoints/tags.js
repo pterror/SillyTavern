@@ -195,15 +195,25 @@ router.post('/manifest', async (request, response) => {
     }
 });
 
-/** Tag ids assigned to a batch of entities (character avatars and/or group ids). Unknown ids come back as `[]`. */
+const FOR_MAX_IDS = 500;
+
+/**
+ * Tag ids assigned to a batch of entities (character avatars and/or group ids). Unknown ids come back as `[]`.
+ * More than FOR_MAX_IDS distinct ids is a 400 rather than a truncated answer, which would read as those entities
+ * having no tags.
+ */
 router.post('/for', async (request, response) => {
     try {
         const { ids } = request.body;
         if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
             return response.status(400).send({ error: 'ids must be an array of strings' });
         }
+        const uniqueIds = [...new Set(ids)];
+        if (uniqueIds.length > FOR_MAX_IDS) {
+            return response.status(400).send({ error: `at most ${FOR_MAX_IDS} distinct ids per request` });
+        }
 
-        const result = await getEntityTagIdsForMany(request.user.directories, ids);
+        const result = await getEntityTagIdsForMany(request.user.directories, uniqueIds);
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }

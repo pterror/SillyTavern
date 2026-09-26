@@ -7,12 +7,40 @@ import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-file-atomic';
 
 import { color, tryParse } from '../util.js';
-import { getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { writeGroupFileAndRow, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany } from '../character-metadata-db.js';
+import { forbiddenRegExp } from '../middleware/validateFileName.js';
+import { writeGroupFileAndRow, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany, groupRowExists } from '../character-metadata-db.js';
 import { calculateGroupChatStats } from '../character-shallow.js';
 import { normalizeFav } from '../../public/scripts/hash-utils.js';
+import { isValidGroupId, normalizeGroupId, normalizeGroupRecord } from '../group-id.js';
 
 export const router = express.Router();
+
+/**
+ * The id a request names a group by, or null when it can't name one. A group that already exists keeps working
+ * whatever its id, so any non-empty string is accepted here, as long as it can't escape the groups directory.
+ * Only creating a group requires a valid new-group id (isValidGroupId()).
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function toRequestGroupId(value) {
+    const id = normalizeGroupId(value);
+    if (id !== null) return id;
+    if (typeof value === 'string' && value !== '' && !forbiddenRegExp.test(value)) return value;
+    return null;
+}
+
+/**
+ * Rejects a request whose `body.id` can't name a group with 400, and replaces a legacy numeric id with its string form.
+ * @type {import('express').RequestHandler}
+ */
+function validateGroupIdBody(request, response, next) {
+    const id = toRequestGroupId(request.body?.id);
+    if (id === null) {
+        return response.sendStatus(400);
+    }
+    request.body.id = id;
+    next();
+}
 
 /**
  * Warns if group data contains deprecated metadata keys and removes them.
@@ -132,7 +160,7 @@ export function getGroupsData(directories) {
         try {
             const filePath = path.join(directories.groups, file);
             const fileContents = fs.readFileSync(filePath, 'utf8');
-            const group = JSON.parse(fileContents);
+            const group = normalizeGroupRecord(JSON.parse(fileContents));
             const groupStat = fs.statSync(filePath);
             group.date_added = groupStat.birthtimeMs;
             group.create_date = new Date(groupStat.birthtimeMs).toISOString();
@@ -165,7 +193,7 @@ export function getGroupsByIds(directories, ids) {
             const filePath = path.join(directories.groups, sanitize(`${id}.json`));
             if (!fs.existsSync(filePath)) continue;
             const fileContents = fs.readFileSync(filePath, 'utf8');
-            result[id] = JSON.parse(fileContents);
+            result[id] = normalizeGroupRecord(JSON.parse(fileContents));
         } catch (error) {
             console.error(error);
         }
@@ -184,7 +212,7 @@ export function getGroupsByIds(directories, ids) {
 export async function stampDbTagIds(directories, groups) {
     const ids = groups.map(g => g.id).filter(Boolean);
     if (ids.length === 0) return;
-    const tagIdsById = await getEntityTagIdsForMany(directories, ids);
+    const tagIdsById = await getEntityTagIdsForMany(directories, ids, { type: 'group' });
     for (const group of groups) {
         group.tag_ids = tagIdsById?.[group.id] ?? [];
     }
@@ -199,17 +227,20 @@ router.post('/all', async (request, response) => {
     return response.send(groups);
 });
 
+const BATCH_MAX_IDS = 500;
+
 // Group-side counterpart to /api/characters/batch. `fields` omitted returns every field, since groups
 // have no shallow/full split - their content hash covers the whole object, so the cache must too.
+// More than BATCH_MAX_IDS distinct ids is a 400 rather than a truncated answer, which would read as those groups
+// not existing.
 router.post('/batch', async (request, response) => {
     try {
-        const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
-        const fields = Array.isArray(request.body?.fields) ? request.body.fields : null;
-        for (const id of ids) {
-            if (typeof id !== 'string' || forbiddenRegExp.test(id)) {
-                return response.sendStatus(400);
-            }
+        // An id that can't name a group is skipped like an unknown one, so it never fails the rest of the batch.
+        const ids = [...new Set((Array.isArray(request.body?.ids) ? request.body.ids : []).map(toRequestGroupId).filter(id => id !== null))];
+        if (ids.length > BATCH_MAX_IDS) {
+            return response.status(400).send({ error: `at most ${BATCH_MAX_IDS} distinct ids per request` });
         }
+        const fields = Array.isArray(request.body?.fields) ? request.body.fields : null;
         if (ids.length === 0) {
             return response.send([]);
         }
@@ -217,7 +248,7 @@ router.post('/batch', async (request, response) => {
         const groupsById = getGroupsByIds(request.user.directories, ids);
         const [favById, tagIdsById] = await Promise.all([
             getGroupFavsByIds(request.user.directories, ids),
-            getEntityTagIdsForMany(request.user.directories, ids),
+            getEntityTagIdsForMany(request.user.directories, ids, { type: 'group' }),
         ]);
 
         const data = ids
@@ -288,8 +319,10 @@ router.post('/create', async (request, response) => {
     return response.send(groupMetadata);
 });
 
-router.post('/edit', getFileNameValidationFunction('id'), async (request, response) => {
-    if (!request.body || !request.body.id) {
+router.post('/edit', validateGroupIdBody, async (request, response) => {
+    const { directories } = request.user;
+    const id = request.body.id;
+    if (!isValidGroupId(id) && !fs.existsSync(path.join(directories.groups, sanitize(`${id}.json`))) && !(await groupRowExists(directories, id))) {
         return response.sendStatus(400);
     }
     warnOnGroupMetadata(request.body);
@@ -320,7 +353,7 @@ export function readGroupFile(directories, id) {
     if (!fs.existsSync(pathToFile)) {
         return null;
     }
-    return JSON.parse(fs.readFileSync(pathToFile, 'utf8'));
+    return normalizeGroupRecord(JSON.parse(fs.readFileSync(pathToFile, 'utf8')));
 }
 
 /**
@@ -334,6 +367,7 @@ export function readGroupFile(directories, id) {
  * @param {boolean} [options.createRow] false: don't insert a missing row (writeGroupFileAndRow()'s createIfMissing).
  */
 export async function writeGroupFile(directories, group, { filePath, createRow = true } = {}) {
+    normalizeGroupRecord(group);
     group.fav = normalizeFav(group.fav);
     const ownPath = path.join(directories.groups, sanitize(`${group.id}.json`));
     const pathToFile = filePath ?? ownPath;
@@ -360,9 +394,9 @@ const GROUP_PARTIAL_ALLOWED_FIELDS = new Set([
 
 // Field-level counterpart to /edit for single-property changes (e.g. toggling one member) - avoids
 // a whole-object last-write-wins save clobbering unrelated concurrent edits.
-router.post('/save-partial', getFileNameValidationFunction('id'), async (request, response) => {
-    const { id, props } = request.body ?? {};
-    if (!id || !props || typeof props !== 'object' || Array.isArray(props)) {
+router.post('/save-partial', validateGroupIdBody, async (request, response) => {
+    const { id, props } = request.body;
+    if (!props || typeof props !== 'object' || Array.isArray(props)) {
         return response.sendStatus(400);
     }
 
@@ -390,12 +424,8 @@ router.post('/save-partial', getFileNameValidationFunction('id'), async (request
 });
 
 // Mints a new chat id for an existing group, the same way /create mints one for a brand new group.
-router.post('/new-chat', getFileNameValidationFunction('id'), async (request, response) => {
-    const { id } = request.body ?? {};
-    if (!id) {
-        return response.sendStatus(400);
-    }
-
+router.post('/new-chat', validateGroupIdBody, async (request, response) => {
+    const { id } = request.body;
     const group = readGroupFile(request.user.directories, id);
     if (!group) {
         return response.sendStatus(404);
@@ -413,11 +443,7 @@ router.post('/new-chat', getFileNameValidationFunction('id'), async (request, re
     return response.send({ chat_id: chatId, chats: group.chats });
 });
 
-router.post('/delete', getFileNameValidationFunction('id'), async (request, response) => {
-    if (!request.body || !request.body.id) {
-        return response.sendStatus(400);
-    }
-
+router.post('/delete', validateGroupIdBody, async (request, response) => {
     const id = request.body.id;
     const pathToGroup = path.join(request.user.directories.groups, sanitize(`${id}.json`));
 

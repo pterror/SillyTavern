@@ -86,7 +86,7 @@ async function loadTagsById(directories) {
 }
 
 async function makeTagNamesResolver(directories, avatars, tagsById) {
-    const assignments = await getEntityTagIdsForMany(directories, avatars);
+    const assignments = await getEntityTagIdsForMany(directories, avatars, { type: 'character' });
     return (avatar) => (assignments?.[avatar] ?? [])
         .map(id => tagsById.get(id)?.name)
         .filter(Boolean)
@@ -103,7 +103,7 @@ async function makeFavResolver(directories, avatars) {
 }
 
 async function makeTagIdsResolver(directories, avatars) {
-    const assignments = await getEntityTagIdsForMany(directories, avatars);
+    const assignments = await getEntityTagIdsForMany(directories, avatars, { type: 'character' });
     return (avatar) => (assignments?.[avatar] ?? []).join(' ');
 }
 

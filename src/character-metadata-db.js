@@ -15,6 +15,7 @@ import { calculateChatSize, calculateDataSize, calculateGroupChatStats, resolveG
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, streamRows } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
+import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds } from '../public/scripts/hash-utils.js';
 
@@ -747,8 +748,8 @@ function migrateGroupDigestColumns(db, directories) {
             try {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
-                const group = JSON.parse(raw);
-                const tagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
+                const group = normalizeGroupRecord(JSON.parse(raw));
+                const tagIds = tagEntityTypeOf(id) === 'group' ? (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) : [];
                 const fingerprintSource = { ...group, tag_ids: tagIds };
                 db.run(
                     'UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash WHERE id = @id',
@@ -2216,6 +2217,7 @@ export async function initializeMetadataStores(directoriesList) {
         // must populate them first.
         entry.bootstrapPromise = __stage('bootstrapIfNeeded', () => bootstrapIfNeeded(directories))
             .then(() => __stage('bootstrapGroupsIfNeeded', () => bootstrapGroupsIfNeeded(directories)))
+            .then(() => __stage('recoverNumericIdGroupsIfNeeded', () => recoverNumericIdGroupsIfNeeded(directories)))
             .then(() => __stage('normalizeGroupFavIfNeeded', () => normalizeGroupFavIfNeeded(directories)))
             .then(() => __stage('migrateTagsJsonIfNeeded', () => migrateTagsJsonIfNeeded(directories)))
             .then(() => __stage('backfillCardTagsIfNeeded', () => backfillCardTagsIfNeeded(directories)))
@@ -2738,39 +2740,59 @@ export async function getCompletedIdMigrations(directories) {
     return (/** @type {IdMigrationRow[]} */ (entry.db.all('SELECT old_id, new_id FROM id_migration WHERE completed = 1')));
 }
 
-// ids can mix character avatars and group ids. Every requested id is a key in the result ([] if no tags), so
-// a caller never has to distinguish "no tags" from "id absent".
+// ids can mix character avatars and group ids; each is looked up only in its own type's table (tagEntityTypeOf()).
+// Every requested id is a key in the result ([] if no tags, or if it isn't a usable id), so a caller never has to
+// distinguish "no tags" from "id absent". A repeated id is looked up once.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
+ * @param {unknown[]} ids
+ * @param {object} [options]
+ * @param {'character' | 'group'} [options.type] For a caller whose ids are all of one type: an id whose own type
+ * differs (a legacy group whose id ends in .png) gets [].
  * @returns {Promise<Record<string, string[]> | null>}
  */
-export async function getEntityTagIdsForMany(directories, ids) {
+export async function getEntityTagIdsForMany(directories, ids, { type: onlyType } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     /** @type {Record<string, string[]>} */
     const result = {};
+    /** @type {string[]} */
+    const characterIds = [];
+    /** @type {string[]} */
+    const groupIds = [];
     for (const id of ids) {
-        result[id] = [];
+        const key = String(id);
+        if (Object.hasOwn(result, key)) continue;
+        result[key] = [];
+        const type = tagEntityTypeOf(id);
+        if (onlyType && type !== onlyType) continue;
+        if (type === 'character') characterIds.push(key);
+        else if (type === 'group') groupIds.push(key);
     }
 
-    // Chunked for the same reason checkCharactersExist() is - stay clear of SQLite's bound-parameter ceiling.
-    for (let i = 0; i < ids.length; i += BATCH_FLUSH_SIZE) {
-        const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE).filter(id => typeof id === 'string' && id.length > 0);
-        if (chunk.length === 0) continue;
-        const placeholders = chunk.map(() => '?').join(', ');
-        const characterRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT character_id as entity_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, chunk)));
-        const groupRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT group_id as entity_id, tag_id FROM group_tags WHERE group_id IN (${placeholders}) ORDER BY group_id, tag_id`, chunk)));
-        for (const row of [...characterRows, ...groupRows]) {
-            result[row.entity_id].push(row.tag_id);
-        }
-
-        if (i + BATCH_FLUSH_SIZE < ids.length) {
-            await new Promise(resolve => setImmediate(resolve));
+    const lookups = [
+        { ids: characterIds, sql: (placeholders) => `SELECT character_id as entity_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})` },
+        { ids: groupIds, sql: (placeholders) => `SELECT group_id as entity_id, tag_id FROM group_tags WHERE group_id IN (${placeholders})` },
+    ];
+    let first = true;
+    for (const lookup of lookups) {
+        // Chunked for the same reason checkCharactersExist() is - stay clear of SQLite's bound-parameter ceiling.
+        for (let i = 0; i < lookup.ids.length; i += BATCH_FLUSH_SIZE) {
+            if (!first) await new Promise(resolve => setImmediate(resolve));
+            first = false;
+            const chunk = lookup.ids.slice(i, i + BATCH_FLUSH_SIZE);
+            const placeholders = chunk.map(() => '?').join(', ');
+            for (const row of /** @type {Iterable<{ entity_id: string, tag_id: string }>} */ (entry.db.iterate(lookup.sql(placeholders), chunk))) {
+                result[row.entity_id].push(row.tag_id);
+            }
         }
     }
 
+    // Sorted in JS even after ORDER BY: SQLite compares UTF-8 bytes, normalizeTagIds() UTF-16 code units.
+    for (const id of Object.keys(result)) {
+        result[id] = normalizeTagIds(result[id]);
+    }
     return result;
 }
 
@@ -2786,7 +2808,7 @@ function patchPendingRowTagIds(pending) {
     Object.assign(pending.row, digestColumnsForShallow(shallow));
 }
 
-// Requires the entity to exist (checked against characters then groups) since neither table has an FK to
+// Requires the entity to exist in its own type's table (tagEntityTypeOf()) since neither tag table has an FK to
 // enforce it. Checks the batch-import pending buffer too: a just-imported, still-buffered row's auto-assign
 // would otherwise race the flush and silently lose the tag.
 /**
@@ -2799,7 +2821,10 @@ export async function assignEntityTag(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const pending = entry.batch?.pending.get(id);
+    const type = tagEntityTypeOf(id);
+    if (type === null) return 'not_found';
+
+    const pending = type === 'character' ? entry.batch?.pending.get(id) : undefined;
     if (pending) {
         if (!pending.tagIds.includes(tagId)) {
             pending.tagIds.push(tagId);
@@ -2808,7 +2833,7 @@ export async function assignEntityTag(directories, id, tagId) {
         return 'ok';
     }
 
-    if ((/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
+    if (type === 'character' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
         entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
         // No updateTagsHashSync() here: this only touches character_tags, never the tags table that hashes, so
         // it would be a full O(library-wide tag count) scan for zero signal.
@@ -2822,7 +2847,7 @@ export async function assignEntityTag(directories, id, tagId) {
         }
         return 'ok';
     }
-    if ((/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
+    if (type === 'group' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
         entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
         const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
         entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
@@ -2831,9 +2856,8 @@ export async function assignEntityTag(directories, id, tagId) {
     return 'not_found';
 }
 
-// Not a 404 on a nonexistent entity: nothing to reject. Runs the delete against both tables unconditionally,
-// cheaper than resolving which one first. Checks the batch-import pending buffer too, same reasoning as
-// assignEntityTag().
+// Not a 404 on a nonexistent entity: nothing to reject. Touches only the id's own type's table
+// (tagEntityTypeOf()). Checks the batch-import pending buffer too, same reasoning as assignEntityTag().
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id
@@ -2844,19 +2868,26 @@ export async function unassignEntityTag(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    const pending = entry.batch?.pending.get(id);
+    const type = tagEntityTypeOf(id);
+    if (type === null) return 'ok';
+
+    const pending = type === 'character' ? entry.batch?.pending.get(id) : undefined;
     if (pending) {
         pending.tagIds = pending.tagIds.filter(t => t !== tagId);
         patchPendingRowTagIds(pending);
         return 'ok';
     }
 
+    if (type === 'group') {
+        entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
+        entry.db.run(
+            'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
+            { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) }) },
+        );
+        return 'ok';
+    }
+
     entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
-    entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
-    entry.db.run(
-        'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
-        { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) }) },
-    );
     const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
     if (charRow) {
         const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
@@ -2883,19 +2914,20 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
     if (!entry) return null;
 
     const ids = Object.keys(tagIdsByEntity);
+    const idsOfType = (/** @type {'character' | 'group'} */ type) => ids.filter(id => tagEntityTypeOf(id) === type);
 
+    // Each id is only looked for in its own type's table (tagEntityTypeOf()).
     /** @type {Set<string>} */
     const characterIds = new Set();
     /** @type {Set<string>} */
     const groupIds = new Set();
-    for (let i = 0; i < ids.length; i += BATCH_FLUSH_SIZE) {
-        const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE);
-        const placeholders = chunk.map(() => '?').join(',');
-        for (const row of (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM characters WHERE id IN (${placeholders})`, chunk)))) {
-            characterIds.add(row.id);
-        }
-        for (const row of (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM groups WHERE id IN (${placeholders})`, chunk)))) {
-            groupIds.add(row.id);
+    for (const [table, typeIds, found] of /** @type {const} */ ([['characters', idsOfType('character'), characterIds], ['groups', idsOfType('group'), groupIds]])) {
+        for (let i = 0; i < typeIds.length; i += BATCH_FLUSH_SIZE) {
+            const chunk = typeIds.slice(i, i + BATCH_FLUSH_SIZE);
+            const placeholders = chunk.map(() => '?').join(',');
+            for (const row of /** @type {Iterable<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM ${table} WHERE id IN (${placeholders})`, chunk))) {
+                found.add(row.id);
+            }
         }
     }
 
@@ -2906,7 +2938,7 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
         for (const id of ids) {
             const tagIds = Array.isArray(tagIdsByEntity[id]) ? [...new Set(tagIdsByEntity[id])] : [];
 
-            const pending = entry.batch?.pending.get(id);
+            const pending = tagEntityTypeOf(id) === 'character' ? entry.batch?.pending.get(id) : undefined;
             if (pending) {
                 pending.tagIds = tagIds;
                 patchPendingRowTagIds(pending);
@@ -2950,7 +2982,7 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
  */
 export async function getGroupTagIds(directories, groupId) {
     const entry = await getEntry(directories);
-    if (!entry) return [];
+    if (!entry || tagEntityTypeOf(groupId) !== 'group') return [];
     return normalizeTagIds((/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId }))).map(r => r.tag_id));
 }
 
@@ -2971,6 +3003,9 @@ export async function getAllTagUsage(directories) {
     return result;
 }
 
+// SQL counterpart to tagEntityTypeOf(id) === 'group' for a group_tags row (case-sensitive, like endsWith()).
+const GROUP_TAG_ROW_IS_GROUP_SQL = 'substr(group_id, -4) <> \'.png\'';
+
 const GROUP_UPSERT_SQL = `
     INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
     VALUES (@id, @name, @nameFold, @fav, @dateAdded, @dateLastChat, @chatSize, @digestFav, @digestContent)
@@ -2985,6 +3020,12 @@ const GROUP_UPSERT_SQL = `
     -- backfill passes, not by /create or /edit requests.
 `;
 
+const GROUP_INSERT_IF_MISSING_SQL = `
+    INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
+    VALUES (@id, @name, @nameFold, @fav, @dateAdded, @dateLastChat, @chatSize, @digestFav, @digestContent)
+    ON CONFLICT(id) DO NOTHING
+`;
+
 // row.group feeds digest_content only; its other fields live in the group's own JSON file, not a groups row column.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
@@ -2996,10 +3037,11 @@ const GROUP_UPSERT_SQL = `
  * @param {number} params.dateAdded
  * @param {number} params.dateLastChat
  * @param {number} params.chatSize
+ * @param {boolean} [params.insertOnly] true: leave an existing row untouched.
  */
-function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat, chatSize }) {
+function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat, chatSize, insertOnly = false }) {
     const normalizedFav = normalizeFav(fav);
-    db.run(GROUP_UPSERT_SQL, {
+    db.run(insertOnly ? GROUP_INSERT_IF_MISSING_SQL : GROUP_UPSERT_SQL, {
         id,
         name: name ?? '',
         nameFold: foldName(name),
@@ -3123,8 +3165,8 @@ export async function bootstrapGroupsIfNeeded(directories) {
                 try {
                     const filePath = path.join(directories.groups, file);
                     const raw = fs.readFileSync(filePath, 'utf8');
-                    const group = JSON.parse(raw);
-                    if (group && typeof group.id === 'string' && group.id) {
+                    const group = normalizeGroupRecord(JSON.parse(raw));
+                    if (hasGroupIdForRow(group)) {
                         const stat = fs.statSync(filePath);
                         const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
                         upsertGroupRowSync(entry.db, {
@@ -3148,6 +3190,87 @@ export async function bootstrapGroupsIfNeeded(directories) {
         'INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         { value: String(Date.now()) },
     );
+}
+
+/**
+ * Whether a group read from its file (after normalizeGroupRecord()) has an id its row can be keyed by. Any non-empty
+ * string counts, not just a valid new-group id: a group that exists on disk keeps working whatever its id.
+ * @param {any} group
+ * @returns {boolean}
+ */
+function hasGroupIdForRow(group) {
+    return typeof group?.id === 'string' && group.id !== '';
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @returns {Promise<boolean>}
+ */
+export async function groupRowExists(directories, id) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    return !!entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id });
+}
+
+export const GROUP_NUMERIC_ID_RECOVERY_FLAG = 'group_numeric_id_recovery_v1';
+
+// One-time pass for stores whose groups bootstrap skipped every group file holding its id as a number (the legacy
+// format): inserts a row for each such group that has none. Existing rows are never touched.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function recoverNumericIdGroupsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_NUMERIC_ID_RECOVERY_FLAG })) return;
+
+    if (fs.existsSync(directories.groups)) {
+        const BATCH_SIZE = 500;
+        const dir = await fsPromises.opendir(directories.groups);
+        /** @type {string[]} */
+        let batch = [];
+        const flush = () => {
+            const files = batch;
+            batch = [];
+            entry.db.transaction(() => {
+                for (const file of files) {
+                    try {
+                        const filePath = path.join(directories.groups, file);
+                        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                        if (typeof raw?.id !== 'number') continue;
+                        const group = normalizeGroupRecord(raw);
+                        if (!hasGroupIdForRow(group)) continue;
+                        const stat = fs.statSync(filePath);
+                        const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
+                        upsertGroupRowSync(entry.db, {
+                            id: group.id,
+                            name: group.name,
+                            fav: normalizeFav(group.fav),
+                            group,
+                            dateAdded: Math.round(stat.birthtimeMs),
+                            dateLastChat,
+                            chatSize,
+                            insertOnly: true,
+                        });
+                    } catch (err) {
+                        console.error(`[character-metadata] Numeric-id group recovery failed to process group file ${file}, skipping it:`, /** @type {any} */ (err).message);
+                    }
+                }
+            });
+        };
+        for await (const dirent of dir) {
+            if (!dirent.isFile() || !dirent.name.endsWith('.json')) continue;
+            batch.push(dirent.name);
+            if (batch.length >= BATCH_SIZE) {
+                flush();
+                await new Promise(resolve => setImmediate(resolve));
+            }
+        }
+        flush();
+    }
+
+    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: GROUP_NUMERIC_ID_RECOVERY_FLAG, value: String(Date.now()) });
 }
 
 export const GROUP_FAV_NORMALIZED_FLAG = 'group_fav_normalized_v1';
@@ -3311,6 +3434,7 @@ export async function getAllEntityTagAssignments(directories) {
         addAssignment(row.character_id, row.tag_id);
     }
     for (const row of groupRows) {
+        if (tagEntityTypeOf(row.group_id) !== 'group') continue;
         addAssignment(row.group_id, row.tag_id);
     }
 
@@ -3518,8 +3642,8 @@ export async function migrateTagsJsonIfNeeded(directories) {
     }
 }
 
-// Imports a `{[id]: tagId[]}` map into character_tags/group_tags, classifying each key against the current
-// characters/groups tables. Returns keys that matched neither.
+// Imports a `{[id]: tagId[]}` map into character_tags/group_tags. Each key is looked for only in its own type's
+// table (tagEntityTypeOf()). Returns keys not found there.
 /**
  * @param {MetadataDbEntry} entry
  * @param {Record<string, unknown>} tagMap Externally-supplied - each value is runtime-checked as string[] below.
@@ -3534,12 +3658,13 @@ function importTagMapSync(entry, tagMap) {
     entry.db.transaction(() => {
         for (const [key, tagIds] of Object.entries(tagMap)) {
             if (!Array.isArray(tagIds)) continue;
-            if (knownCharacterIds.has(key)) {
+            const type = tagEntityTypeOf(key);
+            if (type === 'character' && knownCharacterIds.has(key)) {
                 for (const tagId of tagIds) {
                     entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
                 }
                 if (tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, key);
-            } else if (knownGroupIds.has(key)) {
+            } else if (type === 'group' && knownGroupIds.has(key)) {
                 for (const tagId of tagIds) {
                     entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
                 }
@@ -3886,6 +4011,7 @@ export async function getFullTagMapExport(directories) {
         result[row.id] = row.tags.split(SEP);
     }
     for (const row of (/** @type {{ id: string, tags: string }[]} */ (entry.db.all(`SELECT group_id as id, group_concat(tag_id, '${SEP}') as tags FROM group_tags GROUP BY group_id`)))) {
+        if (tagEntityTypeOf(row.id) !== 'group') continue;
         result[row.id] = row.tags.split(SEP);
     }
     return result;
@@ -4198,15 +4324,15 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
         const mode = tags.mode === 'or' ? 'or' : 'and';
         if (include.length > 0) {
             if (mode === 'and') {
-                clauses.push(`id IN (SELECT group_id FROM group_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}) GROUP BY group_id HAVING COUNT(DISTINCT tag_id) = ?)`);
+                clauses.push(`id IN (SELECT group_id FROM group_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL} GROUP BY group_id HAVING COUNT(DISTINCT tag_id) = ?)`);
                 args.push(...include, include.length);
             } else {
-                clauses.push(`id IN (SELECT group_id FROM group_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}))`);
+                clauses.push(`id IN (SELECT group_id FROM group_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
                 args.push(...include);
             }
         }
         if (exclude.length > 0) {
-            clauses.push(`id NOT IN (SELECT group_id FROM group_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}))`);
+            clauses.push(`id NOT IN (SELECT group_id FROM group_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
             args.push(...exclude);
         }
     }
@@ -4333,7 +4459,8 @@ function makeEntityHashRowMapper(entry, directories) {
             chat = JSON.parse(/** @type {string} */ (r.shallow_json)).chat ?? null;
         } else if (r.digest_fav != null && r.digest_tag_ids != null && r.digest_content != null) {
             favHash = r.digest_fav;
-            tagIdsHash = r.digest_tag_ids;
+            // A .png group row's tags are never read as a group's (tagEntityTypeOf()), so it's served with none.
+            tagIdsHash = tagEntityTypeOf(r.id) === 'group' ? r.digest_tag_ids : groupDigestTagIdsHash({ tag_ids: [] });
             contentHash = r.digest_content;
         } else {
             // Can't import groups.js's getGroupsByIds() here (import-direction rule), so re-read the file directly.
@@ -4358,8 +4485,8 @@ function makeEntityHashRowMapper(entry, directories) {
             if (!hr.isGroup || !groupIdsNeedingFileFallback.has(hr.id)) continue;
             try {
                 const filePath = path.join(directories.groups, sanitize(`${hr.id}.json`));
-                const group = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-                const tagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: hr.id }))).map(r => r.tag_id);
+                const group = normalizeGroupRecord(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+                const tagIds = tagEntityTypeOf(hr.id) === 'group' ? (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: hr.id }))).map(r => r.tag_id) : [];
                 const fingerprintSource = { ...group, tag_ids: tagIds };
                 hr.favHash = groupDigestFavHash(fingerprintSource) >>> 0;
                 hr.tagIdsHash = groupDigestTagIdsHash(fingerprintSource) >>> 0;

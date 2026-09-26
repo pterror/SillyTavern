@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { getConfigValue } from './util.js';
 import { shallowCharacterData } from '../public/scripts/hash-utils.js';
+import { normalizeGroupId, normalizeGroupRecord } from './group-id.js';
 
 // Whether the shallow character response includes creator_notes (matches upstream SillyTavern's shallow response)
 export const shallowCharactersIncludeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
@@ -67,15 +68,16 @@ export function calculateGroupChatStats(groupChatsDir, chatIds) {
  * @param {string} groupsDir `directories.groups`
  * @param {object} params
  * @param {string} [params.chatId] A chat id owned by the group, used for the scan when `groupId` is absent
- * @param {string} [params.groupId] The group's own persistent id, when the caller knows it
+ * @param {string | number} [params.groupId] The group's own persistent id, when the caller knows it
  * @returns {{ id: string, chats: string[] } | null} `null` when no group claims this chat.
  */
-export function resolveGroupOwner(groupsDir, { chatId, groupId } = {}) {
+export function resolveGroupOwner(groupsDir, { chatId, groupId: givenGroupId } = {}) {
     if (!fs.existsSync(groupsDir)) return null;
+    const groupId = normalizeGroupId(givenGroupId) ?? givenGroupId;
 
     const readDescriptor = (filePath) => {
         try {
-            const group = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            const group = normalizeGroupRecord(JSON.parse(fs.readFileSync(filePath, 'utf8')));
             if (typeof group?.id !== 'string') return null;
             return { id: group.id, chats: Array.isArray(group.chats) ? group.chats : [] };
         } catch {

@@ -19,6 +19,7 @@ import {
 } from '../character-metadata-db.js';
 import { rebuildCharacterSearchIndex } from '../endpoints/characters-search-index.js';
 import { writeGroupFile } from '../endpoints/groups.js';
+import { normalizeGroupRecord } from '../group-id.js';
 
 /**
  * Migrates every character file from a name-derived filename to an immutable UUIDv7, rewriting all references.
@@ -138,7 +139,7 @@ async function sweepCrossCuttingReferences(directories, log) {
             const groupPath = path.join(directories.groups, file);
             let group;
             try {
-                group = JSON.parse(await fsPromises.readFile(groupPath, 'utf8'));
+                group = normalizeGroupRecord(JSON.parse(await fsPromises.readFile(groupPath, 'utf8')));
             } catch (err) {
                 log(color.red(`[migrate-character-ids] Failed to read group file ${file}, skipping: ${err.message}`));
                 continue;
