@@ -255,12 +255,12 @@ describe('reconcile racing bootstrap (regression: initializeMetadataStores() mus
         const reconcilePromise = metadataDb.reconcile(directories);
         await Promise.all([bootstrapPromise, reconcilePromise]);
 
-        const changes = await metadataDb.getChangesSince(directories, 0);
+        const currentSeq = await metadataDb.getCurrentSeq(directories);
         const result = await metadataDb.queryCharacters(directories, { wantRows: false, wantTotal: true });
         // A seq count higher than the final character count means at least one file got processed (parsed +
         // written) by both passes instead of exactly one - the real duplicate-work symptom this test guards
         // against, not just lock contention.
-        expect(changes.seq).toBeGreaterThan(result.total);
+        expect(currentSeq).toBeGreaterThan(result.total);
     });
 
     test('sequencing reconcile() after bootstrapIfNeeded() resolves (what the fixed periodic interval does) does not duplicate upserts', async () => {
@@ -271,9 +271,9 @@ describe('reconcile racing bootstrap (regression: initializeMetadataStores() mus
         await metadataDb.bootstrapIfNeeded(directories);
         await metadataDb.reconcile(directories);
 
-        const changes = await metadataDb.getChangesSince(directories, 0);
+        const currentSeq = await metadataDb.getCurrentSeq(directories);
         const result = await metadataDb.queryCharacters(directories, { wantRows: false, wantTotal: true });
-        expect(changes.seq).toBe(result.total);
+        expect(currentSeq).toBe(result.total);
     });
 });
 
@@ -2091,10 +2091,8 @@ describe('getChangesSince / getTagNameChangesSince with { limit }', () => {
         expect(seen.sort()).toEqual(['A.png', 'B.png', 'C.png', 'D.png', 'E.png']);
         expect(since).toBe(await metadataDb.getCurrentSeq(directories));
 
-        // No limit: the unpaged shape, unchanged.
-        const whole = await metadataDb.getChangesSince(directories, 0);
-        expect(whole).not.toHaveProperty('hasMore');
-        expect(whole.changes).toHaveLength(5);
+        // No limit: rejected, so no caller can reach an unbounded read.
+        await expect(metadataDb.getChangesSince(directories, 0)).rejects.toThrow(TypeError);
     });
 
     test('collapses per page, so an id changed in two pages shows up in both', async () => {

@@ -173,6 +173,23 @@ export async function getAllCachedCharacters() {
     return result;
 }
 
+/** Reads the cached characters for `ids`, keyed by avatar; an id with no cached record is absent from the result. */
+export async function readCachedCharactersByIds(ids) {
+    const store = getCharacterCacheStore();
+    const result = new Map();
+    await Promise.all(ids.map(async (id) => {
+        try {
+            const record = await store.getItem(id);
+            if (record && record.character) {
+                result.set(id, rehydrateDuplicateFields(record.character, record.dedup));
+            }
+        } catch (error) {
+            console.error(`Failed to read cached character data for ${id}:`, error);
+        }
+    }));
+    return result;
+}
+
 // A hash match means the cached `character` can be used as-is with zero refetch.
 export async function getCachedEntriesByIds(ids) {
     const store = getCharacterCacheStore();

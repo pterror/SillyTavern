@@ -11,7 +11,7 @@ import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInva
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
-import { getCachedCursor, setCachedCursor, getAllCachedCharacters, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getWriteFailures, setWriteFailures } from './character-cache.js';
+import { getCachedCursor, setCachedCursor, getAllCachedCharacters, readCachedCharactersByIds, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getWriteFailures, setWriteFailures } from './character-cache.js';
 import { Popup } from './popup.js';
 import { renderTemplateAsync } from './templates.js';
 import { accountStorage } from './util/AccountStorage.js';
@@ -758,139 +758,154 @@ function finalizeFetchedCharacter(character) {
 }
 
 // Syncs via the change-feed against the local cache instead of a full-library dump; no full-fetch fallback on failure since that dump can be multi-hundred-MB.
+// The server pages /changes; each page is applied and saved, then its cursor persisted, so an interrupted sync resumes at the last fully applied page.
 async function fetchCharactersDelta() {
-    const sinceSeq = await getCachedCursor();
-    const changesResponse = await fetch('/api/characters/changes', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ sinceSeq }),
-    });
-
-    if (!changesResponse.ok) {
-        throw new Error(`Failed to fetch character changes: ${changesResponse.statusText}`);
-    }
-
-    /** @type {{seq: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean}} */
-    const { seq, changes, truncated } = await changesResponse.json();
-
-    if (truncated) {
-        // sinceSeq predates the server's change log; wipe the cache and retry as a fresh full sync.
-        await clearCharacterCache();
-        return fetchCharactersDelta();
-    }
-
-    const deleteIds = [];
-    const wholeRecordIds = [];
-    // Group field-level changes by their field set so each set becomes one batched /batch call.
-    /** @type {Map<string, { fields: string[], ids: string[] }>} */
-    const fieldGroupMap = new Map();
-
-    for (const { id, op, fields } of changes) {
-        if (op === 'delete') {
-            deleteIds.push(id);
-        } else if (!fields) {
-            wholeRecordIds.push(id);
-        } else {
-            const key = JSON.stringify([...fields].sort());
-            if (!fieldGroupMap.has(key)) {
-                fieldGroupMap.set(key, { fields, ids: [] });
-            }
-            fieldGroupMap.get(key).ids.push(id);
-        }
-    }
-
-    // Re-fetch records that failed to write on a previous sync, triggered by the failure itself.
-    const previousFailures = await getWriteFailures();
-    if (previousFailures.length > 0) {
-        const deleteSet = new Set(deleteIds);
-        for (const id of previousFailures) {
-            if (!deleteSet.has(id) && !wholeRecordIds.includes(id)) {
-                wholeRecordIds.push(id);
-            }
-        }
-        console.log(`[sync] Re-fetching ${previousFailures.length} record(s) from previous write failure(s)`);
-    }
-
-    if (deleteIds.length > 0) {
-        await removeCachedCharacters(deleteIds);
-    }
-
-    /** @type {Map<string, object>} fresh/updated records to save back to the cache */
-    const fresh = new Map();
-
-    for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
-        const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
-        const batchResponse = await fetch('/api/characters/batch', {
+    let changed = false;
+    // Advanced in memory, not re-read per page: setCachedCursor() swallows write errors, and re-reading a
+    // cursor that failed to persist would refetch the same page forever.
+    let sinceSeq = await getCachedCursor();
+    for (;;) {
+        const changesResponse = await fetch('/api/characters/changes', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatars: chunk }),
+            body: JSON.stringify({ sinceSeq }),
         });
 
-        if (!batchResponse.ok) {
-            throw new Error(`Failed to fetch character batch: ${batchResponse.statusText}`);
+        if (!changesResponse.ok) {
+            throw new Error(`Failed to fetch character changes: ${changesResponse.statusText}`);
         }
 
-        const batchData = await batchResponse.json();
-        for (const character of batchData) {
-            finalizeFetchedCharacter(character);
-            fresh.set(character.avatar, character);
+        /** @type {{seq: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean, hasMore: boolean}} */
+        const { seq, changes, truncated, hasMore } = await changesResponse.json();
+
+        if (truncated) {
+            // sinceSeq predates the server's change log; wipe the cache and retry as a fresh full sync.
+            await clearCharacterCache();
+            return fetchCharactersDelta();
         }
-    }
 
-    // Field-level fetches request only the changed fields, e.g. skipping the PNG read server-side.
-    if (fieldGroupMap.size > 0) {
-        // Read the full cache once up front - cheaper than N individual IndexedDB reads for a large fill.
-        const allCachedBefore = await getAllCachedCharacters();
+        const deleteIds = [];
+        const wholeRecordIds = [];
+        // Group field-level changes by their field set so each set becomes one batched /batch call.
+        /** @type {Map<string, { fields: string[], ids: string[] }>} */
+        const fieldGroupMap = new Map();
 
-        for (const { fields, ids } of fieldGroupMap.values()) {
-            for (let i = 0; i < ids.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
-                const chunk = ids.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
-                const batchResponse = await fetch('/api/characters/batch', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ avatars: chunk, fields }),
-                });
-
-                if (!batchResponse.ok) {
-                    throw new Error(`Failed to fetch character batch (fields): ${batchResponse.statusText}`);
+        for (const { id, op, fields } of changes) {
+            if (op === 'delete') {
+                deleteIds.push(id);
+            } else if (!fields) {
+                wholeRecordIds.push(id);
+            } else {
+                const key = JSON.stringify([...fields].sort());
+                if (!fieldGroupMap.has(key)) {
+                    fieldGroupMap.set(key, { fields, ids: [] });
                 }
+                fieldGroupMap.get(key).ids.push(id);
+            }
+        }
 
-                const batchData = await batchResponse.json();
-                const batchMerged = [];
-                for (const partial of batchData) {
-                    const avatar = partial.avatar;
-                    // Check `fresh` first - a whole-record fetch in this same sync supersedes the pre-sync cache.
-                    const existing = fresh.get(avatar) || allCachedBefore.get(avatar);
-                    if (existing) {
-                        for (const field of fields) {
-                            if (field in partial) {
-                                existing[field] = partial[field];
-                            }
-                        }
-                        fresh.set(avatar, existing);
-                        batchMerged.push({ avatar, character: existing });
+        // Re-fetch records that failed to write on a previous sync, triggered by the failure itself.
+        const previousFailures = await getWriteFailures();
+        if (previousFailures.length > 0) {
+            const deleteSet = new Set(deleteIds);
+            for (const id of previousFailures) {
+                if (!deleteSet.has(id) && !wholeRecordIds.includes(id)) {
+                    wholeRecordIds.push(id);
+                }
+            }
+            console.log(`[sync] Re-fetching ${previousFailures.length} record(s) from previous write failure(s)`);
+        }
+
+        if (deleteIds.length > 0) {
+            await removeCachedCharacters(deleteIds);
+        }
+
+        /** @type {Map<string, object>} fresh/updated records to save back to the cache */
+        const fresh = new Map();
+
+        for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
+            const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
+            const batchResponse = await fetch('/api/characters/batch', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatars: chunk }),
+            });
+
+            if (!batchResponse.ok) {
+                throw new Error(`Failed to fetch character batch: ${batchResponse.statusText}`);
+            }
+
+            const batchData = await batchResponse.json();
+            for (const character of batchData) {
+                finalizeFetchedCharacter(character);
+                fresh.set(character.avatar, character);
+            }
+        }
+
+        // Field-level fetches request only the changed fields, e.g. skipping the PNG read server-side.
+        if (fieldGroupMap.size > 0) {
+            // Reads only this page's field-changed ids, so the read is bounded by the page size.
+            const cachedBefore = await readCachedCharactersByIds([...fieldGroupMap.values()].flatMap(group => group.ids));
+
+            for (const { fields, ids } of fieldGroupMap.values()) {
+                for (let i = 0; i < ids.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
+                    const chunk = ids.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
+                    const batchResponse = await fetch('/api/characters/batch', {
+                        method: 'POST',
+                        headers: getRequestHeaders(),
+                        body: JSON.stringify({ avatars: chunk, fields }),
+                    });
+
+                    if (!batchResponse.ok) {
+                        throw new Error(`Failed to fetch character batch (fields): ${batchResponse.statusText}`);
                     }
-                }
-                // Saved incrementally per batch to avoid one huge IndexedDB write at the end.
-                if (batchMerged.length > 0) {
-                    await saveCachedCharacters(batchMerged);
+
+                    const batchData = await batchResponse.json();
+                    const batchMerged = [];
+                    for (const partial of batchData) {
+                        const avatar = partial.avatar;
+                        // Check `fresh` first - a whole-record fetch in this same sync supersedes the pre-sync cache.
+                        const existing = fresh.get(avatar) || cachedBefore.get(avatar);
+                        if (existing) {
+                            for (const field of fields) {
+                                if (field in partial) {
+                                    existing[field] = partial[field];
+                                }
+                            }
+                            fresh.set(avatar, existing);
+                            batchMerged.push({ avatar, character: existing });
+                        }
+                    }
+                    // Saved incrementally per batch to avoid one huge IndexedDB write at the end.
+                    if (batchMerged.length > 0) {
+                        await saveCachedCharacters(batchMerged);
+                    }
                 }
             }
         }
-    }
 
-    let writeFailures = [];
-    if (fresh.size > 0) {
-        writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
+        let writeFailures = [];
+        if (fresh.size > 0) {
+            writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
+        }
+        // Failures before the cursor: if interrupted between the two writes, the page replays and refetches them,
+        // instead of the cursor moving past ids whose write failed.
+        await setWriteFailures(writeFailures);
+        await setCachedCursor(seq);
+
+        if (changes.length > 0 || previousFailures.length > 0) {
+            changed = true;
+        }
+        if (!hasMore) {
+            break;
+        }
+        sinceSeq = seq;
     }
-    await setCachedCursor(seq);
-    await setWriteFailures(writeFailures);
 
     // Re-read rather than reconstruct in place, so a server-side failed character correctly stays absent.
     const allCached = await getAllCachedCharacters();
 
-    // `changed` lets getCharacters() skip its O(library) merge-and-reindex pass when nothing moved.
-    return { list: Array.from(allCached.values()), changed: changes.length > 0 || previousFailures.length > 0 };
+    return { list: Array.from(allCached.values()), changed };
 }
 
 // lodash merge() would merge arrays index-by-index; returning arrays as-is makes them replace wholesale instead.

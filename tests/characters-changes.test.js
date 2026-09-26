@@ -101,7 +101,7 @@ describe('POST /api/characters/changes', () => {
     test('sinceSeq: 0 on an empty library returns an empty change list at seq 0', async () => {
         const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ seq: 0, changes: [], truncated: false });
+        expect(await response.json()).toEqual({ seq: 0, changes: [], truncated: false, hasMore: false });
     });
 
     test('sinceSeq: 0 on a genuinely cold sync returns the whole library as upsert entries - the correctness ' +
@@ -129,7 +129,7 @@ describe('POST /api/characters/changes', () => {
 
         const second = await postJson('/api/characters/changes', { sinceSeq: first.seq });
         expect(second.status).toBe(200);
-        expect(await second.json()).toEqual({ seq: first.seq, changes: [], truncated: false });
+        expect(await second.json()).toEqual({ seq: first.seq, changes: [], truncated: false, hasMore: false });
     });
 
     test('only the ids that actually changed since sinceSeq come back, not the whole library', async () => {
