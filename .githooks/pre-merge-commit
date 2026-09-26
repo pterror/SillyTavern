@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Runs the public/script.js export parity check (scripts/script-exports.mjs) on the result of a merge
+# that commits without a conflict, which never runs pre-commit. Without it, a clean merge whose
+# script.js drops an upstream/staging export would land.
+#
+# Git hasn't written MERGE_HEAD when this runs, so the list is checked against the pre-merge HEAD.
+# Whether the merge left the list behind is reported by post-merge and enforced on the next commit.
+
+set -euo pipefail
+
+. "$(dirname "$0")/lib/staged-snapshot.sh"
+
+if ! command -v node >/dev/null 2>&1; then
+    echo "pre-merge-commit: node not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
+    exit 1
+fi
+
+if [ ! -d "$toplevel/node_modules" ]; then
+    echo "pre-merge-commit: blocked -- $toplevel/node_modules does not exist, so the export parity check can't run." >&2
+    echo "Run 'npm install' in this repo and try again." >&2
+    exit 1
+fi
+
+build_staged_snapshot
+cd "$snap_tree"
+
+if ! node scripts/script-exports.mjs check --repo "$toplevel" >/dev/null; then
+    echo "pre-merge-commit: blocked -- script.js export parity failed in the staged snapshot (see above)." >&2
+    exit 1
+fi
+
+exit 0
