@@ -562,7 +562,7 @@ class PromptManager {
 
             nameField.value = prompt.name;
             roleField.value = 'system';
-            promptField.value = prompt.content ?? '';
+            this.setEditFormContent(prompt.content ?? '');
             injectionPositionField.value = (prompt.injection_position ?? 0).toString();
             injectionDepthField.value = (prompt.injection_depth ?? DEFAULT_DEPTH).toString();
             injectionOrderField.value = (prompt.injection_order ?? DEFAULT_ORDER).toString();
@@ -737,11 +737,14 @@ class PromptManager {
 
                 prompt.content = event.target.value;
 
-                // Update edit form if present
+                // Writing into an edit form that shows another prompt, or holds text the user typed, would destroy that text.
                 // @see https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/offsetParent
                 const popupEditFormPrompt = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_prompt'));
-                if (popupEditFormPrompt.offsetParent) {
-                    popupEditFormPrompt.value = prompt.content;
+                const popupEditFormSave = document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_save');
+                const formShowsThisPrompt = popupEditFormPrompt.offsetParent && popupEditFormSave.dataset.pmPrompt === promptId;
+                const formHasDraft = popupEditFormPrompt.value !== popupEditFormPrompt.dataset.pmLoaded;
+                if (formShowsThisPrompt && !formHasDraft) {
+                    this.setEditFormContent(prompt.content);
                 }
 
                 this.log('Saved prompt: ' + promptId);
@@ -1390,6 +1393,17 @@ class PromptManager {
     }
 
     /**
+     * Writes text into the edit form's prompt field and records it in dataset.pmLoaded, so the
+     * field differing from pmLoaded means the user has typed an unsaved draft since.
+     * @param {string} text
+     */
+    setEditFormContent(text) {
+        const promptField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_prompt'));
+        promptField.value = text;
+        promptField.dataset.pmLoaded = text;
+    }
+
+    /**
      * Loads a given prompt into the edit form fields.
      * @param {Partial<Prompt>} prompt - Prompt object with properties 'name', 'role', 'content', and 'system_prompt'
      */
@@ -1411,7 +1425,7 @@ class PromptManager {
 
         nameField.value = prompt.name ?? '';
         roleField.value = prompt.role || 'system';
-        promptField.value = prompt.content ?? '';
+        this.setEditFormContent(prompt.content ?? '');
         promptField.disabled = prompt.marker ?? false;
         injectionPositionField.value = (prompt.injection_position ?? INJECTION_POSITION.RELATIVE).toString();
         injectionDepthField.value = (prompt.injection_depth ?? DEFAULT_DEPTH).toString();
@@ -1523,7 +1537,7 @@ class PromptManager {
 
         nameField.value = '';
         roleField.selectedIndex = 0;
-        promptField.value = '';
+        this.setEditFormContent('');
         promptField.disabled = false;
         injectionPositionField.selectedIndex = 0;
         injectionPositionField.removeAttribute('disabled');
