@@ -5,6 +5,9 @@ test.describe('/addswipe without chat reload', () => {
     test.beforeEach(testSetup.awaitST);
 
     test('adds swipes in place without reloading the chat', async ({ page }) => {
+        // The welcome screen fills the chat asynchronously on load (its prompt message comes last); wait for it
+        // so it can't land in the test's chat.
+        await page.waitForFunction(() => SillyTavern.getContext().chat.some(message => message?.extra?.type === 'welcome_prompt'));
         const result = await page.evaluate(async () => {
             const { newAssistantChat } = await import('./script.js');
             const ctx = window.SillyTavern.getContext();
@@ -21,22 +24,7 @@ test.describe('/addswipe without chat reload', () => {
                 throw new Error('Timed out waiting for condition');
             }
 
-            // A fresh account runs onboarding on load: dismiss its popup and wait for the
-            // welcome messages to finish arriving, so they don't land inside the test chat.
-            for (let i = 0; i < 10; i++) {
-                const okButton = document.querySelector('.popup:popover-open .popup-button-ok, dialog[open] .popup-button-ok');
-                if (!okButton) break;
-                okButton.click();
-                await delay(300);
-            }
             const chat = ctx.chat;
-            let settledLength = -1;
-            await waitFor(() => {
-                const stable = chat.length === settledLength;
-                settledLength = chat.length;
-                return stable;
-            }, 10000, 700);
-
             await newAssistantChat({ temporary: true });
             const message = {
                 name: 'Assistant',
