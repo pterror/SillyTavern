@@ -6,20 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-}
-
-/**
  * The preloader goes away before initialization finishes; persona slash commands, for one, are registered later.
  * @param {import('@playwright/test').Page} page
  */
@@ -300,7 +286,6 @@ const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 test.describe('provisional greeting follows greeting saves', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('editing the showing greeting in the sidebar pager keeps it shown with its new text', async ({ page }) => {
         const s = stamp();
@@ -548,7 +533,6 @@ test.describe('provisional greeting follows greeting saves', () => {
 
 test.describe('persona switch redraws message 0', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
     test.beforeEach(async ({ page }) => awaitAppReady(page));
 
     test('solo chat on a provisional greeting', async ({ page }) => {

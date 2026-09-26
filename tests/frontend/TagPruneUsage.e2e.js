@@ -5,7 +5,7 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 // judged by what this page happens to have loaded, synced or counted.
 
 /**
- * Loads the app and waits for APP_READY (all characters/groups resident), answering the one-time welcome popup.
+ * Loads the app and waits for APP_READY (all characters/groups resident).
  * @param {import('@playwright/test').Page} page
  */
 async function loadApp(page) {
@@ -16,11 +16,6 @@ async function loadApp(page) {
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
         eventSource.once(eventTypes.APP_READY, () => { window['__appReady'] = true; });
     });
-    const okButton = page.locator('.popup-button-ok').first();
-    if (await okButton.waitFor({ state: 'visible', timeout: 5000 }).then(() => true, () => false)) {
-        await okButton.click();
-        await okButton.waitFor({ state: 'hidden', timeout: 5000 });
-    }
     await page.waitForFunction(() => window['__appReady'], null, { timeout: 60000 });
 }
 

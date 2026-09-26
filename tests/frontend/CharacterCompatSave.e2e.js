@@ -18,20 +18,6 @@ const CHARACTER_WRITE_PATHS = new Set([
 const CHAT_ROW_WRITE_PATHS = new Set(['/api/chats/save', '/api/chats/openings/ensure']);
 
 /**
- * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-}
-
-/**
  * Every write request from here on: character writes (greeting ops included) and chat row writes, with JSON bodies.
  * @param {import('@playwright/test').Page} page
  * @returns {{path: string, body: any}[]}
@@ -207,7 +193,6 @@ async function recordedEvents(page) {
 
 test.describe('createOrEditCharacter in edit mode', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('with nothing changed it resolves undefined and writes nothing', async ({ page }) => {
         const avatar = await createAndOpen(page, 'CompatNoop');
@@ -464,7 +449,6 @@ test.describe('createOrEditCharacter in edit mode', () => {
 
 test.describe('saveCharacterDebounced', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('takes no arguments, returns nothing, and repeated calls coalesce into one save', async ({ page }) => {
         const avatar = await createAndOpen(page, 'CompatDebounced');
@@ -494,7 +478,6 @@ test.describe('saveCharacterDebounced', () => {
 
 test.describe('createOrEditCharacter in create mode', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('creates from the form: .val() inputs, #greeting_field, #character_json_data as base, #character_book_json kept as-is', async ({ page }) => {
         const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;

@@ -7,20 +7,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 
 /**
  * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-}
-
-/**
- * @param {import('@playwright/test').Page} page
  * @param {string} avatar
  * @returns {Promise<any>} The character card as stored on the server.
  */
@@ -81,7 +67,6 @@ for (const path of ['css-anchor', 'js-fallback']) {
             }
         });
         test.beforeEach(testSetup.awaitST);
-        test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
         test('opens anchored below the button, stays non-modal, saves the slider, and closes on outside click and Escape', async ({ page }) => {
             const avatar = await createAndOpenCharacter(page, `TalkativenessPopover-${path}-${Date.now()}`);

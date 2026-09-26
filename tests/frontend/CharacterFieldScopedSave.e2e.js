@@ -6,20 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-}
-
-/**
  * Sets an input's value without firing any event, i.e. text sitting in the form that no save trigger has seen.
  * @param {import('@playwright/test').Page} page
  * @param {string} selector
@@ -86,7 +72,6 @@ async function deleteOpenCharacter(page) {
 
 test.describe('field-scoped character saves', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('editing one field sends only that field and leaves other fields\' unsaved input unsaved', async ({ page }) => {
         const avatar = await createAndOpenCharacter(page, `FieldScopedSave-${Date.now()}`);
