@@ -138,6 +138,9 @@
         "typecheck:dangling-refs": "tsc -p tsconfig.precommit.json --noEmit",
         "typecheck:chat-strict": "tsc -p tsconfig.chat-strict.json --noEmit",
         "lint:cycles": "oxlint -c .oxlintrc.json -A all -D import/no-cycle",
+        "lint:script-exports": "node scripts/script-exports.mjs check",
+        "script-exports:refresh": "node scripts/script-exports.mjs refresh",
+        "merge:upstream": "node scripts/script-exports.mjs merge-upstream",
         "plugins:update": "node plugins update",
         "plugins:install": "node plugins install",
         "postinstall": "patch-package"

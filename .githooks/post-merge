@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Warns when a merge moved the newest upstream/staging commit this branch contains but the committed
+# .upstream-script-exports wasn't refreshed to it (scripts/script-exports.mjs post-merge). The next
+# commit's pre-commit blocks until it is. Git ignores this hook's exit status, so it only warns.
+
+cd "$(git rev-parse --show-toplevel)" || exit 0
+
+if ! command -v node >/dev/null 2>&1; then
+    echo "post-merge: WARNING - node not found on PATH, so .upstream-script-exports was not checked against this merge." >&2
+    exit 0
+fi
+
+node scripts/script-exports.mjs post-merge "$@"
+exit 0
