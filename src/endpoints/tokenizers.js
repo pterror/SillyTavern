@@ -207,7 +207,6 @@ class SentencePieceTokenizer {
             const instance = new SentencePieceProcessor();
             await instance.load(pathToModel);
             console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
-            console.trace('Tokenizer instantiation stack for', path.parse(pathToModel).name);
             this.#instance = instance;
             return this.#instance;
         } catch (error) {
@@ -1024,14 +1023,6 @@ function createSentencepieceEncodingHandler(tokenizer) {
             }
 
             const text = request.body.text || '';
-            if (tokenizer === spp_llama) {
-                console.info('llama encode request', {
-                    route: request.originalUrl,
-                    model: request.query?.model,
-                    bodyKeys: Object.keys(request.body),
-                    caller: request.get('X-ST-Caller') ?? '(no X-ST-Caller header)',
-                });
-            }
             const instance = await tokenizer?.get();
             const { ids, count } = await countSentencepieceTokens(tokenizer, text);
             const chunks = instance?.encodePieces(text);
