@@ -763,18 +763,12 @@ async function unassignTagOnServer(id, tagId) {
 }
 
 /**
- * Recomputes `tagUsageCounts` from scratch - a bridge for callers (e.g. the tag restore flow) that write
- * entity `tag_ids` arrays directly instead of through `assignTagToKey()`/`unassignTagFromKey()`. A genuine
- * whole-corpus scan, same as `removeTagIdEverywhere()` - fine here because it only runs on that same kind of
- * rare, explicit bulk operation, not on any hot per-render/per-message path.
+ * Re-reads `tagUsageCounts` from the server, for callers (e.g. the tag restore flow) that wrote assignments
+ * server-side without going through `assignTagToKey()`/`unassignTagFromKey()`. Loaded cards alone can't give
+ * the counts: they are not every card.
  */
-function invalidateAssignedTagIdsCache() {
-    tagUsageCounts = new Map();
-    for (const [, tagIds] of allTagIdsEntries()) {
-        for (const tagId of tagIds) {
-            tagUsageCounts.set(tagId, (tagUsageCounts.get(tagId) ?? 0) + 1);
-        }
-    }
+async function invalidateAssignedTagIdsCache() {
+    await loadTagUsageCounts();
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
 }
@@ -2869,7 +2863,7 @@ async function onTagRestoreFileSelect(e) {
     }
 
     tagsStore.reindex();
-    invalidateAssignedTagIdsCache();
+    await invalidateAssignedTagIdsCache();
     invalidateTagsFuseIndex();
 
     $('#tag_view_restore_input').val('');
@@ -2900,30 +2894,71 @@ function onTagsBackupClick() {
     download(blob, filename, 'application/json');
 }
 
-async function onTagsPruneClick() {
-    // Stale tag_map references to a missing/deleted character or group used to need a separate existence
-    // check and prune pass here: tag_map was a standalone cache that could outlive the entity it named.
-    // Tag assignments now resolve straight through to each entity's own tag_ids field (see resolveTagIdsArray()),
-    // so a key only ever exists for as long as the entity itself is resident - there's no longer a stray
-    // reference this pass could find.
-    const allTagsInTagMaps = getAssignedTagIds();
-    const tagsToPrune = tags.filter(tag => !allTagsInTagMaps.has(tag.id));
+/** Server-side cap on /api/tags/prune's `limit`. */
+const TAG_PRUNE_BATCH_SIZE = 500;
 
-    if (!tagsToPrune.length) {
+async function onTagsPruneClick() {
+    // Only the server can say a tag is unused: this page may not have every card loaded, may not have synced
+    // other clients' assignments, and its own usage counts may have failed to load.
+    let unusedCount;
+    try {
+        const response = await fetch('/api/tags/unused-count', { method: 'POST', headers: getRequestHeaders(), body: '{}', cache: 'no-cache' });
+        if (!response.ok) throw new Error(response.statusText);
+        unusedCount = Number((await response.json()).count);
+    } catch (error) {
+        console.error('Error counting unused tags:', error);
+        toastr.error(t`Could not check which tags are unused. Nothing was pruned.`);
+        return;
+    }
+
+    if (!unusedCount) {
         toastr.info(t`No unused tags found.`);
         return;
     }
 
-    const confirm = await Popup.show.confirm(t`Prune ${tagsToPrune.length} tags`, t`Are you sure you want to remove all unused tags?`);
+    const confirm = await Popup.show.confirm(t`Prune ${unusedCount} tags`, t`Are you sure you want to remove all unused tags?`);
 
     if (!confirm) {
         return;
     }
 
-    // Fuse-index invalidation (per removal) is handled by the tagsStore.onChange subscriber
-    // (rebuildTagStores()) - firing once per pruned item here is fine, it's just setting dirty flags.
-    for (const tag of tagsToPrune) {
-        tagsStore.remove(tag.id);
+    // The server re-checks usage as it deletes; never delete more than the user confirmed.
+    let remaining = unusedCount;
+    let failed = false;
+    const prunedIds = new Set();
+    try {
+        while (remaining > 0) {
+            const response = await fetch('/api/tags/prune', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ limit: Math.min(remaining, TAG_PRUNE_BATCH_SIZE) }),
+                cache: 'no-cache',
+            });
+            if (!response.ok) throw new Error(response.statusText);
+            const { deleted, more } = await response.json();
+            for (const id of deleted) prunedIds.add(id);
+            remaining -= deleted.length;
+            if (!more) break;
+        }
+    } catch (error) {
+        console.error('Error pruning unused tags:', error);
+        toastr.error(t`Pruning unused tags failed partway. Some unused tags may remain.`);
+        failed = true;
+    }
+
+    // Already deleted server-side: drop them from memory without tagsStore.remove(), which would send a
+    // per-tag /api/tags/delete.
+    if (prunedIds.size) {
+        let write = 0;
+        for (const tag of tags) {
+            if (!prunedIds.has(tag.id)) tags[write++] = tag;
+        }
+        tags.length = write;
+        tagsStore.reindex();
+        invalidateTagsFuseIndex();
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+        await refreshTagsManifestCache();
     }
 
     // Pruned tags are unused by definition - no character/group row displays one, so only the filter buttons
@@ -2934,7 +2969,9 @@ async function onTagsPruneClick() {
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
     printViewTagList(tagContainer);
 
-    toastr.success(t`Unused tags pruned successfully.`);
+    if (!failed) {
+        toastr.success(t`Unused tags pruned successfully.`);
+    }
 }
 
 function onTagCreateClick() {

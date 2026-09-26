@@ -11,6 +11,8 @@ import {
     saveTagDefinitions,
     upsertTagDefinition,
     deleteTagDefinition,
+    countUnusedTags,
+    pruneUnusedTags,
     getTagsHash,
     getTagsDigest,
     getTagsBucketMembers,
@@ -56,6 +58,39 @@ router.post('/upsert', async (request, response) => {
     } catch (err) {
         console.error('Could not upsert tag definition', err);
         response.status(500).send({ error: 'Could not upsert tag definition' });
+    }
+});
+
+router.post('/unused-count', async (request, response) => {
+    try {
+        const count = await countUnusedTags(request.user.directories);
+        if (count === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+        response.send({ count });
+    } catch (err) {
+        console.error('Could not count unused tags', err);
+        response.sendStatus(500);
+    }
+});
+
+const PRUNE_MAX_LIMIT = 500;
+
+/** Deletes up to `limit` unused tag definitions; `more` says whether another call could delete more. */
+router.post('/prune', async (request, response) => {
+    try {
+        const limit = Number(request.body?.limit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > PRUNE_MAX_LIMIT) {
+            return response.status(400).send({ error: `limit must be an integer from 1 to ${PRUNE_MAX_LIMIT}` });
+        }
+        const deleted = await pruneUnusedTags(request.user.directories, limit);
+        if (deleted === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+        response.send({ deleted, more: deleted.length === limit });
+    } catch (err) {
+        console.error('Could not prune unused tags', err);
+        response.sendStatus(500);
     }
 });
 
