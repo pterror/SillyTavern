@@ -18,7 +18,7 @@ import {
     getCompletedIdMigrations,
 } from '../character-metadata-db.js';
 import { rebuildCharacterSearchIndex } from '../endpoints/characters-search-index.js';
-import { normalizeFav } from '../../public/scripts/hash-utils.js';
+import { writeGroupFile } from '../endpoints/groups.js';
 
 /**
  * Migrates every character file from a name-derived filename to an immutable UUIDv7, rewriting all references.
@@ -155,8 +155,7 @@ async function sweepCrossCuttingReferences(directories, log) {
             }
 
             if (changed) {
-                group.fav = normalizeFav(group.fav);
-                await fsPromises.writeFile(groupPath, JSON.stringify(group, null, 4), 'utf8');
+                await writeGroupFile(directories, group, { filePath: groupPath, createRow: false });
             }
         }
     }

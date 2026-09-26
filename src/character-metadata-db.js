@@ -2944,7 +2944,8 @@ function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat,
         dateLastChat,
         chatSize,
         digestFav: groupDigestFavHash({ fav: normalizedFav }),
-        digestContent: groupDigestContentHash(group ?? {}),
+        // Round-tripped so the digest is of what the group's JSON file holds, which is what clients hash.
+        digestContent: groupDigestContentHash(group ? JSON.parse(JSON.stringify(group)) : {}),
     });
 }
 
@@ -2960,6 +2961,39 @@ export async function upsertGroupRow(directories, id, name, { fav, group } = {})
     const entry = await getEntry(directories);
     if (!entry) return;
     upsertGroupRowSync(entry.db, { id, name, fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
+}
+
+/**
+ * Writes a group's own `<id>.json` (via `writeFile`) and updates its row from `group`, ordered so that a failure
+ * at any step can't leave digest_content describing content the file doesn't hold:
+ * 1. digest_content is set to NULL - if this throws, the file is not written.
+ * 2. `writeFile()` - if this throws, the digest stays NULL.
+ * 3. The row is upserted - if this throws, the digest stays NULL.
+ * NULL rather than a sentinel: every uint32 is a possible client hash, and hash mode recomputes a NULL digest from
+ * the file itself, so a hit against it is a hit on the file's current content. Once the store is open the three
+ * steps run synchronously, so no other write to the group can interleave.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} group The exact object `writeFile` serializes.
+ * @param {() => void} writeFile
+ * @param {object} [options]
+ * @param {boolean} [options.createIfMissing] false: don't insert a missing row. For writers that can run before
+ * bootstrapGroupsIfNeeded(), whose insert must be the one that sets date_added and the chat stats.
+ */
+export async function writeGroupFileAndRow(directories, group, writeFile, { createIfMissing = true } = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) {
+        writeFile();
+        return;
+    }
+    const id = group.id;
+    entry.db.run('UPDATE groups SET digest_content = NULL WHERE id = @id', { id });
+    writeFile();
+    try {
+        if (!createIfMissing && !entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) return;
+        upsertGroupRowSync(entry.db, { id, name: group.name, fav: group.fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
+    } catch (err) {
+        console.error(`[character-metadata] Could not update the row for group ${id} after writing its file; its digest stays NULL and is recomputed from the file:`, /** @type {any} */ (err).message);
+    }
 }
 
 /**

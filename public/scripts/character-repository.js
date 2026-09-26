@@ -638,9 +638,9 @@ export class CharacterRepository {
             for (const hr of staleRows) {
                 const partial = fetchedById.get(hr.id);
                 if (!partial) continue;
-                const merged = { ...partial, ...liveFieldsFromHashRow(hr), id: hr.id };
-                result.set(hr.id, merged);
-                toCache.push({ id: hr.id, group: merged });
+                result.set(hr.id, { ...partial, ...liveFieldsFromHashRow(hr), id: hr.id });
+                // Without the live fields: the server's digests don't cover them, so hashing them would never hit.
+                toCache.push({ id: hr.id, group: partial });
             }
             if (toCache.length > 0) {
                 await saveCachedGroups(toCache);

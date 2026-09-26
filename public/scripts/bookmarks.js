@@ -461,6 +461,7 @@ export async function convertSoloToGroupChat() {
 
     if (!createGroupResponse.ok) {
         console.error('Group creation unsuccessful');
+        toastr.error(t`The group was not created. Check the server console for details.`, t`Group could not be created`);
         return;
     }
 

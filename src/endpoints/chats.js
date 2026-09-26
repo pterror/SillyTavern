@@ -1642,8 +1642,12 @@ router.post('/group/save', async function (request, response) {
                 groupId: group.id,
                 stats: { dateLastChat: Date.now(), chatSize: Buffer.byteLength(JSON.stringify(chatData), 'utf8') },
             }).catch(err => console.error(`Could not update group chat stats for ${id}:`, err));
-            await registerGroupChatIdIfNew(request.user.directories, group, id).catch(err =>
-                console.error(`Could not register new chat id "${id}" on group ${group.id}:`, err));
+            try {
+                await registerGroupChatIdIfNew(request.user.directories, group, id);
+            } catch (err) {
+                console.error(`Could not register new chat id "${id}" on group ${group.id}:`, err);
+                return response.status(500).send({ error: 'The chat was saved, but it could not be added to the group\'s chat list, so the group won\'t show it. See the server console for details.' });
+            }
 
             return response.send({
                 ok: true,
