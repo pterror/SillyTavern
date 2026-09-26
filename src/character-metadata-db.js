@@ -17,7 +17,6 @@ import { getSqliteEngine, streamRows } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from '../public/scripts/hash-utils.js';
-import { runDigestWorkerTask } from './character-metadata-digest-dispatch.js';
 
 export const characterChangeEmitter = new EventEmitter();
 
@@ -4530,79 +4529,4 @@ export async function getChangesSince(directories, sinceSeq, { limit } = {}) {
         return { seq: lastSeq ?? maxSeq, changes, truncated: false, hasMore };
     }
     return { seq: maxSeq, changes, truncated: false };
-}
-
-/**
- * Superseded by treeDescend() below; kept but no longer wired into any endpoint or client.
- * Runs on character-metadata-digest-worker.js, not inline, since a full-table scan measured ~2.2s of
- * synchronous JS that would otherwise stall every other request this process is serving.
- * @returns {Promise<{ favBuckets: { hi: number, lo: number }[], contentBuckets: { hi: number, lo: number }[] } | null>}
- * Two parallel bucket-digest streams so a client can tell a fav-only mismatch from a content mismatch.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} [bucketCount]
- */
-export async function getStateDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    return runDigestWorkerTask({ type: 'state-digest', dbPath: getDbPath(directories), bucketCount });
-}
-
-/**
- * Superseded by treeDescend() below; kept but no longer wired into any endpoint or client.
- * Repair half of getStateDigest(): returns the members of one diverged bucket so a client can find exactly
- * which ids differ without re-fetching the whole library.
- * @returns {Promise<{ members: { id: string, favHash: number, fieldsHash: number, fav: boolean }[] } | null>}
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} bucket
- * @param {number} [bucketCount]
- */
-export async function getBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    return runDigestWorkerTask({ type: 'bucket-members', dbPath: getDbPath(directories), bucket, bucketCount });
-}
-
-/**
- * POST /api/characters/tree-descend: recursive hash-tree descent. Given tree-node paths to expand, scans the
- * characters table and for each node returns either children hashes (if the subtree is larger than
- * leafThreshold) or leaf member data with fingerprint values (if small enough to resolve directly).
- * Stateless - each call is independent, no caching between requests.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {{ path: number[] }[]} nodes
- * @param {number} [branching]
- * @param {number} [leafThreshold]
- * @returns {Promise<object | null>}
- */
-export async function treeDescend(directories, nodes, branching = DEFAULT_DIGEST_BUCKET_COUNT, leafThreshold = DEFAULT_DIGEST_BUCKET_COUNT) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    return runDigestWorkerTask({ type: 'tree-descend', dbPath: getDbPath(directories), nodes, branching, leafThreshold });
-}
-
-/**
- * Global 128-bit XOR-fold digest of the characters table - same value as folding all level-0 children from a
- * root tree-descend call, computed in one pass without bucketing.
- * @returns {Promise<{a: number, b: number, c: number, d: number} | null>}
- * @param {import('./users.js').UserDirectoryList} directories
- */
-export async function computeRootDigest(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    const result = await runDigestWorkerTask({ type: 'root-digest', dbPath: getDbPath(directories) });
-    return result?.digest ?? null;
-}
-
-/**
- * Repair half of tree-descend(): resolves fingerprint field values for ids the client has already narrowed
- * drift down to, reading from `shallow_json` (no PNG disk reads).
- * @returns {Promise<{ records: { id: string, fingerprint: object }[] } | null>}
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
- */
-export async function resolveFingerprints(directories, ids) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    return runDigestWorkerTask({ type: 'resolve-fingerprints', dbPath: getDbPath(directories), ids });
 }

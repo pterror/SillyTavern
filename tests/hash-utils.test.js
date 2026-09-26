@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { getStringHash, bucketOf, treeNodeAt, emptyDigest, combineDigest, foldDigests, digestsEqual, contentHashOf, characterDigestFingerprint, characterDigestContentHash, characterDigestFavHash, characterDigestFieldsHash, characterFavFingerprint, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT, characterDigestTagIdsHash, characterTagIdsFingerprint } from '../public/scripts/hash-utils.js';
+import { getStringHash, bucketOf, emptyDigest, combineDigest, digestsEqual, contentHashOf, characterDigestFingerprint, characterDigestFavHash, characterDigestFieldsHash, characterFavFingerprint, characterContentFieldsFingerprint, canonicalStringify, DEFAULT_DIGEST_BUCKET_COUNT, characterDigestTagIdsHash, characterTagIdsFingerprint } from '../public/scripts/hash-utils.js';
 
 describe('getStringHash', () => {
     test('is deterministic for the same string and seed', () => {
@@ -45,46 +45,8 @@ describe('bucketOf', () => {
     });
 });
 
-describe('treeNodeAt - hierarchical tree-node assignment extending bucketOf()', () => {
-    test('level 0 matches bucketOf()', () => {
-        const ids = ['Alice.png', 'Bob.png', 'Carol.png', 'test-123.png', ''];
-        for (const id of ids) {
-            expect(treeNodeAt(id, 0, 256)).toBe(bucketOf(id, 256));
-        }
-    });
-
-    test('is deterministic', () => {
-        expect(treeNodeAt('Alice.png', 1, 256)).toBe(treeNodeAt('Alice.png', 1, 256));
-    });
-
-    test('different levels give different (usually) indices', () => {
-        // Not guaranteed to differ for every id, but extremely likely for any given id
-        const l0 = treeNodeAt('Alice.png', 0, 256);
-        const l1 = treeNodeAt('Alice.png', 1, 256);
-        const l2 = treeNodeAt('Alice.png', 2, 256);
-        // At least two of three levels should differ for a well-distributed hash
-        const unique = new Set([l0, l1, l2]);
-        expect(unique.size).toBeGreaterThanOrEqual(2);
-    });
-
-    test('result is always in range [0, branching)', () => {
-        const ids = ['Alice.png', 'Bob.png', '', 'a'.repeat(1000)];
-        for (const id of ids) {
-            for (let level = 0; level < 4; level++) {
-                const result = treeNodeAt(id, level, 256);
-                expect(result).toBeGreaterThanOrEqual(0);
-                expect(result).toBeLessThan(256);
-            }
-        }
-    });
-
-    test('default branching matches DEFAULT_DIGEST_BUCKET_COUNT', () => {
-        expect(treeNodeAt('Alice.png', 0)).toBe(treeNodeAt('Alice.png', 0, DEFAULT_DIGEST_BUCKET_COUNT));
-    });
-});
-
-describe('combineDigest/foldDigests/digestsEqual - the anti-entropy state-digest primitive shared by ' +
-    'character-metadata-db.js (server) and script.js (client), see this module\'s own header', () => {
+describe('combineDigest/digestsEqual - the anti-entropy state-digest primitive shared by ' +
+    'character-metadata-db.js (server) and tags.js (client), see this module\'s own header', () => {
     test('an empty digest equals another independently-created empty digest', () => {
         expect(digestsEqual(emptyDigest(), emptyDigest())).toBe(true);
     });
@@ -130,22 +92,6 @@ describe('combineDigest/foldDigests/digestsEqual - the anti-entropy state-digest
         const restored = combineDigest(after, 'Bob.png', 2);
         expect(digestsEqual(restored, before)).toBe(true);
     });
-
-    test('foldDigests combines two bucket digests into the same result as folding all their rows into one accumulator', () => {
-        let bucketA = emptyDigest();
-        bucketA = combineDigest(bucketA, 'Alice.png', 1);
-        bucketA = combineDigest(bucketA, 'Bob.png', 2);
-
-        let bucketB = emptyDigest();
-        bucketB = combineDigest(bucketB, 'Carol.png', 3);
-
-        let combinedDirectly = emptyDigest();
-        combinedDirectly = combineDigest(combinedDirectly, 'Alice.png', 1);
-        combinedDirectly = combineDigest(combinedDirectly, 'Bob.png', 2);
-        combinedDirectly = combineDigest(combinedDirectly, 'Carol.png', 3);
-
-        expect(digestsEqual(foldDigests(bucketA, bucketB), combinedDirectly)).toBe(true);
-    });
 });
 
 describe('contentHashOf/characterDigestFingerprint - the content-derived (not stored-counter-derived) hash ' +
@@ -186,51 +132,7 @@ describe('contentHashOf/characterDigestFingerprint - the content-derived (not st
     });
 });
 
-describe('characterDigestContentHash - the fixed-shape fast path for contentHashOf(characterDigestFingerprint(x)), ' +
-    'see this function\'s own doc comment for why it must stay byte-identical to the generic pipeline it replaces ' +
-    'at the two full-library call sites (getStateDigest()/getBucketMembers() server-side, ' +
-    'verifyCharacterCacheDigest() client-side)', () => {
-    /** @type {object[]} */
-    const fixtures = [
-        // Fully populated.
-        { name: 'Alice', fav: false, tags: ['a', 'b'], data: { name: 'Alice', character_version: '1.0', creator: 'bob', tags: ['a', 'b'], creator_notes: 'hi', extensions: { fav: false, world: 'Wonderland' } } },
-        // fav: true, different tag order/content, unicode + characters needing JSON escaping.
-        { name: 'Bo\'b "the builder"', fav: true, tags: ['NSFW', 'tag\nwith\nnewlines'], data: { name: 'Bo\'b', character_version: '', creator: '', tags: [], creator_notes: '"quoted"', extensions: { fav: true, world: '' } } },
-        // Missing `data` entirely.
-        { name: 'NoData', fav: false, tags: [] },
-        // `data` present but missing several of its own fields.
-        { name: 'PartialData', fav: false, tags: ['x'], data: { name: 'PartialData' } },
-        // `data.extensions` entirely missing.
-        { name: 'NoExtensions', fav: true, tags: null, data: { name: 'NoExtensions', character_version: '2.0', creator: 'carol', tags: ['y'], creator_notes: '' } },
-        // Empty object - every field undefined.
-        {},
-        // Volatile fields present too (must be ignored by both paths identically).
-        { name: 'WithVolatile', fav: false, tags: [], chat: 'just now', chat_size: 1, date_added: 1, create_date: 'x', date_last_chat: 2, data: { name: 'WithVolatile', character_version: '', creator: '', tags: [], creator_notes: '', extensions: { fav: false, world: '' } } },
-    ];
-
-    test('matches contentHashOf(characterDigestFingerprint(x)) exactly, for every fixture', () => {
-        for (const fixture of fixtures) {
-            const generic = contentHashOf(characterDigestFingerprint(fixture));
-            const fast = characterDigestContentHash(fixture);
-            expect(fast).toBe(generic);
-        }
-    });
-
-    test('tolerates a null/undefined character (never throws, still matches the generic path)', () => {
-        expect(characterDigestContentHash(undefined)).toBe(contentHashOf(characterDigestFingerprint(undefined)));
-        expect(characterDigestContentHash(null)).toBe(contentHashOf(characterDigestFingerprint(null)));
-    });
-
-    test('a real change to any kept field changes the fast-path hash the same way it changes the generic one', () => {
-        const base = fixtures[0];
-        const favToggled = { ...base, fav: true };
-        expect(characterDigestContentHash(base)).not.toBe(characterDigestContentHash(favToggled));
-        expect(characterDigestContentHash(base) === characterDigestContentHash(favToggled))
-            .toBe(contentHashOf(characterDigestFingerprint(base)) === contentHashOf(characterDigestFingerprint(favToggled)));
-    });
-});
-
-describe('characterDigestFavHash / characterDigestFieldsHash - per-field-group split of characterDigestContentHash, ' +
+describe('characterDigestFavHash / characterDigestFieldsHash - per-field-group split of the character digest, ' +
     'see these functions\' own doc comments for why fav is its own stream', () => {
     const fixtures = [
         { name: 'Alice', fav: false, tags: ['a', 'b'], data: { name: 'Alice', character_version: '1.0', creator: 'bob', tags: ['a', 'b'], creator_notes: 'hi', extensions: { fav: false, world: 'Wonderland' } } },

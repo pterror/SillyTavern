@@ -5,8 +5,7 @@ import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagId
 // Client-side residency cache for character data, keyed off the server's per-item change feed
 // (`getChangesSince()`) rather than a per-character mtime. One IndexedDB database per user handle.
 
-// Bumped when the hash function's output changes; records with a different/missing version get
-// their hashes recomputed on first read.
+// Bumped when the hash function's output changes; records with a different/missing version read as cache misses.
 const HASH_VERSION = 2;
 
 // Top-level fields Spec V2 cards mirror under `data.*` for V1 back-compat; saveCachedCharacters()
@@ -73,6 +72,10 @@ const CURSOR_KEY = '__cursor__';
 // Pre-rename name of CURSOR_KEY, still present in caches written before the rename.
 const LEGACY_REV_KEY = '__rev__';
 
+// No longer written or read; removed from caches that still carry it.
+const STALE_DIGEST_KEY = '__last_verified_digest__';
+let staleDigestKeyRemoved = false;
+
 function getCharacterCacheStore() {
     const handle = getCurrentUserHandle();
     let store = storesByHandle.get(handle);
@@ -97,6 +100,10 @@ export async function getCachedCursor() {
                 cursor = legacy;
             }
         }
+        if (!staleDigestKeyRemoved) {
+            staleDigestKeyRemoved = true;
+            await store.removeItem(STALE_DIGEST_KEY).catch(error => console.error('Failed to remove stale digest record:', error));
+        }
         return typeof cursor === 'number' && Number.isFinite(cursor) ? cursor : 0;
     } catch (error) {
         console.error('Failed to read cached character revision:', error);
@@ -113,34 +120,7 @@ export async function setCachedCursor(seq) {
     }
 }
 
-const LAST_VERIFIED_DIGEST_KEY = '__last_verified_digest__';
-
 const WRITE_FAILURES_KEY = '__write_failures__';
-
-/** Content-derived (XOR-fold of per-record hashes), not a counter, so it can't silently drift like a rev counter can. */
-export async function getLastVerifiedDigest() {
-    const store = getCharacterCacheStore();
-    try {
-        const digest = await store.getItem(LAST_VERIFIED_DIGEST_KEY);
-        if (digest && typeof digest.a === 'number' && typeof digest.b === 'number' &&
-            typeof digest.c === 'number' && typeof digest.d === 'number') {
-            return digest;
-        }
-        return null;
-    } catch (error) {
-        console.error('Failed to read last verified digest:', error);
-        return null;
-    }
-}
-
-export async function setLastVerifiedDigest(digest) {
-    const store = getCharacterCacheStore();
-    try {
-        await store.setItem(LAST_VERIFIED_DIGEST_KEY, digest);
-    } catch (error) {
-        console.error('Failed to persist last verified digest:', error);
-    }
-}
 
 /** Avatar IDs whose IDB write failed on the last sync; fetchCharactersDelta retries these on next boot. */
 export async function getWriteFailures() {
@@ -190,73 +170,6 @@ export async function getAllCachedCharacters() {
         dedupMigrationStarted = true;
         migrateDedupCompression(store, unmigrated);
     }
-    return result;
-}
-
-// Stored atomically with the character data, so verification can read these instead of rehashing
-// full data. Records cached before hash storage lack `hashes`; computed and persisted on first read.
-export async function getAllCachedHashes() {
-    const store = getCharacterCacheStore();
-    const result = new Map();
-    /** @type {[string, object][]} [key, record] pairs needing hash computation */
-    const unhashed = [];
-    try {
-        await store.iterate((record, key) => {
-            if (key === CURSOR_KEY || key === LEGACY_REV_KEY || key === LAST_VERIFIED_DIGEST_KEY || key === WRITE_FAILURES_KEY) return;
-            if (record?.hashes?.v === HASH_VERSION) {
-                result.set(key, record.hashes);
-            } else if (record?.character) {
-                unhashed.push([key, record]);
-            }
-        });
-    } catch (error) {
-        console.error('Failed to read cached character hashes:', error);
-    }
-
-    if (unhashed.length > 0) {
-        console.log(`[character-cache] Computing hashes for ${unhashed.length} cached record(s) that predate hash storage...`);
-        const MIGRATE_BATCH = 500;
-        for (let i = 0; i < unhashed.length; i += MIGRATE_BATCH) {
-            const batch = unhashed.slice(i, i + MIGRATE_BATCH);
-            const toStore = [];
-            for (const [key, record] of batch) {
-                const character = rehydrateDuplicateFields(record.character, record.dedup);
-                // data.name was never DOMPurify-sanitized, unlike the top-level copy.
-                if (character?.data?.name !== undefined) {
-                    character.name = character.data.name;
-                }
-                const hashes = {
-                    fav: characterDigestFavHash(character) % 4294967296,
-                    tagIds: characterDigestTagIdsHash(character),
-                    content: characterDigestFieldsHash(character) % 4294967296,
-                    v: HASH_VERSION,
-                };
-                result.set(key, hashes);
-                toStore.push({ key, value: { character, hashes } });
-            }
-            await Promise.all(toStore.map(({ key, value }) =>
-                store.setItem(key, value).catch(error =>
-                    console.error(`Failed to persist migrated hashes for ${key}:`, error))));
-        }
-        console.log(`[character-cache] Hash migration complete (${unhashed.length} record(s)).`);
-    }
-
-    return result;
-}
-
-export async function getCachedHashesByIds(ids) {
-    const store = getCharacterCacheStore();
-    const result = new Map();
-    await Promise.all(ids.map(async (id) => {
-        try {
-            const record = await store.getItem(id);
-            if (record?.hashes?.v === HASH_VERSION) {
-                result.set(id, record.hashes);
-            }
-        } catch (error) {
-            console.error(`Failed to read cached hash for ${id}:`, error);
-        }
-    }));
     return result;
 }
 
