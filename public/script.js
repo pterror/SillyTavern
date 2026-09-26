@@ -8525,10 +8525,10 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     // Update some stuff about the char management dropdown
     $('#character_source').attr('disabled', !getCharacterSource(character) ? '' : null);
 
-    // CHARACTER_EDITOR_OPENED's public API payload is a chid (array index), so keep emitting that even though this function is avatar-driven internally.
-    const editedEntity = charactersStore.get(avatar);
-    const editedChid = editedEntity ? characters.indexOf(editedEntity) : -1;
-    eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, editedChid);
+    // An index is emitted as passed. The avatar and object forms emit `this_chid` only when they resolve to the
+    // current character (`this_avatar`), and undefined otherwise, so a wrong index is never emitted.
+    const editorOpenedChid = characters[chid] !== undefined ? chid : (avatar === this_avatar ? this_chid : undefined);
+    eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, editorOpenedChid);
 
     // Only populates DOM fields from already-persisted data; nothing here needs saving.
 }
@@ -11683,6 +11683,12 @@ function doCharListDisplaySwitch() {
 }
 
 /**
+ * Option of {@link deleteCharacter} carrying the CHARACTER_DELETED `id`. A symbol, so no outside caller's options
+ * can set it: upstream's `deleteCharacter` ignores every option but `deleteChats`.
+ */
+const DELETED_CHARACTER_INDEX = Symbol('deletedCharacterIndex');
+
+/**
  * Function to handle the deletion of a character, given a specific popup type and character ID.
  * If popup type equals "del_ch", it will proceed with deletion otherwise it will exit the function.
  * It fetches the delete character route, sending necessary parameters, and in case of success,
@@ -11699,18 +11705,24 @@ export async function handleDeleteCharacter(this_chid, delete_chats) {
         return;
     }
 
-    await deleteCharacter(character.avatar, { deleteChats: delete_chats });
+    // CHARACTER_DELETED's `id` is the deleted character's index, known only when the argument is that index.
+    // The property key, not `String()`, which throws on a symbol.
+    const key = Reflect.ownKeys({ [this_chid]: 0 })[0];
+    const index = typeof key === 'string' ? Number(key) : NaN;
+    const isIndex = Number.isInteger(index) && index >= 0 && String(index) === key && resolveCharacterRef(key) === character;
+
+    await deleteCharacter(character.avatar, { deleteChats: delete_chats, [DELETED_CHARACTER_INDEX]: isIndex ? index : undefined });
 }
 
 /**
  * Deletes a character completely, including associated chats if specified
  *
  * @param {string|string[]} characterKey - The key (avatar) of the character to be deleted
- * @param {Object} [options] - Optional parameters for the deletion
- * @param {boolean} [options.deleteChats=true] - Whether to delete associated chats or not
+ * @param {{deleteChats?: boolean, [DELETED_CHARACTER_INDEX]?: number}} [options] - Optional parameters for the
+ * deletion. `deleteChats` (default true): whether to delete associated chats or not
  * @return {Promise<boolean>} - A promise that resolves when the character is successfully deleted
  */
-export async function deleteCharacter(characterKey, { deleteChats = true } = {}) {
+export async function deleteCharacter(characterKey, { deleteChats = true, [DELETED_CHARACTER_INDEX]: deletedIndex = undefined } = {}) {
     if (blockWhileFieldEditing()) {
         return false;
     }
@@ -11797,7 +11809,8 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             }
         }
 
-        await eventSource.emit(event_types.CHARACTER_DELETED, { character: character });
+        // `undefined` unless handleDeleteCharacter passed an index: an avatar → index lookup would be a scan.
+        await eventSource.emit(event_types.CHARACTER_DELETED, { id: deletedIndex, character: character });
         removedCharacters.push({ avatar: character.avatar, entity: character });
         deleted = true;
     }

@@ -913,3 +913,350 @@ test.describe('writeExtensionField index branch', () => {
         }
     });
 });
+
+test.describe('emitted indices: GENERATION_STARTED and GENERATION_AFTER_COMMANDS force_chid (step 11)', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    // Upstream's options payload, in upstream's key order.
+    const UPSTREAM_OPTION_KEYS = ['automatic_trigger', 'force_name2', 'quiet_prompt', 'quietToLoud', 'skipWIAN', 'force_chid', 'force_avatar', 'signal', 'quietImage'];
+
+    /**
+     * Calls Generate offline (it returns before any backend call) and reports both events' payloads.
+     * @param {import('@playwright/test').Page} page
+     * @param {{omitOptions?: boolean, options?: object}} call
+     */
+    async function generationPayloads(page, { omitOptions = false, options = {} }) {
+        return page.evaluate(async ({ omitOptions, options }) => {
+            const { Generate, setOnlineStatus } = await import('/script.js');
+            // @ts-ignore
+            const ctx = SillyTavern.getContext();
+            const payloads = [];
+            const record = (event) => (type, opts, dryRun) => payloads.push({
+                event,
+                type,
+                keys: Object.keys(opts),
+                hasForceChid: Object.hasOwn(opts, 'force_chid'),
+                forceChidType: typeof opts.force_chid,
+                forceChid: opts.force_chid,
+                forceAvatar: opts.force_avatar,
+                dryRun,
+            });
+            const onStarted = record('GENERATION_STARTED');
+            const onAfterCommands = record('GENERATION_AFTER_COMMANDS');
+            ctx.eventSource.on(ctx.eventTypes.GENERATION_STARTED, onStarted);
+            ctx.eventSource.on(ctx.eventTypes.GENERATION_AFTER_COMMANDS, onAfterCommands);
+            setOnlineStatus('no_connection');
+            try {
+                await (omitOptions ? Generate('normal') : Generate('normal', options));
+            } finally {
+                ctx.eventSource.removeListener(ctx.eventTypes.GENERATION_STARTED, onStarted);
+                ctx.eventSource.removeListener(ctx.eventTypes.GENERATION_AFTER_COMMANDS, onAfterCommands);
+            }
+            return payloads;
+        }, { omitOptions, options });
+    }
+
+    /**
+     * Both events' payloads, as expected for this force_chid and force_avatar.
+     * @param {any} forceChid
+     * @param {string|undefined} forceAvatar
+     */
+    function expectedPayloads(forceChid, forceAvatar) {
+        return ['GENERATION_STARTED', 'GENERATION_AFTER_COMMANDS'].map(event => ({
+            event,
+            type: 'normal',
+            keys: UPSTREAM_OPTION_KEYS,
+            hasForceChid: true,
+            forceChidType: typeof forceChid,
+            forceChid,
+            forceAvatar,
+            dryRun: false,
+        }));
+    }
+
+    test('force_chid is carried as passed: a number, an index string, an avatar string, null, not passed, options omitted', async ({ page }) => {
+        const [current, target] = await createCharacters(page, 'IdxGenEvents', 2);
+        try {
+            const index = await indexOf(page, target);
+            await selectCharacter(page, current);
+            await expectIndexNames(page, index, target);
+
+            const cases = [
+                [{ options: { force_chid: Number(index) } }, Number(index), undefined],
+                [{ options: { force_chid: index } }, index, undefined],
+                [{ options: { force_chid: target } }, target, undefined],
+                [{ options: { force_chid: null } }, null, undefined],
+                [{ options: {} }, undefined, undefined],
+                [{ omitOptions: true }, undefined, undefined],
+            ];
+            for (const [call, forceChid, forceAvatar] of cases) {
+                expect(await generationPayloads(page, call)).toEqual(expectedPayloads(forceChid, forceAvatar));
+            }
+        } finally {
+            await deleteCharacters(page, [current, target]);
+        }
+    });
+
+    test('force_avatar is carried next to force_chid, with and without it', async ({ page }) => {
+        const [current, target] = await createCharacters(page, 'IdxGenEventsAvatar', 2);
+        try {
+            const index = await indexOf(page, target);
+            await selectCharacter(page, current);
+            await expectIndexNames(page, index, target);
+
+            expect(await generationPayloads(page, { options: { force_chid: Number(index), force_avatar: target } })).toEqual(expectedPayloads(Number(index), target));
+            expect(await generationPayloads(page, { options: { force_chid: index, force_avatar: target } })).toEqual(expectedPayloads(index, target));
+            expect(await generationPayloads(page, { options: { force_avatar: target } })).toEqual(expectedPayloads(undefined, target));
+        } finally {
+            await deleteCharacters(page, [current, target]);
+        }
+    });
+});
+
+test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    /**
+     * Records every CHARACTER_EDITOR_OPENED from here on into `window.__editorOpened`.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function recordEditorOpened(page) {
+        await page.evaluate(() => {
+            // @ts-ignore
+            const ctx = SillyTavern.getContext();
+            // @ts-ignore
+            window.__editorOpened = [];
+            ctx.eventSource.on(ctx.eventTypes.CHARACTER_EDITOR_OPENED, (...args) => {
+                // @ts-ignore
+                window.__editorOpened.push({ count: args.length, type: typeof args[0], chid: args[0] });
+            });
+        });
+    }
+
+    /**
+     * Returns the CHARACTER_EDITOR_OPENED emits recorded so far, and clears them.
+     * @param {import('@playwright/test').Page} page
+     * @returns {Promise<{count: number, type: string, chid: any}[]>}
+     */
+    async function takeEditorOpened(page) {
+        return page.evaluate(() => {
+            // @ts-ignore
+            return window.__editorOpened.splice(0);
+        });
+    }
+
+    /** @param {import('@playwright/test').Page} page */
+    async function currentCharacterId(page) {
+        return page.evaluate(() => {
+            // @ts-ignore
+            return SillyTavern.getContext().characterId;
+        });
+    }
+
+    /**
+     * @param {any} chid
+     * @returns {{count: number, type: string, chid: any}}
+     */
+    function emitted(chid) {
+        return { count: 1, type: typeof chid, chid };
+    }
+
+    test('an index is emitted as passed; an avatar emits this_chid for the current character and undefined otherwise', async ({ page }) => {
+        const [current, target] = await createCharacters(page, 'IdxEditorEvent', 2);
+        try {
+            const index = await indexOf(page, target);
+            await selectCharacter(page, current);
+            await expectIndexNames(page, index, target);
+            const currentIndex = await currentCharacterId(page);
+            await expectIndexNames(page, currentIndex, current);
+            await recordEditorOpened(page);
+
+            const cases = [[index, index], [Number(index), Number(index)], [current, currentIndex], [target, undefined]];
+            for (const [ref, expected] of cases) {
+                await page.evaluate(async (ref) => {
+                    const { select_selected_character } = await import('/script.js');
+                    select_selected_character(ref);
+                }, ref);
+                expect(await takeEditorOpened(page)).toEqual([emitted(expected)]);
+            }
+        } finally {
+            await deleteCharacters(page, [current, target]);
+        }
+    });
+
+    test('first-party UI paths emit the selected character\'s this_chid', async ({ page }) => {
+        const [current, target] = await createCharacters(page, 'IdxEditorEventUi', 2);
+        try {
+            await selectCharacter(page, current);
+            await recordEditorOpened(page);
+
+            // Selecting a character (what a click on its list row runs).
+            await selectCharacter(page, target);
+            const targetIndex = await currentCharacterId(page);
+            await expectIndexNames(page, targetIndex, target);
+            const onSelect = await takeEditorOpened(page);
+            expect(onSelect.length).toBeGreaterThan(0);
+            expect(onSelect).toEqual(onSelect.map(() => emitted(targetIndex)));
+
+            // The navbar's selected-character button.
+            await page.locator('#rm_button_selected_ch').click();
+            await expect.poll(() => page.evaluate(() => {
+                // @ts-ignore
+                return window.__editorOpened.length;
+            })).toBe(1);
+            expect(await takeEditorOpened(page)).toEqual([emitted(targetIndex)]);
+        } finally {
+            await deleteCharacters(page, [current, target]);
+        }
+    });
+
+    test('the group-member peek emits the peeked member\'s this_chid', async ({ page }) => {
+        const [first, second] = await createCharacters(page, 'IdxEditorEventPeek', 2);
+        const groupId = await page.evaluate(async ({ members, name }) => {
+            // @ts-ignore
+            const ctx = SillyTavern.getContext();
+            const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members }) });
+            if (!response.ok) throw new Error(`group create failed: ${response.status}`);
+            const data = await response.json();
+            const { groupsStore } = await import('/scripts/group-chats.js');
+            await ctx.getCharacters({ silentGroups: true });
+            groupsStore.reportCreated(String(data.id));
+            return String(data.id);
+        }, { members: [first, second], name: `IdxEditorEventPeek-${stamp()}` });
+        try {
+            const secondIndex = await indexOf(page, second);
+            await page.evaluate(async (groupId) => {
+                const { openGroupById } = await import('/scripts/group-chats.js');
+                await openGroupById(groupId);
+            }, groupId);
+            await expect.poll(() => page.evaluate(() => {
+                // @ts-ignore
+                return SillyTavern.getContext().groupId;
+            })).toBe(groupId);
+            await expectIndexNames(page, secondIndex, second);
+            await recordEditorOpened(page);
+
+            await page.locator('#rm_button_selected_ch').click();
+            const view = page.locator(`.rm_group_members .group_member[data-avatar="${second}"] [data-action="view"]`);
+            await expect(view).toHaveCount(1, { timeout: 10000 });
+            // Drops the emits from opening the group panel.
+            await takeEditorOpened(page);
+            await view.click();
+            await expect(page.locator('#avatar_url_pole')).toHaveValue(second, { timeout: 10000 });
+            expect(await takeEditorOpened(page)).toEqual([emitted(secondIndex)]);
+            expect(await currentCharacterId(page)).toBe(secondIndex);
+        } finally {
+            await page.evaluate(async (id) => {
+                // @ts-ignore
+                const headers = SillyTavern.getContext().getRequestHeaders();
+                await fetch('/api/groups/delete', { method: 'POST', headers, body: JSON.stringify({ id }) });
+            }, groupId);
+            await deleteCharacters(page, [first, second]);
+        }
+    });
+});
+
+test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    /**
+     * Records every CHARACTER_DELETED from here on into `window.__deleted`.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function recordDeleted(page) {
+        await page.evaluate(() => {
+            // @ts-ignore
+            const ctx = SillyTavern.getContext();
+            // @ts-ignore
+            window.__deleted = [];
+            ctx.eventSource.on(ctx.eventTypes.CHARACTER_DELETED, (payload) => {
+                // @ts-ignore
+                window.__deleted.push({
+                    keys: Object.keys(payload),
+                    idType: typeof payload.id,
+                    id: payload.id,
+                    idIsNegativeZero: Object.is(payload.id, -0),
+                    avatar: payload.character?.avatar,
+                });
+            });
+        });
+    }
+
+    /**
+     * Returns the CHARACTER_DELETED payloads recorded so far, and clears them.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function takeDeleted(page) {
+        return page.evaluate(() => {
+            // @ts-ignore
+            return window.__deleted.splice(0);
+        });
+    }
+
+    /**
+     * @param {number|undefined} id
+     * @param {string} avatar
+     */
+    function deletedPayload(id, avatar) {
+        return { keys: ['id', 'character'], idType: typeof id, id, idIsNegativeZero: false, avatar };
+    }
+
+    test('handleDeleteCharacter with an index string, a number or [n] emits the index as a number', async ({ page }) => {
+        const [bystander, byIndexString, byNumber, byArray] = await createCharacters(page, 'IdxDeletedEvent', 4);
+        try {
+            await selectCharacter(page, bystander);
+            await recordDeleted(page);
+
+            // Each deletion shifts later indices, so each index is read just before its call.
+            const refs = [[byIndexString, (index) => index], [byNumber, (index) => Number(index)], [byArray, (index) => [Number(index)]]];
+            for (const [avatar, toRef] of refs) {
+                const index = await indexOf(page, avatar);
+                await selectCharacter(page, bystander);
+                await expectIndexNames(page, index, avatar);
+                await deleteVia(page, toRef(index));
+                expect((await fetchStoredCharacter(page, avatar)).ok).toBe(false);
+                expect(await takeDeleted(page)).toEqual([deletedPayload(Number(index), avatar)]);
+            }
+        } finally {
+            await deleteCharacters(page, [bystander, byIndexString, byNumber, byArray]);
+        }
+    });
+
+    test('an avatar-called delete emits id undefined, as an own key', async ({ page }) => {
+        const [bystander, byHandleAvatar, byDeleteCharacter, byDeleteButton] = await createCharacters(page, 'IdxDeletedEventAvatar', 4);
+        try {
+            await selectCharacter(page, bystander);
+            await recordDeleted(page);
+
+            // handleDeleteCharacter with the avatar form.
+            await deleteVia(page, byHandleAvatar);
+            expect((await fetchStoredCharacter(page, byHandleAvatar)).ok).toBe(false);
+            expect(await takeDeleted(page)).toEqual([deletedPayload(undefined, byHandleAvatar)]);
+
+            // An extension calling deleteCharacter(avatar). A delete closes the current chat, and with nothing
+            // selected deleteCharacter first asks to close the temporary chat.
+            await selectCharacter(page, bystander);
+            await page.evaluate(async (avatar) => {
+                const { deleteCharacter } = await import('/script.js');
+                await deleteCharacter(avatar, { deleteChats: true });
+            }, byDeleteCharacter);
+            expect((await fetchStoredCharacter(page, byDeleteCharacter)).ok).toBe(false);
+            expect(await takeDeleted(page)).toEqual([deletedPayload(undefined, byDeleteCharacter)]);
+
+            // The editor's delete button, which deletes the current character by avatar.
+            await selectCharacter(page, byDeleteButton);
+            await page.locator('#delete_button').click();
+            await page.locator('dialog[open] .popup-button-ok').click();
+            await expect.poll(async () => (await fetchStoredCharacter(page, byDeleteButton)).ok, { timeout: 10000 }).toBe(false);
+            await expect.poll(() => page.evaluate(() => {
+                // @ts-ignore
+                return window.__deleted.length;
+            })).toBe(1);
+            expect(await takeDeleted(page)).toEqual([deletedPayload(undefined, byDeleteButton)]);
+
+            expect((await fetchStoredCharacter(page, bystander)).ok).toBe(true);
+        } finally {
+            await deleteCharacters(page, [bystander, byHandleAvatar, byDeleteCharacter, byDeleteButton]);
+        }
+    });
+});
