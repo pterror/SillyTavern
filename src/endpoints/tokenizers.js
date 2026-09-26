@@ -207,6 +207,7 @@ class SentencePieceTokenizer {
             const instance = new SentencePieceProcessor();
             await instance.load(pathToModel);
             console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
+            console.trace('Tokenizer instantiation stack for', path.parse(pathToModel).name);
             this.#instance = instance;
             return this.#instance;
         } catch (error) {
