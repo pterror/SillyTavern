@@ -7109,6 +7109,7 @@ async function doOnboarding(avatarId) {
             title: '',
             connections: [],
         });
+        saveSettingsDebounced('power_user.persona_data');
     }
 }
 
@@ -7196,6 +7197,7 @@ export async function getSettings(initLoaderHandle = null, onStageChange = null,
 }
 
 async function applySettings(data, initLoaderHandle = null, onStageChange = null) {
+    let onboarded = false;
     if (data.result != 'file not find' && data.settings) {
         knownServerSettingsHash = data.settingsHash;
         settings = JSON.parse(data.settings);
@@ -7314,35 +7316,40 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
             await initLoaderHandle?.hide();
             await doOnboarding(user_avatar);
             firstRun = false;
+            saveSettingsDebounced('firstRun');
+            onboarded = true;
         }
     }
     await validateDisabledSamplers();
 
     // Seeds the dirty-check baseline so the first saveSettings() doesn't re-write the exact payload it just received.
-    const bootPayload = JSON.stringify({
-        firstRun: firstRun,
-        currentVersion: currentVersion,
-        username: name1,
-        active_character: active_character,
-        active_group: active_group,
-        user_avatar: user_avatar,
-        amount_gen: amount_gen,
-        max_context: max_context,
-        main_api: main_api,
-        world_info_settings: getWorldInfoSettings(),
-        textgenerationwebui_settings: textgen_settings,
-        swipes: swipes,
-        horde_settings: horde_settings,
-        power_user: power_user,
-        extension_settings: extension_settings,
-        nai_settings: nai_settings,
-        kai_settings: kai_settings,
-        oai_settings: oai_settings,
-        background: background_settings,
-        proxies: proxies,
-        selected_proxy: selected_proxy,
-    });
-    lastSavedSettingsHash = getStringHash(bootPayload);
+    // Not after onboarding: its changes aren't in that payload, and a baseline that included them would skip their save.
+    if (!onboarded) {
+        const bootPayload = JSON.stringify({
+            firstRun: firstRun,
+            currentVersion: currentVersion,
+            username: name1,
+            active_character: active_character,
+            active_group: active_group,
+            user_avatar: user_avatar,
+            amount_gen: amount_gen,
+            max_context: max_context,
+            main_api: main_api,
+            world_info_settings: getWorldInfoSettings(),
+            textgenerationwebui_settings: textgen_settings,
+            swipes: swipes,
+            horde_settings: horde_settings,
+            power_user: power_user,
+            extension_settings: extension_settings,
+            nai_settings: nai_settings,
+            kai_settings: kai_settings,
+            oai_settings: oai_settings,
+            background: background_settings,
+            proxies: proxies,
+            selected_proxy: selected_proxy,
+        });
+        lastSavedSettingsHash = getStringHash(bootPayload);
+    }
 
     settingsReady = true;
     await eventSource.emit(event_types.SETTINGS_LOADED);
