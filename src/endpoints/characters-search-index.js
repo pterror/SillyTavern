@@ -13,6 +13,7 @@ import { getSearchIndex, rebuildSearchIndex, startSearchWorker } from './search-
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 import { timePhase } from '../search-timing.js';
+import { getBusyWaitMs } from './sqlite-engine.js';
 
 // Mirrors fuzzySearchCharacters() (public/scripts/power-user.js) so ranking is consistent client/server.
 const BM25_INDEXED_COLUMNS = ['name', 'resolved_tags', 'description', 'mes_example', 'scenario', 'personality', 'first_mes', 'creator_notes', 'creator', 'tags', 'alternate_greetings'];
@@ -150,34 +151,105 @@ function createEmptyTantivyIndexAt(tantivy, dir) {
     return { index, schema };
 }
 
+/**
+ * Wall ms per catch-up phase, summed over a tick. Phases can overlap lockwait: a write blocked on a lock counts in
+ * both its phase and lockwait.
+ * @typedef {{ read: number, deletes: number, tags: number, load: number, build: number, add: number, commit: number, persist: number }} TickPhases
+ */
+
+/** @returns {TickPhases} */
+function newTickPhases() {
+    return { read: 0, deletes: 0, tags: 0, load: 0, build: 0, add: 0, commit: 0, persist: 0 };
+}
+
+/**
+ * @template T
+ * @param {TickPhases | undefined} phases
+ * @param {keyof TickPhases} phase
+ * @param {() => T} fn
+ * @returns {T}
+ */
+function timeSync(phases, phase, fn) {
+    if (!phases) return fn();
+    const start = Date.now();
+    try {
+        return fn();
+    } finally {
+        phases[phase] += Date.now() - start;
+    }
+}
+
+/**
+ * @template T
+ * @param {TickPhases | undefined} phases
+ * @param {keyof TickPhases} phase
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+async function timeAsync(phases, phase, fn) {
+    if (!phases) return fn();
+    const start = Date.now();
+    try {
+        return await fn();
+    } finally {
+        phases[phase] += Date.now() - start;
+    }
+}
+
 // Adds a doc per id, INDEX_BUILD_BATCH_SIZE ids at a time, reading each batch's card_json by id.
-async function addCharacterDocs(directories, tantivy, schema, writer, ids, tagsById) {
+/** @param {TickPhases} [phases] */
+async function addCharacterDocs(directories, tantivy, schema, writer, ids, tagsById, phases) {
     for (let i = 0; i < ids.length; i += INDEX_BUILD_BATCH_SIZE) {
         const batchIds = ids.slice(i, i + INDEX_BUILD_BATCH_SIZE);
-        await addCharacterBatch(directories, tantivy, schema, writer, batchIds, await getCardJsonByIds(directories, batchIds), tagsById);
+        const cardJsonById = await timeAsync(phases, 'load', () => getCardJsonByIds(directories, batchIds));
+        await addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, tagsById, phases);
     }
 }
 
 // Adds a doc per id as one unit: tag/fav lookups cover exactly these ids. An id with no card_json has no row -
 // it was deleted after the change being applied - so it isn't indexed.
-async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, tagsById) {
+/** @param {TickPhases} [phases] */
+async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, tagsById, phases) {
     const ids = batchIds.filter(id => cardJsonById.has(id));
     if (ids.length === 0) return;
-    const tagNamesFor = await makeTagNamesResolver(directories, ids, tagsById);
-    const favFor = await makeFavResolver(directories, ids);
-    const tagIdsFor = await makeTagIdsResolver(directories, ids);
-    const characters = await mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
+    const { tagNamesFor, favFor, tagIdsFor } = await timeAsync(phases, 'load', async () => ({
+        tagNamesFor: await makeTagNamesResolver(directories, ids, tagsById),
+        favFor: await makeFavResolver(directories, ids),
+        tagIdsFor: await makeTagIdsResolver(directories, ids),
+    }));
+    const characters = await timeAsync(phases, 'build', () => mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
         try {
             return await processCharacter(id, directories, { shallow: false, cardJson: cardJsonById.get(id) });
         } catch {
             // File gone or corrupt - leave it deleted rather than throwing the whole pass away.
             return null;
         }
-    });
+    }));
     for (const character of characters) {
         if (!character?.name) continue;
-        writer.addDocument(characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
+        const doc = timeSync(phases, 'build', () => characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
+        timeSync(phases, 'add', () => writer.addDocument(doc));
     }
+}
+
+/**
+ * One committed catch-up. seqFrom..seq and tagNameSeqFrom..tagNameSeq are the change-log and tag-rename cursors
+ * before and after. backlog: the change-log seq read at the tick's start minus the new cursor. writers: upserted
+ * ids per changed field name (`null` for a whole-record change); an id with several fields counts under each.
+ * tagRenames: distinct renamed tag ids applied. lockWaitMs: time this tick's writes spent on a database lock.
+ * @typedef {{ changed: boolean, deletes: number, upserts: number, ms: number, seq: number, seqFrom: number,
+ *   tagNameSeqFrom: number, tagNameSeq: number, backlog: number, writers: Record<string, number>, tagRenames: number,
+ *   phases: TickPhases, lockWaitMs: number }} TickResult
+ */
+
+/** @param {TickResult} r */
+export function formatCatchUpLine(r) {
+    const p = r.phases;
+    const tagSeq = r.tagNameSeq !== r.tagNameSeqFrom ? ` tagseq=${r.tagNameSeqFrom}..${r.tagNameSeq}` : '';
+    const writers = Object.entries(r.writers).map(([field, n]) => `${field}:${n}`).join(',');
+    return `[search] catch-up: seq=${r.seqFrom}..${r.seq}${tagSeq} backlog=${r.backlog} writers=${writers} tagrenames=${r.tagRenames}`
+        + ` deletes=${r.deletes} upserts=${r.upserts} total_ms=${r.ms} read_ms=${p.read} deletes_ms=${p.deletes} tags_ms=${p.tags}`
+        + ` load_ms=${p.load} build_ms=${p.build} add_ms=${p.add} commit_ms=${p.commit} persist_ms=${p.persist} lockwait_ms=${r.lockWaitMs}`;
 }
 
 /**
@@ -313,13 +385,17 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
      * whatever upsert backlog is in front of it; then upsert and tag-rename pages until the log is drained or
      * tickBudgetMs has passed. An upsert page never undoes an applied delete: it reads the row's current
      * card_json, and a deleted row has none.
-     * @returns {Promise<{ changed: boolean, deletes: number, upserts: number, ms: number, seq: number } | { swapped: string | null } | null>}
+     * @returns {Promise<TickResult | { swapped: string | null } | null>}
      * null when the metadata store is unavailable; `swapped` when a truncated change log forced a full rebuild.
      */
     async function tick() {
         const start = Date.now();
-        const maxSeq = await getCurrentSeq(directories);
-        const maxTagNameChangeSeq = await getCurrentTagNameChangeSeq(directories);
+        const lockWaitAtStart = getBusyWaitMs();
+        const phases = newTickPhases();
+        const { maxSeq, maxTagNameChangeSeq } = await timeAsync(phases, 'read', async () => ({
+            maxSeq: await getCurrentSeq(directories),
+            maxTagNameChangeSeq: await getCurrentTagNameChangeSeq(directories),
+        }));
         if (maxSeq === null || maxTagNameChangeSeq === null) {
             return null;
         }
@@ -327,23 +403,31 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const w = getWriter();
         let deletes = 0;
         let upserts = 0;
+        const seqFrom = seqCursor;
+        const tagNameSeqFrom = tagNameCursor;
         let lastSeq = seqCursor;
         let lastTagNameChangeSeq = tagNameCursor;
+        /** @type {Map<string, number>} */
+        const writers = new Map();
+        /** @type {Set<string>} */
+        const renamedTagIds = new Set();
         try {
             // Starts past seqCursor too: upsert pages aren't capped at a tick's maxSeq, so rows up to seqCursor are
             // already applied, and re-applying a delete there could remove a doc an upsert page has since re-created.
-            for await (const ids of streamDeletedIdsBetween(directories, Math.max(deleteCursor, seqCursor), maxSeq)) {
-                for (const id of ids) {
-                    w.deleteDocumentsByTerm(DATA_FIELD, id);
+            await timeAsync(phases, 'deletes', async () => {
+                for await (const ids of streamDeletedIdsBetween(directories, Math.max(deleteCursor, seqCursor), maxSeq)) {
+                    for (const id of ids) {
+                        w.deleteDocumentsByTerm(DATA_FIELD, id);
+                    }
+                    deletes += ids.length;
                 }
-                deletes += ids.length;
-            }
+            });
 
-            const tagsById = await loadTagsById(directories);
+            const tagsById = await timeAsync(phases, 'tags', () => loadTagsById(directories));
             const budgetLeft = () => Date.now() - start < tickBudgetMs;
 
             for (;;) {
-                const page = await getChangesSince(directories, lastSeq, { limit: INDEX_BUILD_BATCH_SIZE });
+                const page = await timeAsync(phases, 'read', () => getChangesSince(directories, lastSeq, { limit: INDEX_BUILD_BATCH_SIZE }));
                 if (!page) {
                     w.rollback();
                     return null;
@@ -354,13 +438,22 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                 }
                 if (page.changes.length > 0) {
                     // Delete-by-term for every touched id; tantivy has no update-in-place.
-                    for (const { id } of page.changes) {
-                        w.deleteDocumentsByTerm(DATA_FIELD, id);
+                    timeSync(phases, 'add', () => {
+                        for (const { id } of page.changes) {
+                            w.deleteDocumentsByTerm(DATA_FIELD, id);
+                        }
+                    });
+                    const upsertIds = [];
+                    for (const change of page.changes) {
+                        if (change.op === 'delete') continue;
+                        upsertIds.push(change.id);
+                        for (const field of change.fields ?? ['null']) {
+                            writers.set(field, (writers.get(field) ?? 0) + 1);
+                        }
                     }
-                    const upsertIds = page.changes.filter(({ op }) => op !== 'delete').map(({ id }) => id);
                     deletes += page.changes.length - upsertIds.length;
                     upserts += upsertIds.length;
-                    await addCharacterDocs(directories, tantivy, schema, w, upsertIds, tagsById);
+                    await addCharacterDocs(directories, tantivy, schema, w, upsertIds, tagsById, phases);
                 }
                 lastSeq = page.seq;
                 if (!page.hasMore || !budgetLeft()) break;
@@ -368,7 +461,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
 
             // A tag rename doesn't produce a `changes` row for the characters carrying it, so it's tracked separately.
             while (budgetLeft()) {
-                const page = await getTagNameChangesSince(directories, lastTagNameChangeSeq, { limit: INDEX_BUILD_BATCH_SIZE });
+                const page = await timeAsync(phases, 'read', () => getTagNameChangesSince(directories, lastTagNameChangeSeq, { limit: INDEX_BUILD_BATCH_SIZE }));
                 if (!page) {
                     w.rollback();
                     return null;
@@ -378,12 +471,23 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                     return { swapped: await rebuild() };
                 }
                 if (page.tagIds.length > 0) {
-                    for await (const affectedIds of streamCharacterIdsForTagIds(directories, page.tagIds)) {
-                        for (const id of affectedIds) {
-                            w.deleteDocumentsByTerm(DATA_FIELD, id);
+                    for (const tagId of page.tagIds) renamedTagIds.add(tagId);
+                    const affected = streamCharacterIdsForTagIds(directories, page.tagIds)[Symbol.asyncIterator]();
+                    try {
+                        for (;;) {
+                            const next = await timeAsync(phases, 'read', () => affected.next());
+                            if (next.done) break;
+                            const affectedIds = next.value;
+                            timeSync(phases, 'add', () => {
+                                for (const id of affectedIds) {
+                                    w.deleteDocumentsByTerm(DATA_FIELD, id);
+                                }
+                            });
+                            upserts += affectedIds.length;
+                            await addCharacterDocs(directories, tantivy, schema, w, affectedIds, tagsById, phases);
                         }
-                        upserts += affectedIds.length;
-                        await addCharacterDocs(directories, tantivy, schema, w, affectedIds, tagsById);
+                    } finally {
+                        await affected.return?.();
                     }
                 }
                 lastTagNameChangeSeq = page.seq;
@@ -401,15 +505,30 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         // The watermarks are persisted only for what a commit made durable.
         const changed = deletes > 0 || upserts > 0;
         if (changed) {
-            w.commit();
+            timeSync(phases, 'commit', () => w.commit());
         }
         const moved = lastSeq !== seqCursor || lastTagNameChangeSeq !== tagNameCursor;
         setCursors(lastSeq, lastTagNameChangeSeq);
         deleteCursor = Math.max(deleteCursor, maxSeq);
         if (moved) {
-            await persistCursors();
+            await timeAsync(phases, 'persist', () => persistCursors());
         }
-        return { changed, deletes, upserts, ms: Date.now() - start, seq: seqCursor };
+        return {
+            changed,
+            deletes,
+            upserts,
+            ms: Date.now() - start,
+            seq: seqCursor,
+            seqFrom,
+            tagNameSeqFrom,
+            tagNameSeq: tagNameCursor,
+            // Upsert pages aren't capped at maxSeq, so this goes negative when the log grew during the tick.
+            backlog: maxSeq - seqCursor,
+            writers: Object.fromEntries(writers),
+            tagRenames: renamedTagIds.size,
+            phases,
+            lockWaitMs: getBusyWaitMs() - lockWaitAtStart,
+        };
     }
 
     return {

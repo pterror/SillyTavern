@@ -20,7 +20,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
-import { openNativeDatabase } from '../src/endpoints/sqlite-engine.js';
+import { getBusyWaitMs, openNativeDatabase } from '../src/endpoints/sqlite-engine.js';
 
 /** Builds a fake better-sqlite3 constructor so retry behaviour can be driven deterministically. */
 function makeFakeCtor({ transactionImpl }) {
@@ -115,6 +115,36 @@ describe('sqlite-engine lock handling', () => {
         expect(errorSpy).toHaveBeenCalled();
 
         errorSpy.mockRestore();
+    });
+
+    it('counts a call that hit a lock in getBusyWaitMs(), from its start until it succeeds', () => {
+        let attempts = 0;
+        const { ctor } = makeFakeCtor({
+            transactionImpl: (fn) => {
+                attempts++;
+                if (attempts === 1) {
+                    // Stands in for the time busy_timeout blocks before the first attempt throws.
+                    const until = Date.now() + 30;
+                    while (Date.now() < until) { /* spin */ }
+                    throw busyError();
+                }
+                return fn();
+            },
+        });
+        const handle = openNativeDatabase(/** @type {any} */(ctor), path.join(tmpDir, 'f.sqlite'));
+
+        const before = getBusyWaitMs();
+        handle.transaction(() => {});
+        expect(getBusyWaitMs() - before).toBeGreaterThanOrEqual(30);
+    });
+
+    it('adds nothing to getBusyWaitMs() for a call that never hit a lock', () => {
+        const { ctor } = makeFakeCtor({ transactionImpl: (fn) => fn() });
+        const handle = openNativeDatabase(/** @type {any} */(ctor), path.join(tmpDir, 'g.sqlite'));
+
+        const before = getBusyWaitMs();
+        handle.transaction(() => {});
+        expect(getBusyWaitMs()).toBe(before);
     });
 
     it('does not retry errors that are not lock contention', () => {
