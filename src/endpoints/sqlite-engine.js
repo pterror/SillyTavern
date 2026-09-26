@@ -152,12 +152,31 @@ function sleepSync(ms) {
  */
 function runWithBusyRetry(fn, label) {
     const startedAt = Date.now();
+    let blocked = false;
+    try {
+        return retryWhileBusy(fn, label, startedAt, () => { blocked = true; });
+    } finally {
+        // A failed attempt blocked in busy_timeout before it threw, so the wait runs from the call's start.
+        if (blocked) busyWaitMs += Date.now() - startedAt;
+    }
+}
+
+let busyWaitMs = 0;
+
+/** Wall ms this thread's runWithBusyRetry() calls have spent on a lock: each call that hit a busy error counts
+ * from its start until it succeeded or gave up. Cumulative; callers diff it around the work they time. */
+export function getBusyWaitMs() {
+    return busyWaitMs;
+}
+
+function retryWhileBusy(fn, label, startedAt, onBusy) {
     let lastError;
     for (let attempt = 0; attempt < BUSY_RETRY_MAX_ATTEMPTS; attempt++) {
         try {
             return fn();
         } catch (err) {
             if (!isBusyError(err)) throw err;
+            onBusy();
             lastError = err;
             const elapsed = Date.now() - startedAt;
             if (elapsed >= BUSY_RETRY_TOTAL_BUDGET_MS || attempt === BUSY_RETRY_MAX_ATTEMPTS - 1) break;
