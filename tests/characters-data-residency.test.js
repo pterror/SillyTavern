@@ -5,8 +5,8 @@
  * image pixels - must NOT rewrite the character's PNG. The new content is parked in the metadata db's
  * `card_json` column and becomes authoritative; the file keeps its old bytes AND its old mtime.
  *
- * The hard requirement it must not break: anything handed to a user as a standalone file (export, duplicate)
- * still carries a CURRENT embedded chunk, because that is all other tools can read.
+ * The hard requirement it must not break: an export still carries a CURRENT embedded chunk, because that is all
+ * other tools can read. A duplicate is a library entry like any other - image-only, its content in its db row.
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
@@ -92,8 +92,7 @@ describe('metadata-only edits do not touch the PNG', () => {
     test('an /edit that changes only text leaves the file byte-identical and parks the content in the db', async () => {
         expect((await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' })).status).toBe(200);
 
-        // A freshly created card was genuinely written to disk, so nothing should be parked yet.
-        expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).toBeNull();
+        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).data.description).toBe('original');
         const before = fileStamp('Alice.png');
 
         expect((await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' })).status).toBe(200);
@@ -101,9 +100,7 @@ describe('metadata-only edits do not touch the PNG', () => {
         // The file did not move at all - not its bytes, not its mtime.
         expect(fileStamp('Alice.png')).toEqual(before);
 
-        // The PNG still holds the pre-edit text...
-        expect((await chunkOnDisk('Alice.png')).data.description).toBe('original');
-        // ...and the db holds the real one.
+        await expect(chunkOnDisk('Alice.png')).rejects.toThrow('PNG metadata does not contain any');
         const parked = await metadataDb.getCharacterCardJson(directories, 'Alice.png');
         expect(parked).not.toBeNull();
         expect(JSON.parse(parked).data.description).toBe('EDITED');
@@ -200,8 +197,8 @@ describe('export still hands out a self-contained, current card', () => {
     });
 });
 
-describe('duplicate produces a genuinely self-contained copy', () => {
-    test('the duplicate\'s own PNG carries the edited content, and its row is not left stale', async () => {
+describe('duplicate copies the current content', () => {
+    test('the duplicate is image-only and its row holds the edited content', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
 
@@ -209,26 +206,20 @@ describe('duplicate produces a genuinely self-contained copy', () => {
         expect(response.status).toBe(200);
         const newAvatar = (await response.json()).path;
 
-        // A plain byte copy would have carried the SOURCE's stale chunk into the new file.
-        expect((await chunkOnDisk(newAvatar)).data.description).toBe('EDITED');
-        // And because its file is current, the duplicate starts life with nothing parked.
-        expect(await metadataDb.getCharacterCardJson(directories, newAvatar)).toBeNull();
+        await expect(chunkOnDisk(newAvatar)).rejects.toThrow('PNG metadata does not contain any');
+        expect(JSON.parse(await metadataDb.getCharacterCardJson(directories, newAvatar)).data.description).toBe('EDITED');
     });
 });
 
-describe('a real image write retires the parked copy', () => {
-    test('card_json goes back to NULL once the PNG is rewritten with current content', async () => {
+describe('an image write keeps card_json set', () => {
+    test('card_json equals the content upsertCharacterFromWrite() was given', async () => {
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('edit', { avatar_url: 'Alice.png', ch_name: 'Alice', description: 'EDITED' });
-        expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).not.toBeNull();
 
-        // upsertCharacterFromWrite() with pngCardStale defaulting to false is what every image-touching write
-        // path does. It must clear the column, not COALESCE around it - otherwise a card would keep serving
-        // pre-replacement content forever with no way to retire it.
         const cardJson = await metadataDb.getCharacterCardJson(directories, 'Alice.png');
         await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson);
 
-        expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).toBeNull();
+        expect(await metadataDb.getCharacterCardJson(directories, 'Alice.png')).toBe(cardJson);
     });
 });
 

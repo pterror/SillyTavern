@@ -19,6 +19,15 @@ process.env.SILLYTAVERN_PERFORMANCE_CHARACTERMETADATARECONCILEINTERVALMS = '3000
 // also read at module load, so it needs the same env-var treatment as the three keys above.
 process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
 
+// chats.js's direct imports characters.js and message-tree-migration.js pull in modules that read config.yaml at
+// load (and exit the process when it is missing). getChatInfo() uses neither, so mock them at chats.js's boundary.
+jest.unstable_mockModule('../src/endpoints/characters.js', () => ({
+    readCardContent: jest.fn(),
+}));
+jest.unstable_mockModule('../src/message-tree-migration.js', () => ({
+    migrateOwnerOnTouch: jest.fn(),
+}));
+
 /** @type {import('../src/endpoints/chats.js')} */
 let chats;
 

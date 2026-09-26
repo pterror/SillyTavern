@@ -123,13 +123,12 @@ describe('cross-character reflink on the live write path', () => {
         const [srcArg] = reflinkFileMock.mock.calls[0];
         expect(srcArg).toBe(path.join(directories.characters, 'Twin1.png'));
 
-        // Both files parse back to the intended (matching) content.
-        const twin1 = JSON.parse(cardParser.read(fs.readFileSync(path.join(directories.characters, 'Twin1.png'))));
-        const twin2 = JSON.parse(cardParser.read(fs.readFileSync(path.join(directories.characters, 'Twin2.png'))));
+        const twin1 = JSON.parse(await readCardContent(directories, 'Twin1.png'));
+        const twin2 = JSON.parse(await readCardContent(directories, 'Twin2.png'));
         expect(twin2.data.description).toBe(twin1.data.description);
     });
 
-    test('a character with genuinely different content never gets cross-reflinked (no false positive)', async () => {
+    test('a character with different content but a byte-identical avatar image reflinks from the first character\'s file', async () => {
         const firstCreate = await create({ ch_name: 'Alpha', description: 'Alpha description', file_name: 'Alpha1' });
         expect(firstCreate.status).toBe(200);
 
@@ -139,8 +138,8 @@ describe('cross-character reflink on the live write path', () => {
 
         expect(reflinkFileMock).toHaveBeenCalledTimes(1);
         const [srcArg] = reflinkFileMock.mock.calls[0];
-        // Self-path only (the default avatar it was created from) - never Alpha1's file.
-        expect(srcArg).not.toBe(path.join(directories.characters, 'Alpha1.png'));
+        // Both were created from the default avatar, so the avatar-bytes match applies despite differing card content.
+        expect(srcArg).toBe(path.join(directories.characters, 'Alpha1.png'));
     });
 
     test('matching JSON content but a DIFFERENT uploaded image never reflinks the image across - the hash match alone is not trusted', async () => {
@@ -207,8 +206,7 @@ describe('cross-character reflink on the live write path', () => {
         const twin1 = JSON.parse(await readCardContent(directories, 'Twin1.png'));
         expect(twin1.data.description).toBe('Same everything');
 
-        // And Twin1 specifically must not have been dragged into Twin2's edit at the db layer either -
-        // nothing was parked for it, because nothing edited it.
-        expect(await metadataDb.getCharacterCardJson(directories, 'Twin1.png')).toBeNull();
+        const twin1Stored = JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Twin1.png'));
+        expect(twin1Stored.data.description).toBe('Same everything');
     });
 });

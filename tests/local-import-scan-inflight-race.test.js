@@ -13,33 +13,16 @@ import { Buffer } from 'node:buffer';
 // it only serializes the dedup-check-then-import DECISION within a single call - a file already recognized as
 // a duplicate of something previously imported takes the identical short-circuit branch on every call
 // regardless, so two genuinely concurrent processFile() calls for the same filename each independently ran the
-// worker pipeline once and each independently called character-card-parser.js's reclaimReflinkPrefix(),
-// producing duplicate reflink attempts (and the "Deduplicated on disk" log firing twice for the identical
-// file, which is what surfaced this in the owner's real logs). Fixed by a per-filename in-flight guard in
-// local-import-scan.js's processFile(): a second concurrent call for a filename already being processed just
-// joins the first call's own promise instead of running its own redundant pass.
+// whole processFileImpl() pass. Fixed by a per-filename in-flight guard in local-import-scan.js's processFile():
+// a second concurrent call for a filename already being processed just joins the first call's own promise
+// instead of running its own redundant pass.
 //
-// character-card-parser.js's reclaimReflinkPrefix() is partially mocked (spread the real module, override just
-// this one export) so this test can both COUNT how many times it's actually invoked and ARTIFICIALLY STALL its
-// first call - the stall is what turns "the two concurrent scanDirectory() passes MIGHT overlap, depending on
-// real timing" into a deterministic, always-reproducible race window: the second pass's own dispatch for the
-// same filename is guaranteed to land while the first is still in flight, exactly the condition the in-flight
-// guard exists for. Real behavior is preserved via a passthrough to the actual implementation - this only adds
-// counting and a delay around it.
-let reclaimReflinkPrefixCallCount = 0;
+// findCharacterIdByContentHash() is counted because processFileImpl() calls it exactly once per run on the
+// duplicate path, so its call count is the number of processFileImpl() runs. The stall makes the race
+// deterministic: the second pass's dispatch for the same filename lands while the first is still in flight.
+let findCharacterIdByContentHashCallCount = 0;
 /** @type {number} */
-let reclaimReflinkPrefixStallMs = 0;
-const actualCardParser = await import('../src/character-card-parser.js');
-jest.unstable_mockModule('../src/character-card-parser.js', () => ({
-    ...actualCardParser,
-    reclaimReflinkPrefix: jest.fn(async (...args) => {
-        reclaimReflinkPrefixCallCount++;
-        if (reclaimReflinkPrefixStallMs > 0) {
-            await new Promise(resolve => setTimeout(resolve, reclaimReflinkPrefixStallMs));
-        }
-        return actualCardParser.reclaimReflinkPrefix(...args);
-    }),
-}));
+let findCharacterIdByContentHashStallMs = 0;
 
 const originalCwd = process.cwd();
 afterAll(() => process.chdir(originalCwd));
@@ -62,6 +45,18 @@ beforeAll(async () => {
     setConfigFilePath(path.join(originalCwd, '..', 'default', 'config.yaml'));
     // importFromPng() reads DEFAULT_AVATAR_PATH relative to cwd - same fix local-import-scan.test.js needed.
     process.chdir(path.resolve(originalCwd, '..'));
+
+    const actualMetadataDb = await import('../src/character-metadata-db.js');
+    jest.unstable_mockModule('../src/character-metadata-db.js', () => ({
+        ...actualMetadataDb,
+        findCharacterIdByContentHash: jest.fn(async (...args) => {
+            findCharacterIdByContentHashCallCount++;
+            if (findCharacterIdByContentHashStallMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, findCharacterIdByContentHashStallMs));
+            }
+            return actualMetadataDb.findCharacterIdByContentHash(...args);
+        }),
+    }));
 
     localImportScan = await import('../src/local-import-scan.js');
     metadataDb = await import('../src/character-metadata-db.js');
@@ -86,8 +81,8 @@ describe('local-import-scan: concurrent processFile() calls for the SAME filenam
         directories = { root: tempDir, characters: charactersDir, chats: chatsDir };
         globalThis.DATA_ROOT = tempDir;
 
-        reclaimReflinkPrefixCallCount = 0;
-        reclaimReflinkPrefixStallMs = 0;
+        findCharacterIdByContentHashCallCount = 0;
+        findCharacterIdByContentHashStallMs = 0;
     });
 
     afterEach(() => {
@@ -104,20 +99,16 @@ describe('local-import-scan: concurrent processFile() calls for the SAME filenam
         return { sourceDir, lastSeenMtimeMs: new Map(), watcher: null, watchTimers: new Map() };
     }
 
-    test('two concurrent scanDirectory() passes over a file that is ALREADY a duplicate only reflink-dedup it once, not once per pass', async () => {
-        // Import the original once, up front (its own dedup/reflink machinery is irrelevant to this test).
+    test('two concurrent scanDirectory() passes over a file that is ALREADY a duplicate only process it once, not once per pass', async () => {
         const cardBuffer = cardParser.write(BLANK_PNG, JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Ghost' } }));
         fs.writeFileSync(path.join(sourceDir, 'ghost.png'), cardBuffer);
         const state = buildState();
         await localImportScan.scanDirectory(state, directories);
         expect(fs.readdirSync(charactersDir).length).toBe(1);
-        reclaimReflinkPrefixCallCount = 0;
+        findCharacterIdByContentHashCallCount = 0;
 
-        // Now drop a byte-identical duplicate that neither pass below has seen yet, and stall the FIRST call
-        // into reclaimReflinkPrefix() so the second concurrent pass's own dispatch for this same filename is
-        // guaranteed to land while the first is still in flight.
         fs.writeFileSync(path.join(sourceDir, 'ghost-copy.png'), cardBuffer);
-        reclaimReflinkPrefixStallMs = 50;
+        findCharacterIdByContentHashStallMs = 50;
 
         // Same shared `state` object for both - this is what makes it "the same filename, two concurrent
         // triggers", exactly like a periodic-scan pass and a watcher-triggered call sharing one DirectoryScanState
@@ -131,8 +122,8 @@ describe('local-import-scan: concurrent processFile() calls for the SAME filenam
         // local-import-scan.test.js) - what THIS test is actually about is below.
         expect(fs.readdirSync(charactersDir).length).toBe(1);
 
-        // The actual regression: without the in-flight guard, both concurrent passes independently reach the
-        // alreadyImported branch and both call reclaimReflinkPrefix() for ghost-copy.png.
-        expect(reclaimReflinkPrefixCallCount).toBe(1);
+        // Without the in-flight guard, both passes run processFileImpl() for ghost-copy.png, each calling
+        // findCharacterIdByContentHash() once (ghost.png is skipped by its unchanged mtime).
+        expect(findCharacterIdByContentHashCallCount).toBe(1);
     });
 });

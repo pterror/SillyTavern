@@ -104,24 +104,19 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/script.js', () => ({
-    chat: [],
     sendSystemMessage: jest.fn(),
     printMessages: jest.fn(),
     substituteParams: jest.fn(),
-    characters,
-    charactersStore: charactersStoreMock,
     default_avatar: '',
     addOneMessage: jest.fn(),
     clearChat: jest.fn(),
     Generate: jest.fn(),
     select_rm_info: {},
-    setCharacterId: jest.fn(),
     setCharacterName: jest.fn(),
     setEditedMessageId: jest.fn(),
     is_send_press: false,
     resetChatState: jest.fn(),
     setSendButtonState: jest.fn(),
-    getCharacters: jest.fn(),
     system_message_types: {},
     online_status: '',
     talkativeness_default: 50,
@@ -129,10 +124,8 @@ jest.unstable_mockModule('../public/script.js', () => ({
     deleteLastMessage: jest.fn(),
     showSwipeButtons: jest.fn(),
     hideSwipeButtons: jest.fn(),
-    chat_metadata: {},
     updateChatMetadata: jest.fn(),
     getThumbnailUrl: jest.fn(),
-    getRequestHeaders: jest.fn(() => ({})),
     setMenuType: jest.fn(),
     menu_type: '',
     select_selected_character: jest.fn(),
@@ -143,8 +136,6 @@ jest.unstable_mockModule('../public/script.js', () => ({
     saveChatConditional: jest.fn(),
     deactivateSendButtons: jest.fn(),
     activateSendButtons: jest.fn(),
-    eventSource: { emit: jest.fn() },
-    event_types: {},
     getCurrentChatId: jest.fn(),
     setCharacterSettingsOverrides: jest.fn(),
     system_avatar: '',
@@ -170,6 +161,45 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     printTagFilters: jest.fn(),
     tag_filter_type: {},
     removeEntityTags: jest.fn(),
+    tagsStore: {},
+    compareTagsForSort: jest.fn(),
+}));
+
+jest.unstable_mockModule('../public/scripts/character-field-editor.js', () => ({
+    blockWhileFieldEditing: jest.fn(),
+}));
+
+jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
+    getCharacters: jest.fn(),
+}));
+
+jest.unstable_mockModule('../public/scripts/chat-state.js', () => ({
+    chat: [],
+    chat_metadata: {},
+}));
+
+jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
+    getRequestHeaders: jest.fn(() => ({})),
+}));
+
+jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
+    characters,
+    charactersStore: charactersStoreMock,
+    setCharacterId: jest.fn(),
+}));
+
+jest.unstable_mockModule('../public/scripts/events.js', () => ({
+    eventSource: { emit: jest.fn() },
+    event_types: {},
+}));
+
+jest.unstable_mockModule('../public/scripts/chat-store.js', () => ({
+    _setCurrentTarget: jest.fn(),
+    updateMessage: jest.fn(),
+}));
+
+jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({
+    provisionalNodeId: jest.fn(),
 }));
 
 jest.unstable_mockModule('../public/scripts/filters.js', () => ({
@@ -260,6 +290,26 @@ function addResidentCharacter(avatar, name = avatar) {
 }
 
 describe('validateGroup()', () => {
+    // validateGroup() saves through global fetch and there is no server here. saveGroupProperty() reads
+    // nothing off the response, so a bare successful one is enough.
+    const SAVE_URL = '/api/groups/save-partial';
+    const originalFetch = globalThis.fetch;
+
+    beforeEach(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, status: 200 });
+    });
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+    });
+
+    /** Parsed JSON body of the single save-partial request. */
+    function savedBody() {
+        const saveCalls = globalThis.fetch.mock.calls.filter(([url]) => url === SAVE_URL);
+        expect(saveCalls).toHaveLength(1);
+        return JSON.parse(saveCalls[0][1].body);
+    }
+
     test('keeps members that resolve locally without calling exists()', async () => {
         addResidentCharacter('alice.png', 'Alice');
         const group = { id: 'g1', members: ['alice.png'], chats: ['c1'] };
@@ -288,6 +338,8 @@ describe('validateGroup()', () => {
 
         expect(existsMock).toHaveBeenCalledWith(['ghost.png']);
         expect(group.members).toEqual([]);
+        expect(globalThis.fetch).toHaveBeenCalledWith(SAVE_URL, expect.anything());
+        expect(savedBody()).toEqual({ id: 'g1', props: { members: [] } });
     });
 
     test('keeps a non-resident member that exists() says still exists (not deleted, just not resident)', async () => {
@@ -306,6 +358,7 @@ describe('validateGroup()', () => {
         await validateGroup(group);
 
         expect(group.members).toEqual(['maybe-ghost.png']);
+        expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
     });
 
     test('§4.2: aborts the member-pruning mutation when exists() returns a partial answer', async () => {
@@ -316,6 +369,7 @@ describe('validateGroup()', () => {
         await validateGroup(group);
 
         expect(group.members).toEqual(['a.png', 'b.png']);
+        expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
     });
 
     test('still dedupes chat ids even when the member existence check aborts', async () => {
@@ -326,6 +380,8 @@ describe('validateGroup()', () => {
 
         expect(group.members).toEqual(['ghost.png']);
         expect(group.chats).toEqual(['c1', 'c2']);
+        expect(globalThis.fetch).toHaveBeenCalledWith(SAVE_URL, expect.anything());
+        expect(savedBody()).toEqual({ id: 'g1', props: { chats: ['c1', 'c2'] } });
     });
 
     test('does nothing (no dirty save) when there is nothing to prune or dedupe', async () => {
@@ -337,6 +393,7 @@ describe('validateGroup()', () => {
 
         expect(group.members).toEqual(before.members);
         expect(group.chats).toEqual(before.chats);
+        expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
     });
 
     test('does nothing for a null/undefined group', async () => {
