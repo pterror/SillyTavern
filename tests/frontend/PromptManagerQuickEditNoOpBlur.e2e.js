@@ -105,4 +105,60 @@ test.describe('prompt manager quick-edit blur save', () => {
         await textarea.evaluate((el) => el.blur());
         await page.waitForTimeout(1500);
     });
+
+    test('an edit in the main quick-edit leaves an edit form open on another prompt alone', async ({ page }) => {
+        const textarea = await openQuickEditMainTextarea(page);
+        const editFormPrompt = await openEditForm(page, 'jailbreak');
+        const jailbreakText = await editFormPrompt.inputValue();
+
+        const before = await textarea.inputValue();
+        await textarea.focus();
+        await textarea.fill(before + ' (edited by test)');
+        await textarea.evaluate((el) => el.blur());
+
+        await expect(editFormPrompt).toHaveValue(jailbreakText);
+
+        await restoreQuickEdit(page, textarea, before);
+    });
+
+    test('an edit in the main quick-edit keeps unsaved text in the main prompt edit form', async ({ page }) => {
+        const textarea = await openQuickEditMainTextarea(page);
+        const editFormPrompt = await openEditForm(page, 'main');
+
+        const before = await textarea.inputValue();
+        const unsavedDraft = before + ' (unsaved edit form draft)';
+        await editFormPrompt.fill(unsavedDraft);
+
+        await textarea.focus();
+        await textarea.fill(before + ' (edited by test)');
+        await textarea.evaluate((el) => el.blur());
+
+        await expect(editFormPrompt).toHaveValue(unsavedDraft);
+
+        await restoreQuickEdit(page, textarea, before);
+    });
 });
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} identifier
+ */
+async function openEditForm(page, identifier) {
+    await page.locator(`#completion_prompt_manager_list li[data-pm-identifier="${identifier}"] .prompt-manager-edit-action`).click();
+    const editFormPrompt = page.locator('#completion_prompt_manager_popup_entry_form_prompt');
+    await editFormPrompt.waitFor({ state: 'visible', timeout: 5000 });
+    return editFormPrompt;
+}
+
+/**
+ * Puts the quick-edit's original text back and lets its debounced save run, so no edit is left behind.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} textarea
+ * @param {string} original
+ */
+async function restoreQuickEdit(page, textarea, original) {
+    await textarea.focus();
+    await textarea.fill(original);
+    await textarea.evaluate((el) => el.blur());
+    await page.waitForTimeout(1500);
+}
