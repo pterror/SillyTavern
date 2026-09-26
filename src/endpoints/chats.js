@@ -34,6 +34,14 @@ import {
  * @typedef {import('../message-tree-db.js').ChatHeaderLike} ChatHeaderLike
  */
 
+/**
+ * @param {unknown} error
+ * @returns {error is { code: string }}
+ */
+function hasErrorCode(error) {
+    return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string';
+}
+
 export const CHAT_BACKUPS_PREFIX = 'chat_';
 
 /**
@@ -334,7 +342,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
     try {
         stats = await fs.promises.stat(pathToFile);
     } catch (error) {
-        if (error instanceof Error && /** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+        if (hasErrorCode(error) && error.code === 'ENOENT') {
             return chatVanished();
         }
         throw error;
