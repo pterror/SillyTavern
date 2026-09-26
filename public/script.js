@@ -10207,10 +10207,10 @@ let createOrEditCharacterTail = Promise.resolve();
  * @param {Event} [e] A `newChat` CustomEvent skips the first-message redraw.
  * @returns {Promise<void>} Resolves undefined, never rejects; failures are toasted.
  */
-export function createOrEditCharacter(e) {
+export async function createOrEditCharacter(e) {
     const run = createOrEditCharacterTail.then(() => runCreateOrEditCharacter(e));
     createOrEditCharacterTail = run;
-    return run;
+    await run;
 }
 
 /** Upstream's debounced {@link createOrEditCharacter}. */
