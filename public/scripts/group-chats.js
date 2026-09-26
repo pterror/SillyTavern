@@ -81,7 +81,7 @@ import {
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore, setCharacterId, resolveCharacterRef, resolveCharacterRefPair } from './character-store.js';
+import { characters, charactersStore, setCharacterId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget, updateMessage } from './chat-store.js';
@@ -1212,8 +1212,9 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             const forced = typeof params.force_avatar == 'string'
                 ? resolveCharacterRefPair(params.force_chid, params.force_avatar)
                 : resolveCharacterRef(params.force_chid);
-            forcedChidMissing = typeof forced?.avatar !== 'string';
-            activatedMembers = [forcedChidMissing ? undefined : forced.avatar];
+            const forcedAvatar = forced === CHARACTER_REF_MISMATCH ? undefined : forced?.avatar;
+            forcedChidMissing = typeof forcedAvatar !== 'string';
+            activatedMembers = [forcedChidMissing ? undefined : forcedAvatar];
         } else if (params && typeof params.force_avatar == 'string') {
             activatedMembers = [params.force_avatar];
         } else if (type === 'quiet') {
