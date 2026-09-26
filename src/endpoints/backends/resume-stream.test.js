@@ -28,23 +28,26 @@ const { router } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { saveChatToTree, loadBranch, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
+const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-resume-stream-test-'));
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
 const filesDir = path.join(root, 'files');
+const chatsDir = path.join(root, 'chats');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
 fs.mkdirSync(filesDir, { recursive: true });
+fs.mkdirSync(chatsDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
 globalThis.DATA_ROOT = root;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
 
-function writeCharacter(avatar, overrides = {}) {
+async function writeCharacter(avatar, overrides = {}) {
     const name = overrides.name ?? avatar.replace(/\.png$/, '');
     const card = {
         spec: 'chara_card_v2',
@@ -63,8 +66,10 @@ function writeCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    const buffer = writeCard(baseImage, JSON.stringify(card));
+    const cardJson = JSON.stringify(card);
+    const buffer = writeCard(baseImage, cardJson);
     fs.writeFileSync(path.join(charactersDir, avatar), buffer);
+    await upsertCharacterFromWrite(directories, avatar, cardJson);
     return avatar;
 }
 
@@ -111,8 +116,10 @@ async function startFakeBackend(handler) {
  */
 function startFakeSseBackendPaced(chunks, delayMs = 40) {
     let resolveDone;
+    let handlerStarted = false;
     const done = new Promise(resolve => { resolveDone = resolve; });
     const startPromise = startFakeBackend((_req, res) => {
+        handlerStarted = true;
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         (async () => {
             for (const text of chunks) {
@@ -123,7 +130,7 @@ function startFakeSseBackendPaced(chunks, delayMs = 40) {
             resolveDone();
         })();
     });
-    return startPromise.then(backend => ({ ...backend, done }));
+    return startPromise.then(backend => ({ ...backend, done, handlerStarted: () => handlerStarted }));
 }
 
 function buildTestApp() {
@@ -148,7 +155,7 @@ async function waitFor(check, { timeoutMs = 3000, intervalMs = 10 } = {}) {
 }
 
 async function run() {
-    const avatar = writeCharacter('Rex.png', {
+    const avatar = await writeCharacter('Rex.png', {
         name: 'Rex',
         description: 'Rex is a {{char}}.',
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },
@@ -238,7 +245,7 @@ async function run() {
         }
         applyEvents(decoder.flush());
     } finally {
-        await fakeBackend.done;
+        if (fakeBackend.handlerStarted()) await fakeBackend.done;
         fakeBackend.server.close();
         server.closeAllConnections?.();
         await new Promise(resolve => server.close(resolve));

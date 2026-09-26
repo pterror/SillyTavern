@@ -126,23 +126,26 @@ const { writeAllSettings } = await import('../../settings-store.js');
 const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 const { writeSecret, SECRET_KEYS } = await import('../secrets.js');
 const { registerServerTool, unregisterServerTool } = await import('../../server-tools.js');
+const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
 const filesDir = path.join(root, 'files');
+const chatsDir = path.join(root, 'chats');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
 fs.mkdirSync(filesDir, { recursive: true });
+fs.mkdirSync(chatsDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
 globalThis.DATA_ROOT = root;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
 
-function writeCharacter(avatar, overrides = {}) {
+async function writeCharacter(avatar, overrides = {}) {
     const name = overrides.name ?? avatar.replace(/\.png$/, '');
     const card = {
         spec: 'chara_card_v2',
@@ -170,8 +173,10 @@ function writeCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    const buffer = writeCard(baseImage, JSON.stringify(card));
+    const cardJson = JSON.stringify(card);
+    const buffer = writeCard(baseImage, cardJson);
     fs.writeFileSync(path.join(charactersDir, avatar), buffer);
+    await upsertCharacterFromWrite(directories, avatar, cardJson);
     return avatar;
 }
 
@@ -215,7 +220,7 @@ function buildSettingsFixture() {
 
 async function run() {
     writeAllSettings(directories, buildSettingsFixture());
-    const avatar = writeCharacter('Rex.png', {
+    const avatar = await writeCharacter('Rex.png', {
         name: 'Rex',
         description: 'Rex is a {{char}}.',
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },
@@ -324,7 +329,7 @@ async function run() {
     // --- happy path: node_id: null on a GENUINELY BRAND-NEW character with zero prior messages -
     // the ONLY case where omitting a real node id is safe. Resolves via the owner's own anchor to an
     // empty chat, and still produces a real, appendable anchorNodeId. ---
-    const freshAvatar = writeCharacter('Fresh.png', {
+    const freshAvatar = await writeCharacter('Fresh.png', {
         name: 'Fresh',
         description: 'Fresh is a brand-new character with no chat history yet.',
         data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
@@ -993,12 +998,12 @@ async function run() {
     // character cards with deliberately distinct `description`s so a wrong-member/uncombined-card
     // mixup would be detectable.
     {
-        const nova = writeCharacter('Nova.png', {
+        const nova = await writeCharacter('Nova.png', {
             name: 'Nova',
             description: 'Nova is a stoic starship engineer.',
             data: { name: 'Nova', description: 'Nova is a stoic starship engineer.', first_mes: 'Systems nominal.' },
         });
-        const zephyr = writeCharacter('Zephyr.png', {
+        const zephyr = await writeCharacter('Zephyr.png', {
             name: 'Zephyr',
             description: 'Zephyr is a chaotic weather spirit.',
             data: { name: 'Zephyr', description: 'Zephyr is a chaotic weather spirit.', first_mes: 'Winds are shifting!' },

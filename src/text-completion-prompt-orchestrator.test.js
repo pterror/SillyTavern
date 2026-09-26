@@ -16,14 +16,16 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
+const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
 
 /**
  * Real, END-TO-END integration test: a small but realistic fixture exercising every stage of the
  * orchestrator (see src/text-completion-prompt-orchestrator.js's module doc comment for exactly
  * what is and isn't wired). No mocking framework - getCharacterCardFields() (one of the 18 already-
- * ported modules) reads real character cards off disk via readCardContent(), which expects a real
- * PNG with the character JSON embedded in a 'chara' tEXt chunk (readCharacterData() only accepts
- * 'png' format). So this test builds a REAL such PNG per fixture, using this repo's own
+ * ported modules) reads real character cards via readCardContent(), which reads the card JSON from
+ * the character's metadata-store row (card_json) and never from the PNG. So this test builds a REAL
+ * PNG per fixture, with the character JSON embedded in a 'chara' tEXt chunk, and seeds the row with
+ * that same card JSON via upsertCharacterFromWrite(), using this repo's own
  * character-card-parser.js write() against the repo's default placeholder avatar image
  * (public/img/ai4.png) as the base image - same technique src/character-card-fields.test.js and
  * tests/character-metadata-db.test.js use - exercising the actual character-card-fields module for
@@ -35,18 +37,22 @@ const baseAvatarBuffer = fs.readFileSync(path.join(__dirname, '..', 'public', 'i
 function makeDirectories() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-orchestrator-test-'));
     const charactersDir = path.join(root, 'characters');
+    const chatsDir = path.join(root, 'chats');
     const filesDir = path.join(root, 'user', 'files');
     fs.mkdirSync(charactersDir, { recursive: true });
+    fs.mkdirSync(chatsDir, { recursive: true });
     fs.mkdirSync(filesDir, { recursive: true });
     // endpoints/characters.js's on-disk read cache keys its cache dir off this global (set by the
     // real server at startup) - point it at our fixture root so the cache doesn't error out standalone.
     globalThis.DATA_ROOT = root;
-    return { charactersDir, filesDir, root };
+    return { charactersDir, chatsDir, filesDir, root };
 }
 
-function writeCharacterCard(charactersDir, avatar, cardV2) {
-    const pngBuffer = writeCardIntoPng(baseAvatarBuffer, JSON.stringify(cardV2));
-    fs.writeFileSync(path.join(charactersDir, avatar), pngBuffer);
+async function writeCharacterCard(directories, avatar, cardV2) {
+    const cardJson = JSON.stringify(cardV2);
+    const pngBuffer = writeCardIntoPng(baseAvatarBuffer, cardJson);
+    fs.writeFileSync(path.join(directories.characters, avatar), pngBuffer);
+    await upsertCharacterFromWrite(directories, avatar, cardJson);
 }
 
 const fakeCountTokens = async (text) => text.length;
@@ -92,9 +98,10 @@ function baseFixture(directories, avatar) {
 }
 
 test('assembleTextCompletionPrompt: instruct mode OFF - end to end', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -116,7 +123,6 @@ test('assembleTextCompletionPrompt: instruct mode OFF - end to end', async () =>
         },
     });
 
-    const directories = { characters: charactersDir, root };
     const input = baseFixture(directories, avatar);
 
     const result = await assembleTextCompletionPrompt(input);
@@ -144,9 +150,10 @@ test('assembleTextCompletionPrompt: instruct mode OFF - end to end', async () =>
 });
 
 test('assembleTextCompletionPrompt: instruct mode ON differs from instruct mode OFF', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria2.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -167,7 +174,6 @@ test('assembleTextCompletionPrompt: instruct mode ON differs from instruct mode 
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const offInput = baseFixture(directories, avatar);
     const offResult = await assembleTextCompletionPrompt(offInput);
@@ -206,10 +212,11 @@ test('assembleTextCompletionPrompt: instruct mode ON differs from instruct mode 
 });
 
 test('assembleTextCompletionPrompt: instruct mode wraps character-card example dialogue with input/output sequences (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria2b.png';
+    const directories = { characters: charactersDir, root, chats: chatsDir };
     const mesExample = '<START>\nUser: What is your favorite weapon?\nAria: The moonblade sword, of course.\n';
-    writeCharacterCard(charactersDir, avatar, {
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -230,7 +237,6 @@ test('assembleTextCompletionPrompt: instruct mode wraps character-card example d
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const instructPreset = {
         enabled: true,
@@ -274,9 +280,10 @@ test('assembleTextCompletionPrompt: instruct mode wraps character-card example d
 });
 
 test('assembleTextCompletionPrompt: tiny max context trims the prompt without crashing', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria3.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -297,7 +304,6 @@ test('assembleTextCompletionPrompt: tiny max context trims the prompt without cr
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const normalInput = baseFixture(directories, avatar);
     const normalResult = await assembleTextCompletionPrompt(normalInput);
@@ -310,9 +316,10 @@ test('assembleTextCompletionPrompt: tiny max context trims the prompt without cr
 });
 
 test('assembleTextCompletionPrompt: a world-info @Depth entry is spliced into the final output (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria4.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -333,7 +340,6 @@ test('assembleTextCompletionPrompt: a world-info @Depth entry is spliced into th
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -365,9 +371,10 @@ test('assembleTextCompletionPrompt: a world-info @Depth entry is spliced into th
 });
 
 test('assembleTextCompletionPrompt: author\'s note combines with WI ANTop/ANBottom entries when due', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria5.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -388,7 +395,6 @@ test('assembleTextCompletionPrompt: author\'s note combines with WI ANTop/ANBott
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -427,9 +433,10 @@ test('assembleTextCompletionPrompt: author\'s note combines with WI ANTop/ANBott
 });
 
 test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note text now feed World-Info scan injection (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria5b.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -450,7 +457,6 @@ test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note te
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     // Case 1: a world-info entry whose ONLY matching keyword appears in the quiet-prompt text - not
     // in chat history, character card, or an author's note. Before this task's ordering fix, World
@@ -507,9 +513,10 @@ test('assembleTextCompletionPrompt: quiet-prompt and scannable author\'s-note te
 });
 
 test('assembleTextCompletionPrompt: an author\'s note positioned at BEFORE_PROMPT is resolved into beforeScenarioAnchor (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria5c.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -530,7 +537,6 @@ test('assembleTextCompletionPrompt: an author\'s note positioned at BEFORE_PROMP
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -566,9 +572,10 @@ test('assembleTextCompletionPrompt: an author\'s note positioned at BEFORE_PROMP
 });
 
 test('assembleTextCompletionPrompt: an author\'s note positioned at IN_CHAT does NOT leak into the beforeScenarioAnchor/afterScenarioAnchor anchors (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria5d.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -589,7 +596,6 @@ test('assembleTextCompletionPrompt: an author\'s note positioned at IN_CHAT does
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -616,9 +622,10 @@ test('assembleTextCompletionPrompt: an author\'s note positioned at IN_CHAT does
 });
 
 test('assembleTextCompletionPrompt: character card depth_prompt is now spliced into the chat as a real IN_CHAT injection, single-character case (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria-depth-prompt.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -642,7 +649,6 @@ test('assembleTextCompletionPrompt: character card depth_prompt is now spliced i
             extensions: { depth_prompt: { prompt: 'Remember: the moonblade hums when danger is near.', depth: 0, role: 'user' } },
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -665,12 +671,13 @@ test('assembleTextCompletionPrompt: character card depth_prompt is now spliced i
 });
 
 test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced into the chat as a real IN_CHAT injection, one entry per member (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const groupsDir = path.join(root, 'groups');
     fs.mkdirSync(groupsDir, { recursive: true });
+    const directories = { characters: charactersDir, groups: groupsDir, root, chats: chatsDir };
 
     const avatarAria = 'aria-group.png';
-    writeCharacterCard(charactersDir, avatarAria, {
+    await writeCharacterCard(directories, avatarAria, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -696,7 +703,7 @@ test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced in
     });
 
     const avatarBran = 'bran-group.png';
-    writeCharacterCard(charactersDir, avatarBran, {
+    await writeCharacterCard(directories, avatarBran, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Bran',
@@ -727,8 +734,6 @@ test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced in
         disabled_members: [],
     }));
 
-    const directories = { characters: charactersDir, groups: groupsDir, root };
-
     const input = {
         ...baseFixture(directories, avatarAria),
         hasCharacterOrGroup: true,
@@ -751,9 +756,10 @@ test('assembleTextCompletionPrompt: group-chat member depth_prompt is spliced in
 });
 
 test('assembleTextCompletionPrompt: an AI_OUTPUT regex script transforms a chat message (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria6.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -774,7 +780,6 @@ test('assembleTextCompletionPrompt: an AI_OUTPUT regex script transforms a chat 
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -802,9 +807,10 @@ test('assembleTextCompletionPrompt: an AI_OUTPUT regex script transforms a chat 
 });
 
 test('assembleTextCompletionPrompt: a WORLD_INFO regex script transforms an activated entry (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria7.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -825,7 +831,6 @@ test('assembleTextCompletionPrompt: a WORLD_INFO regex script transforms an acti
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, root };
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -856,9 +861,10 @@ test('assembleTextCompletionPrompt: a WORLD_INFO regex script transforms an acti
 });
 
 test('assembleTextCompletionPrompt: no extra.files on any fixture message - file-attachment inlining is a no-op (explicit verification of gap 3 default behavior)', async () => {
-    const { charactersDir, filesDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, filesDir, root } = makeDirectories();
     const avatar = 'aria8.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, files: filesDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -879,7 +885,6 @@ test('assembleTextCompletionPrompt: no extra.files on any fixture message - file
             extensions: {}, alternate_greetings: [],
         },
     });
-    const directories = { characters: charactersDir, files: filesDir, root };
 
     // Same fixture chat as baseFixture() - none of its messages carry an `extra.files` array, so
     // appendFileAttachments() should take its no-op path for every message (see
@@ -896,9 +901,10 @@ test('assembleTextCompletionPrompt: no extra.files on any fixture message - file
 });
 
 test('assembleTextCompletionPrompt: a real extra.files attachment is inlined into the final combinedPrompt (new in this task, closes gap 3)', async () => {
-    const { charactersDir, filesDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, filesDir, root } = makeDirectories();
     const avatar = 'aria9.png';
-    writeCharacterCard(charactersDir, avatar, {
+    const directories = { characters: charactersDir, files: filesDir, root, chats: chatsDir };
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -922,7 +928,6 @@ test('assembleTextCompletionPrompt: a real extra.files attachment is inlined int
     // A real temp file inside a real fixture directories.files directory, exactly as
     // src/file-attachment-inline.test.js exercises readFileAttachment() itself.
     fs.writeFileSync(path.join(filesDir, 'notes.txt'), 'ATTACHED NOTES: the bridge is out east of town.');
-    const directories = { characters: charactersDir, files: filesDir, root };
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -948,8 +953,8 @@ test('assembleTextCompletionPrompt: a real extra.files attachment is inlined int
     );
 });
 
-function writeSimpleCharacter(charactersDir, avatar) {
-    writeCharacterCard(charactersDir, avatar, {
+async function writeSimpleCharacter(directories, avatar) {
+    await writeCharacterCard(directories, avatar, {
         spec: 'chara_card_v2',
         spec_version: '2.0',
         name: 'Aria',
@@ -973,10 +978,10 @@ function writeSimpleCharacter(charactersDir, avatar) {
 }
 
 test('assembleTextCompletionPrompt: mainApi "kobold" dispatches Step 16 to createKoboldGenerationData() (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria-kobold.png';
-    writeSimpleCharacter(charactersDir, avatar);
-    const directories = { characters: charactersDir, root };
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeSimpleCharacter(directories, avatar);
 
     const input = {
         ...baseFixture(directories, avatar),
@@ -1011,10 +1016,10 @@ test('assembleTextCompletionPrompt: mainApi "kobold" dispatches Step 16 to creat
 });
 
 test('assembleTextCompletionPrompt: mainApi "novel" dispatches Step 16 to createNovelGenerationData() (new in this task)', async () => {
-    const { charactersDir, root } = makeDirectories();
+    const { charactersDir, chatsDir, root } = makeDirectories();
     const avatar = 'aria-novel.png';
-    writeSimpleCharacter(charactersDir, avatar);
-    const directories = { characters: charactersDir, root };
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeSimpleCharacter(directories, avatar);
 
     const input = {
         ...baseFixture(directories, avatar),
