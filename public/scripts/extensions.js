@@ -2,7 +2,7 @@ import { Popper } from '../lib.js';
 
 import { saveSettings, saveSettingsDebounced, animation_duration, CLIENT_VERSION } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore } from './character-store.js';
+import { resolveCharacterRef } from './character-store.js';
 import { setFormBaseline } from './character-form-baseline.js';
 import { eventSource, event_types } from './events.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from './popup.js';
@@ -2223,31 +2223,26 @@ export const UNSET_VALUE = '__@@UNSET@@__';
 
 /**
  * Writes a field to the character's data extensions object.
- * @param {string|number} characterIdOrAvatar Avatar (identity) of the character, or (deprecated)
- *   its legacy positional index in the character array
+ * @param {any} characterIdOrAvatar Avatar (identity) of the character, or (deprecated) its legacy positional
+ *   index in the character array; anything {@link resolveCharacterRef} accepts
  * @param {string} key Field name
  * @param {any} value Field value
  * @returns {Promise<void>} When the field is written
  */
 export async function writeExtensionField(characterIdOrAvatar, key, value) {
     const context = getContext();
-    const isLegacyChid = typeof characterIdOrAvatar === 'number' || /^\d+$/.test(characterIdOrAvatar);
-    let characterAvatar = characterIdOrAvatar;
-
-    if (isLegacyChid) {
-        console.warn('writeExtensionField: called with a legacy character index; pass the character avatar instead', characterIdOrAvatar);
-        const legacyCharacter = context.characters[Number(characterIdOrAvatar)];
-        if (!legacyCharacter) {
-            console.warn('Character not found', characterIdOrAvatar);
-            return;
-        }
-        characterAvatar = legacyCharacter.avatar;
-    }
-
-    const character = charactersStore.get(characterAvatar);
+    // Truthiness, not a card check: a hit on a non-index key such as `length` must behave as it did upstream.
+    const character = resolveCharacterRef(characterIdOrAvatar);
     if (!character) {
-        console.warn('Character not found', characterAvatar);
+        console.warn('Character not found', characterIdOrAvatar);
         return;
+    }
+    const isAvatarForm = typeof character.avatar === 'string' && (
+        character.avatar === characterIdOrAvatar
+        || (typeof characterIdOrAvatar === 'object' && characterIdOrAvatar !== null && character.avatar === characterIdOrAvatar.avatar)
+    );
+    if (!isAvatarForm) {
+        console.warn('writeExtensionField: called with a legacy character index; pass the character avatar instead', characterIdOrAvatar);
     }
     const extensionPath = `data.extensions.${key}`;
     const isUnset = value === UNSET_VALUE;
@@ -2269,7 +2264,7 @@ export async function writeExtensionField(characterIdOrAvatar, key, value) {
         character.json_data = JSON.stringify(jsonData);
 
         // Make sure the data doesn't get lost when saving the current character
-        if (characterAvatar === context.characterAvatar) {
+        if (character.avatar === context.characterAvatar) {
             $('#character_json_data').val(character.json_data);
             setFormBaseline('#character_json_data', String($('#character_json_data').val()));
         }

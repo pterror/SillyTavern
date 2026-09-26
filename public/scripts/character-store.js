@@ -54,12 +54,55 @@ export function setCharacterId(value) {
 }
 
 /**
+ * `characters[ref]` is upstream's lookup, kept verbatim so every value resolves exactly as upstream's does,
+ * quirks included: `'03'` and `1.5` miss, `[3]` and `3n` hit, and `'length'` returns `characters.length`, not a
+ * character. It must read the collection `getContext().characters` returns, since that is where indices come from.
+ * The avatar and object forms are fork-only and apply only where upstream misses; no avatar key is all digits,
+ * so they never collide with an index.
+ * @param {any} ref An index into `getContext().characters`, an avatar key, or a character object
+ * @returns {Character|undefined}
+ */
+export function resolveCharacterRef(ref) {
+    const upstreamHit = characters[ref];
+    if (upstreamHit !== undefined) {
+        return upstreamHit;
+    }
+    if (typeof ref === 'string') {
+        return charactersStore.get(ref);
+    }
+    if (typeof ref === 'object' && ref !== null && typeof ref.avatar === 'string') {
+        return charactersStore.get(ref.avatar);
+    }
+    return undefined;
+}
+
+export const CHARACTER_REF_MISMATCH = Symbol('CHARACTER_REF_MISMATCH');
+
+/**
+ * For a call that passed a character in both its upstream form and the fork-only avatar form. Unless both name
+ * the same character, returns {@link CHARACTER_REF_MISMATCH}, and the caller applies its own upstream miss
+ * behaviour. That includes only one resolving: using it would be guessing.
+ * The avatar form is only ever an avatar key, never an index, so `'2'` there names no character.
+ * @param {any} ref The upstream form, resolved with {@link resolveCharacterRef}
+ * @param {any} avatar The fork-only avatar form
+ * @returns {Character|typeof CHARACTER_REF_MISMATCH}
+ */
+export function resolveCharacterRefPair(ref, avatar) {
+    const character = resolveCharacterRef(ref);
+    if (typeof character?.avatar === 'string' && character.avatar === avatar) {
+        return character;
+    }
+    console.warn('Character references do not resolve to the same character; treating as not found:', ref, avatar);
+    return CHARACTER_REF_MISMATCH;
+}
+
+/**
  * Thin wrapper around selectCharacterByAvatar(), kept for the public extension API (context.selectCharacterById).
- * @param {number|string} id
+ * @param {any} id Anything {@link resolveCharacterRef} accepts
  * @param {{switchMenu?: boolean}} [options]
  */
 export async function selectCharacterById(id, { switchMenu = true } = {}) {
-    const avatar = characters[id]?.avatar;
+    const avatar = resolveCharacterRef(id)?.avatar;
     if (avatar === undefined) {
         return;
     }

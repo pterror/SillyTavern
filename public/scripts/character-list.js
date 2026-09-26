@@ -1,6 +1,6 @@
 import { lodash } from '../lib.js';
 import { favsToHotswap } from './RossAscends-mods.js';
-import { characters, charactersStore, this_avatar } from './character-store.js';
+import { characters, charactersStore, this_avatar, resolveCharacterRef } from './character-store.js';
 import { groups, getGroups, getGroupBlock } from './group-chats.js';
 import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from './hash-utils.js';
@@ -707,7 +707,13 @@ export async function getOneCharacter(avatarUrl) {
     }
 }
 
-export function getCharacterSource(character = getCurrentCharacter()) {
+/**
+ * @param {string|number|Character} [chId] An index into `getContext().characters`, an avatar key, or a character
+ *   object
+ * @returns {string}
+ */
+export function getCharacterSource(chId = getCurrentCharacter()) {
+    const character = resolveCharacterRef(chId);
     if (!character) {
         return '';
     }

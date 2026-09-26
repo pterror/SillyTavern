@@ -173,7 +173,8 @@ export async function finishStreamedReplyPersistence({ assistantNodeId, itemizat
  * @property {string} [quiet_prompt] A system instruction to use for the quiet prompt.
  * @property {boolean} [quietToLoud] Whether the system instruction should be sent in background (quiet) or a foreground (loud) mode.
  * @property {boolean} [skipWIAN] Skip adding World Info and Author's Note to the prompt.
- * @property {string} [force_avatar] Force character (by avatar) to use for the generation. Only works in groups.
+ * @property {number} [force_chid] Force character (by index into `getContext().characters`) to use for the generation. Only works in groups.
+ * @property {string} [force_avatar] Force character (by avatar) to use for the generation. Only works in groups. Ignored when `force_chid` is a number, unless it names a different character: then the generation throws, as for a `force_chid` that names none.
  * @property {AbortSignal} [signal] Abort signal to cancel the generation. If not provided, will create a new AbortController.
  * @property {string} [quietImage] Image URL to use for the quiet prompt (defaults to empty string)
  * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
@@ -189,7 +190,7 @@ export async function finishStreamedReplyPersistence({ assistantNodeId, itemizat
  * @param {boolean} dryRun Whether to actually generate a message or just assemble the prompt
  * @returns {Promise<any>} Returns a promise that resolves when the text is done generating.
  */
-export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
+export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
@@ -252,7 +253,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     if (selected_group != null && !is_group_generating) {
         if (!dryRun) {
             // Returns the promise that generateGroupWrapper returns; resolves when generation is done
-            return generateGroupWrapper(false, type, { quiet_prompt, force_avatar, signal: abortController.signal, quietImage, jsonSchema });
+            return generateGroupWrapper(false, type, { quiet_prompt, force_chid, force_avatar, signal: abortController.signal, quietImage, jsonSchema });
         }
 
         const group = groupsStore.get(selected_group);
@@ -2503,7 +2504,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                     streamingProcessor = null;
                     depth = depth + 1;
                     await ToolManager.saveFunctionToolInvocations(invocationResult.invocations);
-                    return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, depth }, dryRun);
+                    return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, depth }, dryRun);
                 }
             }
 
@@ -2670,7 +2671,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
                 depth = depth + 1;
                 await ToolManager.saveFunctionToolInvocations(invocationResult.invocations);
-                return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, depth }, dryRun);
+                return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, force_avatar, signal, quietImage, quietName, depth }, dryRun);
             }
         }
 
