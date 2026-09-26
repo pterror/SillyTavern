@@ -1,3 +1,4 @@
+import zlib from 'node:zlib';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
@@ -393,6 +394,10 @@ test.describe('positional character parameters (#1-#8)', () => {
         const [current] = await createCharacters(page, 'IdxEditorMiss', 1);
         try {
             await selectCharacter(page, current);
+            // Selecting puts the editor in front of the character list; bring the list back as a user would.
+            await expect(page.locator('#form_create')).toHaveAttribute('actiontype', 'editcharacter');
+            await expect(page.locator('#right-nav-panel')).toBeHidden();
+            await page.locator('#rightNavDrawerIcon').click();
             await page.locator('#rm_button_create').click();
             await expect(page.locator('#form_create')).toHaveAttribute('actiontype', 'createcharacter');
             await page.evaluate(() => {
@@ -1259,4 +1264,382 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
             await deleteCharacters(page, [bystander, byHandleAvatar, byDeleteCharacter, byDeleteButton]);
         }
     });
+});
+
+test.describe('#9 saveSettings and saveSettingsDebounced', () => {
+    // saveSettings' retry messages, and TempResponseLength.restore's log.
+    const RESPONSE_LENGTH_WARNING = 'Response length is currently being overridden, scheduling another save';
+    const RESPONSE_LENGTH_ERROR = 'Response length is currently being overridden, but the save loop has reached the maximum number of retries';
+    const RESTORE_LOG = '[TempResponseLength] Restored original response length:';
+    // Longer than the save debounce (DEFAULT_SAVE_EDIT_TIMEOUT, 1000 ms), so a window started before it has run.
+    const PAST_WINDOW = 2500;
+    // Three rescheduled windows plus the final save.
+    const RETRY_TIMEOUT = 15000;
+
+    test.beforeEach(async ({ page }) => {
+        await testSetup.awaitST({ page });
+        // Lets any save the boot scheduled run before a test starts recording.
+        await page.waitForTimeout(PAST_WINDOW);
+    });
+
+    test.afterEach(async ({ page }) => {
+        await releaseResponseLength(page);
+    });
+
+    /**
+     * From here on, in order: upstream's retry warning and error, the restore log, and each POST to
+     * /api/settings/save ('save') or /api/settings/save-partial ('save-partial') with its JSON body.
+     * @param {import('@playwright/test').Page} page
+     * @returns {{kind: string, text?: string, body?: any}[]}
+     */
+    function recordSettingsSaves(page) {
+        const timeline = [];
+        page.on('console', (message) => {
+            const text = message.text();
+            if (text === RESPONSE_LENGTH_WARNING || text === RESPONSE_LENGTH_ERROR || text.startsWith(RESTORE_LOG)) {
+                timeline.push({ kind: message.type(), text });
+            }
+        });
+        page.on('request', (request) => {
+            if (request.method() !== 'POST') return;
+            const path = new URL(request.url()).pathname;
+            if (path !== '/api/settings/save' && path !== '/api/settings/save-partial') return;
+            let raw = request.postDataBuffer() ?? Buffer.alloc(0);
+            if (request.headers()['content-encoding'] === 'gzip') raw = zlib.gunzipSync(raw);
+            let body;
+            try { body = JSON.parse(raw.toString('utf8')); } catch { body = null; }
+            timeline.push({ kind: path === '/api/settings/save' ? 'save' : 'save-partial', body });
+        });
+        return timeline;
+    }
+
+    /**
+     * The timeline, with each full save reduced to the given probes' values and amount_gen, and each partial
+     * save to its keys and whether it carries expectedHashes.
+     * @param {{kind: string, text?: string, body?: any}[]} timeline
+     * @param {{name: string}[]} probes
+     */
+    function project(timeline, probes) {
+        return timeline.map((event) => {
+            if (event.kind === 'save') {
+                return { kind: 'save', probes: probes.map(probe => event.body?.power_user?.[probe.name]), amountGen: event.body?.amount_gen };
+            }
+            if (event.kind === 'save-partial') {
+                return { kind: 'save-partial', keys: event.body?.keys, hasExpectedHashes: typeof event.body?.expectedHashes === 'object' };
+            }
+            return event;
+        });
+    }
+
+    /**
+     * Waits for the timeline to reach the length, then past one more debounce window so a later event would show.
+     * @param {import('@playwright/test').Page} page
+     * @param {any[]} timeline
+     * @param {number} length
+     */
+    async function settle(page, timeline, length) {
+        await expect.poll(() => timeline.length, { timeout: RETRY_TIMEOUT }).toBeGreaterThanOrEqual(length);
+        await page.waitForTimeout(PAST_WINDOW);
+    }
+
+    /**
+     * Names a fresh power_user field, so each save of it differs from the last saved settings.
+     * @returns {{name: string, key: string, value: string}}
+     */
+    function newProbe() {
+        const name = `idx_save_probe_${stamp().replace('-', '_')}`;
+        return { name, key: `power_user.${name}`, value: `value-${stamp()}` };
+    }
+
+    /**
+     * Runs the steps in one evaluate, with no await between them other than a direct saveSettings() call's own.
+     * A step either sets a probe's value in power_user, or calls a script.js export with arguments.
+     * @param {import('@playwright/test').Page} page
+     * @param {({probe: {name: string, value: string}} | {call: string, args: any[]})[]} steps
+     */
+    async function runSteps(page, steps) {
+        await page.evaluate(async (steps) => {
+            const script = await import('/script.js');
+            // @ts-ignore
+            const powerUser = SillyTavern.getContext().powerUserSettings;
+            for (const step of steps) {
+                if ('probe' in step) {
+                    powerUser[step.probe.name] = step.probe.value;
+                    continue;
+                }
+                const result = script[step.call](...step.args);
+                if (result instanceof Promise) await result;
+            }
+        }, steps);
+    }
+
+    /**
+     * Makes TempResponseLength customized, as an in-flight generateRawData({ responseLength }) does: the generation
+     * is held in a GENERATE_AFTER_COMBINE_PROMPTS listener until releaseResponseLength().
+     * @param {import('@playwright/test').Page} page
+     * @returns {Promise<{original: number, overridden: number}>} amount_gen before and during the override.
+     */
+    async function holdResponseLength(page) {
+        return page.evaluate(async () => {
+            const { generateRawData } = await import('/script.js');
+            const params = await import('/scripts/generation-params.js');
+            // @ts-ignore
+            const ctx = SillyTavern.getContext();
+            const original = params.amount_gen;
+            const responseLength = original + 1;
+            let entered;
+            const inside = new Promise(resolve => entered = resolve);
+            let release;
+            const released = new Promise(resolve => release = resolve);
+            const listener = async () => {
+                entered();
+                await released;
+            };
+            ctx.eventSource.on(ctx.eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, listener);
+            // Stopped before it is released, so it never reaches a backend.
+            const generation = generateRawData({ prompt: 'hold', api: 'kobold', responseLength }).catch(() => { });
+            await inside;
+            ctx.eventSource.removeListener(ctx.eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, listener);
+            // @ts-ignore
+            window.__responseLengthHold = async () => {
+                await ctx.eventSource.emit(ctx.eventTypes.GENERATION_STOPPED);
+                release();
+                await generation;
+            };
+            return { original, overridden: params.amount_gen };
+        });
+    }
+
+    /**
+     * Ends a holdResponseLength() generation, if one is held.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function releaseResponseLength(page) {
+        await page.evaluate(async () => {
+            // @ts-ignore
+            const hold = window.__responseLengthHold;
+            // @ts-ignore
+            window.__responseLengthHold = null;
+            if (hold) await hold();
+        });
+    }
+
+    /**
+     * The retry messages for a save that starts at count 0: three reschedules, then the error and the restore.
+     * @param {number} original amount_gen before the override.
+     */
+    function retriesFromZero(original) {
+        return [
+            { kind: 'warning', text: RESPONSE_LENGTH_WARNING },
+            { kind: 'warning', text: RESPONSE_LENGTH_WARNING },
+            { kind: 'warning', text: RESPONSE_LENGTH_WARNING },
+            { kind: 'error', text: RESPONSE_LENGTH_ERROR },
+            { kind: 'log', text: `${RESTORE_LOG} ${original}` },
+        ];
+    }
+
+    test('saveSettings(1) does a full save and does not cancel a pending debounced save', async ({ page }) => {
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        const b = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettingsDebounced', args: [] },
+            { call: 'saveSettings', args: [1] },
+            { probe: b },
+        ]);
+        await settle(page, timeline, 2);
+        expect(project(timeline, [a, b])).toEqual([
+            { kind: 'save', probes: [a.value, undefined], amountGen: expect.any(Number) },
+            { kind: 'save', probes: [a.value, b.value], amountGen: expect.any(Number) },
+        ]);
+    });
+
+    test('saveSettings(\'key\') is a partial save as today', async ({ page }) => {
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettings', args: [a.key] },
+        ]);
+        await settle(page, timeline, 1);
+        expect(project(timeline, [a])).toEqual([
+            { kind: 'save-partial', keys: { [a.key]: a.value }, hasExpectedHashes: true },
+        ]);
+    });
+
+    test('with TempResponseLength customized, saveSettings(0) reschedules through counters 1, 2 and 3, then restores and saves, with upstream\'s messages', async ({ page }) => {
+        const { original, overridden } = await holdResponseLength(page);
+        expect(overridden).not.toBe(original);
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettings', args: [0] },
+        ]);
+        await settle(page, timeline, 6);
+        expect(project(timeline, [a])).toEqual([
+            ...retriesFromZero(original),
+            { kind: 'save', probes: [a.value], amountGen: original },
+        ]);
+    });
+
+    test('saveSettingsDebounced(2) followed by saveSettingsDebounced() in one window runs with count 0', async ({ page }) => {
+        // Count 2 alone: one reschedule (to 3), then the error, the restore and the save.
+        let { original } = await holdResponseLength(page);
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettingsDebounced', args: [2] },
+        ]);
+        await settle(page, timeline, 4);
+        expect(project(timeline, [a])).toEqual([
+            { kind: 'warning', text: RESPONSE_LENGTH_WARNING },
+            { kind: 'error', text: RESPONSE_LENGTH_ERROR },
+            { kind: 'log', text: `${RESTORE_LOG} ${original}` },
+            { kind: 'save', probes: [a.value], amountGen: original },
+        ]);
+        await releaseResponseLength(page);
+
+        // Count 2, then no count, in one window: the run has count 0, so three reschedules.
+        ({ original } = await holdResponseLength(page));
+        const b = newProbe();
+        await runSteps(page, [
+            { probe: b },
+            { call: 'saveSettingsDebounced', args: [2] },
+            { call: 'saveSettingsDebounced', args: [] },
+        ]);
+        await settle(page, timeline, 4 + 6);
+        expect(project(timeline.slice(4), [b])).toEqual([
+            ...retriesFromZero(original),
+            { kind: 'save', probes: [b.value], amountGen: original },
+        ]);
+    });
+
+    test('saveSettings() with keys pending sends one full save that includes them, and leaves pendingSettingsKeys empty', async ({ page }) => {
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettingsDebounced', args: [a.key] },
+            { call: 'saveSettings', args: [] },
+        ]);
+        // The keyed window still runs, and finds nothing pending.
+        await settle(page, timeline, 1);
+        expect(project(timeline, [a])).toEqual([
+            { kind: 'save', probes: [a.value], amountGen: expect.any(Number) },
+        ]);
+
+        // A keyed save sends its keys plus any still pending, so a keyed save of b shows a is no longer pending.
+        const b = newProbe();
+        await runSteps(page, [
+            { probe: b },
+            { call: 'saveSettings', args: [b.key] },
+        ]);
+        await settle(page, timeline, 2);
+        expect(project(timeline, [a, b])).toEqual([
+            { kind: 'save', probes: [a.value, undefined], amountGen: expect.any(Number) },
+            { kind: 'save-partial', keys: { [b.key]: b.value }, hasExpectedHashes: true },
+        ]);
+    });
+
+    test('saveSettingsDebounced(\'key\') alone reaches the server as a keyed partial save to /save-partial', async ({ page }) => {
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettingsDebounced', args: [a.key] },
+        ]);
+        await settle(page, timeline, 1);
+        expect(project(timeline, [a])).toEqual([
+            { kind: 'save-partial', keys: { [a.key]: a.value }, hasExpectedHashes: true },
+        ]);
+    });
+
+    test('saveSettingsDebounced(\'key\') plus saveSettingsDebounced() in one window sends one full save that includes key', async ({ page }) => {
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettingsDebounced', args: [a.key] },
+            { call: 'saveSettingsDebounced', args: [] },
+        ]);
+        await settle(page, timeline, 1);
+        expect(project(timeline, [a])).toEqual([
+            { kind: 'save', probes: [a.value], amountGen: expect.any(Number) },
+        ]);
+    });
+
+    test('with TempResponseLength customized, saveSettings(\'key\') reschedules through counts 1, 2 and 3 as keyed saves, then restores and sends a keyed partial save of key; no full save is sent', async ({ page }) => {
+        const { original } = await holdResponseLength(page);
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettings', args: [a.key] },
+        ]);
+        await settle(page, timeline, 6);
+        expect(project(timeline, [a])).toEqual([
+            ...retriesFromZero(original),
+            { kind: 'save-partial', keys: { [a.key]: a.value }, hasExpectedHashes: true },
+        ]);
+    });
+
+    test('a direct saveSettings(\'key\') doesn\'t cancel a pending window that asked for a full save', async ({ page }) => {
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        const b = newProbe();
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettingsDebounced', args: [] },
+            { probe: b },
+            { call: 'saveSettings', args: [b.key] },
+        ]);
+        await settle(page, timeline, 2);
+        expect(project(timeline, [a, b])).toEqual([
+            { kind: 'save-partial', keys: { [b.key]: b.value }, hasExpectedHashes: true },
+            { kind: 'save', probes: [a.value, b.value], amountGen: expect.any(Number) },
+        ]);
+    });
+
+    test('after a full save of key=A, a keyed save of key=B and then a keyed save of key back to A both reach the server, and the server holds A', async ({ page }) => {
+        const timeline = recordSettingsSaves(page);
+        const a = newProbe();
+        const b = { ...a, value: `${a.value}-b` };
+
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettings', args: [] },
+        ]);
+        await settle(page, timeline, 1);
+
+        await runSteps(page, [
+            { probe: b },
+            { call: 'saveSettings', args: [b.key] },
+        ]);
+        await settle(page, timeline, 2);
+
+        await runSteps(page, [
+            { probe: a },
+            { call: 'saveSettings', args: [a.key] },
+        ]);
+        await settle(page, timeline, 3);
+
+        expect(project(timeline, [a])).toEqual([
+            { kind: 'save', probes: [a.value], amountGen: expect.any(Number) },
+            { kind: 'save-partial', keys: { [a.key]: b.value }, hasExpectedHashes: true },
+            { kind: 'save-partial', keys: { [a.key]: a.value }, hasExpectedHashes: true },
+        ]);
+
+        const onServer = await page.evaluate(async (name) => {
+            // @ts-ignore
+            const headers = SillyTavern.getContext().getRequestHeaders();
+            const response = await fetch('/api/settings/get', { method: 'POST', headers, body: JSON.stringify({}), cache: 'no-cache' });
+            const data = await response.json();
+            return JSON.parse(data.settings).power_user?.[name];
+        }, a.name);
+        expect(onServer).toBe(a.value);
+    });
+
 });

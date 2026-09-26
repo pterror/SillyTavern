@@ -825,13 +825,31 @@ export let chatDragDropHandler = null;
 /** @type {debounce_timeout} The debounce timeout used for chat/settings save. debounce_timeout.long: 1.000 ms */
 export const DEFAULT_SAVE_EDIT_TIMEOUT = debounce_timeout.relaxed;
 
-const _debouncedSaveImpl = debounce(() => saveSettings(), DEFAULT_SAVE_EDIT_TIMEOUT);
-// With key(s) given, fires a partial save instead of the full settings blob; with none, falls back to a full save.
-export function saveSettingsDebounced(...keys) {
-    for (const key of keys) {
-        if (typeof key === 'string') pendingSettingsKeys.add(key);
-    }
+// The window's keys are already in pendingSettingsKeys.
+const _debouncedSaveImpl = debounce(() => {
+    const { full, count } = _settingsSaveWindow;
+    _settingsSaveWindow = { full: false, count: 0 };
+    return runSettingsSave({ full, count });
+}, DEFAULT_SAVE_EDIT_TIMEOUT);
+
+/**
+ * A full request anywhere in the window makes its run a full save, so it is never dropped.
+ * The count is the last call's, as a plain debounce() of saveSettings(loopCounter) would pass it.
+ * @param {{ full: boolean, count: any }} save The call's kind and count.
+ */
+function scheduleSettingsSave({ full, count }) {
+    _settingsSaveWindow = { full: _settingsSaveWindow.full || full, count };
     _debouncedSaveImpl();
+}
+
+/**
+ * Saves settings after the debounce window. A string first argument is a keyed partial save of the string arguments;
+ * anything else (a number, or no argument) is a full save, which also includes any pending keys.
+ * @param {number|string} [loopCounter] Retry count of a full save, or the first key of a keyed save.
+ * @param {...string} keys Further settings keys to save.
+ */
+export function saveSettingsDebounced(loopCounter, ...keys) {
+    scheduleSettingsSave(readSettingsSaveArgs(loopCounter, keys));
 }
 
 
@@ -1036,12 +1054,14 @@ let lastSavedSettingsHash = null;
 // Hash (server key order) of settings this client believes is persisted server-side; sent as X-Settings-Hash for conflict detection.
 /** @type {number|null} */
 let knownServerSettingsHash = null;
-// Top-level settings keys mutated since the last debounced save; empty falls through to a full save.
+// Settings keys marked for saving and not yet sent; a keyed save sends them, a full save includes them in the blob.
 const pendingSettingsKeys = new Set();
 // Per-key content hashes of what this client believes the server has; used for the partial save's expectedHashes conflict check.
 /** @type {Record<string, number>} */
 const serverKeyHashes = {};
-let _saveRetryCounter = 0;
+// Kind and count of the pending debounced save window (see scheduleSettingsSave()); reset when the window runs or is cancelled.
+/** @type {{ full: boolean, count: any }} */
+let _settingsSaveWindow = { full: false, count: 0 };
 // Serializes saveSettings() so overlapping calls can't race on a stale serverKeyHashes snapshot.
 let _saveQueue = Promise.resolve();
 /** User preference for swipeable messages */
@@ -7370,48 +7390,79 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
 }
 
 //MARK: saveSettings()
-export async function saveSettings(...keys) {
-    // Keys given directly trigger an immediate scoped save instead of a debounced one.
-    if (keys.length > 0) {
-        for (const key of keys) {
-            if (typeof key === 'string') pendingSettingsKeys.add(key);
-        }
+/**
+ * Saves settings now. A string first argument is a keyed partial save of the string arguments;
+ * anything else (a number, or no argument) is a full save, which also includes any pending keys.
+ * @param {number|string} [loopCounter] Retry count of a full save, or the first key of a keyed save.
+ * @param {...string} keys Further settings keys to save.
+ */
+export async function saveSettings(loopCounter, ...keys) {
+    const save = readSettingsSaveArgs(loopCounter, keys);
+    // This save sends the pending keys, leaving a keyed window nothing to send; a full window must still run.
+    if (!save.full && !_settingsSaveWindow.full) {
         // debounce()'s returned function has no .cancel of its own; cancelDebounce() finds it via the WeakMap.
         cancelDebounce(_debouncedSaveImpl);
+        _settingsSaveWindow = { full: false, count: 0 };
     }
+    return runSettingsSave(save);
+}
+
+/**
+ * Marks the string keys pending and returns the save's kind and count.
+ * A non-string first argument is the count as passed, so the retry compares it exactly as saveSettings(loopCounter = 0) would.
+ * @param {any} loopCounter The first argument.
+ * @param {any[]} keys The remaining arguments.
+ * @returns {{ full: boolean, count: any }}
+ */
+function readSettingsSaveArgs(loopCounter, keys) {
+    const keyed = typeof loopCounter === 'string';
+    for (const key of keyed ? [loopCounter, ...keys] : keys) {
+        if (typeof key === 'string') pendingSettingsKeys.add(key);
+    }
+    return { full: !keyed, count: keyed || loopCounter === undefined ? 0 : loopCounter };
+}
+
+/**
+ * A rescheduled save keeps its kind, and a keyed save's keys stay pending for it.
+ * @param {{ full: boolean, count: any }} save The save's kind and count.
+ */
+async function runSettingsSave({ full, count }) {
     if (!settingsReady) {
         console.warn('Settings not ready, scheduling another save');
-        // eslint-disable-next-line no-restricted-syntax
-        saveSettingsDebounced();
+        scheduleSettingsSave({ full, count: 0 });
         return;
     }
 
     const MAX_RETRIES = 3;
     if (TempResponseLength.isCustomized()) {
-        if (_saveRetryCounter < MAX_RETRIES) {
+        if (count < MAX_RETRIES) {
             console.warn('Response length is currently being overridden, scheduling another save');
-            _saveRetryCounter++;
-            // eslint-disable-next-line no-restricted-syntax
-            saveSettingsDebounced();
+            scheduleSettingsSave({ full, count: ++count });
             return;
         }
         console.error('Response length is currently being overridden, but the save loop has reached the maximum number of retries');
         TempResponseLength.restore(null);
     }
-    _saveRetryCounter = 0;
 
     // Queue behind any save already in flight, so overlapping calls can't race on a stale serverKeyHashes snapshot.
-    const run = () => performSave();
+    const run = () => performSave({ full });
     const queued = _saveQueue.then(run, run);
     _saveQueue = queued.catch(() => {});
     return queued;
 }
 
-// The body of saveSettings(), pulled out so it can be queued behind _saveQueue instead of running concurrently.
-async function performSave() {
+/**
+ * The body of a save, pulled out so it can be queued behind _saveQueue instead of running concurrently.
+ * @param {{ full: boolean }} save A full save includes the pending keys in its blob; a keyed save sends only them.
+ */
+async function performSave({ full }) {
     // Drain accumulated keys before the async gap - anything added after this point belongs to the next save.
-    const dirtyKeys = pendingSettingsKeys.size > 0 ? [...pendingSettingsKeys] : null;
+    const dirtyKeys = full ? null : [...pendingSettingsKeys];
     pendingSettingsKeys.clear();
+    // An earlier save already sent this keyed save's keys; it must not become a full save.
+    if (dirtyKeys && dirtyKeys.length === 0) {
+        return;
+    }
 
     const payload = {
         firstRun: firstRun,
@@ -7439,9 +7490,6 @@ async function performSave() {
 
     const payloadString = JSON.stringify(payload);
     const payloadHash = getStringHash(payloadString);
-    if (payloadHash === lastSavedSettingsHash) {
-        return;
-    }
 
     if (dirtyKeys) {
         // Partial save path: send only the keys that were explicitly marked dirty.
@@ -7497,7 +7545,7 @@ async function performSave() {
             for (const key of Object.keys(partialPayload)) {
                 seedKeyHashes(serverKeyHashes, partialPayload[key], key);
             }
-            lastSavedSettingsHash = payloadHash;
+            // Not lastSavedSettingsHash: it only ever means "this exact full payload reached the server", and a keyed save sent only part of it.
             // Server-returned hash keeps knownServerSettingsHash in sync without a full copy of the settings content.
             const partialSaveResponse = await result.json().catch(() => ({}));
             if (partialSaveResponse.settingsHash != null) {
@@ -7510,6 +7558,10 @@ async function performSave() {
         }
     } else {
         // Full save path (backward compat for callers that didn't specify keys).
+        // Keyed saves skip this check: the hash only means "this exact full payload reached the server".
+        if (payloadHash === lastSavedSettingsHash) {
+            return;
+        }
         try {
             const headers = getRequestHeaders();
             if (knownServerSettingsHash !== null) {
