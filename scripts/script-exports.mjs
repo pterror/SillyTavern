@@ -39,12 +39,15 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SIGNATURES_FILE, SignatureError, compareSignature, createAnalyzer, formatSignatures, parseSignatures } from './script-signatures.mjs';
 
 const LIST_FILE = '.upstream-script-exports';
 const SCRIPT_FILE = 'public/script.js';
 const UPSTREAM_REF = 'upstream/staging';
 
 class CheckError extends Error {}
+
+const RECORD_FILES = `${LIST_FILE} and ${SIGNATURES_FILE}`;
 
 async function loadTypeScript() {
     let ts;
@@ -187,6 +190,53 @@ function upstreamList(ts, repo, commit) {
     return formatList(commit, upstreamNames(ts, repo, commit));
 }
 
+function gitReader(repo, commit) {
+    return (rel) => {
+        try {
+            return git(repo, ['show', `${commit}:${rel}`]);
+        } catch (error) {
+            throw new CheckError(`could not read ${rel} at ${commit} (${String(error.stderr ?? error.message).trim()}).`);
+        }
+    };
+}
+
+function fsReader(root) {
+    return (rel) => {
+        try {
+            return fs.readFileSync(path.join(root, rel), 'utf8');
+        } catch (error) {
+            throw new CheckError(`could not read ${path.join(root, rel)} (${error.code ?? error.message}).`);
+        }
+    };
+}
+
+/** The signatures record `refresh` writes for `commit`. */
+function upstreamSignatures(ts, repo, commit) {
+    const analyzer = createAnalyzer(ts, gitReader(repo, commit), commit.slice(0, 12));
+    return formatSignatures(commit, upstreamNames(ts, repo, commit).map(name => [name, analyzer.signature(name)]));
+}
+
+function readSignatures(signaturesPath) {
+    let text;
+    try {
+        text = fs.readFileSync(signaturesPath, 'utf8');
+    } catch (error) {
+        throw new CheckError(`could not read ${signaturesPath} (${error.code ?? error.message}).`);
+    }
+    return parseSignatures(text, signaturesPath);
+}
+
+/** Problems with our signatures (`oursSignature(name)`) against upstream's `entries`, for names ours exports. */
+function signatureProblems(entries, ours, oursSignature, source) {
+    const problems = entries
+        .filter(([name]) => ours.has(name))
+        .flatMap(([name, up]) => compareSignature(name, up, oursSignature(name)));
+    return problems.length === 0 ? [] : [
+        `${problems.length} export(s) of ${SCRIPT_FILE} no longer match upstream's signature (${source}). Extensions call these as upstream declares them:\n`
+        + problems.map(problem => `  ${problem}`).join('\n'),
+    ];
+}
+
 function mergeHeads(repo) {
     const mergeHeadPath = path.resolve(repo, git(repo, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim());
     let text;
@@ -241,22 +291,27 @@ function describeBases(bases) {
         : `the newest ${UPSTREAM_REF} commits it contains are ${bases.join(', ')} (criss-cross history)`;
 }
 
-function checkFreshness(ts, repo, list, listPath, ours) {
+function checkFreshness(ts, repo, list, listPath, signatures, signaturesPath, ours, oursSignature) {
     const result = upstreamBasesOfCommit(repo);
     if (result.skipped) {
         notice(`${result.skipped}, so whether ${LIST_FILE} is up to date was not checked.`);
         return [];
     }
     const { bases } = result;
-    const fix = `Run 'npm run script-exports:refresh' and stage ${LIST_FILE}.`;
+    const fix = `Run 'npm run script-exports:refresh' and stage ${RECORD_FILES}.`;
     const problems = [];
     if (!bases.includes(list.commit)) {
         const lags = bases.some(base => gitSucceeds(repo, ['merge-base', '--is-ancestor', list.commit, base]));
         problems.push(lags
             ? `refresh ${LIST_FILE}: it records ${list.commit}, but ${describeBases(bases)}. ${fix}`
             : `${listPath} records ${list.commit}, which this commit does not contain; ${describeBases(bases)}. ${fix}`);
-    } else if (list.text !== upstreamList(ts, repo, list.commit)) {
-        problems.push(`${listPath} records ${list.commit} but its names are not that commit's ${SCRIPT_FILE} exports. ${fix}`);
+    } else {
+        if (list.text !== upstreamList(ts, repo, list.commit)) {
+            problems.push(`${listPath} records ${list.commit} but its names are not that commit's ${SCRIPT_FILE} exports. ${fix}`);
+        }
+        if (signatures.text !== upstreamSignatures(ts, repo, list.commit)) {
+            problems.push(`${signaturesPath} records ${list.commit} but its lines are not that commit's ${SCRIPT_FILE} export signatures. ${fix}`);
+        }
     }
     // With several independent bases the list holds one of them; every other one's exports must
     // stay importable too.
@@ -267,6 +322,8 @@ function checkFreshness(ts, repo, list, listPath, ours) {
             problems.push(`${SCRIPT_FILE} does not export ${missing.length} name(s) that ${UPSTREAM_REF} ${base} (also contained in this commit) exports:\n`
                 + missing.map(name => `  ${name}`).join('\n'));
         }
+        const baseSignatures = parseSignatures(upstreamSignatures(ts, repo, base), `${base}:${SIGNATURES_FILE}`);
+        problems.push(...signatureProblems(baseSignatures.entries, ours, oursSignature, `${UPSTREAM_REF} ${base}, also contained in this commit`));
     }
     return problems;
 }
@@ -289,6 +346,18 @@ async function check(argv) {
     const ours = new Set(exportNames(ts, source, SCRIPT_FILE));
     const missing = list.names.filter(name => !ours.has(name));
 
+    const signaturesPath = path.join(root, SIGNATURES_FILE);
+    const signatures = readSignatures(signaturesPath);
+    if (signatures.commit !== list.commit) {
+        throw new CheckError(`${signaturesPath} records ${signatures.commit} but ${listPath} records ${list.commit}; both must describe the same upstream commit. Run 'npm run script-exports:refresh' and stage ${RECORD_FILES}.`);
+    }
+    const recorded = signatures.entries.map(([name]) => name);
+    if (recorded.length !== list.names.length || recorded.some((name, i) => name !== list.names[i])) {
+        throw new CheckError(`${signaturesPath} does not list the same names as ${listPath}. Run 'npm run script-exports:refresh' and stage ${RECORD_FILES}.`);
+    }
+    const analyzer = createAnalyzer(ts, fsReader(root), 'ours', { ours: true });
+    const oursSignature = name => analyzer.signature(name);
+
     const problems = [];
     if (missing.length > 0) {
         problems.push(
@@ -296,12 +365,13 @@ async function check(argv) {
             + missing.map(name => `  ${name}`).join('\n'),
         );
     }
-    problems.push(...checkFreshness(ts, repo, list, listPath, ours));
+    problems.push(...signatureProblems(signatures.entries, ours, oursSignature, `${SIGNATURES_FILE}, upstream ${list.commit.slice(0, 12)}`));
+    problems.push(...checkFreshness(ts, repo, list, listPath, signatures, signaturesPath, ours, oursSignature));
 
     if (problems.length > 0) {
         throw new CheckError(problems.join('\n\n'));
     }
-    console.log(`script-exports: ok - all ${list.names.length} upstream/staging exports (${list.commit.slice(0, 12)}) are exported by ${SCRIPT_FILE}.`);
+    console.log(`script-exports: ok - all ${list.names.length} upstream/staging exports (${list.commit.slice(0, 12)}) are exported by ${SCRIPT_FILE} with compatible signatures.`);
 }
 
 function toplevel() {
@@ -324,8 +394,10 @@ async function refresh(argv) {
         commit = result.bases[0];
     }
     const text = upstreamList(ts, repo, commit);
+    const signatures = upstreamSignatures(ts, repo, commit);
     fs.writeFileSync(path.join(repo, LIST_FILE), text);
-    console.log(`script-exports: wrote ${LIST_FILE} from ${argv[0] ?? 'the expected commit'} (${commit}), ${text.split('\n').length - 2} names.`);
+    fs.writeFileSync(path.join(repo, SIGNATURES_FILE), signatures);
+    console.log(`script-exports: wrote ${RECORD_FILES} from ${argv[0] ?? 'the expected commit'} (${commit}), ${text.split('\n').length - 2} names.`);
 }
 
 async function mergeUpstream(argv) {
@@ -339,8 +411,8 @@ async function mergeUpstream(argv) {
     }
     if (mergeHeads(repo).length > 0) {
         await refresh([]);
-        git(repo, ['add', '--', LIST_FILE]);
-        console.log(`script-exports: staged ${LIST_FILE}. Resolve any conflicts, then commit.`);
+        git(repo, ['add', '--', LIST_FILE, SIGNATURES_FILE]);
+        console.log(`script-exports: staged ${RECORD_FILES}. Resolve any conflicts, then commit.`);
     }
     process.exitCode = status;
 }
@@ -359,19 +431,22 @@ async function postMerge(argv) {
         : { skipped: 'no ORIG_HEAD' };
     if (before.bases && before.bases.length === now.bases.length && before.bases.every(base => now.bases.includes(base))) return;
     let committed;
+    let committedSignatures;
     try {
         committed = parseList(git(repo, ['show', `HEAD:${LIST_FILE}`]), `HEAD:${LIST_FILE}`);
+        committedSignatures = git(repo, ['show', `HEAD:${SIGNATURES_FILE}`]);
     } catch {
         committed = null;
     }
-    if (committed && now.bases.includes(committed.commit) && committed.text === upstreamList(ts, repo, committed.commit)) return;
+    if (committed && now.bases.includes(committed.commit) && committed.text === upstreamList(ts, repo, committed.commit)
+        && committedSignatures === upstreamSignatures(ts, repo, committed.commit)) return;
     const bar = '!'.repeat(100);
     console.warn([
         bar,
         `script-exports: WARNING - this merge moved the newest ${UPSTREAM_REF} commits this branch contains`,
-        `(now ${now.bases.join(', ')}), but the committed ${LIST_FILE} was not refreshed to it.`,
-        'The next commit will be blocked until it is:',
-        `    npm run script-exports:refresh && git add ${LIST_FILE}`,
+        `(now ${now.bases.join(', ')}), but the committed ${RECORD_FILES} were not refreshed to it.`,
+        'The next commit will be blocked until they are:',
+        `    npm run script-exports:refresh && git add ${LIST_FILE} ${SIGNATURES_FILE}`,
         `Use 'npm run merge:upstream' to merge ${UPSTREAM_REF} with the list refreshed in the same commit.`,
         bar,
     ].join('\n'));
@@ -396,7 +471,7 @@ try {
     }
     await commands[command](rest);
 } catch (error) {
-    if (!(error instanceof CheckError)) throw error;
+    if (!(error instanceof CheckError || error instanceof SignatureError)) throw error;
     console.error(`script-exports: ${command === 'post-merge' ? 'WARNING - could not check the merge' : 'failed'} - ${error.message}`);
     if (command !== 'post-merge') process.exit(1);
 }

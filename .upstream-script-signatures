@@ -1,0 +1,250 @@
+bc81b9f7e33f39afe3f919a66faaf93079276a1c
+ANIMATION_DURATION_DEFAULT value
+CLIENT_VERSION value
+CONNECT_API_MAP value
+DEFAULT_PRINT_TIMEOUT opaque
+DEFAULT_SAVE_EDIT_TIMEOUT opaque
+Generate async type options{automatic_trigger,depth?,force_chid,force_name2,jsonSchema?,quietImage,quietName,quietToLoud,quiet_prompt,signal,skipWIAN}? dryRun?
+MAX_INJECTION_DEPTH value
+UNIQUE_APIS value
+abortStatusCheck opaque
+activateSendButtons fn
+active_character value
+active_group value
+addCopyToCodeBlocks fn messageElement
+addOneMessage fn mes options{forceId?,insertAfter?,insertBefore?,scroll?,showSwipes?,type?}?
+amount_gen value
+animation_duration value
+animation_easing value
+appendImageToMessage fn mes messageElement scrollBehavior?
+appendMediaToMessage fn mes messageElement scrollBehavior?
+baseChatReplace fn value name1Override? name2Override?
+buildAvatarList fn block entities _{empty?,highlightFavs?,interactable?,templateId?}?
+callPopup fn text type inputValue? options{allowHorizontalScrolling,allowVerticalScrolling,cropAspect,large,okButton,rows,wide,wider}?
+cancelDebouncedChatSave fn
+cancelStatusCheck fn reason?
+cancelTtsPlay fn
+changeMainAPI fn api?
+charDragDropHandler value
+characterGroupOverlay opaque
+characterToEntity fn character id
+characters value
+chat value
+chatDragDropHandler value
+chatElement opaque
+chat_metadata value
+cleanUpMessage fn options{displayIncompleteSentences?,getMessage?,includeUserPromptBias?,isContinue?,isImpersonate?,stoppingStrings?,trimNames?,trimWrongNames?}?
+clearChat async options{clearData?}?
+clearItemizedPrompts async
+closeCurrentChat async
+closeMessageEditor fn what?
+comment_avatar value
+converter opaque
+countOccurrences fn string character
+createLazyFields fn resolvers
+createModelIcon fn apiName modelName?
+createOrEditCharacter async e?
+createRawPrompt fn prompt api instructOverride quietToLoud systemPrompt? prefill?
+create_save value
+deactivateSendButtons fn
+default_avatar value
+default_user_avatar value
+deleteCharacter async characterKey options{deleteChats?}?
+deleteCharacterChatByName async characterId fileName
+deleteItemizedPrompts async chatId
+deleteLastMessage async
+deleteMessage async id swipeDeletionIndex? askConfirmation? deleteToolCalls?
+deleteSwipe async swipeId? messageId?
+depth_prompt_depth_default value
+depth_prompt_role_default value
+displayOnlineStatus fn
+displayPastChats async hightlightNames?
+displayVersion value
+doNavbarIconClick async
+doNewChat async _{deleteCurrentChat?}?
+duplicateCharacter async options{avatar?,silent?}?
+ensureMessageMediaIsArray fn mes
+ensureSwipes fn message
+entitiesFilter opaque
+eventSource opaque
+event_types value
+extension_prompt_roles value
+extension_prompt_types value
+extension_prompts value
+extractJsonFromData fn data options{chatCompletionSource?,mainApi?,returnInvalidJson?}?
+extractMessageBias fn message
+extractMessageFromData fn data activeApi?
+findItemizedPromptSet fn itemizedPrompts incomingMesId
+formatCharacterAvatar fn characterAvatar
+generateQuietPrompt async params{forceChId?,jsonSchema?,quietImage?,quietName?,quietPrompt?,quietToLoud?,removeReasoning?,responseLength?,skipWIAN?,trimToSentence?}?
+generateRaw async params{api?,instructOverride?,jsonSchema?,prefill?,prompt?,quietToLoud?,responseLength?,systemPrompt?,trimNames?}?
+generateRawData async params{api?,instructOverride?,jsonSchema?,prefill?,prompt?,quietToLoud?,responseLength?,systemPrompt?}?
+getBiasStrings fn textareaText type
+getCharacterAvatar fn characterId
+getCharacterCardFields fn options{chid?}?
+getCharacterCardFieldsLazy fn options{chid?}?
+getCharacterSource fn chId?
+getCharacters async
+getChat async
+getChatsFromFiles async data isGroupChat
+getCurrentChatDetails fn
+getCurrentChatId fn
+getEntitiesList fn param0{doFilter?,doSort?}?
+getExtensionPrompt async position? depth? separator? role? wrap?
+getExtensionPromptByName async moduleName
+getExtensionPromptMaxDepth fn
+getExtensionPromptRoleByName fn roleName
+getFirstDisplayedMessageId fn
+getGenerateUrl fn api
+getGeneratingApi fn
+getGeneratingModel fn mes
+getMaxContextSize fn overrideResponseLength?
+getMaxContextTokens fn
+getMaxPromptTokens fn overrideResponseLength?
+getMaxResponseTokens fn
+getMediaDisplay fn mes
+getMediaIndex fn mes
+getNextMessageId fn type
+getOneCharacter async avatarUrl
+getOverswipeBehavior fn messageId message?
+getPastCharacterChats async characterId?
+getRequestHeaders fn _{omitContentType?}?
+getSettings async initLoaderHandle?
+getSlideToggleOptions fn
+getStoppingStrings fn isImpersonate isContinue api?
+getSystemMessageByType fn type text? extra?
+getThumbnailUrl fn type file t?
+getUserAvatar fn avatarImg
+getUserAvatars async doRender? openPageAt?
+groupToEntity fn group
+handleDeleteCharacter async this_chid delete_chats
+hideSwipeButtons fn options{hideCounters?}?
+importCharacterChat async formData options{refresh?}?
+isChatSaving value
+isGenerating fn
+isMessageSwipeable fn messageId message?
+isOdd fn number
+isStreamingEnabled fn
+isSwipingAllowed fn
+is_send_press value
+itemizedParams async itemizedPrompts thisPromptSet incomingMesId
+itemizedPrompts value
+koboldai_setting_names opaque
+koboldai_settings opaque
+lastSwipeInfo value
+loadItemizedPrompts async chatId
+main_api opaque
+max_context value
+menu_type value
+mesForShowdownParse opaque
+messageEdit async editMessageId
+messageFormatting fn mes ch_name isSystem isUser messageId sanitizerOverrides? isReasoning?
+nai_settings value
+name1 value
+name2 value
+neutralCharacterName value
+newAssistantChat async params{temporary?}?
+novelai_setting_names opaque
+novelai_settings opaque
+online_status value
+openCharacterChat async file_name
+parseMesExamples fn examplesStr isInstruct
+pingServer async
+printCharacters async fullRefresh?
+printCharactersDebounced fn
+printMessages async
+processCommands async message
+processDroppedFiles async files data?
+promptItemize async itemizedPrompts requestedMesId
+recentSwipes value
+redisplayChat async options{fade?,startIndex?,targetChat?}?
+refreshSwipeButtons fn updateCounters? fade?
+reloadChatMutex opaque
+reloadCurrentChat async ...args
+reloadCurrentChatUnsafe async
+reloadMarkdownProcessor fn
+removeDepthPrompts fn
+removeMacros fn str
+renameCharacter async name? options{renameChats?,silent?}?
+renameChat async oldFileName newName
+renameGroupOrCharacterChat async param{characterId?,groupId?,loader?,newFileName,oldFileName}
+renderTemplate fn templateId templateData? sanitize? localize? fullPath?
+replaceCurrentChat async
+replaceItemizedPromptText async mesId promptText
+resetChatState fn
+resultCheckStatus fn
+saveCharacterDebounced fn
+saveChat async options{chatData?,chatName?,force?,mesId?,withMetadata?}?
+saveChatConditional async
+saveChatDebounced fn
+saveItemizedPrompts async chatId
+saveMetadata async
+saveReply async params{fromStreaming?,getMessage,imageUrls?,reasoning?,reasoningSignature?,swipes?,title?,type}
+saveSettings async loopCounter?
+saveSettingsDebounced fn loopCounter?
+scrollChatToBottom fn options{waitForFrame?}?
+scrollOnMediaLoad fn
+selectCharacterById async id options{switchMenu?}?
+selectRightMenuWithAnimation fn selectedMenuId
+select_rm_info fn type charId previousCharId?
+select_selected_character fn chid param1{switchMenu?}?
+selected_button value
+sendGenerationRequest async type data options?
+sendMessageAsUser async messageText messageBias insertAt? compact? name? avatar?
+sendStreamingRequest async type data options?
+sendSystemMessage fn type text? extra?
+sendTextareaMessage async
+setActiveCharacter fn entityOrKey?
+setActiveGroup fn entityOrKey?
+setAnimationDuration fn ms?
+setCharacterId fn value
+setCharacterName fn value
+setCharacterSettingsOverrides async
+setEditedMessageId fn value
+setExtensionPrompt fn key value position depth scan? role? filter?
+setExternalAbortController fn controller
+setGenerationParamsFromPreset fn preset
+setGenerationProgress fn progress
+setMenuType fn value
+setOnlineStatus fn value
+setScenarioOverride async
+setSendButtonState fn value
+setUserAvatar async imgfile options{navigateToCurrent?,toastPersonaNameChange?}?
+setUserName fn value _{toastPersonaNameChange?}?
+settings opaque
+settingsReady value
+shouldAutoContinue fn messageChunk isImpersonate
+showMoreMessages async messagesToLoad?
+showSwipeButtons fn
+startStatusLoading fn
+stopGeneration fn
+stopStatusLoading fn
+streamingProcessor value
+substituteParams fn content options?
+substituteParamsExtended fn content additionalMacro? postProcessFn?
+substituteParamsLegacy fn content _name1? _name2? _original? _group? _replaceCharacterCard? additionalMacro? postProcessFn?
+swipe async event direction params{forceDuration?,forceMesId?,forceSwipeId?,message?,repeated?,source?}?
+swipeState opaque
+swipe_left async event? params{message?,repeated?,source?}?
+swipe_right async event? params{message?,repeated?,source?}?
+swipesHidden value
+syncMesToSwipe fn messageId?
+syncSwipeToMes fn messageId? swipeId? targetMessage?
+systemUserName value
+system_avatar value
+system_message_types value
+system_messages value
+tagToEntity fn tag
+talkativeness_default value
+this_chid opaque
+token opaque
+triggerAutoContinue fn messageChunk isImpersonate
+unshallowCharacter async characterId
+updateChatMetadata fn newValues reset
+updateEditArrowClasses fn
+updateMessageBlock fn messageId message options{rerenderMessage?}?
+updateMessageElement fn mes options{adjustMediaScroll?,messageElement?,messageId?}?
+updateRemoteChatName async characterId newName
+updateSwipeCounter async mesId options{message?,messageElement?}?
+updateViewMessageIds fn startIndex?
+user_avatar value
