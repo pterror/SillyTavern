@@ -173,7 +173,7 @@ import {
     cancelDebounce,
 } from './scripts/utils.js';
 // Imported directly from hash-utils.js, not re-exported via utils.js, so tests mocking utils.js aren't affected.
-import { getAtPath, seedKeyHashes, characterDigestFieldsHash, characterDigestCardBodyHash } from './scripts/hash-utils.js';
+import { getAtPath, seedKeyHashes, characterDigestFieldsHash, characterDigestCardBodyHash, normalizeFav } from './scripts/hash-utils.js';
 import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, UNSET_VALUE } from './scripts/extensions.js';
@@ -6635,8 +6635,9 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
         avatarTemplate.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', entity.item.name);
         avatarTemplate.attr('title', `[Character] ${entity.item.name}\nFile: ${entity.item.avatar}`);
         if (highlightFavs) {
-            avatarTemplate.toggleClass('is_fav', entity.item.fav || entity.item.fav == 'true');
-            avatarTemplate.find('.ch_fav').val(entity.item.fav);
+            const isFav = normalizeFav(entity.item.fav);
+            avatarTemplate.toggleClass('is_fav', isFav);
+            avatarTemplate.find('.ch_fav').val(String(isFav));
         }
 
         // If this is a group, we need to hack slightly. We still want to keep most of the css classes and layout, but use a group avatar instead.
@@ -8480,7 +8481,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     setFormBaseline('#character_json_data', String($('#character_json_data').val()));
     $('#character_book_json').val(characterFormValue(character, '#character_book_json'));
 
-    updateFavButtonState(character.fav || character.fav == 'true');
+    updateFavButtonState(normalizeFav(character.fav));
 
     const avatarUrl = character.avatar != 'none' ? getThumbnailUrl('avatar', character.avatar) : default_avatar;
     $('#avatar_load_preview').attr('src', avatarUrl);

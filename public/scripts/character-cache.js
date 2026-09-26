@@ -6,7 +6,7 @@ import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagId
 // (`getChangesSince()`) rather than a per-character mtime. One IndexedDB database per user handle.
 
 // Bumped when the hash function's output changes; records with a different/missing version read as cache misses.
-const HASH_VERSION = 2;
+const HASH_VERSION = 3;
 
 // Top-level fields Spec V2 cards mirror under `data.*` for V1 back-compat; saveCachedCharacters()
 // strips a byte-identical top-level copy and records it in `dedup`, restored by readers on the way out.
@@ -253,7 +253,7 @@ export async function clearCharacterCache() {
 }
 
 /** Separate IndexedDB instance, not a namespace in the character store - groups are always resident, never lazily faulted like characters. */
-const GROUP_HASH_VERSION = 1;
+const GROUP_HASH_VERSION = 2;
 
 /** @type {Map<string, LocalForage>} */
 const groupStoresByHandle = new Map();

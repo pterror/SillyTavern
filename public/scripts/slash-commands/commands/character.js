@@ -16,6 +16,7 @@ import { commonEnumMatchProviders, commonEnumProviders } from '../SlashCommandCo
 import { SlashCommandEnumValue, enumTypes } from '../SlashCommandEnumValue.js';
 import { slashCommandReturnHelper } from '../SlashCommandReturnHelper.js';
 import { findChar, isFalseBoolean, isTrueBoolean, resolveAvatarData, waitUntilCondition } from '../../utils.js';
+import { normalizeFav } from '../../hash-utils.js';
 import { validateArrayArgString } from '../core.js';
 
 /**
@@ -419,7 +420,7 @@ async function getCharacterDataCallback(args) {
         character_version: character.data?.character_version ?? '',
         tags: character.data?.tags ?? character.tags ?? [],
         talkativeness: character.data?.extensions?.talkativeness ?? character.talkativeness ?? 0.5,
-        fav: character.fav ?? character.data?.extensions?.fav ?? false,
+        fav: normalizeFav(character.fav ?? character.data?.extensions?.fav),
         chat: character.chat,
         create_date: character.create_date,
     };

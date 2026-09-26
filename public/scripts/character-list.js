@@ -3,6 +3,7 @@ import { favsToHotswap } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar } from './character-store.js';
 import { groups, getGroups, getGroupBlock } from './group-chats.js';
 import { power_user, sortEntitiesList } from './power-user.js';
+import { normalizeFav } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { tags, filterByTagState, isBogusFolder, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, tagsStore } from './tags.js';
@@ -92,8 +93,9 @@ function renderCharacterBlock(template, item, id) {
     template.find('.ch_name').text(item.name).attr('title', `[Character] ${item.name}`);
     template.find('.ch_avatar_url').text(power_user.show_card_avatar_urls ? item.avatar : '');
     template.find('.ch_fav_icon').css('display', 'none');
-    template.toggleClass('is_fav', item.fav || item.fav == 'true');
-    template.find('.ch_fav').val(item.fav);
+    const isFav = normalizeFav(item.fav);
+    template.toggleClass('is_fav', isFav);
+    template.find('.ch_fav').val(String(isFav));
 
     // .toggle() (not .remove()) so this stays correct when the row is reused in place, not freshly cloned.
     const isAssistant = item.avatar === getPermanentAssistantAvatar();

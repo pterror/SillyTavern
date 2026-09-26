@@ -164,6 +164,16 @@ export function contentHashOf(content) {
 }
 
 /**
+ * fav is true iff the value is `true`, `'true'` or `1`; everything else (`false`, `'false'`, `0`, null, missing,
+ * anything else) is false.
+ * @param {*} value
+ * @returns {boolean}
+ */
+export function normalizeFav(value) {
+    return value === true || value === 'true' || value === 1;
+}
+
+/**
  * Picks the subset of a character object that's stable, comparable content between client and server. Excludes
  * `chat`, `chat_size`/`date_last_chat`, and `date_added`/`create_date` - each is recomputed/synthesized from
  * volatile state on one side with no stable equivalent on the other, so including them would make the digest
@@ -175,7 +185,7 @@ export function contentHashOf(content) {
 export function characterDigestFingerprint(character) {
     return {
         name: character?.name,
-        fav: character?.fav,
+        fav: normalizeFav(character?.fav),
         tags: character?.tags,
         tag_ids: Array.isArray(character?.tag_ids) && character.tag_ids.length > 0 ? [...character.tag_ids].sort() : null,
         data: {
@@ -185,7 +195,7 @@ export function characterDigestFingerprint(character) {
             tags: character?.data?.tags,
             creator_notes: character?.data?.creator_notes,
             extensions: {
-                fav: character?.data?.extensions?.fav,
+                fav: normalizeFav(character?.data?.extensions?.fav),
                 world: character?.data?.extensions?.world,
             },
         },
@@ -200,10 +210,10 @@ export function characterDigestFingerprint(character) {
  */
 export function characterFavFingerprint(character) {
     return {
-        fav: character?.fav,
+        fav: normalizeFav(character?.fav),
         data: {
             extensions: {
-                fav: character?.data?.extensions?.fav,
+                fav: normalizeFav(character?.data?.extensions?.fav),
             },
         },
     };
@@ -250,18 +260,9 @@ export function characterTagIdsFingerprint(character) {
  * @returns {number}
  */
 export function characterDigestFavHash(character) {
-    const fav = character?.fav;
-    const extFav = character?.data?.extensions?.fav;
-
-    let extParts = '';
-    if (extFav !== undefined) extParts += `"fav":${JSON.stringify(extFav)}`;
-
-    const dataParts = `"extensions":{${extParts}}`;
-
-    let topParts = `"data":{${dataParts}}`;
-    if (fav !== undefined) topParts += `,"fav":${JSON.stringify(fav)}`;
-
-    return getStringHash(`{${topParts}}`);
+    const fav = normalizeFav(character?.fav);
+    const extFav = normalizeFav(character?.data?.extensions?.fav);
+    return getStringHash(`{"data":{"extensions":{"fav":${extFav}}},"fav":${fav}}`);
 }
 
 /**
@@ -327,7 +328,7 @@ export function characterDigestTagIdsHash(character) {
  * @returns {object}
  */
 export function groupFavFingerprint(group) {
-    return { fav: group?.fav };
+    return { fav: normalizeFav(group?.fav) };
 }
 
 /** @param {object} group @returns {object} */

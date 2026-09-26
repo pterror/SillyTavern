@@ -52,6 +52,7 @@ import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
 
 import { countOccurrences, debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
+import { normalizeFav } from './hash-utils.js';
 import { compareByRandomSeed, getRandomSortSeed, mintRandomSortSeed, rerollRandomSortSeed } from './random-sort.js';
 import { characterRepository, buildCharacterQuery } from './character-repository.js';
 import { FILTER_TYPES } from './filters.js';
@@ -2697,13 +2698,14 @@ const compareFunc = (first, second) => {
     }
 
     switch (power_user.sort_rule) {
-        case 'boolean':
-            if (a === true || a === 'true') return 1;  // Prioritize 'true' or true
-            if (b === true || b === 'true') return -1; // Prioritize 'true' or true
-            if (a && !b) return -1;        // Move truthy values to the end
-            if (!a && b) return 1;         // Move falsy values to the beginning
-            if (a === b) return 0;         // Sort equal values normally
-            return a < b ? -1 : 1;         // Sort non-boolean values normally
+        case 'boolean': {
+            // 'boolean' is only the fav sort; compare the normalized fav, same ordering as before for true/false.
+            const favA = normalizeFav(a);
+            const favB = normalizeFav(b);
+            if (favA) return 1;
+            if (favB) return -1;
+            return 0;
+        }
         default:
             return typeof a == 'string'
                 ? a.localeCompare(b)
