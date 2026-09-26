@@ -32,9 +32,9 @@ test.describe('World Info Editor Renders Entries', () => {
             // Entries need at least one non-empty `key` - updateWorldEntryKeyOptionsCache() only calls
             // getSelect2OptionId() (the code path that crashed) when there's at least one key to hash.
             const data = await loadWorldInfo(worldName);
-            const entry1 = createWorldInfoEntry(worldName, data);
+            const entry1 = await createWorldInfoEntry(worldName, data);
             entry1.key = ['alpha_keyword'];
-            const entry2 = createWorldInfoEntry(worldName, data);
+            const entry2 = await createWorldInfoEntry(worldName, data);
             entry2.key = ['beta_keyword'];
             await saveWorldInfo(worldName, data, true);
 
