@@ -220,7 +220,7 @@ describe('POST /api/tags/save and /api/tags/get (tag definitions - tags.json is 
 });
 
 describe('POST /api/tags/manifest (freshness signature - tags_hash replaces tags.json\'s old mtime)', () => {
-    test('advances after a definitions save or an assign/unassign, so the client cache can detect the change', async () => {
+    test('advances after a definitions save, but not on assign/unassign', async () => {
         const before = (await (await postJson('/api/tags/manifest', {})).json()).hash;
 
         await new Promise(resolve => setTimeout(resolve, 2));
@@ -232,6 +232,6 @@ describe('POST /api/tags/manifest (freshness signature - tags_hash replaces tags
         await new Promise(resolve => setTimeout(resolve, 2));
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
         const afterAssign = (await (await postJson('/api/tags/manifest', {})).json()).hash;
-        expect(afterAssign).not.toBe(afterSave);
+        expect(afterAssign).toBe(afterSave);
     });
 });

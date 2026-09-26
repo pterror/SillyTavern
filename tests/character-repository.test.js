@@ -1,18 +1,259 @@
 import { describe, test, expect, jest, beforeEach } from '@jest/globals';
+import {
+    characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash,
+    groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash,
+} from '../public/scripts/hash-utils.js';
 
 const getRequestHeadersMock = jest.fn(() => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }));
 const unshallowCharacterMock = jest.fn();
 
-// character-repository.js imports these from '../script.js' (it lives in public/scripts/) - script.js itself
-// is not safely importable in a plain node test env (jQuery/DOM assumptions throughout), so it's mocked at the
-// module boundary, same pattern as tests/search-visit.test.js uses for node-fetch. `charactersStore` is also
-// exported here so the module's own default-constructed `characterRepository` singleton doesn't blow up on
-// import, but every test below constructs its own `CharacterRepository` against a fresh fake store instead of
-// relying on that singleton, to keep tests isolated from each other.
+// HASH_VERSION / GROUP_HASH_VERSION in character-cache.js (not exported).
+const CHARACTER_HASH_VERSION = 2;
+const GROUP_HASH_VERSION = 1;
+
+/** Same hashes saveCachedCharacters() stores, and the server ships as a character row's favHash/tagIdsHash/contentHash. */
+function characterHashes(character) {
+    return {
+        fav: characterDigestFavHash(character) % 4294967296,
+        tagIds: characterDigestTagIdsHash(character),
+        content: characterDigestFieldsHash(character) % 4294967296,
+    };
+}
+
+/** Same hashes saveCachedGroups() stores, and the server ships as a group row's hashes. */
+function groupHashes(group) {
+    return {
+        fav: groupDigestFavHash(group),
+        tagIds: groupDigestTagIdsHash(group),
+        content: groupDigestContentHash(group),
+    };
+}
+
+/**
+ * In-memory stand-in for both character-cache.js IndexedDB stores. Records are structured-cloned in and out,
+ * as IndexedDB does.
+ * @type {Map<string, {character?: object, group?: object, hashes: {fav: number, tagIds: number, content: number, v: number}}>}
+ */
+let cacheRecords = new Map();
+
+async function getCachedEntriesByIdsFake(ids) {
+    const result = new Map();
+    for (const id of ids) {
+        const record = cacheRecords.get(id);
+        if (record?.character && record.hashes.v === CHARACTER_HASH_VERSION) result.set(id, structuredClone(record));
+    }
+    return result;
+}
+
+async function saveCachedCharactersFake(entries) {
+    for (const { avatar, character } of entries) {
+        cacheRecords.set(avatar, structuredClone({ character, hashes: { ...characterHashes(character), v: CHARACTER_HASH_VERSION } }));
+    }
+    return [];
+}
+
+async function getCachedGroupEntriesByIdsFake(ids) {
+    const result = new Map();
+    for (const id of ids) {
+        const record = cacheRecords.get(id);
+        if (record?.group && record.hashes.v === GROUP_HASH_VERSION) result.set(id, structuredClone(record));
+    }
+    return result;
+}
+
+async function saveCachedGroupsFake(entries) {
+    for (const { id, group } of entries) {
+        cacheRecords.set(id, structuredClone({ group, hashes: { ...groupHashes(group), v: GROUP_HASH_VERSION } }));
+    }
+    return [];
+}
+
+// HASH_QUERY_SEARCH_BACKEND_CODES in src/endpoints/characters.js.
+const SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
+
+/**
+ * Mirrors serializeQueryHashesBinary() in src/endpoints/characters.js byte for byte (it isn't exported).
+ * @param {{seq:number, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ * @returns {ArrayBuffer}
+ */
+function encodeQueryHashes({ seq, total, approxTotal, hashRows, searchBackend }) {
+    const hasTotal = typeof total === 'number';
+    const searchBackendCode = SEARCH_BACKEND_CODES[searchBackend] ?? 0;
+
+    let totalSize = 1 + 1 + 8 + 8 + 2;
+    for (const row of hashRows) {
+        const idBytes = Buffer.byteLength(row.id, 'utf8');
+        const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
+        totalSize += 1 + 2 + idBytes + 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
+    }
+
+    const buf = Buffer.alloc(totalSize);
+    let offset = 0;
+
+    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0);
+    buf.writeUInt8(headerFlags, offset); offset += 1;
+    buf.writeUInt8(searchBackendCode, offset); offset += 1;
+    buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
+    buf.writeDoubleLE(hasTotal ? total : 0, offset); offset += 8;
+    buf.writeUInt16LE(hashRows.length, offset); offset += 2;
+
+    for (const row of hashRows) {
+        const hasCreateDate = row.create_date !== null && row.create_date !== undefined;
+        const flags = (row.isGroup ? 0b01 : 0) | (hasCreateDate ? 0b10 : 0);
+        buf.writeUInt8(flags, offset); offset += 1;
+
+        const idBytes = Buffer.byteLength(row.id, 'utf8');
+        buf.writeUInt16LE(idBytes, offset); offset += 2;
+        buf.write(row.id, offset, idBytes, 'utf8'); offset += idBytes;
+
+        buf.writeUInt32LE(row.favHash >>> 0, offset); offset += 4;
+        buf.writeUInt32LE(row.tagIdsHash >>> 0, offset); offset += 4;
+        buf.writeUInt32LE(row.contentHash >>> 0, offset); offset += 4;
+
+        buf.writeDoubleLE(row.date_added ?? 0, offset); offset += 8;
+        buf.writeDoubleLE(hasCreateDate ? row.create_date : 0, offset); offset += 8;
+        buf.writeDoubleLE(row.date_last_chat ?? 0, offset); offset += 8;
+        buf.writeDoubleLE(row.chat_size ?? 0, offset); offset += 8;
+        buf.writeDoubleLE(row.data_size ?? 0, offset); offset += 8;
+
+        const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
+        buf.writeUInt16LE(chatBytes, offset); offset += 2;
+        if (chatBytes > 0) {
+            buf.write(row.chat, offset, chatBytes, 'utf8'); offset += chatBytes;
+        }
+    }
+
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+/**
+ * Per-test fake server: character fixtures are their shallow records, group fixtures their stamped group
+ * objects, `live` the per-id fields a hash row carries outside its hashes, and `queryResponses` the /query
+ * answers in call order.
+ */
+let server;
+let liveCounter;
+
+function addCharacter(character) {
+    liveCounter++;
+    server.characters.set(character.avatar, character);
+    server.live.set(character.avatar, {
+        chat: `${character.avatar} chat ${liveCounter}`,
+        date_added: 1000 + liveCounter,
+        create_date: 2000 + liveCounter,
+        date_last_chat: 3000 + liveCounter,
+        chat_size: 4000 + liveCounter,
+        data_size: 5000 + liveCounter,
+    });
+    return character;
+}
+
+function addGroup(group) {
+    liveCounter++;
+    server.groups.set(group.id, group);
+    // The server never ships a chat for a group hash row.
+    server.live.set(group.id, {
+        chat: null,
+        date_added: 1000 + liveCounter,
+        create_date: 2000 + liveCounter,
+        date_last_chat: 3000 + liveCounter,
+        chat_size: 4000 + liveCounter,
+        data_size: 5000 + liveCounter,
+    });
+    return group;
+}
+
+/** The next /query answer: `ids` in server order, each a character or group fixture id. */
+function queueQuery({ ids, total = undefined, approxTotal = false, seq, searchBackend = undefined }) {
+    server.queryResponses.push({ ids, total, approxTotal, seq, searchBackend });
+}
+
+function hashRowFor(id) {
+    if (server.characters.has(id)) {
+        const hashes = characterHashes(server.characters.get(id));
+        return { id, isGroup: false, favHash: hashes.fav, tagIdsHash: hashes.tagIds, contentHash: hashes.content, ...server.live.get(id) };
+    }
+    const hashes = groupHashes(server.groups.get(id));
+    return { id, isGroup: true, favHash: hashes.fav, tagIdsHash: hashes.tagIds, contentHash: hashes.content, ...server.live.get(id) };
+}
+
+async function fakeFetch(url, init) {
+    const body = JSON.parse(init.body);
+    if (url === '/api/characters/query') {
+        const next = server.queryResponses.shift();
+        if (!next) throw new Error('unexpected /api/characters/query call');
+        const buffer = encodeQueryHashes({
+            seq: next.seq, total: next.total, approxTotal: next.approxTotal, searchBackend: next.searchBackend,
+            hashRows: next.ids.map(hashRowFor),
+        });
+        return {
+            ok: true,
+            headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/octet-stream' : null },
+            arrayBuffer: async () => buffer,
+        };
+    }
+    if (url === '/api/characters/batch') {
+        if (!Array.isArray(body.fields)) throw new Error('/api/characters/batch full-record mode is not faked');
+        const data = body.avatars
+            .filter(avatar => server.characters.has(avatar))
+            .map(avatar => {
+                const shallow = server.characters.get(avatar);
+                const filtered = { avatar };
+                for (const field of body.fields) {
+                    if (field in shallow) filtered[field] = shallow[field];
+                }
+                return filtered;
+            });
+        return { ok: true, json: async () => data };
+    }
+    if (url === '/api/groups/batch') {
+        if (Array.isArray(body.fields)) throw new Error('/api/groups/batch field-filtered mode is not faked');
+        const data = body.ids
+            .filter(id => server.groups.has(id))
+            .map(id => {
+                const group = server.groups.get(id);
+                return { ...group, id, fav: !!group.fav, tag_ids: group.tag_ids ?? [] };
+            });
+        return { ok: true, json: async () => data };
+    }
+    throw new Error(`unexpected fetch to ${url}`);
+}
+
+/** What hash mode returns for a character fixture. */
+function hashModeCharacter(character) {
+    return { ...character, ...server.live.get(character.avatar), shallow: true };
+}
+
+/** What hash mode returns for a group fixture (fixtures carry `fav`/`tag_ids`, as /api/groups/batch stamps them). */
+function hashModeGroup(group) {
+    return { ...group, ...server.live.get(group.id) };
+}
+
+async function cacheCharacters(...characters) {
+    await saveCachedCharactersFake(characters.map(character => ({ avatar: character.avatar, character })));
+}
+
+function fetchedUrls() {
+    return global.fetch.mock.calls.map(([url]) => url);
+}
+
+// None of these load in a plain node env: script.js assumes jQuery/DOM, character-store.js imports script.js,
+// and character-cache.js pulls in lib.js, which needs `window`. `charactersStore` exists only so the module's
+// default `characterRepository` singleton constructs on import; tests use their own store from makeStore().
 jest.unstable_mockModule('../public/script.js', () => ({
-    charactersStore: { get: () => undefined, has: () => false, onChange: () => () => {} },
-    getRequestHeaders: getRequestHeadersMock,
     unshallowCharacter: unshallowCharacterMock,
+}));
+jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
+    getRequestHeaders: getRequestHeadersMock,
+}));
+jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
+    charactersStore: { get: () => undefined, has: () => false, onChange: () => () => {} },
+}));
+jest.unstable_mockModule('../public/scripts/character-cache.js', () => ({
+    getCachedEntriesByIds: getCachedEntriesByIdsFake,
+    saveCachedCharacters: saveCachedCharactersFake,
+    getCachedGroupEntriesByIds: getCachedGroupEntriesByIdsFake,
+    saveCachedGroups: saveCachedGroupsFake,
 }));
 
 /** @type {typeof import('../public/scripts/character-repository.js').CharacterRepository} */
@@ -28,7 +269,10 @@ let CharacterQueryError;
 /** @type {typeof import('../public/scripts/character-repository.js').isInvalidSortFieldError} */
 let isInvalidSortFieldError;
 
-beforeAll(async () => {
+// Re-imported per test: the module keeps a last-response-per-request cache that would otherwise carry `ifSeq`
+// from one test's request into another's.
+beforeEach(async () => {
+    jest.resetModules();
     ({ CharacterRepository, buildCharacterQuery, isServerQueryableSort, normalizeQueryRow, CharacterQueryError, isInvalidSortFieldError } = await import('../public/scripts/character-repository.js'));
 });
 
@@ -48,7 +292,10 @@ function makeStore(initial = []) {
 beforeEach(() => {
     getRequestHeadersMock.mockClear();
     unshallowCharacterMock.mockReset();
-    global.fetch = jest.fn();
+    cacheRecords = new Map();
+    server = { characters: new Map(), groups: new Map(), live: new Map(), queryResponses: [] };
+    liveCounter = 0;
+    global.fetch = jest.fn(fakeFetch);
 });
 
 describe('peek()', () => {
@@ -73,24 +320,19 @@ describe('get()', () => {
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    test('falls back to a /query filter.ids call for a non-resident id, and does not write it into the store', async () => {
+    test('falls back to a hash-mode /query filter.ids call for a non-resident id, and does not write it into the store', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        const bob = { avatar: 'bob', name: 'Bob' };
-        global.fetch.mockResolvedValue({
-            ok: true,
-            json: async () => ({ rows: [bob], total: 1, rev: 7 }),
-        });
+        const bob = addCharacter({ avatar: 'bob', name: 'Bob' });
+        queueQuery({ ids: ['bob'], seq: 7 });
 
         const result = await repo.get('bob');
 
-        expect(result).toEqual(bob);
-        expect(global.fetch).toHaveBeenCalledTimes(1);
-        const [url, init] = global.fetch.mock.calls[0];
-        expect(url).toBe('/api/characters/query');
-        const body = JSON.parse(init.body);
+        expect(result).toEqual(hashModeCharacter(bob));
+        expect(fetchedUrls()).toEqual(['/api/characters/query', '/api/characters/batch']);
+        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
         expect(body.filter).toEqual({ ids: ['bob'] });
-        expect(body.want).toEqual(['rows']);
+        expect(body.want).toEqual(['hashes']);
         // The deliberate non-caching behavior (see get()'s doc comment): a server-fallback fetch must never
         // silently grow the resident store, since call sites elsewhere treat its size as "the boot-loaded
         // library" (design doc §4.1's "N hidden" badge).
@@ -101,7 +343,7 @@ describe('get()', () => {
     test('returns undefined for an id that resolves to no rows (a true miss, not merely non-resident)', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        global.fetch.mockResolvedValue({ ok: true, json: async () => ({ rows: [], total: 0, rev: 1 }) });
+        queueQuery({ ids: [], total: 0, seq: 1 });
 
         await expect(repo.get('ghost')).resolves.toBeUndefined();
     });
@@ -112,12 +354,10 @@ describe('getMany()', () => {
         const alice = { avatar: 'alice', name: 'Alice' };
         const store = makeStore([alice]);
         const repo = new CharacterRepository(store);
-        const bob = { avatar: 'bob', name: 'Bob' };
-        const carol = { avatar: 'carol', name: 'Carol' };
-        global.fetch.mockResolvedValue({
-            ok: true,
-            json: async () => ({ rows: [bob, carol], total: 2, rev: 3 }),
-        });
+        const bob = addCharacter({ avatar: 'bob', name: 'Bob' });
+        const carol = addCharacter({ avatar: 'carol', name: 'Carol' });
+        await cacheCharacters(bob, carol);
+        queueQuery({ ids: ['bob', 'carol'], total: 2, seq: 3 });
 
         const result = await repo.getMany(['alice', 'bob', 'carol']);
 
@@ -125,8 +365,8 @@ describe('getMany()', () => {
         const body = JSON.parse(global.fetch.mock.calls[0][1].body);
         expect(body.filter.ids).toEqual(['bob', 'carol']);
         expect(result.get('alice')).toBe(alice);
-        expect(result.get('bob')).toEqual(bob);
-        expect(result.get('carol')).toEqual(carol);
+        expect(result.get('bob')).toEqual(hashModeCharacter(bob));
+        expect(result.get('carol')).toEqual(hashModeCharacter(carol));
         expect(result.size).toBe(3);
     });
 
@@ -145,7 +385,7 @@ describe('getMany()', () => {
     test('ids that fail to resolve server-side are simply absent from the result map (exists()-style semantics)', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        global.fetch.mockResolvedValue({ ok: true, json: async () => ({ rows: [], total: 0, rev: 1 }) });
+        queueQuery({ ids: [], total: 0, seq: 1 });
 
         const result = await repo.getMany(['ghost']);
 
@@ -181,31 +421,30 @@ describe('full()', () => {
 });
 
 describe('query()', () => {
-    test('posts the filter/sort/page/pageSize/want shape and returns the response verbatim', async () => {
+    test('posts the filter/sort/page/pageSize shape with want rows→hashes, and returns the decoded rows/total/seq', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        const responseBody = { rows: [{ avatar: 'a' }], total: 1, rev: 5, searchBackend: 'tantivy' };
-        global.fetch.mockResolvedValue({ ok: true, json: async () => responseBody });
+        const a = addCharacter({ avatar: 'a', name: 'A' });
+        queueQuery({ ids: ['a'], total: 1, seq: 5, searchBackend: 'tantivy' });
 
         const filter = { search: 'tsundere', fav: true };
         const sort = { field: 'random', seed: 42 };
         const result = await repo.query(filter, sort, 2, 50, ['rows', 'total']);
 
-        expect(result).toEqual(responseBody);
-        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(result).toEqual({ rows: [hashModeCharacter(a)], total: 1, seq: 5, searchBackend: 'tantivy' });
         const [url, init] = global.fetch.mock.calls[0];
         expect(url).toBe('/api/characters/query');
         expect(init.method).toBe('POST');
         expect(init.headers).toEqual(getRequestHeadersMock());
         expect(JSON.parse(init.body)).toEqual({
-            filter, sort, page: 2, pageSize: 50, want: ['rows', 'total'],
+            filter, sort, page: 2, pageSize: 50, want: ['hashes', 'total'],
         });
     });
 
     test('passes an approximate (~-prefixed) total through unchanged, never coercing it to a number', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        global.fetch.mockResolvedValue({ ok: true, json: async () => ({ rows: [], total: '~12345', rev: 9 }) });
+        queueQuery({ ids: [], total: 12345, approxTotal: true, seq: 9 });
 
         const result = await repo.query({}, { field: 'name', order: 'asc' }, 1, 100);
 
@@ -213,17 +452,41 @@ describe('query()', () => {
         expect(typeof result.total).toBe('string');
     });
 
-    test('defaults page/pageSize/want when not supplied', async () => {
+    test('defaults page/pageSize/want (with rows sent as hashes) when not supplied', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        global.fetch.mockResolvedValue({ ok: true, json: async () => ({ rows: [], total: 0, rev: 0 }) });
+        queueQuery({ ids: [], total: 0, seq: 0 });
 
         await repo.query({ fav: true });
 
         const body = JSON.parse(global.fetch.mock.calls[0][1].body);
         expect(body.page).toBe(1);
         expect(body.pageSize).toBe(100);
-        expect(body.want).toEqual(['rows', 'total']);
+        expect(body.want).toEqual(['hashes', 'total']);
+    });
+
+    test('a cache miss costs one /batch fetch for just the missing ids; a cache hit costs none', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        const alice = addCharacter({ avatar: 'alice', name: 'Alice' });
+        const bob = addCharacter({ avatar: 'bob', name: 'Bob' });
+        const carol = addCharacter({ avatar: 'carol', name: 'Carol' });
+        await cacheCharacters(alice);
+        queueQuery({ ids: ['alice', 'bob', 'carol'], total: 3, seq: 1 });
+
+        const first = await repo.query({}, { field: 'name', order: 'asc' });
+
+        expect(first.rows).toEqual([alice, bob, carol].map(hashModeCharacter));
+        expect(fetchedUrls()).toEqual(['/api/characters/query', '/api/characters/batch']);
+        expect(JSON.parse(global.fetch.mock.calls[1][1].body).avatars).toEqual(['bob', 'carol']);
+
+        global.fetch.mockClear();
+        queueQuery({ ids: ['carol', 'bob', 'alice'], total: 3, seq: 1 });
+
+        const second = await repo.query({}, { field: 'name', order: 'desc' });
+
+        expect(second.rows).toEqual([carol, bob, alice].map(hashModeCharacter));
+        expect(fetchedUrls()).toEqual(['/api/characters/query']);
     });
 
     test('rejects with a descriptive error on a non-ok response', async () => {
@@ -277,12 +540,13 @@ describe('queryAll()', () => {
     test('returns everything in one call when the first page is short', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        const rows = [{ avatar: 'a' }, { avatar: 'b' }];
-        global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ rows, rev: 1 }) });
+        const characters = [addCharacter({ avatar: 'a', name: 'A' }), addCharacter({ avatar: 'b', name: 'B' })];
+        await cacheCharacters(...characters);
+        queueQuery({ ids: ['a', 'b'], seq: 1 });
 
         const result = await repo.queryAll({ fav: true }, { field: 'name' });
 
-        expect(result).toEqual(rows);
+        expect(result).toEqual(characters.map(hashModeCharacter));
         expect(global.fetch).toHaveBeenCalledTimes(1);
         const [, init] = global.fetch.mock.calls[0];
         expect(JSON.parse(init.body)).toMatchObject({ filter: { fav: true }, sort: { field: 'name' }, page: 1 });
@@ -294,15 +558,15 @@ describe('queryAll()', () => {
         // Page size is the server's MAX_QUERY_PAGE_SIZE (2000), duplicated in character-repository.js as
         // QUERY_ALL_PAGE_SIZE - a full first page must not be treated as "the whole result", even with an
         // approximate ('~'-prefixed) total that looks like it might already cover everything.
-        const fullPage = Array.from({ length: 2000 }, (_, i) => ({ avatar: `c${i}` }));
-        const shortPage = [{ avatar: 'last' }];
-        global.fetch = jest.fn()
-            .mockResolvedValueOnce({ ok: true, json: async () => ({ rows: fullPage, rev: 1, total: '~2001' }) })
-            .mockResolvedValueOnce({ ok: true, json: async () => ({ rows: shortPage, rev: 1 }) });
+        const fullPage = Array.from({ length: 2000 }, (_, i) => addCharacter({ avatar: `c${i}` }));
+        const shortPage = [addCharacter({ avatar: 'last' })];
+        await cacheCharacters(...fullPage, ...shortPage);
+        queueQuery({ ids: fullPage.map(c => c.avatar), total: 2001, approxTotal: true, seq: 1 });
+        queueQuery({ ids: shortPage.map(c => c.avatar), seq: 1 });
 
         const result = await repo.queryAll();
 
-        expect(result).toHaveLength(2001);
+        expect(result).toEqual([...fullPage, ...shortPage].map(hashModeCharacter));
         expect(global.fetch).toHaveBeenCalledTimes(2);
         const secondCallBody = JSON.parse(global.fetch.mock.calls[1][1].body);
         expect(secondCallBody.page).toBe(2);
@@ -311,7 +575,7 @@ describe('queryAll()', () => {
     test('an empty result set makes exactly one call and returns an empty array', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ rows: [], rev: 1, total: 0 }) });
+        queueQuery({ ids: [], total: 0, seq: 1 });
 
         const result = await repo.queryAll({ ids: [] });
 
@@ -420,38 +684,43 @@ describe('normalizeQueryRow()', () => {
 });
 
 describe('query()/queryAll() with includeGroups', () => {
-    test('query() forwards filter.includeGroups verbatim and returns the tagged-row response untouched', async () => {
+    test('query() forwards filter.includeGroups verbatim in a hash-mode request and returns tagged character/group rows', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        const responseBody = {
-            rows: [
-                { type: 'character', item: { avatar: 'alice' } },
-                { type: 'group', item: { id: 'group-1' } },
-            ],
-            total: 2,
-            rev: 1,
-        };
-        global.fetch.mockResolvedValue({ ok: true, json: async () => responseBody });
+        const alice = addCharacter({ avatar: 'alice', name: 'Alice' });
+        const party = addGroup({ id: 'group-1', name: 'The Party', members: ['alice'], fav: false, tag_ids: [] });
+        queueQuery({ ids: ['alice', 'group-1'], total: 2, seq: 1 });
 
         const result = await repo.query({ includeGroups: true }, { field: 'name', order: 'asc' }, 1, 50);
 
-        expect(result).toEqual(responseBody);
-        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
-        expect(body.filter).toEqual({ includeGroups: true });
+        expect(result).toEqual({
+            rows: [
+                { type: 'character', item: hashModeCharacter(alice) },
+                { type: 'group', item: hashModeGroup(party) },
+            ],
+            total: 2,
+            seq: 1,
+        });
+        expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
+            filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 50, want: ['hashes', 'total'],
+        });
+        const groupBatchCalls = global.fetch.mock.calls.filter(([url]) => url === '/api/groups/batch');
+        expect(groupBatchCalls.map(([, init]) => JSON.parse(init.body))).toEqual([{ ids: ['group-1'] }]);
     });
 
     test('queryAll() loops the tagged-row shape the same way it loops bare Character[] pages', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
-        const rows = [
-            { type: 'character', item: { avatar: 'a' } },
-            { type: 'group', item: { id: 'g1' } },
-        ];
-        global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ rows, rev: 1 }) });
+        const a = addCharacter({ avatar: 'a', name: 'A' });
+        const g1 = addGroup({ id: 'g1', name: 'G1', members: ['a'], fav: false, tag_ids: [] });
+        queueQuery({ ids: ['a', 'g1'], seq: 1 });
 
         const result = await repo.queryAll({ includeGroups: true }, { field: 'name' });
 
-        expect(result).toEqual(rows);
+        expect(result).toEqual([
+            { type: 'character', item: hashModeCharacter(a) },
+            { type: 'group', item: hashModeGroup(g1) },
+        ]);
     });
 });
 

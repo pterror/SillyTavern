@@ -116,7 +116,7 @@ describe('branch creation and loading', () => {
 });
 
 describe('forking', () => {
-    test('forkBranch() at a mid-chain node creates a branch whose path stops there', async () => {
+    test('forkBranch() at a mid-chain node labels it, resolving to the chain already below it', async () => {
         const directories = makeDirectories();
         const header = { chat_metadata: {} };
         const chatData = [
@@ -130,13 +130,12 @@ describe('forking', () => {
         const mainLoaded = await treeDb.loadBranch(directories, 'owner-3', 'main');
         const [m0, m1] = mainLoaded.messages;
 
-        // Fork at m1: the new branch's path is just [m0, m1], with no new rows inserted.
         const forkResult = await treeDb.forkBranch(directories, 'owner-3', m1.node_id, 'fork-a', false, {});
         expect(forkResult).toEqual({ branchId: expect.any(String), branchName: 'fork-a' });
 
         const forkLoaded = await treeDb.loadBranch(directories, 'owner-3', 'fork-a');
-        expect(forkLoaded.messages.map(m => m.mes)).toEqual(['m0', 'm1']);
-        expect(forkLoaded.messages[forkLoaded.messages.length - 1].node_id).toBe(m1.node_id);
+        expect(forkLoaded.messages.map(m => m.mes)).toEqual(['m0', 'm1', 'm2-main']);
+        expect(forkLoaded.messages[forkLoaded.messages.length - 1].node_id).toBe(mainLoaded.messages[2].node_id);
 
         // Continue the fork with a divergent message so m1 now has two children: 'm2-main' (from the
         // original branch) and this new one - a real fork point, not just a leaf pointer.
@@ -925,7 +924,7 @@ describe('slim wire protocol (stub handling)', () => {
         expect(loaded.messages.map(m => m.mes)).toEqual(['first', 'appended']);
     });
 
-    test('truncation: fewer stubs than existing messages moves the branch leaf back', async () => {
+    test('endPathAt() ends the conversation at this node: nothing shows after it', async () => {
         // Initial save: 4 messages
         const chatData = [
             { chat_metadata: {} },
@@ -938,13 +937,7 @@ describe('slim wire protocol (stub handling)', () => {
         const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
         const nodeIds = loaded.messages.map(m => m.node_id);
 
-        // Truncate to 2 messages
-        const truncSave = [
-            { chat_metadata: {} },
-            { node_id: nodeIds[0], _unchanged: true },
-            { node_id: nodeIds[1], _unchanged: true },
-        ];
-        await treeDb.saveChatToTree(directories, 'owner', 'chat', truncSave, false);
+        await treeDb.endPathAt(directories, 'owner', nodeIds[1]);
 
         const reloaded = await treeDb.loadBranch(directories, 'owner', 'chat');
         expect(reloaded.messages).toHaveLength(2);

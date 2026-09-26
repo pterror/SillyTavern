@@ -51,8 +51,13 @@ function makeBook(content = 'Some lore about the character.') {
 /** Writes a real, parseable character PNG - mirrors migrate-character-ids.test.js's writeCardFile(). */
 async function writeCardFile(avatar, overrides = {}) {
     const baseImage = await fs.promises.readFile(path.join(process.cwd(), '..', 'public', 'img', 'ai4.png'));
+    const buffer = cardParser.write(baseImage, JSON.stringify(makeCard(avatar, overrides)));
+    await fs.promises.writeFile(path.join(charactersDir, avatar), buffer);
+}
+
+function makeCard(avatar, overrides = {}) {
     const name = avatar.replace(/\.png$/, '');
-    const card = {
+    return {
         name,
         spec: 'chara_card_v2',
         spec_version: '2.0',
@@ -64,13 +69,10 @@ async function writeCardFile(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    const buffer = cardParser.write(baseImage, JSON.stringify(card));
-    await fs.promises.writeFile(path.join(charactersDir, avatar), buffer);
 }
 
-function readCard(avatarPath) {
-    const buffer = fs.readFileSync(avatarPath);
-    return JSON.parse(cardParser.read(buffer));
+async function readDbCard(avatar) {
+    return JSON.parse(await metadataDb.getCharacterCardJson(directories, avatar));
 }
 
 function writeWorldFile(name, data) {
@@ -197,12 +199,14 @@ describe('unimport-embedded-lore - apply', () => {
         writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
         await indexCharacters();
+        const pngBefore = fs.readFileSync(path.join(charactersDir, 'Alice.png'));
 
         const result = await migration.run(directories, { log: () => {} });
         expect(result.migrated).toBe(0);
         expect(result.safe).toBe(1);
 
-        const card = readCard(path.join(charactersDir, 'Alice.png'));
+        expect(fs.readFileSync(path.join(charactersDir, 'Alice.png')).equals(pngBefore)).toBe(true);
+        const card = await readDbCard('Alice.png');
         expect(card.data.extensions.world).toBe("Alice's Lorebook");
         expect(fs.existsSync(path.join(worldsDir, "Alice's Lorebook.json"))).toBe(true);
     });
@@ -212,12 +216,14 @@ describe('unimport-embedded-lore - apply', () => {
         writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
         await indexCharacters();
+        const pngBefore = fs.readFileSync(path.join(charactersDir, 'Alice.png'));
 
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result.migrated).toBe(1);
         expect(result.failed).toBe(0);
 
-        const card = readCard(path.join(charactersDir, 'Alice.png'));
+        expect(fs.readFileSync(path.join(charactersDir, 'Alice.png')).equals(pngBefore)).toBe(true);
+        const card = await readDbCard('Alice.png');
         expect(card.data.extensions.world).toBeFalsy();
         expect(card.data.character_book.entries[0].content).toBe(book.entries[0].content);
         // World file is left in place, never deleted.
@@ -229,11 +235,13 @@ describe('unimport-embedded-lore - apply', () => {
         writeWorldFile("Bob's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Bob.png', { data: { extensions: { world: "Bob's Lorebook" } } });
         await indexCharacters();
+        const pngBefore = fs.readFileSync(path.join(charactersDir, 'Bob.png'));
 
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result.migrated).toBe(1);
 
-        const card = readCard(path.join(charactersDir, 'Bob.png'));
+        expect(fs.readFileSync(path.join(charactersDir, 'Bob.png')).equals(pngBefore)).toBe(true);
+        const card = await readDbCard('Bob.png');
         expect(card.data.extensions.world).toBeFalsy();
         expect(card.data.character_book.entries[0].content).toBe('the only surviving copy');
     });
@@ -258,12 +266,14 @@ describe('unimport-embedded-lore - apply', () => {
         writeWorldFile("Carol's Lorebook", autoImportedWorldFile(importedBook));
         await writeCardFile('Carol.png', { data: { extensions: { world: "Carol's Lorebook" }, character_book: editedBook } });
         await indexCharacters();
+        const pngBefore = fs.readFileSync(path.join(charactersDir, 'Carol.png'));
 
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result.migrated).toBe(0);
         expect(result.ambiguous).toHaveLength(1);
 
-        const card = readCard(path.join(charactersDir, 'Carol.png'));
+        expect(fs.readFileSync(path.join(charactersDir, 'Carol.png')).equals(pngBefore)).toBe(true);
+        const card = await readDbCard('Carol.png');
         expect(card.data.extensions.world).toBe("Carol's Lorebook");
         expect(card.data.character_book.entries[0].content).toBe('this got edited after import');
     });
@@ -286,12 +296,14 @@ describe('unimport-embedded-lore - runOnceAtBoot', () => {
         writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
         await indexCharacters(); // also sets bootstrap_completed
+        const pngBefore = fs.readFileSync(path.join(charactersDir, 'Alice.png'));
 
         const result = await migration.runOnceAtBoot(directories, { log: () => {} });
         expect(result.status).toBe('ran');
         expect(result.result.migrated).toBe(1);
 
-        const card = readCard(path.join(charactersDir, 'Alice.png'));
+        expect(fs.readFileSync(path.join(charactersDir, 'Alice.png')).equals(pngBefore)).toBe(true);
+        const card = await readDbCard('Alice.png');
         expect(card.data.extensions.world).toBeFalsy();
     });
 
@@ -304,16 +316,18 @@ describe('unimport-embedded-lore - runOnceAtBoot', () => {
         const first = await migration.runOnceAtBoot(directories, { log: () => {} });
         expect(first.status).toBe('ran');
 
-        // Re-link the character to the same World by hand (simulating something that would otherwise look
-        // like a fresh candidate) and re-index it - a real re-run would still find and act on it again if
-        // the marker weren't respected.
-        await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
-        await indexCharacters();
+        // Re-link the character to the same World (simulating something that would otherwise look like a
+        // fresh candidate) - a real re-run would still find and act on it again if the marker weren't
+        // respected.
+        const relinked = makeCard('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', JSON.stringify(relinked), null, null);
+        const pngBefore = fs.readFileSync(path.join(charactersDir, 'Alice.png'));
 
         const second = await migration.runOnceAtBoot(directories, { log: () => {} });
         expect(second.status).toBe('already-complete');
 
-        const card = readCard(path.join(charactersDir, 'Alice.png'));
+        expect(fs.readFileSync(path.join(charactersDir, 'Alice.png')).equals(pngBefore)).toBe(true);
+        const card = await readDbCard('Alice.png');
         expect(card.data.extensions.world).toBe("Alice's Lorebook"); // untouched by the second call
     });
 

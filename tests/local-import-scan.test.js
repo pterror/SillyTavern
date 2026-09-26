@@ -696,6 +696,10 @@ describe('initializeLocalImportScan / disposeLocalImportScan (config wiring)', (
     afterEach(() => {
         localImportScan.disposeLocalImportScan();
         metadataDb.disposeMetadataStores();
+        const dbPath = path.join(userDirectories.root, 'character-metadata.sqlite');
+        for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+            fs.rmSync(file, { force: true });
+        }
         fs.rmSync(sourceDir, { recursive: true, force: true });
         for (const file of fs.readdirSync(userCharactersDir)) {
             fs.rmSync(path.join(userCharactersDir, file), { force: true });

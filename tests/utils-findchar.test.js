@@ -36,12 +36,18 @@ jest.unstable_mockModule('../public/lib.js', () => ({
 
 jest.unstable_mockModule('../public/script.js', () => ({
     animation_duration: 0,
-    characters,
-    charactersStore: charactersStoreMock,
     getCurrentCharacter: getCurrentCharacterMock,
-    getRequestHeaders: jest.fn(),
     processDroppedFiles: jest.fn(),
     user_avatar: '',
+}));
+
+jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
+    getRequestHeaders: jest.fn(),
+}));
+
+jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
+    characters,
+    charactersStore: charactersStoreMock,
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({
@@ -89,6 +95,8 @@ jest.unstable_mockModule('../public/scripts/i18n.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/world-info.js', () => ({
     importWorldInfo: jest.fn(),
+    updateWorldInfoList: jest.fn(),
+    charUpdateAddAuxWorld: jest.fn(),
 }));
 
 jest.unstable_mockModule('../public/scripts/hash-utils.js', () => ({

@@ -141,7 +141,7 @@ describe('POST /api/characters/changes', () => {
 
         const response = await postJson('/api/characters/changes', { sinceSeq: afterFirstTwo.seq });
         const body = await response.json();
-        expect(body.changes).toEqual([{ id: 'Carol.png', op: 'upsert' }]);
+        expect(body.changes).toEqual([{ id: 'Carol.png', op: 'upsert', fields: null }]);
     });
 
     test('a deleted character comes back as an explicit op: \'delete\' entry, not merely absent from a listing', async () => {
@@ -189,6 +189,6 @@ describe('POST /api/characters/changes', () => {
 
         const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         const body = await response.json();
-        expect(body.changes).toEqual([{ id: 'Legacy.png', op: 'upsert' }]);
+        expect(body.changes).toEqual([{ id: 'Legacy.png', op: 'upsert', fields: null }]);
     });
 });
