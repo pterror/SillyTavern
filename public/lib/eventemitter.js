@@ -152,6 +152,17 @@ EventEmitter.prototype.emit = async function (event) {
 
     if (this.autoFireAfterEmit.has(event)) {
         this.autoFireLastArgs.set(event, args);
+
+        // Listeners added during delivery missed both the snapshot above and on()'s auto-fire,
+        // since autoFireLastArgs wasn't set yet. Fire them now, as on() would have.
+        if (typeof this.events[event] === 'object') {
+            const delivered = new Set(listeners ?? []);
+            for (const listener of this.events[event].slice()) {
+                if (!delivered.has(listener)) {
+                    listener.apply(this, args);
+                }
+            }
+        }
     }
 };
 
