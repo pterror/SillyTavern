@@ -17,7 +17,7 @@ export default defineConfig({
         video: 'only-on-failure',
         screenshot: 'only-on-failure',
     },
-    workers: 1,
+    workers: 8,
     fullyParallel: true,
     reporter: [[process.env.CI ? 'dot' : 'list'], ['./e2e-reporter.js']],
 });
