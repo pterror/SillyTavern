@@ -3759,12 +3759,13 @@ export async function getWorldEntry(name, data, entry) {
             }
             if (data.entries[uid]?.characterFilter?.names?.length > 0) {
                 const namesToCheck = data.entries[uid].characterFilter.names;
-                const existence = await checkCharactersExistOrNull(namesToCheck);
+                // Filter names are avatar filenames without the extension; character ids are `<name>.png`.
+                const existence = await checkCharactersExistOrNull(namesToCheck.map(name => `${name}.png`));
                 if (existence === null) {
                     // A failed/partial check must abort, not treat unresolved names as gone.
                     console.warn('World Info: skipping character-filter existence prune this run (check failed).');
                 } else {
-                    data.entries[uid].characterFilter.names = namesToCheck.filter(name => existence[name]);
+                    data.entries[uid].characterFilter.names = namesToCheck.filter(name => existence[`${name}.png`]);
                 }
             }
             setWIOriginalDataValue(data, uid, 'character_filter', data.entries[uid].characterFilter);
