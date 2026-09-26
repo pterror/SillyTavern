@@ -779,6 +779,7 @@ async function fetchCharactersDelta() {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({ sinceSeq }),
+            signal: AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS),
         });
 
         if (!changesResponse.ok) {
@@ -955,6 +956,17 @@ export async function seedCharactersFromCache() {
 const DELTA_FETCH_MAX_RETRIES = 3;
 const DELTA_FETCH_RETRY_DELAYS_MS = [1000, 3000, 8000];
 
+// A sync request (one /changes page, or /api/groups/all) taking this long is broken rather than slow.
+export const SYNC_REQUEST_TIMEOUT_MS = 60000;
+
+export function showCharacterSyncFailedToast() {
+    toastr.error(
+        t`Could not sync the character list. Check your connection and refresh the page to retry.`,
+        t`Character sync failed`,
+        { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true },
+    );
+}
+
 // Never falls back to an unconditional full-library fetch on exhausted retries; reports the failure and leaves `characters` stale but uncorrupted.
 /**
  * @param {object} [options]
@@ -964,7 +976,16 @@ const DELTA_FETCH_RETRY_DELAYS_MS = [1000, 3000, 8000];
  * caller that's about to do its own smaller, targeted DOM update (or its own real requery, like
  * select_rm_info()'s flash-to-new-character navigation) instead.
  */
-export async function getCharacters({ silent = false, silentGroups = false, skipPrint = false } = {}) {
+export async function getCharacters(options = {}) {
+    try {
+        return await syncCharacters(options);
+    } catch (error) {
+        console.error('Character sync failed:', error);
+        showCharacterSyncFailedToast();
+    }
+}
+
+async function syncCharacters({ silent = false, silentGroups = false, skipPrint = false } = {}) {
     let newCharacters;
     let charactersChanged = true;
     let lastError;
@@ -987,12 +1008,8 @@ export async function getCharacters({ silent = false, silentGroups = false, skip
     }
 
     if (lastError) {
-        console.error(`Character delta fetch failed after ${DELTA_FETCH_MAX_RETRIES + 1} attempts, giving up (no full-library fallback - see this function's own doc comment):`, lastError);
-        toastr.error(
-            t`Could not sync the character list. Check your connection and refresh the page to retry.`,
-            t`Character sync failed`,
-            { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true },
-        );
+        console.error(`Character delta fetch failed after ${DELTA_FETCH_MAX_RETRIES + 1} attempts, giving up (no full-library fallback - see getCharacters()' doc comment):`, lastError);
+        showCharacterSyncFailedToast();
         return;
     }
 

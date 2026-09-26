@@ -174,6 +174,8 @@ jest.unstable_mockModule('../public/scripts/character-field-editor.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
     getCharacters: jest.fn(),
+    showCharacterSyncFailedToast: jest.fn(),
+    SYNC_REQUEST_TIMEOUT_MS: 60000,
 }));
 
 jest.unstable_mockModule('../public/scripts/chat-state.js', () => ({

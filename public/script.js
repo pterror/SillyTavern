@@ -13,7 +13,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too).
 export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
@@ -1225,7 +1225,7 @@ async function firstLoadInit() {
     await getUserAvatars(true, user_avatar);
 
     // No longer gates first paint; awaited later, right before APP_READY, to keep its full-residency guarantee.
-    let residencyResolved = false;
+    let residencySettled = false;
     const characterResidencyPromise = (async () => {
         await seedCharactersFromCache();
         await getCharacters();
@@ -1233,7 +1233,7 @@ async function firstLoadInit() {
         // own tag_ids, so their usage-count index can't be built until both are resident.
         await reindexTagAssignments();
     })();
-    characterResidencyPromise.then(() => { residencyResolved = true; });
+    characterResidencyPromise.then(() => { residencySettled = true; }, () => { residencySettled = true; });
 
     setStage('Rendering characters');
     await printCharacters(true);
@@ -1282,12 +1282,17 @@ async function firstLoadInit() {
 
     await initLoaderHandle.hide();
     await fixViewport();
-    if (!residencyResolved) {
-        const residencyWaitStart = performance.now();
-        await characterResidencyPromise;
-        console.log(`[Boot] Character residency resolved ${((performance.now() - residencyWaitStart) / 1000).toFixed(2)}s after splash`);
-    } else {
-        await characterResidencyPromise;
+    try {
+        if (!residencySettled) {
+            const residencyWaitStart = performance.now();
+            await characterResidencyPromise;
+            console.log(`[Boot] Character residency resolved ${((performance.now() - residencyWaitStart) / 1000).toFixed(2)}s after splash`);
+        } else {
+            await characterResidencyPromise;
+        }
+    } catch (error) {
+        console.error('[Boot] Character residency failed:', error);
+        showCharacterSyncFailedToast();
     }
     await eventSource.emit(event_types.APP_READY);
 }

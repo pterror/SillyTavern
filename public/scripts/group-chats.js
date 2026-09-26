@@ -78,7 +78,7 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
 } from '../script.js';
-import { getCharacters } from './character-list.js';
+import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId } from './character-store.js';
@@ -937,9 +937,19 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
  * .reportRemoved()/.reportRenamed() once this returns.
  */
 async function getGroups({ silent = false } = {}) {
+    try {
+        await fetchGroups({ silent });
+    } catch (error) {
+        console.error('Group sync failed:', error);
+        showCharacterSyncFailedToast();
+    }
+}
+
+async function fetchGroups({ silent }) {
     const response = await fetch('/api/groups/all', {
         method: 'POST',
         headers: getRequestHeaders({ omitContentType: true }),
+        signal: AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS),
     });
 
     if (response.ok) {
