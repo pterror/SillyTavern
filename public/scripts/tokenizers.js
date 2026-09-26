@@ -1025,7 +1025,6 @@ function countTokensFromServer(endpoint, str, resolve) {
         async: isAsync,
         type: 'POST',
         url: endpoint,
-        headers: callerHeader(endpoint),
         data: JSON.stringify({ text: str }),
         dataType: 'json',
         contentType: 'application/json',
@@ -1139,20 +1138,6 @@ function apiFailureTokenCount(str) {
 }
 
 /**
- * Debug-only: names the client caller of a llama tokenizer request in the server log.
- * @param {string} endpoint API endpoint.
- * @returns {Record<string, string>} Request headers.
- */
-function callerHeader(endpoint) {
-    if (!endpoint.includes('llama') || endpoint.includes('llama3')) {
-        return {};
-    }
-    const stack = new Error().stack?.split('\n').slice(2, 10).map(line => line.trim()).join(' <- ') ?? '';
-    console.trace('llama tokenizer request', endpoint);
-    return { 'X-ST-Caller': stack.replace(/[^\x20-\x7E]/g, '?') };
-}
-
-/**
  * Calls the underlying tokenizer model to encode a string to tokens.
  * @param {string} endpoint API endpoint.
  * @param {string} str String to tokenize.
@@ -1166,7 +1151,6 @@ function getTextTokensFromServer(endpoint, str, resolve) {
         async: isAsync,
         type: 'POST',
         url: endpoint,
-        headers: callerHeader(endpoint),
         data: JSON.stringify({ text: str }),
         dataType: 'json',
         contentType: 'application/json',
