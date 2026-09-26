@@ -53,7 +53,7 @@ async function getGroupsSignature(directories) {
 async function makeTagNamesResolver(directories, groupIds) {
     const [definitions, assignments] = await Promise.all([
         getTagDefinitions(directories),
-        getEntityTagIdsForMany(directories, groupIds),
+        getEntityTagIdsForMany(directories, groupIds, { type: 'group' }),
     ]);
     const tagsById = new Map((definitions ?? []).map(tag => [tag.id, tag]));
     const tagNamesFor = (groupId) => (assignments?.[groupId] ?? [])

@@ -2089,7 +2089,7 @@ async function hydrateEntityRows(directories, rows) {
     const groupIds = rows.filter(r => r.type === 'group').map(r => r.id);
     const [groupsById, groupTagIdsById] = await Promise.all([
         groupIds.length > 0 ? getGroupsByIds(directories, groupIds) : {},
-        groupIds.length > 0 ? getEntityTagIdsForMany(directories, groupIds) : {},
+        groupIds.length > 0 ? getEntityTagIdsForMany(directories, groupIds, { type: 'group' }) : {},
     ]);
     return rows.map(r => {
         if (r.type === 'character') {
