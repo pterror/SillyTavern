@@ -47,7 +47,7 @@ test.describe('prompt manager quick-edit blur save', () => {
 
         const saveRequests = [];
         page.on('request', (request) => {
-            if (request.method() === 'POST' && request.url().endsWith('/api/settings/save')) {
+            if (request.method() === 'POST' && /\/api\/settings\/save(-partial)?$/.test(request.url())) {
                 saveRequests.push(request.url());
             }
         });
@@ -75,7 +75,7 @@ test.describe('prompt manager quick-edit blur save', () => {
 
         const saveRequests = [];
         page.on('request', (request) => {
-            if (request.method() === 'POST' && request.url().endsWith('/api/settings/save')) {
+            if (request.method() === 'POST' && /\/api\/settings\/save(-partial)?$/.test(request.url())) {
                 saveRequests.push(request.url());
             }
         });
