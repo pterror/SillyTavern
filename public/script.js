@@ -231,7 +231,8 @@ import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
-import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, handleFieldEditKey, initCharacterFieldEditor, setFieldValue } from './scripts/character-field-editor.js';
+import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, handleFieldEditKey, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
+import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
 import { initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
@@ -501,6 +502,36 @@ const FORM_TO_CARD = {
     '#character_book_json': { v2: 'data.character_book', transform: 'json' },
 };
 
+/**
+ * What the editor shows in a FORM_TO_CARD input for a stored card.
+ * @param {object} character
+ * @param {string} formId A FORM_TO_CARD key.
+ * @returns {string}
+ */
+function characterFormValue(character, formId) {
+    const data = character.data;
+    switch (formId) {
+        case '#character_name_pole': return String(character.name ?? '');
+        case '#description_textarea': return String(character.description ?? '');
+        case '#personality_textarea': return String(character.personality ?? '');
+        case '#scenario_pole': return String(character.scenario ?? '');
+        case '#mes_example_textarea': return String(character.mes_example ?? '');
+        case '#creator_notes_textarea': return String(data?.creator_notes || character.creatorcomment || '');
+        case '#system_prompt_textarea': return String(data?.system_prompt || '');
+        case '#post_history_instructions_textarea': return String(data?.post_history_instructions || '');
+        case '#tags_textarea': return Array.isArray(data?.tags) ? data.tags.join(', ') : '';
+        case '#creator_textarea': return String(data?.creator ?? '');
+        case '#character_version_textarea': return String(data?.character_version || '');
+        case '#talkativeness_slider': return String(character.talkativeness || talkativeness_default);
+        case '#depth_prompt_prompt': return String(data?.extensions?.depth_prompt?.prompt ?? '');
+        case '#depth_prompt_depth': return String(data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
+        case '#depth_prompt_role': return String(data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
+        case '#character_world': return String(data?.extensions?.world || '');
+        case '#character_book_json': return data?.character_book ? JSON.stringify(data.character_book) : '';
+        default: throw new Error(`characterFormValue: ${formId} is not a character card field`);
+    }
+}
+
 // Per-field hash of the value as it stood when the editor was populated, keyed by v2 path. Captured
 // once at load time so a later change-feed sync of the character store can't mask a real conflict.
 // Only ever describes the character the editor currently has loaded (`_loadedCharacterFieldHashesAvatar`).
@@ -689,7 +720,7 @@ export function saveCharacterField(avatar, formId, value) {
                 _loadedCharacterFieldHashes.set(mapping.v2, chain.hash);
             }
 
-            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character } });
+            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character } });
             updateCharacterListRow(avatar);
             return true;
         } catch (error) {
@@ -1469,12 +1500,14 @@ export async function deleteCharacterChatByName(avatar, fileName) {
 async function pointToFreshChat() {
     _setCurrentTarget('', null);
     $('#selected_chat_pole').val('');
+    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     await getChat({ isNewChat: true });
     // getChat() can refetch and clobber the clear above back to a still-old server value; reapply it before the save below.
     const openingNodeId = chat[0]?.node_id;
     const pointer = isStoredNodeId(openingNodeId) ? openingNodeId : '';
     _setCurrentTarget(pointer, chat_metadata.integrity ?? null);
     $('#selected_chat_pole').val(pointer);
+    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     await saveActiveChat(getCurrentCharacter().avatar, pointer);
 }
 
@@ -1498,6 +1531,7 @@ export async function replaceCurrentChat() {
             const pointer = chats[0].node_id || chats[0].file_name.replace('.jsonl', '');
             _setCurrentTarget(pointer, null);
             $('#selected_chat_pole').val(getCurrentCharacter().chat);
+            setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
             await saveActiveChat(getCurrentCharacter().avatar, getCurrentCharacter().chat);
             await getChat();
         } else {
@@ -6736,23 +6770,33 @@ export async function getChat({ isNewChat = false } = {}) {
     }
 }
 
+/**
+ * Puts the character's greeting into an empty chat as message 0. The caller prints the chat afterwards.
+ * @returns {Promise<boolean>} Whether a message was pushed.
+ */
+async function pushFirstMessageIntoEmptyChat() {
+    if (chat.length !== 0) {
+        return false;
+    }
+    let pushed = false;
+    const message = await getFirstMessage();
+    if (message.mes) {
+        if (power_user.message_token_count_enabled) {
+            message.extra.token_count = await getTokenCountAsync(message.mes, 0);
+        }
+        chat.push(message);
+        pushed = true;
+    }
+
+    if (message?.node_id) {
+        _snapshotMessages();
+    }
+    return pushed;
+}
+
 async function getChatResult() {
     name2 = getCurrentCharacter().name;
-    let freshChat = false;
-    if (chat.length === 0) {
-        const message = await getFirstMessage();
-        if (message.mes) {
-            if (power_user.message_token_count_enabled) {
-                message.extra.token_count = await getTokenCountAsync(message.mes, 0);
-            }
-            chat.push(message);
-            freshChat = true;
-        }
-
-        if (message?.node_id) {
-            _snapshotMessages();
-        }
-    }
+    const freshChat = await pushFirstMessageIntoEmptyChat();
     await loadItemizedPrompts(getCurrentChatId());
     await printMessages();
     select_selected_character(getCurrentCharacter()?.avatar);
@@ -6881,7 +6925,7 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
  * A targeted metadata-only write, instead of rewriting the whole character card - doesn't defeat reflink sharing on its PNG.
  * @param {string} avatar
  * @param {string} chat
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} Whether it was saved.
  */
 export async function saveActiveChat(avatar, chat) {
     try {
@@ -6891,9 +6935,11 @@ export async function saveActiveChat(avatar, chat) {
             body: JSON.stringify({ avatar, chat }),
         });
         if (!response.ok) throw new Error(String(response.status));
+        return true;
     } catch (error) {
         console.error('Failed to save active chat', error);
         toastr.error(t`Failed to save active chat.`);
+        return false;
     }
 }
 
@@ -6909,6 +6955,7 @@ export async function openCharacterChat(file_name) {
         await getChat();
     } finally {
         $('#selected_chat_pole').val(file_name);
+        setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
         await saveActiveChat(getCurrentCharacter().avatar, file_name);
     }
 }
@@ -8396,32 +8443,35 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     $('#add_avatar_button').val('');
 
-    $('#character_name_pole').val(character.name);
-    setFieldValue('description_textarea', character.description);
-    $('#character_world').val(character.data?.extensions?.world || '');
-    setFieldValue('creator_notes_textarea', character.data?.creator_notes || character.creatorcomment);
-    $('#character_version_textarea').val(character.data?.character_version || '');
-    setFieldValue('system_prompt_textarea', character.data?.system_prompt || '');
-    setFieldValue('post_history_instructions_textarea', character.data?.post_history_instructions || '');
-    $('#tags_textarea').val(Array.isArray(character.data?.tags) ? character.data.tags.join(', ') : '');
-    $('#creator_textarea').val(character.data?.creator);
-    $('#character_version_textarea').val(character.data?.character_version || '');
-    $('#personality_textarea').val(character.personality);
+    $('#character_name_pole').val(characterFormValue(character, '#character_name_pole'));
+    setFieldValue('description_textarea', characterFormValue(character, '#description_textarea'));
+    $('#character_world').val(characterFormValue(character, '#character_world'));
+    setFieldValue('creator_notes_textarea', characterFormValue(character, '#creator_notes_textarea'));
+    $('#character_version_textarea').val(characterFormValue(character, '#character_version_textarea'));
+    setFieldValue('system_prompt_textarea', characterFormValue(character, '#system_prompt_textarea'));
+    setFieldValue('post_history_instructions_textarea', characterFormValue(character, '#post_history_instructions_textarea'));
+    $('#tags_textarea').val(characterFormValue(character, '#tags_textarea'));
+    $('#creator_textarea').val(characterFormValue(character, '#creator_textarea'));
+    $('#character_version_textarea').val(characterFormValue(character, '#character_version_textarea'));
+    $('#personality_textarea').val(characterFormValue(character, '#personality_textarea'));
     const greetingModel = cardToGreetingsModel(character);
     setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
-    $('#scenario_pole').val(character.scenario);
-    $('#depth_prompt_prompt').val(character.data?.extensions?.depth_prompt?.prompt ?? '');
-    $('#depth_prompt_depth').val(character.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
-    $('#depth_prompt_role').val(character.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
-    $('#talkativeness_slider').val(character.talkativeness || talkativeness_default);
-    $('#mes_example_textarea').val(character.mes_example);
+    $('#scenario_pole').val(characterFormValue(character, '#scenario_pole'));
+    $('#depth_prompt_prompt').val(characterFormValue(character, '#depth_prompt_prompt'));
+    $('#depth_prompt_depth').val(characterFormValue(character, '#depth_prompt_depth'));
+    $('#depth_prompt_role').val(characterFormValue(character, '#depth_prompt_role'));
+    $('#talkativeness_slider').val(characterFormValue(character, '#talkativeness_slider'));
+    $('#mes_example_textarea').val(characterFormValue(character, '#mes_example_textarea'));
     $('#selected_chat_pole').val(character.chat);
+    setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     $('#create_date_pole').val(timestampToMoment(character.create_date).toISOString());
+    setFormBaseline('#create_date_pole', String($('#create_date_pole').val()));
     $('#avatar_url_pole').val(character.avatar);
     $('#chat_import_avatar_url').val(character.avatar);
     $('#chat_import_character_name').val(character.name);
     $('#character_json_data').val(character.json_data);
-    $('#character_book_json').val(character.data?.character_book ? JSON.stringify(character.data.character_book) : '');
+    setFormBaseline('#character_json_data', String($('#character_json_data').val()));
+    $('#character_book_json').val(characterFormValue(character, '#character_book_json'));
 
     updateFavButtonState(character.fav || character.fav == 'true');
 
@@ -8509,6 +8559,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#mes_example_textarea').val(create_save.mes_example);
     autosizeTextareas(document.getElementById('form_create'));
     $('#character_json_data').val('');
+    setFormBaseline('#character_json_data', String($('#character_json_data').val()));
     $('#character_book_json').val('');
     $('#avatar_div').css('display', 'flex');
     $('#avatar_load_preview').attr('src', default_avatar);
@@ -9391,7 +9442,7 @@ async function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes
     applyGreetingsModelToCharacter(character, { greetings, defaultIndex });
     setGreetingPagerGreetings(greetings, defaultIndex, hashes);
     const greetingEdit = findGreetingEdit(before, cardToGreetingsModel(character).greetings);
-    await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: character, greetingEdit } });
+    await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: character, greetingEdit } });
 }
 
 /**
@@ -9502,7 +9553,7 @@ async function commitGreetingFieldValue(value) {
         const avatar = $('.open_alternate_greetings').data('avatar');
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return false;
-        const result = await postGreetingOp('add', { avatar_url: avatar, position: index, text: value });
+        const result = await postGreetingOp('add', { avatar_url: avatar, position: index, expected_length: greetingPagerState.hashes.length, text: value });
         if (result.ok) {
             await applyGreetingOpSuccess(character, greetingPagerState.greetings.slice(), result.defaultPosition, result.hashes);
             return true;
@@ -9738,7 +9789,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 const avatar = $('.open_alternate_greetings').data('avatar');
                 const character = avatar ? charactersStore.get(avatar) : null;
                 if (!character) return;
-                const result = await postGreetingOp('add', { avatar_url: avatar, position: addedIndex, text: value });
+                const result = await postGreetingOp('add', { avatar_url: avatar, position: addedIndex, expected_length: greetingPagerState.hashes.length, text: value });
                 if (result.ok) {
                     await applyGreetingOpSuccess(character, array.slice(), result.defaultPosition, result.hashes);
                     return;
@@ -9936,7 +9987,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const avatar = $('.open_alternate_greetings').data('avatar');
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
-        const result = await postGreetingOp('default/unset', { avatar_url: avatar });
+        const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_position: greetingPagerState.defaultIndex });
         if (!result.ok) {
             console.error('Unset default greeting failed', { avatar, status: result.status, reason: result.reason });
             toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
@@ -9953,9 +10004,10 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
 
 /**
  * Builds the `/api/characters/create` request body from the confirmed create-mode values in `create_save`.
+ * @param {string} [jsonData] Card JSON the new card starts from; `create_save`'s values are written over it.
  * @returns {Promise<FormData>}
  */
-async function createSaveToFormData() {
+async function createSaveToFormData(jsonData) {
     const formData = new FormData();
     formData.set('ch_name', create_save.name);
     formData.set('description', create_save.description);
@@ -9979,6 +10031,9 @@ async function createSaveToFormData() {
     formData.set('depth_prompt_role', create_save.depth_prompt_role);
     formData.set('fav', String(fav_ch_checked));
     formData.set('extensions', JSON.stringify(create_save.extensions));
+    if (jsonData !== undefined) {
+        formData.set('json_data', jsonData);
+    }
     const avatarFile = create_save.avatar?.[0];
     if (avatarFile) {
         formData.set('avatar', await ensureImageFormatSupported(avatarFile));
@@ -9988,8 +10043,10 @@ async function createSaveToFormData() {
 
 /**
  * Creates a new character from the confirmed create-mode values in `create_save`.
+ * @param {object} [options]
+ * @param {string} [options.jsonData] Card JSON the new card starts from; `create_save`'s values are written over it.
  */
-export async function createCharacterFromCreateSave() {
+export async function createCharacterFromCreateSave({ jsonData } = {}) {
     if (blockWhileFieldEditing()) {
         return;
     }
@@ -10022,7 +10079,7 @@ export async function createCharacterFromCreateSave() {
         const fetchResult = await fetch(url, {
             method: 'POST',
             headers: headers,
-            body: await createSaveToFormData(),
+            body: await createSaveToFormData(jsonData),
             cache: 'no-cache',
         });
 
@@ -10049,7 +10106,7 @@ export async function createCharacterFromCreateSave() {
             { id: '#depth_prompt_depth', callback: value => create_save.depth_prompt_depth = value, defaultValue: depth_prompt_depth_default },
             { id: '#depth_prompt_role', callback: value => create_save.depth_prompt_role = value, defaultValue: depth_prompt_role_default },
             { id: '#mes_example_textarea', callback: value => create_save.mes_example = value },
-            { id: '#character_json_data', callback: () => { } },
+            { id: '#character_json_data', callback: () => setFormBaseline('#character_json_data', String($('#character_json_data').val())) },
             { id: '#character_world', callback: value => create_save.world = value },
             { id: '#_character_extensions_fake', callback: value => create_save.extensions = {} },
         ];
@@ -10098,6 +10155,417 @@ export async function createCharacterFromCreateSave() {
     }
 }
 
+// Upstream's whole-form save, kept for third-party extensions: they write a `#form_create` input, then call
+// createOrEditCharacter() or saveCharacterDebounced(). First-party code saves the one field it changed instead
+// (.eslintrc.cjs forbids importing these two). Edit mode writes only what differs, each through the fork's own
+// conflict-checked path.
+
+/** Create-mode inputs and the `create_save` key each one's input handler keeps in sync. */
+const CREATE_SAVE_INPUTS = {
+    '#character_name_pole': 'name',
+    '#description_textarea': 'description',
+    '#character_world': 'world',
+    '#creator_notes_textarea': 'creator_notes',
+    '#post_history_instructions_textarea': 'post_history_instructions',
+    '#system_prompt_textarea': 'system_prompt',
+    '#tags_textarea': 'tags',
+    '#creator_textarea': 'creator',
+    '#character_version_textarea': 'character_version',
+    '#personality_textarea': 'personality',
+    '#talkativeness_slider': 'talkativeness',
+    '#scenario_pole': 'scenario',
+    '#depth_prompt_prompt': 'depth_prompt_prompt',
+    '#depth_prompt_depth': 'depth_prompt_depth',
+    '#depth_prompt_role': 'depth_prompt_role',
+    '#mes_example_textarea': 'mes_example',
+};
+const NUMERIC_CREATE_SAVE_KEYS = new Set(['talkativeness', 'depth_prompt_depth']);
+
+/** Card paths only the /greetings/* operations may change. */
+const GREETING_CARD_PATHS = [['first_mes'], ['data', 'first_mes'], ['alternate_greetings'], ['data', 'alternate_greetings'], ['data', 'extensions', GREETING_DEFAULT_POSITION_KEY]];
+/** merge-attributes reads these as request fields, not card paths. */
+const MERGE_REQUEST_PATHS = [['avatar'], ['_loadedFieldHashes']];
+
+let createOrEditCharacterTail = Promise.resolve();
+
+/**
+ * Upstream's save of the whole character form. Create mode creates the character; edit mode saves each
+ * form value that differs from what is stored, then redraws the first message the way upstream regenerated it.
+ * @param {Event} [e] A `newChat` CustomEvent skips the first-message redraw.
+ * @returns {Promise<void>} Resolves undefined, never rejects; failures are toasted.
+ */
+export function createOrEditCharacter(e) {
+    const run = createOrEditCharacterTail.then(() => runCreateOrEditCharacter(e));
+    createOrEditCharacterTail = run;
+    return run;
+}
+
+/** Upstream's debounced {@link createOrEditCharacter}. */
+export const saveCharacterDebounced = debounce(() => { void createOrEditCharacter(); }, DEFAULT_SAVE_EDIT_TIMEOUT);
+
+/** @param {Event} [e] */
+async function runCreateOrEditCharacter(e) {
+    try {
+        if ($('#form_create').attr('actiontype') === 'createcharacter') {
+            await createFromForm();
+        } else {
+            await saveEditedCharacterFromForm(e instanceof CustomEvent && e.type === 'newChat');
+        }
+    } catch (error) {
+        console.error('createOrEditCharacter failed', error);
+        toastr.error(t`Something went wrong while saving the character.`);
+    }
+}
+
+async function createFromForm() {
+    for (const [formId, key] of Object.entries(CREATE_SAVE_INPUTS)) {
+        if (isFieldInEdit(formId.slice(1))) continue;
+        const value = String($(formId).val() ?? '');
+        if (value !== String(create_save[key] ?? '')) {
+            create_save[key] = NUMERIC_CREATE_SAVE_KEYS.has(key) ? Number(value) : value;
+        }
+    }
+    const greeting = String($('#greeting_field').val() ?? '');
+    if (!isFieldInEdit('greeting_field') && greeting !== (greetingPagerState.greetings[greetingPagerState.index] ?? '')) {
+        await commitGreetingFieldValue(greeting);
+    }
+    await createCharacterFromCreateSave({ jsonData: createModeJsonData() });
+}
+
+/**
+ * The card JSON a form-driven create starts from: `#character_json_data`, with `#character_book_json` as its
+ * embedded lorebook, kept as-is like an imported card's.
+ * @returns {string|undefined}
+ */
+function createModeJsonData() {
+    let card;
+    const raw = String($('#character_json_data').val() ?? '');
+    if (raw !== '') {
+        card = parseJsonObject(raw);
+        if (!card) {
+            console.warn('createOrEditCharacter: #character_json_data is not a JSON object, creating without it');
+        }
+    }
+    const bookRaw = String($('#character_book_json').val() ?? '');
+    if (bookRaw !== '') {
+        try {
+            const book = JSON.parse(bookRaw);
+            card = card ?? {};
+            lodash.set(card, ['data', 'character_book'], book);
+        } catch (error) {
+            console.warn('createOrEditCharacter: #character_book_json is not JSON, creating without it', error);
+        }
+    }
+    if (!card) {
+        return undefined;
+    }
+    // The greetings come from create_save; a position recorded against the JSON's own greetings would misplace the default.
+    lodash.unset(card, ['data', 'extensions', GREETING_DEFAULT_POSITION_KEY]);
+    return JSON.stringify(card);
+}
+
+/** @param {boolean} isNewChat */
+async function saveEditedCharacterFromForm(isNewChat) {
+    const avatar = getEditorCharacterAvatar();
+    if (!avatar || !charactersStore.get(avatar)) {
+        return;
+    }
+    await flushCharacterFieldSaves();
+
+    /** @type {string[][]} Card paths a changed form input writes; `#character_json_data` leaves them alone. */
+    const formPaths = [];
+
+    const changedFields = [];
+    for (const [formId, mapping] of Object.entries(FORM_TO_CARD)) {
+        if (isFieldInEdit(formId.slice(1))) continue;
+        const value = String($(formId).val() ?? '');
+        if (formValuesMatch(formId, mapping, value, characterFormValue(charactersStore.get(avatar), formId))) continue;
+        changedFields.push({ formId, value });
+        formPaths.push(lodash.toPath(mapping.v2));
+        if (mapping.v1) formPaths.push(lodash.toPath(mapping.v1));
+    }
+
+    const createDate = String($('#create_date_pole').val() ?? '');
+    const createDateBaseline = getFormBaseline('#create_date_pole');
+    const createDateChanged = createDateBaseline !== undefined && createDate !== createDateBaseline;
+    if (createDateChanged) formPaths.push(['create_date']);
+
+    const chatPointer = String($('#selected_chat_pole').val() ?? '');
+    const chatBaseline = getFormBaseline('#selected_chat_pole');
+    const chatChanged = chatBaseline !== undefined && chatPointer !== chatBaseline;
+    if (chatChanged) formPaths.push(['chat']);
+
+    for (const { formId, value } of changedFields) {
+        await saveCharacterField(avatar, formId, value);
+    }
+
+    await saveJsonDataFromForm(avatar, formPaths);
+
+    if (createDateChanged && await mergeCharacterPaths(avatar, [{ path: ['create_date'], value: createDate }])) {
+        setFormBaseline('#create_date_pole', createDate);
+    }
+
+    if (chatChanged && await saveActiveChat(avatar, chatPointer)) {
+        setFormBaseline('#selected_chat_pole', chatPointer);
+    }
+
+    if (!isNewChat) {
+        await redrawFirstMessage(avatar);
+    }
+}
+
+/**
+ * Whether a form input's value means the same card value as the stored card's.
+ * @param {string} formId
+ * @param {{transform?: string}} mapping
+ * @param {string} value The input's value.
+ * @param {string} storedValue {@link characterFormValue} of the stored card.
+ */
+function formValuesMatch(formId, mapping, value, storedValue) {
+    if (value === storedValue) return true;
+    const converted = characterFieldValueToCardValue(formId, mapping, value);
+    const stored = characterFieldValueToCardValue(formId, mapping, storedValue);
+    return converted.ok && stored.ok && lodash.isEqual(converted.value, stored.value);
+}
+
+/**
+ * Saves what an outside writer changed in `#character_json_data` since the fork last wrote it.
+ * @param {string} avatar
+ * @param {string[][]} formPaths Paths a changed form input already writes.
+ */
+async function saveJsonDataFromForm(avatar, formPaths) {
+    const raw = String($('#character_json_data').val() ?? '');
+    const baselineRaw = getFormBaseline('#character_json_data');
+    if (baselineRaw === undefined || raw === baselineRaw) {
+        return;
+    }
+    const card = parseJsonObject(raw);
+    const baselineCard = parseJsonObject(baselineRaw);
+    if (!card || !baselineCard) {
+        console.warn('createOrEditCharacter: #character_json_data (or what the editor last loaded into it) is not a JSON object, so it was not saved');
+        return;
+    }
+
+    const changes = diffJsonPaths(baselineCard, card).filter(({ path }) =>
+        !pathsOverlap(path, GREETING_CARD_PATHS) && !pathsOverlap(path, MERGE_REQUEST_PATHS) && !pathsOverlap(path, formPaths));
+    if (changes.length > 0) {
+        if (!await mergeCharacterPaths(avatar, changes)) return;
+        refreshEditorFieldsAfterMerge(avatar, changes);
+    }
+    if (!await saveGreetingsFromForm(avatar, baselineCard, card)) return;
+    setFormBaseline('#character_json_data', raw);
+}
+
+/**
+ * @param {string} raw
+ * @returns {Record<string, any>|null}
+ */
+function parseJsonObject(raw) {
+    try {
+        const value = JSON.parse(raw);
+        return lodash.isPlainObject(value) ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Every leaf path whose value differs between two JSON objects. Arrays are compared whole.
+ * @param {Record<string, any>} before
+ * @param {Record<string, any>} after
+ * @param {string[]} [prefix]
+ * @param {{path: string[], value?: any, removed?: boolean}[]} [out]
+ */
+function diffJsonPaths(before, after, prefix = [], out = []) {
+    for (const key of Object.keys(before)) {
+        if (!Object.hasOwn(after, key)) out.push({ path: [...prefix, key], removed: true });
+    }
+    for (const key of Object.keys(after)) {
+        const path = [...prefix, key];
+        if (!Object.hasOwn(before, key)) {
+            out.push({ path, value: after[key] });
+        } else if (lodash.isPlainObject(before[key]) && lodash.isPlainObject(after[key])) {
+            diffJsonPaths(before[key], after[key], path, out);
+        } else if (!lodash.isEqual(before[key], after[key])) {
+            out.push({ path, value: after[key] });
+        }
+    }
+    return out;
+}
+
+/**
+ * Whether `path` is, contains or sits inside any of `paths`.
+ * @param {string[]} path
+ * @param {string[][]} paths
+ */
+function pathsOverlap(path, paths) {
+    return paths.some(other => {
+        const length = Math.min(path.length, other.length);
+        for (let i = 0; i < length; i++) {
+            if (path[i] !== other[i]) return false;
+        }
+        return true;
+    });
+}
+
+/**
+ * Writes card paths through merge-attributes. A removed path is unset.
+ * @param {string} avatar
+ * @param {{path: string[], value?: any, removed?: boolean}[]} changes
+ * @returns {Promise<boolean>} Whether they were saved.
+ */
+async function mergeCharacterPaths(avatar, changes) {
+    const mergeData = { avatar };
+    for (const { path, value, removed } of changes) {
+        lodash.set(mergeData, path, removed ? UNSET_VALUE : value);
+    }
+    try {
+        const response = await fetch('/api/characters/merge-attributes', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(mergeData),
+        });
+        if (!response.ok) {
+            throw new Error(`merge-attributes answered ${response.status}`);
+        }
+        await getOneCharacter(avatar);
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: charactersStore.get(avatar) } });
+        updateCharacterListRow(avatar);
+        return true;
+    } catch (error) {
+        console.error(`Failed to save ${avatar}`, error);
+        toastr.error(t`Something went wrong while saving the character.`);
+        return false;
+    }
+}
+
+/**
+ * A merge changed stored fields the editor shows: show the stored value and take it as the conflict baseline,
+ * except in a field being edited or with a save pending, whose own save then meets the change as a conflict.
+ * @param {string} avatar
+ * @param {{path: string[]}[]} changes
+ */
+function refreshEditorFieldsAfterMerge(avatar, changes) {
+    if (_loadedCharacterFieldHashesAvatar !== avatar) return;
+    const character = charactersStore.get(avatar);
+    const changedPaths = changes.map(change => change.path);
+    for (const [formId, mapping] of Object.entries(FORM_TO_CARD)) {
+        const fieldPaths = [mapping.v2, mapping.v1].filter(Boolean).map(p => lodash.toPath(p));
+        if (!fieldPaths.some(p => pathsOverlap(p, changedPaths))) continue;
+        const id = formId.slice(1);
+        if (isFieldInEdit(id) || pendingCharacterFieldSaves.has(characterFieldSaveKey(avatar, formId)) || characterFieldSaveChains.has(characterFieldSaveKey(avatar, formId))) continue;
+        setFieldValue(id, characterFormValue(character, formId));
+        _loadedCharacterFieldHashes.set(mapping.v2, hashCharacterFieldValue(character, mapping.v2));
+    }
+}
+
+/**
+ * Drops empty greetings other than the default, as stripEmptyAlternateGreetings() does, keeping the
+ * default's place among the rest.
+ * @param {GreetingsModel} model
+ * @returns {GreetingsModel}
+ */
+function withoutEmptyGreetings(model) {
+    const greetings = [];
+    let defaultIndex = null;
+    model.greetings.forEach((greeting, index) => {
+        if (index === model.defaultIndex) {
+            defaultIndex = greetings.length;
+            greetings.push(greeting);
+        } else if (greeting !== '') {
+            greetings.push(greeting);
+        }
+    });
+    return { greetings, defaultIndex };
+}
+
+/**
+ * Makes the stored greetings equal the JSON's, through the greeting operations. Each op's precondition
+ * starts from the JSON the fork last loaded, so a greeting changed elsewhere since then is refused, not overwritten.
+ * @param {string} avatar
+ * @param {object} baselineCard
+ * @param {object} card
+ * @returns {Promise<boolean>} False when an op failed; the ones after it were not sent.
+ */
+async function saveGreetingsFromForm(avatar, baselineCard, card) {
+    const start = cardToGreetingsModel(baselineCard);
+    const target = withoutEmptyGreetings(cardToGreetingsModel(card));
+    if (lodash.isEqual(start, target)) {
+        return true;
+    }
+
+    const greetings = start.greetings.slice();
+    let hashes = greetings.map(hashGreetingText);
+    let defaultIndex = start.defaultIndex;
+
+    /**
+     * @param {string} opName
+     * @param {object} body
+     * @param {() => void} applyLocally
+     */
+    const runOp = async (opName, body, applyLocally) => {
+        const result = await postGreetingOp(opName, { avatar_url: avatar, ...body });
+        if (!result.ok) {
+            console.error('Greeting save failed', { avatar, opName, status: result.status, reason: result.reason });
+            toastr.error(result.status === 409
+                ? t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`
+                : t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+            return false;
+        }
+        applyLocally();
+        hashes = result.hashes;
+        defaultIndex = result.defaultPosition;
+        const character = charactersStore.get(avatar);
+        if (character) {
+            await applyGreetingOpSuccess(character, greetings.slice(), defaultIndex, hashes);
+        }
+        return true;
+    };
+
+    const shared = Math.min(greetings.length, target.greetings.length);
+    for (let position = 0; position < shared; position++) {
+        const text = target.greetings[position];
+        if (greetings[position] === text) continue;
+        if (!await runOp('edit', { position, expected_hash: hashes[position], text }, () => { greetings[position] = text; })) return false;
+    }
+    while (greetings.length < target.greetings.length) {
+        const text = target.greetings[greetings.length];
+        if (!await runOp('add', { position: greetings.length, expected_length: hashes.length, text }, () => { greetings.push(text); })) return false;
+    }
+    while (greetings.length > target.greetings.length) {
+        const position = greetings.length - 1;
+        if (!await runOp('delete', { position, expected_hash: hashes[position] }, () => { greetings.pop(); })) return false;
+    }
+    if (defaultIndex !== target.defaultIndex) {
+        const ok = target.defaultIndex === null
+            ? await runOp('default/unset', { expected_default_position: defaultIndex }, () => { })
+            : await runOp('default/set', { position: target.defaultIndex, expected_hash: hashes[target.defaultIndex] }, () => { });
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/**
+ * Upstream regenerated message 0 on save when the chat had not started. The fork never rewrites stored rows,
+ * so it shows message 0 from the current card and persona and fires the events upstream fired.
+ * @param {string} avatar
+ */
+async function redrawFirstMessage(avatar) {
+    if (selected_group || chat_metadata.tainted || getCurrentCharacter()?.avatar !== avatar) {
+        return;
+    }
+    if (chat.length === 0) {
+        if (!await pushFirstMessageIntoEmptyChat()) return;
+        await printMessages();
+    } else if (chat.length === 1 && !chat[0].is_user && !chat[0].is_system) {
+        updateMessageBlock(0, chat[0]);
+    } else {
+        return;
+    }
+    await eventSource.emit(event_types.MESSAGE_RECEIVED, 0, 'first_message');
+    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, 0, 'first_message');
+}
+
 /**
  * Saves a new avatar image for an existing character - only the image, through `/api/characters/edit-avatar`.
  * @param {string} avatar Avatar filename of the character.
@@ -10133,7 +10601,7 @@ async function saveCharacterAvatar(avatar, file) {
         crop_data = undefined;
 
         await getOneCharacter(avatar);
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: charactersStore.get(avatar) } });
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: charactersStore.get(avatar) } });
         updateCharacterListRow(avatar);
         return true;
     } catch (error) {
@@ -11084,6 +11552,7 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
             // rather than clearing to unknown (see _setCurrentTarget()'s own doc comment).
             _setCurrentTarget(newFileName, chat_metadata.integrity);
             $('#selected_chat_pole').val(charactersStore.get(characterAvatar).chat);
+            setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
             await fetch('/api/characters/merge-attributes', {
                 method: 'POST',
                 headers: getRequestHeaders(),
@@ -11833,8 +12302,23 @@ jQuery(async function () {
         read_avatar_load(inputElement);
     });
 
-    // An existing character's fields each save themselves; submitting the form only ever creates.
-    $('#form_create').on('submit', () => {
+    // Whether the click that submits the form next came from the user rather than from a script.
+    let createButtonClickedByUser = false;
+    $('#create_button').on('click', (e) => {
+        createButtonClickedByUser = e.originalEvent?.isTrusted === true;
+        // A click that doesn't submit (the form failed validation) mustn't vouch for a later scripted submit.
+        setTimeout(() => { createButtonClickedByUser = false; });
+    });
+
+    $('#form_create').on('submit', (e) => {
+        const byUser = createButtonClickedByUser;
+        createButtonClickedByUser = false;
+        if (!byUser) {
+            // An extension's `.val()` write, then a scripted click or submit: upstream's whole-form save.
+            void createOrEditCharacter(e.originalEvent);
+            return;
+        }
+        // The user's own Create builds from confirmed values only; an existing character's fields save themselves.
         if ($('#form_create').attr('actiontype') === 'createcharacter') {
             createCharacterFromCreateSave();
         }

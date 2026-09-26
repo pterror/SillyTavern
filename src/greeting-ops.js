@@ -3,9 +3,10 @@ import { reindexDefaultAfterMove, reindexDefaultAfterRemoval } from './greeting-
 
 /**
  * Six named operations against a character's greeting list, addressing positions in the unified list
- * (see {@link import('./greeting-list.js').GreetingsModel}). Ops that target an existing greeting
- * (edit, delete, move's source, set-default) take an `expectedHash` and refuse with
- * `{ ok: false, reason }` if the greeting there doesn't hash-match. Pure: each returns either
+ * (see {@link import('./greeting-list.js').GreetingsModel}). Every op takes a precondition and refuses
+ * with `{ ok: false, reason }` when it doesn't match: ops that target an existing greeting (edit,
+ * delete, move's source, set-default) take an `expectedHash` of the greeting there, add takes the
+ * `expectedLength` of the list, unset-default the `expectedDefaultPosition`. Pure: each returns either
  * `{ ok: true, model }` (new model, input never mutated) or `{ ok: false, reason }`.
  */
 
@@ -27,16 +28,19 @@ function hashMatches(model, position, expectedHash) {
 
 /**
  * Inserts `text` at `position` (0..length, i.e. `length` appends at the end). Refuses empty text.
- * Carries no precondition hash, unlike every other op - it only targets an insertion point, not
- * existing content, so a stale `position` just lands the greeting at the wrong index rather than
- * losing data.
+ * It targets an insertion point, not existing content, so its precondition is the list's length
+ * rather than a hash.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
+ * @param {number} expectedLength
  * @param {string} text
  */
-export function opAdd(model, position, text) {
+export function opAdd(model, position, expectedLength, text) {
     if (typeof text !== 'string' || text === '') {
         return { ok: false, reason: 'refused to add empty greeting text' };
+    }
+    if (model.greetings.length !== expectedLength) {
+        return { ok: false, reason: 'greeting list length changed since it was loaded' };
     }
     if (!Number.isInteger(position) || position < 0 || position > model.greetings.length) {
         return { ok: false, reason: 'position out of range' };
@@ -135,10 +139,13 @@ export function opSetDefault(model, position, expectedHash) {
 }
 
 /**
- * Clears the default entirely. The list keeps its order and membership. Doesn't address a position -
- * there is nothing content-specific being asserted - so it carries no precondition hash.
+ * Clears the default entirely. The list keeps its order and membership.
  * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {number|null} expectedDefaultPosition `null` asserts there is no default
  */
-export function opUnsetDefault(model) {
+export function opUnsetDefault(model, expectedDefaultPosition) {
+    if (model.defaultIndex !== expectedDefaultPosition) {
+        return { ok: false, reason: 'default greeting changed since it was loaded' };
+    }
     return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: null } };
 }

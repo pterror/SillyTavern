@@ -231,7 +231,7 @@ describe('greeting operations read and write the same place', () => {
     test('add -> edit -> delete chains through returned hashes without a 409', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
 
-        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, text: 'second' });
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
         expect(add.status).toBe(200);
         const addBody = await add.json();
         expect(addBody.hashes).toHaveLength(2);
@@ -251,7 +251,7 @@ describe('greeting operations read and write the same place', () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         const before = fileStamp('Alice.png');
 
-        expect((await post('greetings/add', { avatar_url: 'Alice.png', position: 1, text: 'second' })).status).toBe(200);
+        expect((await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' })).status).toBe(200);
 
         expect(fileStamp('Alice.png')).toEqual(before);
         // Stored file carries no character data at all (image-only since creation), so there's nothing there for
@@ -262,7 +262,7 @@ describe('greeting operations read and write the same place', () => {
 
     test('a greeting added through the op shows up in /get and in an export', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
-        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, text: 'second' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
 
         const got = await (await post('get', { avatar_url: 'Alice.png' })).json();
         expect(got.data.alternate_greetings).toEqual(['second']);
@@ -270,6 +270,64 @@ describe('greeting operations read and write the same place', () => {
         const exported = await post('export', { avatar_url: 'Alice.png', format: 'png' });
         const embedded = JSON.parse(cardParser.read(Buffer.from(await exported.arrayBuffer())));
         expect(embedded.data.alternate_greetings).toEqual(['second']);
+    });
+});
+
+describe('add and unset-default are conflict-checked too', () => {
+    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+
+    test('add with the current length appends', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
+        expect(add.status).toBe(200);
+        expect((await add.json()).hashes).toHaveLength(2);
+        expect((await storedCard()).data.alternate_greetings).toEqual(['second']);
+    });
+
+    test('add with a stale length is a 409 and leaves the card unchanged', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
+        const before = await storedCard();
+
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'third' });
+        expect(add.status).toBe(409);
+        expect(await storedCard()).toEqual(before);
+    });
+
+    test('add without expected_length is a 400', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, text: 'second' });
+        expect(add.status).toBe(400);
+        expect((await add.json()).reason).toBe('expected_length is required');
+    });
+
+    test('unset with the current default position clears the default', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+
+        const unset = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_position: 0 });
+        expect(unset.status).toBe(200);
+        expect((await unset.json()).default_position).toBeNull();
+        expect((await storedCard()).first_mes).toBe('');
+    });
+
+    test('unset with a stale default position is a 409 and leaves the card unchanged', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_position: 0 });
+        const before = await storedCard();
+
+        const unset = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_position: 0 });
+        expect(unset.status).toBe(409);
+        expect(await storedCard()).toEqual(before);
+    });
+
+    test('unset without expected_default_position is a 400', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+
+        const unset = await post('greetings/default/unset', { avatar_url: 'Alice.png' });
+        expect(unset.status).toBe(400);
+        expect((await unset.json()).reason).toBe('expected_default_position is required (an integer, or null)');
     });
 });
 
