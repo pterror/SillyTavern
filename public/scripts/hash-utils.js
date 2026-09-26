@@ -144,12 +144,6 @@ export function canonicalStringify(value) {
 export const DEFAULT_DIGEST_BUCKET_COUNT = 256;
 
 /**
- * Branching factor for the recursive tree-descent anti-entropy protocol. leafThreshold = ceil(branching × 1.5),
- * the point where returning per-record hashes becomes cheaper than returning `branching` children hashes.
- */
-export const DEFAULT_TREE_BRANCHING = 64;
-
-/**
  * Deterministic bucket assignment for one id - client and server must agree without asking each other. Keyed
  * on `id` alone (not `id:rev`) so a record always lands in the same bucket regardless of edits.
  * @param {string} id
@@ -158,20 +152,6 @@ export const DEFAULT_TREE_BRANCHING = 64;
  */
 export function bucketOf(id, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
     return getStringHash(String(id)) % bucketCount;
-}
-
-/**
- * Hierarchical extension of `bucketOf()` - tree-node index at a given level, from successive bit ranges of the
- * same hash. Level 0 equals `bucketOf(id, branching)`. Uses division/modulo, not bit shifts, because
- * `getStringHash()` returns 53 bits and `>>>` would truncate to 32.
- * @param {string} id
- * @param {number} level 0-based tree level (0 = same as `bucketOf`)
- * @param {number} [branching] Powers of 2 recommended.
- * @returns {number} Node index at this level (0 to branching-1)
- */
-export function treeNodeAt(id, level, branching = DEFAULT_DIGEST_BUCKET_COUNT) {
-    const hash = getStringHash(String(id));
-    return Math.floor(hash / Math.pow(branching, level)) % branching;
 }
 
 /**
@@ -210,54 +190,6 @@ export function characterDigestFingerprint(character) {
             },
         },
     };
-}
-
-/**
- * Hand-unrolled fast path for `contentHashOf(characterDigestFingerprint(character))` - byte-identical output
- * (verified in tests), used where this runs over an entire character library. `canonicalStringify()`'s
- * recursive key discovery/sort is redundant when the shape is fixed and known statically; skipping it took a
- * 326k-row run from ~1.17s to ~340ms. Must still omit undefined-valued keys exactly like `canonicalStringify()`
- * does, or the two paths would disagree on identical input.
- * @param {object} character A `toShallow()`-shaped object (or the full character object)
- * @returns {number}
- */
-export function characterDigestContentHash(character) {
-    const name = character?.name;
-    const fav = character?.fav;
-    const tags = character?.tags;
-    const data = character?.data;
-    const characterVersion = data?.character_version;
-    const creator = data?.creator;
-    const creatorNotes = data?.creator_notes;
-    const dataName = data?.name;
-    const dataTags = data?.tags;
-    const ext = data?.extensions;
-    const extFav = ext?.fav;
-    const extWorld = ext?.world;
-
-    // Keys below are alphabetically sorted to match canonicalStringify()'s own output exactly.
-    let extParts = '';
-    if (extFav !== undefined) extParts += `"fav":${JSON.stringify(extFav)}`;
-    if (extWorld !== undefined) extParts += (extParts ? ',' : '') + `"world":${JSON.stringify(extWorld)}`;
-
-    let dataParts = '';
-    const appendData = (key, value) => {
-        if (value === undefined) return;
-        dataParts += (dataParts ? ',' : '') + `${JSON.stringify(key)}:${value}`;
-    };
-    if (characterVersion !== undefined) appendData('character_version', JSON.stringify(characterVersion));
-    if (creator !== undefined) appendData('creator', JSON.stringify(creator));
-    if (creatorNotes !== undefined) appendData('creator_notes', JSON.stringify(creatorNotes));
-    appendData('extensions', `{${extParts}}`);
-    if (dataName !== undefined) appendData('name', JSON.stringify(dataName));
-    if (dataTags !== undefined) appendData('tags', JSON.stringify(dataTags));
-
-    let topParts = `"data":{${dataParts}}`;
-    if (fav !== undefined) topParts += `,"fav":${JSON.stringify(fav)}`;
-    if (name !== undefined) topParts += `,"name":${JSON.stringify(name)}`;
-    if (tags !== undefined) topParts += `,"tags":${JSON.stringify(tags)}`;
-
-    return getStringHash(`{${topParts}}`);
 }
 
 /**
@@ -538,77 +470,10 @@ export function combineDigest(digest, id, contentHash) {
 }
 
 /**
- * Folds one bucket digest into another - derives the whole-library digest from the per-bucket table locally, so
- * the wire format never needs to carry a separately-computed whole-library digest too.
- * @param {{ hi: number, lo: number }} a
- * @param {{ hi: number, lo: number }} b
- * @returns {{ hi: number, lo: number }}
- */
-export function foldDigests(a, b) {
-    return { hi: (a.hi ^ b.hi) >>> 0, lo: (a.lo ^ b.lo) >>> 0 };
-}
-
-/**
  * @param {{ hi: number, lo: number }} a
  * @param {{ hi: number, lo: number }} b
  * @returns {boolean}
  */
 export function digestsEqual(a, b) {
     return a.hi === b.hi && a.lo === b.lo;
-}
-
-// --- 128-bit wide digest functions for field-granular sync ---
-// Aggregates use 128 bits so a 32-bit per-field collision can't survive undetected; per-field hashes stay
-// narrow (32 bits) for locating which field drifted.
-
-/**
- * Starting value for a 128-bit bucket digest accumulator.
- * @returns {{ a: number, b: number, c: number, d: number }}
- */
-export function emptyDigest128() {
-    return { a: 0, b: 0, c: 0, d: 0 };
-}
-
-/**
- * Order-independent fold of one record's per-field hashes into a running 128-bit bucket digest, via four
- * differently-seeded cyrb53 hashes so a per-field 32-bit collision is still caught at the aggregate level.
- * @param {{ a: number, b: number, c: number, d: number }} digest
- * @param {string} id
- * @param {number} favHash 32-bit per-field hash
- * @param {number} tagIdsHash 32-bit per-field hash
- * @param {number} contentHash 32-bit per-field hash
- * @returns {{ a: number, b: number, c: number, d: number }}
- */
-export function combineDigest128(digest, id, favHash, tagIdsHash, contentHash) {
-    const key = `${id}:${favHash}:${tagIdsHash}:${contentHash}`;
-    return {
-        a: (digest.a ^ (getStringHash(key, 0) % 4294967296)) >>> 0,
-        b: (digest.b ^ (getStringHash(key, 17) % 4294967296)) >>> 0,
-        c: (digest.c ^ (getStringHash(key, 42) % 4294967296)) >>> 0,
-        d: (digest.d ^ (getStringHash(key, 99) % 4294967296)) >>> 0,
-    };
-}
-
-/**
- * Folds one 128-bit bucket digest into another - 128-bit counterpart of foldDigests().
- * @param {{ a: number, b: number, c: number, d: number }} x
- * @param {{ a: number, b: number, c: number, d: number }} y
- * @returns {{ a: number, b: number, c: number, d: number }}
- */
-export function foldDigests128(x, y) {
-    return {
-        a: (x.a ^ y.a) >>> 0,
-        b: (x.b ^ y.b) >>> 0,
-        c: (x.c ^ y.c) >>> 0,
-        d: (x.d ^ y.d) >>> 0,
-    };
-}
-
-/**
- * @param {{ a: number, b: number, c: number, d: number }} x
- * @param {{ a: number, b: number, c: number, d: number }} y
- * @returns {boolean}
- */
-export function digestsEqual128(x, y) {
-    return x.a === y.a && x.b === y.b && x.c === y.c && x.d === y.d;
 }
