@@ -160,11 +160,6 @@ test.describe('Message text styles', () => {
     });
 
     test('the character editor greeting preview strips the q quote marks', async ({ page }) => {
-        const okButton = page.locator('.popup-button-ok').first();
-        if (await okButton.waitFor({ state: 'visible', timeout: 5000 }).then(() => true, () => false)) {
-            await okButton.click();
-            await okButton.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-        }
         const name = `MessageTextStyles-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const avatar = await page.evaluate(async ({ name, greeting }) => {
             // @ts-ignore

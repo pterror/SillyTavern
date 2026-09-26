@@ -17,27 +17,6 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
 }
 
 /**
- * A brand new data root shows a one-time "Welcome to SillyTavern" / persona-setup popup that
- * covers the whole page. Dismiss it (if present) so the panel underneath is actually
- * interactable.
- * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-    // Dismissing the onboarding popup sets the persona name, which itself fires a legitimate
-    // debounced settings save - let that settle before a test starts listening for saves, so it
-    // isn't mistaken for one triggered by the flow under test.
-    await page.waitForTimeout(1500);
-}
-
-/**
  * Creates a fresh, throwaway character and selects it, leaving the definitions panel open on
  * it - the state a user is in right before they click into a field or re-click the character
  * row. Returns its name for later re-selection and cleanup.
@@ -62,7 +41,6 @@ async function createAndSelectTestCharacter(page) {
 
 test.describe('character editor reopen settings save', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('focusing then blurring a definitions field with no edit does not trigger a settings save', async ({ page }) => {
         const name = await createAndSelectTestCharacter(page);

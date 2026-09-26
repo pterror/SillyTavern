@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect } from './fixtures.js';
 
+test.use({ freshAccount: true });
+
 test('the first-run dialog result is saved, so the dialog does not come back', async ({ page, stServer }) => {
     const firstRunFile = path.join(stServer.dataRoot, 'default-user', 'settings', 'firstRun.json');
     const onboardingPopup = page.locator('dialog[open] .onboarding');

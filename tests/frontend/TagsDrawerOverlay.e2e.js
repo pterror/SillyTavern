@@ -7,20 +7,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
 }
 
 /**
- * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-}
-
-/**
  * Creates and opens a throwaway character with enough tags that the collapsed preview row has
  * real height.
  * @param {import('@playwright/test').Page} page
@@ -100,7 +86,6 @@ async function panelSettled(page) {
 
 test.describe('tags drawer overlay', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('expanded panel starts at the collapsed row, reflows nothing, and hides what it covers', async ({ page }) => {
         await openCharacterWithTags(page);

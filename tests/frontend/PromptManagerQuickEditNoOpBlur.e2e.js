@@ -17,27 +17,6 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
 }
 
 /**
- * A brand new data root shows a one-time "Welcome to SillyTavern" / persona-setup popup that
- * covers the whole page. Dismiss it (if present) so the panel underneath is actually
- * interactable.
- * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-    // Dismissing the onboarding popup sets the persona name, which itself fires a legitimate
-    // debounced settings save - let that settle before a test starts listening for saves, so it
-    // isn't mistaken for one triggered by the quick-edit textarea under test.
-    await page.waitForTimeout(1500);
-}
-
-/**
  * The prompt manager's quick-edit textareas only render (and only wire their blur handler's
  * saveServiceSettings up to a real save) under the Chat Completion API, and live inside a
  * collapsed "Quick Prompts Edit" drawer in the AI Response Configuration panel. Get there.
@@ -62,7 +41,6 @@ async function openQuickEditMainTextarea(page) {
 
 test.describe('prompt manager quick-edit blur save', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('blurring a quick-edit textarea without changing its value does not trigger a settings save', async ({ page }) => {
         const textarea = await openQuickEditMainTextarea(page);

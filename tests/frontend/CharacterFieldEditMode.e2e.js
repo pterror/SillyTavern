@@ -42,20 +42,6 @@ async function awaitAppReady(page) {
 
 /**
  * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-}
-
-/**
- * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {Record<string, string>} values Create-request fields other than the name.
  * @returns {Promise<string>} The new character's avatar filename.
@@ -339,7 +325,6 @@ test('the app loads without page errors', async ({ page }) => {
 
 test.describe('character field edit mode', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
     test.beforeEach(async ({ page }) => awaitAppReady(page));
 
     for (const field of FIELDS) {

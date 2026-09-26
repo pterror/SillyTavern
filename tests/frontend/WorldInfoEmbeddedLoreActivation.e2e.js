@@ -13,24 +13,8 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
     });
 }
 
-/**
- * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(1500);
-}
-
 test.describe('embedded lorebook activates with no linked World', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('getSortedEntries() surfaces an embedded character_book entry when the character has no linked World file', async ({ page }) => {
         const name = `EmbeddedLoreActivationTest-${Date.now()}`;

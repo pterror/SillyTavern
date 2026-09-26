@@ -1,14 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// A new data root shows a welcome popup partway through startup; startup finishes once it is answered.
 async function awaitAppReady(page) {
-    const okButton = page.locator('.popup-button-ok');
-    const shown = await okButton.first().waitFor({ state: 'visible', timeout: 5000 }).then(() => true, () => false);
-    if (shown) {
-        await okButton.first().click();
-    }
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
     await page.evaluate(() => new Promise(resolve => {
         const { eventSource, eventTypes } = window['SillyTavern'].getContext();
         eventSource.once(eventTypes.APP_READY, resolve);

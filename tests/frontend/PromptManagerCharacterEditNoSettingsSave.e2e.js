@@ -17,27 +17,6 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
 }
 
 /**
- * A brand new data root shows a one-time "Welcome to SillyTavern" / persona-setup popup that
- * covers the whole page. Dismiss it (if present) so the panel underneath is actually
- * interactable.
- * @param {import('@playwright/test').Page} page
- */
-async function dismissWelcomePopupIfPresent(page) {
-    const okButton = page.locator('.popup-button-ok');
-    try {
-        await okButton.first().waitFor({ state: 'visible', timeout: 5000 });
-    } catch {
-        return;
-    }
-    await okButton.first().click();
-    await okButton.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-    // Dismissing the onboarding popup sets the persona name, which itself fires a legitimate
-    // debounced settings save - let that settle before a test starts listening for saves, so it
-    // isn't mistaken for one triggered by the flow under test.
-    await page.waitForTimeout(1500);
-}
-
-/**
  * The bug under test only reaches a live saveServiceSettings() once the Chat Completion API's
  * prompt manager has been set up at least once this session (setupChatCompletionPromptManager()
  * wires promptManager.saveServiceSettings to a real saveSettingsDebounced() call and registers
@@ -84,7 +63,6 @@ async function createTestCharacter(page) {
 
 test.describe('prompt manager character-edit settings save', () => {
     test.beforeEach(testSetup.awaitST);
-    test.beforeEach(async ({ page }) => dismissWelcomePopupIfPresent(page));
 
     test('editing a character definition field does not trigger a settings save', async ({ page }) => {
         await switchToChatCompletionApi(page);

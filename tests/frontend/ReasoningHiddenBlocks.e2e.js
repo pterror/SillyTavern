@@ -163,9 +163,6 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('does not create duplicate reasoning editors when add is clicked repeatedly', async ({ page }) => {
         const result = await page.evaluate(async () => {
-            const reasoningModule = await import('/scripts/reasoning.js');
-            reasoningModule.initReasoning();
-
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
             if (!chat) {
@@ -222,9 +219,6 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('close all collapses stale open hidden-like reasoning details', async ({ page }) => {
         const result = await page.evaluate(async () => {
-            const reasoningModule = await import('/scripts/reasoning.js');
-            reasoningModule.initReasoning();
-
             const chat = document.getElementById('chat');
             if (!chat) {
                 throw new Error('Missing #chat container');
@@ -287,9 +281,6 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('collapses whitespace-only reasoning after confirming edit with show hidden enabled', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const reasoningModule = await import('/scripts/reasoning.js');
-            reasoningModule.initReasoning();
-
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
             if (!chat) {
@@ -337,9 +328,6 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('collapses whitespace-only reasoning after canceling edit with show hidden enabled', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const reasoningModule = await import('/scripts/reasoning.js');
-            reasoningModule.initReasoning();
-
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
             if (!chat) {
@@ -384,11 +372,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('collapses whitespace-only reasoning after confirming message edit with reasoning edit open', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const [reasoningModule, scriptModule] = await Promise.all([
-                import('/scripts/reasoning.js'),
-                import('/script.js'),
-            ]);
-            reasoningModule.initReasoning();
+            const scriptModule = await import('/script.js');
 
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
@@ -442,11 +426,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('collapses whitespace-only reasoning after canceling message edit with reasoning edit open', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const [reasoningModule, scriptModule] = await Promise.all([
-                import('/scripts/reasoning.js'),
-                import('/script.js'),
-            ]);
-            reasoningModule.initReasoning();
+            const scriptModule = await import('/script.js');
 
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
@@ -504,8 +484,6 @@ test.describe('Reasoning hidden blocks', () => {
                 import('/scripts/reasoning.js'),
                 import('/scripts/power-user.js'),
             ]);
-            reasoningModule.initReasoning();
-            reasoningModule.initReasoning();
 
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
@@ -543,7 +521,6 @@ test.describe('Reasoning hidden blocks', () => {
                 import('/scripts/reasoning.js'),
                 import('/scripts/power-user.js'),
             ]);
-            reasoningModule.initReasoning();
 
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
@@ -590,11 +567,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('does not expand whitespace-only reasoning through slash commands', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const [reasoningModule, slashCommandsModule] = await Promise.all([
-                import('/scripts/reasoning.js'),
-                import('/scripts/slash-commands.js'),
-            ]);
-            reasoningModule.initReasoning();
+            const slashCommandsModule = await import('/scripts/slash-commands.js');
 
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
@@ -627,11 +600,7 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('expands visible reasoning through slash commands', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const [reasoningModule, slashCommandsModule] = await Promise.all([
-                import('/scripts/reasoning.js'),
-                import('/scripts/slash-commands.js'),
-            ]);
-            reasoningModule.initReasoning();
+            const slashCommandsModule = await import('/scripts/slash-commands.js');
 
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
@@ -667,9 +636,6 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('keeps reasoning expanded after changing whitespace-only reasoning to visible content', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const reasoningModule = await import('/scripts/reasoning.js');
-            reasoningModule.initReasoning();
-
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
             if (!chat) {
@@ -705,9 +671,6 @@ test.describe('Reasoning hidden blocks', () => {
 
     test('collapses reasoning after changing whitespace-only reasoning to different whitespace', async ({ page }) => {
         const result = await page.evaluate(async (messageHtml) => {
-            const reasoningModule = await import('/scripts/reasoning.js');
-            reasoningModule.initReasoning();
-
             const context = window.SillyTavern.getContext();
             const chat = document.getElementById('chat');
             if (!chat) {
