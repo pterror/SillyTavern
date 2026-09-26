@@ -1,7 +1,7 @@
 import { describe, test, expect, jest, beforeEach } from '@jest/globals';
 import {
     characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash,
-    groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash,
+    groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, shallowCharacterData,
 } from '../public/scripts/hash-utils.js';
 
 const getRequestHeadersMock = jest.fn(() => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }));
@@ -134,7 +134,9 @@ function encodeQueryHashes({ seq, total, approxTotal, hashRows, searchBackend })
 let server;
 let liveCounter;
 
-function addCharacter(character) {
+/** @param {object} fields Stored as the shallow record shallow_json holds for a card with these fields. */
+function addCharacter(fields) {
+    const character = { fav: false, tag_ids: [], ...fields, data: shallowCharacterData(fields, false) };
     liveCounter++;
     server.characters.set(character.avatar, character);
     server.live.set(character.avatar, {

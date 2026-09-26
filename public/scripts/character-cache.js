@@ -1,12 +1,13 @@
 import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
-import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from './hash-utils.js';
+import { characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, characterDigestSource, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeTagIds } from './hash-utils.js';
 
 // Client-side residency cache for character data, keyed off the server's per-item change feed
 // (`getChangesSince()`) rather than a per-character mtime. One IndexedDB database per user handle.
 
-// Bumped when the hash function's output changes; records with a different/missing version read as cache misses.
-const HASH_VERSION = 3;
+// Bumped when the hash function's output or the form records are stored in changes (GROUP_HASH_VERSION likewise);
+// records with a different/missing version read as cache misses.
+const HASH_VERSION = 4;
 
 // Top-level fields Spec V2 cards mirror under `data.*` for V1 back-compat; saveCachedCharacters()
 // strips a byte-identical top-level copy and records it in `dedup`, restored by readers on the way out.
@@ -208,19 +209,29 @@ export async function getCachedEntriesByIds(ids) {
     return result;
 }
 
-/** Callers must pass already fully processed character objects - reads return cache hits as-is, unprocessed. */
-export async function saveCachedCharacters(entries) {
+/**
+ * Callers must pass already fully processed character objects - reads return cache hits as-is, unprocessed.
+ * @param {{avatar: string, character: object}[]} entries
+ * @param {object} [options]
+ * @param {boolean} [options.includeCreatorNotes] Required for any record that is not a shallow_json projection
+ * (a whole /batch record): the server's `performance.shallowCharactersIncludeCreatorNotes`, so the record is
+ * hashed as its shallow_json is. Omitted, each record is hashed as it is.
+ * @returns {Promise<string[]>} avatars whose write failed
+ */
+export async function saveCachedCharacters(entries, { includeCreatorNotes } = {}) {
     const store = getCharacterCacheStore();
     const failed = [];
     // Batched so a large backfill doesn't fire hundreds of thousands of concurrent setItem calls.
     const SAVE_BATCH = 500;
     for (let i = 0; i < entries.length; i += SAVE_BATCH) {
         const batch = entries.slice(i, i + SAVE_BATCH);
-        await Promise.all(batch.map(({ avatar, character }) => {
+        await Promise.all(batch.map(({ avatar, character: given }) => {
+            const character = { ...given, tag_ids: normalizeTagIds(given.tag_ids) };
+            const hashed = includeCreatorNotes === undefined ? character : characterDigestSource(character, includeCreatorNotes);
             const hashes = {
-                fav: characterDigestFavHash(character) % 4294967296,
-                tagIds: characterDigestTagIdsHash(character),
-                content: characterDigestFieldsHash(character) % 4294967296,
+                fav: characterDigestFavHash(hashed) % 4294967296,
+                tagIds: characterDigestTagIdsHash(hashed),
+                content: characterDigestFieldsHash(hashed) % 4294967296,
                 v: HASH_VERSION,
             };
             // Hashed from the original `character` before stripping, so hashes reflect full content
@@ -253,7 +264,7 @@ export async function clearCharacterCache() {
 }
 
 /** Separate IndexedDB instance, not a namespace in the character store - groups are always resident, never lazily faulted like characters. */
-const GROUP_HASH_VERSION = 2;
+const GROUP_HASH_VERSION = 3;
 
 /** @type {Map<string, LocalForage>} */
 const groupStoresByHandle = new Map();
@@ -293,7 +304,8 @@ export async function saveCachedGroups(entries) {
     const SAVE_BATCH = 500;
     for (let i = 0; i < entries.length; i += SAVE_BATCH) {
         const batch = entries.slice(i, i + SAVE_BATCH);
-        await Promise.all(batch.map(({ id, group }) => {
+        await Promise.all(batch.map(({ id, group: given }) => {
+            const group = { ...given, tag_ids: normalizeTagIds(given.tag_ids) };
             const hashes = {
                 fav: groupDigestFavHash(group),
                 tagIds: groupDigestTagIdsHash(group),

@@ -3,7 +3,7 @@ import { favsToHotswap } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar } from './character-store.js';
 import { groups, getGroups, getGroupBlock } from './group-chats.js';
 import { power_user, sortEntitiesList } from './power-user.js';
-import { normalizeFav } from './hash-utils.js';
+import { normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { tags, filterByTagState, isBogusFolder, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, tagsStore } from './tags.js';
@@ -832,6 +832,8 @@ async function fetchCharactersDelta() {
 
         /** @type {Map<string, object>} fresh/updated records to save back to the cache */
         const fresh = new Map();
+        // From each /batch response; the saves below hash these records the way the server hashes shallow_json.
+        let includeCreatorNotes = false;
 
         for (let i = 0; i < wholeRecordIds.length; i += CHARACTER_BATCH_CHUNK_SIZE) {
             const chunk = wholeRecordIds.slice(i, i + CHARACTER_BATCH_CHUNK_SIZE);
@@ -844,6 +846,7 @@ async function fetchCharactersDelta() {
             if (!batchResponse.ok) {
                 throw new Error(`Failed to fetch character batch: ${batchResponse.statusText}`);
             }
+            includeCreatorNotes = batchResponse.headers.get(SHALLOW_CREATOR_NOTES_HEADER) === 'true';
 
             const batchData = await batchResponse.json();
             for (const character of batchData) {
@@ -869,6 +872,7 @@ async function fetchCharactersDelta() {
                     if (!batchResponse.ok) {
                         throw new Error(`Failed to fetch character batch (fields): ${batchResponse.statusText}`);
                     }
+                    includeCreatorNotes = batchResponse.headers.get(SHALLOW_CREATOR_NOTES_HEADER) === 'true';
 
                     const batchData = await batchResponse.json();
                     const batchMerged = [];
@@ -882,13 +886,20 @@ async function fetchCharactersDelta() {
                                     existing[field] = partial[field];
                                 }
                             }
+                            // A 'fav' change also sets shallow_json's data.extensions.fav, but /batch only returns the top-level
+                            // field; without the mirror this record's fav hash would differ from the server's.
+                            if (fields.includes('fav') && 'fav' in partial) {
+                                existing.data = existing.data ?? {};
+                                existing.data.extensions = existing.data.extensions ?? {};
+                                existing.data.extensions.fav = partial.fav;
+                            }
                             fresh.set(avatar, existing);
                             batchMerged.push({ avatar, character: existing });
                         }
                     }
                     // Saved incrementally per batch to avoid one huge IndexedDB write at the end.
                     if (batchMerged.length > 0) {
-                        await saveCachedCharacters(batchMerged);
+                        await saveCachedCharacters(batchMerged, { includeCreatorNotes });
                     }
                 }
             }
@@ -896,7 +907,7 @@ async function fetchCharactersDelta() {
 
         let writeFailures = [];
         if (fresh.size > 0) {
-            writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })));
+            writeFailures = await saveCachedCharacters(Array.from(fresh, ([avatar, character]) => ({ avatar, character })), { includeCreatorNotes });
         }
         // Failures before the cursor: if interrupted between the two writes, the page replays and refetches them,
         // instead of the cursor moving past ids whose write failed.

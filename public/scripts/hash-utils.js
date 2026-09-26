@@ -174,6 +174,60 @@ export function normalizeFav(value) {
 }
 
 /**
+ * The stored form of an entity's tag_ids, on the server and in the client caches: a sorted copy, and `[]` for
+ * anything that isn't an array (absent included). The tag_ids digests read it the same way, so two records with
+ * equal digests hold equal tag_ids.
+ * @param {*} tagIds
+ * @returns {string[]}
+ */
+export function normalizeTagIds(tagIds) {
+    return Array.isArray(tagIds) ? [...tagIds].sort() : [];
+}
+
+/** `/api/characters/batch` response header carrying `shallowCharacterData()`'s `includeCreatorNotes` ('true'/'false'). */
+export const SHALLOW_CREATOR_NOTES_HEADER = 'X-Shallow-Characters-Include-Creator-Notes';
+
+/**
+ * The `data` object of a shallow character (the server's toShallow(), src/character-shallow.js): each field
+ * falls back to its default only when absent, so a card missing any of them hashes like its shallow_json does.
+ * @param {object} character
+ * @param {boolean} includeCreatorNotes The server's `performance.shallowCharactersIncludeCreatorNotes`.
+ * @returns {object}
+ */
+export function shallowCharacterData(character, includeCreatorNotes) {
+    const data = character?.data;
+    const orDefault = (value, fallback) => (value === undefined ? fallback : value);
+    return {
+        name: orDefault(data?.name, ''),
+        character_version: orDefault(data?.character_version, ''),
+        creator: orDefault(data?.creator, ''),
+        tags: orDefault(data?.tags, []),
+        ...(includeCreatorNotes && { creator_notes: orDefault(data?.creator_notes, '') }),
+        extensions: {
+            fav: orDefault(data?.extensions?.fav, false),
+            world: orDefault(data?.extensions?.world, ''),
+        },
+    };
+}
+
+/**
+ * The fields of a whole character record the three character digests read, as the server's shallow_json holds
+ * them - hash this, not the record, whenever the record isn't itself a shallow_json projection.
+ * @param {object} character
+ * @param {boolean} includeCreatorNotes The server's `performance.shallowCharactersIncludeCreatorNotes`.
+ * @returns {object}
+ */
+export function characterDigestSource(character, includeCreatorNotes) {
+    return {
+        name: character?.name,
+        fav: character?.fav,
+        tags: character?.tags,
+        tag_ids: character?.tag_ids,
+        data: shallowCharacterData(character, includeCreatorNotes),
+    };
+}
+
+/**
  * Picks the subset of a character object that's stable, comparable content between client and server. Excludes
  * `chat`, `chat_size`/`date_last_chat`, and `date_added`/`create_date` - each is recomputed/synthesized from
  * volatile state on one side with no stable equivalent on the other, so including them would make the digest

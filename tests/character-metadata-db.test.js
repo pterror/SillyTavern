@@ -76,6 +76,32 @@ function cardJson(overrides = {}) {
     });
 }
 
+/**
+ * cardJson() in the shape the app stores in card_json (see /create): a spec'd V2 card whose top-level fields
+ * mirror `data.*`, with no fav.
+ * @param {object} overrides As for cardJson()
+ * @returns {string}
+ */
+function storedCardJson(overrides = {}) {
+    const card = JSON.parse(cardJson(overrides));
+    delete card.fav;
+    delete card.data.extensions.fav;
+    const data = { description: '', personality: '', scenario: '', first_mes: '', mes_example: '', ...card.data };
+    return JSON.stringify({
+        ...card,
+        name: data.name,
+        description: data.description,
+        personality: data.personality,
+        scenario: data.scenario,
+        first_mes: data.first_mes,
+        mes_example: data.mes_example,
+        tags: data.tags,
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        data,
+    });
+}
+
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
@@ -111,7 +137,7 @@ afterEach(() => {
 describe('upsertCharacterFromWrite', () => {
     test('creates a row with the given date_added on first insert', async () => {
         const before = Date.now();
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', storedCardJson());
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         expect(row).toBeDefined();
@@ -123,11 +149,11 @@ describe('upsertCharacterFromWrite', () => {
     });
 
     test('never recomputes date_added on a later write to the same avatar', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', storedCardJson());
         const firstRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         await new Promise(resolve => setTimeout(resolve, 5));
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['x'], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', storedCardJson({ data: { name: 'Bob', tags: ['x'], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
         const secondRow = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
 
         expect(secondRow.date_added).toBe(firstRow.date_added);
@@ -1314,8 +1340,8 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         // second call's tagDefinitions entry for the shared tag is the SAME object getTagCache() built (and the
         // first call already returned) - without caching, each call would JSON.parse() its own fresh copy, and
         // object identity would differ even though the VALUES are equal.
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
-        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', storedCardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', storedCardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
 
         const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
         const second = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');

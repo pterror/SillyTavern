@@ -21,7 +21,7 @@ import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
 import { parse, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer, reclaimReflinkPrefix } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
-import { calculateChatSize, calculateDataSize, toShallow } from '../character-shallow.js';
+import { calculateChatSize, calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
@@ -36,7 +36,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds } from '../character-metadata-db.js';
-import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
+import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
 import { copyCharacterFile } from '../local-import-copy.js';
@@ -2681,6 +2681,9 @@ router.post('/batch', async function (request, response) {
                 return response.sendStatus(400);
             }
         }
+
+        // A client caching these records hashes them the way shallow_json is hashed, which depends on this setting.
+        response.set(SHALLOW_CREATOR_NOTES_HEADER, String(shallowCharactersIncludeCreatorNotes));
 
         // Field-filtered mode: shallow_json already carries db-authoritative fav/active_chat/tag_ids, so no
         // extra stamping step is needed here, unlike the full-record path below.
