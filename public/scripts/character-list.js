@@ -979,44 +979,44 @@ export async function getCharacters({ silent = false, silentGroups = false, skip
     }
 
     if (charactersChanged) {
-    // Merge field-by-field rather than a wholesale replace, since newCharacters can be a shallow projection missing heavy fields.
-    const newByAvatar = new Map(newCharacters.map(c => [c.avatar, c]));
-    for (const existing of characters) {
-        const incoming = newByAvatar.get(existing.avatar);
-        if (!incoming) continue;
-        // Don't let an incoming shallow projection downgrade an already-unshallowed entity back to shallow.
-        const wasUnshallowed = existing.shallow === false;
-        lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
-        if (wasUnshallowed && incoming.shallow === true) {
-            existing.shallow = false;
+        // Merge field-by-field rather than a wholesale replace, since newCharacters can be a shallow projection missing heavy fields.
+        const newByAvatar = new Map(newCharacters.map(c => [c.avatar, c]));
+        for (const existing of characters) {
+            const incoming = newByAvatar.get(existing.avatar);
+            if (!incoming) continue;
+            // Don't let an incoming shallow projection downgrade an already-unshallowed entity back to shallow.
+            const wasUnshallowed = existing.shallow === false;
+            lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
+            if (wasUnshallowed && incoming.shallow === true) {
+                existing.shallow = false;
+            }
         }
-    }
-    for (let i = characters.length - 1; i >= 0; i--) {
-        if (!newByAvatar.has(characters[i].avatar)) {
-            characters.splice(i, 1);
+        for (let i = characters.length - 1; i >= 0; i--) {
+            if (!newByAvatar.has(characters[i].avatar)) {
+                characters.splice(i, 1);
+            }
         }
-    }
-    const existingAvatars = new Set(characters.map(c => c.avatar));
-    for (const incoming of newCharacters) {
-        if (!existingAvatars.has(incoming.avatar)) {
-            characters.push(incoming);
+        const existingAvatars = new Set(characters.map(c => c.avatar));
+        for (const incoming of newCharacters) {
+            if (!existingAvatars.has(incoming.avatar)) {
+                characters.push(incoming);
+            }
         }
-    }
 
-    if (silent) {
-        charactersStore.reindex();
-    } else {
-        charactersStore.reset();
-    }
-
-    if (this_avatar) {
-        if (charactersStore.get(this_avatar)) {
-            await selectCharacterByAvatar(this_avatar, { switchMenu: false });
+        if (silent) {
+            charactersStore.reindex();
         } else {
-            await Popup.show.text(t`ERROR: The active character is no longer available.`, t`The page will be refreshed to prevent data loss. Press "OK" to continue.`);
-            return location.reload();
+            charactersStore.reset();
         }
-    }
+
+        if (this_avatar) {
+            if (charactersStore.get(this_avatar)) {
+                await selectCharacterByAvatar(this_avatar, { switchMenu: false });
+            } else {
+                await Popup.show.text(t`ERROR: The active character is no longer available.`, t`The page will be refreshed to prevent data loss. Press "OK" to continue.`);
+                return location.reload();
+            }
+        }
     } // end if (charactersChanged)
 
     await getGroups({ silent: silentGroups });
