@@ -3065,18 +3065,6 @@ export async function getTagDefinitionsByIds(directories, ids) {
     return out;
 }
 
-// Every tag id currently assigned to at least one entity, read off the trigger-maintained `tag_usage` table.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<string[] | null>}
- */
-export async function getAssignedTagIds(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    const rows = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM tag_usage WHERE count > 0')));
-    return rows.map(row => row.tag_id);
-}
-
 /**
  * Every entity-to-tag assignment across both tables. Returned compactly: `avatars`/`tagIds` intern each unique
  * id/tag string to an integer index, and `map[i]` lists the tag-id indices assigned to `avatars[i]`.
@@ -4454,16 +4442,20 @@ export async function* streamDeletedIdsBetween(directories, afterSeq, uptoSeq) {
 }
 
 /**
- * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean, hasMore?: boolean } | null>}
+ * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert'|'delete', fields?: string[]|null }[], truncated: boolean, hasMore: boolean } | null>}
  * `truncated: true` means `sinceSeq` predates the oldest change-log row still kept (the log is never pruned
  * today, so this can currently only trigger for a `sinceSeq` from a different store).
- * With `limit`, reads at most that many log rows past sinceSeq and collapses only those: `seq` is then the last
- * row read (pass it back as sinceSeq for the next page) and `hasMore` says whether rows remain.
+ * Reads at most `limit` log rows past sinceSeq and collapses only those: `seq` is the last row read (pass it
+ * back as sinceSeq for the next page) and `hasMore` says whether rows remain. `limit` is required, so no
+ * caller can reach an unbounded read.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceSeq
- * @param {{ limit?: number }} [options]
+ * @param {{ limit: number }} options
  */
 export async function getChangesSince(directories, sinceSeq, { limit } = {}) {
+    if (!Number.isInteger(limit) || limit <= 0) {
+        throw new TypeError('getChangesSince() requires a positive integer limit');
+    }
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -4473,24 +4465,21 @@ export async function getChangesSince(directories, sinceSeq, { limit } = {}) {
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
     const truncated = minSeq !== undefined && numericSince < minSeq - 1;
-    const paged = Number.isInteger(limit) && limit > 0;
     if (truncated) {
-        return paged ? { seq: maxSeq, changes: [], truncated: true, hasMore: false } : { seq: maxSeq, changes: [], truncated: true };
+        return { seq: maxSeq, changes: [], truncated: true, hasMore: false };
     }
 
     let lastSeq = null;
     let hasMore = false;
     let read = 0;
-    const rawChanges = paged
-        ? /** @type {Generator<ChangeRow>} */ (entry.db.iterate('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [numericSince, limit + 1]))
-        : (/** @type {ChangeRow[]} */ (entry.db.all('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC', [numericSince])));
+    const rawChanges = /** @type {Generator<ChangeRow>} */ (entry.db.iterate('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [numericSince, limit + 1]));
     // Collapse to one entry per id: a delete anywhere in the window forces a full refetch even if the id
     // is later re-created, since the client's cached copy predates the delete.
     /** @type {Map<string, { op: 'upsert' | 'delete', hasDelete: boolean, hasNullFields: boolean, fieldSet: Set<string> }>} */
     const collapsedById = new Map();
     for (const row of rawChanges) {
         // The page's LIMIT is limit + 1: reaching the extra row means more remain, and it isn't part of this page.
-        if (paged && read === limit) {
+        if (read === limit) {
             hasMore = true;
             break;
         }
@@ -4525,8 +4514,5 @@ export async function getChangesSince(directories, sinceSeq, { limit } = {}) {
         return { id, op, fields };
     });
 
-    if (paged) {
-        return { seq: lastSeq ?? maxSeq, changes, truncated: false, hasMore };
-    }
-    return { seq: maxSeq, changes, truncated: false };
+    return { seq: lastSeq ?? maxSeq, changes, truncated: false, hasMore };
 }

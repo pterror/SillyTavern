@@ -893,6 +893,7 @@ describe('POST /api/characters/changes', () => {
         expect(body.changes).toEqual([]);
         expect(body.truncated).toBe(false);
         expect(body.seq).toBe(0);
+        expect(body.hasMore).toBe(false);
     });
 
     test('reports an upsert then a delete as two ops for the same id, since sinceSeq 0', async () => {

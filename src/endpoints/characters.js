@@ -2544,8 +2544,12 @@ router.post('/exists', async function (request, response) {
     }
 });
 
+// Fixed page size for /changes: the server always pages, and the client loops on `hasMore`.
+const CHANGES_PAGE_SIZE = 500;
+
 /**
  * Change feed over the metadata store's change log, replacing `/api/characters/manifest`'s readdir+stat-everything boot scan.
+ * Always paged: at most CHANGES_PAGE_SIZE log rows per response, with `hasMore` saying whether rows remain past `seq`.
  * @param  {import("express").Request} request The HTTP request object.
  * @param  {import("express").Response} response The HTTP response object.
  * @return {void}
@@ -2557,7 +2561,7 @@ router.post('/changes', async function (request, response) {
             return response.sendStatus(400);
         }
 
-        const result = await getChangesSince(request.user.directories, sinceSeq);
+        const result = await getChangesSince(request.user.directories, sinceSeq, { limit: CHANGES_PAGE_SIZE });
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
         }
