@@ -81,7 +81,7 @@ import {
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore, setCharacterId } from './character-store.js';
+import { characters, charactersStore, setCharacterId, resolveCharacterRef, resolveCharacterRefPair } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget, updateMessage } from './chat-store.js';
@@ -1203,8 +1203,18 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         const activationStrategy = Number(group.activation_strategy ?? group_activation_strategy.NATURAL);
         const enabledMembers = group.members.filter(x => !group.disabled_members.includes(x));
         let activatedMembers = [];
+        // Upstream throws a TypeError where it first reads a forced member that isn't there, so a miss keeps a
+        // placeholder member to reach those same two points.
+        let forcedChidMissing = false;
+        const forcedChidMissError = () => new TypeError(`force_chid ${params.force_chid} does not name a character`);
 
-        if (params && typeof params.force_avatar == 'string') {
+        if (params && typeof params.force_chid == 'number') {
+            const forced = typeof params.force_avatar == 'string'
+                ? resolveCharacterRefPair(params.force_chid, params.force_avatar)
+                : resolveCharacterRef(params.force_chid);
+            forcedChidMissing = typeof forced?.avatar !== 'string';
+            activatedMembers = [forcedChidMissing ? undefined : forced.avatar];
+        } else if (params && typeof params.force_avatar == 'string') {
             activatedMembers = [params.force_avatar];
         } else if (type === 'quiet') {
             activatedMembers = activateSwipe(group.members, { allowSystem: true }).slice(0, 1);
@@ -1243,6 +1253,9 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         groupChatQueueOrder = new Map();
 
         if (power_user.show_group_chat_queue) {
+            if (forcedChidMissing) {
+                throw forcedChidMissError();
+            }
             for (let i = 0; i < activatedMembers.length; ++i) {
                 groupChatQueueOrder.set(activatedMembers[i], i + 1);
             }
@@ -1253,6 +1266,9 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             throwIfAborted();
             deactivateSendButtons();
             setCharacterId(avatar);
+            if (forcedChidMissing) {
+                throw forcedChidMissError();
+            }
             setCharacterName(charactersStore.get(avatar).name);
             if (power_user.show_group_chat_queue) {
                 printGroupMembers();

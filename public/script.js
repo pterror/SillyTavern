@@ -12,7 +12,7 @@ import {
 } from './lib.js';
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
-import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById } from './scripts/character-store.js';
+import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too).
 export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
@@ -1444,19 +1444,17 @@ async function delChat(chatfile) {
 
 /**
  * Deletes a character chat by its name.
- * @param {string} avatar Character avatar to delete chat for
+ * @param {string|number} characterId An index into `getContext().characters`, or an avatar key
  * @param {string} fileName Name of the chat file to delete (without .jsonl extension)
  * @returns {Promise<void>} A promise that resolves when the chat is deleted.
  */
-export async function deleteCharacterChatByName(avatar, fileName) {
-    /** @type {Character} */
-    const character = charactersStore.get(avatar);
-
+export async function deleteCharacterChatByName(characterId, fileName) {
     // Make sure all the data is loaded.
-    await unshallowCharacter(character?.avatar);
+    await unshallowCharacter(characterId);
 
+    const character = resolveCharacterRef(characterId);
     if (!character) {
-        console.warn(`Character with avatar ${avatar} not found.`);
+        console.warn(`Character ${characterId} not found.`);
         return;
     }
 
@@ -2682,11 +2680,11 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
 
 /**
  * Returns the URL of the avatar for the given character.
- * @param {string} avatar Character avatar
+ * @param {string|number} characterId An index into `getContext().characters`, or an avatar key
  * @returns {string} Avatar URL
  */
-export function getCharacterAvatar(avatar) {
-    const character = charactersStore.get(avatar);
+export function getCharacterAvatar(characterId) {
+    const character = resolveCharacterRef(characterId);
     const avatarImg = character?.avatar;
 
     if (!avatarImg || avatarImg === 'none') {
@@ -3376,11 +3374,20 @@ export function createLazyFields(resolvers) {
  * Returns the character card fields for the current character as lazy getters.
  * Each field is only processed (baseChatReplace) when first accessed.
  * @param {Object} [options={}]
- * @param {string} [options.avatar] Optional character avatar. Falls back to the current character when omitted.
+ * @param {number|string} [options.chid] Optional character: an index into `getContext().characters`, or an avatar key. Falls back to the current character when null or undefined.
+ * @param {string} [options.avatar] Optional character avatar, used when `chid` is null or undefined. With both naming different characters, the fields are those of no character.
  * @returns {CharacterCardFields} Character card fields with lazy evaluation
  */
-export function getCharacterCardFieldsLazy({ avatar = undefined } = {}) {
-    const character = avatar !== undefined ? charactersStore.get(avatar) : getCurrentCharacter();
+export function getCharacterCardFieldsLazy({ chid = undefined, avatar = undefined } = {}) {
+    let character;
+    if (chid == null) {
+        character = avatar !== undefined ? charactersStore.get(avatar) : getCurrentCharacter();
+    } else if (avatar !== undefined) {
+        const resolved = resolveCharacterRefPair(chid, avatar);
+        character = resolved === CHARACTER_REF_MISMATCH ? undefined : resolved;
+    } else {
+        character = resolveCharacterRef(chid);
+    }
 
     // For group chats, we need to check if group cards should be used
     const useGroupCards = selected_group && character;
@@ -3449,11 +3456,12 @@ export function getCharacterCardFieldsLazy({ avatar = undefined } = {}) {
 /**
  * Returns the character card fields for the current character.
  * @param {Object} [options={}]
- * @param {string} [options.avatar] Optional character avatar
+ * @param {number|string} [options.chid] Optional character, as for {@link getCharacterCardFieldsLazy}
+ * @param {string} [options.avatar] Optional character avatar, as for {@link getCharacterCardFieldsLazy}
  * @returns {CharacterCardFields} Character card fields
  */
-export function getCharacterCardFields({ avatar = undefined } = {}) {
-    const lazy = getCharacterCardFieldsLazy({ avatar });
+export function getCharacterCardFields({ chid = undefined, avatar = undefined } = {}) {
+    const lazy = getCharacterCardFieldsLazy({ chid, avatar });
 
     // Resolve all lazy fields into a plain object
     return {
@@ -6672,19 +6680,19 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
 
 /**
  * Loads all the data of a shallow character.
- * @param {string|undefined} avatar Character avatar filename
+ * @param {string|number|undefined} characterId An index into `getContext().characters`, or an avatar key
  * @returns {Promise<void>} Promise that resolves when the character is unshallowed
  */
-export async function unshallowCharacter(avatar) {
-    if (avatar === undefined) {
+export async function unshallowCharacter(characterId) {
+    const character = resolveCharacterRef(characterId);
+
+    if (characterId === undefined) {
         console.debug('Undefined character cannot be unshallowed');
         return;
     }
 
-    /** @type {Character} */
-    const character = charactersStore.get(avatar);
     if (!character) {
-        console.debug('Character not found:', avatar);
+        console.debug('Character not found:', characterId);
         return;
     }
 
@@ -6693,7 +6701,7 @@ export async function unshallowCharacter(avatar) {
         return;
     }
 
-    await getOneCharacter(avatar);
+    await getOneCharacter(character.avatar);
 }
 
 /**
@@ -8017,19 +8025,20 @@ export async function getChatsFromFiles(data, isGroupChat) {
  * The function sends a POST request to the server to retrieve all chats for the character. It then
  * processes the received data, sorts it by the file name, and returns the sorted data.
  *
- * @param {null|string} [characterAvatar=null] - When set, the function will use this character avatar instead of this_avatar.
+ * @param {null|string|number} [characterId=null] - An index into `getContext().characters`, or an avatar key.
+ * When null or undefined, the current character.
  *
  * @returns {Promise<Array>} - An array containing metadata of all past chats of the character, sorted
  * in descending order by file name. Returns an empty array if the fetch request is unsuccessful or the
  * response is an object with an `error` property set to `true`.
  */
-export async function getPastCharacterChats(characterAvatar = null) {
-    characterAvatar = characterAvatar ?? this_avatar;
-    if (!charactersStore.get(characterAvatar)) return [];
+export async function getPastCharacterChats(characterId = null) {
+    const character = resolveCharacterRef(characterId ?? this_avatar);
+    if (!character) return [];
 
     const response = await fetch('/api/characters/chats', {
         method: 'POST',
-        body: JSON.stringify({ avatar_url: characterAvatar }),
+        body: JSON.stringify({ avatar_url: character.avatar }),
         headers: getRequestHeaders(),
     });
 
@@ -8426,13 +8435,17 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
 
 /**
  * Selects the right menu for displaying the character editor.
- * @param {string} avatar Character avatar filename
+ * @param {string|number} chid An index into `getContext().characters`, or an avatar key
  * @param {object} [param1] Options for the switch
  * @param {boolean} [param1.switchMenu=true] Whether to switch the menu
  */
-export function select_selected_character(avatar, { switchMenu = true } = {}) {
+export function select_selected_character(chid, { switchMenu = true } = {}) {
     //character select
-    const character = charactersStore.get(avatar);
+    const character = resolveCharacterRef(chid);
+    if (character == null) {
+        throw new TypeError(`select_selected_character: no character found for ${JSON.stringify(chid)}`);
+    }
+    const avatar = character?.avatar;
     select_rm_create({ switchMenu });
     switchMenu && setMenuType('character_edit');
     $('#delete_button').css('display', 'flex');
@@ -8514,8 +8527,8 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     // CHARACTER_EDITOR_OPENED's public API payload is a chid (array index), so keep emitting that even though this function is avatar-driven internally.
     const editedEntity = charactersStore.get(avatar);
-    const chid = editedEntity ? characters.indexOf(editedEntity) : -1;
-    eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, chid);
+    const editedChid = editedEntity ? characters.indexOf(editedEntity) : -1;
+    eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, editedChid);
 
     // Only populates DOM fields from already-persisted data; nothing here needs saving.
 }
@@ -11504,17 +11517,27 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
 /**
  * Renames a group or character chat.
  * @param {object} param Parameters for renaming chat
- * @param {string} [param.characterAvatar] Character avatar (identity) to rename chat for
+ * @param {number|string} [param.characterId] Character to rename chat for: an index into `getContext().characters`, or an avatar key
+ * @param {string} [param.characterAvatar] Character avatar (identity) to rename chat for, used when `characterId` is null or undefined. Without `groupId`, both naming different characters renames nothing.
  * @param {string} [param.groupId] Group ID to rename chat for
  * @param {string} param.oldFileName Old name of the chat (no JSONL extension)
  * @param {string} param.newFileName New name for the chat (no JSONL extension)
  * @param {boolean} [param.loader=true] Whether to show loader during the operation
  */
-export async function renameGroupOrCharacterChat({ characterAvatar, groupId, oldFileName, newFileName, loader: showLoader, byNode = false }) {
+export async function renameGroupOrCharacterChat({ characterId, characterAvatar, groupId, oldFileName, newFileName, loader: showLoader, byNode = false }) {
     const currentChatId = getCurrentChatId();
+    let avatarUrl;
+    if (characterId == null) {
+        avatarUrl = characterAvatar;
+    } else if (characterAvatar !== undefined && !groupId) {
+        const resolved = resolveCharacterRefPair(characterId, characterAvatar);
+        avatarUrl = resolved === CHARACTER_REF_MISMATCH ? undefined : resolved.avatar;
+    } else {
+        avatarUrl = resolveCharacterRef(characterId)?.avatar;
+    }
     const body = {
         is_group: !!groupId,
-        avatar_url: characterAvatar,
+        avatar_url: avatarUrl,
         // A node id isn't a file, so no .jsonl extension gets glued on.
         original_file: byNode ? oldFileName : `${oldFileName}.jsonl`,
         renamed_file: `${newFileName.trim()}.jsonl`,
@@ -11560,16 +11583,16 @@ export async function renameGroupOrCharacterChat({ characterAvatar, groupId, old
         if (groupId) {
             await renameGroupChat(groupId, oldFileName, newFileName);
         // Only a name-addressed pointer has to follow the rename - a node-addressed one already names that node.
-        } else if (!byNode && characterAvatar !== undefined && characterAvatar === this_avatar && charactersStore.get(characterAvatar)?.chat === oldFileName) {
+        } else if (!byNode && avatarUrl !== undefined && avatarUrl === this_avatar && charactersStore.get(avatarUrl)?.chat === oldFileName) {
             // Same node under a new label, not a different node - carry the current integrity forward
             // rather than clearing to unknown (see _setCurrentTarget()'s own doc comment).
             _setCurrentTarget(newFileName, chat_metadata.integrity);
-            $('#selected_chat_pole').val(charactersStore.get(characterAvatar).chat);
+            $('#selected_chat_pole').val(charactersStore.get(avatarUrl).chat);
             setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
             await fetch('/api/characters/merge-attributes', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar: characterAvatar, chat: newFileName }),
+                body: JSON.stringify({ avatar: avatarUrl, chat: newFileName }),
             });
         }
 
@@ -11638,14 +11661,14 @@ export async function closeCurrentChat() {
 
 /**
  * Forces the update of a character's stored active-chat pointer.
- * @param {string} avatar Character avatar to update the pointer for
+ * @param {string|number} characterId An index into `getContext().characters`, or an avatar key
  * @param {string} newName New pointer value (a node id, a legacy chat name, or '' to clear it - "no active chat" is a valid state)
  * @returns {Promise<void>}
  */
-export async function updateRemoteChatName(avatar, newName) {
-    const character = charactersStore.get(avatar);
+export async function updateRemoteChatName(characterId, newName) {
+    const character = resolveCharacterRef(characterId);
     if (!character) {
-        console.warn(`Character not found for avatar: ${avatar}`);
+        console.warn(`Character not found: ${characterId}`);
         return;
     }
     character.chat = newName;
@@ -11666,15 +11689,17 @@ function doCharListDisplaySwitch() {
  * it proceeds to delete character from UI and saves settings.
  * In case of error during the fetch request, it logs the error details.
  *
- * @param {string} characterId - Unused; the current character (getCurrentCharacter()) is what actually gets deleted.
+ * @param {string|number} this_chid - An index into `getContext().characters`, or an avatar key. Shadows the
+ * module's `this_chid` to keep upstream's parameter name.
  * @param {boolean} delete_chats - Whether to delete chats or not.
  */
-export async function handleDeleteCharacter(characterId, delete_chats) {
-    if (!getCurrentCharacter()) {
+export async function handleDeleteCharacter(this_chid, delete_chats) {
+    const character = resolveCharacterRef(this_chid);
+    if (!character) {
         return;
     }
 
-    await deleteCharacter(getCurrentCharacter().avatar, { deleteChats: delete_chats });
+    await deleteCharacter(character.avatar, { deleteChats: delete_chats });
 }
 
 /**
