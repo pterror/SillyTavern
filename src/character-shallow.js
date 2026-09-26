@@ -1,12 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import _ from 'lodash';
-
 import { getConfigValue } from './util.js';
+import { shallowCharacterData } from '../public/scripts/hash-utils.js';
 
 // Whether the shallow character response includes creator_notes (matches upstream SillyTavern's shallow response)
-const shallowCharactersIncludeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
+export const shallowCharactersIncludeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
 
 /**
  * Calculates the total chat size for a given character.
@@ -132,16 +131,6 @@ export function toShallow(character) {
         data_size: character.data_size,
         tags: character.tags,
         tag_ids: character.tag_ids,
-        data: {
-            name: _.get(character, 'data.name', ''),
-            character_version: _.get(character, 'data.character_version', ''),
-            creator: _.get(character, 'data.creator', ''),
-            tags: _.get(character, 'data.tags', []),
-            ...(shallowCharactersIncludeCreatorNotes && { creator_notes: _.get(character, 'data.creator_notes', '') }),
-            extensions: {
-                fav: _.get(character, 'data.extensions.fav', false),
-                world: _.get(character, 'data.extensions.world', ''),
-            },
-        },
+        data: shallowCharacterData(character, shallowCharactersIncludeCreatorNotes),
     };
 }

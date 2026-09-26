@@ -107,6 +107,35 @@ async function seedCharacter(avatar, overrides = {}) {
 }
 
 /**
+ * Like seedCharacter(), but the card has the shape the app stores in card_json (see /create): a spec'd V2 card
+ * whose top-level fields mirror `data.*`, with no fav.
+ * @param {string} avatar
+ * @param {object} data Merged onto the card's `data`
+ */
+async function seedStoredCharacter(avatar, data = {}) {
+    const name = avatar.replace(/\.png$/, '');
+    const cardData = {
+        name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
+        tags: [], creator: '', character_version: '', creator_notes: '',
+        extensions: { world: '' },
+        ...data,
+    };
+    const card = {
+        name: cardData.name,
+        description: cardData.description,
+        personality: cardData.personality,
+        scenario: cardData.scenario,
+        first_mes: cardData.first_mes,
+        mes_example: cardData.mes_example,
+        tags: cardData.tags,
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        data: cardData,
+    };
+    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
+}
+
+/**
  * Like seedCharacter(), but also writes a real (parseable) PNG to `directories.characters` - needed for the
  * `filter.search` tests below, since search (characters-search-index.js) reads full character data straight off
  * disk to build its index, unlike plain `/query` which never touches the filesystem. Mirrors
@@ -449,8 +478,8 @@ describe('POST /api/characters/query', () => {
     });
 
     test('filter.world narrows to a lorebook', async () => {
-        await seedCharacter('A.png', { data: { name: 'A', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: 'Wonderland' } } });
-        await seedCharacter('B.png', { data: { name: 'B', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: 'Oz' } } });
+        await seedStoredCharacter('A.png', { extensions: { world: 'Wonderland' } });
+        await seedStoredCharacter('B.png', { extensions: { world: 'Oz' } });
 
         const response = await postJson('/api/characters/query', { filter: { world: 'Wonderland' }, page: 1, pageSize: 10 });
         const body = await response.json();

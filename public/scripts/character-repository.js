@@ -13,6 +13,7 @@ import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { tagFetchStamp } from './tag-fetch-stamps.js';
 import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups } from './character-cache.js';
+import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normalizeTagIds, shallowCharacterData } from './hash-utils.js';
 
 /**
  * @typedef {import('../script.js').Character} Character
@@ -367,6 +368,35 @@ function liveFieldsFromHashRow(hashRow) {
     };
 }
 
+/**
+ * A cached character as the row a miss returns for it: the fields `/batch` field-filtered mode returns from
+ * shallow_json (HASH_MODE_BATCH_FIELDS), with nothing else from the cached record, so a consumer can't tell a
+ * hit from a miss. A whole-record cache entry carries fields shallow_json doesn't (and, with
+ * `shallowCharactersIncludeCreatorNotes` off, `data.creator_notes`), which the hashes don't cover.
+ *
+ * Whether the row's shallow_json holds `data.creator_notes` is read off its content hash: the cached record
+ * matches it hashed one way only.
+ * @param {object} character The cached record, whose hashes matched `contentHash`.
+ * @param {number} contentHash The row's content hash from the server.
+ * @returns {object|undefined} `undefined` if the record matches `contentHash` neither way (refetch it).
+ */
+function projectCachedCharacter(character, contentHash) {
+    const includeCreatorNotes = [false, true].find(include =>
+        characterDigestFieldsHash(characterDigestSource(character, include)) % 4294967296 === contentHash);
+    if (includeCreatorNotes === undefined) return undefined;
+    const data = shallowCharacterData(character, includeCreatorNotes);
+    data.extensions.fav = normalizeFav(data.extensions.fav);
+    /** @type {Record<string, any>} */
+    const row = {};
+    // JSON drops undefined values, so a field a miss's shallow_json lacks is absent from its row.
+    if (character.name !== undefined) row.name = character.name;
+    row.fav = normalizeFav(character.fav);
+    if (character.tags !== undefined) row.tags = character.tags;
+    row.tag_ids = normalizeTagIds(character.tag_ids);
+    row.data = data;
+    return row;
+}
+
 /** Owns character residency for internal (non-extension) client code. */
 export class CharacterRepository {
     /** @type {import('./entity-store.js').EntityStore<Character>} */
@@ -581,8 +611,9 @@ export class CharacterRepository {
         for (const hr of hashRows) {
             const entry = cachedEntries.get(hr.id);
             const hit = entry && entry.hashes.fav === hr.favHash && entry.hashes.tagIds === hr.tagIdsHash && entry.hashes.content === hr.contentHash;
-            if (hit) {
-                result.set(hr.id, { ...entry.character, ...liveFieldsFromHashRow(hr), avatar: hr.id, shallow: true });
+            const projected = hit ? projectCachedCharacter(entry.character, hr.contentHash) : undefined;
+            if (projected) {
+                result.set(hr.id, { avatar: hr.id, ...projected, ...liveFieldsFromHashRow(hr), shallow: true });
             } else {
                 staleRows.push(hr);
             }

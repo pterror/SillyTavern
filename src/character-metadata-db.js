@@ -16,7 +16,7 @@ import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, streamRows } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
-import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav } from '../public/scripts/hash-utils.js';
+import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds } from '../public/scripts/hash-utils.js';
 
 export const characterChangeEmitter = new EventEmitter();
 
@@ -748,7 +748,7 @@ function migrateGroupDigestColumns(db, directories) {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
                 const group = JSON.parse(raw);
-                const tagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }))).map(r => r.tag_id);
+                const tagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
                 const fingerprintSource = { ...group, tag_ids: tagIds };
                 db.run(
                     'UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash WHERE id = @id',
@@ -1041,6 +1041,9 @@ function digestColumnsForShallow(shallow) {
  * active_chat) so a caller's other column writes stay atomic with the shallow_json write.
  */
 function writeShallowJson(db, id, shallow, changeSeq, extraColumns = {}) {
+    // Absent means never filled (backfillTagIdsInShallowJson() finds such rows by the missing key), so it is filled
+    // from character_tags rather than stored as [].
+    shallow.tag_ids = normalizeTagIds(Array.isArray(shallow.tag_ids) ? shallow.tag_ids : readCharacterTagIds(db, id));
     const columns = {
         shallow_json: JSON.stringify(shallow),
         change_seq: Number(changeSeq),
@@ -1049,6 +1052,15 @@ function writeShallowJson(db, id, shallow, changeSeq, extraColumns = {}) {
     };
     const setSql = Object.keys(columns).map(key => `${key} = @${key}`).join(', ');
     db.run(`UPDATE characters SET ${setSql} WHERE id = @id`, { ...columns, id });
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @returns {string[]}
+ */
+function readCharacterTagIds(db, id) {
+    return Array.from(db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }), row => /** @type {{ tag_id: string }} */ (row).tag_id);
 }
 
 // shallow_json's two fav fields both mirror the db-authoritative fav column.
@@ -1089,7 +1101,7 @@ function buildRow(id, character, { dateAddedCandidate, chatSize, dateLastChat, c
         date_last_chat: dateLastChat,
         chat_size: chatSize,
         data_size: dataSize,
-        tag_ids: tagIds,
+        tag_ids: normalizeTagIds(tagIds),
     };
     const shallow = toShallow(shallowSource);
     // Falls back to the V2 mirror when the V1 top-level field is absent, same drift the other
@@ -1144,7 +1156,7 @@ function writeRowSync(db, row, tagIds) {
         const currentTagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id }))).map(r => r.tag_id);
 
         const shallow = JSON.parse(row.shallow_json);
-        shallow.tag_ids = currentTagIds;
+        shallow.tag_ids = normalizeTagIds(currentTagIds);
         if (favChanged) {
             setShallowFav(shallow, !!currentFav);
         }
@@ -1207,15 +1219,23 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, co
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    let character;
+    let card;
     try {
-        character = JSON.parse(cardJson);
+        card = JSON.parse(cardJson);
     } catch (err) {
         console.error(`[character-metadata] Failed to parse just-written card for ${avatar}, skipping metadata upsert:`, err);
         return;
     }
 
-    const contentIdentityHash = computeContentIdentityHash(character);
+    const contentIdentityHash = computeContentIdentityHash(card);
+    // The row describes the card as every reader of card_json sees it (/batch, bootstrap, reconcile all read it
+    // through getCharaCardV2()), except chat and fav: getCharaCardV2() invents a chat for a card without one and
+    // drops a V2 card's top-level fav, and both only seed the row's db-authoritative columns.
+    const character = {
+        ...getCharaCardV2(JSON.parse(cardJson), directories, false),
+        chat: card.chat,
+        fav: card.fav ?? _.get(card, 'data.extensions.fav'),
+    };
     const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
     const tagIds = getTagIdsFor(directories, avatar);
     const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson });
@@ -1402,6 +1422,10 @@ export async function getCharacterTagIdsByIds(directories, ids) {
                 result[row.character_id].push(row.tag_id);
             }
         }
+    }
+    // Sorted in JS even after ORDER BY: SQLite compares UTF-8 bytes, normalizeTagIds() UTF-16 code units.
+    for (const id of Object.keys(result)) {
+        result[id] = normalizeTagIds(result[id]);
     }
     return result;
 }
@@ -1983,6 +2007,45 @@ export async function normalizeCharacterFavIfNeeded(directories) {
     entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: CHARACTER_FAV_NORMALIZED_FLAG, value: String(Date.now()) });
 }
 
+const CHARACTER_TAG_IDS_NORMALIZED_FLAG = 'character_tag_ids_normalized_v1';
+
+// One-time pass sorting shallow_json.tag_ids written before writes sorted it. A reordered row gets a ['tag_ids']
+// change-log entry and change_seq bump; digest_tag_ids already sorts, so it doesn't change. A row with no tag_ids
+// is left to backfillTagIdsInShallowJson(). Each row is re-read inside its batch's transaction, so a concurrent
+// tag write can't be overwritten with a stale value.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function normalizeCharacterTagIdsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_TAG_IDS_NORMALIZED_FLAG })) return;
+
+    for await (const rows of streamRows(entry.db, {
+        readSql: 'SELECT id FROM characters WHERE (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit',
+        keyColumn: 'id',
+    })) {
+        entry.db.transaction(() => {
+            for (const { id } of /** @type {{ id: string }[]} */ (rows)) {
+                try {
+                    const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
+                    if (!row) continue;
+                    const shallow = JSON.parse(row.shallow_json);
+                    if (!Array.isArray(shallow.tag_ids)) continue;
+                    if (JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(shallow.tag_ids))) continue;
+                    const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
+                    writeShallowJson(entry.db, id, shallow, lastInsertRowid);
+                } catch (err) {
+                    console.error(`[character-metadata] Character tag_ids normalization failed for ${id}, leaving its row as is:`, /** @type {any} */ (err).message);
+                }
+            }
+        });
+        await new Promise(resolve => setImmediate(resolve));
+    }
+
+    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: CHARACTER_TAG_IDS_NORMALIZED_FLAG, value: String(Date.now()) });
+}
+
 // Diffs tags.json's tag_map against character_tags and applies only the delta, since most rows already agree.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -2158,6 +2221,7 @@ export async function initializeMetadataStores(directoriesList) {
             .then(() => __stage('backfillCardTagsIfNeeded', () => backfillCardTagsIfNeeded(directories)))
             .then(() => __stage('backfillTagIdsInShallowJson', () => backfillTagIdsInShallowJson(directories)))
             .then(() => __stage('normalizeCharacterFavIfNeeded', () => normalizeCharacterFavIfNeeded(directories)))
+            .then(() => __stage('normalizeCharacterTagIdsIfNeeded', () => normalizeCharacterTagIdsIfNeeded(directories)))
             .then(() => __stage('reconcile', () => reconcile(directories)))
             // After reconcile() so this pass sees any rows reconcile() itself just inserted.
             .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
@@ -2697,7 +2761,7 @@ export async function getEntityTagIdsForMany(directories, ids) {
         if (chunk.length === 0) continue;
         const placeholders = chunk.map(() => '?').join(', ');
         const characterRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT character_id as entity_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, chunk)));
-        const groupRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT group_id as entity_id, tag_id FROM group_tags WHERE group_id IN (${placeholders})`, chunk)));
+        const groupRows = (/** @type {{ entity_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT group_id as entity_id, tag_id FROM group_tags WHERE group_id IN (${placeholders}) ORDER BY group_id, tag_id`, chunk)));
         for (const row of [...characterRows, ...groupRows]) {
             result[row.entity_id].push(row.tag_id);
         }
@@ -2717,7 +2781,7 @@ export async function getEntityTagIdsForMany(directories, ids) {
  */
 function patchPendingRowTagIds(pending) {
     const shallow = JSON.parse(pending.row.shallow_json);
-    shallow.tag_ids = pending.tagIds;
+    shallow.tag_ids = normalizeTagIds(pending.tagIds);
     pending.row.shallow_json = JSON.stringify(shallow);
     Object.assign(pending.row, digestColumnsForShallow(shallow));
 }
@@ -2760,7 +2824,7 @@ export async function assignEntityTag(directories, id, tagId) {
     }
     if ((/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
         entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-        const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }))).map(r => r.tag_id);
+        const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
         entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
         return 'ok';
     }
@@ -2791,7 +2855,7 @@ export async function unassignEntityTag(directories, id, tagId) {
     entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
     entry.db.run(
         'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
-        { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }))).map(r => r.tag_id) }) },
+        { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) }) },
     );
     const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
     if (charRow) {
@@ -2887,7 +2951,7 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
 export async function getGroupTagIds(directories, groupId) {
     const entry = await getEntry(directories);
     if (!entry) return [];
-    return (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: groupId }))).map(r => r.tag_id);
+    return normalizeTagIds((/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId }))).map(r => r.tag_id));
 }
 
 /**
@@ -4295,7 +4359,7 @@ function makeEntityHashRowMapper(entry, directories) {
             try {
                 const filePath = path.join(directories.groups, sanitize(`${hr.id}.json`));
                 const group = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-                const tagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: hr.id }))).map(r => r.tag_id);
+                const tagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: hr.id }))).map(r => r.tag_id);
                 const fingerprintSource = { ...group, tag_ids: tagIds };
                 hr.favHash = groupDigestFavHash(fingerprintSource) >>> 0;
                 hr.tagIdsHash = groupDigestTagIdsHash(fingerprintSource) >>> 0;
