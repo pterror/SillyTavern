@@ -1,3 +1,11 @@
+// Upstream's whole-form character save, exported from script.js only so third-party extensions keep working.
+// First-party code knows which field it changed and saves that field. Listed in every no-restricted-syntax
+// block covering first-party files outside script.js, since a later matching block replaces an earlier one's list.
+const noWholeFormCharacterSave = {
+    selector: 'ImportSpecifier[imported.name=/^(saveCharacterDebounced|createOrEditCharacter)$/]',
+    message: 'saveCharacterDebounced/createOrEditCharacter are upstream-compat exports for third-party extensions only - save the field you changed with saveCharacterField()/saveCharacterFieldDebounced() (script.js), or the greeting/chat/avatar path for it.',
+};
+
 module.exports = {
     root: true,
     extends: [
@@ -79,6 +87,7 @@ module.exports = {
                         selector: 'ImportDeclaration[source.value=/openai\\.js$/]',
                         message: "openai.js was renamed to chat-completion-settings.js (it covers every Chat Completion provider, not just OpenAI) - import from there instead. The old path is kept only as a back-compat shim for third-party extensions.",
                     },
+                    noWholeFormCharacterSave,
                 ],
             },
         },
@@ -95,6 +104,7 @@ module.exports = {
                         selector: "ImportSpecifier[imported.name='this_chid']",
                         message: 'this_chid is a back-compat shim for third-party extensions/upstream parity only - use this_avatar/getCurrentCharacter()/charactersStore instead.',
                     },
+                    noWholeFormCharacterSave,
                 ],
             },
         },
@@ -127,6 +137,7 @@ module.exports = {
                         selector: "CallExpression[callee.property.name='saveChat']",
                         message: 'Use context.editMessage()/editMessages()/appendMessage() for this action instead - see this rule\'s own comment in .eslintrc.cjs.',
                     },
+                    noWholeFormCharacterSave,
                 ],
             },
         },

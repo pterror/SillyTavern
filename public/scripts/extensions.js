@@ -3,6 +3,7 @@ import { Popper } from '../lib.js';
 import { saveSettings, saveSettingsDebounced, animation_duration, CLIENT_VERSION } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
+import { setFormBaseline } from './character-form-baseline.js';
 import { eventSource, event_types } from './events.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from './popup.js';
 import { renderTemplate, renderTemplateAsync } from './templates.js';
@@ -2270,6 +2271,7 @@ export async function writeExtensionField(characterIdOrAvatar, key, value) {
         // Make sure the data doesn't get lost when saving the current character
         if (characterAvatar === context.characterAvatar) {
             $('#character_json_data').val(character.json_data);
+            setFormBaseline('#character_json_data', String($('#character_json_data').val()));
         }
     }
 
@@ -2388,6 +2390,7 @@ export async function writeExtensionFieldBulk(avatars, key, value, { filterPath 
         const activeChar = context.characters[context.characterId];
         if (activeChar && updatedSet.has(activeChar.avatar) && activeChar.json_data) {
             $('#character_json_data').val(activeChar.json_data);
+            setFormBaseline('#character_json_data', String($('#character_json_data').val()));
         }
     }
 

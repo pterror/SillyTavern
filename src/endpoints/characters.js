@@ -974,6 +974,11 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         // Favorite status is db-authoritative once a row exists; the card written below never carries `fav`.
         const initialFav = request.body.fav === 'true' || request.body.fav === true;
         const charaData = charaFormatData(request.body, request.user.directories);
+        // A lorebook embedded in json_data is kept as-is, as on an imported card, not replaced by the linked World's.
+        const embeddedBook = _.get(tryParse(request.body.json_data), 'data.character_book');
+        if (embeddedBook !== undefined) {
+            _.set(charaData, 'data.character_book', embeddedBook);
+        }
         charaData.create_date = new Date().toISOString();
         omitFavField(charaData);
         const char = JSON.stringify(charaData);
@@ -1519,18 +1524,20 @@ function sendGreetingOpResult(response, result) {
 }
 
 /**
- * Inserts a new greeting at `position` (length appends at the end). No precondition hash and no content dedup - two identical greetings are legitimate on a card.
+ * Inserts a new greeting at `position` (length appends at the end). Refuses a stale `expected_length`. No content dedup - two identical greetings are legitimate on a card.
  */
 router.post('/greetings/add', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
         const position = Number(request.body.position);
+        const expectedLength = Number(request.body.expected_length);
         const text = request.body.text;
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
+        if (!Number.isInteger(expectedLength)) return response.status(400).send({ ok: false, reason: 'expected_length is required' });
 
-        const result = await applyGreetingOperation(request, avatar, model => opAdd(model, position, text));
+        const result = await applyGreetingOperation(request, avatar, model => opAdd(model, position, expectedLength, text));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error adding greeting:', error);
@@ -1621,14 +1628,19 @@ router.post('/greetings/default/set', validateAvatarUrlMiddleware, async functio
 
 /**
  * Clears the default entirely - no default greeting at all. The list keeps its order and membership.
- * Doesn't address a position, so it carries no precondition hash.
+ * Refuses a stale `expected_default_position` (an integer, or `null` for "no default").
  */
 router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
+        const rawExpectedDefault = request.body.expected_default_position;
+        const expectedDefaultPosition = rawExpectedDefault === null ? null : Number(rawExpectedDefault);
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
+        if (expectedDefaultPosition !== null && !Number.isInteger(expectedDefaultPosition)) {
+            return response.status(400).send({ ok: false, reason: 'expected_default_position is required (an integer, or null)' });
+        }
 
-        const result = await applyGreetingOperation(request, avatar, model => opUnsetDefault(model));
+        const result = await applyGreetingOperation(request, avatar, model => opUnsetDefault(model, expectedDefaultPosition));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error unsetting default greeting:', error);
