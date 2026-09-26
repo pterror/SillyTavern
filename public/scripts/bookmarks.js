@@ -45,6 +45,7 @@ import {
     getUniqueName,
     isTrueBoolean,
 } from './utils.js';
+import { normalizeFav } from './hash-utils.js';
 
 const bookmarkNameToken = 'Bookmark #';
 
@@ -428,7 +429,7 @@ export async function convertSoloToGroupChat() {
     const name = `Group: ${character.name}`;
     const avatar = getThumbnailUrl('avatar', character.avatar);
     const members = [character.avatar];
-    const favChecked = character.fav || character.fav == 'true';
+    const favChecked = normalizeFav(character.fav);
     /** @type {ChatMetadata} */
     const metadata = Object.assign({}, chat_metadata);
     delete metadata.main_chat;

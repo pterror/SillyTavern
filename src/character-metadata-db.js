@@ -16,7 +16,7 @@ import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, streamRows } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
-import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash } from '../public/scripts/hash-utils.js';
+import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav } from '../public/scripts/hash-utils.js';
 
 export const characterChangeEmitter = new EventEmitter();
 
@@ -713,7 +713,7 @@ function migrateGroupsColumns(db, directories) {
                 const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
                 db.run(
                     'UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded, date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id',
-                    { id, name: group.name ?? '', nameFold: foldName(group.name), fav: group.fav ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs), dateLastChat, chatSize },
+                    { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs), dateLastChat, chatSize },
                 );
             } catch (err) {
                 console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
@@ -1051,6 +1051,18 @@ function writeShallowJson(db, id, shallow, changeSeq, extraColumns = {}) {
     db.run(`UPDATE characters SET ${setSql} WHERE id = @id`, { ...columns, id });
 }
 
+// shallow_json's two fav fields both mirror the db-authoritative fav column.
+/**
+ * @param {{ fav?: unknown, data?: { extensions?: { fav?: unknown } } }} shallow Mutated in place.
+ * @param {boolean} fav
+ */
+function setShallowFav(shallow, fav) {
+    shallow.fav = fav;
+    shallow.data = shallow.data ?? {};
+    shallow.data.extensions = shallow.data.extensions ?? {};
+    shallow.data.extensions.fav = fav;
+}
+
 // dateAddedCandidate is only used on a genuine insert.
 /**
  * @param {string} id
@@ -1080,13 +1092,15 @@ function buildRow(id, character, { dateAddedCandidate, chatSize, dateLastChat, c
         tag_ids: tagIds,
     };
     const shallow = toShallow(shallowSource);
+    // Falls back to the V2 mirror when the V1 top-level field is absent, same drift the other
+    // V1_V2_FIELD_MAPPINGS fields get repaired for at read-time (character-card-normalize.js).
+    const fav = normalizeFav(character.fav ?? _.get(/** @type {any} */ (character), 'data.extensions.fav'));
+    setShallowFav(shallow, fav);
     return {
         id,
         name: character.name ?? '',
         name_fold: foldName(character.name),
-        // Falls back to the V2 mirror when the V1 top-level field is absent, same drift the other
-        // V1_V2_FIELD_MAPPINGS fields get repaired for at read-time (character-card-normalize.js).
-        fav: (character.fav ?? _.get(/** @type {any} */ (character), 'data.extensions.fav')) === true ? 1 : 0,
+        fav: fav ? 1 : 0,
         date_added: dateAddedCandidate,
         create_date: parseCreateDateToEpochMs(character.create_date),
         date_last_chat: dateLastChat,
@@ -1132,7 +1146,7 @@ function writeRowSync(db, row, tagIds) {
         const shallow = JSON.parse(row.shallow_json);
         shallow.tag_ids = currentTagIds;
         if (favChanged) {
-            shallow.fav = !!currentFav;
+            setShallowFav(shallow, !!currentFav);
         }
         if (forceActiveChat) {
             shallow.chat = existingRow.active_chat;
@@ -1224,11 +1238,12 @@ export async function setCharacterFav(directories, avatar, fav) {
     const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!existing) return false;
 
+    const normalized = normalizeFav(fav);
     const shallow = JSON.parse(existing.shallow_json);
-    shallow.fav = !!fav;
+    setShallowFav(shallow, normalized);
 
     const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['fav']));
-    writeShallowJson(entry.db, avatar, shallow, lastInsertRowid, { fav: fav ? 1 : 0 });
+    writeShallowJson(entry.db, avatar, shallow, lastInsertRowid, { fav: normalized ? 1 : 0 });
     return true;
 }
 
@@ -1921,6 +1936,53 @@ export async function backfillTagIdsInShallowJson(directories) {
     }
 }
 
+const CHARACTER_FAV_NORMALIZED_FLAG = 'character_fav_normalized_v1';
+
+// One-time pass re-deriving shallow_json's two fav fields (and so digest_fav) from the fav column, which it never
+// writes. A row whose shallow_json changes gets a ['fav'] change-log entry and change_seq bump, so clients learn
+// of it through the feed; a row whose fields already match only has a stale digest_fav corrected, with no entry.
+// Each row is re-read inside its batch's transaction, so a concurrent fav write can't be overwritten with a
+// stale value.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function normalizeCharacterFavIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_FAV_NORMALIZED_FLAG })) return;
+
+    for await (const rows of streamRows(entry.db, {
+        readSql: 'SELECT id FROM characters WHERE (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit',
+        keyColumn: 'id',
+    })) {
+        entry.db.transaction(() => {
+            for (const { id } of /** @type {{ id: string }[]} */ (rows)) {
+                try {
+                    const row = (/** @type {{ fav: number, shallow_json: string, digest_fav: number } | undefined} */ (entry.db.get('SELECT fav, shallow_json, digest_fav FROM characters WHERE id = @id', { id })));
+                    if (!row) continue;
+                    const fav = !!row.fav;
+                    const shallow = JSON.parse(row.shallow_json);
+                    if (shallow.fav !== fav || shallow.data?.extensions?.fav !== fav) {
+                        setShallowFav(shallow, fav);
+                        const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['fav']));
+                        writeShallowJson(entry.db, id, shallow, lastInsertRowid);
+                        continue;
+                    }
+                    const { digest_fav } = digestColumnsForShallow(shallow);
+                    if (Number(row.digest_fav) !== digest_fav) {
+                        entry.db.run('UPDATE characters SET digest_fav = @digest_fav WHERE id = @id', { id, digest_fav });
+                    }
+                } catch (err) {
+                    console.error(`[character-metadata] Character fav normalization failed for ${id}, leaving its row as is:`, /** @type {any} */ (err).message);
+                }
+            }
+        });
+        await new Promise(resolve => setImmediate(resolve));
+    }
+
+    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: CHARACTER_FAV_NORMALIZED_FLAG, value: String(Date.now()) });
+}
+
 // Diffs tags.json's tag_map against character_tags and applies only the delta, since most rows already agree.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -2091,9 +2153,11 @@ export async function initializeMetadataStores(directoriesList) {
         // must populate them first.
         entry.bootstrapPromise = __stage('bootstrapIfNeeded', () => bootstrapIfNeeded(directories))
             .then(() => __stage('bootstrapGroupsIfNeeded', () => bootstrapGroupsIfNeeded(directories)))
+            .then(() => __stage('normalizeGroupFavIfNeeded', () => normalizeGroupFavIfNeeded(directories)))
             .then(() => __stage('migrateTagsJsonIfNeeded', () => migrateTagsJsonIfNeeded(directories)))
             .then(() => __stage('backfillCardTagsIfNeeded', () => backfillCardTagsIfNeeded(directories)))
             .then(() => __stage('backfillTagIdsInShallowJson', () => backfillTagIdsInShallowJson(directories)))
+            .then(() => __stage('normalizeCharacterFavIfNeeded', () => normalizeCharacterFavIfNeeded(directories)))
             .then(() => __stage('reconcile', () => reconcile(directories)))
             // After reconcile() so this pass sees any rows reconcile() itself just inserted.
             .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
@@ -2870,15 +2934,16 @@ const GROUP_UPSERT_SQL = `
  * @param {number} params.chatSize
  */
 function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat, chatSize }) {
+    const normalizedFav = normalizeFav(fav);
     db.run(GROUP_UPSERT_SQL, {
         id,
         name: name ?? '',
         nameFold: foldName(name),
-        fav: fav === true ? 1 : 0,
+        fav: normalizedFav ? 1 : 0,
         dateAdded,
         dateLastChat,
         chatSize,
-        digestFav: groupDigestFavHash({ fav: fav ?? false }),
+        digestFav: groupDigestFavHash({ fav: normalizedFav }),
         digestContent: groupDigestContentHash(group ?? {}),
     });
 }
@@ -2967,7 +3032,7 @@ export async function bootstrapGroupsIfNeeded(directories) {
                         upsertGroupRowSync(entry.db, {
                             id: group.id,
                             name: group.name,
-                            fav: !!group.fav,
+                            fav: normalizeFav(group.fav),
                             group,
                             dateAdded: Math.round(stat.birthtimeMs),
                             dateLastChat,
@@ -2985,6 +3050,44 @@ export async function bootstrapGroupsIfNeeded(directories) {
         'INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         { value: String(Date.now()) },
     );
+}
+
+export const GROUP_FAV_NORMALIZED_FLAG = 'group_fav_normalized_v1';
+
+// One-time pass re-deriving each group's fav column and digest_fav from its normalized JSON file (the source of
+// truth), since older writers stored the raw file value by truthiness (a file holding "false" read as a favourite).
+// Each batch's file reads and row writes run in one synchronous transaction, so a group write in this process
+// can't land between them. An unreadable file is logged and its row left alone: its next write fixes it.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function normalizeGroupFavIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_FAV_NORMALIZED_FLAG })) return;
+
+    for await (const rows of streamRows(entry.db, {
+        readSql: 'SELECT id FROM groups WHERE (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit',
+        keyColumn: 'id',
+    })) {
+        entry.db.transaction(() => {
+            for (const { id } of /** @type {{ id: string }[]} */ (rows)) {
+                try {
+                    const group = JSON.parse(fs.readFileSync(path.join(directories.groups, sanitize(`${id}.json`)), 'utf8'));
+                    const fav = normalizeFav(group?.fav);
+                    entry.db.run(
+                        'UPDATE groups SET fav = @fav, digest_fav = @digestFav WHERE id = @id AND (fav IS NOT @fav OR digest_fav IS NOT @digestFav)',
+                        { id, fav: fav ? 1 : 0, digestFav: groupDigestFavHash({ fav }) },
+                    );
+                } catch (err) {
+                    console.error(`[character-metadata] Group fav normalization failed for ${id}, leaving its row as is:`, /** @type {any} */ (err).message);
+                }
+            }
+        });
+        await new Promise(resolve => setImmediate(resolve));
+    }
+
+    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: GROUP_FAV_NORMALIZED_FLAG, value: String(Date.now()) });
 }
 
 // Returns tag definitions in no particular order - sorting is a client concern (compareTagsForSort(), tags.js).

@@ -9,6 +9,7 @@ import { getCharacters, characterToEntity } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';
+import { normalizeFav } from './hash-utils.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
@@ -94,7 +95,7 @@ class CharacterContextMenu {
      */
     static favorite = async (avatar) => {
         const character = CharacterContextMenu.#getCharacter(avatar);
-        const newFavState = !character.fav;
+        const newFavState = !normalizeFav(character.fav);
 
         const favResponse = await fetch('/api/characters/fav', {
             method: 'POST',
@@ -123,7 +124,7 @@ class CharacterContextMenu {
         if (avatars.length === 0) return;
 
         const characters = avatars.map(avatar => CharacterContextMenu.#getCharacter(avatar)).filter(Boolean);
-        const bulk = characters.map(character => ({ avatar: character.avatar, fav: !character.fav }));
+        const bulk = characters.map(character => ({ avatar: character.avatar, fav: !normalizeFav(character.fav) }));
 
         const favResponse = await fetch('/api/characters/fav', {
             method: 'POST',
@@ -145,7 +146,7 @@ class CharacterContextMenu {
                 continue;
             }
 
-            const newFavState = !character.fav;
+            const newFavState = !normalizeFav(character.fav);
             character.fav = newFavState;
             if (character.data?.extensions) character.data.extensions.fav = newFavState;
             const element = document.querySelector(`[data-avatar="${CSS.escape(character.avatar)}"]`);

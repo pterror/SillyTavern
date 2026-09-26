@@ -21,6 +21,7 @@ import {
     paginationDropdownChangeHandler,
     waitUntilCondition,
 } from './utils.js';
+import { normalizeFav } from './hash-utils.js';
 import { RA_CountCharTokens, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, loadMovingUIState, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
@@ -998,8 +999,9 @@ export function getGroupBlock(group) {
     template.attr('data-grid', group.id);
     template.find('.ch_name').text(group.name).attr('title', `[Group] ${group.name}`);
     template.find('.group_fav_icon').css('display', 'none');
-    template.addClass(group.fav ? 'is_fav' : '');
-    template.find('.ch_fav').val(String(group.fav));
+    const isFav = normalizeFav(group.fav);
+    template.addClass(isFav ? 'is_fav' : '');
+    template.find('.ch_fav').val(String(isFav));
     template.find('.group_select_counter').text(count + ' ' + (count != 1 ? t`characters` : t`character`));
     template.find('.group_select_block_list').text(namesList.join(', '));
 
@@ -1913,7 +1915,7 @@ async function printGroupMembers() {
 function getGroupCharacterBlock(character) {
     const avatar = getThumbnailUrl('avatar', character.avatar);
     const template = $('#group_member_template .group_member').clone();
-    const isFav = !!character.fav || character.fav == 'true';
+    const isFav = normalizeFav(character.fav);
     template.data('id', character.avatar);
     template.find('.avatar img').attr({ 'src': avatar, 'title': character.avatar });
     template.find('.ch_name').text(character.name);
@@ -2089,7 +2091,7 @@ function select_group_chats(groupId, skipAnimation) {
         $('#group_open_media_overrides').hide();
     }
 
-    updateFavButtonState(group?.fav ?? false);
+    updateFavButtonState(normalizeFav(group?.fav));
     setAutoModeWorker();
 
     // top bar

@@ -10,6 +10,7 @@ import { color, tryParse } from '../util.js';
 import { getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
 import { upsertGroupRow, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany } from '../character-metadata-db.js';
 import { calculateGroupChatStats } from '../character-shallow.js';
+import { normalizeFav } from '../../public/scripts/hash-utils.js';
 
 export const router = express.Router();
 
@@ -95,6 +96,7 @@ export async function migrateGroupChatsMetadataFormat(userDirectories) {
                     }
                     delete groupData.chat_metadata;
                     delete groupData.past_metadata;
+                    groupData.fav = normalizeFav(groupData.fav);
                     await writeFileAtomic(groupFilePath, JSON.stringify(groupData, null, 4), 'utf8');
                     console.log(`Migrated group chats metadata for group: ${groupData.id}`);
                     anyDataMigrated = true;
@@ -190,6 +192,9 @@ export async function stampDbTagIds(directories, groups) {
 
 router.post('/all', async (request, response) => {
     const groups = getGroupsData(request.user.directories);
+    for (const group of groups) {
+        group.fav = normalizeFav(group.fav);
+    }
     await stampDbTagIds(request.user.directories, groups);
     return response.send(groups);
 });
@@ -252,7 +257,7 @@ router.post('/create', async (request, response) => {
         activation_strategy: request.body.activation_strategy ?? 0,
         generation_mode: request.body.generation_mode ?? 0,
         disabled_members: request.body.disabled_members ?? [],
-        fav: request.body.fav,
+        fav: normalizeFav(request.body.fav),
         chat_id: request.body.chat_id ?? id,
         chats: request.body.chats ?? [id],
         auto_mode_delay: request.body.auto_mode_delay ?? 5,
@@ -280,6 +285,7 @@ router.post('/edit', getFileNameValidationFunction('id'), async (request, respon
     }
     warnOnGroupMetadata(request.body);
     const id = request.body.id;
+    request.body.fav = normalizeFav(request.body.fav);
     const pathToFile = path.join(request.user.directories.groups, sanitize(`${id}.json`));
     const fileData = JSON.stringify(request.body, null, 4);
 
@@ -317,6 +323,7 @@ export function readGroupFile(directories, id) {
  * @param {object} group
  */
 export async function writeGroupFile(directories, group) {
+    group.fav = normalizeFav(group.fav);
     const pathToFile = path.join(directories.groups, sanitize(`${group.id}.json`));
     writeFileAtomicSync(pathToFile, JSON.stringify(group, null, 4));
     await upsertGroupRow(directories, group.id, group.name, { fav: group.fav, group }).catch(err =>

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getTagDefinitions, getEntityTagIdsForMany, getTagsHash } from '../character-metadata-db.js';
+import { getTagDefinitions, getEntityTagIdsForMany, getTagsHash, getGroupFavsByIds, getMetaValue, GROUP_FAV_NORMALIZED_FLAG } from '../character-metadata-db.js';
 import { getGroupsData } from './groups.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery, fastFieldOrderValue } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
@@ -38,12 +38,14 @@ const DEFAULT_TANTIVY_MAX_ROWS = 500;
 
 const INDEX_DIR_NAME = 'groups-tantivy';
 
-/** @returns {Promise<string>} A cheap fingerprint that changes whenever a group is added/removed/edited or a
- * tag definition/assignment changes. */
+/** @returns {Promise<string>} A cheap fingerprint that changes whenever a group is added/removed/edited, a
+ * tag definition/assignment changes, or the one-time group fav normalization (which rewrites only fav columns)
+ * completes. */
 async function getGroupsSignature(directories) {
     const groupsDirMtime = fs.existsSync(directories.groups) ? fs.statSync(directories.groups).mtimeMs : 0;
     const tagsHash = await getTagsHash(directories);
-    return `${groupsDirMtime}:${tagsHash}`;
+    const favNormalized = await getMetaValue(directories, GROUP_FAV_NORMALIZED_FLAG);
+    return `${groupsDirMtime}:${tagsHash}:${favNormalized}`;
 }
 
 /** Fetches tag definitions/assignments once up front (two batched reads total) instead of one call per group.
@@ -90,7 +92,9 @@ async function buildTantivyIndex(directories, tantivy) {
     let batchIndex = 0;
     for (let i = 0; i < groups.length; i += INDEX_BUILD_BATCH_SIZE) {
         const batch = groups.slice(i, i + INDEX_BUILD_BATCH_SIZE);
+        const favById = await getGroupFavsByIds(directories, batch.map(group => group.id));
         for (const group of batch) {
+            group.fav = !!favById[group.id];
             const doc = tantivy.Document.fromDict({
                 name: group.name ?? '',
                 resolved_tags: tagNamesFor(group.id),

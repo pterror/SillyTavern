@@ -36,7 +36,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds } from '../character-metadata-db.js';
-import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash } from '../../public/scripts/hash-utils.js';
+import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
 import { copyCharacterFile } from '../local-import-copy.js';
@@ -972,7 +972,7 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         request.body.ch_name = sanitize(request.body.ch_name);
 
         // Favorite status is db-authoritative once a row exists; the card written below never carries `fav`.
-        const initialFav = request.body.fav === 'true' || request.body.fav === true;
+        const initialFav = normalizeFav(request.body.fav);
         const charaData = charaFormatData(request.body, request.user.directories);
         // A lorebook embedded in json_data is kept as-is, as on an imported card, not replaced by the linked World's.
         const embeddedBook = _.get(tryParse(request.body.json_data), 'data.character_book');
@@ -1301,7 +1301,7 @@ async function mergeCharacterUpdate(avatarPath, avatar, updateData, request, sho
 
     character = deepMerge(character, update);
     processUnsetSentinels(character, update);
-    const requestedFav = !!(character.fav ?? _.get(character, 'data.extensions.fav'));
+    const requestedFav = normalizeFav(character.fav ?? _.get(character, 'data.extensions.fav'));
     const requestedChat = character.chat;
     omitFavField(character);
     omitChatField(character);
@@ -1666,7 +1666,7 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
                     results.push({ avatar: entry.avatar, ok: false });
                     continue;
                 }
-                const updated = await setCharacterFav(request.user.directories, entry.avatar, entry.fav === true || entry.fav === 'true');
+                const updated = await setCharacterFav(request.user.directories, entry.avatar, normalizeFav(entry.fav));
                 results.push({ avatar: entry.avatar, ok: updated });
             }
             return response.send({ results });
@@ -1675,7 +1675,7 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
         if (typeof avatar !== 'string' || !avatar) {
             return response.status(400).send({ error: true, reason: 'avatar-required' });
         }
-        const updated = await setCharacterFav(request.user.directories, avatar, fav === true || fav === 'true');
+        const updated = await setCharacterFav(request.user.directories, avatar, normalizeFav(fav));
         if (!updated) {
             return response.status(404).send({ error: true, reason: 'not-tracked' });
         }
@@ -1872,7 +1872,8 @@ async function writeBackpressured(response, chunk) {
 }
 
 /**
- * Overwrites each character's `.fav` with the metadata store's own value, in place. A character not yet tracked is left untouched.
+ * Overwrites each character's `.fav` and `data.extensions.fav` with the metadata store's own value, in place. A
+ * character not yet tracked is left untouched.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {object[]} characters Already-processed character objects (each with `.avatar` set) - mutated in place.
  * @returns {Promise<void>}
@@ -1884,6 +1885,7 @@ async function stampDbFav(directories, characters) {
     for (const character of characters) {
         if (Object.prototype.hasOwnProperty.call(favById, character.avatar)) {
             character.fav = favById[character.avatar];
+            _.set(character, 'data.extensions.fav', favById[character.avatar]);
         }
     }
 }
@@ -2955,6 +2957,7 @@ router.post('/import', async function (request, response) {
         // Hands the client the freshly-imported character's data in the same response, so it can insert it
         // directly instead of a second full-library fetch just to learn what it itself just uploaded.
         const character = await processCharacter(`${fileName}.png`, request.user.directories, { shallow: useShallowCharacters });
+        await stampDbFav(request.user.directories, [character]);
         await stampDbTagIds(request.user.directories, [character]);
 
         response.send({ file_name: fileName, character, tagDefinitions });

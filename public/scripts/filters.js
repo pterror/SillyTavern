@@ -1,6 +1,7 @@
 import { fuzzySearchCharacters, fuzzySearchGroups, fuzzySearchPersonas, fuzzySearchTags, fuzzySearchWorldInfo, power_user } from './power-user.js';
 import { isTagAssignedToKey } from './tags.js';
 import { includesIgnoreCaseAndAccents } from './utils.js';
+import { normalizeFav } from './hash-utils.js';
 
 
 /**
@@ -271,7 +272,7 @@ export class FilterHelper {
      */
     favFilter(data) {
         const state = this.filterData[FILTER_TYPES.FAV];
-        const isFav = entity => entity.item.fav || entity.item.fav == 'true';
+        const isFav = entity => normalizeFav(entity.item.fav);
 
         return this.filterDataByState(data, state, isFav, { includeFolders: true });
     }

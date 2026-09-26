@@ -38,6 +38,7 @@ import {
     secret_state,
 } from './secrets.js';
 import { debounce, getStringHash, isValidUrl } from './utils.js';
+import { normalizeFav } from './hash-utils.js';
 import { chat_completion_sources, oai_settings, POLLINATIONS_ENDPOINT } from './chat-completion-settings.js';
 import { getTokenCountsAsyncBatch } from './tokenizers.js';
 import { textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer } from './textgen-settings.js';
@@ -380,7 +381,7 @@ async function favsToHotswapImpl() {
         if (searchTerm) {
             entities = entitiesFilter.searchFilter(entities);
         }
-        favs = entities.filter(x => x.item.fav);
+        favs = entities.filter(x => normalizeFav(x.item.fav));
         sortEntitiesList(favs, false);
         favs = favs.slice(0, FAVS_LIMIT);
     }
