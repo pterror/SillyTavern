@@ -41,23 +41,26 @@ const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternat
 // only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
 // here rather than re-implementing a second copy of the decode logic for this test file.
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
+const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
 const filesDir = path.join(root, 'files');
+const chatsDir = path.join(root, 'chats');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
 fs.mkdirSync(filesDir, { recursive: true });
+fs.mkdirSync(chatsDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
 globalThis.DATA_ROOT = root;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'public', 'img', 'ai4.png'));
 
-function writeCharacter(avatar, overrides = {}) {
+async function writeCharacter(avatar, overrides = {}) {
     const name = overrides.name ?? avatar.replace(/\.png$/, '');
     const card = {
         spec: 'chara_card_v2',
@@ -85,8 +88,10 @@ function writeCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    const buffer = writeCard(baseImage, JSON.stringify(card));
+    const cardJson = JSON.stringify(card);
+    const buffer = writeCard(baseImage, cardJson);
     fs.writeFileSync(path.join(charactersDir, avatar), buffer);
+    await upsertCharacterFromWrite(directories, avatar, cardJson);
     return avatar;
 }
 
@@ -124,7 +129,7 @@ const fakeTokenizerOptions = {
 
 async function run() {
     writeAllSettings(directories, buildSettingsFixture());
-    const avatar = writeCharacter('Rex.png', {
+    const avatar = await writeCharacter('Rex.png', {
         name: 'Rex',
         description: 'Rex is a {{char}}.',
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },
@@ -232,7 +237,7 @@ async function run() {
     // the ONLY case where omitting a real node id is safe, since there is no real point for the
     // caller to have disagreed about. Resolves via the owner's own anchor (auto-created, no name
     // required at all) to an empty chat, and still produces a real, appendable anchorNodeId. ---
-    const freshAvatar = writeCharacter('Fresh.png', {
+    const freshAvatar = await writeCharacter('Fresh.png', {
         name: 'Fresh',
         description: 'Fresh is a brand-new character with no chat history yet.',
         data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
@@ -748,12 +753,12 @@ async function run() {
     // avatar), and two real member character cards with deliberately distinct `description`s so a
     // wrong-member mixup would be detectable.
     {
-        const nova = writeCharacter('Nova.png', {
+        const nova = await writeCharacter('Nova.png', {
             name: 'Nova',
             description: 'Nova is a stoic starship engineer.',
             data: { name: 'Nova', description: 'Nova is a stoic starship engineer.', first_mes: 'Systems nominal.' },
         });
-        const zephyr = writeCharacter('Zephyr.png', {
+        const zephyr = await writeCharacter('Zephyr.png', {
             name: 'Zephyr',
             description: 'Zephyr is a chaotic weather spirit.',
             data: { name: 'Zephyr', description: 'Zephyr is a chaotic weather spirit.', first_mes: 'Winds are shifting!' },
@@ -1451,7 +1456,7 @@ async function run() {
     //      already implicitly exercise (a single append per real send) once the client stops
     //      making its own redundant, differently-keyed append call.
     {
-        const dupAvatar = writeCharacter('DupBug.png', {
+        const dupAvatar = await writeCharacter('DupBug.png', {
             name: 'DupBug',
             data: { name: 'DupBug', description: '', first_mes: 'Hi.' },
         });
@@ -1499,7 +1504,7 @@ async function run() {
         // public/script.js), the raw-action route's own appendMessages() call above becomes the
         // ONLY writer for this message. Proven here on a fresh anchor: with only that ONE append
         // performed (never the client-side one), exactly one node exists - no duplicate sibling. ---
-        const fixedAvatar = writeCharacter('FixedBug.png', {
+        const fixedAvatar = await writeCharacter('FixedBug.png', {
             name: 'FixedBug',
             data: { name: 'FixedBug', description: '', first_mes: 'Hi.' },
         });

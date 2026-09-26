@@ -23,18 +23,21 @@ const { saveChatToTree, disposeMessageTreeStores } = await import('./message-tre
 const { prepareOpenAIMessages } = await import('./chat-completion-prepare-messages.js');
 const { world_info_position } = await import('./world-info/result-bucketing.js');
 const { extension_prompt_types, extension_prompt_roles } = await import('./extension-prompt-table.js');
+const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completion-generation-input-test-'));
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
 const filesDir = path.join(root, 'files');
+const chatsDir = path.join(root, 'chats');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
 fs.mkdirSync(filesDir, { recursive: true });
+fs.mkdirSync(chatsDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
 globalThis.DATA_ROOT = root;
 
 /** Minimal real on-disk lorebook, matching src/world-info/candidate-resolution.test.js's own fixture shape. */
@@ -48,7 +51,7 @@ function writeLorebook(name, entries) {
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
 
-function writeCharacter(avatar, overrides = {}) {
+async function writeCharacter(avatar, overrides = {}) {
     const name = overrides.name ?? avatar.replace(/\.png$/, '');
     const card = {
         spec: 'chara_card_v2',
@@ -76,8 +79,10 @@ function writeCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    const buffer = writeCard(baseImage, JSON.stringify(card));
+    const cardJson = JSON.stringify(card);
+    const buffer = writeCard(baseImage, cardJson);
     fs.writeFileSync(path.join(charactersDir, avatar), buffer);
+    await upsertCharacterFromWrite(directories, avatar, cardJson);
     return avatar;
 }
 
@@ -97,14 +102,16 @@ function buildSettingsFixture() {
             prefer_character_prompt: true,
             prefer_character_jailbreak: false,
         },
-        world_info: {
-            globalSelect: ['TestLore'],
-            charLore: [],
+        world_info_settings: {
+            world_info: {
+                globalSelect: ['TestLore'],
+                charLore: [],
+            },
+            world_info_character_strategy: 1, // world_info_insertion_strategy.character_first
+            // world_info_depth wide enough to reach every message in this test's short chat history, so
+            // the real keyword scan below can genuinely find 'traveler' regardless of which message it's in.
+            world_info_depth: 10,
         },
-        world_info_character_strategy: 1, // world_info_insertion_strategy.character_first
-        // world_info_depth wide enough to reach every message in this test's short chat history, so
-        // the real keyword scan below can genuinely find 'traveler' regardless of which message it's in.
-        world_info_settings: { world_info_depth: 10 },
         oai_settings: {
             chat_completion_source: 'openai',
             openai_model: 'gpt-4o',
@@ -174,7 +181,7 @@ async function run() {
             position: world_info_position.atDepth, depth: WI_DEPTH_TEST_DEPTH, role: WI_DEPTH_TEST_ROLE,
         },
     ]);
-    const avatar = writeCharacter('Rex.png', {
+    const avatar = await writeCharacter('Rex.png', {
         name: 'Rex',
         description: 'Rex is a {{char}}.',
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },
@@ -213,7 +220,7 @@ async function run() {
     assert.equal(input.systemPromptOverride, '', 'systemPromptOverride resolves from fields.system (empty card system_prompt here, but the real preferCharacterPrompt-gated path)');
 
     // --- world-info candidate resolution (real, via resolveWorldInfoCandidates()) ---
-    assert.equal(input.worldInfoCandidates.length, 2, 'worldInfoCandidates is auto-resolved for real from the on-disk lorebook named in settings.world_info.globalSelect (wi1 + the new @Depth wi2)');
+    assert.equal(input.worldInfoCandidates.length, 2, 'worldInfoCandidates is auto-resolved for real from the on-disk lorebook named in settings.world_info_settings.world_info.globalSelect (wi1 + the new @Depth wi2)');
     assert.equal(input.worldInfoCandidates[0].content, 'The ancient tower looms over the village.');
 
     // --- world-info ACTIVATION (real, via activateWorldInfoEntries()/bucketActivatedEntries()) - the
@@ -422,12 +429,12 @@ async function run() {
     // responding member's own card - so this test asserts against that combined-string shape
     // specifically, not a single member's own uncombined card. ---
     {
-        const nova = writeCharacter('Nova.png', {
+        const nova = await writeCharacter('Nova.png', {
             name: 'Nova',
             description: 'Nova is a stoic starship engineer.',
             data: { name: 'Nova', description: 'Nova is a stoic starship engineer.', first_mes: 'Systems nominal.' },
         });
-        const zephyr = writeCharacter('Zephyr.png', {
+        const zephyr = await writeCharacter('Zephyr.png', {
             name: 'Zephyr',
             description: 'Zephyr is a chaotic weather spirit.',
             data: { name: 'Zephyr', description: 'Zephyr is a chaotic weather spirit.', first_mes: 'Winds are shifting!' },

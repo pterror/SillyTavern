@@ -18,18 +18,21 @@ const { resolveTextCompletionGenerationInput } = await import('./text-completion
 const { writeAllSettings } = await import('./settings-store.js');
 const { saveChatToTree, disposeMessageTreeStores } = await import('./message-tree-db.js');
 const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
+const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completion-generation-input-test-'));
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
 const filesDir = path.join(root, 'files');
+const chatsDir = path.join(root, 'chats');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
 fs.mkdirSync(filesDir, { recursive: true });
+fs.mkdirSync(chatsDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir, files: filesDir, chats: chatsDir };
 globalThis.DATA_ROOT = root;
 
 /** Minimal real on-disk lorebook, matching src/world-info/candidate-resolution.test.js's own fixture shape. */
@@ -43,7 +46,7 @@ function writeLorebook(name, entries) {
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
 
-function writeCharacter(avatar, overrides = {}) {
+async function writeCharacter(avatar, overrides = {}) {
     const name = overrides.name ?? avatar.replace(/\.png$/, '');
     const card = {
         spec: 'chara_card_v2',
@@ -71,8 +74,10 @@ function writeCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    const buffer = writeCard(baseImage, JSON.stringify(card));
+    const cardJson = JSON.stringify(card);
+    const buffer = writeCard(baseImage, cardJson);
     fs.writeFileSync(path.join(charactersDir, avatar), buffer);
+    await upsertCharacterFromWrite(directories, avatar, cardJson);
     return avatar;
 }
 
@@ -127,14 +132,14 @@ function buildSettingsFixture() {
                 post_history: '',
             },
         },
-        // Real global lorebook selection - top-level `world_info` key, NOT `world_info_settings`
+        // Real global lorebook selection - nested `world_info_settings.world_info` key, NOT top-level `world_info`
         // (see text-completion-generation-input.js's own field-mapping notes on this exact distinction).
-        world_info: {
-            globalSelect: ['TestLore'],
-            charLore: [],
-        },
-        world_info_character_strategy: 1, // world_info_insertion_strategy.character_first
         world_info_settings: {
+            world_info: {
+                globalSelect: ['TestLore'],
+                charLore: [],
+            },
+            world_info_character_strategy: 1, // world_info_insertion_strategy.character_first
             world_info_depth: 3,
             world_info_budget: 30,
             world_info_budget_cap: 0,
@@ -147,7 +152,6 @@ function buildSettingsFixture() {
             // Real settings that exist here but have no orchestrator input to map to - see module doc comment.
             world_info_case_sensitive: false,
             world_info_match_whole_words: true,
-            world_info_character_strategy: 1,
         },
         textgenerationwebui_settings: {
             type: 'ooba',
@@ -236,7 +240,7 @@ async function run() {
     writeLorebook('TestLore', [
         { uid: 'wi1', key: ['irrelevant-key'], keysecondary: [], comment: '', content: 'The ancient tower looms over the village.', constant: true, selective: false, order: 10, position: 0, disable: false },
     ]);
-    const avatar = writeCharacter('Rex.png', {
+    const avatar = await writeCharacter('Rex.png', {
         name: 'Rex',
         description: 'Rex is a {{char}}.',
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },

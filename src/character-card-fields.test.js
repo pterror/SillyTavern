@@ -13,14 +13,17 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { getCharacterCardFields, getGroupCharacterDepthPrompts } = await import('./character-card-fields.js');
+const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-character-card-fields-test-'));
 const charactersDir = path.join(root, 'characters');
 const groupsDir = path.join(root, 'groups');
+const chatsDir = path.join(root, 'chats');
 fs.mkdirSync(charactersDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
+fs.mkdirSync(chatsDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir };
+const directories = { root, characters: charactersDir, groups: groupsDir, chats: chatsDir };
 // endpoints/characters.js's on-disk read cache keys its cache dir off this global (set by the real
 // server at startup) - point it at our fixture root so the cache doesn't error out standalone.
 globalThis.DATA_ROOT = root;
@@ -32,9 +35,9 @@ const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'a
  * Writes a minimal valid Spec V2 character card PNG to the fixture characters directory.
  * @param {string} avatar Filename, e.g. 'Alice.png'
  * @param {object} overrides Shallow-merged onto a minimal card (top-level fields win over `data` mirror by spec)
- * @returns {string} avatar (for chaining into a group's members list)
+ * @returns {Promise<string>} avatar (for chaining into a group's members list)
  */
-function writeCharacter(avatar, overrides = {}) {
+async function writeCharacter(avatar, overrides = {}) {
     const name = overrides.data?.name ?? overrides.name ?? avatar.replace(/\.png$/, '');
     const card = {
         spec: 'chara_card_v2',
@@ -70,8 +73,10 @@ function writeCharacter(avatar, overrides = {}) {
             }
         }
     }
-    const buffer = writeCard(baseImage, JSON.stringify(card));
+    const cardJson = JSON.stringify(card);
+    const buffer = writeCard(baseImage, cardJson);
     fs.writeFileSync(path.join(charactersDir, avatar), buffer);
+    await upsertCharacterFromWrite(directories, avatar, cardJson);
     return avatar;
 }
 
@@ -82,7 +87,7 @@ function writeGroup(id, group) {
 async function run() {
     // 1. Plain non-group character - all fields resolve, both prefer flags on.
     {
-        const avatar = writeCharacter('Alice.png', {
+        const avatar = await writeCharacter('Alice.png', {
             description: 'Alice is {{char}}.',
             personality: 'Cheerful',
             scenario: 'A cozy cafe',
@@ -130,7 +135,7 @@ async function run() {
 
     // 2. prefer_character_prompt / prefer_character_jailbreak off -> system/jailbreak resolve to ''.
     {
-        const avatar = writeCharacter('Bob.png', {
+        const avatar = await writeCharacter('Bob.png', {
             data: {
                 name: 'Bob',
                 system_prompt: 'You are Bob.',
@@ -148,7 +153,7 @@ async function run() {
 
     // 3. chat_metadata.scenario / chat_metadata.mes_example override the character's own values.
     {
-        const avatar = writeCharacter('Carol.png', {
+        const avatar = await writeCharacter('Carol.png', {
             scenario: 'Carol\'s own scenario',
             mes_example: '<START>\nCarol\'s own example',
             data: { name: 'Carol' },
@@ -186,7 +191,7 @@ async function run() {
 
     // 4b. depth_prompt.depth/.role explicitly set - custom numeric depth, and role given by name.
     {
-        const avatarUser = writeCharacter('Dave.png', {
+        const avatarUser = await writeCharacter('Dave.png', {
             data: {
                 name: 'Dave',
                 extensions: { depth_prompt: { prompt: 'Dave depth note', depth: 7, role: 'user' } },
@@ -197,7 +202,7 @@ async function run() {
         assert.equal(fieldsUser.charDepthPromptDepth, 7);
         assert.equal(fieldsUser.charDepthPromptRole, 1, 'role \'user\' resolves to extension_prompt_roles.USER (1)');
 
-        const avatarAssistant = writeCharacter('Eve.png', {
+        const avatarAssistant = await writeCharacter('Eve.png', {
             data: {
                 name: 'Eve',
                 extensions: { depth_prompt: { prompt: 'Eve depth note', depth: 0, role: 'assistant' } },
@@ -208,7 +213,7 @@ async function run() {
         assert.equal(fieldsAssistant.charDepthPromptRole, 2, 'role \'assistant\' resolves to extension_prompt_roles.ASSISTANT (2)');
 
         // A role already given as a valid number passes through as-is.
-        const avatarNumericRole = writeCharacter('Frank.png', {
+        const avatarNumericRole = await writeCharacter('Frank.png', {
             data: {
                 name: 'Frank',
                 extensions: { depth_prompt: { prompt: 'Frank depth note', depth: 2, role: 1 } },
@@ -218,7 +223,7 @@ async function run() {
         assert.equal(fieldsNumericRole.charDepthPromptRole, 1, 'a valid numeric role passes through unchanged');
 
         // An unrecognized role string falls back to SYSTEM (0), matching the client's own fallback.
-        const avatarBadRole = writeCharacter('Grace.png', {
+        const avatarBadRole = await writeCharacter('Grace.png', {
             data: {
                 name: 'Grace',
                 extensions: { depth_prompt: { prompt: 'Grace depth note', role: 'not-a-role' } },
@@ -230,21 +235,21 @@ async function run() {
 
     // 5. Group-combine path.
     {
-        const memberA = writeCharacter('GroupMemberA.png', {
+        const memberA = await writeCharacter('GroupMemberA.png', {
             description: 'A description',
             personality: 'A personality',
             scenario: 'A scenario',
             mes_example: 'A example line',
             data: { name: 'MemberA' },
         });
-        const memberB = writeCharacter('GroupMemberB.png', {
+        const memberB = await writeCharacter('GroupMemberB.png', {
             description: 'B description',
             personality: 'B personality',
             scenario: 'B scenario',
             mes_example: 'B example line',
             data: { name: 'MemberB' },
         });
-        const memberDisabled = writeCharacter('GroupMemberDisabled.png', {
+        const memberDisabled = await writeCharacter('GroupMemberDisabled.png', {
             description: 'Disabled description',
             data: { name: 'MemberDisabled' },
         });
@@ -324,22 +329,22 @@ async function run() {
     // 6. getGroupCharacterDepthPrompts() - per-member depth-prompt resolution (distinct from the
     // combined-cards path above).
     {
-        const memberNoPrompt = writeCharacter('DepthMemberNone.png', {
+        const memberNoPrompt = await writeCharacter('DepthMemberNone.png', {
             data: { name: 'DepthMemberNone' },
         });
-        const memberWithPrompt = writeCharacter('DepthMemberWith.png', {
+        const memberWithPrompt = await writeCharacter('DepthMemberWith.png', {
             data: {
                 name: 'DepthMemberWith',
                 extensions: { depth_prompt: { prompt: 'Depth note for {{char}}', depth: 3, role: 'user' } },
             },
         });
-        const memberDisabledCurrent = writeCharacter('DepthMemberDisabledCurrent.png', {
+        const memberDisabledCurrent = await writeCharacter('DepthMemberDisabledCurrent.png', {
             data: {
                 name: 'DepthMemberDisabledCurrent',
                 extensions: { depth_prompt: { prompt: 'Disabled-but-current note' } },
             },
         });
-        const memberDisabledOther = writeCharacter('DepthMemberDisabledOther.png', {
+        const memberDisabledOther = await writeCharacter('DepthMemberDisabledOther.png', {
             data: {
                 name: 'DepthMemberDisabledOther',
                 extensions: { depth_prompt: { prompt: 'Disabled-and-not-current note' } },

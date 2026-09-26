@@ -67,21 +67,24 @@ const { writeSecret, SECRET_KEYS } = await import('./secrets.js');
 const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } = await import('../message-tree-db.js');
 const { forwardAndPersistCompactStream } = await import('./backends/text-completions.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
+const { upsertCharacterFromWrite } = await import('../character-metadata-db.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-novelai-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
+const chatsDir = path.join(root, 'chats');
 const groupsDir = path.join(root, 'groups');
 const worldsDir = path.join(root, 'worlds');
 fs.mkdirSync(charactersDir, { recursive: true });
+fs.mkdirSync(chatsDir, { recursive: true });
 fs.mkdirSync(groupsDir, { recursive: true });
 fs.mkdirSync(worldsDir, { recursive: true });
 
-const directories = { root, characters: charactersDir, groups: groupsDir, worlds: worldsDir };
+const directories = { root, characters: charactersDir, chats: chatsDir, groups: groupsDir, worlds: worldsDir };
 globalThis.DATA_ROOT = root;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'img', 'ai4.png'));
 
-function writeCharacter(avatar, overrides = {}) {
+async function writeCharacter(avatar, overrides = {}) {
     const name = overrides.name ?? avatar.replace(/\.png$/, '');
     const card = {
         spec: 'chara_card_v2',
@@ -109,8 +112,10 @@ function writeCharacter(avatar, overrides = {}) {
         },
         ...overrides,
     };
-    const buffer = writeCard(baseImage, JSON.stringify(card));
+    const cardJson = JSON.stringify(card);
+    const buffer = writeCard(baseImage, cardJson);
     fs.writeFileSync(path.join(charactersDir, avatar), buffer);
+    await upsertCharacterFromWrite(directories, avatar, cardJson);
     return avatar;
 }
 
@@ -255,7 +260,7 @@ function pointNovelBackendAt(url) {
 async function run() {
     writeAllSettings(directories, buildSettingsFixture());
     writeSecret(directories, SECRET_KEYS.NOVEL, 'test-novel-api-key');
-    const avatar = writeCharacter('Rex.png', {
+    const avatar = await writeCharacter('Rex.png', {
         name: 'Rex',
         description: 'Rex is a {{char}}.',
         data: { name: 'Rex', description: 'Rex is a {{char}}.', first_mes: 'Hi, I am Rex.' },
@@ -343,7 +348,7 @@ async function run() {
     // ONLY case where omitting a real node id is safe. Resolves via the owner's own anchor to an
     // empty chat, and still produces a real, appendable anchorNodeId. ---
     {
-        const freshAvatar = writeCharacter('NovelFresh.png', {
+        const freshAvatar = await writeCharacter('NovelFresh.png', {
             name: 'Fresh',
             description: 'Fresh is a brand-new character with no chat history yet.',
             data: { name: 'Fresh', description: 'Fresh is a brand-new character with no chat history yet.', first_mes: 'Hello, this is Fresh.' },
