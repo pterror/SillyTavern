@@ -1,5 +1,3 @@
-const baseURL = `http://127.0.0.1:${process.env.ST_E2E_PORT}`;
-
 export const testSetup = {
     /**
      * Navigates to the home page without waiting for SillyTavern to load.
@@ -17,6 +15,7 @@ export const testSetup = {
      */
     awaitST: async ({ page }) => {
         await page.goto('/');
+        const origin = new URL(page.url()).origin;
         if (await testSetup.isLoginPage({ page })) {
             // eslint-disable-next-line playwright/no-networkidle
             await page.waitForLoadState('networkidle');
@@ -26,7 +25,7 @@ export const testSetup = {
             for (let i = userCount - 1; i >= 0; i--) {
                 await userSelects.nth(i).click();
                 const loggedIn = await page
-                    .waitForURL(url => url.toString().startsWith(baseURL) && url.pathname !== '/login', { timeout: 3000 })
+                    .waitForURL(url => url.origin === origin && url.pathname !== '/login', { timeout: 3000 })
                     .then(() => true, () => false);
                 if (loggedIn) {
                     break;

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 // NixOS host: the Playwright-managed Chromium download is missing system libs, so fall back
