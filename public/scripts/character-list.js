@@ -510,10 +510,11 @@ function verifyCharactersSearchSortRule() {
  * Converts the given character to its entity representation
  *
  * @param {Character} character - The character
+ * @param {string|number} [id] - The entity id. Upstream callers pass the character's index; defaults to its avatar.
  * @returns {Entity} The entity for this character
  */
-export function characterToEntity(character) {
-    return { item: character, id: character?.avatar, type: 'character' };
+export function characterToEntity(character, id) {
+    return { item: character, id: id === undefined ? character?.avatar : id, type: 'character' };
 }
 
 /**
