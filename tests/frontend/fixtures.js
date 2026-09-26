@@ -1,0 +1,32 @@
+// Every Playwright worker gets its own server.js on its own throwaway data root under the run root, so
+// workers can run in parallel without sharing state. Each data root starts with a copy of the seed's
+// webpack build (see e2e-global-setup.js), so its server's boot compile hits a warm cache.
+import fs from 'node:fs';
+import path from 'node:path';
+import { test as base, expect } from '@playwright/test';
+import { startServer } from '../e2e-st-server.js';
+
+export const test = base.extend({
+    stServer: [async ({}, use) => {
+        const runRoot = process.env.ST_E2E_RUN_ROOT;
+        if (!runRoot) {
+            throw new Error('ST_E2E_RUN_ROOT must be set (by playwright.config.js)');
+        }
+        const seedRoot = path.join(runRoot, 'seed');
+        const dataRoot = fs.mkdtempSync(path.join(runRoot, 'worker-'));
+        fs.cpSync(path.join(seedRoot, '_webpack'), path.join(dataRoot, '_webpack'), { recursive: true, preserveTimestamps: true });
+
+        const server = await startServer(dataRoot);
+        try {
+            await use({ baseURL: server.baseURL, dataRoot });
+        } finally {
+            await server.stop();
+        }
+    }, { scope: 'worker', auto: true, timeout: 180000 }],
+
+    baseURL: async ({ stServer }, use) => {
+        await use(stServer.baseURL);
+    },
+});
+
+export { expect };

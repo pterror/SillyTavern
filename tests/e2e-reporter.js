@@ -1,19 +1,19 @@
-// Deletes the throwaway data root only after a fully passing run; anything else (failed, interrupted,
-// timedout) keeps it for debugging. Playwright calls onEnd after the webServer is already stopped, and
-// the deletion waits for process exit so it always runs after everything else.
+// Deletes the throwaway run root only after a fully passing run; anything else (failed, interrupted,
+// timedout) keeps it for debugging. The deletion waits for process exit so it runs after the workers
+// have stopped their servers.
 import fs from 'node:fs';
 
-export default class E2EDataRootReporter {
+export default class E2ERunRootReporter {
     /** @type {import('@playwright/test/reporter').FullResult['status'] | undefined} */
     status;
 
     constructor() {
-        const dataRoot = process.env.ST_E2E_DATA_ROOT;
+        const runRoot = process.env.ST_E2E_RUN_ROOT;
         process.on('exit', () => {
             if (this.status === 'passed') {
-                fs.rmSync(dataRoot, { recursive: true, force: true });
+                fs.rmSync(runRoot, { recursive: true, force: true });
             } else {
-                console.log(`e2e run did not pass; data root kept at ${dataRoot}`);
+                console.log(`e2e run did not pass; run root kept at ${runRoot}`);
             }
         });
     }

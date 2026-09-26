@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 // A new data root shows a welcome popup partway through startup; startup finishes once it is answered.

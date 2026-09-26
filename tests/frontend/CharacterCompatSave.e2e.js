@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
 
 // Upstream's whole-form saves, `createOrEditCharacter` and `saveCharacterDebounced`, re-exported from script.js
