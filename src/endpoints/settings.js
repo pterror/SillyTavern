@@ -167,7 +167,7 @@ async function backupUserSettings(handle, preventDuplicates) {
 }
 
 /** Checks if the backup would be a duplicate of the latest existing one. */
-function isDuplicateBackup(handle, content) {
+export function isDuplicateBackup(handle, content) {
     const latestBackup = getLatestBackup(handle);
     if (!latestBackup || !fs.existsSync(latestBackup)) {
         return false;
@@ -176,20 +176,37 @@ function isDuplicateBackup(handle, content) {
 }
 
 /**
- * Gets the latest backup file for a user.
+ * Gets the latest backup file for a user: the one whose name carries the newest timestamp. File times aren't
+ * reliable for this (a copied or restored backups folder gets fresh ctimes in arbitrary order), so they are
+ * only used for a name without a parseable timestamp.
  * @param {string} handle User handle
  * @returns {string|null} Latest backup file. Null if no backup exists.
  */
 function getLatestBackup(handle) {
     const userDirectories = getUserDirectories(handle);
+    const prefix = getSettingsBackupFilePrefix(handle);
     const backupFiles = fs.readdirSync(userDirectories.backups)
-        .filter(x => x.startsWith(getSettingsBackupFilePrefix(handle)))
-        .map(x => ({ name: x, ctime: fs.statSync(path.join(userDirectories.backups, x)).ctimeMs }));
-    const latestBackup = backupFiles.sort((a, b) => b.ctime - a.ctime)[0]?.name;
+        .filter(x => x.startsWith(prefix))
+        .map(x => ({ name: x, time: getBackupTime(path.join(userDirectories.backups, x), x.slice(prefix.length)) }));
+    const latestBackup = backupFiles.sort((a, b) => b.time - a.time)[0]?.name;
     if (!latestBackup) {
         return null;
     }
     return path.join(userDirectories.backups, latestBackup);
+}
+
+/**
+ * @param {string} filePath Backup file path
+ * @param {string} suffix The file name after the backup prefix, e.g. `20260926-150503.json` (see generateTimestamp())
+ * @returns {number} Epoch milliseconds
+ */
+function getBackupTime(filePath, suffix) {
+    const match = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})\.json$/.exec(suffix);
+    if (match) {
+        const [year, month, day, hours, minutes, seconds] = match.slice(1).map(Number);
+        return new Date(year, month - 1, day, hours, minutes, seconds).getTime();
+    }
+    return fs.statSync(filePath).mtimeMs;
 }
 
 export const router = express.Router();
