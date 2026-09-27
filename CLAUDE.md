@@ -16,6 +16,10 @@ Subagents run only the tests covering what they changed, never the full suite. E
 
 Breaking is forbidden. Upstream (upstream/staging) exports, their signatures and parameter meanings, event payloads, routes, and third-party extensions keep working. Never change third-party extensions. For every upstream parameter, handle each input exactly as upstream does.
 
+## Client
+
+Clients only send actions.
+
 ## Loading
 
 Anything the client might already have is fetched conditionally against its cached hash. Nothing loads until it is on screen, except chat bodies, which always load whole. IDB space is limited.
