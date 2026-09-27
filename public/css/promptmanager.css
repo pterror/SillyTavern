@@ -43,9 +43,33 @@
 
 
 #completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_list_head .prompt_manager_prompt_tokens,
-#completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt .prompt_manager_prompt_tokens {
+#completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt .prompt_manager_prompt_tokens,
+#completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt .prompt_manager_prompt_tokens_wrapper {
     font-size: calc(var(--mainFontSize)*0.9);
     text-align: right;
+}
+
+/* Lays out its content as its own block, as it did as a grid child, so the warning span's leading space still collapses. */
+#completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt .prompt_manager_prompt_tokens_wrapper > .prompt_manager_prompt_tokens {
+    display: inline-block;
+}
+
+/* The wrapper puts the warning span three spans deep, where the controls' icon rule below would match it. */
+#completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt .prompt_manager_prompt_tokens > span {
+    flex-direction: unset;
+    justify-content: unset;
+    margin-left: unset;
+    cursor: unset;
+    transition: unset;
+    height: unset;
+    width: unset;
+    filter: unset;
+    opacity: unset;
+}
+
+/* Beats .tooltip's own cursor, so it is restated here. */
+#completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt .prompt_manager_prompt_tokens > span.tooltip {
+    cursor: help;
 }
 
 #completion_prompt_manager #completion_prompt_manager_list .completion_prompt_manager_prompt .prompt_manager_prompt_controls {
