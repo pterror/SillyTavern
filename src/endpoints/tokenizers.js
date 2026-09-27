@@ -16,6 +16,7 @@ import { TEXTGEN_TYPES } from '../constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from '../tokenizer-ids.js';
 import { resolveChatCompletionTokenizer, describeMapEntry, localResolution } from '../tokenizer-map-resolution.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
+import { DOWNLOAD_RETRY_MS, isDownloadBackedOff, recordDownloadFailure, clearDownloadFailure } from '../tokenizer-sources.js';
 import { getConfigValue, isValidUrl, trimV1 } from '../util.js';
 
 /**
@@ -72,15 +73,6 @@ export function guesstimate(str) {
     return Math.ceil(byteLength / BYTES_PER_TOKEN);
 }
 
-const DOWNLOAD_RETRY_MS = 60_000;
-
-/**
- * URL -> `performance.now()` of its last failed download. Monotonic, so a wall-clock change
- * can't stretch or skip the wait.
- * @type {Map<string, number>}
- */
-const failedDownloads = new Map();
-
 /**
  * Gets a path to the tokenizer model. Downloads the model if it's a URL.
  * @param {string} model Model URL or path
@@ -134,8 +126,7 @@ async function getPathToTokenizer(model) {
             throw new Error('Downloading tokenizers is disabled, the model is not cached');
         }
 
-        const failedAt = failedDownloads.get(model);
-        if (failedAt !== undefined && performance.now() - failedAt < DOWNLOAD_RETRY_MS) {
+        if (isDownloadBackedOff(model)) {
             throw new Error(`The last download failed less than ${DOWNLOAD_RETRY_MS / 1000} s ago`);
         }
 
@@ -150,15 +141,15 @@ async function getPathToTokenizer(model) {
             if (isCompressed) {
                 const decompressedBuffer = await gunzip(arrayBuffer);
                 writeFileAtomicSync(uncompressedPath, decompressedBuffer);
-                failedDownloads.delete(model);
+                clearDownloadFailure(model);
                 return uncompressedPath;
             }
 
             writeFileAtomicSync(cachedFile, Buffer.from(arrayBuffer));
-            failedDownloads.delete(model);
+            clearDownloadFailure(model);
             return cachedFile;
         } catch (error) {
-            failedDownloads.set(model, performance.now());
+            recordDownloadFailure(model);
             throw error;
         }
     } catch (error) {
