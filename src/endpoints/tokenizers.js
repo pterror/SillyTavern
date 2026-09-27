@@ -1027,7 +1027,9 @@ function createWebTokenizerEncodingHandler(tokenizer) {
 
             const text = request.body.text || '';
             const instance = await tokenizer?.get();
-            if (!instance) throw new Error('Failed to load the Web tokenizer');
+            if (!instance) {
+                return response.send({ ids: [], count: guesstimate(text), chunks: [] });
+            }
             const tokens = Array.from(instance.encode(text));
             const chunks = getWebTokenizersChunks(instance, tokens);
             return response.send({ ids: tokens, count: tokens.length, chunks });

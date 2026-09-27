@@ -321,6 +321,16 @@ if (canMockDownloads) {
         assert.deepEqual(readPaths.filter(file => path.basename(file) === 'llama3.json'), [], 'no llama3.json load');
     });
 
+    await testCase('/command-r/encode: a failed download answers the estimate, not 0 tokens', async () => {
+        downloadRequests.length = 0;
+        const response = await fetch(`${baseUrl}/command-r/encode`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { ids: [], count: guesstimate(text), chunks: [] });
+        assert.deepEqual(downloadRequests, ['https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz'], 'the download was tried');
+    });
+
     // command-a's download answers claude.json, so the load succeeds.
     await testCase('command-a, four parallel encodes on a cold cache: one request and one fromJSON', async () => {
         const commandAUrl = 'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz';
