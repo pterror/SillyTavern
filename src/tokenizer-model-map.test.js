@@ -42,9 +42,71 @@ check(GENERAL_API, 'codellama-13b', null);
 
 // --- Llama 3.0 ---
 check(GENERAL_API, 'Llama-3-8B', tokenizers.LLAMA3);
-check(GENERAL_API, 'llama-3.1-8b', null);
-// any occurrence failing its "not followed by" check leaves the name unmapped
+check(GENERAL_API, 'llama-3.4-8b', null);
+// a name naming two versions is unmapped
 check(GENERAL_API, 'llama-3-llama-3.1', null);
+check(GENERAL_API, 'llama-3.1-llama-3.3-70b', null);
+
+// --- Llama 3.1-3.3, 4 and Llama Guard: one official file each ---
+// Llama 3.1 Instruct, 3.2 1B and 3B (base and Instruct) and Llama Guard 3 1B ship one file. Ollama's
+// `llama3.1:<size>` tags and Groq's `llama-3.1-8b-instant` are the Instruct models.
+for (const name of [
+    'meta-llama/Llama-3.1-8B-Instruct', 'Llama-3.1-405B-Instruct-FP8', 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+    'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf', 'llama3.1:8b', 'llama3.1:70b-instruct-q4_K_M', 'llama3.1:405b',
+    'llama-3.1-8b-instant', 'accounts/fireworks/models/llama-v3p1-8b-instruct', '@cf/meta/llama-3.1-8b-instruct-fp8',
+    'Llama-3.2-1B', 'meta-llama/Llama-3.2-3B-Instruct', 'Llama-3.2-1B-Instruct-QLORA_INT4_EO8', 'llama3.2:1b',
+    'llama3.2:3b-text-q4_K_M', 'llama-3.2-3b-preview', 'accounts/fireworks/models/llama-v3p2-3b-instruct',
+    'Llama-Guard-3-1B', 'llama-guard3:1b',
+]) {
+    checkSource(GENERAL_API, name, 'llama3.1');
+}
+// Llama 3.1 base (8B, 70B, 405B-FP8)
+for (const name of ['meta-llama/Llama-3.1-8B', 'Llama-3.1-70B', 'Llama-3.1-405B-FP8', 'llama-3.1-8b', 'llama3.1:70b-text-q4_0']) {
+    checkSource(GENERAL_API, name, 'llama3.1-base');
+}
+for (const name of [
+    'meta-llama/Llama-3.3-70B-Instruct', 'Llama-3.3-70B-Instruct-Q4_K_M.gguf', 'llama3.3:70b', 'llama-3.3-70b-versatile',
+    'accounts/fireworks/models/llama-v3p3-70b-instruct', '@cf/meta/llama-3.3-70b-instruct-fp8-fast', 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+]) {
+    checkSource(GENERAL_API, name, 'llama3.3');
+}
+// Llama 4 Scout and Maverick, base and Instruct, ship one file.
+for (const name of [
+    'meta-llama/Llama-4-Scout-17B-16E-Instruct', 'Llama-4-Maverick-17B-128E-Instruct-FP8', 'Llama-4-Scout-17B-16E',
+    'Llama-4-Maverick-17B-128E-Original', 'Llama-4-Scout-17B-16E-Instruct-Q4_K_M.gguf', 'meta-llama/llama-4-scout-17b-16e-instruct',
+    'llama4:scout', 'llama4:maverick', 'llama4:16x17b', 'llama4:128x17b', 'accounts/fireworks/models/llama4-maverick-instruct-basic',
+]) {
+    checkSource(GENERAL_API, name, 'llama4');
+}
+for (const name of ['Meta-Llama-Guard-2-8B', 'meta-llama/LlamaGuard-2-8b', 'accounts/fireworks/models/llama-guard-2-8b']) {
+    checkSource(GENERAL_API, name, 'llama-guard-2');
+}
+for (const name of ['Llama-Guard-3-8B', 'Llama-Guard-3-8B-INT8', 'llama-guard-3-8b', 'llama-guard3:8b', '@cf/meta/llama-guard-3-8b']) {
+    checkSource(GENERAL_API, name, 'llama-guard-3-8b');
+}
+checkSource(GENERAL_API, 'meta-llama/Llama-Guard-3-11B-Vision', 'llama-guard-3-11b-vision');
+for (const name of ['Llama-Guard-4-12B', 'meta-llama/llama-guard-4-12b']) {
+    checkSource(GENERAL_API, name, 'llama-guard-4');
+}
+// The distill's own file wins over its base model's.
+checkSource(GENERAL_API, 'DeepSeek-R1-Distill-Llama-3.3-70B', 'deepseek-r1-distill-llama');
+
+// Llama names that name no one official file: 3.2 Vision (its tokenizer.json and original/tokenizer.model
+// give different ids), the 405B base (its original/mp8/tokenizer.model is unknown), the closed
+// Llama-3.3-8B-Instruct, Groq ids that served Llama 3.3, names without a size, unknown versions, NVIDIA's
+// Nemotron models, Prompt Guard, Llama Guard 1, and "LLaMA v2".
+for (const name of [
+    'Llama-3.2-11B-Vision-Instruct', 'meta-llama/Llama-3.2-90B-Vision', 'llama3.2-vision:11b', 'llama-3.2-11b-text-preview',
+    'accounts/fireworks/models/llama-v3p2-90b-vision-instruct', 'meta-llama/Llama-3.1-405B', 'llama3.1:405b-text-q4_0',
+    'Llama-3.3-8B-Instruct', 'llama-3.1-70b-versatile', 'llama-3.1-70b-specdec',
+    'llama3.1', 'llama3.1:latest', 'llama-3.1', 'llama3.2:latest', 'llama3.3', 'llama3.3:latest', 'llama-3.3',
+    'llama4', 'llama4:latest', 'llama-4', 'llama-scout', 'llama-guard3', 'llama-guard3:latest', 'llama-3.1-sonar-large-128k-online',
+    'llama-4.1-scout', 'EVA-UNIT-01/EVA-LLaMA-3.33-70B-v0.1', 'Envoid/Llama-3.05-NT-Storybreaker-Ministral-70B',
+    'nvidia/Llama-3.1-Nemotron-70B-Instruct-HF', 'Llama-3.1-Nemotron-Nano-VL-8B-V1', 'Llama-3_3-Nemotron-Super-49B-v1',
+    'meta-llama/Llama-Prompt-Guard-2-86M', 'meta-llama/LlamaGuard-7b', 'LLaMA v2',
+]) {
+    check(GENERAL_API, name, null);
+}
 
 // --- Mistral V1 ---
 check(GENERAL_API, 'mistral-7b-instruct-v0.2', tokenizers.MISTRAL);
@@ -323,11 +385,14 @@ check(GENERAL_API, 'Mixtral-8x22B-Instruct-v0.1', null);
 check(GENERAL_API, 'mixtral-8x22B-v0.3', null);
 check(GENERAL_API, 'open-mixtral-8x22b', null);
 
-// CodeLlama 34b (llama.model); the 7b/13b base and Instruct and all 70b files differ
+// CodeLlama 34b (llama.model); the 7b/13b base and Instruct and all 70b files differ, and each repo's
+// tokenizer.model and tokenizer.json give different ids
 check(GENERAL_API, 'CodeLlama-34b-Instruct-hf', tokenizers.LLAMA);
 check(GENERAL_API, 'CodeLlama-34b-Python-hf', tokenizers.LLAMA);
 check(GENERAL_API, 'CodeLlama-7b-hf', null);
+check(GENERAL_API, 'CodeLlama-13b-Instruct-hf', null);
 check(GENERAL_API, 'CodeLlama-70b-hf', null);
+check(GENERAL_API, 'codellama:70b', null);
 check(GENERAL_API, 'CodeLlama-7b-Python-hf', tokenizers.LLAMA);
 check(GENERAL_API, 'CodeLlama-13b-Python-hf', tokenizers.LLAMA);
 check(GENERAL_API, 'codellama:7b-python-q4_0', tokenizers.LLAMA);
@@ -529,6 +594,17 @@ for (const [name, source] of [['gemma-3-27b-it', 'gemma-3-it'], ['gemma-3n-e4b-i
     }
 }
 for (const [name, source] of [['gemma-3-27b-pt', 'gemma-3-pt'], ['gemma-4-E4B-it', 'gemma-4'], ['gemma-4-31B-it-assistant', 'gemma-4-assistant'], ['codegemma-7b-it', 'codegemma']]) {
+    for (const state of backendStates) {
+        const unmapped = state.api === 'novel' || (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
+        assert.deepEqual(selectBackendResult(lookupModelTokenizer(state.api, name), state), unmapped ? null : { source }, `${name} on ${JSON.stringify(state)}`);
+    }
+}
+
+// No vendor API serves Llama models under these names, so they map on every backend, hosted APIs included.
+for (const [name, source] of [
+    ['llama-3.3-70b-versatile', 'llama3.3'], ['meta-llama/llama-3.1-8b-instruct', 'llama3.1'], ['llama3.1:8b-text-q4_0', 'llama3.1-base'],
+    ['meta-llama/llama-4-maverick-17b-128e-instruct', 'llama4'], ['meta-llama/llama-guard-4-12b', 'llama-guard-4'],
+]) {
     for (const state of backendStates) {
         const unmapped = state.api === 'novel' || (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
         assert.deepEqual(selectBackendResult(lookupModelTokenizer(state.api, name), state), unmapped ? null : { source }, `${name} on ${JSON.stringify(state)}`);

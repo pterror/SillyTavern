@@ -985,6 +985,29 @@ await check('a Gemma 3 -it name: its file on llama.cpp and Ollama; the estimate 
     assert.deepEqual({ kind: openrouterPt.kind, source: openrouterPt.source, localCopy: openrouterPt.localCopy }, { kind: 'local', source: 'gemma-3-pt', localCopy: pt });
 });
 
+await check('a Llama 3.x or 4 name: its file on every backend, hosted APIs included; the remote tokenizer first on llama.cpp', async () => {
+    const instruct = { id: tokenizers.LLAMA3_1, source: 'llama3.1', name: 'Llama 3.1 (official)' };
+    const llamacpp = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf', tokenizerSetting: tokenizers.BEST_MATCH,
+    });
+    assert.deepEqual({ kind: llamacpp.kind, localCopy: llamacpp.localCopy }, { kind: 'remote', localCopy: instruct });
+
+    const hosted = [
+        [{ api: 'openai', source: 'groq' }, 'llama-3.3-70b-versatile', { id: tokenizers.LLAMA3_3, source: 'llama3.3', name: 'Llama 3.3 (official)' }],
+        [{ api: 'openai', source: 'openrouter' }, 'meta-llama/llama-3.1-8b-instruct', instruct],
+        [{ api: 'openai', source: 'workers_ai' }, '@cf/meta/llama-4-scout-17b-16e-instruct', { id: tokenizers.LLAMA4, source: 'llama4', name: 'Llama 4 (official)' }],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'llama3.1:8b-text-q4_0', { id: tokenizers.LLAMA3_1_BASE, source: 'llama3.1-base', name: 'Llama 3.1 base (official)' }],
+    ];
+    for (const [backend, model, expected] of hosted) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual(
+            { kind: resolved.kind, id: resolved.id, source: resolved.source, name: resolved.name, localCopy: resolved.localCopy },
+            { kind: 'local', ...expected, localCopy: expected },
+            `${JSON.stringify(backend)} ${model}`,
+        );
+    }
+});
+
 await check('the old resolvers and their llama defaults are no longer exported', async () => {
     const modules = {
         './tokenizer-resolve.js': ['getTokenizerBestMatch', 'resolveTokenizerType', 'getCurrentOpenRouterModelTokenizer', 'getCurrentDreamGenModelTokenizer'],

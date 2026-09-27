@@ -50,6 +50,13 @@ export const tokenizers = {
     GEMMA_3N: 1024,
     CODEGEMMA: 1025,
     GEMMA_2_JPN: 1026,
+    LLAMA3_1_BASE: 1027,
+    LLAMA3_3: 1028,
+    LLAMA4: 1029,
+    LLAMA_GUARD_3_8B: 1030,
+    LLAMA_GUARD_3_11B_VISION: 1031,
+    LLAMA_GUARD_2: 1032,
+    LLAMA_GUARD_4: 1033,
 };
 
 /**
@@ -106,4 +113,11 @@ export const TOKENIZER_TYPE_KEYS = {
     [tokenizers.GEMMA_3N]: 'gemma-3n',
     [tokenizers.CODEGEMMA]: 'codegemma',
     [tokenizers.GEMMA_2_JPN]: 'gemma-2-jpn',
+    [tokenizers.LLAMA3_1_BASE]: 'llama3.1-base',
+    [tokenizers.LLAMA3_3]: 'llama3.3',
+    [tokenizers.LLAMA4]: 'llama4',
+    [tokenizers.LLAMA_GUARD_3_8B]: 'llama-guard-3-8b',
+    [tokenizers.LLAMA_GUARD_3_11B_VISION]: 'llama-guard-3-11b-vision',
+    [tokenizers.LLAMA_GUARD_2]: 'llama-guard-2',
+    [tokenizers.LLAMA_GUARD_4]: 'llama-guard-4',
 };
