@@ -309,6 +309,10 @@ router.post('/generate', async function (req, res) {
     // src/endpoints/backends/text-completions.js's/src/endpoints/backends/kobold.js's own
     // identically-shaped branches for the full design precedent this mirrors.
     let pendingAssistantPersist = null;
+    // Per-request warnings for the screen - see text-completions.js's identical `warnings` for the
+    // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
+    /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
+    const warnings = [];
     if (req.body.owner_id && (req.body.character_avatar || req.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
@@ -480,7 +484,7 @@ router.post('/generate', async function (req, res) {
             // forwardAndPersistCompactStream()'s own doc comment) - `data.logprobs` is carried through
             // as a `0x02` probabilities frame so per-token logprob display keeps working.
             // `pendingAssistantPersist` only gates whether the final text also gets persisted.
-            await forwardAndPersistCompactStream(response, res, pendingAssistantPersist, json => json?.token, json => json?.logprobs);
+            await forwardAndPersistCompactStream(response, res, pendingAssistantPersist, json => json?.token, json => json?.logprobs, null, warnings);
         } else {
             if (!response.ok) {
                 const text = await response.text();
@@ -512,6 +516,9 @@ router.post('/generate', async function (req, res) {
                 if (persisted) {
                     data.assistant_node_id = persisted.node_id;
                 }
+            }
+            if (warnings.length) {
+                data.warnings = warnings;
             }
 
             return res.send(data);

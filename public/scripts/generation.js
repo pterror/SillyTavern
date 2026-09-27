@@ -48,6 +48,7 @@ import { sendSystemMessage, system_message_types } from './system-messages.js';
 import { getTextGenGenerationData, textgenerationwebui_settings as textgen_settings } from './textgen-settings.js';
 import { getFriendlyTokenizerName, getTokenCountAsync, saveTokenCache } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
+import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { shiftDownByOne, shiftUpByOne, waitUntilCondition } from './utils.js';
 import { getWorldInfoPrompt, wi_anchor_position, world_info_include_names } from './world-info.js';
 
@@ -2583,6 +2584,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             }
             throw new Error(data?.response);
         }
+
+        showTokenizerWarnings(data.warnings);
 
         if (jsonSchema) {
             unblockGeneration(type);

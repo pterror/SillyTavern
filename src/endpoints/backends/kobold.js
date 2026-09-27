@@ -177,6 +177,10 @@ router.post('/generate', async function (request, response_generate) {
     // Set only by the raw-action branch below (buildRawActionKoboldRequest()'s own `itemization`
     // field) - see text-completions.js's identical `rawActionItemization` for the full rationale.
     let rawActionItemization = null;
+    // Per-request warnings for the screen - see text-completions.js's identical `warnings` for the
+    // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
+    /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
+    const warnings = [];
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
@@ -372,7 +376,7 @@ router.post('/generate', async function (request, response_generate) {
                 // compact binary wire format every streaming path uses, raw-action or not (see
                 // text-completions.js's forwardAndPersistCompactStream() doc comment) -
                 // `pendingAssistantPersist` only gates whether the final text also gets persisted.
-                await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token, null, rawActionItemization);
+                await forwardAndPersistCompactStream(response, response_generate, pendingAssistantPersist, json => json?.token, null, rawActionItemization, warnings);
                 return;
             } else {
                 if (!response.ok) {
@@ -405,6 +409,9 @@ router.post('/generate', async function (request, response_generate) {
                 // non-streaming attachment for the full rationale.
                 if (rawActionItemization) {
                     data.itemization = rawActionItemization;
+                }
+                if (warnings.length) {
+                    data.warnings = warnings;
                 }
 
                 return response_generate.send(data);

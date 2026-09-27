@@ -241,8 +241,10 @@ function setJsonObjectFormat(bodyParams, messages, jsonSchema) {
  * shared `persistAssistantReply()`, for both streaming (teed via `forwardAndPersistCompactStream()`, accumulating
  * only `content_block_delta` events whose `delta.type === 'text_delta'`) and non-streaming. Purely additive:
  * the bytes/JSON actually sent to the client are unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendClaudeRequest(request, response, persist) {
+async function sendClaudeRequest(request, response, persist, warnings = null) {
     const apiUrl = new URL(request.body.reverse_proxy || API_CLAUDE).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE, request.body.secret_id);
     const divider = '-'.repeat(process.stdout.columns);
@@ -445,7 +447,7 @@ async function sendClaudeRequest(request, response, persist) {
             // is correctly ignored, so thinking/tool-call content is never mistaken for the reply.
             await forwardAndPersistCompactStream(generateResponse, response, persist,
                 json => (json?.type === 'content_block_delta' && json?.delta?.type === 'text_delta') ? json.delta.text : undefined,
-                json => json?.delta?.thinking || undefined);
+                json => json?.delta?.thinking || undefined, warnings);
         } else {
             if (!generateResponse.ok) {
                 const generateResponseText = await generateResponse.text();
@@ -475,6 +477,7 @@ async function sendClaudeRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, persistedText);
                 if (persisted) reply.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) reply.warnings = warnings;
 
             return response.send(reply);
         }
@@ -498,8 +501,10 @@ async function sendClaudeRequest(request, response, persist) {
  * are excluded), matching this function's own existing, unmodified non-streaming `responseText`
  * extraction below verbatim. Purely additive: the bytes/JSON actually sent to the client are
  * unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendMakerSuiteRequest(request, response, persist) {
+async function sendMakerSuiteRequest(request, response, persist, warnings = null) {
     const useVertexAi = request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.VERTEXAI;
     const apiName = useVertexAi ? 'Google Vertex AI' : 'Google AI Studio';
     let apiUrl;
@@ -803,7 +808,7 @@ async function sendMakerSuiteRequest(request, response, persist) {
                 await forwardAndPersistCompactStream(generateResponse, response, persist, json => {
                     const parts = json?.candidates?.[0]?.content?.parts;
                     return Array.isArray(parts) ? parts.filter(part => !part.thought).map(part => part.text ?? '').join('') : undefined;
-                }, json => json?.candidates?.[0]?.content?.parts?.find(part => part.thought)?.text || undefined);
+                }, json => json?.candidates?.[0]?.content?.parts?.find(part => part.thought)?.text || undefined, warnings);
             } catch (error) {
                 console.error('Error forwarding streaming response:', error);
                 if (!response.headersSent) {
@@ -856,6 +861,7 @@ async function sendMakerSuiteRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, responseText ?? '');
                 if (persisted) reply.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) reply.warnings = warnings;
 
             return response.send(reply);
         }
@@ -879,8 +885,10 @@ async function sendMakerSuiteRequest(request, response, persist) {
  * `{choices: [{delta: {content}}]}` per SSE chunk while streaming - see `body` above: this function
  * always builds and sends a real `messages: [...]` request to that same endpoint). Purely additive:
  * the bytes/JSON actually sent to the client are unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendAI21Request(request, response, persist) {
+async function sendAI21Request(request, response, persist, warnings = null) {
     if (!request.body) return response.sendStatus(400);
 
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AI21, request.body.secret_id);
@@ -940,7 +948,7 @@ async function sendAI21Request(request, response, persist) {
             // persistence when `persist` is set - the compact re-encoding itself always happens;
             // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
             // own doc comment above).
-            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, null, warnings);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -958,6 +966,7 @@ async function sendAI21Request(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -984,8 +993,10 @@ async function sendAI21Request(request, response, persist) {
  * above: this function always builds and sends a real `messages: [...]` request to that same
  * endpoint, no Mistral-specific response reshaping). Purely additive: the bytes/JSON actually sent to
  * the client are unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendMistralAIRequest(request, response, persist) {
+async function sendMistralAIRequest(request, response, persist, warnings = null) {
     const apiUrl = new URL(request.body.reverse_proxy || API_MISTRAL).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.MISTRALAI, request.body.secret_id);
 
@@ -1055,7 +1066,7 @@ async function sendMistralAIRequest(request, response, persist) {
             // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
             // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
-                json => json.choices?.find(choice => choice?.delta?.content?.[0]?.thinking)?.delta?.content?.[0]?.thinking?.[0]?.text || undefined);
+                json => json.choices?.find(choice => choice?.delta?.content?.[0]?.thinking)?.delta?.content?.[0]?.thinking?.[0]?.text || undefined, warnings);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1073,6 +1084,7 @@ async function sendMistralAIRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -1108,8 +1120,10 @@ async function sendMistralAIRequest(request, response, persist) {
  * `delta.message.content.text` field - the exact same event types/field `parseStreamData()` already
  * treats as real reply-text chunks. Purely additive: the bytes/JSON actually sent to the client are
  * unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendCohereRequest(request, response, persist) {
+async function sendCohereRequest(request, response, persist, warnings = null) {
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.COHERE, request.body.secret_id);
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
@@ -1194,7 +1208,7 @@ async function sendCohereRequest(request, response, persist) {
             await forwardAndPersistCompactStream(stream, response, persist, json =>
                 (typeof json?.delta === 'object' && typeof json?.delta?.message === 'object' && ['content-delta', 'tool-plan-delta'].includes(json?.type))
                     ? (json.delta.message.content?.text ?? '')
-                    : undefined);
+                    : undefined, null, warnings);
         } else {
             const generateResponse = await fetch(apiUrl, config);
             if (!generateResponse.ok) {
@@ -1217,6 +1231,7 @@ async function sendCohereRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, contentText || generateResponseJson?.message?.tool_plan || '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -1248,8 +1263,10 @@ async function sendCohereRequest(request, response, persist) {
  * function's own existing, unmodified client-facing response (`response.send(generateResponseJson)`
  * as-is) already leaves `reasoning_content` untouched too. Purely additive: the bytes/JSON actually
  * sent to the client are unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendDeepSeekRequest(request, response, persist) {
+async function sendDeepSeekRequest(request, response, persist, warnings = null) {
     const apiUrl = new URL(request.body.reverse_proxy || API_DEEPSEEK).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.DEEPSEEK, request.body.secret_id);
 
@@ -1344,7 +1361,7 @@ async function sendDeepSeekRequest(request, response, persist) {
             // reasoner models' separate reasoning-output field - see this function's own doc comment
             // above), so reasoning is never persisted as if it were the reply.
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
-                json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined);
+                json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined, warnings);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1363,6 +1380,7 @@ async function sendDeepSeekRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -1391,8 +1409,10 @@ async function sendDeepSeekRequest(request, response, persist) {
  * persistence here reads only `content`/`delta.content`, exactly matching this function's own existing
  * client-facing response, which forwards `generateResponseJson` unmodified. Purely additive: the
  * bytes/JSON actually sent to the client are unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendXaiRequest(request, response, persist) {
+async function sendXaiRequest(request, response, persist, warnings = null) {
     const apiUrl = new URL(request.body.reverse_proxy || API_XAI).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.XAI, request.body.secret_id);
 
@@ -1478,7 +1498,7 @@ async function sendXaiRequest(request, response, persist) {
             // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
             // own doc comment above).
             await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content,
-                json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined);
+                json => json.choices?.find(choice => choice?.delta?.reasoning_content)?.delta?.reasoning_content || undefined, warnings);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1496,6 +1516,7 @@ async function sendXaiRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -1523,8 +1544,10 @@ async function sendXaiRequest(request, response, persist) {
  * endpoint, an aggregator that proxies many underlying models but exposes a single uniform
  * OpenAI-compatible surface). Purely additive: the bytes/JSON actually sent to the client are
  * unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendAimlapiRequest(request, response, persist) {
+async function sendAimlapiRequest(request, response, persist, warnings = null) {
     const apiUrl = API_AIMLAPI;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AIMLAPI, request.body.secret_id);
 
@@ -1608,7 +1631,7 @@ async function sendAimlapiRequest(request, response, persist) {
             // persistence when `persist` is set - the compact re-encoding itself always happens;
             // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
             // own doc comment above).
-            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning, warnings);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1626,6 +1649,7 @@ async function sendAimlapiRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -1654,8 +1678,10 @@ async function sendAimlapiRequest(request, response, persist) {
  * reasoning/thinking-adjacent field (e.g. a separate `reasoning_content`) is read/exposed anywhere in
  * this function - checked, not assumed - so plain `content`/`delta.content` is the whole reply.
  * Purely additive: the bytes/JSON actually sent to the client are unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendElectronHubRequest(request, response, persist) {
+async function sendElectronHubRequest(request, response, persist, warnings = null) {
     const apiUrl = API_ELECTRONHUB;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.ELECTRONHUB, request.body.secret_id);
 
@@ -1746,7 +1772,7 @@ async function sendElectronHubRequest(request, response, persist) {
             // persistence when `persist` is set - the compact re-encoding itself always happens;
             // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
             // own doc comment above).
-            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning, warnings);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1764,6 +1790,7 @@ async function sendElectronHubRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -1794,8 +1821,10 @@ async function sendElectronHubRequest(request, response, persist) {
  * read/exposed anywhere in this function - checked, not assumed - so plain `content`/`delta.content`
  * is the whole reply. Purely additive: the bytes/JSON actually sent to the client are unaffected
  * either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendChutesRequest(request, response, persist) {
+async function sendChutesRequest(request, response, persist, warnings = null) {
     const apiUrl = API_CHUTES;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.CHUTES, request.body.secret_id);
 
@@ -1875,7 +1904,7 @@ async function sendChutesRequest(request, response, persist) {
             // persistence when `persist` is set - the compact re-encoding itself always happens;
             // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
             // own doc comment above).
-            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning, warnings);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1893,6 +1922,7 @@ async function sendChutesRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -1924,8 +1954,10 @@ async function sendChutesRequest(request, response, persist) {
  * reasoning/thinking-adjacent field (e.g. a separate `reasoning_content`) is read/exposed anywhere in
  * this function - checked, not assumed - so plain `content`/`delta.content` is the whole reply.
  * Purely additive: the bytes/JSON actually sent to the client are unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendMinimaxRequest(request, response, persist) {
+async function sendMinimaxRequest(request, response, persist, warnings = null) {
     const apiUrl = request.body.minimax_endpoint === MINIMAX_ENDPOINT.CN
         ? API_MINIMAX_CN : API_MINIMAX;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.MINIMAX, request.body.secret_id);
@@ -1985,7 +2017,7 @@ async function sendMinimaxRequest(request, response, persist) {
             // persistence when `persist` is set - the compact re-encoding itself always happens;
             // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
             // own doc comment above).
-            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            await forwardAndPersistCompactStream(generateResponse, response, persist, json => json?.choices?.[0]?.delta?.content, null, warnings);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -2003,6 +2035,7 @@ async function sendMinimaxRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, generateResponseJson?.choices?.[0]?.message?.content ?? '');
                 if (persisted) generateResponseJson.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) generateResponseJson.warnings = warnings;
 
             return response.send(generateResponseJson);
         }
@@ -2033,8 +2066,10 @@ async function sendMinimaxRequest(request, response, persist) {
  * `reasoning_content`) is read/exposed anywhere in this function - checked, not assumed - so plain
  * `content`/`delta.content` is the whole reply. Purely additive: the bytes/JSON actually sent to the
  * client are unaffected either way.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
+ * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
  */
-async function sendAzureOpenAIRequest(request, response, persist) {
+async function sendAzureOpenAIRequest(request, response, persist, warnings = null) {
     // 1. GATHER & VALIDATE SETTINGS
     const { azure_base_url, azure_deployment_name, azure_api_version } = request.body;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AZURE_OPENAI, request.body.secret_id);
@@ -2106,7 +2141,7 @@ async function sendAzureOpenAIRequest(request, response, persist) {
             // persistence when `persist` is set - the compact re-encoding itself always happens;
             // a falsy `persist` only skips persistence (see `forwardAndPersistCompactStream()`'s
             // own doc comment above).
-            return await forwardAndPersistCompactStream(fetchResponse, response, persist, json => json?.choices?.[0]?.delta?.content);
+            return await forwardAndPersistCompactStream(fetchResponse, response, persist, json => json?.choices?.[0]?.delta?.content, null, warnings);
         }
 
         if (fetchResponse.ok) {
@@ -2121,6 +2156,7 @@ async function sendAzureOpenAIRequest(request, response, persist) {
                 const persisted = await persistAssistantReply(persist, json?.choices?.[0]?.message?.content ?? '');
                 if (persisted) json.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) json.warnings = warnings;
 
             return response.send(json);
         }
@@ -2969,9 +3005,12 @@ function extractGenericReasoning(json) {
  * no reasoning field of its own (Claude/Gemini/DeepSeek/xAI/Mistral pass their own; everything else
  * OpenAI-Chat-Completions-shaped passes `extractGenericReasoning`; AI21/MiniMax/Azure pass `null`,
  * matching `getStreamingReply()` never surfacing reasoning for those sources either).
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The
+ * `/generate` route's per-request warnings - when non-empty, written as the stream's first frame, a
+ * control frame (`{control: {warnings: ...}}`), before any content.
  * @returns {Promise<void>}
  */
-async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractReasoning = null) {
+async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractReasoning = null, warnings = null) {
     if (!fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
@@ -2993,6 +3032,9 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     const generationRecord = createGenerationRecord(generationId);
     const { writer: initialWriter, stopKeepalive } = createResumableWriter(createChatCompactStreamWriter(response), generationRecord);
     let writer = initialWriter;
+    if (warnings?.length) {
+        writer.write(encodeControlFrame({ warnings }));
+    }
     let sseBuffer = '';
     let accumulatedText = '';
     let lastIndex = 0;
@@ -3230,9 +3272,12 @@ function applyServerToolCallDelta(target, delta) {
  * (`{directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas}`).
  * @param {(messages: object[]) => Promise<import('node-fetch').Response>} refetch Re-issues the backend
  * request with a freshly-resolved `messages` array - forwarded straight through to `runServerToolRounds()`.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The
+ * `/generate` route's per-request warnings - when non-empty, written as the stream's first frame, a
+ * control frame (`{control: {warnings: ...}}`), before any content.
  * @returns {Promise<void>}
  */
-async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, response, persist, pendingServerToolLoop, refetch) {
+async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, response, persist, pendingServerToolLoop, refetch, warnings = null) {
     if (!fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
@@ -3244,6 +3289,9 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     response.setHeader('X-Generation-Id', generationId);
 
     const { writer } = createResumableWriter(createChatCompactStreamWriter(response), createGenerationRecord(generationId));
+    if (warnings?.length) {
+        writer.write(encodeControlFrame({ warnings }));
+    }
 
     let buffer = '';
     let text = '';
@@ -3850,6 +3898,13 @@ router.post('/generate', async function (request, response) {
     // `buildRawActionChatCompletionRequest()` call, which requires them too.
     let pendingServerToolLoop = null;
 
+    // Per-request warnings for the screen (dropped entries, estimate trims, tokenizer fallbacks),
+    // covering every branch below and not gated on persistence. Sent as the stream's first frame
+    // (`{control: {warnings}}`) or as the reply's `warnings`, only when non-empty - so a reply with
+    // no warnings is byte-identical.
+    /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
+    const warnings = [];
+
     try {
         if (!request.body) return response.status(400).send({ error: true });
 
@@ -4122,19 +4177,19 @@ router.post('/generate', async function (request, response) {
         }
 
         switch (request.body.chat_completion_source) {
-            case CHAT_COMPLETION_SOURCES.CLAUDE: return await sendClaudeRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.AI21: return await sendAI21Request(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.MAKERSUITE: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.VERTEXAI: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.MISTRALAI: return await sendMistralAIRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.COHERE: return await sendCohereRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.DEEPSEEK: return await sendDeepSeekRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.AIMLAPI: return await sendAimlapiRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.XAI: return await sendXaiRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.CHUTES: return await sendChutesRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.MINIMAX: return await sendMinimaxRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.ELECTRONHUB: return await sendElectronHubRequest(request, response, pendingAssistantPersist);
-            case CHAT_COMPLETION_SOURCES.AZURE_OPENAI: return await sendAzureOpenAIRequest(request, response, pendingAssistantPersist);
+            case CHAT_COMPLETION_SOURCES.CLAUDE: return await sendClaudeRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.AI21: return await sendAI21Request(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.MAKERSUITE: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.VERTEXAI: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.MISTRALAI: return await sendMistralAIRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.COHERE: return await sendCohereRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.DEEPSEEK: return await sendDeepSeekRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.AIMLAPI: return await sendAimlapiRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.XAI: return await sendXaiRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.CHUTES: return await sendChutesRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.MINIMAX: return await sendMinimaxRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.ELECTRONHUB: return await sendElectronHubRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.AZURE_OPENAI: return await sendAzureOpenAIRequest(request, response, pendingAssistantPersist, warnings);
         }
 
         let apiUrl;
@@ -4574,6 +4629,7 @@ router.post('/generate', async function (request, response) {
                 return await forwardAndPersistCompactStreamWithServerTools(
                     fetchResponse, response, pendingAssistantPersist, pendingServerToolLoop,
                     (messages) => fetch(endpointUrl, { ...config, body: JSON.stringify({ ...requestBody, stream: false, messages }) }),
+                    warnings,
                 );
             }
 
@@ -4583,7 +4639,7 @@ router.post('/generate', async function (request, response) {
             // the full teeing mechanism and the `choices[0].delta.content` shape verification. The
             // compact re-encoding itself always happens; `pendingAssistantPersist` being `null`
             // (connection_profile_id and legacy/default calls) only skips persistence.
-            return await forwardAndPersistCompactStream(fetchResponse, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning);
+            return await forwardAndPersistCompactStream(fetchResponse, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning, warnings);
         }
 
         if (fetchResponse.ok) {
@@ -4672,6 +4728,7 @@ router.post('/generate', async function (request, response) {
                 const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
                 if (persisted) json.assistant_node_id = persisted.node_id;
             }
+            if (warnings?.length) json.warnings = warnings;
 
             return response.send(json);
         } else {
