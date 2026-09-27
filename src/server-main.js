@@ -82,6 +82,7 @@ import { initializeLocalImportScan, disposeLocalImportScan } from './local-impor
 import { disposeMessageTreeStores } from './message-tree-db.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { runOnceAtBoot as runUnimportEmbeddedLoreAtBoot } from './migrations/unimport-embedded-lore.js';
+import { maybeStartGroupChatRestore } from './migrations/restore-group-chat-migration-losses.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
@@ -502,6 +503,11 @@ async function postSetupTasks(result) {
 
     setupLogLevel();
     serverEvents.emit(EVENT_NAMES.SERVER_STARTED, { url: browserLaunchUrl });
+
+    // Off unless config.yaml sets restoreGroupChatMigrationLosses: true. Runs in a worker, after listening.
+    maybeStartGroupChatRestore(await getUserDirectoriesList(), {
+        enabled: getConfigValue('restoreGroupChatMigrationLosses', false, 'boolean'),
+    });
 }
 
 /**
