@@ -6,7 +6,7 @@ import { delay } from '../../util.js';
 import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
 import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
-import { resolveTokenizerType, encodeWithTokenizerType, resolveTokenizer, encodeWithTokenizer, countWithTokenizer } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer } from '../../tokenizer-resolve.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
@@ -33,18 +33,10 @@ export const router = express.Router();
  *   on the returned `generate_data.api_server` field (createKoboldGenerationData()'s own
  *   `api_server` wire field) - there is no separate "backend" object to return here, unlike the
  *   textgenerationwebui/`api_type`+`api_server` pair.
- * - Tokenizer resolution passes `forApi: 'kobold'` (not the default 'textgenerationwebui') to
- *   resolveTokenizerType() and `canUseTokenization: false` - Kobold's own tokenize capability
- *   (`kai_flags.can_use_tokenization`, gating `tokenizers.API_KOBOLD`) is a LIVE version-probe
- *   result (see kai-settings.js's checkStatusKobold()), the exact same "don't trigger a live
- *   network call as a side effect of pure request-building" concern already established for
- *   koboldFlags itself (see the orchestrator's own doc comment) - so this always falls back to a
- *   local tokenizer (typically `tokenizers.LLAMA`, getTokenizerBestMatch()'s own generic
- *   kobold/textgenerationwebui fallback) rather than attempting the remote Kobold tokenize
- *   endpoint. This only affects `countTokens`'s own budget-fitting accuracy (createKoboldGenerationData()
- *   itself never calls `encodeTokens` at all - Kobold has no token-id-based ban/bias mechanism, see
- *   text-completion-generation-input.js's own doc comment) - a real, narrower approximation than a
- *   live-probed tokenizer would give, flagged here rather than silently assumed exact.
+ * - The tokenizer comes from resolveTokenizer(): for Kobold, from the backend at
+ *   `kai_settings.api_server`; for Horde (`macroExtras.isHorde`), from the saved Horde model
+ *   selection (`horde_settings.models`). It only counts for budget fitting:
+ *   createKoboldGenerationData() never encodes entries, so a Kobold or Horde send has none to drop.
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {import('express').Request} [params.request]
@@ -125,26 +117,17 @@ export async function buildRawActionKoboldRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const { power_user: powerUser = {}, kai_settings: koboldSettings = {} } = readSettingsAtPaths(directories, ['power_user', 'kai_settings']);
-    let encodeTokens;
-    let countTokens;
-    if (macroExtras.isHorde) {
-        // Horde has its own tokenizer resolution (its selected models), not wired here yet.
-        const tokenizerType = resolveTokenizerType({
-            userTokenizerSetting: powerUser.tokenizer, forApi: 'kobold', canUseTokenization: false,
-        });
-        encodeTokens = (text) => encodeWithTokenizerType(tokenizerType, text, { request, ...tokenizerOptions });
-        countTokens = async (text) => (await encodeTokens(text)).length;
-    } else {
-        const url = koboldSettings.api_server ?? '';
-        const resolvedTokenizer = await resolveTokenizer(
-            { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer },
-            { directories },
-        );
-        const encodeOptions = { request, koboldBaseUrl: url, ...tokenizerOptions };
-        encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
-        countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
-    }
+    const {
+        power_user: powerUser = {}, kai_settings: koboldSettings = {}, horde_settings: hordeSettings = {},
+    } = readSettingsAtPaths(directories, ['power_user', 'kai_settings', 'horde_settings']);
+    const url = koboldSettings.api_server ?? '';
+    const tokenizerState = macroExtras.isHorde
+        ? { api: 'koboldhorde', hordeModels: Array.isArray(hordeSettings.models) ? hordeSettings.models : [], tokenizerSetting: powerUser.tokenizer }
+        : { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer };
+    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    const encodeOptions = { request, koboldBaseUrl: url, ...tokenizerOptions };
+    const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
+    const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', ownerId, nodeId,

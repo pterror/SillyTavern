@@ -46,6 +46,7 @@ if (canMockHordeBackend) {
 }
 
 const { router: hordeRouter, _setHordePollingConfigForTests } = await import('./horde.js');
+const { buildRawActionKoboldRequest } = await import('./backends/kobold.js');
 const { writeAllSettings } = await import('../settings-store.js');
 const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } = await import('../message-tree-db.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
@@ -106,7 +107,7 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** Real settings.json fixture - only the keys resolveTokenizerType()/resolveTextCompletionGenerationInput()/createKoboldGenerationData() actually read, matching kobold.test.js's own fixture (this route reuses buildRawActionKoboldRequest() verbatim). `kai_settings.api_server` is left blank/unused - Horde never forwards it (this route strips it - see buildRawActionHordePayload()'s own comment). */
+/** Real settings.json fixture - only the keys resolveTokenizer()/resolveTextCompletionGenerationInput()/createKoboldGenerationData() actually read, matching kobold.test.js's own fixture (this route reuses buildRawActionKoboldRequest() verbatim). `kai_settings.api_server` is left blank/unused - Horde never forwards it (this route strips it - see buildRawActionHordePayload()'s own comment). */
 function buildSettingsFixture() {
     return {
         username: 'Tester',
@@ -212,11 +213,6 @@ async function waitFor(check, { timeoutMs = 3000, intervalMs = 10 } = {}) {
 }
 
 async function run() {
-    if (!canMockHordeBackend) {
-        console.log('horde.test.js: skipping all route-level /generate-text tests - run with `node --experimental-test-module-mocks` to include them (see the canMockHordeBackend comment near the top of this file)');
-        return;
-    }
-
     writeAllSettings(directories, buildSettingsFixture());
     const avatar = await writeCharacter('Rex.png', {
         name: 'Rex',
@@ -234,6 +230,63 @@ async function run() {
         { name: 'Tester', is_user: true, mes: 'Hi Rex, nice to meet you.', send_date: 2, extra: {} },
         { name: 'Rex', is_user: false, mes: 'Likewise!', send_date: 3, extra: {} },
     ]);
+
+    // --- tokenizer: the Horde send resolves its tokenizer from the saved Horde model selection ---
+    {
+        const { leaf_id: leafId } = (await loadBranch(directories, ownerId, branchName)).branch;
+
+        /**
+         * Builds the Horde send with the given saved model selection, recording which local
+         * tokenizer key each encode used.
+         * @param {string[]|undefined} hordeModels
+         */
+        async function buildHordeSend(hordeModels) {
+            const settings = buildSettingsFixture();
+            if (hordeModels !== undefined) {
+                settings.horde_settings = { models: hordeModels };
+            }
+            writeAllSettings(directories, settings);
+            const keys = [];
+            try {
+                await buildRawActionKoboldRequest(directories, {
+                    characterAvatar: avatar, ownerId, nodeId: leafId,
+                    type: 'normal', userMessageText: 'Which tokenizer, Rex?',
+                    macroExtras: { isHorde: true },
+                    tokenizerOptions: {
+                        encodeLocal: async (key, text) => {
+                            keys.push(key);
+                            return Array.from(String(text ?? '')).map(ch => ch.codePointAt(0));
+                        },
+                    },
+                });
+            } finally {
+                writeAllSettings(directories, buildSettingsFixture());
+            }
+            return keys;
+        }
+
+        // Two selected models that both map to LLAMA3 -> the send counts with llama3.
+        const llama3Keys = await buildHordeSend(['koboldcpp/Meta-Llama-3-8B-Instruct', 'aphrodite/NousResearch/Hermes-2-Pro-Llama-3-8B']);
+        assert.ok(llama3Keys.length > 0, 'two LLAMA3 models: the send counts with a local tokenizer');
+        assert.deepEqual([...new Set(llama3Keys)], ['llama3'], 'two LLAMA3 models: the send counts with llama3, nothing else');
+
+        // Models mapping to different tokenizers, or none selected -> the estimate: no local
+        // tokenizer is loaded at all.
+        for (const [label, hordeModels] of [
+            ['mixed models', ['koboldcpp/Meta-Llama-3-8B-Instruct', 'koboldcpp/gemma-2-9b-it']],
+            ['no model selected', []],
+            ['no saved Horde settings', undefined],
+        ]) {
+            const keys = await buildHordeSend(hordeModels);
+            assert.deepEqual(keys, [], `${label}: the send counts by the estimate and loads no local tokenizer`);
+        }
+    }
+
+    if (!canMockHordeBackend) {
+        console.log('horde.test.js: skipping all route-level /generate-text tests - run with `node --experimental-test-module-mocks` to include them (see the canMockHordeBackend comment near the top of this file)');
+        console.log('horde.test.js: tokenizer assertions passed (route-level tests skipped)');
+        return;
+    }
 
     // (a) real end-to-end raw-action generation: submit -> a few "still processing" polls (with real
     // keepalive frames received meanwhile) -> a completed generation -> real content frame(s) ->
