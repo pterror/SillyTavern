@@ -207,6 +207,8 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.COMMAND_A], 'command-a');
 assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NEMO], 'nemo');
 assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.DEEPSEEK], 'deepseek');
 assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.GPT2], 'gpt2');
+assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD], 'nerdstash');
+assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 
 // --- encodeWithTokenizerType: branch dispatch, using injected stub encoders (no real network/tokenizer files) ---
 
@@ -229,6 +231,15 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.GPT2], 'gpt2');
     await encodeWithTokenizerType(tokenizers.OPENAI, 'hi', { encodeLocal });
     await encodeWithTokenizerType(tokenizers.GPT2, 'hi', { encodeLocal });
     assert.deepEqual(calls, ['gpt2', 'gpt2']);
+}
+
+{
+    // NovelAI clio (NERD) and kayra (NERD2).
+    const calls = [];
+    const encodeLocal = async (key, text) => { calls.push([key, text]); return [5]; };
+    assert.deepEqual(await encodeWithTokenizerType(tokenizers.NERD, 'hi', { encodeLocal }), [5]);
+    assert.deepEqual(await encodeWithTokenizerType(tokenizers.NERD2, 'hi', { encodeLocal }), [5]);
+    assert.deepEqual(calls, [['nerdstash', 'hi'], ['nerdstash_v2', 'hi']]);
 }
 
 {

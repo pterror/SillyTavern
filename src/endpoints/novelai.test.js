@@ -121,18 +121,9 @@ async function writeCharacter(avatar, overrides = {}) {
 
 /** Real settings.json fixture - only the keys resolveTextCompletionGenerationInput()/createNovelGenerationData() actually read, plus a real nai_settings shape matching src/novel-generation-data.test.js's own baseSettings() field names.
  *
- * JUDGMENT CALL: model_novel is 'llama-3-erato-v1' (an Erato-family model), NOT clio/kayra -
- * verified by reading src/tokenizer-resolve.js's own ENCODE_TOKENIZERS/TOKENIZER_TYPE_KEYS: clio
- * maps to tokenizers.NERD and kayra to tokenizers.NERD2 (via getTokenizerTypeForModel()), and BOTH
- * are real, deliberately unsupported by encodeWithTokenizerType()'s local-encode path ("NERD/NERD2
- * are deliberately excluded... because no weights have been released for them yet" - that file's
- * own comment) - it throws `Unsupported tokenizer type for encoding` for either, with no local
- * fallback, regardless of any injected `encodeLocal`. Erato maps to tokenizers.LLAMA3, which IS in
- * both lists, so the same fakeTokenizerOptions.encodeLocal technique used everywhere else in this
- * repo's test suite works here too. This also exercises the OTHER real baseURL branch
- * (`TEXT_NOVELAI`, not `API_NOVELAI` - novelai.js's own `(model.includes('kayra') ||
- * model.includes('erato')) ? TEXT_NOVELAI : API_NOVELAI`), verified below by the fake-backend
- * `mock.module()` reroute matching BOTH real hardcoded hosts.
+ * model_novel is 'llama-3-erato-v1' (Erato, tokenizers.LLAMA3), which goes to the `TEXT_NOVELAI`
+ * host (novelai.js's `(model.includes('kayra') || model.includes('erato')) ? TEXT_NOVELAI :
+ * API_NOVELAI`); the fake-backend `mock.module()` reroute below matches both real hosts.
  */
 function buildSettingsFixture() {
     return {
