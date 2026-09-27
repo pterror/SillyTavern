@@ -176,7 +176,7 @@ describe('each group file writer updates the row and digests from the file it wr
 
     test('migrateGroupChatsMetadataFormat()', async () => {
         const created = await createGroup();
-        const legacy = { ...readGroupFile(created.id), chat_metadata: { note: 'x' }, fav: 'true' };
+        const legacy = { ...readGroupFile(created.id), chat_metadata: {}, fav: 'true' };
         writeRawFile(`${created.id}.json`, legacy);
         await metadataDb.upsertGroupRow(directories, created.id, legacy.name, { fav: legacy.fav, group: legacy });
         const dateAdded = readRow(created.id).date_added;
@@ -215,7 +215,7 @@ describe('each group file writer updates the row and digests from the file it wr
 
 describe('migration writers never create rows or touch a row the file does not back', () => {
     test('migrateGroupChatsMetadataFormat() on a group with no row leaves it rowless (the bootstrap inserts it)', async () => {
-        writeRawFile('g1.json', { id: 'g1', name: 'G', members: [], chats: [], chat_metadata: { note: 'x' } });
+        writeRawFile('g1.json', { id: 'g1', name: 'G', members: [], chats: [], chat_metadata: {} });
         await groupsModule.migrateGroupChatsMetadataFormat([directories]);
         expect(readGroupFile('g1').chat_metadata).toBeUndefined();
         expect(readRow('g1')).toBeUndefined();
@@ -224,7 +224,7 @@ describe('migration writers never create rows or touch a row the file does not b
     test('migrateGroupChatsMetadataFormat() on a file not named after its id rewrites that file and leaves the id\'s row alone', async () => {
         const created = await createGroup();
         const rowBefore = readRow(created.id);
-        writeRawFile('stray.json', { ...readGroupFile(created.id), name: 'Stray copy', chat_metadata: { note: 'x' } });
+        writeRawFile('stray.json', { ...readGroupFile(created.id), name: 'Stray copy', chat_metadata: {} });
 
         await groupsModule.migrateGroupChatsMetadataFormat([directories]);
 

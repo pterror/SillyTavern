@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { color } from './util.js';
+import { isChatHeaderEntry } from './chat-header.js';
 import { getUserDirectoriesList } from './users.js';
-import { getGroupsData } from './endpoints/groups.js';
+import { getGroupsData, migrateGroupChatsMetadataFormat } from './endpoints/groups.js';
 import {
     getDbHandle, insertMessageSync, createBranchSync, hasBranchesSync, newId,
     ensureAnchorSync, setDefaultChildSync, alternativesFromMessage, nodeIdentityKey,
@@ -62,24 +63,31 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
 
     // fileNames comes from user-editable group JSON, so it's filtered to look like a real scan
     // result (bare .jsonl name, no path segments, file exists) rather than trusted outright.
-    const allFiles = (Array.isArray(fileNames)
+    const allFiles = [...new Set(Array.isArray(fileNames)
         ? fileNames.filter(f => typeof f === 'string'
             && f.endsWith('.jsonl')
             && !f.includes('/') && !f.includes('\\') && path.basename(f) === f
             && fs.existsSync(path.join(chatDir, f)))
-        : fs.readdirSync(chatDir).filter(f => f.endsWith('.jsonl'))
-    ).sort();
+        : fs.readdirSync(chatDir).filter(f => f.endsWith('.jsonl')),
+    )].sort();
     if (allFiles.length === 0) {
         return { migrated: 0, skipped: 0, errors: [] };
     }
 
-    const errors = [];
-    let migrated = 0;
-    const migratedFileNames = [];
-    const usedLabels = new Set();
-    const index = new Map();
+    /** @type {string[]} */
+    let errors = [];
+    /** @type {string[]} */
+    let migratedFileNames = [];
 
     db.transaction(() => {
+        // A busy retry re-runs this callback after a rollback, so nothing from a previous attempt may
+        // survive into the next one - above all `index`, whose ids would name rolled-back rows.
+        errors = [];
+        migratedFileNames = [];
+        const usedLabels = new Set();
+        /** @type {Map<string, string>} */
+        const index = new Map();
+
         const now = Date.now();
         const anchor = ensureAnchorSync(db, ownerId, now);
 
@@ -89,25 +97,16 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
             try {
                 raw = fs.readFileSync(filePath, 'utf8');
             } catch (err) {
-                errors.push(`Failed to read ${fileName}: ${err.message}`);
+                errors.push(`Failed to read ${fileName}: ${err.message}; file left in place, not migrated`);
                 continue;
             }
 
-            const lines = raw.split('\n').filter(Boolean);
-            if (lines.length === 0) continue;
-
-            let header;
-            try {
-                header = JSON.parse(lines[0]);
-            } catch (err) {
-                errors.push(`Failed to parse header of ${fileName}: ${err.message}`);
+            const parsed = parseChatFile(raw);
+            if ('error' in parsed) {
+                errors.push(`${fileName}: ${parsed.error}; file left in place, not migrated`);
                 continue;
             }
-
-            const messages = [];
-            for (let i = 1; i < lines.length; i++) {
-                try { messages.push(JSON.parse(lines[i])); } catch { /* skip malformed line */ }
-            }
+            const { header, messages } = parsed;
 
             const chatName = fileName.replace(/\.jsonl$/, '');
             const cleanMetadata = { ...(header?.chat_metadata || {}) };
@@ -116,6 +115,11 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
             delete cleanMetadata.fork_point;
             if (isGroup) cleanMetadata.__is_group = true;
 
+            // Each file lands whole or not at all: a failure rolls back just this file's rows, and its
+            // new dedup keys only join `index` once the file has committed to the outer transaction.
+            db.exec('SAVEPOINT migrate_chat_file');
+            /** @type {Map<string, string>} */
+            const fileIndex = new Map();
             try {
                 let parentId = anchor.id;
                 let lastId = null;
@@ -127,7 +131,7 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
                     for (let k = 0; k < contents.length; k++) {
                         const content = contents[k];
                         const key = nodeIdentityKey(parentId, content);
-                        let id = index.get(key);
+                        let id = index.get(key) ?? fileIndex.get(key);
                         if (!id) {
                             id = newId();
                             insertMessageSync(db, {
@@ -139,7 +143,7 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
                                 // +k preserves swipe order under the (created_at, id) sort used elsewhere
                                 createdAt: now + k,
                             });
-                            index.set(key, id);
+                            fileIndex.set(key, id);
                         }
                         if (k === selected) chosenId = id;
                     }
@@ -150,31 +154,35 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
                     lastId = chosenId;
                 }
 
-                if (lastId) {
-                    const existing = db.get('SELECT label FROM messages WHERE id = @id', { id: lastId });
-                    if (existing?.label) {
-                        errors.push(`Dropped duplicate chat name "${chatName}" — leaf already labeled "${existing.label}"`);
-                    } else if (usedLabels.has(chatName)) {
-                        errors.push(`Dropped duplicate chat name "${chatName}" — name already used by an earlier file`);
-                    } else {
-                        createBranchSync(db, {
-                            leafId: lastId,
-                            name: chatName,
-                            isGroup,
-                            metadata: JSON.stringify(cleanMetadata),
-                        });
-                        usedLabels.add(chatName);
-                    }
+                // parseChatFile() only returns files with at least one message, so lastId is set here.
+                const existing = db.get('SELECT label FROM messages WHERE id = @id', { id: lastId });
+                if (existing?.label) {
+                    throw new Error(`its last message is already the end of chat "${existing.label}", so chat "${chatName}" and its metadata would have no place in the tree`);
                 }
-
-                migrated++;
-                migratedFileNames.push(fileName);
+                if (usedLabels.has(chatName)) {
+                    throw new Error(`chat name "${chatName}" is already used by an earlier file`);
+                }
+                createBranchSync(db, {
+                    leafId: lastId,
+                    name: chatName,
+                    isGroup,
+                    metadata: JSON.stringify(cleanMetadata),
+                });
+                db.exec('RELEASE migrate_chat_file');
             } catch (err) {
-                errors.push(`Failed to migrate ${fileName}: ${err.message}`);
+                db.exec('ROLLBACK TO migrate_chat_file');
+                db.exec('RELEASE migrate_chat_file');
+                errors.push(`Failed to migrate ${fileName}: ${err.message}; file left in place, not migrated`);
+                continue;
             }
+
+            for (const [key, id] of fileIndex) index.set(key, id);
+            usedLabels.add(chatName);
+            migratedFileNames.push(fileName);
         }
     });
 
+    // Only files whose every message, name and metadata landed in the committed transaction get here.
     for (const fileName of migratedFileNames) {
         try {
             const filePath = path.join(chatDir, fileName);
@@ -185,10 +193,81 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
         }
     }
 
+    const migrated = migratedFileNames.length;
     const skipped = allFiles.length - migrated;
     console.log(color.green(`[message-tree] Migrated ${migrated} chats for ${ownerId} (${skipped} skipped, ${errors.length} errors)`));
+    for (const error of errors) {
+        console.warn(color.yellow(`[message-tree] ${ownerId}: ${error}`));
+    }
 
     return { migrated, skipped, errors };
+}
+
+/**
+ * Splits a JSONL chat file into its header (null when it has none) and its messages. Refuses the
+ * whole file, naming the offending lines, rather than migrating part of it.
+ * @param {string} raw
+ * @returns {{ header: object | null, messages: object[] } | { error: string }}
+ */
+function parseChatFile(raw) {
+    const entries = [];
+    const badLines = [];
+    const lines = raw.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        let entry;
+        try {
+            entry = JSON.parse(lines[i]);
+        } catch {
+            badLines.push(i + 1);
+            continue;
+        }
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+            badLines.push(i + 1);
+            continue;
+        }
+        entries.push(entry);
+    }
+    if (badLines.length > 0) {
+        return { error: `line(s) ${badLines.join(', ')} are not valid JSON objects` };
+    }
+
+    const header = entries.length > 0 && isChatHeaderEntry(entries[0]) ? entries[0] : null;
+    const messages = header ? entries.slice(1) : entries;
+    if (messages.length === 0) {
+        return { error: 'it has no messages, and the tree cannot hold a chat without one' };
+    }
+    return { header, messages };
+}
+
+/**
+ * One user's part of migrateAllGroupChats(). The group metadata-format migration runs first because
+ * it can only give an old-format (headerless) chat file its header and metadata while that file is
+ * still at `<chatId>.jsonl`, and the tree migration below renames every file it migrates.
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function migrateUserGroupChats(directories) {
+    await migrateGroupChatsMetadataFormat([directories]);
+
+    let groups;
+    try {
+        groups = getGroupsData(directories);
+    } catch (err) {
+        console.error(color.red(`[message-tree] Failed to read groups for ${directories.root}:`), err);
+        return;
+    }
+
+    for (const group of groups) {
+        if (typeof group?.id !== 'string' || !Array.isArray(group.chats)) {
+            continue;
+        }
+        await migrateOwnerOnTouch(directories, {
+            ownerId: group.id,
+            chatDir: directories.groupChats,
+            isGroup: true,
+            fileNames: group.chats.map(c => `${c}.jsonl`),
+        });
+    }
 }
 
 /**
@@ -202,25 +281,7 @@ export async function migrateAllGroupChats() {
     const directoriesList = await getUserDirectoriesList();
 
     for (const directories of directoriesList) {
-        let groups;
-        try {
-            groups = getGroupsData(directories);
-        } catch (err) {
-            console.error(color.red(`[message-tree] Failed to read groups for ${directories.root}:`), err);
-            continue;
-        }
-
-        for (const group of groups) {
-            if (typeof group?.id !== 'string' || !Array.isArray(group.chats)) {
-                continue;
-            }
-            await migrateOwnerOnTouch(directories, {
-                ownerId: group.id,
-                chatDir: directories.groupChats,
-                isGroup: true,
-                fileNames: group.chats.map(c => `${c}.jsonl`),
-            });
-        }
+        await migrateUserGroupChats(directories);
     }
 }
 
