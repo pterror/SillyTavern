@@ -8,8 +8,6 @@ import { tokenizers } from './tokenizer-resolve.js';
  *
  * Also ports these nai-settings.js helpers, which getNovelGenerationData() calls directly:
  * - selectPrefix() - picks the instruct prefix ('special_instruct' / user-selected / 'vanilla').
- * - getTokenizerTypeForModel() - maps a NovelAI model-name substring to a `tokenizers` enum value.
- *   Reuses the REAL `tokenizers` enum from src/tokenizer-resolve.js rather than re-declaring it.
  * - getBadWordIds()/getBadWordPermutations() - turns settings.banned_tokens lines into bad-word
  *   token id lists.
  * - calculateNovelLogitBias() - a faithful port of nai-settings.js's private, module-scoped
@@ -62,24 +60,6 @@ const DEFAULT_ORDER = [1, 5, 0, 2, 3, 4];
 /** Trivial reimplementation of public/scripts/utils.js's onlyUnique array filter. */
 function onlyUnique(value, index, array) {
     return array.indexOf(value) === index;
-}
-
-/**
- * Mirrors nai-settings.js's getTokenizerTypeForModel(model).
- * @param {string} model nai_settings.model_novel equivalent.
- * @returns {number} A `tokenizers` value (see src/tokenizer-resolve.js).
- */
-export function getTokenizerTypeForModel(model) {
-    if (model.includes('clio')) {
-        return tokenizers.NERD;
-    }
-    if (model.includes('kayra')) {
-        return tokenizers.NERD2;
-    }
-    if (model.includes('erato')) {
-        return tokenizers.LLAMA3;
-    }
-    return tokenizers.NONE;
 }
 
 /**

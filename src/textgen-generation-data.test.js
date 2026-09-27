@@ -201,17 +201,14 @@ function baseSettings(overrides = {}) {
     assert.equal('parseSequenceBreakers' in params, false);
 }
 
-// logit_bias: real computation from settings.logit_bias via computeTextgenLogitBias() (src/
-// endpoints/tokenizers.js) - not just forwarding a caller-pre-resolved value. No live-connection
-// state given -> resolveTextgenTokenizerForTokenIds() falls to the pure model-name/power-user
-// branches; a 'generic' settings.type with no power_user tokenizer and no matching model name
-// resolves to the final `llama` fallback, a real local (sentencepiece) tokenizer.
+// logit_bias from settings.logit_bias needs a tokenizer resolution; with none it throws instead of
+// picking a tokenizer.
 {
     const settings = baseSettings({ type: 'generic', logit_bias: [{ text: 'hello', value: -5 }] });
-    const params = await createTextGenGenerationData(settings, 'm', 'p', 10, false, false, null, 'normal');
-    assert.equal(typeof params.logit_bias, 'object');
-    assert.equal(Object.keys(params.logit_bias).length > 0, true);
-    assert.equal(Object.values(params.logit_bias).every(v => v === -5), true);
+    await assert.rejects(
+        () => createTextGenGenerationData(settings, 'm', 'p', 10, false, false, null, 'normal'),
+        /tokenizerOptions\.resolved is required/,
+    );
 
     // A logitBias override still takes priority over real computation when both are given.
     const overridden = await createTextGenGenerationData(settings, 'm', 'p', 10, false, false, null, 'normal', { logitBias: { 1: 1 } });

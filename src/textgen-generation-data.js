@@ -93,8 +93,8 @@ const { OOBA, MANCER, VLLM, APHRODITE, TABBY, KOBOLDCPP, LLAMACPP, OLLAMA, INFER
  * priority when provided.
  * @property {object} [logitBiasContext] `{tokenizerOptions, remoteContext, dropped}` forwarded to
  * computeTextgenLogitBias() (src/endpoints/tokenizers.js) when `logitBias` isn't given - see that
- * function's doc comment for every field. The first two default to `{}`, matching
- * computeTextgenLogitBias()'s own defaults.
+ * function's doc comment for every field. `tokenizerOptions.resolved` is required when
+ * `settings.logit_bias` is non-empty and no `logitBias` is given.
  * @property {number} [maxContext]
  * @property {boolean} [requestTokenProbabilities]
  * @property {{name1?: string, name2?: string}} [macroContext] For substituting settings.negative_prompt
