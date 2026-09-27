@@ -311,29 +311,15 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  *   src/tokenizer-resolve.js's encodeWithTokenizerType() plus a resolved backend/model context -
  *   a separate resolution concern from this orchestrator. Callers must resolve a real tokenizer
  *   and inject it here (or, for tests, a simple deterministic fake).
- * @property {(text: string) => number[] | Promise<number[]>} encodeTokens REQUIRED. Distinct from
- *   `countTokens` - returns token IDS (for getCustomTokenBans()/calculateLogitBias()), not a count.
+ * @property {(text: string) => number[] | null | Promise<number[] | null>} encodeTokens REQUIRED. Distinct from
+ *   `countTokens` - returns token IDS (for getCustomTokenBans()/calculateLogitBias()), not a count;
+ *   null when there is no tokenizer, which leaves the entry out and lists it in `droppedEntries`.
  *   May be async (e.g. src/tokenizer-resolve.js's encodeWithTokenizerType(), which can probe a
  *   remote backend) - both functions now await it, so a real async tokenizer can be wired in
  *   directly.
  * @property {(tokenizerType: number, text: string) => number[] | Promise<number[]>} [encodeTokensByType]
- *   REAL PARAMETER-SHAPE MISMATCH, DELIBERATELY BRIDGED (JUDGMENT CALL, flagged): createNovelGenerationData()'s
- *   own `encodeTokens` param (src/novel-generation-data.js's `EncodeTokensFn`) is a DIFFERENT shape
- *   from this orchestrator's own generic `encodeTokens` above - it takes a `tokenizerType` (a
- *   `tokenizers` enum value, model-dependent - see getTokenizerTypeForModel()) as its FIRST argument,
- *   not just `text`. Passing the plain single-arg `encodeTokens` straight through to
- *   createNovelGenerationData() would silently misbind `tokenizerType` into that function's own
- *   `text` parameter and drop the real text argument entirely - a real, verified bug this parameter
- *   exists specifically to avoid, not a hypothetical one (caught by an over-shallow test assertion
- *   during this task and fixed here, not left in). This orchestrator therefore calls
- *   createNovelGenerationData() with `encodeTokensByType`, NOT the plain `encodeTokens`. Defaults to
- *   `(tokenizerType, text) => encodeTokens(text)` (ignores `tokenizerType`, falls back to whatever
- *   the plain `encodeTokens` already does) ONLY for backward-compatible callers that never supply a
- *   real per-tokenizer-type encoder (e.g. existing tests) - this is an approximation, not a
- *   correctness claim, and is irrelevant whenever `mainApi !== 'novel'` (nothing else calls this). A
- *   real caller building a novel raw-action request (see src/endpoints/novelai.js's
- *   buildRawActionNovelRequest()) supplies a real implementation via
- *   `src/tokenizer-resolve.js`'s `encodeWithTokenizerType(tokenizerType, text, ...)`.
+ *   Required when `mainApi` is 'novel': createNovelGenerationData() encodes with a tokenizer type as
+ *   its first argument, a different shape from `encodeTokens`.
  * @property {number} [amountGen] Equivalent of `amount_gen` - max new tokens to request, forwarded
  *   to createTextGenGenerationData() as `maxTokens`.
  * @property {boolean} [requestTokenProbabilities] Equivalent of power_user.request_token_probabilities.
@@ -496,13 +482,7 @@ export async function assembleTextCompletionPrompt(input) {
 
     if (typeof countTokens !== 'function') throw new Error('assembleTextCompletionPrompt: countTokens is required');
     if (typeof encodeTokens !== 'function') throw new Error('assembleTextCompletionPrompt: encodeTokens is required');
-    // See the `encodeTokensByType` JSDoc above for exactly why this bridge exists (a real, verified
-    // parameter-shape mismatch between this orchestrator's generic `encodeTokens` and
-    // createNovelGenerationData()'s own two-arg `EncodeTokensFn`) - only ever actually invoked for
-    // `mainApi === 'novel'`.
-    const resolvedEncodeTokensByType = typeof encodeTokensByType === 'function'
-        ? encodeTokensByType
-        : (_tokenizerType, text) => encodeTokens(text);
+    if (mainApi === 'novel' && typeof encodeTokensByType !== 'function') throw new Error('assembleTextCompletionPrompt: encodeTokensByType is required for novel');
 
     // Shared side effect sink for the {{banned "..."}} macro, threaded through every substituteParams
     // call this orchestrator triggers (directly or via a downstream module), same as the client's
@@ -984,16 +964,20 @@ export async function assembleTextCompletionPrompt(input) {
     // ever sent) and NovelAI has its OWN, differently-shaped mechanism (createNovelGenerationData()
     // computes its own `bad_words_ids`/`logit_bias_exp` internally, straight from `settings.banned_tokens`/
     // `settings.logit_bias`, via its own getBadWordIds()/calculateNovelLogitBias() - see that module's
-    // doc comment for why that's a SEPARATE port, not a reuse of this one). So this call is only ever
-    // actually USED by the textgenerationwebui dispatch branch below - still computed unconditionally
-    // here (cheap, and `bannedWordsSink`-consuming macro side effects must still run regardless of
-    // `mainApi`, matching the client's own unconditional module-level ban-list behavior) but its
-    // result is simply unused/inert for the kobold/novel dispatch branches.
+    // doc comment for why that's a SEPARATE port, not a reuse of this one). So only the
+    // textgenerationwebui dispatch branch below uses them, and only there are entries encoded. The
+    // ban lines still go through macro substitution for every `mainApi`, for its side effects.
+    const isTextgen = mainApi !== 'kobold' && mainApi !== 'novel';
+    /** @type {string[]} Entries left out because there is no tokenizer to encode them with. */
+    const droppedEntries = [];
     const { banned_tokens: bannedTokens, banned_strings: bannedStrings } = await getCustomTokenBans({
         bannedTokensRaw, globalBannedTokensRaw, sendBannedTokens, bannedWordsFromMacros: bannedWordsSink,
-        encode: encodeTokens, macroContext,
+        encode: isTextgen ? encodeTokens : () => null, macroContext,
+        dropped: isTextgen ? droppedEntries : undefined,
     });
-    const logitBias = await calculateLogitBias({ logitBiasEntries, encode: encodeTokens });
+    const logitBias = isTextgen
+        ? await calculateLogitBias({ logitBiasEntries, encode: encodeTokens, dropped: droppedEntries })
+        : {};
 
     // ---- Step 16: final generate_data wire payload ---------------------------------------------------
     // Dispatches on `mainApi`, matching public/script.js's own `switch (main_api)` in Generate()
@@ -1045,7 +1029,7 @@ export async function assembleTextCompletionPrompt(input) {
             consoleLogPrompts,
             requestTokenProbabilities,
             stoppingStringsParams,
-            encodeTokens: resolvedEncodeTokensByType,
+            encodeTokens: encodeTokensByType,
             macroContext,
         });
     } else {
@@ -1058,6 +1042,7 @@ export async function assembleTextCompletionPrompt(input) {
         // Final outputs
         combinedPrompt,
         generate_data,
+        droppedEntries,
         // Intermediate state, for sanity-checking each stage.
         messageBias, promptBias, isUserPromptBias,
         characterCardFields: fields,

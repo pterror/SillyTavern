@@ -23,7 +23,7 @@ import { createTextGenGenerationData } from '../../textgen-generation-data.js';
 import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
-import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, droppedEntriesWarning, resolveProfileTokenizerSetting } from '../../tokenizer-resolve.js';
 import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
@@ -440,10 +440,10 @@ router.post('/props', async function (request, response) {
  *    generation) and resolve which existing tree node any new user message must be appended after
  *    (`anchorNodeId` - the given `nodeId` itself, verified to exist, or - only when `nodeId` is
  *    explicitly `null` AND this owner's conversation is genuinely empty - the owner's own anchor).
- * 3. Build real `countTokens`/`encodeTokens` closures via `resolveTokenizerType()`/
- *    `encodeWithTokenizerType()`, resolving the SAME tokenizer the resolved backend would actually
- *    use (`power_user.tokenizer` is the user's manual override, exactly like
- *    `getTokenizerForTokenIds()` reads client-side).
+ * 3. Resolve the tokenizer with `resolveTokenizer()` (the backend's type, URL and model setting, and
+ *    `power_user.tokenizer`), and build `countTokens`/`encodeTokens` from it: an estimate
+ *    resolution counts by the estimate and has no ids, so entries needing ids are left out and
+ *    reported in the returned `warnings`.
  * 4. Resolve the orchestrator's full input from real on-disk settings/character/chat state via
  *    `resolveTextCompletionGenerationInput()`.
  * 5. Assemble the real prompt via `assembleTextCompletionPrompt()`.
@@ -514,7 +514,7 @@ router.post('/props', async function (request, response) {
  * forwarded verbatim to `resolveTextCompletionGenerationInput()` and reused as-is for the real
  * persisted append below (the route handler is responsible for having already sanitized whatever the
  * client sent; this function does not re-validate it). Ignored when `userMessageText` is omitted.
- * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
+ * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, warnings: object[] }>}
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
@@ -582,16 +582,17 @@ export async function buildRawActionTextCompletionRequest(directories, {
 
     // Step 3
     const { power_user: powerUser = {} } = readSettingsAtPaths(directories, ['power_user']);
-    const tokenizerType = resolveTokenizerType({
-        userTokenizerSetting: powerUser.tokenizer,
-        textgenType: backend.type,
-        textgenModel: backend.model,
-    });
-    const encodeTokens = (text) => encodeWithTokenizerType(tokenizerType, text, {
+    const tokenizerState = {
+        api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, model: backend.model ?? '',
+        tokenizerSetting: powerUser.tokenizer,
+    };
+    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    const encodeOptions = {
         request, textgenBaseUrl: backend.serverUrl, textgenModel: backend.model, textgenApiType: backend.type,
         ...tokenizerOptions,
-    });
-    const countTokens = async (text) => (await encodeTokens(text)).length;
+    };
+    const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
+    const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
 
     // Step 4
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
@@ -635,9 +636,12 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // every other, non-continue caller shape where `chat` could legitimately be empty.
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
+    const droppedWarning = droppedEntriesWarning(tokenizerState, resolvedTokenizer, assembled.droppedEntries);
+
     return {
         params: assembled.generate_data, backend, anchorNodeId, anchorContent,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
+        warnings: droppedWarning ? [droppedWarning] : [],
         // Prompt-itemization breakdown for the client's itemizedPrompts entry - see
         // buildItemizationBreakdown()'s own doc comment (text-completion-prompt-orchestrator.js).
         itemization: buildItemizationBreakdown(assembled),
@@ -722,27 +726,36 @@ router.post('/generate', async function (request, response) {
                 ? getInstructStoppingSequences(instructPreset, contextPreset ?? {}, { name1, name2 })
                 : [];
 
-            const { 'textgenerationwebui_settings': baseSettings } = readSettingsAtPaths(request.user.directories, ['textgenerationwebui_settings']);
+            const { 'textgenerationwebui_settings': baseSettings, power_user: powerUser = {} } = readSettingsAtPaths(request.user.directories, ['textgenerationwebui_settings', 'power_user']);
             const preset = profile.preset ? readPresetByName('textgenerationwebui', profile.preset, request.user.directories) : null;
             const settings = mergeTextGenPreset({ ...baseSettings, type: selectedApiMap.type }, preset);
 
-            // Resolved early (normally computed after this call, at line ~327) so it can also be
-            // handed to computeTextgenLogitBias()'s remote-tokenize branches (src/endpoints/
-            // tokenizers.js) via logitBiasContext.remoteContext - without it, a connected textgen/
-            // kobold backend's OWN tokenizer would silently be skipped for any settings.logit_bias
-            // entry that needs it, even though the backend the request will hit is already known
-            // here.
             const apiServerUrl = profile['api-url'] || resolveServerUrl(settings);
+
+            // The profile's own backend and tokenizer, not the main connection's.
+            const tokenizerState = {
+                api: 'textgenerationwebui', type: selectedApiMap.type, url: apiServerUrl, model: profile.model ?? '',
+                tokenizerSetting: resolveProfileTokenizerSetting(profile.tokenizer, powerUser.tokenizer),
+            };
+            const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories: request.user.directories });
+            /** @type {string[]} */
+            const droppedBiasEntries = [];
 
             const params = await createTextGenGenerationData(
                 settings, profile.model, finalPrompt, maxTokens, isImpersonate, isContinue, null, type,
                 {
                     stoppingStrings, macroContext: { name1, name2 },
                     logitBiasContext: {
+                        tokenizerOptions: { resolved: resolvedTokenizer },
                         remoteContext: { request, baseUrl: apiServerUrl, apiType: selectedApiMap.type, model: profile.model },
+                        dropped: droppedBiasEntries,
                     },
                 },
             );
+            const droppedWarning = droppedEntriesWarning(tokenizerState, resolvedTokenizer, droppedBiasEntries);
+            if (droppedWarning) {
+                warnings.push(droppedWarning);
+            }
 
             // Optional sampler-field overrides for this one call (e.g. a caller that wants a
             // specific temperature without a whole separate profile/preset). Deliberately excludes
@@ -810,6 +823,7 @@ router.post('/generate', async function (request, response) {
                 console.error('Failed to build raw-action text completion request:', error);
                 return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
             }
+            warnings.push(...built.warnings);
 
             // Persist the NEW USER MESSAGE - "the user sent this" - BEFORE dispatching to the
             // backend. This is a real fact that should be committed regardless of whether

@@ -13,6 +13,7 @@ import { SentencePieceProcessor } from '@agnai/sentencepiece-js';
 import tiktoken from 'tiktoken';
 
 import { TEXTGEN_TYPES } from '../constants.js';
+import { tokenizers, TOKENIZER_TYPE_KEYS } from '../tokenizer-ids.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { getConfigValue, isValidUrl, trimV1 } from '../util.js';
 
@@ -848,12 +849,26 @@ export function resolveTextgenTokenizerForTokenIds(options = {}) {
 }
 
 /**
- * Encodes text per a `resolveTextgenTokenizerForTokenIds()` descriptor. Internal helper for
+ * The encode descriptor for a resolveTokenizer() answer (src/tokenizer-resolve.js).
+ * @param {{kind: string, id: number, model?: string}} resolved
+ * @returns {{kind: 'remote-textgen'}|{kind: 'remote-kobold'}|{kind: 'local', type: string}|{kind: 'openai', model: string}|{kind: 'estimate'}}
+ */
+function descriptorForResolvedTokenizer(resolved) {
+    if (resolved.kind === 'estimate') return { kind: 'estimate' };
+    if (resolved.kind === 'remote') {
+        return resolved.id === tokenizers.API_KOBOLD ? { kind: 'remote-kobold' } : { kind: 'remote-textgen' };
+    }
+    if (resolved.id === tokenizers.OPENAI) return { kind: 'openai', model: resolved.model };
+    return { kind: 'local', type: TOKENIZER_TYPE_KEYS[resolved.id] };
+}
+
+/**
+ * Encodes text per a `resolveTextgenTokenizerForTokenIds()` or `descriptorForResolvedTokenizer()` descriptor. Internal helper for
  * `computeTextgenLogitBias()`.
- * @param {ReturnType<typeof resolveTextgenTokenizerForTokenIds>} tokenizerDescriptor
+ * @param {ReturnType<typeof resolveTextgenTokenizerForTokenIds>|ReturnType<typeof descriptorForResolvedTokenizer>} tokenizerDescriptor
  * @param {string} text
  * @param {{request?: import('express').Request, baseUrl?: string, model?: string, apiType?: string}} remoteContext
- * @returns {Promise<number[]>}
+ * @returns {Promise<number[]|null>} null for an estimate: there is no tokenizer.
  */
 async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remoteContext) {
     const { request, baseUrl, model, apiType } = remoteContext;
@@ -877,9 +892,9 @@ async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remote
                 return [];
             }
         case 'openai': {
-            // Mirrors computeLogitBias()'s own model-name dispatch (sentencepiece/web/tiktoken),
-            // reached here only via the OpenRouter branch's tokenizers.OPENAI default case.
-            const resolvedModel = getTokenizerModel(String(model || ''));
+            // A resolveTokenizer() answer names its tiktoken model; the old resolver's OpenRouter
+            // branch leaves it to computeLogitBias()'s model-name dispatch.
+            const resolvedModel = 'model' in tokenizerDescriptor ? tokenizerDescriptor.model : getTokenizerModel(String(model || ''));
             if (resolvedModel === 'claude') return [];
             try {
                 if (sentencepieceTokenizers.includes(resolvedModel) || webTokenizers.includes(resolvedModel)) {
@@ -892,6 +907,8 @@ async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remote
                 return [];
             }
         }
+        case 'estimate':
+            return null;
         case 'none':
         default:
             return [];
@@ -927,20 +944,25 @@ async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remote
  * @param {{id?: string, text?: string, value?: number}[]} logitBiasPreset Raw
  * `textgenerationwebui_settings.logit_bias`-shaped array.
  * @param {object} [tokenizerOptions] Forwarded to `resolveTextgenTokenizerForTokenIds()` - see its
- * doc comment for every field.
+ * doc comment for every field. `tokenizerOptions.resolved`, a resolveTokenizer() answer
+ * (src/tokenizer-resolve.js), is used instead when given.
  * @param {{request?: import('express').Request, baseUrl?: string, model?: string, apiType?: string}} [remoteContext]
  * Only consulted when tokenizer resolution lands on a remote backend; see above.
+ * @param {string[]} [dropped] Receives the text of each entry left out because the resolution is an
+ * estimate (no tokenizer).
  * @returns {Promise<{[tokenId: string]: number}>} Token-id-keyed bias map. `{}` for an
  * absent/empty preset, matching `calculateLogitBias()`'s own early return.
  */
-export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions = {}, remoteContext = {}) {
+export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions = {}, remoteContext = {}, dropped = undefined) {
     const result = {};
 
     if (!Array.isArray(logitBiasPreset) || logitBiasPreset.length === 0) {
         return result;
     }
 
-    const tokenizerDescriptor = resolveTextgenTokenizerForTokenIds(tokenizerOptions);
+    const tokenizerDescriptor = tokenizerOptions.resolved
+        ? descriptorForResolvedTokenizer(tokenizerOptions.resolved)
+        : resolveTextgenTokenizerForTokenIds(tokenizerOptions);
 
     for (const entry of logitBiasPreset) {
         if (!entry || typeof entry.text !== 'string' || entry.text.length === 0) {
@@ -973,6 +995,11 @@ export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions 
         } else {
             // Text with a leading space
             tokens = await encodeTextgenLogitBiasEntryText(tokenizerDescriptor, ` ${text}`, remoteContext);
+        }
+
+        if (tokens === null) {
+            dropped?.push(text);
+            continue;
         }
 
         if (!Array.isArray(tokens) || tokens.length === 0) {

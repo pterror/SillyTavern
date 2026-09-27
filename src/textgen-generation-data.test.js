@@ -12,7 +12,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
 const { createTextGenGenerationData, APHRODITE_DEFAULT_ORDER } = await import('./textgen-generation-data.js');
-const { resolveTextgenTokenizerForTokenIds } = await import('./endpoints/tokenizers.js');
+const { encodeTextByLocalTokenizerType } = await import('./endpoints/tokenizers.js');
+const { resolveTokenizer, tokenizers } = await import('./tokenizer-resolve.js');
 
 function baseSettings(overrides = {}) {
     return {
@@ -221,23 +222,28 @@ function baseSettings(overrides = {}) {
     assert.equal('logit_bias' in none, false);
 }
 
-// resolveTextgenTokenizerForTokenIds(): with every live-connection-state param omitted (the honest
-// default reproducing the client's own disconnected fallback), a textgen model name containing
-// "mistral" resolves to the local mistral tokenizer - hand-traced against getTokenizerBestMatch's
-// model-name-substring branch (public/scripts/tokenizers.js ~line 331) since getTokenizerForTokenIds
-// itself doesn't consult that branch's return value directly, it only cares whether
-// getTokenizerBestMatch('textgenerationwebui') === tokenizers.API_TEXTGENERATIONWEBUI (which requires
-// isConnected - false by default here) - so with nothing else set, resolution falls all the way
-// through to the final `tokenizers.LLAMA` default, NOT a model-name match. This test asserts that
-// exact (perhaps counter-intuitive, but faithfully ported) behavior.
+// logit_bias with a resolveTokenizer() answer: an estimate (no tokenizer known) leaves out the
+// entries that need token ids and lists them, keeping raw ids; an explicit tokenizer encodes with it.
 {
-    const fallback = resolveTextgenTokenizerForTokenIds({ settingsType: 'ooba' });
-    assert.deepEqual(fallback, { kind: 'local', type: 'llama' });
+    const logit_bias = [{ text: 'hello', value: -5 }, { text: '{world}', value: 3 }, { text: '[5,6]', value: 2 }];
+    const settings = baseSettings({ type: 'ooba', logit_bias });
 
-    // A directly-selected power_user.tokenizer equivalent of 'mistral' DOES take effect (pure,
-    // no live state needed) - mirrors ENCODE_TOKENIZERS.includes(power_user.tokenizer).
-    const explicitMistral = resolveTextgenTokenizerForTokenIds({ settingsType: 'ooba', powerUserTokenizer: 'mistral' });
-    assert.deepEqual(explicitMistral, { kind: 'local', type: 'mistral' });
+    const estimate = await resolveTokenizer({ api: 'textgenerationwebui', type: 'ooba', url: 'http://127.0.0.1:1', model: '', tokenizerSetting: tokenizers.BEST_MATCH });
+    assert.equal(estimate.kind, 'estimate');
+    const dropped = [];
+    const params = await createTextGenGenerationData(settings, '', 'p', 10, false, false, null, 'normal', {
+        logitBiasContext: { tokenizerOptions: { resolved: estimate }, dropped },
+    });
+    assert.deepEqual(params.logit_bias, { 5: 2, 6: 2 });
+    assert.deepEqual(dropped, ['hello', '{world}']);
+
+    const mistral = await resolveTokenizer({ api: 'textgenerationwebui', type: 'ooba', url: 'http://127.0.0.1:1', model: '', tokenizerSetting: tokenizers.MISTRAL });
+    assert.equal(mistral.id, tokenizers.MISTRAL);
+    const explicit = await createTextGenGenerationData(baseSettings({ type: 'ooba', logit_bias: [{ text: 'hello', value: -5 }] }), '', 'p', 10, false, false, null, 'normal', {
+        logitBiasContext: { tokenizerOptions: { resolved: mistral } },
+    });
+    const mistralIds = await encodeTextByLocalTokenizerType('mistral', ' hello');
+    assert.deepEqual(explicit.logit_bias, Object.fromEntries(mistralIds.map(id => [String(id), -5])));
 }
 
 console.log('textgen-generation-data.test.js: all assertions passed');

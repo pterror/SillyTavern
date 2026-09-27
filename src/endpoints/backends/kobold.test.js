@@ -391,6 +391,11 @@ async function run() {
     // 341d1dead:src/endpoints/backends/kobold.js`, the persistAssistantReply() call site comment).
     {
         const fakeBackend = await startFakeBackend((req, res) => {
+            if (req.url === '/v1/model' || req.url === '/extra/version') {
+                // The tokenizer probe: no model, not KoboldCpp.
+                res.writeHead(404);
+                return res.end();
+            }
             assert.equal(req.url, '/v1/generate', 'the non-streaming raw-action request really hits Kobold\'s real /v1/generate endpoint');
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ results: [{ text: 'Rex says hello back.' }] }));
@@ -446,6 +451,11 @@ async function run() {
                 res.writeHead(200, { 'Content-Type': 'text/event-stream' });
                 res.end(sseTokens.map(token => `data: ${JSON.stringify({ token })}\n\n`).join('') + 'data: [DONE]\n\n');
                 return;
+            }
+            if (req.url === '/v1/model' || req.url === '/extra/version') {
+                // The tokenizer probe: no model, not KoboldCpp.
+                res.writeHead(404);
+                return res.end();
             }
             sawNonStreamRequest = true;
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -704,6 +714,52 @@ async function run() {
         }
 
         assert.equal(sawAbortCall, true, 'the client disconnecting mid-stream triggered a real POST to the Kobold backend\'s /extra/abort endpoint - proving can_abort correctly reached `true` end-to-end for a raw-action request, not silently `false` as it was before this fix');
+    }
+
+    // --- tokenizer: the KoboldCpp probe gives the backend's own tokenizer; the textgen logit_bias
+    // and banned tokens are not encoded for a kobold request ---
+    {
+        const tokenCountPrompts = [];
+        const paths = [];
+        const fakeBackend = await startFakeBackend((req, res, body) => {
+            paths.push(req.url);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (req.url === '/api/extra/version') return res.end(JSON.stringify({ result: 'KoboldCpp', version: '1.70' }));
+            if (req.url === '/api/v1/model') return res.end(JSON.stringify({ result: 'koboldcpp/some-model' }));
+            if (req.url === '/api/extra/tokencount') {
+                const prompt = JSON.parse(body).prompt;
+                tokenCountPrompts.push(prompt);
+                const ids = Array.from(prompt).map(ch => ch.codePointAt(0));
+                return res.end(JSON.stringify({ value: ids.length, ids }));
+            }
+            res.end('{}');
+        });
+        const settings = buildSettingsFixture();
+        settings.kai_settings.api_server = `${fakeBackend.url}/api`;
+        settings.textgenerationwebui_settings = {
+            logit_bias: [{ id: 'z', text: 'zebra', value: -5 }],
+            send_banned_tokens: true,
+            banned_tokens: 'giraffe',
+        };
+        writeAllSettings(directories, settings);
+
+        const localEncodes = [];
+        try {
+            await buildRawActionKoboldRequest(directories, {
+                characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+                type: 'normal', userMessageText: 'What happens next, Rex?',
+                tokenizerOptions: { encodeLocal: async (key, text) => { localEncodes.push(text); return [1]; } },
+            });
+        } finally {
+            fakeBackend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+
+        assert.ok(paths.includes('/api/extra/version'), 'the KoboldCpp version was probed');
+        assert.ok(tokenCountPrompts.length > 0, 'counted with the backend\'s own tokenizer');
+        assert.deepEqual(localEncodes, [], 'no local tokenizer used');
+        assert.ok(!tokenCountPrompts.includes(' zebra'), 'the textgen logit_bias is not encoded for kobold');
+        assert.ok(!tokenCountPrompts.includes('giraffe'), 'the textgen banned tokens are not encoded for kobold');
     }
 
     console.log('kobold.test.js: all assertions passed');

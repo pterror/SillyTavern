@@ -1061,3 +1061,46 @@ test('assembleTextCompletionPrompt: mainApi "novel" dispatches Step 16 to create
     assert.equal(result.generate_data.max_new_tokens, undefined);
     assert.equal(result.generate_data.max_context_length, undefined);
 });
+
+test('assembleTextCompletionPrompt: mainApi "novel" without encodeTokensByType throws instead of swapping tokenizers', async () => {
+    const { charactersDir, chatsDir, root } = makeDirectories();
+    const avatar = 'aria-novel-no-bytype.png';
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeSimpleCharacter(directories, avatar);
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        mainApi: 'novel',
+        settings: { model_novel: 'clio-v1', banned_tokens: '', logit_bias: [], order: [1, 5, 0, 2, 3, 4] },
+    };
+
+    await assert.rejects(() => assembleTextCompletionPrompt(input), /encodeTokensByType is required/);
+});
+
+test('assembleTextCompletionPrompt: the textgen logit_bias and banned tokens are encoded only for textgen', async () => {
+    const { charactersDir, chatsDir, root } = makeDirectories();
+    const avatar = 'aria-bias-scope.png';
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeSimpleCharacter(directories, avatar);
+
+    const encoded = [];
+    const encodeTokens = text => { encoded.push(text); return Array.from(text).map(ch => ch.codePointAt(0)); };
+    const entries = {
+        logitBiasEntries: [{ text: 'zebra', value: -5 }],
+        sendBannedTokens: true,
+        bannedTokensRaw: 'giraffe',
+    };
+
+    await assembleTextCompletionPrompt({
+        ...baseFixture(directories, avatar), ...entries, encodeTokens,
+        mainApi: 'kobold', settings: { sampler_order: [6, 0, 1, 2, 3, 4, 5] }, apiServer: 'http://localhost:5001',
+    });
+    assert.ok(!encoded.includes(' zebra') && !encoded.includes('giraffe'), 'nothing of the textgen entries is encoded for kobold');
+
+    const textgen = await assembleTextCompletionPrompt({ ...baseFixture(directories, avatar), ...entries, encodeTokens, mainApi: 'textgenerationwebui', settings: { type: 'ooba', logit_bias: entries.logitBiasEntries } });
+    assert.ok(encoded.includes(' zebra') && encoded.includes('giraffe'), 'both are encoded for textgen');
+    assert.deepEqual(textgen.droppedEntries, []);
+
+    const estimate = await assembleTextCompletionPrompt({ ...baseFixture(directories, avatar), ...entries, encodeTokens: () => null, mainApi: 'textgenerationwebui', settings: { type: 'ooba', logit_bias: entries.logitBiasEntries } });
+    assert.deepEqual(estimate.droppedEntries, ['giraffe', 'zebra'], 'without a tokenizer the entries are listed as dropped');
+});
