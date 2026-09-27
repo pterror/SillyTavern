@@ -14,6 +14,8 @@ import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
 import { t } from './i18n.js';
 import { isMobile } from './RossAscends-mods.js';
+import { getRememberedTokenizerAnswer } from './tokenizers.js';
+import { renderCountBasis } from './tokenizer-notices.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -1811,12 +1813,18 @@ class PromptManager {
                             </span>
                     </span>
 
-                    <span class="prompt_manager_prompt_tokens" data-pm-tokens="${calculatedTokens}"><span class="${warningClass}" title="${warningTitle}"> </span>${calculatedTokens}</span>
+                    <span class="prompt_manager_prompt_tokens_wrapper"><span class="prompt_manager_prompt_tokens" data-pm-tokens="${calculatedTokens}"><span class="${warningClass}" title="${warningTitle}"> </span>${calculatedTokens}</span></span>
                 </li>
             `;
         });
 
         promptManagerList.insertAdjacentHTML('beforeend', listItemHtml);
+
+        // A `-` has no count, so it has no basis to mark.
+        const tokenizerAnswer = getRememberedTokenizerAnswer();
+        promptManagerList.querySelectorAll('.prompt_manager_prompt_tokens[data-pm-tokens]:not([data-pm-tokens="-"])').forEach(el => {
+            renderCountBasis(el, tokenizerAnswer);
+        });
 
         // Now that the new elements are in the DOM, you can add the event listeners.
         Array.from(promptManagerList.getElementsByClassName('prompt-manager-detach-action')).forEach(el => {
