@@ -1223,9 +1223,10 @@ export async function countChatCompletionMessages(resolved, messages, outcome = 
         if (sentencepieceTokenizers.includes(key)) {
             return await countSentencepieceArrayTokens(LOCAL_TOKENIZER_INSTANCES[key], messages);
         }
-        const instance = await LOCAL_TOKENIZER_INSTANCES[key]?.get();
+        const instance = await getEncodingTokenizer(key)?.get();
         if (!instance) throw new Error(`Failed to load the ${resolved.name} tokenizer`);
-        return countWebTokenizerTokens(instance, messages);
+        const jsonBody = messages.flatMap(x => Object.values(x)).join('\n\n');
+        return (await instance.encode(jsonBody)).length;
     } catch (error) {
         console.error('An error counting tokens, using fallback estimation method', error);
         if (outcome) {

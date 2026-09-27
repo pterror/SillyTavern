@@ -537,6 +537,21 @@ await testCase('llama3.json: /llama3/*, /openai/* and /current/* give the refere
     assert.deepEqual(counted.counts, [ignoreMergesIds.length], '/current/count');
 });
 
+await testCase('llama3.json: chat-completion message counts give the reference count where ignore_merges matters', async () => {
+    // A message's values are joined with '\n\n', so a message with one value counts that value alone.
+    const llama3Messages = [{ content: ignoreMergesText }];
+
+    const state = { api: 'openai', source: 'openrouter', model: 'meta-llama/llama-3-70b-instruct' };
+    const current = await postCurrent('count', { state, messages: llama3Messages });
+    assert.deepEqual({ id: current.tokenizer.id, basis: current.tokenizer.basis }, { id: tokenizers.LLAMA3, basis: 'local' }, 'the model maps to llama3');
+
+    const openai = await postTokenizer('/openai/count', 'llama3', llama3Messages);
+    assert.deepEqual(
+        { openaiCount: openai.token_count, currentCount: current.count },
+        { openaiCount: ignoreMergesIds.length, currentCount: ignoreMergesIds.length },
+    );
+});
+
 await testCase('/current/*: a working remote tokenizer with an exact local copy decodes and trims with the copy', async () => {
     fakeTokenizeMode = 'ok';
     const gemmaIds = await encodeTextByLocalTokenizerType('gemma', text);
