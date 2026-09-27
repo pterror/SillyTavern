@@ -68,6 +68,7 @@ const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } 
 const { forwardAndPersistCompactStream } = await import('./backends/text-completions.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
 const { upsertCharacterFromWrite } = await import('../character-metadata-db.js');
+const { tokenizers } = await import('../tokenizer-ids.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-novelai-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -354,6 +355,83 @@ async function run() {
         assert.ok(!builtFresh.params.input.includes('Hello there, traveler.'), 'no unrelated prior history (Rex\'s) leaked into a brand-new character\'s resolved, empty chat');
     }
 
+    // --- tokenizer: the send resolves its tokenizer with resolveTokenizer() ---
+
+    function tokenizerSettings(modelNovel, tokenizerSetting) {
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = tokenizerSetting;
+        settings.power_user.custom_stopping_strings = JSON.stringify(['\nNarrator:']);
+        settings.nai_settings.model_novel = modelNovel;
+        settings.nai_settings.banned_tokens = 'dragon\n[5,6]';
+        settings.nai_settings.logit_bias = [{ text: 'sword', value: 1 }, { text: '[7]', value: -1 }];
+        return settings;
+    }
+
+    /** A fake local encoder that records which tokenizer key each call used. */
+    function recordingTokenizerOptions() {
+        const keys = [];
+        return {
+            keys,
+            options: {
+                encodeLocal: async (key, text) => {
+                    keys.push(key);
+                    return Array.from(String(text ?? '')).map(ch => ch.codePointAt(0));
+                },
+            },
+        };
+    }
+
+    const codePoints = (text) => Array.from(text).map(ch => ch.codePointAt(0));
+
+    // A clio fixture with stop strings -> NERD (nerdstash) ids.
+    {
+        writeAllSettings(directories, tokenizerSettings('clio-v1', undefined));
+        const { keys, options } = recordingTokenizerOptions();
+        const built = await buildRawActionNovelRequest(directories, {
+            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+            type: 'normal', userMessageText: 'Stop strings, Rex?',
+            tokenizerOptions: options,
+        });
+        writeAllSettings(directories, buildSettingsFixture());
+
+        assert.ok(keys.length > 0, 'the clio send encodes with a local tokenizer');
+        assert.deepEqual([...new Set(keys)], ['nerdstash'], 'clio counts and ids use NERD (nerdstash), nothing else');
+        assert.ok(built.params.stop_sequences.some(ids => JSON.stringify(ids) === JSON.stringify(codePoints('\nNarrator:'))), 'the custom stop string is sent as NERD ids');
+        assert.ok(built.params.bad_words_ids.some(ids => JSON.stringify(ids) === JSON.stringify(codePoints('dragon'))), 'a text bad word is encoded');
+        assert.ok(built.params.bad_words_ids.some(ids => JSON.stringify(ids) === JSON.stringify([5, 6])), 'a raw-id bad word goes through');
+    }
+
+    // An estimate resolution (an explicit None setting, or a model the NovelAI list doesn't know)
+    // leaves out every entry that needs ids and lists each one in a `dropped` warning; raw-id
+    // entries still go through, and nothing is encoded.
+    for (const [label, modelNovel, tokenizerSetting] of [
+        ['explicit None setting', 'clio-v1', tokenizers.NONE],
+        ['model the NovelAI list does not know', 'some-future-model', undefined],
+    ]) {
+        writeAllSettings(directories, tokenizerSettings(modelNovel, tokenizerSetting));
+        const { keys, options } = recordingTokenizerOptions();
+        const built = await buildRawActionNovelRequest(directories, {
+            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+            type: 'normal', userMessageText: 'No tokenizer, Rex?',
+            tokenizerOptions: options,
+        });
+        writeAllSettings(directories, buildSettingsFixture());
+
+        assert.deepEqual(keys, [], `${label}: no tokenizer is loaded, counts use the estimate`);
+        assert.equal(built.params.stop_sequences, undefined, `${label}: stop strings need ids, so none are sent`);
+        assert.deepEqual(built.params.bad_words_ids, [[5, 6]], `${label}: only the raw-id bad word goes through`);
+        assert.deepEqual(built.params.logit_bias_exp.map(entry => entry.sequence), [[7]], `${label}: only the raw-id bias goes through`);
+
+        assert.equal(built.warnings.length, 1, `${label}: one warning`);
+        const [warning] = built.warnings;
+        assert.equal(warning.kind, 'dropped');
+        assert.ok(warning.entries.includes('\nNarrator:'), `${label}: the stop string is listed`);
+        assert.ok(warning.entries.includes('dragon'), `${label}: the text bad word is listed`);
+        assert.ok(warning.entries.includes('sword'), `${label}: the text bias is listed`);
+        assert.ok(!warning.entries.includes('[5,6]') && !warning.entries.includes('[7]'), `${label}: raw-id entries are not listed`);
+        assert.ok(warning.message.includes('dragon') && warning.message.includes('sword'), `${label}: the message names the entries`);
+    }
+
     if (!canMockNovelBackend) {
         console.log('novelai.test.js: skipping all route-level /generate tests (a)-(e) - run with `node --experimental-test-module-mocks` to include them (see the canMockNovelBackend comment near the top of this file)');
         console.log('novelai.test.js: assembly/validation assertions passed (route-level tests skipped)');
@@ -498,6 +576,31 @@ async function run() {
         assert.equal(branchAfterDirect.messages[1].mes, 'Rex streams a reply.', 'the real forwardAndPersistCompactStream() + the route\'s own extractors correctly accumulated and persisted every chunk');
         assert.equal(branchAfterDirect.messages[1].name, 'Rex');
         assert.equal(branchAfterDirect.messages[1].is_user, false);
+    }
+
+    // (b2) an estimate resolution's `dropped` warning reaches the non-streaming reply.
+    {
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ output: 'Rex replies without stop strings.' }));
+        });
+        pointNovelBackendAt(fakeBackend.url);
+        writeAllSettings(directories, tokenizerSettings('clio-v1', tokenizers.NONE));
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'Warn me, Rex.', stream: false,
+        });
+        fakeBackend.server.close();
+        pointNovelBackendAt(null);
+        writeAllSettings(directories, buildSettingsFixture());
+
+        assert.equal(status, 200);
+        assert.equal(data.warnings?.length, 1);
+        assert.equal(data.warnings[0].kind, 'dropped');
+        assert.ok(data.warnings[0].entries.includes('dragon'));
     }
 
     // (c) failed backend response: only the user message is persisted, no spurious assistant reply.

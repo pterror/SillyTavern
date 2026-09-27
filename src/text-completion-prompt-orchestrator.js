@@ -320,6 +320,9 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  * @property {(tokenizerType: number, text: string) => number[] | Promise<number[]>} [encodeTokensByType]
  *   Required when `mainApi` is 'novel': createNovelGenerationData() encodes with a tokenizer type as
  *   its first argument, a different shape from `encodeTokens`.
+ * @property {number} [novelTokenizerType] Required when `mainApi` is 'novel': the send's resolved
+ *   `tokenizers` value, NONE for an estimate resolution. Entries NovelAI leaves out for lack of a
+ *   tokenizer are listed in `droppedEntries`.
  * @property {number} [amountGen] Equivalent of `amount_gen` - max new tokens to request, forwarded
  *   to createTextGenGenerationData() as `maxTokens`.
  * @property {boolean} [requestTokenProbabilities] Equivalent of power_user.request_token_probabilities.
@@ -459,7 +462,7 @@ export async function assembleTextCompletionPrompt(input) {
         alwaysForceName2 = false, forceName2Override,
         reasoningAddToPrompts = false, reasoningMaxAdditions = 999999, reasoningPrefix = '', reasoningSeparator = '', reasoningSuffix = '',
         regexScripts = [], regexExtensionEnabled = true,
-        tokenPadding = 0, countTokens, encodeTokens, encodeTokensByType, amountGen = 0, requestTokenProbabilities = false,
+        tokenPadding = 0, countTokens, encodeTokens, encodeTokensByType, novelTokenizerType, amountGen = 0, requestTokenProbabilities = false,
         chatGuidanceScale, groupchatIndividualChars = false, charaCfg, globalCfg, promptCombine = [], promptSeparator, promptInsertionDepth = 1, chatMetadataPrompts = {},
         worldInfoCandidates = [], worldInfoIncludeNames = false, worldInfoBudgetPercent = 25, worldInfoBudgetCap = 0,
         worldInfoDepth = 2, worldInfoRecursive = true, worldInfoMaxRecursionSteps = 0,
@@ -483,6 +486,7 @@ export async function assembleTextCompletionPrompt(input) {
     if (typeof countTokens !== 'function') throw new Error('assembleTextCompletionPrompt: countTokens is required');
     if (typeof encodeTokens !== 'function') throw new Error('assembleTextCompletionPrompt: encodeTokens is required');
     if (mainApi === 'novel' && typeof encodeTokensByType !== 'function') throw new Error('assembleTextCompletionPrompt: encodeTokensByType is required for novel');
+    if (mainApi === 'novel' && typeof novelTokenizerType !== 'number') throw new Error('assembleTextCompletionPrompt: novelTokenizerType is required for novel');
 
     // Shared side effect sink for the {{banned "..."}} macro, threaded through every substituteParams
     // call this orchestrator triggers (directly or via a downstream module), same as the client's
@@ -1029,7 +1033,9 @@ export async function assembleTextCompletionPrompt(input) {
             consoleLogPrompts,
             requestTokenProbabilities,
             stoppingStringsParams,
+            tokenizerType: novelTokenizerType,
             encodeTokens: encodeTokensByType,
+            dropped: droppedEntries,
             macroContext,
         });
     } else {

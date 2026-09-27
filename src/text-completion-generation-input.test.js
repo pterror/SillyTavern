@@ -19,6 +19,7 @@ const { writeAllSettings } = await import('./settings-store.js');
 const { saveChatToTree, disposeMessageTreeStores } = await import('./message-tree-db.js');
 const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
 const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
+const { tokenizers } = await import('./tokenizer-ids.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completion-generation-input-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -405,7 +406,7 @@ async function run() {
     // --- mainApi: 'novel' dispatch (new in this task) ---
     const novelInput = await resolveTextCompletionGenerationInput(directories, {
         avatar, ownerId, branchName, mainApi: 'novel', countTokens, encodeTokens,
-        macroExtras: { encodeTokensByType: (_tokenizerType, text) => encodeTokens(text) },
+        macroExtras: { encodeTokensByType: (_tokenizerType, text) => encodeTokens(text), novelTokenizerType: tokenizers.NERD },
     });
     assert.equal(novelInput.mainApi, 'novel');
     assert.equal(novelInput.settings.model_novel, 'clio-v1', 'settings resolves from the real top-level nai_settings, not textgenerationwebui_settings');

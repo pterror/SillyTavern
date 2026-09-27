@@ -7,8 +7,8 @@ import express from 'express';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { readAllChunks, extractFileFromZipBuffer } from '../util.js';
 import { readSettingsAtPaths } from '../settings-store.js';
-import { encodeWithTokenizerType } from '../tokenizer-resolve.js';
-import { getTokenizerTypeForModel } from '../novel-generation-data.js';
+import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, droppedEntriesWarning } from '../tokenizer-resolve.js';
+import { tokenizers } from '../tokenizer-ids.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
 import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../message-tree-db.js';
@@ -185,13 +185,10 @@ router.post('/status', async function (req, res) {
  * fixed API endpoint (`API_NOVELAI`/`TEXT_NOVELAI`, selected by model name, unchanged below), unlike
  * Kobold's own connectable-server-URL model.
  *
- * `encodeTokensByType` (see text-completion-prompt-orchestrator.js's own doc comment on this exact
- * parameter for the full "real, verified parameter-shape mismatch" rationale) is wired here to the
- * REAL `getTokenizerTypeForModel()` + `encodeWithTokenizerType()` pair - `settings.model_novel`
- * (read directly off `nai_settings` below, matching the model createNovelGenerationData() itself
- * will use) decides which tokenizer id createNovelGenerationData() passes back into this function on
- * each call, and this function then dispatches that SPECIFIC tokenizer type to the real encoder -
- * exactly the shape createNovelGenerationData() needs, not the generic single-arg `encodeTokens`.
+ * The tokenizer is resolved with `resolveTokenizer()` from `nai_settings.model_novel` and
+ * `power_user.tokenizer`. An estimate resolution counts by the estimate and has no ids, so stop
+ * strings, bad words and bias entries needing ids are left out and reported in the returned
+ * `warnings`.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {import('express').Request} [params.request]
@@ -214,7 +211,7 @@ router.post('/status', async function (req, res) {
  * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. NovelAI has no
  * media/image inlining wired here - only `.files` is meaningfully consumed downstream
  * (file-attachment-inline.js, via resolveTextCompletionGenerationInput()).
- * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
+ * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, warnings: object[] }>}
  */
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
@@ -263,24 +260,21 @@ export async function buildRawActionNovelRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const { nai_settings: naiSettings = {} } = readSettingsAtPaths(directories, ['nai_settings']);
-    const modelNovel = naiSettings.model_novel ?? '';
-    const novelTokenizerType = getTokenizerTypeForModel(modelNovel);
-    // Generic single-arg encodeTokens (Step 1-15's own contract - see
-    // text-completion-prompt-orchestrator.js's plain `encodeTokens` doc comment) always uses the
-    // SAME real per-model tokenizer type NovelAI itself will use - a reasonable, real choice (not a
-    // guess) since this whole request is for that one fixed model either way.
-    const encodeTokens = (text) => encodeWithTokenizerType(novelTokenizerType, text, { request, ...tokenizerOptions });
-    const countTokens = async (text) => (await encodeTokens(text)).length;
-    // Real two-arg bridge for createNovelGenerationData()'s own EncodeTokensFn - see this function's
-    // own doc comment above.
-    const encodeTokensByType = (tokenizerType, text) => encodeWithTokenizerType(tokenizerType ?? novelTokenizerType, text, { request, ...tokenizerOptions });
+    const { nai_settings: naiSettings = {}, power_user: powerUser = {} } = readSettingsAtPaths(directories, ['nai_settings', 'power_user']);
+    const tokenizerState = { api: 'novel', model: naiSettings.model_novel ?? '', tokenizerSetting: powerUser.tokenizer };
+    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    const encodeOptions = { request, ...tokenizerOptions };
+    const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
+    const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
+    // createNovelGenerationData() hands back the type it was given, which is this resolution's.
+    const encodeTokensByType = (_tokenizerType, text) => encodeTokens(text);
+    const novelTokenizerType = resolvedTokenizer.kind === 'estimate' ? tokenizers.NONE : resolvedTokenizer.id;
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'novel', ownerId, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
         countTokens, encodeTokens,
-        macroExtras: { encodeTokensByType },
+        macroExtras: { encodeTokensByType, novelTokenizerType },
     });
 
     // `nodeId === null` ("genuinely new, empty conversation") is only valid when this owner's
@@ -299,7 +293,12 @@ export async function buildRawActionNovelRequest(directories, {
     const assembled = await assembleTextCompletionPrompt(orchestratorInput);
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
-    return { params: assembled.generate_data, anchorNodeId, anchorContent, name1: orchestratorInput.name1, name2: orchestratorInput.name2 };
+    const droppedWarning = droppedEntriesWarning(tokenizerState, resolvedTokenizer, assembled.droppedEntries);
+
+    return {
+        params: assembled.generate_data, anchorNodeId, anchorContent, name1: orchestratorInput.name1, name2: orchestratorInput.name2,
+        warnings: droppedWarning ? [droppedWarning] : [],
+    };
 }
 
 router.post('/generate', async function (req, res) {
@@ -341,6 +340,7 @@ router.post('/generate', async function (req, res) {
             console.error('Failed to build raw-action NovelAI request:', error);
             return res.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
         }
+        warnings.push(...built.warnings);
 
         // Same three-mode persistence contract as text-completions.js's/kobold.js's own raw-action
         // branches - see text-completions.js's own extensive comment on impersonate/quiet skipping,
