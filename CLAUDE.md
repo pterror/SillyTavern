@@ -34,7 +34,7 @@ Correctness comes before speed. Never lose data. Never leave anything out silent
 
 ## Tree model
 
-Each character's or group's messages form a tree: a message can have several replies, and each reply starts a different branch of the conversation. The app keeps a pointer to the message you are currently at. A bookmark is a saved reference to one message (its id) plus a label you choose, so you can jump back to that message later; opening it shows the conversation from the first message down to that one. A following bookmark is updated whenever a new message is added right after the one it points to, so it always points at the newest message on that branch. A fixed bookmark always points at the same message. A "chat", as upstream code sees it, is only a thin layer over a bookmark.
+Each character's or group's messages form a tree: a message can have several replies, and each reply starts a different branch of the conversation. The app keeps a pointer to the message you are currently at. A bookmark is a saved reference to one message (its id) plus a label you choose, so you can jump back to that message later; opening it shows the conversation from the first message down to that one. A following bookmark is updated whenever a new message is added right after the one it points to, so it always points at the newest message on that branch. A pinned bookmark always points at the same message. A "chat", as upstream code sees it, is only a thin layer over a bookmark.
 
 ## Boot and batches
 
