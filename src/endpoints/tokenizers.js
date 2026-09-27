@@ -588,15 +588,16 @@ async function getLocalEncoder(resolved) {
 /**
  * Computes a token-id-keyed logit bias map from bias-preset entries for a server-built
  * chat-completion send, with the model's chat-completion tokenizer resolution (the model map).
- * Claude models get {} (no bias support), as does a tokenizer that fails to load. With no tokenizer
- * for the model, raw-id entries are kept and every other entry is left out and listed in `dropped`.
+ * Claude models get {} (no bias support). With no tokenizer for the model, or one that fails to load
+ * (tried again on every call), raw-id entries are kept and every other entry is left out and listed
+ * in `dropped`.
  * Entries without `text` are skipped, and an encode failure is warned about, not thrown.
  *
  * @param {{text?: string, value?: number}[]} biasPresetEntries Raw bias-preset entries, e.g.
  * oai_settings.bias_presets[oai_settings.bias_preset_selected] client-side - {id, text, value}[]
  * shaped, though only `text`/`value` are used here.
  * @param {string} requestModel The chat-completion model name.
- * @param {string[]} [dropped] Receives the text of each entry left out because there is no tokenizer.
+ * @param {string[]} [dropped] Receives the text of each entry left out because there are no token ids for it.
  * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
  */
 export async function computeLogitBias(biasPresetEntries, requestModel, dropped = undefined) {
@@ -619,7 +620,6 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
         encodeFunction = await getLocalEncoder(resolved);
         if (!encodeFunction) {
             console.error('Tokenizer not initialized:', resolved.name);
-            return {};
         }
     }
 
@@ -1164,9 +1164,10 @@ function countTiktokenMessages(model, messages) {
  * when there is no tokenizer or counting fails.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @param {object[]} messages
+ * @param {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a failed count, for a send's warnings.
  * @returns {Promise<number>}
  */
-export async function countChatCompletionMessages(resolved, messages) {
+export async function countChatCompletionMessages(resolved, messages, outcome = undefined) {
     try {
         if (resolved.kind === 'estimate') {
             return guesstimate(JSON.stringify(messages));
@@ -1183,6 +1184,10 @@ export async function countChatCompletionMessages(resolved, messages) {
         return countWebTokenizerTokens(instance, messages);
     } catch (error) {
         console.error('An error counting tokens, using fallback estimation method', error);
+        if (outcome) {
+            outcome.failed = true;
+            outcome.countEstimated = true;
+        }
         return guesstimate(JSON.stringify(messages));
     }
 }

@@ -76,10 +76,16 @@ let chutesFakeBackendUrl = null;
 let minimaxFakeBackendUrl = null;
 /** @type {string|null} Set by pointElectronHubBackendAt() below; read by the node-fetch reroute mock. */
 let electronhubFakeBackendUrl = null;
+/** @type {string[]} Downloadable-tokenizer URLs asked for; the mock answers each with 503. */
+const tokenizerDownloadRequests = [];
 if (canMockAi21Backend) {
     const realNodeFetch = (await import(path.join(__dirname, '..', '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
     mock.module('node-fetch', {
         defaultExport: async (url, opts) => {
+            if (String(url).startsWith('https://github.com/SillyTavern/SillyTavern-Tokenizers/')) {
+                tokenizerDownloadRequests.push(String(url));
+                return new Response('unavailable', { status: 503, statusText: 'Service Unavailable' });
+            }
             const target = new URL(url);
             if (ai21FakeBackendUrl && target.origin === 'https://api.ai21.com') {
                 return realNodeFetch(new URL(target.pathname + target.search, ai21FakeBackendUrl), opts);
@@ -768,6 +774,60 @@ async function run() {
             }], `${name}: the dropped entry is listed`);
         }
         assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }, { 11: 2, 12: 2 }], 'raw-id entries still go through');
+    }
+
+    // (a-2b) a model mapped to a downloadable tokenizer whose download fails: the same as a model
+    // with no tokenizer, but the reason is that tokenizer failing. The raw-action send's prompt
+    // budget fell to the estimate, so it also carries `trim-estimate`; the profile send counts
+    // nothing. Each send tries the download again.
+    if (canMockAi21Backend) {
+        const backendBodies = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            backendBodies.push(JSON.parse(body));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }));
+        });
+        const settings = buildSettingsFixture();
+        settings.oai_settings.custom_url = fakeBackend.url;
+        settings.oai_settings.custom_model = 'Mistral-Nemo-Instruct-2407';
+        settings.oai_settings.bias_preset_selected = 'Drop';
+        settings.oai_settings.bias_presets = { Drop: [{ id: 'a', text: 'hello', value: -5 }, { id: 'b', text: '[11, 12]', value: 2 }] };
+        settings.extension_settings = {
+            connectionManager: { profiles: [{ id: 'p-nemo', api: 'custom', 'api-url': fakeBackend.url, model: 'mistral-nemo' }] },
+        };
+        writeAllSettings(directories, settings);
+
+        tokenizerDownloadRequests.length = 0;
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const app = buildTestApp();
+        const rawAction = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'Bias with Nemo, Rex?', stream: false,
+        });
+        const profile = await postGenerate(app, {
+            connection_profile_id: 'p-nemo', messages: [{ role: 'user', content: 'Hi.' }], stream: false,
+        });
+        fakeBackend.server.close();
+        writeAllSettings(directories, buildSettingsFixture());
+
+        const dropped = model => ({
+            kind: 'dropped',
+            key: `openai|custom||${model}|nemo`,
+            message: 'Left out 1 entry that need token ids, because the Mistral Nemo tokenizer failed: hello',
+            entries: ['hello'],
+        });
+        assert.equal(rawAction.status, 200, 'raw-action');
+        assert.deepEqual(rawAction.data.warnings, [{
+            kind: 'trim-estimate',
+            key: 'openai|custom||Mistral-Nemo-Instruct-2407|nemo',
+            message: 'The Mistral Nemo tokenizer failed, so the prompt was fitted to the context by an estimated token count.',
+        }, dropped('Mistral-Nemo-Instruct-2407')], 'raw-action: the estimate trim and the dropped entry are reported');
+        assert.equal(profile.status, 200, 'profile');
+        assert.deepEqual(profile.data.warnings, [dropped('mistral-nemo')], 'profile: the dropped entry is listed');
+        assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }, { 11: 2, 12: 2 }], 'raw-id entries still go through');
+        assert.ok(tokenizerDownloadRequests.filter(url => url.endsWith('/nemo.json.gz')).length >= 2, 'each send tries the download again');
+    } else {
+        console.log('chat-completions.test.js: skipping the downloadable-tokenizer failure case - run with `node --experimental-test-module-mocks`, which it needs to stub the download');
     }
 
     // (a-3) POST /bias keeps upstream's encoding and response: a name its tokenizer guess doesn't
