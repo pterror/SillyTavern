@@ -364,12 +364,28 @@ export function droppedEntriesWarning(state, resolved, entries) {
     if (entries.length === 0) {
         return null;
     }
-    const noun = entries.length === 1 ? 'entry' : 'entries';
+    const messages = droppedMessages(resolved);
+    const template = entries.length === 1 ? messages.one : messages.many;
+    const values = { count: String(entries.length), entries: entries.join(', ') };
     return {
         kind: 'dropped',
         key: tokenizerWarningKey(state, resolved),
-        message: `Left out ${entries.length} ${noun} that need token ids, because ${droppedReason(resolved)}: ${entries.join(', ')}`,
+        message: template.replace(/\{(count|entries)\}/g, (_, name) => values[name]),
         entries,
+    };
+}
+
+/**
+ * The `dropped` warning's wording for one entry and for several, with `{count}` and `{entries}`
+ * left for the browser to fill in on the sends it builds.
+ * @param {ResolvedTokenizer} resolved
+ * @returns {{ one: string, many: string }}
+ */
+function droppedMessages(resolved) {
+    const reason = droppedReason(resolved);
+    return {
+        one: `Left out {count} entry that need token ids, because ${reason}: {entries}`,
+        many: `Left out {count} entries that need token ids, because ${reason}: {entries}`,
     };
 }
 
@@ -429,15 +445,21 @@ function failedTokenizerName(resolved) {
 /**
  * The `tokenizer` a `/api/tokenizers/current/*` response names: the tokenizer that answered (the
  * local copy when it answered for a failed remote one), the request's basis, and the `key` its
- * warnings carry.
+ * warnings carry, and the wording of a `dropped` warning for a send the browser builds.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {TokenizerOutcome} outcome
- * @returns {{ id: number, name: string, model?: string, basis: ResolvedTokenizer['basis'], key: string }}
+ * @returns {{ id: number, name: string, model?: string, basis: ResolvedTokenizer['basis'], key: string, messages: { dropped: { one: string, many: string } } }}
  */
 export function tokenizerAnswer(state, resolved, outcome) {
     const used = outcome.usedCopy ?? resolved;
-    const answer = { id: used.id, name: used.name, basis: tokenizerOutcomeBasis(resolved, outcome), key: tokenizerWarningKey(state, resolved) };
+    const answer = {
+        id: used.id,
+        name: used.name,
+        basis: tokenizerOutcomeBasis(resolved, outcome),
+        key: tokenizerWarningKey(state, resolved),
+        messages: { dropped: droppedMessages(resolved) },
+    };
     if (used.model) {
         answer.model = used.model;
     }

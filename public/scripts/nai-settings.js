@@ -10,14 +10,13 @@ import {
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
 import { MAX_CONTEXT_DEFAULT, MAX_RESPONSE_DEFAULT, power_user } from './power-user.js';
-import { getTextTokens, tokenizers } from './tokenizers.js';
+import { getEntryTokenIds, getTokenizerBestMatch, registerEntryTextSource, showDroppedEntries, tokenizers } from './tokenizers.js';
 import { CompactStreamDecoder } from './llamacpp-compact-stream.js';
 import {
     getSortableDelay,
-    getStringHash,
     onlyUnique,
 } from './utils.js';
-import { BIAS_CACHE, createNewLogitBiasEntry, displayLogitBias, getLogitBiasListResult } from './logit-bias.js';
+import { buildLogitBiasListResult, createNewLogitBiasEntry, displayLogitBias, getLogitBiasEntryTexts } from './logit-bias.js';
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
 
@@ -82,7 +81,6 @@ const samplers = {
 };
 
 let novel_data = null;
-let badWordsCache = {};
 const BIAS_KEY = '#range_block_novel';
 
 export function setNovelData(data) {
@@ -431,20 +429,42 @@ const sliders = [
     },
 ];
 
-function getBadWordIds(banned_tokens, tokenizerType) {
-    if (tokenizerType === tokenizers.NONE) {
-        return [];
+/**
+ * The texts a bad words line encodes: `{verbatim}` without its braces, plain text as its case and
+ * leading-space permutations.
+ * @param {string} trimmed A trimmed, non-empty line.
+ * @returns {string[]|null} null for raw token ids.
+ */
+function getBadWordEncodeTexts(trimmed) {
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        return [trimmed.slice(1, -1)];
     }
-
-    const cacheKey = `${getStringHash(banned_tokens)}-${tokenizerType}`;
-
-    if (cacheKey in badWordsCache && Array.isArray(badWordsCache[cacheKey])) {
-        console.debug(`Bad words ids cache hit for "${banned_tokens}"`, badWordsCache[cacheKey]);
-        return badWordsCache[cacheKey];
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        return null;
     }
+    return getBadWordPermutations(trimmed);
+}
 
+/**
+ * @param {string} banned_tokens Bad words, one per line.
+ * @returns {string[]} The texts they encode.
+ */
+function getBadWordTexts(banned_tokens) {
+    return String(banned_tokens ?? '').split('\n')
+        .map(token => token.trim())
+        .filter(trimmed => trimmed.length > 0)
+        .flatMap(trimmed => getBadWordEncodeTexts(trimmed) ?? []);
+}
+
+/**
+ * @param {string} banned_tokens Bad words, one per line.
+ * @param {(text: string) => number[]|null} getIds Token ids for a text; null leaves its line out.
+ * @param {string[]} dropped Receives each line left out.
+ * @returns {number[][]}
+ */
+function getBadWordIds(banned_tokens, getIds, dropped) {
     const result = [];
-    const sequence = banned_tokens.split('\n');
+    const sequence = String(banned_tokens ?? '').split('\n');
 
     for (let token of sequence) {
         const trimmed = token.trim();
@@ -453,10 +473,8 @@ function getBadWordIds(banned_tokens, tokenizerType) {
             continue;
         }
 
-        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-            const tokens = getTextTokens(tokenizerType, trimmed.slice(1, -1));
-            result.push(tokens);
-        } else if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        const texts = getBadWordEncodeTexts(trimmed);
+        if (texts === null) {
             try {
                 const tokens = JSON.parse(trimmed);
 
@@ -468,15 +486,18 @@ function getBadWordIds(banned_tokens, tokenizerType) {
             } catch (err) {
                 console.log(`Failed to parse bad word token list: ${trimmed}`, err);
             }
-        } else {
-            const permutations = getBadWordPermutations(trimmed).map(t => getTextTokens(tokenizerType, t));
-            result.push(...permutations);
+            continue;
         }
+
+        const ids = texts.map(getIds);
+        if (ids.includes(null)) {
+            dropped.push(trimmed);
+            continue;
+        }
+        result.push(...ids);
     }
 
     console.debug(`Bad words ids for "${banned_tokens}"`, result);
-    badWordsCache[cacheKey] = result;
-
     return result;
 }
 
@@ -502,7 +523,6 @@ export function getNovelGenerationData(finalPrompt, settings, maxLength, isImper
     const isKayra = nai_settings.model_novel.includes('kayra');
     const isErato = nai_settings.model_novel.includes('erato');
 
-    const tokenizerType = getTokenizerTypeForModel(nai_settings.model_novel);
     const stoppingStrings = getStoppingStrings(isImpersonate, isContinue);
 
     // Llama 3 tokenizer, huh?
@@ -528,21 +548,38 @@ export function getNovelGenerationData(finalPrompt, settings, maxLength, isImper
     }
 
     const MAX_STOP_SEQUENCES = 1024;
-    const stopSequences = (tokenizerType !== tokenizers.NONE)
-        ? stoppingStrings.slice(0, MAX_STOP_SEQUENCES).map(t => getTextTokens(tokenizerType, t))
-        : undefined;
+    const sentStoppingStrings = stoppingStrings.slice(0, MAX_STOP_SEQUENCES);
+    const hasBias = Array.isArray(nai_settings.logit_bias) && nai_settings.logit_bias.length > 0;
+    const entryTexts = [
+        ...sentStoppingStrings,
+        ...getBadWordTexts(nai_settings.banned_tokens),
+        ...(hasBias ? getLogitBiasEntryTexts(nai_settings.logit_bias) : []),
+    ];
+    const entryIds = entryTexts.length > 0 ? getEntryTokenIds(entryTexts, 'novel') : null;
+    /** @param {string} text */
+    const getIds = text => entryIds?.ids.get(text) ?? null;
+    const hasTokenizer = () => (entryIds?.tokenizer?.id ?? getTokenizerBestMatch('novel')) !== tokenizers.NONE;
+    const dropped = [];
 
-    const badWordIds = (tokenizerType !== tokenizers.NONE)
-        ? getBadWordIds(nai_settings.banned_tokens, tokenizerType)
-        : undefined;
+    const stopSequences = [];
+    for (const stoppingString of sentStoppingStrings) {
+        const ids = getIds(stoppingString);
+        if (ids === null) {
+            dropped.push(stoppingString);
+            continue;
+        }
+        stopSequences.push(ids);
+    }
+    const stopDropped = dropped.length;
+
+    const badWordIds = getBadWordIds(nai_settings.banned_tokens, getIds, dropped);
+    const badWordsDropped = dropped.length - stopDropped;
 
     const prefix = selectPrefix(nai_settings.prefix, finalPrompt);
 
-    let logitBias = [];
-    if (tokenizerType !== tokenizers.NONE && Array.isArray(nai_settings.logit_bias) && nai_settings.logit_bias.length) {
-        logitBias = BIAS_CACHE.get(BIAS_KEY) || calculateLogitBias();
-        BIAS_CACHE.set(BIAS_KEY, logitBias);
-    }
+    const logitBias = hasBias ? calculateLogitBias(getIds, dropped) : [];
+
+    showDroppedEntries(entryIds?.tokenizer ?? null, dropped);
 
     if (power_user.console_log_prompts) {
         console.log(finalPrompt);
@@ -555,6 +592,8 @@ export function getNovelGenerationData(finalPrompt, settings, maxLength, isImper
 
     const adjustedMaxLength = (isKayra || isErato) ? getNovelMaxResponseTokens() : maximum_output_length;
 
+    // A field left empty with no tokenizer, or because its entries were left out, is `undefined`,
+    // as it was when no tokenizer was known.
     return {
         'input': finalPrompt,
         'model': nai_settings.model_novel,
@@ -579,8 +618,8 @@ export function getNovelGenerationData(finalPrompt, settings, maxLength, isImper
         'mirostat_lr': Number(nai_settings.mirostat_lr),
         'mirostat_tau': Number(nai_settings.mirostat_tau),
         'phrase_rep_pen': nai_settings.phrase_rep_pen,
-        'stop_sequences': stopSequences,
-        'bad_words_ids': badWordIds,
+        'stop_sequences': stopSequences.length === 0 && (stopDropped > 0 || !hasTokenizer()) ? undefined : stopSequences,
+        'bad_words_ids': badWordIds.length === 0 && (badWordsDropped > 0 || !hasTokenizer()) ? undefined : badWordIds,
         'logit_bias_exp': logitBias,
         'generate_until_sentence': true,
         'use_cache': false,
@@ -606,19 +645,6 @@ function selectPrefix(selected_prefix, finalPrompt) {
     }
 
     return 'vanilla';
-}
-
-function getTokenizerTypeForModel(model) {
-    if (model.includes('clio')) {
-        return tokenizers.NERD;
-    }
-    if (model.includes('kayra')) {
-        return tokenizers.NERD2;
-    }
-    if (model.includes('erato')) {
-        return tokenizers.LLAMA3;
-    }
-    return tokenizers.NONE;
 }
 
 function sortItemsByOrder(orderArray) {
@@ -655,14 +681,17 @@ function saveSamplingOrder() {
     saveSettingsDebounced('nai_settings');
 }
 
-function calculateLogitBias() {
+/**
+ * @param {(text: string) => number[]|null} getIds Token ids for an entry's text; null leaves it out.
+ * @param {string[]} dropped Receives the text of each entry left out.
+ * @returns {object[]}
+ */
+function calculateLogitBias(getIds, dropped) {
     const biasPreset = nai_settings.logit_bias;
 
     if (!Array.isArray(biasPreset) || biasPreset.length === 0) {
         return [];
     }
-
-    const tokenizerType = getTokenizerTypeForModel(nai_settings.model_novel);
 
     function getBiasObject(bias, sequence) {
         return {
@@ -673,7 +702,7 @@ function calculateLogitBias() {
         };
     }
 
-    const result = getLogitBiasListResult(biasPreset, tokenizerType, getBiasObject);
+    const result = buildLogitBiasListResult(biasPreset, getIds, getBiasObject, dropped);
     return result;
 }
 
@@ -838,6 +867,8 @@ export async function getStatusNovel() {
 }
 
 export function initNovelAISettings() {
+    registerEntryTextSource('novel', () => [...getBadWordTexts(nai_settings.banned_tokens), ...getLogitBiasEntryTexts(nai_settings.logit_bias)]);
+
     sliders.forEach(slider => {
         $(document).on('input', slider.sliderId, function () {
             const value = $(this).val();

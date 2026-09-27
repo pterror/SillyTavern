@@ -354,7 +354,24 @@ await testCase('/current/count: chat-completion messages count like /openai/coun
     const counted = await postCurrent('count', { state: { api: 'openai', source: 'openai', model: 'gpt-4o' }, messages });
     const upstream = await postTokenizer('/openai/count', 'gpt-4o', messages);
     assert.equal(counted.count, upstream.token_count);
-    assert.deepEqual(counted.tokenizer, { id: tokenizers.OPENAI, name: 'gpt-4o', model: 'gpt-4o', basis: 'local', key: 'openai|openai||gpt-4o|openai' });
+    const { id, name, model, basis, key } = counted.tokenizer;
+    assert.deepEqual({ id, name, model, basis, key }, { id: tokenizers.OPENAI, name: 'gpt-4o', model: 'gpt-4o', basis: 'local', key: 'openai|openai||gpt-4o|openai' });
+});
+
+await testCase('/current/*: the answer carries the server-built `dropped` wording for the browser to fill in', async () => {
+    const unmapped = (await postCurrent('tokenizer', { state: unmappedState })).tokenizer;
+    assert.deepEqual(unmapped.messages, {
+        dropped: {
+            one: 'Left out {count} entry that need token ids, because no tokenizer is known for this model: {entries}',
+            many: 'Left out {count} entries that need token ids, because no tokenizer is known for this model: {entries}',
+        },
+    });
+
+    const none = (await postCurrent('encode', { state: { ...unmappedState, tokenizerSetting: tokenizers.NONE }, texts: [text] })).tokenizer;
+    assert.equal(none.messages.dropped.many, 'Left out {count} entries that need token ids, because the tokenizer is set to None: {entries}');
+
+    const local = (await postCurrent('count', { state: llama3State, texts: [text] })).tokenizer;
+    assert.equal(local.messages.dropped.one, 'Left out {count} entry that need token ids, because the Llama 3 tokenizer failed: {entries}');
 });
 
 await testCase('/current/*: a failing llama.cpp /tokenize with a gemma-2 model counts with gemma, basis fallback', async () => {

@@ -32,20 +32,22 @@ jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     power_user: {},
 }));
 jest.unstable_mockModule('../public/scripts/tokenizers.js', () => ({
-    getTextTokens: jest.fn(),
-    tokenizers: { NONE: 0, NERD: 1, NERD2: 2, LLAMA3: 3 },
+    getEntryTokenIds: jest.fn(),
+    getTokenizerBestMatch: jest.fn(),
+    registerEntryTextSource: jest.fn(),
+    showDroppedEntries: jest.fn(),
+    tokenizers: { NONE: 0 },
 }));
 jest.unstable_mockModule('../public/scripts/sse-stream.js', () => ({ getEventSourceStream: jest.fn() }));
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     getSortableDelay: jest.fn(),
-    getStringHash: jest.fn(),
     onlyUnique: jest.fn(),
 }));
 jest.unstable_mockModule('../public/scripts/logit-bias.js', () => ({
-    BIAS_CACHE: new Map(),
+    buildLogitBiasListResult: jest.fn(),
     createNewLogitBiasEntry: jest.fn(),
     displayLogitBias: jest.fn(),
-    getLogitBiasListResult: jest.fn(),
+    getLogitBiasEntryTexts: jest.fn(),
 }));
 jest.unstable_mockModule('../public/scripts/secrets.js', () => ({
     SECRET_KEYS: {},
