@@ -982,14 +982,16 @@ export async function countTokensOpenAIAsync(messages, full = false) {
  * Calls the underlying tokenizer model to encode a string to tokens.
  * @param {string} endpoint API endpoint.
  * @param {string} str String to tokenize.
+ * @param {Record<string, string>} [headers] Extra request headers.
  * @returns {number[]} Array of token ids.
  */
-function getTextTokensFromServer(endpoint, str) {
+function getTextTokensFromServer(endpoint, str, headers = undefined) {
     let ids = [];
     jQuery.ajax({
         async: false,
         type: 'POST',
         url: endpoint,
+        headers,
         data: JSON.stringify({ text: str }),
         dataType: 'json',
         contentType: 'application/json',
@@ -1034,18 +1036,63 @@ function getTextTokensFromCurrent(str) {
 }
 
 /**
+ * The official tokenizer files' values (1000 and up). They have no named route: `getTextTokens` and
+ * `decodeTextTokens` send them to `/current/*` as `explicitTokenizer`, which the server honours on
+ * every API.
+ */
+const REGISTRY_TOKENIZERS = Object.values(tokenizers).filter(value => value >= 1000);
+
+/**
+ * Encodes a string with the tokenizer the caller named, through `/current/encode` as `explicitTokenizer`.
+ * The response isn't the on-screen state's tokenizer, so it isn't remembered.
+ * @param {number} tokenizerType A REGISTRY_TOKENIZERS value.
+ * @param {string} str String to tokenize.
+ * @returns {number[]} Array of token ids, with their `chunks` when given, like a named route's.
+ */
+function getTextTokensFromExplicit(tokenizerType, str) {
+    const state = getTokenizerState();
+    if (!state) {
+        return [];
+    }
+    const data = postCurrent('encode', { state, texts: [str], explicitTokenizer: tokenizerType }, false);
+    const ids = Array.isArray(data?.ids?.[0]) ? data.ids[0] : [];
+    if (Array.isArray(data?.chunks?.[0])) {
+        Object.defineProperty(ids, 'chunks', { value: data.chunks[0] });
+    }
+    return ids;
+}
+
+/**
+ * Decodes token ids with the tokenizer the caller named, through `/current/decode` as `explicitTokenizer`.
+ * The response isn't the on-screen state's tokenizer, so it isn't remembered.
+ * @param {number} tokenizerType A REGISTRY_TOKENIZERS value.
+ * @param {number[]} ids Array of token ids
+ * @returns {({ text: string, chunks: string[] })} Decoded token text and chunks. Empty on failure.
+ */
+function decodeTextTokensFromExplicit(tokenizerType, ids) {
+    const state = getTokenizerState();
+    if (!state) {
+        return { text: '', chunks: [] };
+    }
+    const data = postCurrent('decode', { state, ids, explicitTokenizer: tokenizerType }, false);
+    return { text: typeof data?.text === 'string' ? data.text : '', chunks: Array.isArray(data?.chunks) ? data.chunks : [] };
+}
+
+/**
  * Calls the underlying tokenizer model to decode token ids to text.
  * @param {string} endpoint API endpoint.
  * @param {number[]} ids Array of token ids
+ * @param {Record<string, string>} [headers] Extra request headers.
  * @returns {({ text: string, chunks?: string[] })} Decoded token text as a single string and individual chunks (if available).
  */
-function decodeTextTokensFromServer(endpoint, ids) {
+function decodeTextTokensFromServer(endpoint, ids, headers = undefined) {
     let text = '';
     let chunks = [];
     jQuery.ajax({
         async: false,
         type: 'POST',
         url: endpoint,
+        headers,
         data: JSON.stringify({ ids: ids }),
         dataType: 'json',
         contentType: 'application/json',
@@ -1055,6 +1102,15 @@ function decodeTextTokensFromServer(endpoint, ids) {
         },
     });
     return { text, chunks };
+}
+
+/**
+ * Headers for an `/openai/*` request: the chat-completion state, which the server resolves from
+ * instead of `?model=`. The query stays for callers that send no state.
+ * @returns {Record<string, string>}
+ */
+function getOpenAIRouteHeaders() {
+    return { 'X-ST-Connection-State': getTokenizerStateHeader('openai') };
 }
 
 /**
@@ -1070,6 +1126,9 @@ export function getTextTokens(tokenizerType, str) {
         case tokenizers.API_KOBOLD:
             return getTextTokensFromCurrent(str);
         default: {
+            if (REGISTRY_TOKENIZERS.includes(tokenizerType)) {
+                return getTextTokensFromExplicit(tokenizerType, str);
+            }
             const tokenizerEndpoints = TOKENIZER_URLS[tokenizerType];
             if (!tokenizerEndpoints) {
                 console.warn('Unknown tokenizer type', tokenizerType);
@@ -1082,6 +1141,7 @@ export function getTextTokens(tokenizerType, str) {
             }
             if (tokenizerType === tokenizers.OPENAI) {
                 endpointUrl += `?model=${getTokenizerModel()}`;
+                return getTextTokensFromServer(endpointUrl, str, getOpenAIRouteHeaders());
             }
             return getTextTokensFromServer(endpointUrl, str);
         }
@@ -1099,6 +1159,9 @@ export function decodeTextTokens(tokenizerType, ids) {
     if (tokenizerType === tokenizers.API_CURRENT) {
         return decodeTextTokens(tokenizers.NONE, ids);
     }
+    if (REGISTRY_TOKENIZERS.includes(tokenizerType)) {
+        return decodeTextTokensFromExplicit(tokenizerType, ids);
+    }
     const tokenizerEndpoints = TOKENIZER_URLS[tokenizerType];
     if (!tokenizerEndpoints) {
         console.warn('Unknown tokenizer type', tokenizerType);
@@ -1111,6 +1174,7 @@ export function decodeTextTokens(tokenizerType, ids) {
     }
     if (tokenizerType === tokenizers.OPENAI) {
         endpointUrl += `?model=${getTokenizerModel()}`;
+        return decodeTextTokensFromServer(endpointUrl, ids, getOpenAIRouteHeaders());
     }
     return decodeTextTokensFromServer(endpointUrl, ids);
 }

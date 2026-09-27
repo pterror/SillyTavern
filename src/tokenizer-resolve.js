@@ -192,37 +192,7 @@ async function encodeWithRegistryEntry(source, text, options) {
  */
 const EXPLICIT_OPENAI_MODEL = 'gpt-3.5-turbo';
 
-/**
- * @typedef {object} TokenizerState
- * @property {string} api main_api: 'textgenerationwebui', 'kobold', 'novel', 'koboldhorde' or 'openai'.
- * @property {string} [type] Textgen type, or the chat-completion source.
- * @property {string} [url] Backend URL (textgen and kobold).
- * @property {string} [model] The backend's model setting; empty asks the backend (textgen, kobold).
- * @property {string} [source] Chat-completion source.
- * @property {number} [tokenizerSetting] A `tokenizers` value; defaults to BEST_MATCH.
- * @property {string[]} [hordeModels] Selected Horde models.
- */
-
-/**
- * The on-screen connection state a request sends, or null when it names no API.
- * @param {any} state
- * @returns {TokenizerState|null}
- */
-export function readTokenizerState(state) {
-    if (!state || typeof state !== 'object' || typeof state.api !== 'string' || !state.api) {
-        return null;
-    }
-    const optionalString = (value) => typeof value === 'string' ? value : undefined;
-    return {
-        api: state.api,
-        type: optionalString(state.type),
-        url: optionalString(state.url),
-        model: optionalString(state.model),
-        source: optionalString(state.source),
-        tokenizerSetting: Number.isInteger(state.tokenizerSetting) ? state.tokenizerSetting : undefined,
-        hordeModels: Array.isArray(state.hordeModels) ? state.hordeModels.map(String) : undefined,
-    };
-}
+/** @typedef {import('./connection-state-header.js').TokenizerState} TokenizerState */
 
 /**
  * @typedef {object} LocalTokenizer
@@ -248,6 +218,31 @@ export function readTokenizerState(state) {
  */
 
 /**
+ * Whether `value` is an explicit pick (rule 1): a local tokenizer or NONE.
+ * @param {unknown} value
+ * @returns {value is number}
+ */
+export function isExplicitTokenizer(value) {
+    return EXPLICIT_LOCAL_TOKENIZERS.includes(/** @type {number} */ (value)) || value === tokenizers.NONE;
+}
+
+/**
+ * Rule 1: an explicit pick resolves to that local tokenizer, or to the estimate for NONE.
+ * @param {number} id An id isExplicitTokenizer() accepts.
+ * @param {import('./tokenizer-map-resolution.js').MapDeps['registry']} registry
+ * @returns {ResolvedTokenizer}
+ */
+function resolveExplicitSetting(id, registry) {
+    if (id === tokenizers.NONE) {
+        return estimateResolution('none');
+    }
+    const local = id === tokenizers.OPENAI
+        ? { id: tokenizers.OPENAI, name: EXPLICIT_OPENAI_MODEL, model: EXPLICIT_OPENAI_MODEL }
+        : describeTokenizerId(id, registry);
+    return localResolution(local, null);
+}
+
+/**
  * The one tokenizer resolution, used for counts and token ids alike. Never falls back to LLAMA:
  * only the map, an explicit setting or the NovelAI list give llama.
  * @param {TokenizerState} state
@@ -260,19 +255,18 @@ export async function resolveTokenizer(state, deps = {}) {
     const tokenizerSetting = state.tokenizerSetting ?? tokenizers.BEST_MATCH;
     const { lookupModel = lookupModelTokenizer, registry } = deps;
 
+    // A tokenizer the caller named outright, like a named route: before every other rule, on every api.
+    if (isExplicitTokenizer(state.explicitTokenizer)) {
+        return resolveExplicitSetting(state.explicitTokenizer, registry);
+    }
+
     // Upstream never applies the tokenizer setting to chat completion.
     if (api === 'openai') {
         return resolveChatCompletionTokenizer(state.model, state.source, deps);
     }
 
-    if (EXPLICIT_LOCAL_TOKENIZERS.includes(tokenizerSetting)) {
-        const local = tokenizerSetting === tokenizers.OPENAI
-            ? { id: tokenizers.OPENAI, name: EXPLICIT_OPENAI_MODEL, model: EXPLICIT_OPENAI_MODEL }
-            : describeTokenizerId(tokenizerSetting, registry);
-        return localResolution(local, null);
-    }
-    if (tokenizerSetting === tokenizers.NONE) {
-        return estimateResolution('none');
+    if (isExplicitTokenizer(tokenizerSetting)) {
+        return resolveExplicitSetting(tokenizerSetting, registry);
     }
 
     // Every other setting (API_CURRENT, BEST_MATCH) resolves alike: the remote tokenizer when

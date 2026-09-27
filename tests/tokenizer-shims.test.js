@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, jest, test } from '@jest/globals';
 const tokenizerIds = {
     NONE: 0, GPT2: 1, OPENAI: 2, LLAMA: 3, NERD: 4, NERD2: 5, API_CURRENT: 6, MISTRAL: 7, YI: 8,
     API_TEXTGENERATIONWEBUI: 9, API_KOBOLD: 10, CLAUDE: 11, LLAMA3: 12, GEMMA: 13, JAMBA: 14, QWEN2: 15,
-    COMMAND_R: 16, NEMO: 17, DEEPSEEK: 18, COMMAND_A: 19, BEST_MATCH: 99,
+    COMMAND_R: 16, NEMO: 17, DEEPSEEK: 18, COMMAND_A: 19, BEST_MATCH: 99, QWEN3: 1000,
 };
 
 const settings = {
@@ -16,7 +16,7 @@ const settings = {
     oai: { chat_completion_source: 'nanogpt', nanogpt_model: 'claude-sonnet-4' },
 };
 
-/** @type {Array<{url: string, async: boolean, body: any}>} */
+/** @type {Array<{url: string, async: boolean, body: any, headers?: Record<string, string>}>} */
 let requests;
 /** @type {(url: string, body: any) => any} Answers a request; throwing makes it fail. */
 let respond;
@@ -52,7 +52,7 @@ function defaultRespond(url, body) {
 global.jQuery = {
     ajax: jest.fn((options) => {
         const body = options.data ? JSON.parse(options.data) : undefined;
-        requests.push({ url: options.url, async: options.async !== false, body });
+        requests.push({ url: options.url, async: options.async !== false, body, headers: options.headers });
         let data;
         try {
             data = respond(options.url, body);
@@ -302,9 +302,78 @@ describe('tokenizer shims', () => {
         expect(requests[0].body.state).toEqual({ api: 'openai', source: 'nanogpt', model: 'claude-sonnet-4', tokenizerSetting: tokenizerIds.BEST_MATCH });
     });
 
+    test('getTextTokens(OPENAI) and decodeTextTokens(OPENAI) keep ?model= and send the chat-completion state in X-ST-Connection-State', () => {
+        respond = (url, body) => url === '/api/tokenizers/current/tokenizer'
+            ? { tokenizer: answer({ id: tokenizerIds.OPENAI, name: 'gpt-4o', model: 'gpt-4o', key: 'openai|nanogpt||claude-sonnet-4|openai' }) }
+            : defaultRespond(url, body);
+        const header = { 'X-ST-Connection-State': JSON.stringify({ api: 'openai', source: 'nanogpt', model: 'claude-sonnet-4', tokenizerSetting: tokenizerIds.BEST_MATCH }) };
+        expect(tokenizersModule.getTextTokens(tokenizerIds.OPENAI, 'x')).toEqual([3]);
+        tokenizersModule.decodeTextTokens(tokenizerIds.OPENAI, [3]);
+        const routeRequests = requests.filter(r => r.url.startsWith('/api/tokenizers/openai/'));
+        expect(routeRequests).toEqual([
+            { url: '/api/tokenizers/openai/encode?model=gpt-4o', async: false, body: { text: 'x' }, headers: header },
+            { url: '/api/tokenizers/openai/decode?model=gpt-4o', async: false, body: { ids: [3] }, headers: header },
+        ]);
+    });
+
     test('saveTokenCache stays exported and writes nothing', async () => {
         await tokenizersModule.saveTokenCache();
         expect(store.setItem).not.toHaveBeenCalled();
+    });
+});
+
+describe('an explicit registry id goes through /current/* as explicitTokenizer', () => {
+    const qwen3Answer = (key) => answer({ id: tokenizerIds.QWEN3, name: 'Qwen3 (official)', key });
+    const respondQwen3 = (key) => (url, body) => {
+        if (url === '/api/tokenizers/current/encode') {
+            return { ids: [[5, 6]], chunks: [['a', 'b']], tokenizer: qwen3Answer(key) };
+        }
+        if (url === '/api/tokenizers/current/decode') {
+            return { text: 'ab', chunks: ['a', 'b'], tokenizer: qwen3Answer(key) };
+        }
+        return defaultRespond(url, body);
+    };
+
+    test('getTextTokens(QWEN3) posts to /current/encode with the on-screen state and explicitTokenizer, chunks attached', () => {
+        respond = respondQwen3('textgenerationwebui|llamacpp|http://127.0.0.1:8080||qwen3');
+        const ids = tokenizersModule.getTextTokens(tokenizerIds.QWEN3, 'ab');
+        expect(ids).toEqual([5, 6]);
+        expect(/** @type {any} */ (ids).chunks).toEqual(['a', 'b']);
+        expect(Object.keys(ids)).toEqual(['0', '1']);
+        expect(requests).toEqual([{ url: '/api/tokenizers/current/encode', async: false, body: { state: textgenState, texts: ['ab'], explicitTokenizer: tokenizerIds.QWEN3 } }]);
+    });
+
+    test('getTextTokens(QWEN3) while main_api is openai sends the chat-completion state and explicitTokenizer', async () => {
+        await useApi('openai');
+        respond = respondQwen3('openai|nanogpt||claude-sonnet-4|qwen3');
+        const ids = tokenizersModule.getTextTokens(tokenizerIds.QWEN3, 'ab');
+        expect(ids).toEqual([5, 6]);
+        expect(/** @type {any} */ (ids).chunks).toEqual(['a', 'b']);
+        expect(requests).toEqual([{
+            url: '/api/tokenizers/current/encode',
+            async: false,
+            body: { state: { api: 'openai', source: 'nanogpt', model: 'claude-sonnet-4', tokenizerSetting: tokenizerIds.BEST_MATCH }, texts: ['ab'], explicitTokenizer: tokenizerIds.QWEN3 },
+        }]);
+    });
+
+    test('decodeTextTokens(QWEN3) posts to /current/decode with the on-screen state and explicitTokenizer', () => {
+        respond = respondQwen3('textgenerationwebui|llamacpp|http://127.0.0.1:8080||qwen3');
+        expect(tokenizersModule.decodeTextTokens(tokenizerIds.QWEN3, [5, 6])).toEqual({ text: 'ab', chunks: ['a', 'b'] });
+        expect(requests).toEqual([{ url: '/api/tokenizers/current/decode', async: false, body: { state: textgenState, ids: [5, 6], explicitTokenizer: tokenizerIds.QWEN3 } }]);
+    });
+
+    test('a failed explicit request gives no ids, or empty text and chunks', () => {
+        respond = () => { throw new Error('offline'); };
+        expect(tokenizersModule.getTextTokens(tokenizerIds.QWEN3, 'ab')).toEqual([]);
+        expect(tokenizersModule.decodeTextTokens(tokenizerIds.QWEN3, [5, 6])).toEqual({ text: '', chunks: [] });
+    });
+
+    test('an explicit response is not the on-screen answer, so it is not remembered', () => {
+        respond = respondQwen3('textgenerationwebui|llamacpp|http://127.0.0.1:8080||qwen3');
+        tokenizersModule.getTextTokens(tokenizerIds.QWEN3, 'ab');
+        respond = defaultRespond;
+        expect(tokenizersModule.getTokenizerBestMatch()).toBe(tokenizerIds.GEMMA);
+        expect(requests.map(r => r.url)).toEqual(['/api/tokenizers/current/encode', '/api/tokenizers/current/tokenizer']);
     });
 });
 
