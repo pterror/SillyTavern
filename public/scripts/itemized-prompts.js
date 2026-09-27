@@ -9,7 +9,7 @@ import { Popup, POPUP_TYPE } from './popup.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { isMobile } from './RossAscends-mods.js';
 import { renderTemplateAsync } from './templates.js';
-import { getFriendlyTokenizerName, getTokenCountsAsyncBatch } from './tokenizers.js';
+import { getTokenCountsWithTokenizer } from './tokenizers.js';
 import { copyText } from './utils.js';
 
 let PromptArrayItemForRawPromptDisplay;
@@ -433,7 +433,7 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
         );
     }
 
-    const tokenCounts = await getTokenCountsAsyncBatch(tokenFields.map(([, text]) => text));
+    const { counts: tokenCounts, tokenizer: countTokenizer } = await getTokenCountsWithTokenizer(tokenFields.map(([, text]) => text));
     /** @type {Record<string, number>} */
     const tokens = Object.fromEntries(tokenFields.map(([key], i) => [key, tokenCounts[i]]));
 
@@ -510,7 +510,7 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
         params.promptBiasTokensPercentage = ((params.oaiBiasTokens / (params.finalPromptTokens)) * 100).toFixed(2);
         params.worldInfoStringTokensPercentage = ((params.worldInfoStringTokens / (params.finalPromptTokens)) * 100).toFixed(2);
         params.allAnchorsTokensPercentage = ((params.allAnchorsTokens / (params.finalPromptTokens)) * 100).toFixed(2);
-        params.selectedTokenizer = getFriendlyTokenizerName(params.this_main_api).tokenizerName;
+        params.selectedTokenizer = countTokenizer.tokenizerName;
         params.oaiSystemTokens = params.oaiImpersonateTokens + params.oaiJailbreakTokens + params.oaiNudgeTokens + params.oaiStartTokens + params.oaiNsfwTokens + params.oaiMainTokens;
         params.oaiSystemTokensPercentage = ((params.oaiSystemTokens / (params.finalPromptTokens)) * 100).toFixed(2);
     } else {
@@ -541,7 +541,7 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
         params.promptBiasTokensPercentage = ((params.promptBiasTokens / (params.totalTokensInPrompt)) * 100).toFixed(2);
         params.worldInfoStringTokensPercentage = ((params.worldInfoStringTokens / (params.totalTokensInPrompt)) * 100).toFixed(2);
         params.allAnchorsTokensPercentage = ((params.allAnchorsTokens / (params.totalTokensInPrompt)) * 100).toFixed(2);
-        params.selectedTokenizer = itemizedPrompts[thisPromptSet]?.tokenizer || getFriendlyTokenizerName(params.this_main_api).tokenizerName;
+        params.selectedTokenizer = countTokenizer.tokenizerName;
     }
     return params;
 }

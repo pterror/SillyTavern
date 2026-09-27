@@ -370,3 +370,43 @@ describe('the token counter encode asks /current/encode', () => {
         expect(requests.length).toBe(1);
     });
 });
+
+describe('count batches name their tokenizer', () => {
+    test('a textgen batch makes one /current/count request and names the response\'s tokenizer', async () => {
+        expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab', 'c'])).toEqual({
+            counts: [2, 1],
+            tokenizer: { tokenizerName: 'Gemma / Gemini', tokenizerKey: 'gemma', tokenizerId: tokenizerIds.GEMMA },
+        });
+        expect(requests.map(r => r.url)).toEqual(['/api/tokenizers/current/count']);
+    });
+
+    test('the name is the response\'s, not the remembered one', async () => {
+        tokenizersModule.getTokenizerBestMatch();
+        respond = (url, body) => ({ counts: body.texts.map(text => text.length), tokenizer: answer({ id: tokenizerIds.LLAMA3, name: 'Llama 3', key: 'k3' }) });
+        const { tokenizer } = await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
+        expect(tokenizer).toEqual({ tokenizerName: 'Llama 3', tokenizerKey: 'llama3', tokenizerId: tokenizerIds.LLAMA3 });
+    });
+
+    test('an all-cached batch makes no request and names the same tokenizer', async () => {
+        const first = await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
+        const second = await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
+        expect(requests.length).toBe(1);
+        expect(second.tokenizer).toEqual(first.tokenizer);
+    });
+
+    test('a failed request gives the estimate and names None', async () => {
+        respond = () => { throw new Error('offline'); };
+        expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).toEqual({
+            counts: [tokenizersModule.guesstimate('ab')],
+            tokenizer: { tokenizerName: 'None / Estimated', tokenizerKey: 'none', tokenizerId: tokenizerIds.NONE },
+        });
+    });
+
+    test('a chat-completion batch names the chat-completion tokenizer model', async () => {
+        await useApi('openai');
+        expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).toEqual({
+            counts: [7],
+            tokenizer: { tokenizerName: 'gpt-4o', tokenizerKey: 'openai', tokenizerId: tokenizerIds.OPENAI },
+        });
+    });
+});
