@@ -405,16 +405,69 @@ export function sendTokenizerWarnings(state, resolved, outcome, droppedEntries) 
         });
     }
     if (outcome.countEstimated) {
-        const failedName = resolved.kind === 'remote' ? 'The backend\'s tokenizer' : `The ${resolved.name} tokenizer`;
         warnings.push({
             kind: 'trim-estimate',
             key,
-            message: `${failedName} failed, so the prompt was fitted to the context by an estimated token count.`,
+            message: `${failedTokenizerName(resolved)} failed, so the prompt was fitted to the context by an estimated token count.`,
         });
     }
     const dropped = droppedEntriesWarning(state, resolved, droppedEntries);
     if (dropped) {
         warnings.push(dropped);
+    }
+    return warnings;
+}
+
+/**
+ * @param {ResolvedTokenizer} resolved
+ * @returns {string}
+ */
+function failedTokenizerName(resolved) {
+    return resolved.kind === 'remote' ? 'The backend\'s tokenizer' : `The ${resolved.name} tokenizer`;
+}
+
+/**
+ * The `tokenizer` a `/api/tokenizers/current/*` response names: the tokenizer that answered (the
+ * local copy when it answered for a failed remote one), the request's basis, and the `key` its
+ * warnings carry.
+ * @param {TokenizerState} state
+ * @param {ResolvedTokenizer} resolved
+ * @param {TokenizerOutcome} outcome
+ * @returns {{ id: number, name: string, model?: string, basis: ResolvedTokenizer['basis'], key: string }}
+ */
+export function tokenizerAnswer(state, resolved, outcome) {
+    const used = outcome.usedCopy ?? resolved;
+    const answer = { id: used.id, name: used.name, basis: tokenizerOutcomeBasis(resolved, outcome), key: tokenizerWarningKey(state, resolved) };
+    if (used.model) {
+        answer.model = used.model;
+    }
+    return answer;
+}
+
+/**
+ * The warnings a `/api/tokenizers/current/*` response carries: `fallback-copy` when a local copy
+ * answered for a failed remote tokenizer, `estimate` when a tokenizer failed with none to answer.
+ * @param {TokenizerState} state
+ * @param {ResolvedTokenizer} resolved
+ * @param {TokenizerOutcome} outcome
+ * @returns {Array<{kind: string, key: string, message: string}>}
+ */
+export function tokenizerResponseWarnings(state, resolved, outcome) {
+    const key = tokenizerWarningKey(state, resolved);
+    const warnings = [];
+    if (outcome.usedCopy) {
+        warnings.push({
+            kind: 'fallback-copy',
+            key,
+            message: `The backend's tokenizer failed, so its local copy, ${outcome.usedCopy.name}, was used.`,
+        });
+    }
+    if (outcome.failed) {
+        warnings.push({
+            kind: 'estimate',
+            key,
+            message: `${failedTokenizerName(resolved)} failed, so token counts are estimates.`,
+        });
     }
     return warnings;
 }

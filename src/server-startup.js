@@ -17,6 +17,7 @@ import { router as openAiRouter } from './endpoints/openai.js';
 import { router as googleRouter } from './endpoints/google.js';
 import { router as anthropicRouter } from './endpoints/anthropic.js';
 import { router as tokenizersRouter } from './endpoints/tokenizers.js';
+import { router as currentTokenizersRouter } from './endpoints/tokenizers-current.js';
 import { router as presetsRouter } from './endpoints/presets.js';
 import { router as secretsRouter } from './endpoints/secrets.js';
 import { router as thumbnailRouter } from './endpoints/thumbnails.js';
@@ -153,6 +154,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/google', googleRouter);
     app.use('/api/anthropic', anthropicRouter);
     app.use('/api/tokenizers', tokenizersRouter);
+    app.use('/api/tokenizers', currentTokenizersRouter);
     app.use('/api/presets', presetsRouter);
     app.use('/api/secrets', secretsRouter);
     app.use('/thumbnail', thumbnailRouter);
