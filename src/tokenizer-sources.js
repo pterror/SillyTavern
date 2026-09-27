@@ -127,6 +127,78 @@ export const TOKENIZER_SOURCES = Object.freeze([
             split: { maxChars: 400000, maxRun: 25000 },
         },
     },
+    {
+        id: 'qwen2-vl',
+        family: 'Qwen2-VL',
+        format: 'hf-json',
+        sha256: 'cb63a0a23eef3d5b01063a9880a1925a65aaf4d1591d519910ee3527852950a0',
+        bytes: 7029741,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct/blob/eed13092ef92e448dd6875b2a00151bd3f7db0ac/LICENSE',
+        sources: [
+            { repo: 'Qwen/Qwen2-VL-7B-Instruct', revision: 'eed13092ef92e448dd6875b2a00151bd3f7db0ac', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'qwen2.5',
+        family: 'Qwen2.5',
+        format: 'hf-json',
+        sha256: 'c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539',
+        bytes: 7031645,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/blob/a09a35458c702b33eeacc393d103063234e8bc28/LICENSE',
+        sources: [
+            { repo: 'Qwen/Qwen2.5-7B-Instruct', revision: 'a09a35458c702b33eeacc393d103063234e8bc28', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'qwen3.5',
+        family: 'Qwen3.5/3.6',
+        format: 'hf-json',
+        sha256: '5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42',
+        bytes: 12807982,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE',
+        sources: [
+            { repo: 'Qwen/Qwen3.5-9B', revision: 'c202236235762e1c871ad0ccb60c8ee5ba337b9a', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'qwen3.5-base',
+        family: 'Qwen3.5 base',
+        format: 'hf-json',
+        sha256: 'fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927',
+        bytes: 12807196,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://huggingface.co/Qwen/Qwen3.5-9B-Base/blob/68c46c4b3498877f3ef123c856ecfde50c39f404/LICENSE',
+        sources: [
+            { repo: 'Qwen/Qwen3.5-9B-Base', revision: '68c46c4b3498877f3ef123c856ecfde50c39f404', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'qwen3.8',
+        family: 'Qwen3.8',
+        format: 'hf-json',
+        sha256: '0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3',
+        bytes: 12809320,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/LICENSE',
+        sources: [
+            { repo: 'Qwen/Qwen3.8-27B', revision: '1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'codeqwen1.5',
+        family: 'CodeQwen1.5',
+        format: 'hf-json',
+        sha256: '76e125407daec8387eb5ce9bd8b6c455d2e96604f0b70219d73409b1b64d74fc',
+        bytes: 4462887,
+        license: 'Tongyi Qianwen LICENSE AGREEMENT (model card: tongyi-qianwen-research)',
+        licenseUrl: 'https://huggingface.co/Qwen/CodeQwen1.5-7B/blob/5ce5a1554e50a9e3bb236de7c0b8a2a1746186e4/LICENSE',
+        sources: [
+            { repo: 'Qwen/CodeQwen1.5-7B', revision: '5ce5a1554e50a9e3bb236de7c0b8a2a1746186e4', path: 'tokenizer.json', gated: false },
+        ],
+    },
 ]);
 
 /**

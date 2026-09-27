@@ -12,6 +12,12 @@ import { setConfigFilePath } from './util.js';
 // the samples. Each file is read through the reader SillyTavern uses for it, and must give the same
 // ids. A file that isn't in the cache is not run; `node scripts/fetch-tokenizer-fixtures.js` fills it.
 //
+// A fixture whose `file` is {"sameContentAs": <sha256>, ...} was made from a file with the same
+// content as the file of fixture <sha256>, which is the file SillyTavern reads. That fixture must
+// exist and have the same format. Its file is located and sha-checked through that fixture's own
+// `file`, `format` and `sha256`, so it is not run when that file isn't in the cache, and it must give
+// this fixture's ids.
+//
 // Usage: node src/tokenizer-exactness.test.js [--dataRoot <dir>]
 // Without --dataRoot, config.yaml's dataRoot is used.
 
@@ -70,7 +76,26 @@ const fixtureFiles = fs.readdirSync(fixturesDir).filter(name => /^[0-9a-f]{64}\.
 for (const name of fixtureFiles) {
     const fixture = JSON.parse(fs.readFileSync(path.join(fixturesDir, name), 'utf8'));
     const descriptor = JSON.stringify(fixture.file);
-    const { filePath, getEncode } = locate(fixture.file, fixture.format);
+
+    // The fixture that says where SillyTavern keeps the file and which sha256 it has.
+    let read = fixture;
+    if (fixture.file.sameContentAs) {
+        const referencedPath = path.join(fixturesDir, `${fixture.file.sameContentAs}.json`);
+        const referenced = fs.existsSync(referencedPath) ? JSON.parse(fs.readFileSync(referencedPath, 'utf8')) : null;
+        const problem = !referenced
+            ? `no fixture ${fixture.file.sameContentAs}`
+            : referenced.format !== fixture.format
+                ? `fixture ${fixture.file.sameContentAs} has format ${referenced.format}, this fixture has ${fixture.format}`
+                : null;
+        if (problem) {
+            summary.failed++;
+            failures.push(descriptor);
+            console.log(`not ok - ${descriptor}: ${problem}`);
+            continue;
+        }
+        read = referenced;
+    }
+    const { filePath, getEncode } = locate(read.file, read.format);
 
     if (!fs.existsSync(filePath)) {
         summary.notRun++;
@@ -78,9 +103,9 @@ for (const name of fixtureFiles) {
         continue;
     }
     const sha256 = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-    if (sha256 !== fixture.sha256) {
+    if (sha256 !== read.sha256) {
         summary.notRun++;
-        console.log(`not run: ${descriptor} (${filePath} has sha256 ${sha256}, the fixture is for ${fixture.sha256})`);
+        console.log(`not run: ${descriptor} (${filePath} has sha256 ${sha256}, the fixture is for ${read.sha256})`);
         continue;
     }
 

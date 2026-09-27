@@ -136,7 +136,6 @@ function generalMatches(tokens, lowerName) {
         [tokenizers.GEMMA, [['gemma']], rest => rest[0] === '3' || rest[0] === '3n'],
         [tokenizers.GEMMA, [['gemma2']], () => false],
         [tokenizers.YI, [['yi']], () => false],
-        [tokenizers.QWEN2, [['qwen2']], followedByAllDigits],
         [tokenizers.DEEPSEEK, [['deepseek', 'v3']], followedByAllDigits],
     ];
     for (const [result, sequences, isExcluded] of /** @type {Array<[number, string[][], (rest: string[]) => boolean]>} */ (guarded)) {
@@ -144,6 +143,75 @@ function generalMatches(tokens, lowerName) {
         if (outcome === 'veto') return null;
         if (outcome === 'match') add(result);
     }
+
+    // Qwen1.5/Qwen2 ship qwen2.json. `qwen2`,`5` (Qwen2.5) and `qwen2`,`vl` (Qwen2-VL) have their own
+    // entries below; `qwen2` followed by another number is an unknown version.
+    let isQwen2 = false;
+    for (const start of findSequence(tokens, ['qwen2'])) {
+        const next = tokens[start + 1];
+        if (next !== undefined && ALL_DIGITS.test(next) && next !== '5') return null;
+        if (next !== '5' && next !== 'vl') isQwen2 = true;
+    }
+    if (isQwen2) add(tokenizers.QWEN2);
+
+    // `qwen3` followed by a number other than 3.5, 3.6 and 3.8 is an unknown version.
+    const qwen3Version = guardedMatch(tokens, [['qwen3']], rest => followedByAllDigits(rest) && !['5', '6', '8'].includes(rest[0]));
+    if (qwen3Version === 'veto') return null;
+
+    /** @param {string} token */
+    const isSizeToken = token => /^a?\d+[bt]$/.test(token);
+    // A Qwen name that doesn't pick one model is a moving alias (step 18): estimate. A size token
+    // (`8b`, `a3b`, `4t`) picks one; so do Qwen3-Coder-Next, Qwen3.8-Flash-Next and QVQ (QVQ-72B-Preview
+    // is the only open QVQ).
+    const picksOneQwenModel = tokens.some(isSizeToken)
+        || hasSequence(tokens, ['coder', 'next'])
+        || hasSequence(tokens, ['flash', 'next'])
+        || tokens.includes('qvq');
+    // Closed DashScope ids (plus, max, omni, flash other than Flash-Next) count by estimate.
+    const isClosedQwen = ['plus', 'max', 'omni'].some(token => tokens.includes(token))
+        || tokens.some((token, i) => token === 'flash' && tokens[i + 1] !== 'next');
+    // DeepSeek's Qwen-based models are DeepSeek's entries.
+    const qwenGate = !tokens.includes('deepseek') && !isClosedQwen && picksOneQwenModel;
+
+    const hasBase = tokens.includes('base');
+    const isCoderNext = hasSequence(tokens, ['coder', 'next']);
+    const hasUnversionedQwen3 = findSequence(tokens, ['qwen3']).some(start => !followedByAllDigits(tokens.slice(start + 1)));
+    // Qwen3 Embedding, ASR, ForcedAligner, Omni, the closed rerank and Qwen3-235B-A22B-MLX (an extra
+    // `<unk>`) ship files that differ; Qwen3-TTS has no tokenizer.json. Qwen3-Reranker ships the Qwen3 file.
+    const isOtherQwen3File = ['embedding', 'asr', 'forcedaligner', 'tts', 'omni', 'rerank'].some(token => tokens.includes(token))
+        || (tokens.includes('mlx') && hasSequence(tokens, ['qwen3', '235b']));
+
+    // Qwen1.5 ships the same file as Qwen2.
+    if (qwenGate && hasSequence(tokens, ['qwen1', '5'])) add(tokenizers.QWEN2);
+
+    // Qwen2-VL ships its own file; the Qwen2-VL AWQ/GPTQ repos ship a file with two more added tokens.
+    if (qwenGate && hasSequence(tokens, ['qwen2', 'vl']) && !tokens.includes('awq') && !tokens.includes('gptq')) {
+        add({ source: 'qwen2-vl' });
+    }
+
+    // The Qwen2.5 file: Qwen2.5 (Coder, Math, VL, 1M; not Omni or the PRMs, whose files differ),
+    // QwQ-32B-Preview, QVQ-72B-Preview, and the Qwen3-*-Base repos (Qwen3-Coder-Next-Base ships the Qwen3 file).
+    const isQwen25File = (hasSequence(tokens, ['qwen2', '5']) && !['omni', 'prm', 'prm800k'].some(token => tokens.includes(token)))
+        || hasSequence(tokens, ['qwq', '32b', 'preview'])
+        || tokens.includes('qvq')
+        || (hasUnversionedQwen3 && hasBase && !isCoderNext && !isOtherQwen3File);
+    if (qwenGate && isQwen25File) add({ source: 'qwen2.5' });
+
+    // The Qwen3 file: Qwen3 (incl. Next, Coder, VL, Reranker) other than the Base repos, and QwQ-32B.
+    const isQwen3File = !isOtherQwen3File
+        && ((hasUnversionedQwen3 && (!hasBase || isCoderNext)) || (tokens.includes('qwq') && !tokens.includes('preview')));
+    if (qwenGate && isQwen3File) add({ source: 'qwen3' });
+
+    // Qwen3.5 and Qwen3.6 ship the Qwen3.5 file; Qwen3.5-*-Base ships its own.
+    const isQwen35 = hasSequence(tokens, ['qwen3', '5']);
+    if (qwenGate && !hasBase && (isQwen35 || hasSequence(tokens, ['qwen3', '6']))) add({ source: 'qwen3.5' });
+    if (qwenGate && hasBase && isQwen35) add({ source: 'qwen3.5-base' });
+
+    // The open Qwen3.8 repos ship the Qwen3.8 file.
+    if (qwenGate && hasSequence(tokens, ['qwen3', '8'])) add({ source: 'qwen3.8' });
+
+    // CodeQwen1.5 ships its own file.
+    if (qwenGate && hasSequence(tokens, ['codeqwen1', '5'])) add({ source: 'codeqwen1.5' });
 
     const isMistralV1 = (hasSequence(tokens, ['mistral', '7b'])
         && (hasSequence(tokens, ['v0', '1']) || hasSequence(tokens, ['v0', '2'])))

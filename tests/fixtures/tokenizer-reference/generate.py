@@ -17,7 +17,9 @@ MANIFEST.json is a JSON array of {"path": <local file>, "format": <format>, "fil
   the repo revision's tiktoken.model, tokenization_kimi.py and tokenizer_config.json.
 - "file" is copied into the fixture and tells src/tokenizer-exactness.test.js where SillyTavern
   keeps the file: {"bundled": "src/tokenizers/<name>"}, {"download": <url>, "cacheName": <name in
-  DATA_ROOT/_cache>} or {"registry": <TOKENIZER_SOURCES id>}.
+  DATA_ROOT/_cache>}, {"registry": <TOKENIZER_SOURCES id>} or {"sameContentAs": <sha256 of the
+  fixture of the file SillyTavern reads>, "repo": <repo>, "revision": <full commit>, "path": <path in
+  the repo>} for a file with the same content as that one.
 
 Each fixture is written as OUT_DIR/<sha256>.json.
 """

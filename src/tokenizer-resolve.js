@@ -36,6 +36,12 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.LLAMA3_1,
     tokenizers.NEMO_TEKKEN,
     tokenizers.KIMI,
+    tokenizers.QWEN2_VL,
+    tokenizers.QWEN2_5,
+    tokenizers.QWEN3_5,
+    tokenizers.QWEN3_5_BASE,
+    tokenizers.QWEN3_8,
+    tokenizers.CODEQWEN1_5,
 ];
 
 /**

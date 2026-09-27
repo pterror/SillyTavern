@@ -27,6 +27,12 @@ export const tokenizers = {
     LLAMA3_1: 1001,
     NEMO_TEKKEN: 1002,
     KIMI: 1003,
+    QWEN2_VL: 1004,
+    QWEN2_5: 1005,
+    QWEN3_5: 1006,
+    QWEN3_5_BASE: 1007,
+    QWEN3_8: 1008,
+    CODEQWEN1_5: 1009,
 };
 
 /**
@@ -60,4 +66,10 @@ export const TOKENIZER_TYPE_KEYS = {
     [tokenizers.LLAMA3_1]: 'llama3.1',
     [tokenizers.NEMO_TEKKEN]: 'nemo-tekken',
     [tokenizers.KIMI]: 'kimi',
+    [tokenizers.QWEN2_VL]: 'qwen2-vl',
+    [tokenizers.QWEN2_5]: 'qwen2.5',
+    [tokenizers.QWEN3_5]: 'qwen3.5',
+    [tokenizers.QWEN3_5_BASE]: 'qwen3.5-base',
+    [tokenizers.QWEN3_8]: 'qwen3.8',
+    [tokenizers.CODEQWEN1_5]: 'codeqwen1.5',
 };

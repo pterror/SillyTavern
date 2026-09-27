@@ -27,6 +27,15 @@ function check(api, name, expected) {
     assert.equal(lookupModelTokenizer(api, name), expected, `${api} / ${JSON.stringify(name)}`);
 }
 
+/**
+ * @param {string} api
+ * @param {string} name
+ * @param {string} source registry entry id
+ */
+function checkSource(api, name, source) {
+    assert.deepEqual(lookupModelTokenizer(api, name), { source }, `${api} / ${JSON.stringify(name)}`);
+}
+
 // --- Llama 2 ---
 check(GENERAL_API, 'llama-2-13b-chat', tokenizers.LLAMA);
 check(GENERAL_API, 'codellama-13b', null);
@@ -64,7 +73,65 @@ check(GENERAL_API, 'jamba-instruct', null);
 
 // --- Qwen2 ---
 check(GENERAL_API, 'qwen2-72b-instruct', tokenizers.QWEN2);
-check(GENERAL_API, 'qwen2.5-72b', null);
+checkSource(GENERAL_API, 'qwen2.5-72b', 'qwen2.5');
+check(GENERAL_API, 'Qwen1.5-7B-Chat', tokenizers.QWEN2);
+check(GENERAL_API, 'Qwen2-Audio-7B', tokenizers.QWEN2);
+
+// --- Qwen: one official file each ---
+checkSource(GENERAL_API, 'Qwen2-VL-7B-Instruct', 'qwen2-vl');
+for (const name of [
+    'Qwen2.5-7B-Instruct', 'Qwen2.5-Coder-32B-Instruct', 'Qwen2.5-Math-72B', 'Qwen2.5-VL-72B-Instruct',
+    'Qwen2.5-14B-Instruct-1M', 'QwQ-32B-Preview', 'QVQ-72B-Preview', 'Qwen3-8B-Base', 'qwen2.5:7b',
+]) {
+    checkSource(GENERAL_API, name, 'qwen2.5');
+}
+for (const name of [
+    'Qwen3-8B', 'qwen3:8b', 'Qwen3-30B-A3B-Instruct-2507', 'Qwen3-Next-80B-A3B-Instruct',
+    'Qwen3-Coder-480B-A35B-Instruct', 'Qwen3-Coder-Next', 'Qwen3-Coder-Next-Base', 'Qwen3-VL-8B-Instruct',
+    'QwQ-32B', 'Qwen3-Reranker-8B', 'qwen3-235b-a22b-thinking-2507',
+]) {
+    checkSource(GENERAL_API, name, 'qwen3');
+}
+for (const name of ['Qwen3.5-9B', 'Qwen3.6-27B', 'qwen3.5:0.8b', 'qwen3.5-27b:thinking']) {
+    checkSource(GENERAL_API, name, 'qwen3.5');
+}
+checkSource(GENERAL_API, 'Qwen3.5-9B-Base', 'qwen3.5-base');
+for (const name of ['Qwen3.8-27B', 'Qwen3.8-2.4T-A95B', 'Qwen3.8-Flash-Next']) {
+    checkSource(GENERAL_API, name, 'qwen3.8');
+}
+checkSource(GENERAL_API, 'CodeQwen1.5-7B-Chat', 'codeqwen1.5');
+
+// Qwen repos whose file differs from their family's (or that have none) are unmapped.
+for (const name of [
+    'Qwen2-VL-7B-Instruct-AWQ', 'Qwen2-VL-2B-Instruct-GPTQ-Int4', 'Qwen2.5-Omni-7B', 'Qwen2.5-Math-PRM-72B',
+    'Qwen2.5-Math-7B-PRM800K', 'Qwen3-Embedding-8B', 'Qwen3-VL-Embedding-2B', 'Qwen3-ASR-1.7B',
+    'Qwen3-ForcedAligner-0.6B', 'Qwen3-TTS-12Hz-1.7B-Base', 'Qwen3-Omni-30B-A3B-Instruct',
+    'Qwen3-235B-A22B-MLX-4bit', 'DeepSeek-R1-0528-Qwen3-8B',
+]) {
+    check(GENERAL_API, name, null);
+}
+
+// Closed DashScope ids count by estimate.
+for (const name of [
+    'qwen3.5-plus', 'qwen3.5-flash-02-23', 'qwen3.6-max-preview', 'qwen3.8-flash', 'qwen3.8-max',
+    'qwen3.8-omni-flash', 'qwen3-8-omni-flash', 'qwen3-max', 'qwen3-max-2025-09-23', 'qwen3-coder-plus',
+    'qwen3-coder-flash', 'qwen3-vl-plus', 'qwen3-vl-flash', 'qwen3-tts-flash', 'qwen3-rerank', 'qwq-plus',
+    'qvq-max', 'qwen-plus', 'qwen-max', 'qwen-turbo',
+]) {
+    check(GENERAL_API, name, null);
+}
+
+// A Qwen name that doesn't pick one model is a moving alias.
+for (const alias of [
+    'qwen3', 'qwen3:latest', 'qwen3.6', 'qwen3.6:latest', 'qwen3.7', 'qwen3-coder', 'qwen3-vl', 'qwen3-vl-pro',
+    'qwen3-vl-instruct', 'qwen3-next', 'qwq', 'qwen2.5-coder', 'qwen1.5', 'codeqwen1.5', 'qwen3.5', 'qwen3.8',
+]) {
+    check(GENERAL_API, alias, null);
+    check('openai', alias, null);
+}
+
+// An unknown Qwen3 version is unmapped.
+check(GENERAL_API, 'qwen3.7-27b', null);
 
 // --- Command-R ---
 check(GENERAL_API, 'command-r-plus', tokenizers.COMMAND_R);
