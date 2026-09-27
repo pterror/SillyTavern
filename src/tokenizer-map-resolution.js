@@ -1,3 +1,4 @@
+import { CHAT_COMPLETION_SOURCES, TEXTGEN_TYPES } from './constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 import { lookupModelTokenizer } from './tokenizer-model-map.js';
 import { findTokenizerSource, getTokenizerDisplayName } from './tokenizer-sources.js';
@@ -50,21 +51,67 @@ function describeRegistryEntry(source, registry) {
 }
 
 /**
- * The map's result for this backend. A model whose vendor's own files disagree gets its file only on
- * the vendor's own API. Every other backend gets none, so its remote tokenizer or the estimate, and
- * no local copy, because the file it uses is unknowable: a server can use either file, and a gguf's
- * vocab is converted from either. The `hf` file would be for a backend whose own docs say it
- * tokenizes with the repo's `tokenizer.json`; no backend here is documented as one.
+ * Textgen types where the model name is the weights the user loaded. `generic` and `huggingface`
+ * are not among them: whether one is self-hosted is unknowable from the type.
+ */
+const SELF_HOSTED_TEXTGEN_TYPES = [
+    TEXTGEN_TYPES.OOBA,
+    TEXTGEN_TYPES.VLLM,
+    TEXTGEN_TYPES.APHRODITE,
+    TEXTGEN_TYPES.TABBY,
+    TEXTGEN_TYPES.KOBOLDCPP,
+    TEXTGEN_TYPES.LLAMACPP,
+    TEXTGEN_TYPES.OLLAMA,
+];
+
+/** Ollama's cloud models (`deepseek-v4-pro:cloud`, `deepseek-v4-pro:0813-cloud`) run on Ollama's hosted service. */
+const OLLAMA_CLOUD_TAG = /:(?:[^:]*-)?cloud$/i;
+
+/**
+ * Every chat-completion source, Horde, NovelAI and the hosted textgen types are hosted APIs.
+ * @param {{ api: string, type?: string, model?: string }} state
+ * @returns {boolean}
+ */
+function isSelfHostedBackend(state) {
+    if (state.api === 'kobold') {
+        return true;
+    }
+    if (state.api !== 'textgenerationwebui' || !SELF_HOSTED_TEXTGEN_TYPES.includes(state.type)) {
+        return false;
+    }
+    return !(state.type === TEXTGEN_TYPES.OLLAMA && OLLAMA_CLOUD_TAG.test(String(state.model ?? '')));
+}
+
+/**
+ * The map's result for this backend.
+ *
+ * DeepSeek's own API gets the estimate for every id: its `/models` `name` is a display name that
+ * DeepSeek's own pages contradict, so which model an id serves can't be looked up.
+ *
+ * A model whose vendor's own files disagree gets its file only on the vendor's own API. Every other
+ * backend gets none, so its remote tokenizer or the estimate, and no local copy, because the file it
+ * uses is unknowable: a server can use either file, and a gguf's vocab is converted from either. The
+ * `hf` file would be for a backend whose own docs say it tokenizes with the repo's `tokenizer.json`;
+ * no backend here is documented as one.
+ *
+ * The `other` result applies only on a self-hosted backend, where the name is the weights the user
+ * loaded. Every hosted API gets the estimate for it.
  * @param {import('./tokenizer-model-map.js').MapResult|null} result
- * @param {{ api: string, source?: string }} state
+ * @param {{ api: string, type?: string, source?: string, model?: string }} state `model` is the name the result is for
  * @returns {import('./tokenizer-model-map.js').MapResult|null}
  */
 export function selectBackendResult(result, state) {
+    if (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK) {
+        return null;
+    }
     if (result === null || typeof result !== 'object' || !('byBackend' in result)) {
         return result;
     }
     const vendorApis = result.byBackend.vendorApis ?? {};
-    return state.api === 'openai' && state.source && Object.hasOwn(vendorApis, state.source) ? vendorApis[state.source] : null;
+    if (state.api === 'openai' && state.source && Object.hasOwn(vendorApis, state.source)) {
+        return vendorApis[state.source];
+    }
+    return result.byBackend.other !== undefined && isSelfHostedBackend(state) ? result.byBackend.other : null;
 }
 
 /**

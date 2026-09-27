@@ -106,7 +106,7 @@ for (const name of [
     'Qwen2-VL-7B-Instruct-AWQ', 'Qwen2-VL-2B-Instruct-GPTQ-Int4', 'Qwen2.5-Omni-7B', 'Qwen2.5-Math-PRM-72B',
     'Qwen2.5-Math-7B-PRM800K', 'Qwen3-Embedding-8B', 'Qwen3-VL-Embedding-2B', 'Qwen3-ASR-1.7B',
     'Qwen3-ForcedAligner-0.6B', 'Qwen3-TTS-12Hz-1.7B-Base', 'Qwen3-Omni-30B-A3B-Instruct',
-    'Qwen3-235B-A22B-MLX-4bit', 'DeepSeek-R1-0528-Qwen3-8B',
+    'Qwen3-235B-A22B-MLX-4bit',
 ]) {
     check(GENERAL_API, name, null);
 }
@@ -142,9 +142,66 @@ check(GENERAL_API, 'command-a-03-2025', tokenizers.COMMAND_A);
 check(GENERAL_API, 'command-r', tokenizers.COMMAND_R);
 check(GENERAL_API, 'command', null);
 
-// --- DeepSeek V3 ---
-check(GENERAL_API, 'deepseek-v3', tokenizers.DEEPSEEK);
-check(GENERAL_API, 'deepseek-v3.1', null);
+// --- DeepSeek: one official file each ---
+for (const name of ['DeepSeek-V2-Lite-Chat', 'DeepSeek-V2', 'deepseek-v2:16b', 'deepseek-v2:latest']) {
+    checkSource(GENERAL_API, name, 'deepseek-v2');
+}
+for (const name of ['DeepSeek-V2.5-1210', 'DeepSeek-V2-Chat-0628', 'DeepSeek-Coder-V2-Lite-Instruct', 'deepseek-coder-v2:16b', 'deepseek-coder-v2:latest', 'deepseek-v2.5:latest']) {
+    checkSource(GENERAL_API, name, 'deepseek-v2.5');
+}
+for (const name of ['deepseek-v3', 'DeepSeek-V3-Base', 'DeepSeek-V3-0324', 'deepseek-v3:671b', 'deepseek-v3:latest']) {
+    check(GENERAL_API, name, tokenizers.DEEPSEEK);
+}
+for (const name of ['deepseek-v3.1', 'DeepSeek-V3.1-Terminus', 'DeepSeek-V3.1-Base', 'DeepSeek-V3.2-Exp', 'DeepSeek-V3.2-Exp-Base', 'deepseek-v3.1:latest']) {
+    checkSource(GENERAL_API, name, 'deepseek-v3.1');
+}
+for (const name of ['DeepSeek-V3.2', 'DeepSeek-V3.2-Speciale', 'deepseek/deepseek-v3.2']) {
+    checkSource(GENERAL_API, name, 'deepseek-v3.2');
+}
+for (const name of ['DeepSeek-R1-0528', 'DeepSeek-R1-Zero', 'deepseek-r1:671b', 'deepseek-r1:671b-0528-q4_K_M']) {
+    checkSource(GENERAL_API, name, 'deepseek-r1');
+}
+for (const name of [
+    'DeepSeek-R1-Distill-Qwen-7B', 'DeepSeek-R1-Distill-Qwen-32B', 'deepseek-r1:1.5b-qwen-distill-q4_K_M',
+    'deepseek-r1:7b-qwen-distill-fp16', 'deepseek-r1:14b-qwen-distill-q8_0', 'deepseek-r1:32b-qwen-distill-q4_K_M',
+]) {
+    checkSource(GENERAL_API, name, 'deepseek-r1-distill-qwen');
+}
+for (const name of ['DeepSeek-R1-Distill-Llama-8B', 'DeepSeek-R1-Distill-Llama-70B', 'deepseek-r1:8b-llama-distill-q4_K_M', 'deepseek-r1:70b-llama-distill-q8_0']) {
+    checkSource(GENERAL_API, name, 'deepseek-r1-distill-llama');
+}
+// This merge ships llama3.json's content, not the distill's.
+check(GENERAL_API, 'mergekit-community/Llama-3-DeepSeek-R1-Distill-8B-LewdPlay-Uncensored', tokenizers.LLAMA3);
+checkSource(GENERAL_API, 'DeepSeek-R1-0528-Qwen3-8B', 'deepseek-r1-0528-qwen3');
+for (const name of ['DeepSeek-V4-Pro', 'DeepSeek-V4-Flash-0731', 'DeepSeek-V4-Pro-0813', 'DeepSeek-V4-Flash-DSpark', 'DeepSeek-V4-Pro-Base']) {
+    assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), { byBackend: { other: { source: 'deepseek-v4' } } }, name);
+}
+for (const name of ['DeepSeek-V4.1-Flash', 'DeepSeek-V4-Flash-Vision-Exp']) {
+    checkSource(GENERAL_API, name, 'deepseek-v4.1');
+}
+
+// Unknown DeepSeek versions are unmapped.
+for (const name of ['deepseek-v3.5', 'deepseek-v3-1226', 'deepseek-v4.2-flash']) {
+    check(GENERAL_API, name, null);
+}
+
+// DeepSeek names that don't name one official file are unmapped: Ollama's bare `deepseek-r1` and its
+// sizes other than 671b are the distills; `deepseek-v4`, `deepseek-v4-lite`, `-latest` and
+// `~deepseek/…` are moving aliases; the rest ship other files, or have no rule.
+for (const name of [
+    'DeepSeek-R1', 'deepseek-r1', 'deepseek-r1:latest', 'deepseek-r1:1.5b', 'deepseek-r1:8b', 'deepseek-r1:32b', 'deepseek-r1:70b',
+    'deepseek-r1:8b-0528-qwen3-q4_K_M', 'r1-1776:70b-distill-llama-q4_K_M',
+    'deepseek-v4', 'deepseek-v4-lite', 'deepseek-lite', 'deepseek-v4-flash-latest', 'deepseek/deepseek-v4-flash-latest',
+    '~deepseek/deepseek-v4-flash-latest', '~deepseek/deepseek-pro-latest', 'deepseek/deepseek-latest',
+    'mlx-community/DeepSeek-V4-Pro-Qwen3.5-9B-4bit', 'NousResearch/DeepSeek-V3.1-Alternate-Tokenizer',
+    'DevQuasar/deepseek-ai.DeepSeek-V3.2-Speciale-Channel-INT8', 'FuseO1-DeepSeekR1-Qwen2.5-Instruct-32B-Preview',
+    'DeepSeek-Prover-V2-671B', 'DeepSeek-Prover-V1.5-RL', 'DeepSeek-Math-V2', 'deepseek-math-7b-instruct',
+    'ESFT-token-code-lite', 'deepseek/deepseek-chat-v3.1', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-flash',
+    'deepseek-coder-33b-instruct', 'deepseek-coder-7b-instruct-v1.5', 'deepseek-llm-67b-chat', 'deepseek-moe-16b-chat',
+    'deepseek-vl2', 'deepseek-vl-7b-chat', 'Janus-Pro-7B', 'DeepSeek-OCR',
+]) {
+    check(GENERAL_API, name, null);
+}
 
 // --- OpenAI (tiktoken on the lowercased raw name) ---
 check(GENERAL_API, 'GPT-4o', 'gpt-4o');
@@ -355,12 +412,41 @@ assert.equal(pickMapResult([{ result: severalFiles }, { result: tokenizers.NEMO 
 
 // Ids that point at different models over time are never in the map.
 for (const alias of [
-    'deepseek-chat', 'deepseek-flash', 'deepseek-v4-pro', 'deepseek-reasoner',
+    'deepseek-chat', 'deepseek-flash', 'deepseek-reasoner',
     'mistral-large-latest', 'mistral-small-latest', 'mistral-small', 'open-mistral-7b', 'open-mixtral-8x22b',
     'qwen-plus-latest', 'jamba-mini', 'jamba-large', 'mistralai/mistral-large',
 ]) {
     check(GENERAL_API, alias, null);
     check('openai', alias, null);
+}
+
+// DeepSeek's hosted `deepseek-v4-pro` and `deepseek-v4-flash` are moving aliases: unmapped everywhere
+// except on a self-hosted backend, where the name is the weights the user loaded.
+const { selectBackendResult } = await import('./tokenizer-map-resolution.js');
+const { CHAT_COMPLETION_SOURCES, TEXTGEN_TYPES } = await import('./constants.js');
+const selfHostedTextgen = ['ooba', 'vllm', 'aphrodite', 'tabby', 'koboldcpp', 'llamacpp', 'ollama'];
+const backendStates = [
+    ...Object.values(CHAT_COMPLETION_SOURCES).map(source => ({ api: 'openai', source })),
+    { api: 'openai' },
+    ...Object.values(TEXTGEN_TYPES).map(type => ({ api: GENERAL_API, type })),
+    { api: 'kobold' },
+    { api: 'koboldhorde' },
+    { api: 'novel' },
+];
+for (const alias of ['deepseek-v4-pro', 'deepseek-v4-flash']) {
+    for (const state of backendStates) {
+        const selfHosted = state.api === 'kobold' || (state.api === GENERAL_API && selfHostedTextgen.includes(state.type));
+        assert.deepEqual(
+            selectBackendResult(lookupModelTokenizer(state.api, alias), state),
+            selfHosted ? { source: 'deepseek-v4' } : null,
+            `${alias} on ${JSON.stringify(state)}`,
+        );
+    }
+}
+
+// DeepSeek's own API gives every id the estimate.
+for (const name of ['deepseek-v3', 'deepseek-v3.1', 'DeepSeek-V3.2', 'deepseek-v4.1-flash', 'DeepSeek-R1-0528', 'deepseek-chat']) {
+    assert.equal(selectBackendResult(lookupModelTokenizer('openai', name), { api: 'openai', source: 'deepseek' }), null, name);
 }
 
 console.log('tokenizer-model-map tests passed');

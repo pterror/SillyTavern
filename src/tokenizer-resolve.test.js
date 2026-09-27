@@ -409,7 +409,7 @@ await check('best match on a backend without a remote tokenizer: the map on the 
         ['command-a-03-2025', tokenizers.COMMAND_A],
         ['Qwen2-72B-Instruct', tokenizers.QWEN2],
         ['pixtral-12b', null],
-        ['deepseek-coder-v2', null],
+        ['deepseek-coder-v2', tokenizers.DEEPSEEK_V2_5],
         ['some-totally-unknown-model', null],
     ];
     for (const [model, expected] of cases) {
@@ -915,6 +915,44 @@ await check('one model, several official files: the vendor\'s own API gets its f
 
     const llamacpp = await resolveTokenizer({ api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'test-several-files', tokenizerSetting: tokenizers.BEST_MATCH }, registryDeps);
     assert.deepEqual({ kind: llamacpp.kind, localCopy: llamacpp.localCopy }, { kind: 'remote', localCopy: null });
+});
+
+await check('a DeepSeek-V4-Pro name: V4 on llama.cpp and Ollama; the estimate on DeepSeek\'s API, every hosted API and Ollama\'s cloud models', async () => {
+    const v4 = { id: tokenizers.DEEPSEEK_V4, source: 'deepseek-v4', name: 'DeepSeek-V4 (official)' };
+
+    const llamacpp = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1',
+        model: 'DeepSeek-V4-Pro-0813-UD-Q4_K_XL-00001-of-00020.gguf', tokenizerSetting: tokenizers.BEST_MATCH,
+    });
+    assert.deepEqual({ kind: llamacpp.kind, localCopy: llamacpp.localCopy }, { kind: 'remote', localCopy: v4 });
+
+    for (const model of ['deepseek-v4-pro', 'DeepSeek-V4-Pro']) {
+        const ollama = await resolveTokenizer({
+            api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1', model, tokenizerSetting: tokenizers.BEST_MATCH,
+        });
+        assert.deepEqual(
+            { kind: ollama.kind, id: ollama.id, source: ollama.source, name: ollama.name, localCopy: ollama.localCopy },
+            { kind: 'local', ...v4, localCopy: v4 },
+            model,
+        );
+    }
+
+    const hosted = [
+        [{ api: 'openai', source: 'deepseek' }, ['deepseek-v4-pro', 'DeepSeek-V4-Pro']],
+        [{ api: 'openai', source: 'openrouter' }, ['deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-pro-0813']],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OPENROUTER }, ['deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-pro-0813']],
+        [{ api: 'openai', source: 'aimlapi' }, ['deepseek-v4-pro', 'deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-pro-0813']],
+        [{ api: 'openai', source: 'electronhub' }, ['deepseek-v4-pro', 'deepseek-v4-pro-thinking']],
+        [{ api: 'openai', source: 'nanogpt' }, ['deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-pro:thinking']],
+        [{ api: 'openai', source: 'pollinations' }, ['deepseek-v4-pro', 'deepseek/deepseek-v4-pro']],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, ['deepseek-v4-pro:cloud', 'deepseek-v4-pro:0813-cloud']],
+    ];
+    for (const [backend, models] of hosted) {
+        for (const model of models) {
+            const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+            assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, `${JSON.stringify(backend)} ${model}`);
+        }
+    }
 });
 
 await check('the old resolvers and their llama defaults are no longer exported', async () => {
