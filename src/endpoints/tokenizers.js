@@ -72,6 +72,15 @@ export function guesstimate(str) {
     return Math.ceil(byteLength / BYTES_PER_TOKEN);
 }
 
+const DOWNLOAD_RETRY_MS = 60_000;
+
+/**
+ * URL -> `performance.now()` of its last failed download. Monotonic, so a wall-clock change
+ * can't stretch or skip the wait.
+ * @type {Map<string, number>}
+ */
+const failedDownloads = new Map();
+
 /**
  * Gets a path to the tokenizer model. Downloads the model if it's a URL.
  * @param {string} model Model URL or path
@@ -125,21 +134,33 @@ async function getPathToTokenizer(model) {
             throw new Error('Downloading tokenizers is disabled, the model is not cached');
         }
 
-        console.info('Downloading tokenizer model:', model);
-        const response = await fetch(model);
-        if (!response.ok) {
-            throw new Error(`Failed to fetch the model: ${response.status} ${response.statusText}`);
+        const failedAt = failedDownloads.get(model);
+        if (failedAt !== undefined && performance.now() - failedAt < DOWNLOAD_RETRY_MS) {
+            throw new Error(`The last download failed less than ${DOWNLOAD_RETRY_MS / 1000} s ago`);
         }
 
-        const arrayBuffer = await response.arrayBuffer();
-        if (isCompressed) {
-            const decompressedBuffer = await gunzip(arrayBuffer);
-            writeFileAtomicSync(uncompressedPath, decompressedBuffer);
-            return uncompressedPath;
-        }
+        try {
+            console.info('Downloading tokenizer model:', model);
+            const response = await fetch(model);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch the model: ${response.status} ${response.statusText}`);
+            }
 
-        writeFileAtomicSync(cachedFile, Buffer.from(arrayBuffer));
-        return cachedFile;
+            const arrayBuffer = await response.arrayBuffer();
+            if (isCompressed) {
+                const decompressedBuffer = await gunzip(arrayBuffer);
+                writeFileAtomicSync(uncompressedPath, decompressedBuffer);
+                failedDownloads.delete(model);
+                return uncompressedPath;
+            }
+
+            writeFileAtomicSync(cachedFile, Buffer.from(arrayBuffer));
+            failedDownloads.delete(model);
+            return cachedFile;
+        } catch (error) {
+            failedDownloads.set(model, performance.now());
+            throw error;
+        }
     } catch (error) {
         throw new Error(`Could not get a tokenizer from ${model.split('/').pop()}. Reason: ${error.message}`);
     }
@@ -223,6 +244,10 @@ class WebTokenizer {
      * @type {string} Path to the tokenizer model
      */
     #model;
+    /**
+     * @type {Promise<Tokenizer|null>|null}
+     */
+    #loadPromise;
 
     /**
      * Creates a new Web tokenizer.
@@ -241,6 +266,18 @@ class WebTokenizer {
             return this.#instance;
         }
 
+        if (!this.#loadPromise) {
+            this.#loadPromise = this.#load();
+        }
+
+        return this.#loadPromise;
+    }
+
+    /**
+     * Loads the Web tokenizer instance.
+     * @returns {Promise<Tokenizer|null>} Web tokenizer instance
+     */
+    async #load() {
         try {
             const pathToModel = await getPathToTokenizer(this.#model);
             const fileBuffer = await fs.promises.readFile(pathToModel);
@@ -250,6 +287,8 @@ class WebTokenizer {
         } catch (error) {
             console.error('Web tokenizer failed to load: ' + this.#model, error);
             return null;
+        } finally {
+            this.#loadPromise = null;
         }
     }
 }

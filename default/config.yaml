@@ -403,7 +403,8 @@ git:
   backend: auto
 
 # Additional model tokenizers can be downloaded on demand.
-# Disabling will fallback to another locally available tokenizer.
+# A tokenizer that isn't downloaded (disabled here, or the download failed) is not replaced by another
+# tokenizer: its token counts are estimated. A failed download is tried again after 60 seconds.
 enableDownloadableTokenizers: true
 # One-time repair of group chats whose first message or chat metadata an older chat migration lost.
 # Restores them from "<chat>.jsonl.pre-migration" files and backups/_group_metadata_update, in the background
