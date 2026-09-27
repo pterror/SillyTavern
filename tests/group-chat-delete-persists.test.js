@@ -173,6 +173,21 @@ describe('/api/chats/group/delete removes the id from the group file', () => {
         expect(file.chats).toEqual([group.chat_id, newChat.body.chat_id]);
     });
 
+    test('a chat with no saved messages is removed from the list, and new-chat does not bring it back', async () => {
+        const group = await createGroupWithChat();
+        const { chat_id: emptyId } = await postOk('/api/groups/new-chat', { id: group.id });
+        expect(readGroupFile(group.id).chats).toEqual([group.chat_id, emptyId]);
+
+        const result = await deleteChat(group.id, emptyId);
+        expect(result.status).toBe(200);
+        expect(result.body).toEqual({ ok: true });
+        expect(readGroupFile(group.id).chats).toEqual([group.chat_id]);
+
+        const newChat = await postOk('/api/groups/new-chat', { id: group.id });
+        expect(newChat.chats).toEqual([group.chat_id, newChat.chat_id]);
+        expect(readGroupFile(group.id).chats).toEqual([group.chat_id, newChat.chat_id]);
+    });
+
     test('deleting an id the group does not have leaves the group file untouched', async () => {
         const group = await createGroupWithChat();
         const filePath = path.join(directories.groups, `${group.id}.json`);

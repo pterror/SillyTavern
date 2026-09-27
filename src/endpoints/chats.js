@@ -1525,12 +1525,11 @@ router.post('/group/delete', async (request, response) => {
 
         // Same lock as /api/groups/new-chat's read-modify-write of `chats`, which would otherwise write the id back.
         const outcome = await withGroupLock(request.user.directories, group.id, async () => {
-            if (!await deleteBranch(request.user.directories, group.id, id)) {
-                return 'not_deleted';
-            }
+            // A chat with no saved messages has no labelled branch, but its id is still in `chats`.
+            const branchDeleted = await deleteBranch(request.user.directories, group.id, id);
             const fullGroup = /** @type {{ chats?: string[] } | null} */ (readGroupFile(request.user.directories, group.id));
             if (!fullGroup || !Array.isArray(fullGroup.chats) || !fullGroup.chats.includes(id)) {
-                return 'ok';
+                return branchDeleted ? 'ok' : 'not_deleted';
             }
             fullGroup.chats = fullGroup.chats.filter(chatId => chatId !== id);
             try {
