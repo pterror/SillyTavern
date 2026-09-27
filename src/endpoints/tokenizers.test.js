@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 import { mock } from 'node:test';
 
 // This module reads process-wide config at import time (e.g. src/endpoints/secrets.js) - the
@@ -13,16 +14,23 @@ import { setConfigFilePath } from '../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-// Tokenizer downloads fail with 503 without touching the network. Needs --experimental-test-module-mocks.
+// Tokenizer downloads fail with 503 without touching the network, except the URLs in
+// `downloadBodies`, which answer that body. Needs --experimental-test-module-mocks.
 const canMockDownloads = typeof mock.module === 'function';
 /** @type {string[]} URLs the download stub was asked for. */
 const downloadRequests = [];
+/** @type {Map<string, Buffer>} */
+const downloadBodies = new Map();
 if (canMockDownloads) {
     const realNodeFetch = (await import(path.join(__dirname, '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
     mock.module('node-fetch', {
         defaultExport: async (url, opts) => {
             if (String(url).startsWith('https://github.com/SillyTavern/SillyTavern-Tokenizers/')) {
                 downloadRequests.push(String(url));
+                const body = downloadBodies.get(String(url));
+                if (body) {
+                    return new Response(body, { status: 200 });
+                }
                 return new Response('unavailable', { status: 503, statusText: 'Service Unavailable' });
             }
             return realNodeFetch(url, opts);
@@ -37,6 +45,7 @@ const { computeLogitBias, computeTextgenLogitBias, router, encodeTextByLocalToke
 const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
 const { router: currentRouter } = await import('./tokenizers-current.js');
 const { default: express } = await import('express');
+const { Tokenizer } = await import('@agnai/web-tokenizers');
 
 // --- computeLogitBias ---
 
@@ -285,25 +294,51 @@ for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
 // --- downloadable tokenizers ---
 
 if (canMockDownloads) {
-    await testCase('qwen2 download failure: no llama3.json load, a throw, and a retry on the next use', async () => {
+    await testCase('qwen2 download failure: no llama3.json load, a throw, and no new request for 60 s', async () => {
         const readPaths = [];
         const realReadFile = fs.promises.readFile;
         fs.promises.readFile = function (file, ...rest) {
             readPaths.push(String(file));
             return realReadFile.call(this, file, ...rest);
         };
+        const qwen2Url = 'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz';
+        const realNow = performance.now();
+        const clock = mock.method(performance, 'now', () => realNow);
         try {
             downloadRequests.length = 0;
             await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the Web tokenizer for type: qwen2/);
+            clock.mock.mockImplementation(() => realNow + 59_999);
             await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the Web tokenizer for type: qwen2/);
+            assert.deepEqual(downloadRequests, [qwen2Url], 'one request within 60 s');
+
+            clock.mock.mockImplementation(() => realNow + 60_000);
+            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the Web tokenizer for type: qwen2/);
+            assert.deepEqual(downloadRequests, [qwen2Url, qwen2Url], 'downloaded again after 60 s');
         } finally {
+            clock.mock.restore();
             fs.promises.readFile = realReadFile;
         }
         assert.deepEqual(readPaths.filter(file => path.basename(file) === 'llama3.json'), [], 'no llama3.json load');
-        assert.deepEqual(downloadRequests, [
-            'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz',
-            'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz',
-        ], 'downloaded again on the next use');
+    });
+
+    // command-a's download answers claude.json, so the load succeeds.
+    await testCase('command-a, four parallel encodes on a cold cache: one request and one fromJSON', async () => {
+        const commandAUrl = 'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz';
+        downloadBodies.set(commandAUrl, zlib.gzipSync(fs.readFileSync(path.join(__dirname, '..', 'tokenizers', 'claude.json'))));
+        const fromJSON = mock.method(Tokenizer, 'fromJSON');
+        try {
+            downloadRequests.length = 0;
+            const results = await Promise.all([1, 2, 3, 4].map(() => encodeTextByLocalTokenizerType('command-a', text)));
+            assert.ok(results[0].length > 0);
+            for (const ids of results) {
+                assert.deepEqual(ids, results[0]);
+            }
+            assert.deepEqual(downloadRequests, [commandAUrl], 'one request');
+            assert.equal(fromJSON.mock.callCount(), 1, 'one fromJSON');
+        } finally {
+            fromJSON.mock.restore();
+            downloadBodies.delete(commandAUrl);
+        }
     });
 }
 

@@ -779,7 +779,7 @@ async function run() {
     // (a-2b) a model mapped to a downloadable tokenizer whose download fails: the same as a model
     // with no tokenizer, but the reason is that tokenizer failing. The raw-action send's prompt
     // budget fell to the estimate, so it also carries `trim-estimate`; the profile send counts
-    // nothing. Each send tries the download again.
+    // nothing. The failed download isn't tried again for 60 s, so the two sends make one request.
     if (canMockAi21Backend) {
         const backendBodies = [];
         const fakeBackend = await startFakeBackend((_req, res, body) => {
@@ -825,7 +825,7 @@ async function run() {
         assert.equal(profile.status, 200, 'profile');
         assert.deepEqual(profile.data.warnings, [dropped('mistral-nemo')], 'profile: the dropped entry is listed');
         assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }, { 11: 2, 12: 2 }], 'raw-id entries still go through');
-        assert.ok(tokenizerDownloadRequests.filter(url => url.endsWith('/nemo.json.gz')).length >= 2, 'each send tries the download again');
+        assert.equal(tokenizerDownloadRequests.filter(url => url.endsWith('/nemo.json.gz')).length, 1, 'one download request for both sends');
     } else {
         console.log('chat-completions.test.js: skipping the downloadable-tokenizer failure case - run with `node --experimental-test-module-mocks`, which it needs to stub the download');
     }
