@@ -5,7 +5,7 @@ import { amount_gen, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { textgenerationwebui_settings as textgen_settings, textgen_types } from './textgen-settings.js';
-import { tokenizers } from './tokenizers.js';
+import { getTextgenTypeTokenizer } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 import { POPUP_TYPE, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
@@ -1361,50 +1361,20 @@ function calculateOpenRouterCost() {
     eventSource.once(event_types.SETTINGS_UPDATED, calculateOpenRouterCost);
 }
 
+/**
+ * The tokenizer the server resolves for the OpenRouter model.
+ * @returns {number} Tokenizer type.
+ */
 export function getCurrentOpenRouterModelTokenizer() {
-    const modelId = textgen_settings.openrouter_model;
-    const model = openRouterModels.find(x => x.id === modelId);
-    if (modelId?.includes('jamba')) {
-        return tokenizers.JAMBA;
-    }
-    switch (model?.architecture?.tokenizer) {
-        case 'Llama2':
-            return tokenizers.LLAMA;
-        case 'Llama3':
-            return tokenizers.LLAMA3;
-        case 'Yi':
-            return tokenizers.YI;
-        case 'Mistral':
-            return tokenizers.MISTRAL;
-        case 'Gemini':
-            return tokenizers.GEMMA;
-        case 'Claude':
-            return tokenizers.CLAUDE;
-        case 'Cohere':
-            return tokenizers.COMMAND_R;
-        case 'Qwen':
-            return tokenizers.QWEN2;
-        default:
-            return tokenizers.OPENAI;
-    }
+    return getTextgenTypeTokenizer(textgen_types.OPENROUTER);
 }
 
 /**
- * `src/endpoints/tokenizers.js`'s `resolveTextgenTokenizerForTokenIds()` is a server-side port of
- * this decision tree; its doc comment's JUDGMENT CALL note documents that this function throws on
- * an empty/not-yet-fetched `dreamGenModels` (no `?.` on `model.id` below) and that the port
- * deliberately does not reproduce that crash. Keep both in sync if this logic changes.
+ * The tokenizer the server resolves for the DreamGen model.
+ * @returns {number} Tokenizer type.
  */
 export function getCurrentDreamGenModelTokenizer() {
-    const modelId = textgen_settings.dreamgen_model;
-    const model = dreamGenModels.find(x => x.id === modelId);
-    if (model.id.startsWith('lucid-v1-medium') || model.id.startsWith('lucid-v1-base')) {
-        return tokenizers.MISTRAL;
-    } else if (model.id.startsWith('lucid-v1-extra-large') || model.id.startsWith('lucid-v1-max')) {
-        return tokenizers.LLAMA3;
-    } else {
-        return tokenizers.MISTRAL;
-    }
+    return getTextgenTypeTokenizer(textgen_types.DREAMGEN);
 }
 
 export function initTextGenModels() {
