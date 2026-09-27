@@ -100,6 +100,29 @@ async function switchToGpt2Tokenizer(page) {
     await page.evaluate(value => $('#tokenizer').val(String(value)).trigger('change'), GPT2_TOKENIZER);
 }
 
+/**
+ * Makes the server's /current/count and /current/tokenizer answers say the model is unknown to the map
+ * (basis `unknown`, an estimate), keeping every count a plain number.
+ * @param {import('@playwright/test').Page} page
+ */
+async function answerUnknownTokenizer(page) {
+    const tokenizer = {
+        id: 0,
+        name: 'None / Estimated',
+        basis: 'unknown',
+        key: 'e2e-unknown-model',
+        messages: { unknownModel: 'This model has no known tokenizer.' },
+    };
+    await page.route('**/api/tokenizers/current/tokenizer', route => route.fulfill({ json: { tokenizer } }));
+    await page.route('**/api/tokenizers/current/count', (route) => {
+        const body = route.request().postDataJSON();
+        if (Array.isArray(body?.texts)) {
+            return route.fulfill({ json: { counts: body.texts.map(text => Math.ceil(text.length / 3.35) + (body.padding ?? 0)), tokenizer } });
+        }
+        return route.fulfill({ json: { count: 7, tokenizer } });
+    });
+}
+
 test.describe('character editor counts while showing', () => {
     test.beforeEach(async ({ page }) => {
         await recordTokenizerSends(page);
@@ -173,5 +196,24 @@ test.describe('character editor counts while showing', () => {
         }, GPT2_TOKENIZER);
         await expect.poll(async () => (await countsOf(page, marker)).length, { timeout: 5000 }).toBe(before + 1);
         expect((await countsOf(page, marker)).at(-1).showing).toBe(false);
+    });
+
+    test('a count with an unknown model marks the editor total, which stays a plain number', async ({ page }) => {
+        const { marker } = await createCharacterAndCloseEditor(page);
+        await answerUnknownTokenizer(page);
+        const before = (await countsOf(page, marker)).length;
+
+        // A new state, so the answer is asked again and the editor recounts when it opens.
+        await switchToGpt2Tokenizer(page);
+        await page.locator('#charInfoDrawerIcon').click();
+        await expect(page.locator('#char-info-panel')).toBeVisible();
+        await expect.poll(async () => (await countsOf(page, marker)).length, { timeout: 5000 }).toBe(before + 1);
+
+        const total = page.locator('#result_info_total_tokens');
+        await expect(total.locator('xpath=following-sibling::*[1]')).toHaveClass(/\btoken_count_basis\b/);
+        await expect(total.locator('xpath=following-sibling::*[1]/i[contains(@class, "fa-circle-question")]')).toHaveCount(1);
+        await expect(total.locator('xpath=preceding-sibling::*[1]')).toHaveClass(/\btoken_count_approx\b/);
+        await expect(total.locator('xpath=preceding-sibling::*[1]')).toHaveText('~');
+        await expect(total).toHaveText(/^\d+$/);
     });
 });

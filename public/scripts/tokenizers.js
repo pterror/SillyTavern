@@ -753,15 +753,42 @@ export async function getTokenCountsAsyncBatch(strings, padding = 0) {
  * Same as getTokenCountsAsyncBatch(), and also names the tokenizer these counts came from.
  * @param {string[]} strings Strings to tokenize, in order
  * @param {number} [padding=0] Padding tokens added to each non-empty result
- * @returns {Promise<{ counts: number[], tokenizer: Tokenizer }>} Token counts, same order/length as `strings`, and their tokenizer
+ * @returns {Promise<{ counts: number[], tokenizer: Tokenizer, answer: CurrentTokenizer|null }>} Token counts, same
+ * order/length as `strings`, their tokenizer, and the server's answer they came from: the response's own, the
+ * remembered one when every count was cached, or null when the request failed.
  */
 export async function getTokenCountsWithTokenizer(strings, padding = 0) {
     if (isOpenAiApi()) {
         const counts = await Promise.all(strings.map(str => getTokenCountAsync(str, padding)));
-        return { counts, tokenizer: toFriendlyTokenizer('openai', getRememberedTokenizer()) };
+        const answer = getRememberedTokenizer();
+        return { counts, tokenizer: toFriendlyTokenizer('openai', answer), answer };
     }
     const { counts, tokenizer } = await countTexts(strings, padding, true);
-    return { counts, tokenizer: toFriendlyTokenizer(main_api, tokenizer) };
+    return { counts, tokenizer: toFriendlyTokenizer(main_api, tokenizer), answer: tokenizer };
+}
+
+/**
+ * Same count as getTokenCountAsync(str, padding), with the server's answer it came from: the
+ * response's own, the remembered one when no request was made, or null when the request failed.
+ * @param {string} str String to tokenize
+ * @param {number | undefined} padding Optional padding tokens. Defaults to 0.
+ * @returns {Promise<{ count: number, answer: CurrentTokenizer|null }>}
+ */
+export async function getTokenCountWithAnswer(str, padding = undefined) {
+    if (typeof str !== 'string' || !str?.length) {
+        return { count: 0, answer: getRememberedTokenizer() };
+    }
+
+    if (isOpenAiApi()) {
+        if (padding === power_user.token_padding) {
+            return { count: guesstimate(str) + padding, answer: getRememberedTokenizer() };
+        }
+        const count = await counterWrapperOpenAIAsync(str);
+        return { count, answer: getRememberedTokenizer() };
+    }
+
+    const { counts: [count], tokenizer } = await countTexts([str], padding ?? 0, true);
+    return { count, answer: tokenizer };
 }
 
 /**

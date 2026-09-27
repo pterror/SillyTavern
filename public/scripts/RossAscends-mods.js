@@ -40,7 +40,8 @@ import {
 import { debounce, getStringHash, isValidUrl } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
 import { chat_completion_sources, oai_settings, POLLINATIONS_ENDPOINT } from './chat-completion-settings.js';
-import { getTokenCountsAsyncBatch } from './tokenizers.js';
+import { getRememberedTokenizerAnswer, getTokenCountsWithTokenizer } from './tokenizers.js';
+import { renderCountBasis } from './tokenizer-notices.js';
 import { textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer } from './textgen-settings.js';
 import { debounce_timeout, SWIPE_SOURCE } from './constants.js';
 
@@ -249,6 +250,8 @@ export async function RA_CountCharTokens() {
     const counterNonceLocal = counterNonce;
     let total_tokens = 0;
     let permanent_tokens = 0;
+    // The answer the total is rendered with: the batch's, when there is one.
+    let totalAnswer = getRememberedTokenizerAnswer();
 
     const tokenCounters = document.querySelectorAll('[data-token-counter]');
 
@@ -271,6 +274,7 @@ export async function RA_CountCharTokens() {
         if (!value) {
             input.data('last-value-hash', '');
             counter.text(0);
+            renderCountBasis(counter, getRememberedTokenizerAnswer());
             counter.closest('.inline-drawer, .tab-title').add(counter.closest('.tab-contents').prev('.tab-title')).toggleClass('token-count-zero', true);
             counter.closest('small').toggle(false);
             continue;
@@ -288,7 +292,8 @@ export async function RA_CountCharTokens() {
     }
 
     if (pending.length > 0) {
-        const counted = await getTokenCountsAsyncBatch(pending.map(p => p.valueToCount));
+        const { counts: counted, answer } = await getTokenCountsWithTokenizer(pending.map(p => p.valueToCount));
+        totalAnswer = answer;
 
         if (counterNonceLocal !== counterNonce) {
             return;
@@ -297,6 +302,7 @@ export async function RA_CountCharTokens() {
         pending.forEach((p, i) => {
             const tokens = counted[i];
             p.counter.text(tokens);
+            renderCountBasis(p.counter, answer);
             p.counter.closest('.inline-drawer, .tab-title').add(p.counter.closest('.tab-contents').prev('.tab-title')).toggleClass('token-count-zero', tokens === 0);
             p.counter.closest('small').toggle(tokens !== 0);
             total_tokens += tokens;
@@ -308,6 +314,7 @@ export async function RA_CountCharTokens() {
     const tokenLimit = Math.max(((main_api !== 'openai' ? max_context : oai_settings.openai_max_context) / 2), 1024);
     const showWarning = (total_tokens > tokenLimit);
     $('#result_info_total_tokens').text(total_tokens);
+    renderCountBasis($('#result_info_total_tokens'), totalAnswer);
     $('#result_info_permanent_tokens').text(permanent_tokens);
     $('#result_info_text').toggleClass('neutral_warning', showWarning);
     $('#chartokenwarning').toggle(showWarning);

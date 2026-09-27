@@ -11,7 +11,8 @@ import { chat_metadata } from './chat-state.js';
 import { eventSource, event_types } from './events.js';
 import { extension_settings, getContext, saveMetadataDebounced } from './extensions.js';
 import { getCharaFilename, debounce, delay } from './utils.js';
-import { getTokenCountAsync } from './tokenizers.js';
+import { getRememberedTokenizerAnswer, getTokenCountWithAnswer } from './tokenizers.js';
+import { renderCountBasis } from './tokenizer-notices.js';
 import { debounce_timeout } from './constants.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -128,9 +129,20 @@ function updateSettings() {
     setFloatingPrompt();
 }
 
-const setMainPromptTokenCounterDebounced = debounce(async (value) => $('#extension_floating_prompt_token_counter').text(await getTokenCountAsync(value)), debounce_timeout.relaxed);
-const setCharaPromptTokenCounterDebounced = debounce(async (value) => $('#extension_floating_chara_token_counter').text(await getTokenCountAsync(value)), debounce_timeout.relaxed);
-const setDefaultPromptTokenCounterDebounced = debounce(async (value) => $('#extension_floating_default_token_counter').text(await getTokenCountAsync(value)), debounce_timeout.relaxed);
+/**
+ * Counts a value and writes the count, with its basis, into a counter.
+ * @param {string} selector The counter.
+ * @param {string} value
+ */
+async function setTokenCounter(selector, value) {
+    const { count, answer } = await getTokenCountWithAnswer(value);
+    $(selector).text(count);
+    renderCountBasis($(selector), answer);
+}
+
+const setMainPromptTokenCounterDebounced = debounce((value) => setTokenCounter('#extension_floating_prompt_token_counter', value), debounce_timeout.relaxed);
+const setCharaPromptTokenCounterDebounced = debounce((value) => setTokenCounter('#extension_floating_chara_token_counter', value), debounce_timeout.relaxed);
+const setDefaultPromptTokenCounterDebounced = debounce((value) => setTokenCounter('#extension_floating_default_token_counter', value), debounce_timeout.relaxed);
 
 async function onExtensionFloatingPromptInput() {
     chat_metadata[metadata_keys.prompt] = $(this).val();
@@ -429,22 +441,28 @@ async function onChatChanged() {
     // Disable the chara note if in a group
     $('#extension_floating_chara').prop('disabled', !!context.groupId);
 
-    const tokenCounter1 = chat_metadata[metadata_keys.prompt] ? await getTokenCountAsync(chat_metadata[metadata_keys.prompt]) : 0;
+    const { count: tokenCounter1, answer: answer1 } = chat_metadata[metadata_keys.prompt] ? await getTokenCountWithAnswer(chat_metadata[metadata_keys.prompt]) : { count: 0, answer: getRememberedTokenizerAnswer() };
     $('#extension_floating_prompt_token_counter').text(tokenCounter1);
+    renderCountBasis($('#extension_floating_prompt_token_counter'), answer1);
 
     let tokenCounter2;
+    let answer2 = null;
+    let counted2 = false;
     if (extension_settings.note.chara && context.characterId !== undefined) {
         const charaNote = extension_settings.note.chara.find((e) => e.name === getCharaFilename());
 
         if (charaNote) {
-            tokenCounter2 = await getTokenCountAsync(charaNote.prompt);
+            ({ count: tokenCounter2, answer: answer2 } = await getTokenCountWithAnswer(charaNote.prompt));
+            counted2 = true;
         }
     }
 
     $('#extension_floating_chara_token_counter').text(tokenCounter2 || 0);
+    renderCountBasis($('#extension_floating_chara_token_counter'), counted2 ? answer2 : getRememberedTokenizerAnswer());
 
-    const tokenCounter3 = extension_settings.note.default ? await getTokenCountAsync(extension_settings.note.default) : 0;
+    const { count: tokenCounter3, answer: answer3 } = extension_settings.note.default ? await getTokenCountWithAnswer(extension_settings.note.default) : { count: 0, answer: getRememberedTokenizerAnswer() };
     $('#extension_floating_default_token_counter').text(tokenCounter3);
+    renderCountBasis($('#extension_floating_default_token_counter'), answer3);
 }
 
 function onAllowWIScanCheckboxChanged() {
