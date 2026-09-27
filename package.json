@@ -94,6 +94,7 @@
         "simple-git": "^3.33.0",
         "slidetoggle": "^4.0.0",
         "tiktoken": "^1.0.22",
+        "tokenizers": "^0.23.2",
         "url-join": "^5.0.0",
         "vectra": "^0.2.2",
         "wavefile": "^11.0.0",

@@ -9,7 +9,6 @@ import fetch from 'node-fetch';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { Tokenizer } from '@agnai/web-tokenizers';
-import { SentencePieceProcessor } from '@agnai/sentencepiece-js';
 import tiktoken from 'tiktoken';
 
 import { TEXTGEN_TYPES } from '../constants.js';
@@ -17,6 +16,7 @@ import { tokenizers, TOKENIZER_TYPE_KEYS } from '../tokenizer-ids.js';
 import { resolveChatCompletionTokenizer, describeMapEntry, localResolution } from '../tokenizer-map-resolution.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { DOWNLOAD_RETRY_MS, isDownloadBackedOff, recordDownloadFailure, clearDownloadFailure } from '../tokenizer-sources.js';
+import { loadTokenizerFile, loadTokenizerFunctions } from '../tokenizer-loader.js';
 import { getConfigValue, isValidUrl, trimV1 } from '../util.js';
 
 /**
@@ -78,7 +78,7 @@ export function guesstimate(str) {
  * @param {string} model Model URL or path
  * @returns {Promise<string>} Path to the tokenizer model. Throws when the model can't be had.
  */
-async function getPathToTokenizer(model) {
+export async function getPathToTokenizer(model) {
     if (!isValidUrl(model)) {
         return model;
     }
@@ -162,17 +162,9 @@ async function getPathToTokenizer(model) {
  */
 class SentencePieceTokenizer {
     /**
-     * @type {import('@agnai/sentencepiece-js').SentencePieceProcessor} Sentencepiece tokenizer instance
-     */
-    #instance;
-    /**
      * @type {string} Path to the tokenizer model
      */
     #model;
-    /**
-     * @type {Promise<import('@agnai/sentencepiece-js').SentencePieceProcessor|null>|null}
-     */
-    #loadPromise;
 
     /**
      * Creates a new Sentencepiece tokenizer.
@@ -187,38 +179,12 @@ class SentencePieceTokenizer {
      * @returns {Promise<import('@agnai/sentencepiece-js').SentencePieceProcessor|null>} Sentencepiece tokenizer instance
      */
     async get() {
-        if (this.#instance) {
-            return this.#instance;
-        }
-
-        if (!this.#loadPromise) {
-            this.#loadPromise = this.#load();
-        }
-
-        return this.#loadPromise;
-    }
-
-    /**
-     * Loads the Sentencepiece tokenizer instance.
-     * @returns {Promise<import('@agnai/sentencepiece-js').SentencePieceProcessor|null>} Sentencepiece tokenizer instance
-     */
-    async #load() {
         try {
             const pathToModel = await getPathToTokenizer(this.#model);
-            const instance = new SentencePieceProcessor();
-            await instance.load(pathToModel);
-            // load() ignores the load status, and a processor whose model failed to load encodes everything to [].
-            if (instance.encodeIds('a').length === 0) {
-                throw new Error('The model encodes non-empty text to no tokens');
-            }
-            console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
-            this.#instance = instance;
-            return this.#instance;
+            return await loadTokenizerFile(pathToModel, 'sentencepiece');
         } catch (error) {
             console.error('Sentencepiece tokenizer failed to load: ' + this.#model, error);
             return null;
-        } finally {
-            this.#loadPromise = null;
         }
     }
 }
@@ -284,6 +250,36 @@ class WebTokenizer {
     }
 }
 
+/**
+ * A tokenizer.json read by npm `tokenizers`, with the same `get()` as WebTokenizer. Its instance's
+ * encode and decode return promises.
+ */
+class ExactJsonTokenizer {
+    /**
+     * @type {string} Path to the tokenizer file
+     */
+    #model;
+
+    /**
+     * @param {string} model Path to the tokenizer file
+     */
+    constructor(model) {
+        this.#model = model;
+    }
+
+    /**
+     * @returns {Promise<import('../tokenizer-loader.js').TokenizerFunctions|null>}
+     */
+    async get() {
+        try {
+            return await loadTokenizerFunctions(this.#model, 'hf-json');
+        } catch (error) {
+            console.error('Tokenizer failed to load: ' + this.#model, error);
+            return null;
+        }
+    }
+}
+
 const spp_llama = new SentencePieceTokenizer('src/tokenizers/llama.model');
 const spp_nerd = new SentencePieceTokenizer('src/tokenizers/nerdstash.model');
 const spp_nerd_v2 = new SentencePieceTokenizer('src/tokenizers/nerdstash_v2.model');
@@ -293,6 +289,9 @@ const spp_gemma = new SentencePieceTokenizer('src/tokenizers/gemma.model');
 const spp_jamba = new SentencePieceTokenizer('src/tokenizers/jamba.model');
 const claude_tokenizer = new WebTokenizer('src/tokenizers/claude.json');
 const llama3_tokenizer = new WebTokenizer('src/tokenizers/llama3.json');
+// @agnai/web-tokenizers ignores llama3.json's `ignore_merges`. llama3_tokenizer stays for the upstream
+// exports that hand out its instance or encode with it synchronously (getWebTokenizer, countWebTokenizerTokens).
+const llama3ExactTokenizer = new ExactJsonTokenizer('src/tokenizers/llama3.json');
 const commandRTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz');
 const commandATokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz');
 const qwen2Tokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz');
@@ -443,16 +442,16 @@ async function getTiktokenChunks(tokenizer, ids) {
 
 /**
  * Gets the token chunks for the given token IDs using the Web tokenizer.
- * @param {Tokenizer} tokenizer Web tokenizer instance
+ * @param {Tokenizer|import('../tokenizer-loader.js').TokenizerFunctions} tokenizer Web tokenizer instance
  * @param {number[]} ids Token IDs
- * @returns {string[]} Token chunks
+ * @returns {Promise<string[]>} Token chunks
  */
-function getWebTokenizersChunks(tokenizer, ids) {
+async function getWebTokenizersChunks(tokenizer, ids) {
     const chunks = [];
 
     for (let i = 0, lastProcessed = 0; i < ids.length; i++) {
         const chunkIds = ids.slice(lastProcessed, i + 1);
-        const chunkText = tokenizer.decode(new Int32Array(chunkIds));
+        const chunkText = await tokenizer.decode(new Int32Array(chunkIds));
         if (chunkText === '�') {
             continue;
         }
@@ -572,11 +571,11 @@ export function getTiktokenTokenizer(model) {
  * Gets tokenids for a given logit bias preset entry. Mirrors the getEntryTokens() helper that used
  * to live inline in the /api/backends/chat-completions/bias route handler.
  * @param {string} text Entry text
- * @param {((text: string) => Uint32Array)|null} encode Function to encode text to token ids; null
- * when there is no tokenizer.
- * @returns {Uint32Array|null} Array of token ids; null when the entry needs a tokenizer and there is none.
+ * @param {((text: string) => Uint32Array|Promise<Uint32Array>)|null} encode Function to encode text to
+ * token ids; null when there is no tokenizer.
+ * @returns {Promise<Uint32Array|null>} Array of token ids; null when the entry needs a tokenizer and there is none.
  */
-function getEntryTokens(text, encode) {
+async function getEntryTokens(text, encode) {
     // Get raw token ids from JSON array
     if (text.trim().startsWith('[') && text.trim().endsWith(']')) {
         try {
@@ -590,13 +589,13 @@ function getEntryTokens(text, encode) {
     }
 
     // Otherwise, get token ids from tokenizer
-    return encode ? encode(text) : null;
+    return encode ? await encode(text) : null;
 }
 
 /**
  * An encoder for a local resolveTokenizer() answer, or null when its tokenizer fails to load.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
- * @returns {Promise<((text: string) => Uint32Array)|null>}
+ * @returns {Promise<((text: string) => Uint32Array|Promise<Uint32Array>)|null>}
  */
 async function getLocalEncoder(resolved) {
     if (resolved.id === tokenizers.OPENAI) {
@@ -604,14 +603,14 @@ async function getLocalEncoder(resolved) {
         return tokenizer.encode.bind(tokenizer);
     }
     const key = TOKENIZER_TYPE_KEYS[resolved.id];
-    const instance = await LOCAL_TOKENIZER_INSTANCES[key]?.get();
+    const instance = await getEncodingTokenizer(key)?.get();
     if (!instance) {
         return null;
     }
     if (sentencepieceTokenizers.includes(key)) {
         return (text) => new Uint32Array(instance.encodeIds(text));
     }
-    return (text) => new Uint32Array(instance.encode(text));
+    return async (text) => new Uint32Array(await instance.encode(text));
 }
 
 /**
@@ -658,7 +657,7 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
         }
 
         try {
-            const tokens = getEntryTokens(entry.text, encodeFunction);
+            const tokens = await getEntryTokens(entry.text, encodeFunction);
 
             if (tokens === null) {
                 dropped?.push(entry.text);
@@ -711,13 +710,13 @@ export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) 
         }
         encodeFunction = (text) => new Uint32Array(instance.encodeIds(text));
     } else if (webTokenizers.includes(model)) {
-        const tokenizer = getWebTokenizer(model);
+        const tokenizer = model === 'llama3' ? llama3ExactTokenizer : getWebTokenizer(model);
         const instance = await tokenizer?.get();
         if (!instance) {
             console.warn('Tokenizer not initialized:', model);
             return {};
         }
-        encodeFunction = (text) => new Uint32Array(instance.encode(text));
+        encodeFunction = async (text) => new Uint32Array(await instance.encode(text));
     } else {
         const tokenizer = getTiktokenTokenizer(model);
         encodeFunction = (tokenizer.encode.bind(tokenizer));
@@ -729,7 +728,7 @@ export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) 
         }
 
         try {
-            const tokens = getEntryTokens(entry.text, encodeFunction);
+            const tokens = await getEntryTokens(entry.text, encodeFunction);
 
             for (const token of tokens) {
                 result[token] = entry.value;
@@ -1001,7 +1000,7 @@ function createTiktokenDecodingHandler(modelId) {
 
 /**
  * Creates an API handler for encoding WebTokenizer tokens.
- * @param {WebTokenizer} tokenizer WebTokenizer instance
+ * @param {WebTokenizer|ExactJsonTokenizer} tokenizer WebTokenizer instance
  * @returns {TokenizationHandler} Handler function
  */
 function createWebTokenizerEncodingHandler(tokenizer) {
@@ -1021,8 +1020,8 @@ function createWebTokenizerEncodingHandler(tokenizer) {
             if (!instance) {
                 return response.send({ ids: [], count: guesstimate(text), chunks: [] });
             }
-            const tokens = Array.from(instance.encode(text));
-            const chunks = getWebTokenizersChunks(instance, tokens);
+            const tokens = Array.from(await instance.encode(text));
+            const chunks = await getWebTokenizersChunks(instance, tokens);
             return response.send({ ids: tokens, count: tokens.length, chunks });
         } catch (error) {
             console.error(error);
@@ -1033,7 +1032,7 @@ function createWebTokenizerEncodingHandler(tokenizer) {
 
 /**
  * Creates an API handler for decoding WebTokenizer tokens.
- * @param {WebTokenizer} tokenizer WebTokenizer instance
+ * @param {WebTokenizer|ExactJsonTokenizer} tokenizer WebTokenizer instance
  * @returns {TokenizationHandler} Handler function
  */
 function createWebTokenizerDecodingHandler(tokenizer) {
@@ -1052,8 +1051,8 @@ function createWebTokenizerDecodingHandler(tokenizer) {
             const ids = request.body.ids || [];
             const instance = await tokenizer?.get();
             if (!instance) throw new Error('Failed to load the Web tokenizer');
-            const chunks = getWebTokenizersChunks(instance, ids);
-            const text = instance.decode(new Int32Array(ids));
+            const chunks = await getWebTokenizersChunks(instance, ids);
+            const text = await instance.decode(new Int32Array(ids));
             return response.send({ text, chunks });
         } catch (error) {
             console.error(error);
@@ -1090,6 +1089,17 @@ const SENTENCEPIECE_TOKENIZER_TYPES = new Set(['llama', 'nerdstash', 'nerdstash_
 const WEB_TOKENIZER_TYPES = new Set(['claude', 'llama3', 'qwen2', 'command-r', 'command-a', 'nemo', 'deepseek']);
 
 /**
+ * The tokenizer that encodes and decodes for a local tokenizer type on every path that awaits it. It
+ * is LOCAL_TOKENIZER_INSTANCES' except for llama3, which gets the exact reader. A web tokenizer
+ * instance's encode and decode may return promises.
+ * @param {string} key A LOCAL_TOKENIZER_INSTANCES key
+ * @returns {SentencePieceTokenizer|WebTokenizer|ExactJsonTokenizer|undefined}
+ */
+function getEncodingTokenizer(key) {
+    return key === 'llama3' ? llama3ExactTokenizer : LOCAL_TOKENIZER_INSTANCES[key];
+}
+
+/**
  * Encodes text to token ids using an already-instantiated local tokenizer, keyed by the same
  * type string used for the '/api/tokenizers/<type>/encode' routes below. Factors out the
  * per-type encode step that createSentencepieceEncodingHandler/createWebTokenizerEncodingHandler/
@@ -1112,10 +1122,10 @@ export async function encodeTextByLocalTokenizerType(tokenizerType, text) {
     }
 
     if (WEB_TOKENIZER_TYPES.has(tokenizerType)) {
-        const tokenizer = LOCAL_TOKENIZER_INSTANCES[tokenizerType];
+        const tokenizer = getEncodingTokenizer(tokenizerType);
         const instance = await tokenizer?.get();
         if (!instance) throw new Error(`Failed to load the Web tokenizer for type: ${tokenizerType}`);
-        return Array.from(instance.encode(text ?? ''));
+        return Array.from(await instance.encode(text ?? ''));
     }
 
     throw new Error(`Unrecognized local tokenizer type: ${tokenizerType}`);
@@ -1132,7 +1142,7 @@ router.post('/gemma/encode', createSentencepieceEncodingHandler(spp_gemma));
 router.post('/jamba/encode', createSentencepieceEncodingHandler(spp_jamba));
 router.post('/gpt2/encode', createTiktokenEncodingHandler('gpt2'));
 router.post('/claude/encode', createWebTokenizerEncodingHandler(claude_tokenizer));
-router.post('/llama3/encode', createWebTokenizerEncodingHandler(llama3_tokenizer));
+router.post('/llama3/encode', createWebTokenizerEncodingHandler(llama3ExactTokenizer));
 router.post('/qwen2/encode', createWebTokenizerEncodingHandler(qwen2Tokenizer));
 router.post('/command-r/encode', createWebTokenizerEncodingHandler(commandRTokenizer));
 router.post('/command-a/encode', createWebTokenizerEncodingHandler(commandATokenizer));
@@ -1147,7 +1157,7 @@ router.post('/gemma/decode', createSentencepieceDecodingHandler(spp_gemma));
 router.post('/jamba/decode', createSentencepieceDecodingHandler(spp_jamba));
 router.post('/gpt2/decode', createTiktokenDecodingHandler('gpt2'));
 router.post('/claude/decode', createWebTokenizerDecodingHandler(claude_tokenizer));
-router.post('/llama3/decode', createWebTokenizerDecodingHandler(llama3_tokenizer));
+router.post('/llama3/decode', createWebTokenizerDecodingHandler(llama3ExactTokenizer));
 router.post('/qwen2/decode', createWebTokenizerDecodingHandler(qwen2Tokenizer));
 router.post('/command-r/decode', createWebTokenizerDecodingHandler(commandRTokenizer));
 router.post('/command-a/decode', createWebTokenizerDecodingHandler(commandATokenizer));
@@ -1238,7 +1248,7 @@ function chatCompletionTokenizerHandler(resolved, direction) {
         return encode ? createTiktokenEncodingHandler(resolved.model) : createTiktokenDecodingHandler(resolved.model);
     }
     const key = TOKENIZER_TYPE_KEYS[resolved.id];
-    const instance = LOCAL_TOKENIZER_INSTANCES[key];
+    const instance = getEncodingTokenizer(key);
     if (sentencepieceTokenizers.includes(key)) {
         return encode ? createSentencepieceEncodingHandler(instance) : createSentencepieceDecodingHandler(instance);
     }
@@ -1446,7 +1456,7 @@ function getTiktokenFor(tokenizer) {
  */
 async function getLocalInstance(tokenizer) {
     const key = TOKENIZER_TYPE_KEYS[tokenizer.id];
-    const instance = await LOCAL_TOKENIZER_INSTANCES[key]?.get();
+    const instance = await getEncodingTokenizer(key)?.get();
     if (!instance) {
         throw new Error(`Failed to load the ${tokenizer.name} tokenizer`);
     }
@@ -1465,7 +1475,7 @@ export async function getLocalEncodeChunks(tokenizer, text, ids) {
         return getTiktokenChunks(getTiktokenFor(tokenizer), ids);
     }
     const { key, instance } = await getLocalInstance(tokenizer);
-    return SENTENCEPIECE_TOKENIZER_TYPES.has(key) ? instance.encodePieces(text) : getWebTokenizersChunks(instance, ids);
+    return SENTENCEPIECE_TOKENIZER_TYPES.has(key) ? instance.encodePieces(text) : await getWebTokenizersChunks(instance, ids);
 }
 
 /**
@@ -1483,5 +1493,5 @@ export async function decodeWithLocalTokenizer(tokenizer, ids) {
         const chunks = await Promise.all(ids.map(id => instance.decodeIds([id])));
         return { text: chunks.join(''), chunks };
     }
-    return { text: instance.decode(new Int32Array(ids)), chunks: getWebTokenizersChunks(instance, ids) };
+    return { text: await instance.decode(new Int32Array(ids)), chunks: await getWebTokenizersChunks(instance, ids) };
 }

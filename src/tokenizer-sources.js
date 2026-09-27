@@ -33,13 +33,101 @@ import { getConfigValue } from './util.js';
  * @property {string} license License name
  * @property {string} licenseUrl
  * @property {readonly TokenizerSource[]} sources Tried in order: the model's own repo first, then verified byte-identical copies
+ * @property {import('./tokenizer-loader.js').TiktokenConfig} [tiktoken] For the `tiktoken` format: how the repo's own code builds its encoding
  */
 
 /**
  * The pinned tokenizer registry. A fixed list in code: disk and memory are bounded by it, not by user data.
  * @type {readonly TokenizerSourceEntry[]}
  */
-export const TOKENIZER_SOURCES = Object.freeze([]);
+export const TOKENIZER_SOURCES = Object.freeze([
+    {
+        id: 'qwen3',
+        family: 'Qwen3',
+        format: 'hf-json',
+        sha256: 'aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4',
+        bytes: 11422654,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://huggingface.co/Qwen/Qwen3-8B/blob/b968826d9c46dd6066d109eabc6255188de91218/LICENSE',
+        sources: [
+            { repo: 'Qwen/Qwen3-8B', revision: 'b968826d9c46dd6066d109eabc6255188de91218', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'llama3.1',
+        family: 'Llama 3.1',
+        format: 'hf-json',
+        sha256: '79e3e522635f3171300913bb421464a87de6222182a0570b9b2ccba2a964b2b4',
+        bytes: 9085657,
+        license: 'Llama 3.1 Community License',
+        licenseUrl: 'https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/blob/0e9e39f249a16976918f6564b8830bc894c89659/LICENSE',
+        sources: [
+            { repo: 'meta-llama/Llama-3.1-8B-Instruct', revision: '0e9e39f249a16976918f6564b8830bc894c89659', path: 'tokenizer.json', gated: true },
+            { repo: 'nvidia/Llama-3.1-Nemotron-70B-Instruct-HF', revision: '031d4042f36adc1a52cca51b331d25cbe3cf1022', path: 'tokenizer.json', gated: false },
+            { repo: 'NousResearch/Meta-Llama-3.1-8B-Instruct', revision: 'd10aef7999a2b5ba950ab3974312feeedbfe0b77', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'nemo-tekken',
+        family: 'Mistral Nemo',
+        format: 'tekken',
+        sha256: 'eccd1665d2e477697c33cb7f0daa6f6dfefc57a0a6bceb66d4be52952f827516',
+        bytes: 14801223,
+        license: 'Apache-2.0',
+        // The pinned revision has no LICENSE file; its model card declares apache-2.0.
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Mistral-Nemo-Instruct-2407', revision: '04d8a90549d23fc6bd7f642064003592df51e9b3', path: 'tekken.json', gated: false },
+        ],
+    },
+    {
+        id: 'kimi',
+        family: 'Kimi K2',
+        format: 'tiktoken',
+        sha256: 'b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103',
+        bytes: 2795286,
+        license: 'Modified MIT',
+        licenseUrl: 'https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/fd1984e2b7a3350dbf7305fe73a4ede25c14de50/LICENSE',
+        sources: [
+            { repo: 'moonshotai/Kimi-K2-Instruct', revision: 'fd1984e2b7a3350dbf7305fe73a4ede25c14de50', path: 'tiktoken.model', gated: false },
+        ],
+        // tokenization_kimi.py and tokenizer_config.json at the same revision.
+        tiktoken: {
+            patStr: [
+                String.raw`[\p{Han}]+`,
+                String.raw`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+                String.raw`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+                String.raw`\p{N}{1,3}`,
+                String.raw` ?[^\s\p{L}\p{N}]+[\r\n]*`,
+                String.raw`\s*[\r\n]+`,
+                String.raw`\s+(?!\S)`,
+                String.raw`\s+`,
+            ].join('|'),
+            specialTokens: {
+                '[BOS]': 163584,
+                '[EOS]': 163585,
+                '<|im_end|>': 163586,
+                '<|im_user|>': 163587,
+                '<|im_assistant|>': 163588,
+                '<|start_header_id|>': 163590,
+                '<|end_header_id|>': 163591,
+                '[EOT]': 163593,
+                '<|im_system|>': 163594,
+                '<|tool_calls_section_begin|>': 163595,
+                '<|tool_calls_section_end|>': 163596,
+                '<|tool_call_begin|>': 163597,
+                '<|tool_call_argument_begin|>': 163598,
+                '<|tool_call_end|>': 163599,
+                '<|im_middle|>': 163601,
+                '[UNK]': 163838,
+                '[PAD]': 163839,
+            },
+            reservedSpecialTokens: { start: 163584, count: 256, name: '<|reserved_token_{id}|>' },
+            allowedSpecial: 'all',
+            split: { maxChars: 400000, maxRun: 25000 },
+        },
+    },
+]);
 
 /**
  * Cache file extension per format. The sha256 is the file's identity and the format decides its
