@@ -1,0 +1,17 @@
+[
+ "The quick brown fox jumps over the lazy dog. It's a well-known pangram, isn't it?",
+ "日本語のテキストと中文文本，还有한국어 문장도 있습니다。",
+ "Emoji test: 😀👍🏽👨‍👩‍👧‍👦🇯🇵 ❤️‍🔥 done.",
+ "function add(a, b) {\n    return a + b; // sum\n}\nconst x = add(1, 2);\n",
+ "Numbers: 0 7 42 1234567890 3.14159 -2.5e10 1,000,000 2026-09-27",
+ "Η γρήγορη καφέ αλεπού πηδάει πάνω από τον τεμπέλη σκύλο.",
+ "Съешь же ещё этих мягких французских булок, да выпей чаю.",
+ "نص عربي قصير لاختبار التقطيع.",
+ "טקסט קצר בעברית לבדיקת החלוקה.",
+ "यह हिंदी में एक छोटा वाक्य है।",
+ "a                                        b\n\n\n\t\t  \n                 c",
+ "*She smiles softly and tilts her head.* \"Well, {{user}}, I didn't expect you here...\" she whispers.",
+ "[INST] Hello <s> world </s> <|im_start|>user\nHi<|im_end|> <|endoftext|> [/INST]",
+ "   leading and trailing spaces   ",
+ "Ở Việt Nam, việc này có nhiều điều hợp lý; jeho každý характер değişti."
+]

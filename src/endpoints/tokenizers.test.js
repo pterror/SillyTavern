@@ -518,6 +518,25 @@ await testCase('/current/trim: the same text as encode-slice-decode for a local 
     assert.equal((await postCurrent('trim', { state: llama3State, text, limit: 'x' })).text, text, 'no limit');
 });
 
+// The reference ids from python tokenizers 0.23.2 for a string where llama3.json's `ignore_merges`
+// matters (tests/fixtures/tokenizer-reference, sample 15). @agnai/web-tokenizers gives 40 ids.
+const ignoreMergesText = 'Ở Việt Nam, việc này có nhiều điều hợp lý; jeho každý характер değişti.';
+const ignoreMergesIds = [5080, 252, 101798, 31074, 11, 100769, 97635, 29876, 100937, 101309, 100827, 101226, 26, 101503, 112357, 105670, 409, 44907, 7370, 10462, 13];
+
+await testCase('llama3.json: /llama3/*, /openai/* and /current/* give the reference ids where ignore_merges matters', async () => {
+    const legacy = await postTokenizer('/llama3/encode', '', { text: ignoreMergesText });
+    assert.deepEqual({ ids: legacy.ids, count: legacy.count }, { ids: ignoreMergesIds, count: ignoreMergesIds.length }, '/llama3/encode');
+    assert.equal(legacy.chunks.join(''), ignoreMergesText, '/llama3/encode chunks');
+    assert.equal((await postTokenizer('/llama3/decode', '', { ids: ignoreMergesIds })).text, ignoreMergesText, '/llama3/decode');
+
+    assert.deepEqual((await postTokenizer('/openai/encode', 'llama3', { text: ignoreMergesText })).ids, ignoreMergesIds, '/openai/encode');
+
+    const current = await postCurrent('encode', { state: llama3State, texts: [ignoreMergesText] });
+    assert.deepEqual(current.ids, [ignoreMergesIds], '/current/encode');
+    const counted = await postCurrent('count', { state: llama3State, texts: [ignoreMergesText] });
+    assert.deepEqual(counted.counts, [ignoreMergesIds.length], '/current/count');
+});
+
 await testCase('/current/*: a working remote tokenizer with an exact local copy decodes and trims with the copy', async () => {
     fakeTokenizeMode = 'ok';
     const gemmaIds = await encodeTextByLocalTokenizerType('gemma', text);
