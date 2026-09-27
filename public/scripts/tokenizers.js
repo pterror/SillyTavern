@@ -228,8 +228,8 @@ async function removeStoredTokenCache() {
  * @property {string} [model]
  * @property {'remote'|'local'|'unknown'|'none'|'fallback'|'failed'} basis
  * @property {string} key
- * @property {{ dropped?: { one: string, many: string } }} [messages] Server-built wording, with
- * `{count}` and `{entries}` for the browser to fill in.
+ * @property {{ dropped?: { one: string, many: string }, trimEstimate?: string, unknownModel?: string }} [messages]
+ * Server-built wording; `dropped` has `{count}` and `{entries}` for the browser to fill in.
  */
 
 /**
@@ -352,6 +352,34 @@ function getRememberedTokenizer() {
 }
 
 /**
+ * The server's answer for the current on-screen state, as the last response left it. Never asks the
+ * server.
+ * @returns {CurrentTokenizer|null} null when no response has answered the current state.
+ */
+export function getRememberedTokenizerAnswer() {
+    return getRememberedTokenizer();
+}
+
+/** The routes whose response `warnings` are shown. */
+const ROUTES_WITH_NOTICES = new Set(['count', 'encode', 'trim']);
+
+/**
+ * Shows the `fallback-copy` / `estimate` warnings a count, encode or trim response carries. Never
+ * throws, so the functions that count add no throws.
+ * @param {any} data The response.
+ */
+function showResponseWarnings(data) {
+    if (!Array.isArray(data?.warnings) || data.warnings.length === 0) {
+        return;
+    }
+    try {
+        showTokenizerWarnings(data?.warnings);
+    } catch (error) {
+        console.error('Could not show the tokenizer warnings', error);
+    }
+}
+
+/**
  * Posts to a `/api/tokenizers/current/*` route.
  * @param {string} route
  * @param {object} body
@@ -367,8 +395,12 @@ function postCurrent(route, body, async) {
         dataType: 'json',
         contentType: 'application/json',
     };
+    const notify = ROUTES_WITH_NOTICES.has(route);
     if (async) {
-        return Promise.resolve(jQuery.ajax(request)).catch((error) => {
+        return Promise.resolve(jQuery.ajax(request)).then((data) => {
+            if (notify) showResponseWarnings(data);
+            return data;
+        }, (error) => {
             console.error(`Tokenizer request /current/${route} failed`, error);
             return null;
         });
@@ -379,6 +411,7 @@ function postCurrent(route, body, async) {
         success: (response) => { data = response; },
         error: (_xhr, _status, error) => console.error(`Tokenizer request /current/${route} failed`, error),
     });
+    if (notify) showResponseWarnings(data);
     return data;
 }
 
@@ -535,6 +568,24 @@ export function getTokenizerStateHeader(api = main_api) {
  */
 export function getTokenizerAnswer(api = main_api) {
     return api === main_api ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState(api));
+}
+
+/**
+ * Shows the `trim-estimate` warning, in the server's words, when the current state's remembered
+ * answer after a browser-built send's counts has basis `failed`: the send was fitted to the context
+ * by the estimate because the tokenizer failed. Asks the server nothing.
+ */
+export function showTrimEstimateWarning() {
+    const tokenizer = getRememberedTokenizer();
+    if (tokenizer?.basis !== 'failed') {
+        return;
+    }
+    const message = tokenizer.messages?.trimEstimate;
+    if (typeof message !== 'string') {
+        console.warn('The prompt was fitted to the context by an estimated token count');
+        return;
+    }
+    showTokenizerWarnings([{ kind: 'trim-estimate', key: tokenizer.key, message }]);
 }
 
 /**
@@ -880,6 +931,7 @@ export async function countTokensOpenAIAsync(messages, full = false) {
                 dataType: 'json',
                 contentType: 'application/json',
             });
+            showResponseWarnings(data);
             token_count += applyMessageCount(stateKey, message, data);
         }
     }

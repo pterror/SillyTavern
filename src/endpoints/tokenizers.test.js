@@ -365,6 +365,8 @@ await testCase('/current/*: the answer carries the server-built `dropped` wordin
             one: 'Left out {count} entry that need token ids, because no tokenizer is known for this model: {entries}',
             many: 'Left out {count} entries that need token ids, because no tokenizer is known for this model: {entries}',
         },
+        trimEstimate: 'The None / Estimated tokenizer failed, so the prompt was fitted to the context by an estimated token count.',
+        unknownModel: 'No tokenizer is known for this model, so token counts are estimates. A tokenizer can be picked in Advanced Formatting → Tokenizer.',
     });
 
     const none = (await postCurrent('encode', { state: { ...unmappedState, tokenizerSetting: tokenizers.NONE }, texts: [text] })).tokenizer;
@@ -372,6 +374,21 @@ await testCase('/current/*: the answer carries the server-built `dropped` wordin
 
     const local = (await postCurrent('count', { state: llama3State, texts: [text] })).tokenizer;
     assert.equal(local.messages.dropped.one, 'Left out {count} entry that need token ids, because the Llama 3 tokenizer failed: {entries}');
+});
+
+await testCase('/current/*: the answer carries the server-built `trim-estimate` and unknown-model wording, the same as a send\'s', async () => {
+    const { sendTokenizerWarnings, createTokenizerOutcome } = await import('../tokenizer-resolve.js');
+    const unknownModel = 'No tokenizer is known for this model, so token counts are estimates. A tokenizer can be picked in Advanced Formatting → Tokenizer.';
+    for (const state of [llama3State, remoteGemmaState]) {
+        const answer = (await postCurrent('tokenizer', { state })).tokenizer;
+        const resolved = await resolveTokenizer(state, {});
+        const outcome = { ...createTokenizerOutcome(), countEstimated: true };
+        const sendWarning = sendTokenizerWarnings(state, resolved, outcome, []).find(w => w.kind === 'trim-estimate');
+        assert.equal(answer.messages.trimEstimate, sendWarning.message, `trimEstimate for ${state.type}`);
+        assert.equal(answer.messages.unknownModel, unknownModel, `unknownModel for ${state.type}`);
+    }
+    const remote = (await postCurrent('tokenizer', { state: remoteGemmaState })).tokenizer;
+    assert.equal(remote.messages.trimEstimate, 'The backend\'s tokenizer failed, so the prompt was fitted to the context by an estimated token count.');
 });
 
 await testCase('/current/*: a failing llama.cpp /tokenize with a gemma-2 model counts with gemma, basis fallback', async () => {

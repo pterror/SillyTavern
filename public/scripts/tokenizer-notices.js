@@ -59,3 +59,40 @@ export function showTokenizerWarnings(warnings) {
         toastr.warning(warning.message);
     }
 }
+
+/**
+ * Marks what an on-screen count is, in two sibling spans kept next to the count element: `~` before
+ * it for an estimate, and after it the local copy's name for a fallback count, or a marker for a
+ * model no tokenizer is known for. Never touches the count element itself, which callers and
+ * extensions read back as a number.
+ * @param {Element|JQuery} countElement
+ * @param {{ name?: string, basis?: string, messages?: { unknownModel?: string } }|null|undefined} tokenizer The answer the count came from.
+ */
+export function renderCountBasis(countElement, tokenizer) {
+    const count = $(countElement);
+
+    let approx = count.prev('span.token_count_approx');
+    if (approx.length === 0) {
+        approx = $('<span class="token_count_approx"></span>');
+        count.before(approx);
+    }
+    let basis = count.next('span.token_count_basis');
+    if (basis.length === 0) {
+        basis = $('<span class="token_count_basis"></span>');
+        count.after(basis);
+    }
+
+    const estimated = tokenizer?.basis === 'unknown' || tokenizer?.basis === 'failed';
+    approx.text(estimated ? '~' : '');
+    basis.empty();
+    if (tokenizer?.basis === 'fallback') {
+        basis.text(`(${tokenizer.name})`);
+    } else if (estimated) {
+        const marker = $('<i class="fa-solid fa-circle-question"></i>');
+        const title = tokenizer.messages?.unknownModel;
+        if (typeof title === 'string') {
+            marker.attr('title', title);
+        }
+        basis.append(marker);
+    }
+}

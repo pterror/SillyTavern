@@ -3810,6 +3810,10 @@ grammarly-extension {
     padding: 4px;
 }
 
+.token_count_basis:not(:empty) {
+    margin-left: 0.25em;
+}
+
 /* Focus */
 
 #bulk_tag_popup,
