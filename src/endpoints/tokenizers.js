@@ -16,7 +16,7 @@ import { tokenizers, TOKENIZER_TYPE_KEYS } from '../tokenizer-ids.js';
 import { resolveChatCompletionTokenizer, describeMapEntry, localResolution } from '../tokenizer-map-resolution.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { DOWNLOAD_RETRY_MS, isDownloadBackedOff, recordDownloadFailure, clearDownloadFailure } from '../tokenizer-sources.js';
-import { loadTokenizerFile, loadTokenizerFunctions } from '../tokenizer-loader.js';
+import { loadRegistryTokenizer, loadTokenizerFile, loadTokenizerFunctions } from '../tokenizer-loader.js';
 import { getConfigValue, isValidUrl, trimV1 } from '../util.js';
 
 /**
@@ -279,6 +279,45 @@ class ExactJsonTokenizer {
         }
     }
 }
+
+/**
+ * A registry entry's tokenizer (src/tokenizer-sources.js), with the same `get()` as WebTokenizer.
+ * Its instance's encode and decode return promises.
+ */
+class RegistryTokenizer {
+    /** @type {string} */
+    #source;
+    /** @type {LocalTokenizerOptions} */
+    #options;
+
+    /**
+     * @param {string} source Registry entry id
+     * @param {LocalTokenizerOptions} options
+     */
+    constructor(source, options) {
+        this.#source = source;
+        this.#options = options;
+    }
+
+    /**
+     * @returns {Promise<import('../tokenizer-loader.js').TokenizerFunctions|null>}
+     */
+    async get() {
+        try {
+            return await loadRegistryTokenizer(this.#source, this.#options);
+        } catch (error) {
+            console.error('Tokenizer failed to load: ' + this.#source, error);
+            return null;
+        }
+    }
+}
+
+/**
+ * What loading a registry entry's tokenizer needs from the request.
+ * @typedef {object} LocalTokenizerOptions
+ * @property {import('../users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
+ * @property {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a download of the entry's file
+ */
 
 const spp_llama = new SentencePieceTokenizer('src/tokenizers/llama.model');
 const spp_nerd = new SentencePieceTokenizer('src/tokenizers/nerdstash.model');
@@ -603,11 +642,11 @@ async function getLocalEncoder(resolved) {
         return tokenizer.encode.bind(tokenizer);
     }
     const key = TOKENIZER_TYPE_KEYS[resolved.id];
-    const instance = await getEncodingTokenizer(key)?.get();
+    const instance = await getLocalTokenizer(resolved)?.get();
     if (!instance) {
         return null;
     }
-    if (sentencepieceTokenizers.includes(key)) {
+    if (!resolved.source && sentencepieceTokenizers.includes(key)) {
         return (text) => new Uint32Array(instance.encodeIds(text));
     }
     return async (text) => new Uint32Array(await instance.encode(text));
@@ -626,9 +665,10 @@ async function getLocalEncoder(resolved) {
  * shaped, though only `text`/`value` are used here.
  * @param {string} requestModel The chat-completion model name.
  * @param {string[]} [dropped] Receives the text of each entry left out because there are no token ids for it.
+ * @param {string} [source] The chat-completion source, which decides the file for a model with several official files.
  * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
  */
-export async function computeLogitBias(biasPresetEntries, requestModel, dropped = undefined) {
+export async function computeLogitBias(biasPresetEntries, requestModel, dropped = undefined, source = undefined) {
     const result = {};
 
     if (!Array.isArray(biasPresetEntries)) {
@@ -642,7 +682,7 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
         return result;
     }
 
-    const resolved = resolveChatCompletionTokenizer(modelName);
+    const resolved = resolveChatCompletionTokenizer(modelName, source);
     let encodeFunction = null;
     if (resolved.kind !== 'estimate') {
         encodeFunction = await getLocalEncoder(resolved);
@@ -1100,6 +1140,20 @@ function getEncodingTokenizer(key) {
 }
 
 /**
+ * The tokenizer that encodes and decodes for a local resolution: its registry entry's when it has
+ * a `source`, else getEncodingTokenizer()'s.
+ * @param {{id: number, source?: string}} tokenizer
+ * @param {LocalTokenizerOptions} [options]
+ * @returns {SentencePieceTokenizer|WebTokenizer|ExactJsonTokenizer|RegistryTokenizer|undefined}
+ */
+function getLocalTokenizer(tokenizer, options = {}) {
+    if (tokenizer.source) {
+        return new RegistryTokenizer(tokenizer.source, options);
+    }
+    return getEncodingTokenizer(TOKENIZER_TYPE_KEYS[tokenizer.id]);
+}
+
+/**
  * Encodes text to token ids using an already-instantiated local tokenizer, keyed by the same
  * type string used for the '/api/tokenizers/<type>/encode' routes below. Factors out the
  * per-type encode step that createSentencepieceEncodingHandler/createWebTokenizerEncodingHandler/
@@ -1208,10 +1262,12 @@ function countTiktokenMessages(model, messages) {
  * when there is no tokenizer or counting fails.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @param {object[]} messages
- * @param {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a failed count, for a send's warnings.
+ * @param {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a failed count and
+ * a downloaded tokenizer file, for a send's or a response's warnings.
+ * @param {import('../users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
  * @returns {Promise<number>}
  */
-export async function countChatCompletionMessages(resolved, messages, outcome = undefined) {
+export async function countChatCompletionMessages(resolved, messages, outcome = undefined, directories = undefined) {
     try {
         if (resolved.kind === 'estimate') {
             return guesstimate(JSON.stringify(messages));
@@ -1220,10 +1276,10 @@ export async function countChatCompletionMessages(resolved, messages, outcome = 
             return countTiktokenMessages(resolved.model, messages);
         }
         const key = TOKENIZER_TYPE_KEYS[resolved.id];
-        if (sentencepieceTokenizers.includes(key)) {
+        if (!resolved.source && sentencepieceTokenizers.includes(key)) {
             return await countSentencepieceArrayTokens(LOCAL_TOKENIZER_INSTANCES[key], messages);
         }
-        const instance = await getEncodingTokenizer(key)?.get();
+        const instance = await getLocalTokenizer(resolved, { directories, outcome })?.get();
         if (!instance) throw new Error(`Failed to load the ${resolved.name} tokenizer`);
         const jsonBody = messages.flatMap(x => Object.values(x)).join('\n\n');
         return (await instance.encode(jsonBody)).length;
@@ -1241,16 +1297,17 @@ export async function countChatCompletionMessages(resolved, messages, outcome = 
  * The encode or decode handler for a local chat-completion resolveTokenizer() answer.
  * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @param {'encode'|'decode'} direction
+ * @param {import('../users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
  * @returns {TokenizationHandler}
  */
-function chatCompletionTokenizerHandler(resolved, direction) {
+function chatCompletionTokenizerHandler(resolved, direction, directories = undefined) {
     const encode = direction === 'encode';
     if (resolved.id === tokenizers.OPENAI) {
         return encode ? createTiktokenEncodingHandler(resolved.model) : createTiktokenDecodingHandler(resolved.model);
     }
     const key = TOKENIZER_TYPE_KEYS[resolved.id];
-    const instance = getEncodingTokenizer(key);
-    if (sentencepieceTokenizers.includes(key)) {
+    const instance = getLocalTokenizer(resolved, { directories });
+    if (!resolved.source && sentencepieceTokenizers.includes(key)) {
         return encode ? createSentencepieceEncodingHandler(instance) : createSentencepieceDecodingHandler(instance);
     }
     return encode ? createWebTokenizerEncodingHandler(instance) : createWebTokenizerDecodingHandler(instance);
@@ -1285,7 +1342,7 @@ router.post('/openai/encode', async function (req, res) {
         if (resolved.kind === 'estimate') {
             return res.send({ ids: [], count: guesstimate(String(req.body.text || '')), chunks: [] });
         }
-        return chatCompletionTokenizerHandler(resolved, 'encode')(req, res);
+        return chatCompletionTokenizerHandler(resolved, 'encode', req.user?.directories)(req, res);
     } catch (error) {
         console.error(error);
         return res.send({ ids: [], count: 0, chunks: [] });
@@ -1300,7 +1357,7 @@ router.post('/openai/decode', async function (req, res) {
         if (resolved.kind === 'estimate') {
             return res.send({ text: '' });
         }
-        return chatCompletionTokenizerHandler(resolved, 'decode')(req, res);
+        return chatCompletionTokenizerHandler(resolved, 'decode', req.user?.directories)(req, res);
     } catch (error) {
         console.error(error);
         return res.send({ text: '' });
@@ -1311,7 +1368,7 @@ router.post('/openai/count', async function (req, res) {
     if (!req.body) return res.sendStatus(400);
 
     const resolved = resolveOpenAIRouteModel(String(req.query.model || ''));
-    const num_tokens = await countChatCompletionMessages(resolved, req.body);
+    const num_tokens = await countChatCompletionMessages(resolved, req.body, undefined, req.user?.directories);
     return res.send({ 'token_count': num_tokens });
 });
 
@@ -1451,46 +1508,49 @@ function getTiktokenFor(tokenizer) {
 }
 
 /**
- * The loaded instance of a local sentencepiece or web tokenizer. Throws when it fails to load.
- * @param {{id: number, name: string}} tokenizer
- * @returns {Promise<{key: string, instance: any}>}
+ * The loaded instance of a local sentencepiece, web or registry tokenizer, and whether it is one of
+ * the bundled sentencepiece files. Throws when it fails to load.
+ * @param {{id: number, source?: string, name: string}} tokenizer
+ * @param {LocalTokenizerOptions} options
+ * @returns {Promise<{isSentencepiece: boolean, instance: any}>}
  */
-async function getLocalInstance(tokenizer) {
-    const key = TOKENIZER_TYPE_KEYS[tokenizer.id];
-    const instance = await getEncodingTokenizer(key)?.get();
+async function getLocalInstance(tokenizer, options) {
+    const instance = await getLocalTokenizer(tokenizer, options)?.get();
     if (!instance) {
         throw new Error(`Failed to load the ${tokenizer.name} tokenizer`);
     }
-    return { key, instance };
+    return { isSentencepiece: !tokenizer.source && SENTENCEPIECE_TOKENIZER_TYPES.has(TOKENIZER_TYPE_KEYS[tokenizer.id]), instance };
 }
 
 /**
  * The token chunks for `ids` a local tokenizer gave for `text`, as its encode route shows them.
- * @param {{id: number, name: string, model?: string}} tokenizer
+ * @param {{id: number, source?: string, name: string, model?: string}} tokenizer
  * @param {string} text
  * @param {number[]} ids
+ * @param {LocalTokenizerOptions} [options]
  * @returns {Promise<string[]>}
  */
-export async function getLocalEncodeChunks(tokenizer, text, ids) {
+export async function getLocalEncodeChunks(tokenizer, text, ids, options = {}) {
     if (tokenizer.id === tokenizers.OPENAI || tokenizer.id === tokenizers.GPT2) {
         return getTiktokenChunks(getTiktokenFor(tokenizer), ids);
     }
-    const { key, instance } = await getLocalInstance(tokenizer);
-    return SENTENCEPIECE_TOKENIZER_TYPES.has(key) ? instance.encodePieces(text) : await getWebTokenizersChunks(instance, ids);
+    const { isSentencepiece, instance } = await getLocalInstance(tokenizer, options);
+    return isSentencepiece ? instance.encodePieces(text) : await getWebTokenizersChunks(instance, ids);
 }
 
 /**
  * Decodes ids with a local tokenizer, as its decode route does. Throws when it fails to load.
- * @param {{id: number, name: string, model?: string}} tokenizer
+ * @param {{id: number, source?: string, name: string, model?: string}} tokenizer
  * @param {number[]} ids
+ * @param {LocalTokenizerOptions} [options]
  * @returns {Promise<{text: string, chunks?: string[]}>}
  */
-export async function decodeWithLocalTokenizer(tokenizer, ids) {
+export async function decodeWithLocalTokenizer(tokenizer, ids, options = {}) {
     if (tokenizer.id === tokenizers.OPENAI || tokenizer.id === tokenizers.GPT2) {
         return { text: new TextDecoder().decode(getTiktokenFor(tokenizer).decode(new Uint32Array(ids))) };
     }
-    const { key, instance } = await getLocalInstance(tokenizer);
-    if (SENTENCEPIECE_TOKENIZER_TYPES.has(key)) {
+    const { isSentencepiece, instance } = await getLocalInstance(tokenizer, options);
+    if (isSentencepiece) {
         const chunks = await Promise.all(ids.map(id => instance.decodeIds([id])));
         return { text: chunks.join(''), chunks };
     }

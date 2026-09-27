@@ -1,9 +1,28 @@
 import tiktoken from 'tiktoken';
 
-import { tokenizers } from './tokenizer-ids.js';
+import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 
 // Exact-only: a name the rules below don't clearly place is unmapped (null), never given a
-// possibly-wrong tokenizer.
+// possibly-wrong tokenizer. An id that points at different models over time (a moving alias such as
+// `deepseek-chat` or `mistral-large-latest`) is never listed: a hand-kept alias table goes stale when
+// the vendor moves the alias.
+
+/**
+ * What the map gives for a model:
+ * - a `tokenizers` value;
+ * - a tiktoken model name;
+ * - `{ source }`, a src/tokenizer-sources.js entry id;
+ * - `{ byBackend }`, for a model whose vendor's own files disagree: `vendorApis` maps a
+ *   chat-completion source (the vendor's own API) to the result for it, and `hf` is the repo's HF
+ *   `tokenizer.json`, for a backend documented to tokenize with it.
+ * @typedef {number | string | { source: string } | { byBackend: { vendorApis?: Record<string, MapResult>, hf?: MapResult } }} MapResult
+ */
+
+/**
+ * One entry that matched a name. `supersedes` names results this one wins over when both match, by
+ * their mapResultKey().
+ * @typedef {{ result: MapResult, supersedes?: string[] }} MapMatch
+ */
 
 const ALL_DIGITS = /^\d+$/;
 
@@ -66,13 +85,16 @@ const followedByAllDigits = rest => rest.length > 0 && ALL_DIGITS.test(rest[0]);
 /**
  * @param {string[]} tokens
  * @param {string} lowerName
- * @returns {Array<number|string> | null} null when a guard vetoes the name
+ * @returns {MapMatch[] | null} null when a guard vetoes the name
  */
 function generalMatches(tokens, lowerName) {
-    const results = [];
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
 
     if (hasSequence(tokens, ['llama', '2']) || hasSequence(tokens, ['llama2'])) {
-        results.push(tokenizers.LLAMA);
+        add(tokenizers.LLAMA);
     }
 
     // Phi-3 and Phi-3.5 ship llama.model; Phi-3-small is cl100k and Phi-3(.5)-vision has no
@@ -80,7 +102,7 @@ function generalMatches(tokens, lowerName) {
     const phi3 = guardedMatch(tokens, [['phi', '3'], ['phi3']], rest => followedByAllDigits(rest) && rest[0] !== '5');
     if (phi3 === 'veto') return null;
     if (phi3 === 'match' && !tokens.includes('small') && !tokens.includes('vision')) {
-        results.push(tokenizers.LLAMA);
+        add(tokenizers.LLAMA);
     }
 
     // CodeLlama 34b and 7b/13b Python ship llama.model; the 7b/13b base and Instruct and the 70b
@@ -90,7 +112,7 @@ function generalMatches(tokens, lowerName) {
         ['codellama', '7b', 'python'],
         ['codellama', '13b', 'python'],
     ];
-    if (codellamaSequences.some(sequence => hasSequence(tokens, sequence))) results.push(tokenizers.LLAMA);
+    if (codellamaSequences.some(sequence => hasSequence(tokens, sequence))) add(tokenizers.LLAMA);
 
     // Gemma-derived models whose tokenizer.model is gemma.model; ShieldGemma 2 (Gemma 3) differs.
     const gemmaDerivedSequences = [
@@ -107,7 +129,7 @@ function generalMatches(tokens, lowerName) {
         ['txgemma', '27b', 'chat'],
         ['txgemma', '27b', 'predict'],
     ];
-    if (gemmaDerivedSequences.some(sequence => hasSequence(tokens, sequence))) results.push(tokenizers.GEMMA);
+    if (gemmaDerivedSequences.some(sequence => hasSequence(tokens, sequence))) add(tokenizers.GEMMA);
 
     const guarded = [
         [tokenizers.LLAMA3, [['llama', '3'], ['llama3']], followedByAllDigits],
@@ -120,7 +142,7 @@ function generalMatches(tokens, lowerName) {
     for (const [result, sequences, isExcluded] of /** @type {Array<[number, string[][], (rest: string[]) => boolean]>} */ (guarded)) {
         const outcome = guardedMatch(tokens, sequences, isExcluded);
         if (outcome === 'veto') return null;
-        if (outcome === 'match') results.push(result);
+        if (outcome === 'match') add(result);
     }
 
     const isMistralV1 = (hasSequence(tokens, ['mistral', '7b'])
@@ -128,9 +150,9 @@ function generalMatches(tokens, lowerName) {
         || hasSequence(tokens, ['mixtral', '8x7b'])
         // Mixtral 8x22B base v0.1 ships mistral.model; the Instruct and v0.3 files differ.
         || (hasSequence(tokens, ['mixtral', '8x22b']) && hasSequence(tokens, ['v0', '1']) && !tokens.includes('instruct'));
-    if (isMistralV1) results.push(tokenizers.MISTRAL);
+    if (isMistralV1) add(tokenizers.MISTRAL);
 
-    if (hasSequence(tokens, ['nemo'])) results.push(tokenizers.NEMO);
+    if (hasSequence(tokens, ['nemo'])) add(tokenizers.NEMO);
     // Jamba 1.5/1.6/1.7, Jamba-tiny-dev and Jamba-tiny-reward-dev ship jamba.model; Jamba v0.1, Jamba2 and Jamba
     // Reasoning don't.
     const jambaSequences = [
@@ -144,50 +166,89 @@ function generalMatches(tokens, lowerName) {
         ['jamba', 'tiny', 'dev'],
         ['jamba', 'tiny', 'reward', 'dev'],
     ];
-    if (jambaSequences.some(sequence => hasSequence(tokens, sequence))) results.push(tokenizers.JAMBA);
-    if (hasSequence(tokens, ['command', 'r'])) results.push(tokenizers.COMMAND_R);
-    if (hasSequence(tokens, ['command', 'a'])) results.push(tokenizers.COMMAND_A);
+    if (jambaSequences.some(sequence => hasSequence(tokens, sequence))) add(tokenizers.JAMBA);
+    if (hasSequence(tokens, ['command', 'r'])) add(tokenizers.COMMAND_R);
+    if (hasSequence(tokens, ['command', 'a'])) add(tokenizers.COMMAND_A);
 
     // tiktoken's model list is the authority on the raw (lowercased, not separator-split) name,
     // so separators do matter here: 'gpt-4o' is known, 'gpt_4o' is not.
     try {
         tiktoken.get_encoding_name_for_model(/** @type {any} */ (lowerName));
-        results.push(lowerName);
+        add(lowerName);
     } catch {
         // not an OpenAI model tiktoken knows
     }
 
-    return results;
+    return matches;
 }
 
 /**
  * @param {string[]} tokens
- * @returns {number[]}
+ * @returns {MapMatch[]}
  */
 function novelMatches(tokens) {
     const results = [];
     if (hasSequence(tokens, ['clio'])) results.push(tokenizers.NERD);
     if (hasSequence(tokens, ['kayra'])) results.push(tokenizers.NERD2);
     if (hasSequence(tokens, ['erato'])) results.push(tokenizers.LLAMA3);
-    return results;
+    return results.map(result => ({ result }));
+}
+
+/**
+ * The name a `supersedes` list uses for a result: a registry entry id, a `tokenizers` value's
+ * TOKENIZER_TYPE_KEYS key, or `tiktoken` for the tiktoken lookup.
+ * @param {MapResult} result
+ * @returns {string}
+ */
+export function mapResultKey(result) {
+    if (typeof result === 'number') {
+        return TOKENIZER_TYPE_KEYS[result] ?? String(result);
+    }
+    if (typeof result === 'string') {
+        return 'tiktoken';
+    }
+    if ('source' in result) {
+        return result.source;
+    }
+    const { vendorApis = {}, hf } = result.byBackend;
+    const parts = Object.keys(vendorApis).sort().map(source => `${source}=${mapResultKey(vendorApis[source])}`);
+    if (hf !== undefined) {
+        parts.push(`hf=${mapResultKey(hf)}`);
+    }
+    return `byBackend(${parts.join(',')})`;
+}
+
+/**
+ * The one result the matches agree on, after dropping every result another match supersedes;
+ * null when none or more than one is left.
+ * @param {MapMatch[]} matches
+ * @returns {MapResult|null}
+ */
+export function pickMapResult(matches) {
+    const superseded = new Set(matches.flatMap(match => match.supersedes ?? []));
+    /** @type {Map<string, MapResult>} */
+    const distinct = new Map();
+    for (const { result } of matches) {
+        const key = mapResultKey(result);
+        if (!superseded.has(key)) {
+            distinct.set(key, result);
+        }
+    }
+    return distinct.size === 1 ? [...distinct.values()][0] : null;
 }
 
 /**
  * @param {string} api
  * @param {string} modelName
- * @returns {number|string|null} a `tokenizers` id, a tiktoken model name, or null when unmapped
+ * @returns {MapResult|null} null when unmapped
  */
 export function lookupModelTokenizer(api, modelName) {
     if (typeof modelName !== 'string' || modelName === '') {
         return null;
     }
     const tokens = tokenize(modelName);
-    const results = api === 'novel'
+    const matches = api === 'novel'
         ? novelMatches(tokens)
         : generalMatches(tokens, modelName.toLowerCase());
-    if (results === null) {
-        return null;
-    }
-    const distinct = new Set(results);
-    return distinct.size === 1 ? [...distinct][0] : null;
+    return matches === null ? null : pickMapResult(matches);
 }

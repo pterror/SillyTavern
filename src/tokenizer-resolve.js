@@ -1,9 +1,11 @@
 import { TEXTGEN_TYPES } from './constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
-import { lookupModelTokenizer } from './tokenizer-model-map.js';
+import { lookupModelTokenizer, mapResultKey } from './tokenizer-model-map.js';
 import { hasRemoteTokenizer, lookupBackendModel } from './backend-status.js';
-import { TOKENIZER_NAMES, describeMapEntry, localResolution, estimateResolution, resolveChatCompletionTokenizer } from './tokenizer-map-resolution.js';
+import { TOKENIZER_NAMES, describeMapEntry, describeTokenizerId, localResolution, estimateResolution, resolveChatCompletionTokenizer, selectBackendResult } from './tokenizer-map-resolution.js';
+import { findTokenizerSource } from './tokenizer-sources.js';
+import { loadRegistryTokenizer } from './tokenizer-loader.js';
 
 /**
  * The server's one tokenizer resolution (resolveTokenizer), and counting and encoding with its
@@ -30,6 +32,10 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.COMMAND_A,
     tokenizers.NEMO,
     tokenizers.DEEPSEEK,
+    tokenizers.QWEN3,
+    tokenizers.LLAMA3_1,
+    tokenizers.NEMO_TEKKEN,
+    tokenizers.KIMI,
 ];
 
 /**
@@ -63,7 +69,14 @@ export { TOKENIZER_TYPE_KEYS };
  * @property {typeof fetch} [fetchImpl] Injected replacement for the global fetch, used for the
  * API_KOBOLD remote-count call.
  * @property {TokenizerOutcome} [outcome] Records what encodeWithTokenizer()/countWithTokenizer()
- * fell back to, for one request's warnings and basis.
+ * fell back to and which tokenizer files they downloaded, for one request's warnings and basis.
+ * @property {import('./users.js').UserDirectoryList} [directories] The requesting user's directories,
+ * for their saved Hugging Face token when a registry entry's file is downloaded. Defaults to
+ * `request.user.directories`.
+ * @property {import('./tokenizer-loader.js').RegistryTokenizerOptions['registry']} [registry]
+ * Replaces the tokenizer registry, for tests.
+ * @property {import('./tokenizer-loader.js').RegistryTokenizerOptions['loadPinned']} [loadPinned]
+ * Replaces the registry file loader, for tests.
  */
 
 /** A remote tokenizer answered with an HTTP error, a network error or a reply without token ids. */
@@ -136,6 +149,9 @@ export async function encodeWithTokenizerType(tokenizerType, text, options = {})
     }
 
     const key = TOKENIZER_TYPE_KEYS[tokenizerType];
+    if (key && findTokenizerSource(key, options.registry)) {
+        return encodeWithRegistryEntry(key, text, options);
+    }
     if (key) {
         return encodeLocal(key, text);
     }
@@ -152,6 +168,23 @@ const EXPLICIT_LOCAL_TOKENIZERS = [
     tokenizers.NERD2,
     tokenizers.OPENAI,
 ];
+
+/**
+ * Token ids from a registry entry's tokenizer, recording a download of its file in the request's outcome.
+ * @param {string} source A registry entry id
+ * @param {string} text
+ * @param {EncodeWithTokenizerTypeOptions} options
+ * @returns {Promise<number[]>}
+ */
+async function encodeWithRegistryEntry(source, text, options) {
+    const tokenizer = await loadRegistryTokenizer(source, {
+        directories: options.directories ?? options.request?.user?.directories,
+        outcome: options.outcome,
+        registry: options.registry,
+        loadPinned: options.loadPinned,
+    });
+    return Array.from(await tokenizer.encode(text));
+}
 
 /**
  * The model upstream counts an explicit OpenAI setting with: `/openai/encode` gets no model and
@@ -194,6 +227,7 @@ export function readTokenizerState(state) {
 /**
  * @typedef {object} LocalTokenizer
  * @property {number} id A `tokenizers` value.
+ * @property {string} [source] A registry entry id (src/tokenizer-sources.js), for a registry entry.
  * @property {string} name
  * @property {string} [model] The tiktoken model for OPENAI; for chat completion, the tokenizer
  * model string `/openai/encode` takes.
@@ -203,6 +237,7 @@ export function readTokenizerState(state) {
  * @typedef {object} ResolvedTokenizer
  * @property {'remote'|'local'|'estimate'} kind
  * @property {number} id A `tokenizers` value; API_TEXTGENERATIONWEBUI or API_KOBOLD for remote, NONE for an estimate.
+ * @property {string} [source] A registry entry id, for a local registry entry.
  * @property {string} name
  * @property {string} [model]
  * @property {'remote'|'local'|'unknown'|'none'|'fallback'|'failed'} basis resolveTokenizer() gives
@@ -216,23 +251,24 @@ export function readTokenizerState(state) {
  * The one tokenizer resolution, used for counts and token ids alike. Never falls back to LLAMA:
  * only the map, an explicit setting or the NovelAI list give llama.
  * @param {TokenizerState} state
- * @param {{ directories?: import('./users.js').UserDirectoryList }} [deps] directories give the
- * backend's API key headers for the model lookup and capability probe.
+ * @param {{ directories?: import('./users.js').UserDirectoryList } & import('./tokenizer-map-resolution.js').MapDeps} [deps]
+ * directories give the backend's API key headers for the model lookup and capability probe.
  * @returns {Promise<ResolvedTokenizer>}
  */
 export async function resolveTokenizer(state, deps = {}) {
     const { api, type, url, hordeModels } = state;
     const tokenizerSetting = state.tokenizerSetting ?? tokenizers.BEST_MATCH;
+    const { lookupModel = lookupModelTokenizer, registry } = deps;
 
     // Upstream never applies the tokenizer setting to chat completion.
     if (api === 'openai') {
-        return resolveChatCompletionTokenizer(state.model);
+        return resolveChatCompletionTokenizer(state.model, state.source, deps);
     }
 
     if (EXPLICIT_LOCAL_TOKENIZERS.includes(tokenizerSetting)) {
         const local = tokenizerSetting === tokenizers.OPENAI
             ? { id: tokenizers.OPENAI, name: EXPLICIT_OPENAI_MODEL, model: EXPLICIT_OPENAI_MODEL }
-            : { id: tokenizerSetting, name: TOKENIZER_NAMES[tokenizerSetting] };
+            : describeTokenizerId(tokenizerSetting, registry);
         return localResolution(local, null);
     }
     if (tokenizerSetting === tokenizers.NONE) {
@@ -243,15 +279,15 @@ export async function resolveTokenizer(state, deps = {}) {
     // the backend has one, else the map.
 
     if (api === 'koboldhorde') {
-        const entries = new Set((hordeModels ?? []).map(model => lookupModelTokenizer(api, model)));
-        const [only] = entries;
-        const local = entries.size === 1 ? describeMapEntry(only, api) : null;
+        const results = (hordeModels ?? []).map(model => selectBackendResult(lookupModel(api, model), state));
+        const keys = new Set(results.map(result => result === null ? null : mapResultKey(result)));
+        const local = keys.size === 1 ? describeMapEntry(results[0], api, registry) : null;
         return local ? localResolution(local, local) : estimateResolution('unknown');
     }
 
     const backend = { api, type, url, directories: deps.directories };
     const model = state.model || await lookupBackendModel(backend);
-    const local = describeMapEntry(lookupModelTokenizer(api, model), api);
+    const local = describeMapEntry(selectBackendResult(lookupModel(api, model), state), api, registry);
 
     if (await hasRemoteTokenizer(backend, TEXTGEN_TOKENIZERS)) {
         const id = api === 'kobold' ? tokenizers.API_KOBOLD : tokenizers.API_TEXTGENERATIONWEBUI;
@@ -277,11 +313,12 @@ export function estimateTokenCount(text) {
  * @property {LocalTokenizer|null} usedCopy The local copy that answered for a failed remote tokenizer.
  * @property {boolean} failed Some count or encode had no tokenizer: the estimate, or no ids.
  * @property {boolean} countEstimated Some count fell to the estimate.
+ * @property {Array<{ family: string, license: string }>} downloads The registry files this request downloaded.
  */
 
 /** @returns {TokenizerOutcome} */
 export function createTokenizerOutcome() {
-    return { usedCopy: null, failed: false, countEstimated: false };
+    return { usedCopy: null, failed: false, countEstimated: false, downloads: [] };
 }
 
 /**
@@ -351,12 +388,15 @@ export async function encodeWithTokenizer(resolved, text, options = {}) {
 }
 
 /**
- * @param {{id: number, model?: string}} tokenizer A resolution or a LocalTokenizer.
+ * @param {{id: number, source?: string, model?: string}} tokenizer A resolution or a LocalTokenizer.
  * @param {string} text
  * @param {EncodeWithTokenizerTypeOptions} options
  * @returns {Promise<number[]>}
  */
 async function encodeWithLocalOrType(tokenizer, text, options) {
+    if (tokenizer.source) {
+        return encodeWithRegistryEntry(tokenizer.source, text, options);
+    }
     if (tokenizer.id === tokenizers.OPENAI) {
         return Array.from(getTiktokenTokenizer(tokenizer.model).encode(text));
     }
@@ -364,14 +404,33 @@ async function encodeWithLocalOrType(tokenizer, text, options) {
 }
 
 /**
- * The `key` of every warning about this resolution: `api|type-or-source|url|model|tokenizer`.
+ * The `key` of every warning about this resolution: `api|type-or-source|url|model|tokenizer`. The
+ * tokenizer part is the registry entry id when the resolution or its local copy is a registry entry,
+ * because the model setting can be empty (llama.cpp), and then only the entry tells two models apart.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @returns {string}
  */
 function tokenizerWarningKey(state, resolved) {
-    const tokenizerKey = Object.keys(tokenizers).find(key => tokenizers[key] === resolved.id)?.toLowerCase() ?? '';
+    const tokenizerKey = resolved.source
+        ?? resolved.localCopy?.source
+        ?? Object.keys(tokenizers).find(key => tokenizers[key] === resolved.id)?.toLowerCase()
+        ?? '';
     return [state.api, state.type ?? state.source ?? '', state.url ?? '', state.model ?? '', tokenizerKey].join('|');
+}
+
+/**
+ * A `license` warning for each registry file the request downloaded.
+ * @param {string} key
+ * @param {TokenizerOutcome} outcome
+ * @returns {Array<{kind: 'license', key: string, message: string}>}
+ */
+function licenseWarnings(key, outcome) {
+    return (outcome.downloads ?? []).map(({ family, license }) => ({
+        kind: 'license',
+        key,
+        message: `Downloaded the ${family} tokenizer. License: ${license}`,
+    }));
 }
 
 /**
@@ -424,7 +483,8 @@ function droppedReason(resolved) {
 /**
  * Every warning one server-built send carries about its tokenizer: `fallback-copy` when a local
  * copy answered for a failed remote tokenizer, `trim-estimate` when a failure left a count to the
- * estimate, and `dropped` for the entries it had no ids for.
+ * estimate, `dropped` for the entries it had no ids for, and `license` for each registry file it
+ * downloaded.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {TokenizerOutcome} outcome
@@ -452,6 +512,7 @@ export function sendTokenizerWarnings(state, resolved, outcome, droppedEntries) 
     if (dropped) {
         warnings.push(dropped);
     }
+    warnings.push(...licenseWarnings(key, outcome));
     return warnings;
 }
 
@@ -504,7 +565,8 @@ export function tokenizerAnswer(state, resolved, outcome) {
 
 /**
  * The warnings a `/api/tokenizers/current/*` response carries: `fallback-copy` when a local copy
- * answered for a failed remote tokenizer, `estimate` when a tokenizer failed with none to answer.
+ * answered for a failed remote tokenizer, `estimate` when a tokenizer failed with none to answer,
+ * and `license` for each registry file the request downloaded.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {TokenizerOutcome} outcome
@@ -527,6 +589,7 @@ export function tokenizerResponseWarnings(state, resolved, outcome) {
             message: `${failedTokenizerName(resolved)} failed, so token counts are estimates.`,
         });
     }
+    warnings.push(...licenseWarnings(key, outcome));
     return warnings;
 }
 

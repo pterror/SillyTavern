@@ -37,6 +37,12 @@ export const tokenizers = {
     DEEPSEEK: 18,
     COMMAND_A: 19,
     BEST_MATCH: 99,
+    // Official tokenizer files the server downloads on demand, from 1000 up, above upstream's range.
+    // A value is fixed forever once shipped: never renumbered, reused or removed.
+    QWEN3: 1000,
+    LLAMA3_1: 1001,
+    NEMO_TEKKEN: 1002,
+    KIMI: 1003,
 };
 
 // A list of local tokenizers that support encoding and decoding token ids.
@@ -52,6 +58,10 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.COMMAND_A,
     tokenizers.NEMO,
     tokenizers.DEEPSEEK,
+    tokenizers.QWEN3,
+    tokenizers.LLAMA3_1,
+    tokenizers.NEMO_TEKKEN,
+    tokenizers.KIMI,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,

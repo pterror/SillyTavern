@@ -252,7 +252,7 @@ export async function createGenerationParameters(settings, model, type, messages
     if (logitBiasOverride !== undefined) {
         logit_bias = logitBiasOverride;
     } else if (Array.isArray(biasPresetEntries) && biasPresetEntries.length && logitBiasSources.includes(settings.chat_completion_source)) {
-        logit_bias = await computeLogitBias(biasPresetEntries, model, droppedBiasEntries);
+        logit_bias = await computeLogitBias(biasPresetEntries, model, droppedBiasEntries, settings.chat_completion_source);
     }
     if (Object.keys(logit_bias).length === 0) {
         logit_bias = undefined;

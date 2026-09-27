@@ -231,5 +231,27 @@ await testCase('every registry entry is pinned', () => {
     assert.ok(Object.isFrozen(TOKENIZER_SOURCES));
 });
 
+await testCase('every registry entry has its fixed `tokenizers` value, on the server, in the browser and in Advanced Formatting', async () => {
+    const { tokenizers, TOKENIZER_TYPE_KEYS } = await import('./tokenizer-ids.js');
+    // Fixed forever once shipped: never renumbered, reused or removed.
+    const expected = { QWEN3: 1000, LLAMA3_1: 1001, NEMO_TEKKEN: 1002, KIMI: 1003 };
+    const clientEnum = fs.readFileSync(path.join(__dirname, '..', 'public', 'scripts', 'tokenizers.js'), 'utf8');
+    const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+    const registryKeys = new Set();
+    for (const entry of TOKENIZER_SOURCES) {
+        const key = entry.id.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+        registryKeys.add(key);
+        const value = tokenizers[key];
+        assert.equal(value, expected[key], `${entry.id}: tokenizers.${key}`);
+        assert.equal(TOKENIZER_TYPE_KEYS[value], entry.id, `${entry.id}: TOKENIZER_TYPE_KEYS`);
+        assert.ok(clientEnum.includes(`\n    ${key}: ${value},\n`), `${entry.id}: the browser's tokenizers.${key}`);
+        assert.ok(indexHtml.includes(`<option value="${value}">${entry.family} (official)</option>`), `${entry.id}: its #tokenizer option`);
+    }
+    assert.deepEqual([...registryKeys].sort(), Object.keys(expected).sort());
+    for (const [key, value] of Object.entries(tokenizers)) {
+        assert.equal(value >= 1000, registryKeys.has(key), `tokenizers.${key}: only registry entries are 1000 and up`);
+    }
+});
+
 fs.rmSync(dataRoot, { recursive: true, force: true });
 fs.rmSync(userRoot, { recursive: true, force: true });
