@@ -119,9 +119,11 @@ test('getBadWordIds: plain text expands into permutations, each tokenized', asyn
     assert.deepStrictEqual(result, expected);
 });
 
-test('getBadWordIds: tokenizerType === NONE short-circuits to []', async () => {
-    const result = await getBadWordIds('{abc}\n[1,2,3]\nab', tokenizers.NONE, fakeEncodeTokens);
-    assert.deepStrictEqual(result, []);
+test('getBadWordIds: tokenizerType NONE keeps raw ids and lists the lines needing a tokenizer', async () => {
+    const dropped = [];
+    const result = await getBadWordIds('{abc}\n[1,2,3]\nab', tokenizers.NONE, fakeEncodeTokens, dropped);
+    assert.deepStrictEqual(result, [[1, 2, 3]]);
+    assert.deepStrictEqual(dropped, ['{abc}', 'ab']);
 });
 
 // --- calculateNovelLogitBias ---
@@ -143,6 +145,20 @@ test('calculateNovelLogitBias: verbatim/list/plain-text entry formats', async ()
         { bias: -5, ensure_sequence_finish: false, generate_once: false, sequence: [1, 2] },
         { bias: 2, ensure_sequence_finish: false, generate_once: false, sequence: [32, 97, 98] },
     ]);
+});
+
+test('calculateNovelLogitBias: tokenizerType NONE keeps raw ids and lists the entries needing a tokenizer', async () => {
+    const entries = [
+        { text: '{ab}', value: 5 },
+        { text: '[1,2]', value: -5 },
+        { text: 'ab', value: 2 },
+    ];
+    const dropped = [];
+    const result = await calculateNovelLogitBias(entries, tokenizers.NONE, fakeEncodeTokens, dropped);
+    assert.deepStrictEqual(result, [
+        { bias: -5, ensure_sequence_finish: false, generate_once: false, sequence: [1, 2] },
+    ]);
+    assert.deepStrictEqual(dropped, ['{ab}', 'ab']);
 });
 
 // --- getNovelMaxResponseTokens ---
@@ -172,6 +188,7 @@ test('createNovelGenerationData: erato expands \\n-prefixed stop strings into 12
         settings: baseSettings({ model_novel: 'llama-3-erato-v1' }),
         maxLength: 50,
         stoppingStringsParams: { instructPreset: {}, customStoppingStringsRaw: JSON.stringify(['\nBob:']) },
+        tokenizerType: tokenizers.LLAMA3,
         encodeTokens: fakeEncodeTokens,
     });
 
@@ -193,6 +210,7 @@ test('createNovelGenerationData: erato does not expand non-\\n-prefixed stop str
         settings: baseSettings({ model_novel: 'llama-3-erato-v1' }),
         maxLength: 50,
         stoppingStringsParams: { customStoppingStringsRaw: JSON.stringify(['Bob:']) },
+        tokenizerType: tokenizers.LLAMA3,
         encodeTokens: fakeEncodeTokens,
     });
     const decodedStopSequences = data.stop_sequences.map(ids => String.fromCharCode(...ids));
@@ -206,6 +224,7 @@ test('createNovelGenerationData: erato prepends the startoftext/reserved-token p
         finalPrompt: 'hello world',
         settings: baseSettings({ model_novel: 'llama-3-erato-v1' }),
         maxLength: 50,
+        tokenizerType: tokenizers.LLAMA3,
         encodeTokens: fakeEncodeTokens,
     });
     assert.strictEqual(data.input, '<|startoftext|><|reserved_special_token81|>hello world');
@@ -216,6 +235,7 @@ test('createNovelGenerationData: non-erato model does not get the prefix hack', 
         finalPrompt: 'hello world',
         settings: baseSettings({ model_novel: 'kayra-v1' }),
         maxLength: 50,
+        tokenizerType: tokenizers.NERD2,
         encodeTokens: fakeEncodeTokens,
     });
     assert.strictEqual(data.input, 'hello world');
@@ -229,6 +249,7 @@ test('createNovelGenerationData: kayra/erato clamp using getNovelMaxResponseToke
         settings: baseSettings({ model_novel: 'kayra-v1' }),
         maxLength: 100,
         novelDataTier: 3, // adjustedMaxLength = 250
+        tokenizerType: tokenizers.NERD2,
         encodeTokens: fakeEncodeTokens,
     });
     assert.strictEqual(dataUnderCap.max_length, 100);
@@ -238,6 +259,7 @@ test('createNovelGenerationData: kayra/erato clamp using getNovelMaxResponseToke
         settings: baseSettings({ model_novel: 'kayra-v1' }),
         maxLength: 300,
         novelDataTier: 3, // adjustedMaxLength = 250
+        tokenizerType: tokenizers.NERD2,
         encodeTokens: fakeEncodeTokens,
     });
     assert.strictEqual(dataOverCap.max_length, 250);
@@ -247,6 +269,7 @@ test('createNovelGenerationData: kayra/erato clamp using getNovelMaxResponseToke
         settings: baseSettings({ model_novel: 'llama-3-erato-v1' }),
         maxLength: 300,
         novelDataTier: 1, // adjustedMaxLength = 150
+        tokenizerType: tokenizers.LLAMA3,
         encodeTokens: fakeEncodeTokens,
     });
     assert.strictEqual(dataErato.max_length, 150);
@@ -258,6 +281,7 @@ test('createNovelGenerationData: clio/other clamp using the static maximum_outpu
         settings: baseSettings({ model_novel: 'clio-v1' }),
         maxLength: 100,
         novelDataTier: 3, // irrelevant for clio - static cap applies
+        tokenizerType: tokenizers.NERD,
         encodeTokens: fakeEncodeTokens,
     });
     assert.strictEqual(dataUnderCap.max_length, 100);
@@ -267,23 +291,53 @@ test('createNovelGenerationData: clio/other clamp using the static maximum_outpu
         settings: baseSettings({ model_novel: 'clio-v1' }),
         maxLength: 300,
         novelDataTier: 3,
+        tokenizerType: tokenizers.NERD,
         encodeTokens: fakeEncodeTokens,
     });
     assert.strictEqual(dataOverCap.max_length, 150);
 });
 
-// --- createNovelGenerationData: tokenizerType === NONE -> undefined, not [] ---
+// --- createNovelGenerationData: tokenizerType NONE ---
 
-test('createNovelGenerationData: stop_sequences/bad_words_ids/logit_bias_exp are undefined for tokenizerType NONE', async () => {
+test('createNovelGenerationData: stop_sequences/bad_words_ids/logit_bias_exp are undefined for tokenizerType NONE, and every entry is listed', async () => {
+    const dropped = [];
     const data = await create({
         finalPrompt: 'hello',
-        settings: baseSettings({ model_novel: 'some-unknown-model', banned_tokens: 'foo', logit_bias: [{ text: 'foo', value: 1 }] }),
+        settings: baseSettings({ model_novel: 'some-unknown-model', banned_tokens: 'foo', logit_bias: [{ text: 'bar', value: 1 }] }),
         maxLength: 50,
-        encodeTokens: fakeEncodeTokens,
+        stoppingStringsParams: { customStoppingStringsRaw: JSON.stringify(['Bob:']) },
+        tokenizerType: tokenizers.NONE,
+        encodeTokens: () => assert.fail('nothing is encoded without a tokenizer'),
+        dropped,
     });
     assert.strictEqual(data.stop_sequences, undefined);
     assert.strictEqual(data.bad_words_ids, undefined);
     assert.strictEqual(data.logit_bias_exp, undefined);
+    assert.deepStrictEqual(dropped, ['Bob:', 'foo', 'bar']);
+});
+
+test('createNovelGenerationData: raw-id bad words and bias still go through for tokenizerType NONE', async () => {
+    const dropped = [];
+    const data = await create({
+        finalPrompt: 'hello',
+        settings: baseSettings({ model_novel: 'clio-v1', banned_tokens: 'foo\n[1,2]', logit_bias: [{ text: '[3]', value: -1 }] }),
+        maxLength: 50,
+        tokenizerType: tokenizers.NONE,
+        encodeTokens: () => assert.fail('nothing is encoded without a tokenizer'),
+        dropped,
+    });
+    assert.deepStrictEqual(data.bad_words_ids, [[1, 2]]);
+    assert.deepStrictEqual(data.logit_bias_exp, [{ bias: -1, ensure_sequence_finish: false, generate_once: false, sequence: [3] }]);
+    assert.deepStrictEqual(dropped, ['foo']);
+});
+
+test('createNovelGenerationData: tokenizerType is required', async () => {
+    await assert.rejects(() => create({
+        finalPrompt: 'hello',
+        settings: baseSettings(),
+        maxLength: 50,
+        encodeTokens: fakeEncodeTokens,
+    }), /tokenizerType is required/);
 });
 
 test('createNovelGenerationData: stop_sequences/bad_words_ids/logit_bias_exp are arrays for a known tokenizerType', async () => {
@@ -291,6 +345,7 @@ test('createNovelGenerationData: stop_sequences/bad_words_ids/logit_bias_exp are
         finalPrompt: 'hello',
         settings: baseSettings({ model_novel: 'kayra-v1', banned_tokens: '', logit_bias: [] }),
         maxLength: 50,
+        tokenizerType: tokenizers.NERD2,
         encodeTokens: fakeEncodeTokens,
     });
     assert.ok(Array.isArray(data.stop_sequences));

@@ -17,6 +17,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const { assembleTextCompletionPrompt } = await import('./text-completion-prompt-orchestrator.js');
 const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
+const { tokenizers } = await import('./tokenizer-ids.js');
 
 /**
  * Real, END-TO-END integration test: a small but realistic fixture exercising every stage of the
@@ -1038,6 +1039,7 @@ test('assembleTextCompletionPrompt: mainApi "novel" dispatches Step 16 to create
         // `tokenizerType` as the FIRST argument - passing the generic `encodeTokens` straight through
         // would silently misbind it and drop `text`, a real bug this test guards against).
         encodeTokensByType: (tokenizerType, text) => [tokenizerType, ...Array.from(text).map(ch => ch.codePointAt(0))],
+        novelTokenizerType: tokenizers.NERD,
         ephemeralStoppingStrings: ['STOP_HERE'],
     };
 
@@ -1075,6 +1077,49 @@ test('assembleTextCompletionPrompt: mainApi "novel" without encodeTokensByType t
     };
 
     await assert.rejects(() => assembleTextCompletionPrompt(input), /encodeTokensByType is required/);
+});
+
+test('assembleTextCompletionPrompt: mainApi "novel" without novelTokenizerType throws', async () => {
+    const { charactersDir, chatsDir, root } = makeDirectories();
+    const avatar = 'aria-novel-no-type.png';
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeSimpleCharacter(directories, avatar);
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        mainApi: 'novel',
+        settings: { model_novel: 'clio-v1', banned_tokens: '', logit_bias: [], order: [1, 5, 0, 2, 3, 4] },
+        encodeTokensByType: (_tokenizerType, text) => Array.from(text).map(ch => ch.codePointAt(0)),
+    };
+
+    await assert.rejects(() => assembleTextCompletionPrompt(input), /novelTokenizerType is required/);
+});
+
+test('assembleTextCompletionPrompt: mainApi "novel" with no tokenizer lists the NovelAI entries it left out', async () => {
+    const { charactersDir, chatsDir, root } = makeDirectories();
+    const avatar = 'aria-novel-estimate.png';
+    const directories = { characters: charactersDir, root, chats: chatsDir };
+    await writeSimpleCharacter(directories, avatar);
+
+    const input = {
+        ...baseFixture(directories, avatar),
+        mainApi: 'novel',
+        settings: {
+            model_novel: 'clio-v1', banned_tokens: 'dragon\n[5,6]', logit_bias: [{ text: 'sword', value: 1 }],
+            prefix: 'vanilla', order: [1, 5, 0, 2, 3, 4],
+        },
+        encodeTokensByType: () => assert.fail('nothing is encoded without a tokenizer'),
+        novelTokenizerType: tokenizers.NONE,
+        ephemeralStoppingStrings: ['STOP_HERE'],
+    };
+
+    const result = await assembleTextCompletionPrompt(input);
+
+    assert.equal(result.generate_data.stop_sequences, undefined);
+    assert.deepEqual(result.generate_data.bad_words_ids, [[5, 6]]);
+    assert.ok(result.droppedEntries.includes('STOP_HERE'));
+    assert.ok(result.droppedEntries.includes('dragon'));
+    assert.ok(result.droppedEntries.includes('sword'));
 });
 
 test('assembleTextCompletionPrompt: the textgen logit_bias and banned tokens are encoded only for textgen', async () => {

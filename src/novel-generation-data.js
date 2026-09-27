@@ -32,10 +32,9 @@ import { tokenizers } from './tokenizer-resolve.js';
  *   returning a Promise (and this whole module's functions that need encoding are `async`,
  *   `await`-ing every call) - even though the fake encoder in the test file is deliberately
  *   synchronous, to show the signature tolerates either (an `async` function returning a
- *   already-resolved value works fine when awaited). This module does NOT do any tokenizer-type
- *   resolution/dispatch beyond getTokenizerTypeForModel() (which only picks WHICH tokenizers enum
- *   value applies to a given NovelAI model name) - actually turning that enum value into ids is
- *   entirely the caller's job, via the injected encodeTokens.
+ *   already-resolved value works fine when awaited).
+ * - tokenizerType - the caller resolves which tokenizer the send uses; this module does no
+ *   tokenizer resolution.
  * - stoppingStringsParams - forwarded to src/stopping-strings.js's getStoppingStrings(), minus
  *   isImpersonate/isContinue/api (which this module supplies itself: api is fixed to a non-'openai'
  *   value, since NovelAI is never a chat-completion source).
@@ -140,15 +139,13 @@ export function getBadWordPermutations(text) {
  * Mirrors nai-settings.js's getBadWordIds(banned_tokens, tokenizerType), minus the `badWordsCache`
  * perf cache (see module doc comment - always computes fresh here).
  * @param {string} bannedTokens nai_settings.banned_tokens equivalent (newline-separated lines).
- * @param {number} tokenizerType A `tokenizers` value.
+ * @param {number} tokenizerType A `tokenizers` value. NONE means no tokenizer: only raw-id lines
+ * go through.
  * @param {EncodeTokensFn} encodeTokens
+ * @param {string[]} [dropped] Receives each line left out because it needs a tokenizer.
  * @returns {Promise<number[][]>}
  */
-export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens) {
-    if (tokenizerType === tokenizers.NONE) {
-        return [];
-    }
-
+export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens, dropped) {
     const result = [];
     const sequence = bannedTokens.split('\n');
 
@@ -159,10 +156,16 @@ export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens) {
             continue;
         }
 
+        const isRawIds = trimmed.startsWith('[') && trimmed.endsWith(']');
+        if (tokenizerType === tokenizers.NONE && !isRawIds) {
+            dropped?.push(trimmed);
+            continue;
+        }
+
         if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
             const tokenIds = await encodeTokens(tokenizerType, trimmed.slice(1, -1));
             result.push(tokenIds);
-        } else if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        } else if (isRawIds) {
             try {
                 const tokenIds = JSON.parse(trimmed);
 
@@ -206,11 +209,13 @@ export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens) {
  * that one returns a token-id-keyed object, this one returns an array of per-sequence objects.
  * Minus the `BIAS_CACHE`/`BIAS_KEY` perf cache (always computes fresh here).
  * @param {NovelLogitBiasEntry[]} logitBiasEntries nai_settings.logit_bias equivalent.
- * @param {number} tokenizerType A `tokenizers` value.
+ * @param {number} tokenizerType A `tokenizers` value. NONE means no tokenizer: only raw-id entries
+ * go through.
  * @param {EncodeTokensFn} encodeTokens
+ * @param {string[]} [dropped] Receives each entry's text left out because it needs a tokenizer.
  * @returns {Promise<NovelLogitBiasObject[]>}
  */
-export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, encodeTokens) {
+export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, encodeTokens, dropped) {
     if (!Array.isArray(logitBiasEntries) || logitBiasEntries.length === 0) {
         return [];
     }
@@ -233,11 +238,17 @@ export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, e
         // Skip empty lines
         if (text.length === 0) continue;
 
+        const isRawIds = text.startsWith('[') && text.endsWith(']');
+        if (tokenizerType === tokenizers.NONE && !isRawIds) {
+            dropped?.push(text);
+            continue;
+        }
+
         if (text.startsWith('{') && text.endsWith('}')) {
             // Verbatim text
             const tokenIds = await encodeTokens(tokenizerType, text.slice(1, -1));
             result.push(getBiasObject(entry.value, tokenIds));
-        } else if (text.startsWith('[') && text.endsWith(']')) {
+        } else if (isRawIds) {
             // Raw token ids, JSON serialized
             try {
                 const tokenIds = JSON.parse(text);
@@ -324,7 +335,11 @@ export function getNovelMaxResponseTokens(novelDataTier) {
  * @property {boolean} [requestTokenProbabilities] power_user.request_token_probabilities equivalent.
  * @property {import('./stopping-strings.js').GetStoppingStringsParams} [stoppingStringsParams]
  * Forwarded to getStoppingStrings(), minus isImpersonate/isContinue/api (supplied by this function).
+ * @property {number} tokenizerType The send's resolved `tokenizers` value, passed back to
+ * `encodeTokens`. NONE (an estimate resolution) leaves out every stop string, bad word and bias
+ * entry that needs ids; raw-id entries still go through.
  * @property {EncodeTokensFn} encodeTokens
+ * @property {string[]} [dropped] Receives each entry left out because there is no tokenizer.
  * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] Forwarded
  * into the getStoppingStrings() call (merged into stoppingStringsParams).
  */
@@ -349,14 +364,18 @@ export async function createNovelGenerationData({
     consoleLogPrompts = false,
     requestTokenProbabilities = false,
     stoppingStringsParams = {},
+    tokenizerType,
     encodeTokens,
+    dropped,
     macroContext = {},
 }) {
     console.debug('NovelAI generation data for', type);
+    if (typeof tokenizerType !== 'number') {
+        throw new Error('createNovelGenerationData: tokenizerType is required');
+    }
     const isKayra = settings.model_novel.includes('kayra');
     const isErato = settings.model_novel.includes('erato');
 
-    const tokenizerType = getTokenizerTypeForModel(settings.model_novel);
     const stoppingStrings = getStoppingStrings({
         ...stoppingStringsParams,
         isImpersonate,
@@ -388,33 +407,27 @@ export async function createNovelGenerationData({
     }
 
     const MAX_STOP_SEQUENCES = 1024;
+    const sentStoppingStrings = stoppingStrings.slice(0, MAX_STOP_SEQUENCES);
+    const hasTokenizer = tokenizerType !== tokenizers.NONE;
     let stopSequences;
-    if (tokenizerType !== tokenizers.NONE) {
+    if (hasTokenizer) {
         stopSequences = [];
-        for (const stoppingString of stoppingStrings.slice(0, MAX_STOP_SEQUENCES)) {
+        for (const stoppingString of sentStoppingStrings) {
             stopSequences.push(await encodeTokens(tokenizerType, stoppingString));
         }
+    } else {
+        dropped?.push(...sentStoppingStrings);
     }
 
-    const badWordIds = (tokenizerType !== tokenizers.NONE)
-        ? await getBadWordIds(settings.banned_tokens, tokenizerType, encodeTokens)
-        : undefined;
+    const badWordIds = await getBadWordIds(settings.banned_tokens, tokenizerType, encodeTokens, dropped);
 
     const prefix = selectPrefix(settings.prefix, finalPrompt, settings.model_novel);
 
-    // Deviation from the client (flagged): the client initializes `logitBias` to `[]` and only
-    // overwrites it when `tokenizerType !== tokenizers.NONE && ...`, so it stays `[]` (not
-    // `undefined`) when the tokenizer type is NONE. Here, `logit_bias_exp` is `undefined` for
-    // tokenizers.NONE instead, matching the `stop_sequences`/`bad_words_ids` convention above -
-    // this reads as more consistent (all three "requires an actual tokenizer" fields behave the
-    // same way) and NovelAI's own request handling almost certainly treats an omitted
-    // `logit_bias_exp` and an empty-array one identically. Documented, not a silent guess.
-    let logitBias;
-    if (tokenizerType !== tokenizers.NONE) {
-        logitBias = (Array.isArray(settings.logit_bias) && settings.logit_bias.length)
-            ? await calculateNovelLogitBias(settings.logit_bias, tokenizerType, encodeTokens)
-            : [];
-    }
+    // With no tokenizer only raw-id entries are sent, and a field left with none is `undefined`,
+    // like `stop_sequences`. (The client sends `logit_bias_exp: []` there.)
+    const logitBias = (Array.isArray(settings.logit_bias) && settings.logit_bias.length)
+        ? await calculateNovelLogitBias(settings.logit_bias, tokenizerType, encodeTokens, dropped)
+        : [];
 
     if (consoleLogPrompts) {
         console.log(finalPrompt);
@@ -451,8 +464,8 @@ export async function createNovelGenerationData({
         'mirostat_tau': Number(settings.mirostat_tau),
         'phrase_rep_pen': settings.phrase_rep_pen,
         'stop_sequences': stopSequences,
-        'bad_words_ids': badWordIds,
-        'logit_bias_exp': logitBias,
+        'bad_words_ids': hasTokenizer || badWordIds.length ? badWordIds : undefined,
+        'logit_bias_exp': hasTokenizer || logitBias.length ? logitBias : undefined,
         'generate_until_sentence': true,
         'use_cache': false,
         'return_full_text': false,
