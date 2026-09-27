@@ -29,7 +29,7 @@ import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId } from './character-store.js';
 import { eventSource, event_types } from './events.js';
-import { isMobile, initMovingUI, favsToHotswap } from './RossAscends-mods.js';
+import { isMobile, initMovingUI, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './RossAscends-mods.js';
 import {
     groups,
     resetSelectedGroup,
@@ -1183,6 +1183,7 @@ function switchWaifuMode() {
 function switchForceMobileView() {
     $('body').toggleClass('forceMobileView', power_user.forceMobileView);
     $('#forceMobileView').prop('checked', power_user.forceMobileView);
+    onCharacterEditorMaybeShown();
 }
 
 function switchSpoilerMode() {
@@ -3557,11 +3558,24 @@ export function getCustomStoppingStrings(limit = undefined) {
     return strings;
 }
 
-export function forceCharacterEditorTokenize() {
+function clearCharacterEditorCountHashes() {
     $('[data-token-counter]').each(function () {
         $(document.getElementById($(this).data('token-counter'))).data('last-value-hash', '');
     });
+}
+
+export function forceCharacterEditorTokenize() {
+    clearCharacterEditorCountHashes();
     $('#rm_ch_create_block').trigger('input');
+}
+
+/**
+ * Marks every character editor count stale and recounts once the editor is showing.
+ * The internal counterpart of forceCharacterEditorTokenize(), which counts right away.
+ */
+export function markCharacterEditorCountsStale() {
+    clearCharacterEditorCountHashes();
+    countCharTokensWhenShown();
 }
 
 jQuery(() => {
@@ -4108,8 +4122,7 @@ jQuery(() => {
         BIAS_CACHE.clear();
         saveSettingsDebounced('power_user.tokenizer');
 
-        // Trigger character editor re-tokenize
-        forceCharacterEditorTokenize();
+        markCharacterEditorCountsStale();
     });
 
     $('#send_on_enter').on('change', function () {

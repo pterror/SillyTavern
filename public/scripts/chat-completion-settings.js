@@ -40,7 +40,7 @@ import {
     promptManagerDefaultPromptOrders,
 } from './PromptManager.js';
 
-import { forceCharacterEditorTokenize, getCustomStoppingStrings, persona_description_positions, power_user } from './power-user.js';
+import { markCharacterEditorCountsStale, getCustomStoppingStrings, persona_description_positions, power_user } from './power-user.js';
 import { getPersonaDescription, getPersonaDescriptionPosition } from './personas.js';
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
@@ -7001,7 +7001,7 @@ export function initOpenAI() {
             saveSettingsDebounced('oai_settings');
         }
         reconnectOpenAi();
-        forceCharacterEditorTokenize();
+        markCharacterEditorCountsStale();
         updateFeatureSupportFlags();
         eventSource.emit(event_types.CHATCOMPLETION_SOURCE_CHANGED, oai_settings.chat_completion_source);
     });

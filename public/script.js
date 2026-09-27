@@ -11,7 +11,7 @@ import {
     lodash,
 } from './lib.js';
 
-import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, RA_CountCharTokens } from './scripts/RossAscends-mods.js';
+import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, getEntitiesList, queryEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too).
@@ -88,7 +88,7 @@ import {
     registerDebugFunction,
     flushEphemeralStoppingStrings,
     resetMovableStyles,
-    forceCharacterEditorTokenize,
+    markCharacterEditorCountsStale,
     applyPowerUserSettings,
     generatedTextFiltered,
     applyStylePins,
@@ -7112,7 +7112,7 @@ export function changeMainAPI(api = null) {
     }
     validateDisabledSamplers();
     setupChatCompletionPromptManager(oai_settings);
-    forceCharacterEditorTokenize();
+    markCharacterEditorCountsStale();
 }
 
 export function setUserName(value, { toastPersonaNameChange = true } = {}) {
@@ -8290,6 +8290,7 @@ function recomputeDrawerFronts() {
             accountStorage.setItem(key, String(Boolean(document.getElementById(id)?.classList.contains('openDrawer'))));
         }
     }
+    onCharacterEditorMaybeShown();
 }
 
 /**
@@ -8385,6 +8386,7 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
             });
         }
     });
+    onCharacterEditorMaybeShown();
 }
 
 export function select_rm_info(type, charId, previousCharId = null, displayName = null) {
@@ -9570,7 +9572,7 @@ function renderGreetingPager() {
     $('.greeting-pager-input').val(index + 1);
     $('.greeting-pager-total').text(`/${greetings.length}`);
     // .val() above doesn't fire a native input event, so the token counter needs an explicit nudge.
-    RA_CountCharTokens();
+    countCharTokensWhenShown();
 }
 
 /**
