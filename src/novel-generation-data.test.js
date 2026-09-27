@@ -14,7 +14,6 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
 const { tokenizers } = await import('./tokenizer-resolve.js');
 const {
-    getTokenizerTypeForModel,
     selectPrefix,
     getBadWordPermutations,
     getBadWordIds,
@@ -49,24 +48,6 @@ const tests = [];
 function test(name, fn) {
     tests.push(() => run(name, fn));
 }
-
-// --- getTokenizerTypeForModel ---
-
-test('getTokenizerTypeForModel: clio -> NERD', () => {
-    assert.strictEqual(getTokenizerTypeForModel('clio-v1'), tokenizers.NERD);
-});
-
-test('getTokenizerTypeForModel: kayra -> NERD2', () => {
-    assert.strictEqual(getTokenizerTypeForModel('kayra-v1'), tokenizers.NERD2);
-});
-
-test('getTokenizerTypeForModel: erato -> LLAMA3', () => {
-    assert.strictEqual(getTokenizerTypeForModel('llama-3-erato-v1'), tokenizers.LLAMA3);
-});
-
-test('getTokenizerTypeForModel: unknown model -> NONE', () => {
-    assert.strictEqual(getTokenizerTypeForModel('some-other-model'), tokenizers.NONE);
-});
 
 // --- selectPrefix ---
 

@@ -735,31 +735,6 @@ export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) 
 }
 
 /**
- * Mirrors public/scripts/tokenizers.js's `TEXTGEN_TOKENIZERS` array (populated at runtime in
- * `initTokenizers()` there) - the textgen backend `type`s whose own API can tokenize text, so the
- * server-side "current API" tokenizer path can be reached at all.
- * @type {string[]}
- */
-export const TEXTGEN_API_TOKENIZER_TYPES = [
-    TEXTGEN_TYPES.OOBA,
-    TEXTGEN_TYPES.TABBY,
-    TEXTGEN_TYPES.KOBOLDCPP,
-    TEXTGEN_TYPES.LLAMACPP,
-    TEXTGEN_TYPES.VLLM,
-    TEXTGEN_TYPES.APHRODITE,
-];
-
-/**
- * Mirrors public/scripts/tokenizers.js's `ENCODE_TOKENIZERS` array, expressed as the local
- * tokenizer type strings `encodeTextByLocalTokenizerType()` accepts (NERD/NERD2 are commented out
- * client-side pending NovelAI weights, so they're omitted here too).
- * @type {string[]}
- */
-export const TEXTGEN_ENCODE_TOKENIZER_TYPES = [
-    'llama', 'mistral', 'yi', 'llama3', 'gemma', 'jamba', 'qwen2', 'command-r', 'command-a', 'nemo', 'deepseek',
-];
-
-/**
  * Encodes one string against a Kobold-compatible backend's own tokenize endpoint. Extracted from
  * the `/api/tokenizers/remote/kobold/count` route handler below (same rationale as
  * `encodeViaTextgenAPI` and this session's `computeLogitBias` extraction) so in-process callers can
@@ -798,133 +773,6 @@ export async function encodeViaKoboldAPI(baseUrl, text) {
 }
 
 /**
- * Server-side port of public/scripts/textgen-settings.js's `getTokenizerForTokenIds()` (called
- * `getTokenizerBestMatch('textgenerationwebui')` inline where relevant) - resolves which tokenizer
- * `computeTextgenLogitBias()` should encode bias-preset text with, WITHOUT any of the live/session
- * state the client closes over. See `computeTextgenLogitBias()`'s doc comment for the full
- * live-state-vs-pure breakdown; this function only implements the pure decision tree.
- *
- * Returns a discriminated descriptor instead of the client's numeric `tokenizers` enum value,
- * since this port has no use for enum values that only ever get compared for equality here:
- * - `{ kind: 'remote-textgen' }` - encode via the connected textgen backend's own tokenizer
- *   (`encodeViaTextgenAPI`).
- * - `{ kind: 'remote-kobold' }` - encode via the connected KoboldAI-compatible backend's own
- *   tokenizer (`encodeViaKoboldAPI`).
- * - `{ kind: 'local', type }` - encode with an already-available in-process tokenizer, `type` being
- *   one of `encodeTextByLocalTokenizerType()`'s accepted values.
- * - `{ kind: 'openai' }` - client's `tokenizers.OPENAI` fallback (only reachable from the OpenRouter
- *   branch here) - resolved per-request against the actual model name, mirroring `computeLogitBias`'s
- *   own model-name dispatch.
- * - `{ kind: 'none' }` - client's `tokenizers.NONE` (unmapped `main_api`) - no real tokenizer, so no
- *   tokens are produced (mirrors `getTextTokens()`'s default branch warning-and-returning-`[]`
- *   behavior for a tokenizer type with no `TOKENIZER_URLS` entry).
- *
- * @param {object} [options]
- * @param {string} [options.settingsType] `textgenerationwebui_settings.type` equivalent - one of
- * `TEXTGEN_TYPES`'s values.
- * @param {string} [options.mainApi] `main_api` equivalent - only `'kobold'`/`'textgenerationwebui'`
- * resolve to a live remote tokenizer; anything else mirrors `currentRemoteTokenizerAPI()`'s
- * `tokenizers.NONE` fallback.
- * @param {string} [options.powerUserTokenizer] `power_user.tokenizer` equivalent. Compared against
- * `'api_current'` (mirrors `tokenizers.API_CURRENT`) and against `TEXTGEN_ENCODE_TOKENIZER_TYPES`
- * (mirrors `ENCODE_TOKENIZERS.includes(power_user.tokenizer)`) - pass one of
- * `TEXTGEN_ENCODE_TOKENIZER_TYPES`'s values, `'api_current'`, or leave undefined.
- * @param {boolean} [options.isConnected] LIVE connection state - mirrors `online_status !==
- * 'no_connection'`. Honest default: `false`, matching the client's own disconnected fallback path
- * (falls through to the pure model-name/power-user-tokenizer branches below).
- * @param {boolean} [options.hasTokenizerError] LIVE session-memoized state - mirrors
- * `sessionStorage.getItem(TOKENIZER_WARNING_KEY)`. Honest default: `false` (no remembered error),
- * which is also the client's own first-run/no-error state.
- * @param {boolean} [options.hasValidEndpoint] LIVE session-memoized state - mirrors
- * `sessionStorage.getItem(TOKENIZER_SUPPORTED_KEY)`, only consulted for `TEXTGEN_TYPES.OOBA`.
- * Honest default: `false`.
- * @param {string} [options.openRouterModelId] `textgen_settings.openrouter_model` equivalent.
- * @param {{id?: string, architecture?: {tokenizer?: string}}[]} [options.openRouterModels] LIVE
- * external data - mirrors the client's module-level `openRouterModels` (fetched from OpenRouter).
- * Honest default: `[]`, which - same as the client with an empty/not-yet-fetched list - makes
- * `.find()` return `undefined` and fall to the `tokenizers.OPENAI` default case.
- * @param {string} [options.dreamGenModelId] `textgen_settings.dreamgen_model` equivalent.
- * @param {{id?: string}[]} [options.dreamGenModels] LIVE external data - mirrors the client's
- * module-level `dreamGenModels`. JUDGMENT CALL: the client's own
- * `public/scripts/textgen-models.js`'s `getCurrentDreamGenModelTokenizer()` (which carries a
- * cross-reference back to this comment) does `dreamGenModels.find(...)` with NO fallback and then
- * reads `model.id` unconditionally - with
- * an empty/not-yet-fetched list (the honest default for this live parameter) that would throw a
- * `TypeError` on the client too. That's a latent client bug, not a "live fallback" worth
- * reproducing; this port uses `model?.id` and falls back to the same `tokenizers.MISTRAL` result the
- * client's own final `else` branch already produces for every DreamGen model that isn't a
- * recognized `lucid-v1-extra-large`/`lucid-v1-max` id, rather than crash.
- * @returns {{kind: 'remote-textgen'}|{kind: 'remote-kobold'}|{kind: 'local', type: string}|{kind: 'openai'}|{kind: 'none'}}
- */
-export function resolveTextgenTokenizerForTokenIds(options = {}) {
-    const {
-        settingsType,
-        mainApi,
-        powerUserTokenizer,
-        isConnected = false,
-        hasTokenizerError = false,
-        hasValidEndpoint = false,
-        openRouterModelId,
-        openRouterModels = [],
-        dreamGenModelId,
-        dreamGenModels = [],
-    } = options;
-
-    /** Mirrors `currentRemoteTokenizerAPI()`. */
-    function resolveApiCurrent() {
-        if (mainApi === 'kobold') return { kind: 'remote-kobold' };
-        if (mainApi === 'textgenerationwebui') return { kind: 'remote-textgen' };
-        return { kind: 'none' };
-    }
-
-    // getTokenizerBestMatch('textgenerationwebui') === tokenizers.API_TEXTGENERATIONWEBUI iff:
-    const isTokenizerSupported = TEXTGEN_API_TOKENIZER_TYPES.includes(settingsType)
-        && (settingsType !== TEXTGEN_TYPES.OOBA || hasValidEndpoint);
-    if (!hasTokenizerError && isConnected && isTokenizerSupported) {
-        return resolveApiCurrent();
-    }
-
-    if (powerUserTokenizer === 'api_current' && TEXTGEN_API_TOKENIZER_TYPES.includes(settingsType)) {
-        return resolveApiCurrent();
-    }
-
-    if (TEXTGEN_ENCODE_TOKENIZER_TYPES.includes(powerUserTokenizer)) {
-        return { kind: 'local', type: powerUserTokenizer };
-    }
-
-    if (settingsType === TEXTGEN_TYPES.OPENROUTER) {
-        // Mirrors getCurrentOpenRouterModelTokenizer()
-        const model = openRouterModels.find(x => x.id === openRouterModelId);
-        if (openRouterModelId?.includes('jamba')) {
-            return { kind: 'local', type: 'jamba' };
-        }
-        switch (model?.architecture?.tokenizer) {
-            case 'Llama2': return { kind: 'local', type: 'llama' };
-            case 'Llama3': return { kind: 'local', type: 'llama3' };
-            case 'Yi': return { kind: 'local', type: 'yi' };
-            case 'Mistral': return { kind: 'local', type: 'mistral' };
-            case 'Gemini': return { kind: 'local', type: 'gemma' };
-            case 'Claude': return { kind: 'local', type: 'claude' };
-            case 'Cohere': return { kind: 'local', type: 'command-r' };
-            case 'Qwen': return { kind: 'local', type: 'qwen2' };
-            default: return { kind: 'openai' };
-        }
-    }
-
-    if (settingsType === TEXTGEN_TYPES.DREAMGEN) {
-        // Mirrors getCurrentDreamGenModelTokenizer() - see the dreamGenModels doc above for the
-        // one deliberate divergence (no-model-found doesn't throw here).
-        const model = dreamGenModels.find(x => x.id === dreamGenModelId);
-        if (model?.id?.startsWith('lucid-v1-extra-large') || model?.id?.startsWith('lucid-v1-max')) {
-            return { kind: 'local', type: 'llama3' };
-        }
-        return { kind: 'local', type: 'mistral' };
-    }
-
-    return { kind: 'local', type: 'llama' };
-}
-
-/**
  * The encode descriptor for a resolveTokenizer() answer (src/tokenizer-resolve.js).
  * @param {{kind: string, id: number, model?: string}} resolved
  * @returns {{kind: 'remote-textgen'}|{kind: 'remote-kobold'}|{kind: 'local', type: string}|{kind: 'openai', model: string}|{kind: 'estimate'}}
@@ -939,9 +787,9 @@ function descriptorForResolvedTokenizer(resolved) {
 }
 
 /**
- * Encodes text per a `resolveTextgenTokenizerForTokenIds()` or `descriptorForResolvedTokenizer()` descriptor. Internal helper for
+ * Encodes text per a `descriptorForResolvedTokenizer()` descriptor. Internal helper for
  * `computeTextgenLogitBias()`.
- * @param {ReturnType<typeof resolveTextgenTokenizerForTokenIds>|ReturnType<typeof descriptorForResolvedTokenizer>} tokenizerDescriptor
+ * @param {ReturnType<typeof descriptorForResolvedTokenizer>} tokenizerDescriptor
  * @param {string} text
  * @param {{request?: import('express').Request, baseUrl?: string, model?: string, apiType?: string}} remoteContext
  * @returns {Promise<number[]|null>} null for an estimate: there is no tokenizer.
@@ -968,9 +816,7 @@ async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remote
                 return [];
             }
         case 'openai': {
-            // A resolveTokenizer() answer names its tiktoken model; the old resolver's OpenRouter
-            // branch leaves it to computeLogitBias()'s model-name dispatch.
-            const resolvedModel = 'model' in tokenizerDescriptor ? tokenizerDescriptor.model : getTokenizerModel(String(model || ''));
+            const resolvedModel = tokenizerDescriptor.model;
             if (resolvedModel === 'claude') return [];
             try {
                 if (sentencepieceTokenizers.includes(resolvedModel) || webTokenizers.includes(resolvedModel)) {
@@ -985,7 +831,6 @@ async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remote
         }
         case 'estimate':
             return null;
-        case 'none':
         default:
             return [];
     }
@@ -995,20 +840,11 @@ async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remote
  * Server-side port of public/scripts/textgen-settings.js's `calculateLogitBias()` - computes a
  * token-id-keyed logit bias map from a textgen `logit_bias` preset array. This turned out to have
  * the SAME shape of mischaracterization as the chat-completion port's `logitBias` exclusion (see
- * `computeLogitBias()` above): the client function does no computation the server lacks - it just
- * dispatches to `getTokenizerForTokenIds()` (ported here as `resolveTextgenTokenizerForTokenIds()`)
- * and `getLogitBiasListResult()` (inlined below), both of which bottom out in either an
- * already-in-process local tokenizer, or one of the server's own existing remote-tokenize routes
- * (`encodeViaTextgenAPI`/`encodeViaKoboldAPI`, both already extracted for in-process reuse).
- *
- * LIVE/EXTERNAL STATE: `resolveTextgenTokenizerForTokenIds()` needs a handful of parameters that are
- * genuinely live client/session state (connection status, session-memoized tokenizer-support flags,
- * fetched OpenRouter/DreamGen model lists) - these are accepted here as optional, honestly-scoped
- * `tokenizerOptions` fields with defaults that reproduce the client's own real disconnected/
- * no-data fallback path (see that function's doc comment for the field-by-field breakdown). This is
- * the same category of parameter as `isToolCallingSupported`'s `modelList`
- * (src/chat-completion-tool-capabilities.js) - not a re-introduction of the old "not portable"
- * mischaracterization.
+ * `computeLogitBias()` above): the client function does no computation the server lacks - it
+ * encodes with the tokenizer the caller resolved (the client's `getTokenizerForTokenIds()`, here
+ * resolveTokenizer() in src/tokenizer-resolve.js) and `getLogitBiasListResult()` (inlined below),
+ * both of which bottom out in either an already-in-process local tokenizer, or one of the server's
+ * own existing remote-tokenize routes (`encodeViaTextgenAPI`/`encodeViaKoboldAPI`).
  *
  * For the two REMOTE-tokenizer outcomes (`{kind: 'remote-textgen'}`/`{kind: 'remote-kobold'}`),
  * actually encoding text needs the Express `request` (for `encodeViaTextgenAPI`'s
@@ -1019,9 +855,9 @@ async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remote
  *
  * @param {{id?: string, text?: string, value?: number}[]} logitBiasPreset Raw
  * `textgenerationwebui_settings.logit_bias`-shaped array.
- * @param {object} [tokenizerOptions] Forwarded to `resolveTextgenTokenizerForTokenIds()` - see its
- * doc comment for every field. `tokenizerOptions.resolved`, a resolveTokenizer() answer
- * (src/tokenizer-resolve.js), is used instead when given.
+ * @param {{resolved?: import('../tokenizer-resolve.js').ResolvedTokenizer}} [tokenizerOptions]
+ * `resolved`, a resolveTokenizer() answer, is required for a non-empty preset; without one this
+ * throws, since any default would silently pick a tokenizer.
  * @param {{request?: import('express').Request, baseUrl?: string, model?: string, apiType?: string}} [remoteContext]
  * Only consulted when tokenizer resolution lands on a remote backend; see above.
  * @param {string[]} [dropped] Receives the text of each entry left out because the resolution is an
@@ -1036,9 +872,10 @@ export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions 
         return result;
     }
 
-    const tokenizerDescriptor = tokenizerOptions.resolved
-        ? descriptorForResolvedTokenizer(tokenizerOptions.resolved)
-        : resolveTextgenTokenizerForTokenIds(tokenizerOptions);
+    if (!tokenizerOptions.resolved) {
+        throw new Error('computeTextgenLogitBias: tokenizerOptions.resolved is required');
+    }
+    const tokenizerDescriptor = descriptorForResolvedTokenizer(tokenizerOptions.resolved);
 
     for (const entry of logitBiasPreset) {
         if (!entry || typeof entry.text !== 'string' || entry.text.length === 0) {

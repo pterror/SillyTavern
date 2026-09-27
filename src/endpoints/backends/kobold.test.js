@@ -140,7 +140,7 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** Real settings.json fixture - only the keys resolveTokenizerType()/resolveTextCompletionGenerationInput()/createKoboldGenerationData() actually read, plus a real kai_settings shape matching src/kobold-generation-data.test.js's own baseArgs().koboldSettings field names. */
+/** Real settings.json fixture - only the keys resolveTokenizer()/resolveTextCompletionGenerationInput()/createKoboldGenerationData() actually read, plus a real kai_settings shape matching src/kobold-generation-data.test.js's own baseArgs().koboldSettings field names. */
 function buildSettingsFixture() {
     return {
         username: 'Tester',

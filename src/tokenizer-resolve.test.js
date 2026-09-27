@@ -16,174 +16,8 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 const {
     tokenizers,
     TOKENIZER_TYPE_KEYS,
-    getTokenizerBestMatch,
-    getCurrentOpenRouterModelTokenizer,
-    getCurrentDreamGenModelTokenizer,
-    resolveTokenizerType,
     encodeWithTokenizerType,
 } = await import('./tokenizer-resolve.js');
-
-// --- getTokenizerBestMatch: novel API / NAI model branches ---
-
-assert.equal(getTokenizerBestMatch('novel', { naiModel: 'clio-v1' }), tokenizers.NERD);
-assert.equal(getTokenizerBestMatch('novel', { naiModel: 'kayra-v1' }), tokenizers.NERD2);
-assert.equal(getTokenizerBestMatch('novel', { naiModel: 'erato-v1' }), tokenizers.LLAMA3);
-// Unrecognized NAI model name falls through the novel branch entirely -> NONE (matches client:
-// getTokenizerBestMatch has no post-novel-branch fallback, so an unmatched novel model returns
-// undefined in the client; here the equivalent "falls through to the final `return NONE`" applies
-// since our novel branch and the kobold/textgen branch are mutually exclusive ifs).
-assert.equal(getTokenizerBestMatch('novel', { naiModel: 'unknown-model' }), tokenizers.NONE);
-
-// --- getTokenizerBestMatch: unrecognized API -> NONE ---
-
-assert.equal(getTokenizerBestMatch('some_other_api'), tokenizers.NONE);
-assert.equal(getTokenizerBestMatch(undefined), tokenizers.NONE);
-
-// --- getTokenizerBestMatch: textgen model-name substring matches (isConnected but no remote/API tokenizer) ---
-
-const modelCases = [
-    ['Meta-Llama-3-8B-Instruct', tokenizers.LLAMA3],
-    ['llama-3-70b', tokenizers.LLAMA3],
-    ['Mixtral-8x7B', tokenizers.MISTRAL],
-    ['gemma-2-9b-it', tokenizers.GEMMA],
-    ['pixtral-12b', tokenizers.NEMO],
-    ['deepseek-coder-v2', tokenizers.DEEPSEEK],
-    ['01-ai/Yi-34B', tokenizers.YI],
-    ['jamba-1.5-mini', tokenizers.JAMBA],
-    ['command-r-plus', tokenizers.COMMAND_R],
-    ['command-a-03-2025', tokenizers.COMMAND_A],
-    ['Qwen2-72B-Instruct', tokenizers.QWEN2],
-    ['some-totally-unknown-model', tokenizers.LLAMA], // default fallback
-];
-
-for (const [textgenModel, expected] of modelCases) {
-    const result = getTokenizerBestMatch('textgenerationwebui', {
-        textgenType: TEXTGEN_TYPES.GENERIC,
-        textgenModel,
-    });
-    assert.equal(result, expected, `model "${textgenModel}" should resolve to tokenizer ${expected}, got ${result}`);
-}
-
-// --- getTokenizerBestMatch: remote/API tokenizer takes priority when backend type supports it ---
-
-assert.equal(
-    getTokenizerBestMatch('textgenerationwebui', { textgenType: TEXTGEN_TYPES.TABBY, textgenModel: 'mistral-large' }),
-    tokenizers.API_TEXTGENERATIONWEBUI,
-);
-assert.equal(
-    getTokenizerBestMatch('kobold', { canUseTokenization: true }),
-    tokenizers.API_KOBOLD,
-);
-// Not connected -> remote/API tokenizer skipped even if otherwise supported, falls through to model-name match.
-assert.equal(
-    getTokenizerBestMatch('textgenerationwebui', { textgenType: TEXTGEN_TYPES.TABBY, textgenModel: 'gemma-2', isConnected: false }),
-    tokenizers.GEMMA,
-);
-
-// --- getCurrentOpenRouterModelTokenizer / getCurrentDreamGenModelTokenizer fixtures ---
-
-const openRouterModels = [
-    { id: 'meta-llama/llama-3-70b', architecture: { tokenizer: 'Llama3' } },
-    { id: 'anthropic/claude-3-opus', architecture: { tokenizer: 'Claude' } },
-    { id: 'qwen/qwen-2-72b', architecture: { tokenizer: 'Qwen' } },
-    { id: 'some/unknown-tokenizer-model', architecture: { tokenizer: 'SomethingElse' } },
-];
-
-assert.equal(getCurrentOpenRouterModelTokenizer('meta-llama/llama-3-70b', openRouterModels), tokenizers.LLAMA3);
-assert.equal(getCurrentOpenRouterModelTokenizer('anthropic/claude-3-opus', openRouterModels), tokenizers.CLAUDE);
-assert.equal(getCurrentOpenRouterModelTokenizer('qwen/qwen-2-72b', openRouterModels), tokenizers.QWEN2);
-assert.equal(getCurrentOpenRouterModelTokenizer('some/unknown-tokenizer-model', openRouterModels), tokenizers.OPENAI);
-assert.equal(getCurrentOpenRouterModelTokenizer('ai21/jamba-1.5', openRouterModels), tokenizers.JAMBA);
-assert.equal(getCurrentOpenRouterModelTokenizer('not-in-list', []), tokenizers.OPENAI);
-
-const dreamGenModels = [
-    { id: 'lucid-v1-medium' },
-    { id: 'lucid-v1-base' },
-    { id: 'lucid-v1-extra-large' },
-    { id: 'lucid-v1-max' },
-];
-
-assert.equal(getCurrentDreamGenModelTokenizer('lucid-v1-medium', dreamGenModels), tokenizers.MISTRAL);
-assert.equal(getCurrentDreamGenModelTokenizer('lucid-v1-base', dreamGenModels), tokenizers.MISTRAL);
-assert.equal(getCurrentDreamGenModelTokenizer('lucid-v1-extra-large', dreamGenModels), tokenizers.LLAMA3);
-assert.equal(getCurrentDreamGenModelTokenizer('lucid-v1-max', dreamGenModels), tokenizers.LLAMA3);
-assert.equal(getCurrentDreamGenModelTokenizer('unknown-model-id', dreamGenModels), tokenizers.MISTRAL);
-
-// --- resolveTokenizerType: OpenRouter / DreamGen delegation via getTokenizerForTokenIds mirror ---
-
-assert.equal(
-    resolveTokenizerType({
-        textgenType: TEXTGEN_TYPES.OPENROUTER,
-        openRouterModel: 'meta-llama/llama-3-70b',
-        openRouterModels,
-    }),
-    tokenizers.LLAMA3,
-);
-assert.equal(
-    resolveTokenizerType({
-        textgenType: TEXTGEN_TYPES.DREAMGEN,
-        dreamGenModel: 'lucid-v1-extra-large',
-        dreamGenModels,
-    }),
-    tokenizers.LLAMA3,
-);
-
-// --- resolveTokenizerType: LLAMA default fallback ---
-
-assert.equal(
-    resolveTokenizerType({ textgenType: TEXTGEN_TYPES.GENERIC, textgenModel: 'totally-unknown-model' }),
-    tokenizers.LLAMA,
-);
-// No deps at all -> still LLAMA (matches getTokenizerForTokenIds()'s unconditional final fallback).
-assert.equal(resolveTokenizerType(), tokenizers.LLAMA);
-
-// --- resolveTokenizerType: remote/API tokenizer -> API_CURRENT (matches getTokenizerForTokenIds()) ---
-
-assert.equal(
-    resolveTokenizerType({ textgenType: TEXTGEN_TYPES.TABBY, textgenModel: 'mistral-large' }),
-    tokenizers.API_CURRENT,
-);
-
-// --- resolveTokenizerType: power_user.tokenizer === API_CURRENT + supported backend type ---
-
-assert.equal(
-    resolveTokenizerType({
-        userTokenizerSetting: tokenizers.API_CURRENT,
-        textgenType: TEXTGEN_TYPES.KOBOLDCPP,
-        textgenModel: 'unknown-model',
-        isConnected: false, // force past the remote-tokenizer branch so this check is what's exercised
-    }),
-    tokenizers.API_CURRENT,
-);
-
-// --- resolveTokenizerType: ENCODE_TOKENIZERS.includes(userTokenizerSetting) short-circuit ---
-
-assert.equal(
-    resolveTokenizerType({
-        userTokenizerSetting: tokenizers.QWEN2,
-        textgenType: TEXTGEN_TYPES.GENERIC,
-        textgenModel: 'unknown-model',
-        isConnected: false,
-    }),
-    tokenizers.QWEN2,
-);
-// A userTokenizerSetting NOT in ENCODE_TOKENIZERS (e.g. GPT2) does not short-circuit.
-assert.equal(
-    resolveTokenizerType({
-        userTokenizerSetting: tokenizers.GPT2,
-        textgenType: TEXTGEN_TYPES.GENERIC,
-        textgenModel: 'unknown-model',
-        isConnected: false,
-    }),
-    tokenizers.LLAMA,
-);
-
-// --- resolveTokenizerType: forApi override delegates straight to getTokenizerBestMatch (novel / unrecognized) ---
-
-assert.equal(resolveTokenizerType({ forApi: 'novel', naiModel: 'clio-v1' }), tokenizers.NERD);
-assert.equal(resolveTokenizerType({ forApi: 'some_other_api' }), tokenizers.NONE);
-
-console.log('tokenizer-resolve.test.js: resolveTokenizerType assertions passed');
 
 // --- encodeWithTokenizerType: NONE -> [] ---
 
@@ -547,6 +381,71 @@ await check('NovelAI uses the NovelAI list: clio -> NERD, kayra -> NERD2, erato 
     assert.equal((await at('some-new-model')).kind, 'estimate');
 });
 
+await check('best match on a backend without a remote tokenizer: the map on the model name, unmapped -> estimate', async () => {
+    const cases = [
+        ['Meta-Llama-3-8B-Instruct', tokenizers.LLAMA3],
+        ['llama-3-70b', tokenizers.LLAMA3],
+        ['Mixtral-8x7B', tokenizers.MISTRAL],
+        ['gemma-2-9b-it', tokenizers.GEMMA],
+        ['01-ai/Yi-34B', tokenizers.YI],
+        ['jamba-1.5-mini', tokenizers.JAMBA],
+        ['command-r-plus', tokenizers.COMMAND_R],
+        ['command-a-03-2025', tokenizers.COMMAND_A],
+        ['Qwen2-72B-Instruct', tokenizers.QWEN2],
+        ['pixtral-12b', null],
+        ['deepseek-coder-v2', null],
+        ['some-totally-unknown-model', null],
+    ];
+    for (const [model, expected] of cases) {
+        const resolved = await resolveTokenizer({ api: TEXTGEN, type: TEXTGEN_TYPES.GENERIC, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        if (expected === null) {
+            assert.equal(resolved.kind, 'estimate', model);
+            assert.equal(resolved.basis, 'unknown', model);
+        } else {
+            assert.equal(resolved.kind, 'local', model);
+            assert.equal(resolved.id, expected, model);
+        }
+    }
+});
+
+await check('OpenRouter and DreamGen resolve through the map like any textgen model', async () => {
+    const cases = [
+        [TEXTGEN_TYPES.OPENROUTER, 'meta-llama/llama-3-70b', tokenizers.LLAMA3],
+        [TEXTGEN_TYPES.OPENROUTER, 'ai21/jamba-1.5', tokenizers.JAMBA],
+        [TEXTGEN_TYPES.OPENROUTER, 'cohere/command-r', tokenizers.COMMAND_R],
+        [TEXTGEN_TYPES.OPENROUTER, 'anthropic/claude-3-opus', null],
+        [TEXTGEN_TYPES.OPENROUTER, 'qwen/qwen-2-72b', null],
+        [TEXTGEN_TYPES.OPENROUTER, 'some/unknown-tokenizer-model', null],
+        [TEXTGEN_TYPES.DREAMGEN, 'lucid-v1-medium', null],
+        [TEXTGEN_TYPES.DREAMGEN, 'lucid-v1-max', null],
+    ];
+    for (const [type, model, expected] of cases) {
+        const resolved = await resolveTokenizer({ api: TEXTGEN, type, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        if (expected === null) {
+            assert.equal(resolved.kind, 'estimate', model);
+        } else {
+            assert.equal(resolved.id, expected, model);
+        }
+    }
+});
+
+await check('API_CURRENT on a backend with a remote tokenizer -> remote, no local copy for an unmapped model', async () => {
+    const resolved = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.KOBOLDCPP, model: 'unknown-model', tokenizerSetting: tokenizers.API_CURRENT,
+    });
+    assert.equal(resolved.kind, 'remote');
+    assert.equal(resolved.id, tokenizers.API_TEXTGENERATIONWEBUI);
+    assert.equal(resolved.localCopy, null);
+});
+
+await check('an unrecognized api, or textgen with nothing set -> estimate', async () => {
+    for (const state of [{ api: 'some_other_api' }, { api: TEXTGEN }]) {
+        const resolved = await resolveTokenizer(state);
+        assert.equal(resolved.kind, 'estimate', state.api);
+        assert.equal(resolved.id, tokenizers.NONE, state.api);
+    }
+});
+
 // --- remote capability memory ---
 
 await check('textgen /status on OOBA remembers encode support; resolving then probes nothing', async () => {
@@ -747,6 +646,20 @@ await check('countWithTokenizer counts with the resolved tokenizer', async () =>
     const openai = await resolveTokenizer({ api: 'openai', source: 'openai', model: 'gpt-4o' });
     assert.equal(await countWithTokenizer(openai, 'Hello world'), 2, 'tiktoken gpt-4o');
     assert.equal(await countWithTokenizer(openai, ''), 0);
+});
+
+await check('the old resolvers and their llama defaults are no longer exported', async () => {
+    const modules = {
+        './tokenizer-resolve.js': ['getTokenizerBestMatch', 'resolveTokenizerType', 'getCurrentOpenRouterModelTokenizer', 'getCurrentDreamGenModelTokenizer'],
+        './endpoints/tokenizers.js': ['resolveTextgenTokenizerForTokenIds', 'TEXTGEN_ENCODE_TOKENIZER_TYPES', 'TEXTGEN_API_TOKENIZER_TYPES'],
+        './novel-generation-data.js': ['getTokenizerTypeForModel'],
+    };
+    for (const [specifier, names] of Object.entries(modules)) {
+        const module = await import(specifier);
+        for (const name of names) {
+            assert.equal(name in module, false, `${specifier} still exports ${name}`);
+        }
+    }
 });
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });

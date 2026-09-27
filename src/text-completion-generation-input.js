@@ -128,14 +128,14 @@ import { resolveWorldInfoCandidates, world_info_insertion_strategy } from './wor
  *   bridged into a synchronous `encodeTokens` without desyncing it from `countTokens` - no longer
  *   applies at the type-signature level; both orchestrator params now accept an async function.
  *   This resolver STILL leaves both as required caller-supplied params, though, for a different
- *   reason: wiring `src/tokenizer-resolve.js`'s real `resolveTokenizerType()`/`encodeWithTokenizerType()`
+ *   reason: wiring `src/tokenizer-resolve.js`'s real `resolveTokenizer()`/`encodeWithTokenizer()`
  *   by default here would mean simply calling this settings-resolution function can trigger a LIVE
  *   NETWORK REQUEST to the user's configured backend server (the remote-tokenizer path) as a side
  *   effect - a meaningfully different risk/behavior profile than every other field this resolver
  *   computes (plain reads of local disk state). Whether/how to opt into that automatically is a
  *   separate decision this task does not make silently - so both tokenizer functions remain
  *   explicit, required inputs; a caller that wants the real local-tokenizer-only path can call
- *   `resolveTokenizerType()`/`encodeWithTokenizerType()` itself and pass the result in.
+ *   `resolveTokenizer()`/`encodeWithTokenizer()` itself and pass the result in.
  * - `quiet_prompt`/`quietToLoud`/`quietName`/`generationTrigger`/`isDryRun`/`canUseTools`/
  *   `forceName2Override`/`preferCharacterPrompt`/`preferCharacterJailbreak`/`worldInfoRandom`/
  *   `entryFilterContext`/`externalActivations`/`ephemeralStoppingStrings`/`injectedIndices`/

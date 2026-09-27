@@ -113,16 +113,14 @@ async function writeCharacter(avatar, overrides = {}) {
     return avatar;
 }
 
-/** Real settings.json fixture - only the keys resolveTextGenBackend()/resolveTokenizerType()/resolveTextCompletionGenerationInput() actually read. */
+/** Real settings.json fixture - only the keys resolveTextGenBackend()/resolveTokenizer()/resolveTextCompletionGenerationInput() actually read. */
 function buildSettingsFixture() {
     return {
         username: 'Tester',
         amount_gen: 100,
         max_context: 4096,
         power_user: {
-            // Deliberately GENERIC-typed backend (not in TEXTGEN_TOKENIZERS, not OpenRouter/DreamGen)
-            // so resolveTokenizerType() falls through to its plain LLAMA default, and no
-            // userTokenizerSetting override is in play either.
+            // No tokenizer setting: best match.
             tokenizer: undefined,
             instruct: { enabled: false },
             context: {},
