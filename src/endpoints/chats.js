@@ -18,6 +18,7 @@ import {
 import { bumpCharacterDateLastChat, bumpGroupChatStats, getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
 import { resolveGroupOwner } from '../character-shallow.js';
 import { readGroupFile, writeGroupFile } from './groups.js';
+import { withGroupLock } from '../group-lock.js';
 import { readCardContent } from './characters.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { migrateOwnerOnTouch } from '../message-tree-migration.js';
@@ -1399,22 +1400,26 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
 
 /**
  * Resolves which group owns a chat/group id and migrates its chats into the tree before the caller touches
- * them.
+ * them. The migration runs under the group's lock, on the group's chat list as read inside it.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{ chatId?: string, groupId?: string }} params
  * @returns {Promise<{ id: string, chats: string[] } | null>} `null` when no group claims this chat.
  */
 async function touchGroupOwner(directories, { chatId, groupId }) {
-    const group = resolveGroupOwner(directories.groups, { chatId, groupId });
-    if (!group) return null;
+    const resolved = resolveGroupOwner(directories.groups, { chatId, groupId });
+    if (!resolved) return null;
 
-    await migrateOwnerOnTouch(directories, {
-        ownerId: group.id,
-        chatDir: directories.groupChats,
-        isGroup: true,
-        fileNames: group.chats.map(c => `${c}.jsonl`),
+    return withGroupLock(directories, resolved.id, async () => {
+        const group = resolveGroupOwner(directories.groups, { chatId, groupId: resolved.id });
+        if (!group) return null;
+        await migrateOwnerOnTouch(directories, {
+            ownerId: group.id,
+            chatDir: directories.groupChats,
+            isGroup: true,
+            fileNames: group.chats.map(c => `${c}.jsonl`),
+        });
+        return group;
     });
-    return group;
 }
 
 router.post('/group/get', async (request, response) => {
@@ -1574,12 +1579,14 @@ async function registerGroupChatIdIfNew(directories, group, chatId) {
     // readGroupFile() (groups.js, not owned by this pass) declares its return as the bare `object` type,
     // so the full on-disk group descriptor's actual shape - including `chats` - isn't visible here; narrowed
     // locally to the one field this function reads/writes.
-    const fullGroup = /** @type {{ chats?: string[] } | null} */ (readGroupFile(directories, group.id));
-    if (!fullGroup) {
-        return;
-    }
-    fullGroup.chats = Array.isArray(fullGroup.chats) ? [...fullGroup.chats, chatId] : [chatId];
-    await writeGroupFile(directories, fullGroup);
+    await withGroupLock(directories, group.id, async () => {
+        const fullGroup = /** @type {{ chats?: string[] } | null} */ (readGroupFile(directories, group.id));
+        if (!fullGroup || (Array.isArray(fullGroup.chats) && fullGroup.chats.includes(chatId))) {
+            return;
+        }
+        fullGroup.chats = Array.isArray(fullGroup.chats) ? [...fullGroup.chats, chatId] : [chatId];
+        await writeGroupFile(directories, fullGroup);
+    });
 }
 
 /**
