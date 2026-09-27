@@ -8,7 +8,7 @@ import { write as writeCard } from './character-card-parser.js';
 import './fetch-patch.js';
 import { Jimp, JimpMime } from './jimp.js';
 // chat-completion-generation-input.js pulls in src/endpoints/characters.js (via readCardContent) and
-// src/endpoints/tokenizers.js (via getTokenizerModel/getTiktokenTokenizer), both of which read
+// src/endpoints/tokenizers.js (via the token counter), both of which read
 // process-wide config at import time - set the config path before importing it, the same way
 // text-completion-generation-input.test.js (and character-card-fields.test.js before it) does, since
 // this test runs standalone.
@@ -24,6 +24,7 @@ const { prepareOpenAIMessages } = await import('./chat-completion-prepare-messag
 const { world_info_position } = await import('./world-info/result-bucketing.js');
 const { extension_prompt_types, extension_prompt_roles } = await import('./extension-prompt-table.js');
 const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
+const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('./endpoints/tokenizers.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completion-generation-input-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -157,7 +158,32 @@ function buildSettingsFixture() {
     };
 }
 
+// A gemma-2 model on a source with no tokenizer branch of its own counts with gemma, not tiktoken's
+// gpt-3.5-turbo.
+async function gemmaModelCountsWithGemma() {
+    const settings = buildSettingsFixture();
+    settings.oai_settings.chat_completion_source = 'openrouter';
+    settings.oai_settings.openrouter_model = 'google/gemma-2-9b-it';
+    writeAllSettings(directories, settings);
+    const avatar = await writeCharacter('Gem.png', { name: 'Gem', data: { name: 'Gem', first_mes: 'Hi.' } });
+    await saveChatToTree(directories, avatar, 'gem-chat', [
+        { chat_metadata: {} },
+        { name: 'Gem', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
+    ]);
+
+    const input = await resolveChatCompletionGenerationInput(directories, { avatar, ownerId: avatar, branchName: 'gem-chat' });
+
+    const message = { role: 'user', content: 'Antidisestablishmentarianism, naïveté and 東京 split differently.' };
+    const gemmaCount = (await encodeTextByLocalTokenizerType('gemma', `${message.role}\n\n${message.content}`)).length;
+    const gpt35 = getTiktokenTokenizer('gpt-3.5-turbo');
+    const gpt35Count = 3 + gpt35.encode(message.role).length + gpt35.encode(message.content).length + 3;
+    assert.notEqual(gemmaCount, gpt35Count, 'the fixture tells the two tokenizers apart');
+
+    assert.equal(await input.tokenHandler.countTokenAsyncFn([message]), gemmaCount, 'counted with gemma');
+}
+
 async function run() {
+    await gemmaModelCountsWithGemma();
     writeAllSettings(directories, buildSettingsFixture());
     // A REAL, non-constant, non-stubbed lorebook entry - its key ('traveler') genuinely appears in the
     // chat history written below ('Hello there, traveler.'), so it only ends up in worldInfoBefore if

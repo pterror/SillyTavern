@@ -3,6 +3,7 @@ import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
 import { lookupModelTokenizer } from './tokenizer-model-map.js';
 import { hasRemoteTokenizer, lookupBackendModel } from './backend-status.js';
+import { TOKENIZER_NAMES, describeMapEntry, localResolution, estimateResolution, resolveChatCompletionTokenizer } from './tokenizer-map-resolution.js';
 
 /**
  * Server-side port of the tokenizer TYPE resolution logic in public/scripts/tokenizers.js
@@ -405,28 +406,6 @@ const EXPLICIT_LOCAL_TOKENIZERS = [
  */
 const EXPLICIT_OPENAI_MODEL = 'gpt-3.5-turbo';
 
-/** The `#tokenizer` option labels, plus the client's names for the two API tokenizers. */
-const TOKENIZER_NAMES = {
-    [tokenizers.NONE]: 'None / Estimated',
-    [tokenizers.GPT2]: 'GPT-2',
-    [tokenizers.LLAMA]: 'Llama 1/2',
-    [tokenizers.LLAMA3]: 'Llama 3',
-    [tokenizers.GEMMA]: 'Gemma / Gemini',
-    [tokenizers.JAMBA]: 'Jamba',
-    [tokenizers.QWEN2]: 'Qwen2',
-    [tokenizers.COMMAND_R]: 'Command-R',
-    [tokenizers.COMMAND_A]: 'Command-A',
-    [tokenizers.NERD]: 'NerdStash (NovelAI Clio)',
-    [tokenizers.NERD2]: 'NerdStash v2 (NovelAI Kayra)',
-    [tokenizers.MISTRAL]: 'Mistral V1',
-    [tokenizers.NEMO]: 'Mistral Nemo',
-    [tokenizers.YI]: 'Yi',
-    [tokenizers.CLAUDE]: 'Claude 1/2',
-    [tokenizers.DEEPSEEK]: 'DeepSeek V3',
-    [tokenizers.API_TEXTGENERATIONWEBUI]: 'API (Text Completion)',
-    [tokenizers.API_KOBOLD]: 'API (KoboldAI Classic)',
-};
-
 /**
  * @typedef {object} TokenizerState
  * @property {string} api main_api: 'textgenerationwebui', 'kobold', 'novel', 'koboldhorde' or 'openai'.
@@ -457,39 +436,6 @@ const TOKENIZER_NAMES = {
  */
 
 /**
- * @param {number|string|null} entry A lookupModelTokenizer() answer.
- * @param {string} api
- * @returns {LocalTokenizer|null}
- */
-function describeMapEntry(entry, api) {
-    if (entry === null || entry === undefined) {
-        return null;
-    }
-    if (typeof entry === 'string') {
-        return { id: tokenizers.OPENAI, name: entry, model: entry };
-    }
-    const described = { id: entry, name: TOKENIZER_NAMES[entry] };
-    return api === 'openai' ? { ...described, model: TOKENIZER_TYPE_KEYS[entry] } : described;
-}
-
-/**
- * @param {LocalTokenizer} local
- * @param {LocalTokenizer|null} localCopy
- * @returns {ResolvedTokenizer}
- */
-function localResolution(local, localCopy) {
-    return { kind: 'local', ...local, basis: 'local', localCopy };
-}
-
-/**
- * @param {'unknown'|'none'} basis
- * @returns {ResolvedTokenizer}
- */
-function estimateResolution(basis) {
-    return { kind: 'estimate', id: tokenizers.NONE, name: TOKENIZER_NAMES[tokenizers.NONE], basis, localCopy: null };
-}
-
-/**
  * The one tokenizer resolution, used for counts and token ids alike. Never falls back to LLAMA:
  * only the map, an explicit setting or the NovelAI list give llama.
  * @param {TokenizerState} state
@@ -503,8 +449,7 @@ export async function resolveTokenizer(state, deps = {}) {
 
     // Upstream never applies the tokenizer setting to chat completion.
     if (api === 'openai') {
-        const local = describeMapEntry(lookupModelTokenizer(api, state.model), api);
-        return local ? localResolution(local, local) : estimateResolution('unknown');
+        return resolveChatCompletionTokenizer(state.model);
     }
 
     if (EXPLICIT_LOCAL_TOKENIZERS.includes(tokenizerSetting)) {

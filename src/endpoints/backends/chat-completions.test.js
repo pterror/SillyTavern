@@ -127,6 +127,7 @@ const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternat
 const { writeSecret, SECRET_KEYS } = await import('../secrets.js');
 const { registerServerTool, unregisterServerTool } = await import('../../server-tools.js');
 const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
+const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('../tokenizers.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -723,6 +724,81 @@ async function run() {
         assert.equal(assistantMsg.mes, 'Rex says hello back.', 'the assistant reply text was extracted from data.choices[0].message.content and appended');
         assert.equal(assistantMsg.is_user, false);
         assert.equal(assistantMsg.name, 'Rex', 'the assistant message uses name2 (the character\'s display name), not name1');
+    }
+
+    // (a-2) a model no tokenizer is known for: bias entries needing ids are left out of the sent
+    // logit_bias and listed in a `dropped` warning, on raw-action and profile sends alike; raw-id
+    // entries still go through.
+    {
+        const backendBodies = [];
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            backendBodies.push(JSON.parse(body));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }));
+        });
+        const settings = buildSettingsFixture();
+        settings.oai_settings.custom_url = fakeBackend.url;
+        settings.oai_settings.custom_model = 'some-unheard-of-model';
+        settings.oai_settings.bias_preset_selected = 'Drop';
+        settings.oai_settings.bias_presets = { Drop: [{ id: 'a', text: 'hello', value: -5 }, { id: 'b', text: '[11, 12]', value: 2 }] };
+        settings.extension_settings = {
+            connectionManager: { profiles: [{ id: 'p-unmapped', api: 'custom', 'api-url': fakeBackend.url, model: 'another-unheard-of-model' }] },
+        };
+        writeAllSettings(directories, settings);
+
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const app = buildTestApp();
+        const rawAction = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'Bias, Rex?', stream: false,
+        });
+        const profile = await postGenerate(app, {
+            connection_profile_id: 'p-unmapped', messages: [{ role: 'user', content: 'Hi.' }], stream: false,
+        });
+        fakeBackend.server.close();
+        writeAllSettings(directories, buildSettingsFixture());
+
+        for (const [name, { status, data }, model] of [['raw-action', rawAction, 'some-unheard-of-model'], ['profile', profile, 'another-unheard-of-model']]) {
+            assert.equal(status, 200, name);
+            assert.deepEqual(data.warnings, [{
+                kind: 'dropped',
+                key: `openai|custom||${model}|none`,
+                message: 'Left out 1 entry that need token ids, because no tokenizer is known for this model: hello',
+                entries: ['hello'],
+            }], `${name}: the dropped entry is listed`);
+        }
+        assert.deepEqual(backendBodies.map(body => body.logit_bias), [{ 11: 2, 12: 2 }, { 11: 2, 12: 2 }], 'raw-id entries still go through');
+    }
+
+    // (a-3) POST /bias keeps upstream's encoding and response: a name its tokenizer guess doesn't
+    // know is encoded with gpt-3.5-turbo, a mistral name with mistral, and claude gets no bias.
+    {
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const postBias = async (model, entries) => {
+            const res = await fetch(`http://127.0.0.1:${server.address().port}/bias?model=${encodeURIComponent(model)}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entries),
+            });
+            return { status: res.status, headers: res.headers, data: await res.json() };
+        };
+        const entries = [{ text: 'hello', value: -5 }, { text: '[11, 12]', value: 2 }];
+        const expectedFor = ids => ({ ...Object.fromEntries(ids.map(id => [id, -5])), 11: 2, 12: 2 });
+        try {
+            const unknown = await postBias('some-unheard-of-model', entries);
+            assert.equal(unknown.status, 200);
+            assert.deepEqual(unknown.data, expectedFor(Array.from(getTiktokenTokenizer('gpt-3.5-turbo').encode('hello'))), 'an unknown name: gpt-3.5-turbo');
+            assert.deepEqual([...unknown.headers.keys()].filter(name => name.startsWith('x-st-')), [], 'no tokenizer header yet');
+
+            const mistral = await postBias('mistral-7b-instruct', entries);
+            assert.deepEqual(mistral.data, expectedFor(await encodeTextByLocalTokenizerType('mistral', 'hello')), 'a mistral name: mistral');
+
+            const claude = await postBias('claude', entries);
+            assert.deepEqual(claude.data, {}, 'claude: no bias');
+        } finally {
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
     }
 
     // (b) a failed backend response (non-2xx) does NOT append an assistant reply (the user message,

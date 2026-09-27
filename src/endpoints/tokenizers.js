@@ -14,6 +14,7 @@ import tiktoken from 'tiktoken';
 
 import { TEXTGEN_TYPES } from '../constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from '../tokenizer-ids.js';
+import { resolveChatCompletionTokenizer, describeMapEntry, localResolution } from '../tokenizer-map-resolution.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { getConfigValue, isValidUrl, trimV1 } from '../util.js';
 
@@ -561,8 +562,9 @@ export function getTiktokenTokenizer(model) {
  * Gets tokenids for a given logit bias preset entry. Mirrors the getEntryTokens() helper that used
  * to live inline in the /api/backends/chat-completions/bias route handler.
  * @param {string} text Entry text
- * @param {(string) => Uint32Array} encode Function to encode text to token ids
- * @returns {Uint32Array} Array of token ids
+ * @param {((text: string) => Uint32Array)|null} encode Function to encode text to token ids; null
+ * when there is no tokenizer.
+ * @returns {Uint32Array|null} Array of token ids; null when the entry needs a tokenizer and there is none.
  */
 function getEntryTokens(text, encode) {
     // Get raw token ids from JSON array
@@ -578,29 +580,103 @@ function getEntryTokens(text, encode) {
     }
 
     // Otherwise, get token ids from tokenizer
-    return encode(text);
+    return encode ? encode(text) : null;
 }
 
 /**
- * Computes a token-id-keyed logit bias map from bias-preset entries, using the requested model's
- * tokenizer. This is the core logic behind the `/api/backends/chat-completions/bias` route
- * (src/endpoints/backends/chat-completions.js) - extracted here so server-side code that needs a
- * logit bias (e.g. src/chat-completion-generation-data.js's createGenerationParameters()) can
- * compute it directly, in-process, instead of only being reachable over HTTP from the client.
- *
- * Mirrors the route handler's behavior exactly, including:
- * - returning {} for Claude models (no bias support)
- * - returning {} if the selected tokenizer isn't initialized/available
- * - skipping entries without a `text` field, and warning (not throwing) on encode failures
+ * An encoder for a local resolveTokenizer() answer, or null when its tokenizer fails to load.
+ * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
+ * @returns {Promise<((text: string) => Uint32Array)|null>}
+ */
+async function getLocalEncoder(resolved) {
+    if (resolved.id === tokenizers.OPENAI) {
+        const tokenizer = getTiktokenTokenizer(resolved.model);
+        return tokenizer.encode.bind(tokenizer);
+    }
+    const key = TOKENIZER_TYPE_KEYS[resolved.id];
+    const instance = await LOCAL_TOKENIZER_INSTANCES[key]?.get();
+    if (!instance) {
+        return null;
+    }
+    if (sentencepieceTokenizers.includes(key)) {
+        return (text) => new Uint32Array(instance.encodeIds(text));
+    }
+    return (text) => new Uint32Array(instance.encode(text));
+}
+
+/**
+ * Computes a token-id-keyed logit bias map from bias-preset entries for a server-built
+ * chat-completion send, with the model's chat-completion tokenizer resolution (the model map).
+ * Claude models get {} (no bias support), as does a tokenizer that fails to load. With no tokenizer
+ * for the model, raw-id entries are kept and every other entry is left out and listed in `dropped`.
+ * Entries without `text` are skipped, and an encode failure is warned about, not thrown.
  *
  * @param {{text?: string, value?: number}[]} biasPresetEntries Raw bias-preset entries, e.g.
  * oai_settings.bias_presets[oai_settings.bias_preset_selected] client-side - {id, text, value}[]
  * shaped, though only `text`/`value` are used here.
- * @param {string} requestModel Model name/id used to resolve which tokenizer to use, same as the
- * route's `?model=` query param (passed through getTokenizerModel()).
+ * @param {string} requestModel The chat-completion model name.
+ * @param {string[]} [dropped] Receives the text of each entry left out because there is no tokenizer.
  * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
  */
-export async function computeLogitBias(biasPresetEntries, requestModel) {
+export async function computeLogitBias(biasPresetEntries, requestModel, dropped = undefined) {
+    const result = {};
+
+    if (!Array.isArray(biasPresetEntries)) {
+        return result;
+    }
+
+    const modelName = String(requestModel || '');
+
+    // no bias for claude
+    if (modelName.toLowerCase().includes('claude')) {
+        return result;
+    }
+
+    const resolved = resolveChatCompletionTokenizer(modelName);
+    let encodeFunction = null;
+    if (resolved.kind !== 'estimate') {
+        encodeFunction = await getLocalEncoder(resolved);
+        if (!encodeFunction) {
+            console.error('Tokenizer not initialized:', resolved.name);
+            return {};
+        }
+    }
+
+    for (const entry of biasPresetEntries) {
+        if (!entry || !entry.text) {
+            continue;
+        }
+
+        try {
+            const tokens = getEntryTokens(entry.text, encodeFunction);
+
+            if (tokens === null) {
+                dropped?.push(entry.text);
+                continue;
+            }
+
+            for (const token of tokens) {
+                result[token] = entry.value;
+            }
+        } catch {
+            console.warn('Tokenizer failed to encode:', entry.text);
+        }
+    }
+
+    // not needed for cached tokenizers
+    //tokenizer.free();
+    return result;
+}
+
+/**
+ * The `/api/backends/chat-completions/bias` route's encoding: the tokenizer upstream picks from the
+ * model name with getTokenizerModel(), and the same result for the same input. It stays until the
+ * route and its browser caller change together.
+ * @param {{text?: string, value?: number}[]} biasPresetEntries
+ * @param {string} requestModel The route's `?model=`.
+ * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
+ */
+export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) {
     const result = {};
 
     if (!Array.isArray(biasPresetEntries)) {
@@ -1303,73 +1379,122 @@ router.post('/command-a/decode', createWebTokenizerDecodingHandler(commandAToken
 router.post('/nemo/decode', createWebTokenizerDecodingHandler(nemoTokenizer));
 router.post('/deepseek/decode', createWebTokenizerDecodingHandler(deepseekTokenizer));
 
+/**
+ * Counts tiktoken tokens in chat messages the way OpenAI documents it.
+ * @param {string} model A tiktoken model name
+ * @param {object[]} messages
+ * @returns {number}
+ */
+function countTiktokenMessages(model, messages) {
+    const isTurbo0301 = model.includes('gpt-3.5-turbo-0301');
+    const tokensPerName = isTurbo0301 ? -1 : 1;
+    const tokensPerMessage = isTurbo0301 ? 4 : 3;
+    const tokensPadding = 3;
+
+    const tokenizer = getTiktokenTokenizer(model);
+    let numTokens = 0;
+
+    for (const msg of messages) {
+        try {
+            numTokens += tokensPerMessage;
+            for (const [key, value] of Object.entries(msg)) {
+                numTokens += tokenizer.encode(value).length;
+                if (key == 'name') {
+                    numTokens += tokensPerName;
+                }
+            }
+        } catch {
+            console.warn('Error tokenizing message:', msg);
+        }
+    }
+    numTokens += tokensPadding;
+
+    // NB: Since 2023-10-14, the GPT-3.5 Turbo 0301 model shoves in 7-9 extra tokens to every message.
+    // More details: https://community.openai.com/t/gpt-3-5-turbo-0301-showing-different-behavior-suddenly/431326/14
+    if (isTurbo0301) {
+        numTokens += 9;
+    }
+
+    return numTokens;
+}
+
+/**
+ * Counts chat-completion messages with a chat-completion resolveTokenizer() answer; the estimate
+ * when there is no tokenizer or counting fails.
+ * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
+ * @param {object[]} messages
+ * @returns {Promise<number>}
+ */
+export async function countChatCompletionMessages(resolved, messages) {
+    try {
+        if (resolved.kind === 'estimate') {
+            return guesstimate(JSON.stringify(messages));
+        }
+        if (resolved.id === tokenizers.OPENAI) {
+            return countTiktokenMessages(resolved.model, messages);
+        }
+        const key = TOKENIZER_TYPE_KEYS[resolved.id];
+        if (sentencepieceTokenizers.includes(key)) {
+            return await countSentencepieceArrayTokens(LOCAL_TOKENIZER_INSTANCES[key], messages);
+        }
+        const instance = await LOCAL_TOKENIZER_INSTANCES[key]?.get();
+        if (!instance) throw new Error(`Failed to load the ${resolved.name} tokenizer`);
+        return countWebTokenizerTokens(instance, messages);
+    } catch (error) {
+        console.error('An error counting tokens, using fallback estimation method', error);
+        return guesstimate(JSON.stringify(messages));
+    }
+}
+
+/**
+ * The encode or decode handler for a local chat-completion resolveTokenizer() answer.
+ * @param {import('../tokenizer-resolve.js').ResolvedTokenizer} resolved
+ * @param {'encode'|'decode'} direction
+ * @returns {TokenizationHandler}
+ */
+function chatCompletionTokenizerHandler(resolved, direction) {
+    const encode = direction === 'encode';
+    if (resolved.id === tokenizers.OPENAI) {
+        return encode ? createTiktokenEncodingHandler(resolved.model) : createTiktokenDecodingHandler(resolved.model);
+    }
+    const key = TOKENIZER_TYPE_KEYS[resolved.id];
+    const instance = LOCAL_TOKENIZER_INSTANCES[key];
+    if (sentencepieceTokenizers.includes(key)) {
+        return encode ? createSentencepieceEncodingHandler(instance) : createSentencepieceDecodingHandler(instance);
+    }
+    return encode ? createWebTokenizerEncodingHandler(instance) : createWebTokenizerDecodingHandler(instance);
+}
+
+/**
+ * The tokenizers upstream's `/openai/*` routes accept by name (their `TOKENIZER_TYPE_KEYS` key) in
+ * `?model=`. Naming one is an explicit pick of that tokenizer, whether or not the model map knows the name.
+ */
+const OPENAI_ROUTE_NAMED_TOKENIZERS = [
+    tokenizers.CLAUDE, tokenizers.LLAMA3, tokenizers.LLAMA, tokenizers.MISTRAL, tokenizers.YI, tokenizers.GEMMA,
+    tokenizers.JAMBA, tokenizers.QWEN2, tokenizers.COMMAND_R, tokenizers.COMMAND_A, tokenizers.NEMO, tokenizers.DEEPSEEK,
+];
+
+/**
+ * The tokenizer for an `/openai/*` route's `?model=`: the named tokenizer, else the model map.
+ * @param {string} queryModel
+ * @returns {import('../tokenizer-resolve.js').ResolvedTokenizer}
+ */
+function resolveOpenAIRouteModel(queryModel) {
+    const named = OPENAI_ROUTE_NAMED_TOKENIZERS.find(id => TOKENIZER_TYPE_KEYS[id] === queryModel);
+    return named === undefined
+        ? resolveChatCompletionTokenizer(queryModel)
+        : localResolution(describeMapEntry(named, 'openai'), null);
+}
+
 router.post('/openai/encode', async function (req, res) {
     try {
-        const queryModel = String(req.query.model || '');
+        if (!req.body) return res.sendStatus(400);
 
-        if (queryModel.includes('llama3') || queryModel.includes('llama-3')) {
-            const handler = createWebTokenizerEncodingHandler(llama3_tokenizer);
-            return handler(req, res);
+        const resolved = resolveOpenAIRouteModel(String(req.query.model || ''));
+        if (resolved.kind === 'estimate') {
+            return res.send({ ids: [], count: guesstimate(String(req.body.text || '')), chunks: [] });
         }
-
-        if (queryModel.includes('llama')) {
-            const handler = createSentencepieceEncodingHandler(spp_llama);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('mistral')) {
-            const handler = createSentencepieceEncodingHandler(spp_mistral);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('yi')) {
-            const handler = createSentencepieceEncodingHandler(spp_yi);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('claude')) {
-            const handler = createWebTokenizerEncodingHandler(claude_tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('gemma') || queryModel.includes('gemini')) {
-            const handler = createSentencepieceEncodingHandler(spp_gemma);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('jamba')) {
-            const handler = createSentencepieceEncodingHandler(spp_jamba);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('qwen2')) {
-            const handler = createWebTokenizerEncodingHandler(qwen2Tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('command-r')) {
-            const handler = createWebTokenizerEncodingHandler(commandRTokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('command-a')) {
-            const handler = createWebTokenizerEncodingHandler(commandATokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('nemo')) {
-            const handler = createWebTokenizerEncodingHandler(nemoTokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('deepseek')) {
-            const handler = createWebTokenizerEncodingHandler(deepseekTokenizer);
-            return handler(req, res);
-        }
-
-        const model = getTokenizerModel(queryModel);
-        const handler = createTiktokenEncodingHandler(model);
-        return handler(req, res);
+        return chatCompletionTokenizerHandler(resolved, 'encode')(req, res);
     } catch (error) {
         console.error(error);
         return res.send({ ids: [], count: 0, chunks: [] });
@@ -1378,71 +1503,13 @@ router.post('/openai/encode', async function (req, res) {
 
 router.post('/openai/decode', async function (req, res) {
     try {
-        const queryModel = String(req.query.model || '');
+        if (!req.body) return res.sendStatus(400);
 
-        if (queryModel.includes('llama3') || queryModel.includes('llama-3')) {
-            const handler = createWebTokenizerDecodingHandler(llama3_tokenizer);
-            return handler(req, res);
+        const resolved = resolveOpenAIRouteModel(String(req.query.model || ''));
+        if (resolved.kind === 'estimate') {
+            return res.send({ text: '' });
         }
-
-        if (queryModel.includes('llama')) {
-            const handler = createSentencepieceDecodingHandler(spp_llama);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('mistral')) {
-            const handler = createSentencepieceDecodingHandler(spp_mistral);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('yi')) {
-            const handler = createSentencepieceDecodingHandler(spp_yi);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('claude')) {
-            const handler = createWebTokenizerDecodingHandler(claude_tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('gemma') || queryModel.includes('gemini')) {
-            const handler = createSentencepieceDecodingHandler(spp_gemma);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('jamba')) {
-            const handler = createSentencepieceDecodingHandler(spp_jamba);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('qwen2')) {
-            const handler = createWebTokenizerDecodingHandler(qwen2Tokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('command-r')) {
-            const handler = createWebTokenizerDecodingHandler(commandRTokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('command-a')) {
-            const handler = createWebTokenizerDecodingHandler(commandATokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('nemo')) {
-            const handler = createWebTokenizerDecodingHandler(nemoTokenizer);
-            return handler(req, res);
-        }
-
-        if (queryModel.includes('deepseek')) {
-            const handler = createWebTokenizerDecodingHandler(deepseekTokenizer);
-            return handler(req, res);
-        }
-
-        const model = getTokenizerModel(queryModel);
-        const handler = createTiktokenDecodingHandler(model);
-        return handler(req, res);
+        return chatCompletionTokenizerHandler(resolved, 'decode')(req, res);
     } catch (error) {
         console.error(error);
         return res.send({ text: '' });
@@ -1450,124 +1517,11 @@ router.post('/openai/decode', async function (req, res) {
 });
 
 router.post('/openai/count', async function (req, res) {
-    try {
-        if (!req.body) return res.sendStatus(400);
+    if (!req.body) return res.sendStatus(400);
 
-        let num_tokens = 0;
-        const queryModel = String(req.query.model || '');
-        const model = getTokenizerModel(queryModel);
-
-        if (model === 'claude') {
-            const instance = await claude_tokenizer.get();
-            if (!instance) throw new Error('Failed to load the Claude tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'llama3' || model === 'llama-3') {
-            const instance = await llama3_tokenizer.get();
-            if (!instance) throw new Error('Failed to load the Llama3 tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'llama') {
-            num_tokens = await countSentencepieceArrayTokens(spp_llama, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'mistral') {
-            num_tokens = await countSentencepieceArrayTokens(spp_mistral, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'yi') {
-            num_tokens = await countSentencepieceArrayTokens(spp_yi, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'gemma' || model === 'gemini') {
-            num_tokens = await countSentencepieceArrayTokens(spp_gemma, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'jamba') {
-            num_tokens = await countSentencepieceArrayTokens(spp_jamba, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'qwen2') {
-            const instance = await qwen2Tokenizer.get();
-            if (!instance) throw new Error('Failed to load the Qwen2 tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'command-r') {
-            const instance = await commandRTokenizer.get();
-            if (!instance) throw new Error('Failed to load the Command-R tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'command-a') {
-            const instance = await commandATokenizer.get();
-            if (!instance) throw new Error('Failed to load the Command-A tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'nemo') {
-            const instance = await nemoTokenizer.get();
-            if (!instance) throw new Error('Failed to load the Nemo tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        if (model === 'deepseek') {
-            const instance = await deepseekTokenizer.get();
-            if (!instance) throw new Error('Failed to load the DeepSeek tokenizer');
-            num_tokens = countWebTokenizerTokens(instance, req.body);
-            return res.send({ 'token_count': num_tokens });
-        }
-
-        const tokensPerName = queryModel.includes('gpt-3.5-turbo-0301') ? -1 : 1;
-        const tokensPerMessage = queryModel.includes('gpt-3.5-turbo-0301') ? 4 : 3;
-        const tokensPadding = 3;
-
-        const tokenizer = getTiktokenTokenizer(model);
-
-        for (const msg of req.body) {
-            try {
-                num_tokens += tokensPerMessage;
-                for (const [key, value] of Object.entries(msg)) {
-                    num_tokens += tokenizer.encode(value).length;
-                    if (key == 'name') {
-                        num_tokens += tokensPerName;
-                    }
-                }
-            } catch {
-                console.warn('Error tokenizing message:', msg);
-            }
-        }
-        num_tokens += tokensPadding;
-
-        // NB: Since 2023-10-14, the GPT-3.5 Turbo 0301 model shoves in 7-9 extra tokens to every message.
-        // More details: https://community.openai.com/t/gpt-3-5-turbo-0301-showing-different-behavior-suddenly/431326/14
-        if (queryModel.includes('gpt-3.5-turbo-0301')) {
-            num_tokens += 9;
-        }
-
-        // not needed for cached tokenizers
-        //tokenizer.free();
-
-        res.send({ 'token_count': num_tokens });
-    } catch (error) {
-        console.error('An error counting tokens, using fallback estimation method', error);
-        const jsonBody = JSON.stringify(req.body);
-        const num_tokens = guesstimate(jsonBody);
-        res.send({ 'token_count': num_tokens });
-    }
+    const resolved = resolveOpenAIRouteModel(String(req.query.model || ''));
+    const num_tokens = await countChatCompletionMessages(resolved, req.body);
+    return res.send({ 'token_count': num_tokens });
 });
 
 router.post('/remote/kobold/count', async function (request, response) {
