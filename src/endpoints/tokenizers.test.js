@@ -424,6 +424,31 @@ await testCase('/current/*: each route names the tokenizer it used', async () =>
     assert.deepEqual(Object.keys(answered), ['tokenizer']);
 });
 
+await testCase('/current/*: a registry entry picked in Advanced Formatting is named by the answer', async () => {
+    // A stand-in under the Qwen3 entry's cache name, so nothing is downloaded: llama3.json, an hf-json file.
+    const { TOKENIZER_SOURCES } = await import('../tokenizer-sources.js');
+    const qwen3 = TOKENIZER_SOURCES.find(entry => entry.id === 'qwen3');
+    fs.copyFileSync(path.join(__dirname, '..', 'tokenizers', 'llama3.json'), path.join(dataRoot, '_cache', `${qwen3.sha256}.json`));
+    const standInIds = await encodeTextByLocalTokenizerType('llama3', text);
+    const state = { ...llama3State, tokenizerSetting: tokenizers.QWEN3 };
+    const expected = { id: tokenizers.QWEN3, name: 'Qwen3 (official)', basis: 'local', key: 'textgenerationwebui|generic|http://127.0.0.1:1|x|qwen3' };
+    const named = (answer) => ({ id: answer.id, name: answer.name, basis: answer.basis, key: answer.key });
+
+    const counted = await postCurrent('count', { state, texts: [text] });
+    assert.deepEqual(counted.counts, [standInIds.length]);
+    assert.deepEqual(named(counted.tokenizer), expected, 'count');
+    assert.equal(counted.warnings, undefined, 'nothing was downloaded');
+
+    const encoded = await postCurrent('encode', { state, texts: [text] });
+    assert.deepEqual(encoded.ids, [standInIds]);
+    assert.equal(encoded.chunks[0].join(''), text, 'encode chunks');
+    assert.deepEqual(named(encoded.tokenizer), expected, 'encode');
+
+    const decoded = await postCurrent('decode', { state, ids: standInIds });
+    assert.equal(decoded.text, text);
+    assert.deepEqual(named(decoded.tokenizer), expected, 'decode');
+});
+
 await testCase('/current/count: chat-completion messages count like /openai/count, naming the model\'s tokenizer', async () => {
     const counted = await postCurrent('count', { state: { api: 'openai', source: 'openai', model: 'gpt-4o' }, messages });
     const upstream = await postTokenizer('/openai/count', 'gpt-4o', messages);

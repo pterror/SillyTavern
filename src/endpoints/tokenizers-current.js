@@ -50,7 +50,7 @@ async function trimToTokenLimit(resolved, text, limit, direction, options) {
     if (decoding && ids !== null) {
         const slice = direction === 'start' ? ids.slice(0, limit) : ids.slice(-limit);
         try {
-            return (await decodeWithLocalTokenizer(decoding, slice)).text;
+            return (await decodeWithLocalTokenizer(decoding, slice, options)).text;
         } catch (error) {
             console.warn('Decoding failed while trimming to a token limit, returning the text unchanged', error);
             options.outcome.failed = true;
@@ -89,6 +89,7 @@ function currentTokenizerRoute(parse, handle) {
                 textgenModel: state.model,
                 textgenApiType: state.type,
                 koboldBaseUrl: state.url,
+                directories: request.user?.directories,
                 outcome,
             };
             const result = await handle(input, resolved, options);
@@ -124,7 +125,7 @@ router.post('/current/count', currentTokenizerRoute(
     },
     async (input, resolved, options) => {
         if ('messages' in input) {
-            return { count: await countChatCompletionMessages(resolved, input.messages, options.outcome) };
+            return { count: await countChatCompletionMessages(resolved, input.messages, options.outcome, options.directories) };
         }
         const counts = await Promise.all(input.texts.map(async text => text.length > 0
             ? await countWithTokenizer(resolved, text, options) + input.padding
@@ -145,7 +146,7 @@ router.post('/current/encode', currentTokenizerRoute(
         }
         const chunks = await Promise.all(ids.map((tokenIds, i) => tokenIds === null
             ? null
-            : getLocalEncodeChunks(resolved, texts[i], tokenIds).catch(() => null)));
+            : getLocalEncodeChunks(resolved, texts[i], tokenIds, options).catch(() => null)));
         return { ids, chunks };
     },
 ));
@@ -158,7 +159,7 @@ router.post('/current/decode', currentTokenizerRoute(
             return { text: '', chunks: [] };
         }
         try {
-            return await decodeWithLocalTokenizer(decoding, ids);
+            return await decodeWithLocalTokenizer(decoding, ids, options);
         } catch (error) {
             console.warn(`Tokenizer ${decoding.name} failed to decode:`, error.message);
             options.outcome.failed = true;

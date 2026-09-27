@@ -577,15 +577,17 @@ export function getChatCompletionModel(settings) {
  * counting like `/api/tokenizers/openai/count` with a resolveTokenizer() answer: the model's own
  * tokenizer, or the estimate when the model map has none. Only string fields are counted.
  * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} resolved
- * @param {import('./tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a count that fell to the estimate because the tokenizer failed.
+ * @param {import('./tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a count that fell to
+ * the estimate because the tokenizer failed, and a downloaded tokenizer file.
+ * @param {import('./users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
  * @returns {import('./chat-completion-budget.js').CountTokenAsyncFn}
  */
-export function createOpenAITokenCounter(resolved, outcome = undefined) {
+export function createOpenAITokenCounter(resolved, outcome = undefined, directories = undefined) {
     /** @type {import('./chat-completion-budget.js').CountTokenAsyncFn} */
     const countTokenAsyncFn = async function countTokenAsyncFn(messages) {
         const list = (Array.isArray(messages) ? messages : [messages])
             .map(msg => Object.fromEntries(Object.entries(msg ?? {}).filter(([, value]) => typeof value === 'string')));
-        return countChatCompletionMessages(resolved, list, outcome);
+        return countChatCompletionMessages(resolved, list, outcome, directories);
     };
     return countTokenAsyncFn;
 }
@@ -1002,6 +1004,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(
         await resolveTokenizer({ api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '' }),
         tokenizerOutcome,
+        directories,
     ));
 
     // Real world-info ACTIVATION - see doc comment decision 4 for the full rationale/settings-path

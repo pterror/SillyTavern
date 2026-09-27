@@ -758,6 +758,165 @@ await check('a local tokenizer that fails to load: no ids, estimate counts, drop
     assert.ok(warnings[1].message.includes('Qwen2'), warnings[1].message);
 });
 
+// --- registry entries ---
+
+const { lookupModelTokenizer } = await import('./tokenizer-model-map.js');
+const { tokenizerAnswer, tokenizerResponseWarnings, ENCODE_TOKENIZERS } = await import('./tokenizer-resolve.js');
+
+/** Test-only entries under production ids, so they have `tokenizers` values. */
+const testRegistry = [
+    { id: 'qwen3', family: 'Test Qwen', format: 'hf-json', sha256: 'a'.repeat(64), bytes: 1, license: 'Test License A', licenseUrl: 'https://example.invalid/a', sources: [] },
+    { id: 'kimi', family: 'Test Kimi', format: 'tiktoken', sha256: 'b'.repeat(64), bytes: 1, license: 'Test License B', licenseUrl: 'https://example.invalid/b', sources: [] },
+];
+/** @type {string[]} */
+const registryLoads = [];
+let nextLoadDownloads = false;
+/** A stub loader: qwen3 encodes to [1000, length], kimi to [2000, length]. */
+const loadPinned = async (entry) => {
+    registryLoads.push(entry.id);
+    const downloaded = nextLoadDownloads;
+    nextLoadDownloads = false;
+    const first = entry.id === 'qwen3' ? 1000 : 2000;
+    return {
+        encode: async (text) => [first, text.length],
+        decode: async (ids) => ids.join(','),
+        downloaded,
+    };
+};
+const testModels = {
+    'test-qwen-model.gguf': { source: 'qwen3' },
+    'test-kimi-model.gguf': { source: 'kimi' },
+    'test-several-files': { byBackend: { vendorApis: { mistralai: { source: 'qwen3' } }, hf: { source: 'kimi' } } },
+};
+const lookupModel = (api, name) => testModels[name] ?? lookupModelTokenizer(api, name);
+const registryDeps = { directories, registry: testRegistry, lookupModel };
+const registryOptions = { registry: testRegistry, loadPinned };
+
+await check('registry values join ENCODE_TOKENIZERS', async () => {
+    for (const id of [tokenizers.QWEN3, tokenizers.LLAMA3_1, tokenizers.NEMO_TEKKEN, tokenizers.KIMI]) {
+        assert.ok(Number.isInteger(id) && ENCODE_TOKENIZERS.includes(id), String(id));
+    }
+});
+
+await check('llamacpp BEST_MATCH with a registry model -> remote, the entry as local copy', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'test-qwen-model.gguf', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = await resolveTokenizer(state, registryDeps);
+    assert.equal(resolved.kind, 'remote');
+    assert.deepEqual(resolved.localCopy, { id: tokenizers.QWEN3, source: 'qwen3', name: 'Test Qwen (official)' });
+});
+
+await check('llamacpp /tokenize failing with a registry model -> the entry\'s ids, basis fallback', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'test-qwen-model.gguf', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = await resolveTokenizer(state, registryDeps);
+    const outcome = createTokenizerOutcome();
+    registryLoads.length = 0;
+    const ids = await encodeWithTokenizer(resolved, 'hello', { encodeTextgenRemote: failingRemote, ...registryOptions, outcome });
+    assert.deepEqual(ids, [1000, 5]);
+    assert.deepEqual(registryLoads, ['qwen3']);
+    assert.equal(tokenizerOutcomeBasis(resolved, outcome), 'fallback');
+    const answer = tokenizerAnswer(state, resolved, outcome);
+    assert.deepEqual({ id: answer.id, name: answer.name, basis: answer.basis }, { id: tokenizers.QWEN3, name: 'Test Qwen (official)', basis: 'fallback' });
+    const warnings = sendTokenizerWarnings(state, resolved, outcome, []);
+    assert.deepEqual(warnings.map(w => w.kind), ['fallback-copy']);
+    assert.ok(warnings[0].message.includes('Test Qwen (official)'), warnings[0].message);
+});
+
+await check('kobold without tokenization and a registry model -> local, with source', async () => {
+    const classic = await startFakeBackend({});
+    try {
+        const state = { api: 'kobold', url: `${classic.url}/api`, model: 'test-kimi-model.gguf', tokenizerSetting: tokenizers.BEST_MATCH };
+        const resolved = await resolveTokenizer(state, registryDeps);
+        assert.deepEqual(
+            { kind: resolved.kind, id: resolved.id, source: resolved.source, name: resolved.name, basis: resolved.basis },
+            { kind: 'local', id: tokenizers.KIMI, source: 'kimi', name: 'Test Kimi (official)', basis: 'local' },
+        );
+        assert.equal(resolved.localCopy?.source, 'kimi');
+        assert.equal(await countWithTokenizer(resolved, 'hi', registryOptions), 2);
+        assert.deepEqual(await encodeWithTokenizer(resolved, 'hey', registryOptions), [2000, 3]);
+    } finally {
+        classic.server.close();
+    }
+});
+
+await check('the key differs between two models on the same URL with an empty model setting that map to different entries', async () => {
+    let reported = 'test-qwen-model.gguf';
+    const llamacpp = await startFakeBackend({
+        '/v1/models': (req, res) => json({ data: [{ id: reported }] })(req, res),
+    });
+    try {
+        const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: llamacpp.url, model: '', tokenizerSetting: tokenizers.BEST_MATCH };
+        const qwen = tokenizerAnswer(state, await resolveTokenizer(state, registryDeps), createTokenizerOutcome());
+        reported = 'test-kimi-model.gguf';
+        const kimi = tokenizerAnswer(state, await resolveTokenizer(state, registryDeps), createTokenizerOutcome());
+        assert.notEqual(qwen.key, kimi.key);
+        assert.equal(qwen.key, `${TEXTGEN}|llamacpp|${llamacpp.url}||qwen3`);
+        assert.equal(kimi.key, `${TEXTGEN}|llamacpp|${llamacpp.url}||kimi`);
+    } finally {
+        llamacpp.server.close();
+    }
+});
+
+await check('a local registry resolution\'s key ends with the entry id', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.GENERIC, url: '', model: 'test-qwen-model.gguf', tokenizerSetting: tokenizers.BEST_MATCH };
+    const answer = tokenizerAnswer(state, await resolveTokenizer(state, registryDeps), createTokenizerOutcome());
+    assert.equal(answer.key, `${TEXTGEN}|generic||test-qwen-model.gguf|qwen3`);
+});
+
+await check('an explicit pick of a registry value is rule 1: that entry, whatever the backend', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'gemma-2-9b-it', tokenizerSetting: tokenizers.QWEN3 };
+    const resolved = await resolveTokenizer(state, registryDeps);
+    assert.deepEqual(
+        { kind: resolved.kind, id: resolved.id, source: resolved.source, name: resolved.name, localCopy: resolved.localCopy },
+        { kind: 'local', id: tokenizers.QWEN3, source: 'qwen3', name: 'Test Qwen (official)', localCopy: null },
+    );
+    const production = await resolveTokenizer({ ...state, tokenizerSetting: tokenizers.LLAMA3_1 });
+    assert.deepEqual({ id: production.id, source: production.source, name: production.name }, { id: tokenizers.LLAMA3_1, source: 'llama3.1', name: 'Llama 3.1 (official)' });
+});
+
+await check('Horde: two models mapping to one registry entry -> that entry', async () => {
+    const resolved = await resolveTokenizer({
+        api: 'koboldhorde', hordeModels: ['test-qwen-model.gguf', 'test-qwen-model.gguf'], tokenizerSetting: tokenizers.BEST_MATCH,
+    }, registryDeps);
+    assert.equal(resolved.kind, 'local');
+    assert.equal(resolved.source, 'qwen3');
+});
+
+await check('the request that downloads an entry\'s file carries a license warning; later requests don\'t', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.GENERIC, url: '', model: 'test-qwen-model.gguf', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = await resolveTokenizer(state, registryDeps);
+
+    nextLoadDownloads = true;
+    const downloading = createTokenizerOutcome();
+    await countWithTokenizer(resolved, 'hi', { ...registryOptions, outcome: downloading });
+    const expected = {
+        kind: 'license',
+        key: `${TEXTGEN}|generic||test-qwen-model.gguf|qwen3`,
+        message: 'Downloaded the Test Qwen tokenizer. License: Test License A',
+    };
+    assert.deepEqual(tokenizerResponseWarnings(state, resolved, downloading), [expected]);
+    assert.deepEqual(sendTokenizerWarnings(state, resolved, downloading, []), [expected]);
+    assert.equal(tokenizerOutcomeBasis(resolved, downloading), 'local');
+
+    const later = createTokenizerOutcome();
+    await countWithTokenizer(resolved, 'hi', { ...registryOptions, outcome: later });
+    assert.deepEqual(tokenizerResponseWarnings(state, resolved, later), []);
+});
+
+await check('one model, several official files: the vendor\'s own API gets its file; other backends get none', async () => {
+    const mistral = await resolveTokenizer({ api: 'openai', source: 'mistralai', model: 'test-several-files' }, registryDeps);
+    assert.deepEqual({ kind: mistral.kind, source: mistral.source, localCopy: mistral.localCopy?.source }, { kind: 'local', source: 'qwen3', localCopy: 'qwen3' });
+
+    const openrouter = await resolveTokenizer({ api: 'openai', source: 'openrouter', model: 'test-several-files' }, registryDeps);
+    assert.deepEqual({ kind: openrouter.kind, basis: openrouter.basis }, { kind: 'estimate', basis: 'unknown' });
+
+    // No backend is counted as HF-based serving by assumption, so the HF file is used by none.
+    const generic = await resolveTokenizer({ api: TEXTGEN, type: TEXTGEN_TYPES.GENERIC, model: 'test-several-files', tokenizerSetting: tokenizers.BEST_MATCH }, registryDeps);
+    assert.deepEqual({ kind: generic.kind, basis: generic.basis }, { kind: 'estimate', basis: 'unknown' });
+
+    const llamacpp = await resolveTokenizer({ api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'test-several-files', tokenizerSetting: tokenizers.BEST_MATCH }, registryDeps);
+    assert.deepEqual({ kind: llamacpp.kind, localCopy: llamacpp.localCopy }, { kind: 'remote', localCopy: null });
+});
+
 await check('the old resolvers and their llama defaults are no longer exported', async () => {
     const modules = {
         './tokenizer-resolve.js': ['getTokenizerBestMatch', 'resolveTokenizerType', 'getCurrentOpenRouterModelTokenizer', 'getCurrentDreamGenModelTokenizer'],

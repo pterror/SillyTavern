@@ -2557,7 +2557,8 @@ router.post('/status', async function (request, statusResponse) {
 
 /**
  * A chat-completion send's tokenizer warnings: `trim-estimate` when its prompt was fitted by the
- * estimate because the tokenizer failed, and `dropped` for the bias entries it had no token ids for.
+ * estimate because the tokenizer failed, `dropped` for the bias entries it had no token ids for, and
+ * `license` for a tokenizer file its prompt count downloaded.
  * @param {string} source
  * @param {string|null|undefined} model
  * @param {string[]} droppedEntries
@@ -2566,7 +2567,7 @@ router.post('/status', async function (request, statusResponse) {
  * @returns {Promise<Array<{kind: string, key: string, message: string, entries?: string[]}>>} Empty when there is nothing to report.
  */
 async function chatCompletionSendWarnings(source, model, droppedEntries, outcome = createTokenizerOutcome()) {
-    if (droppedEntries.length === 0 && !outcome.countEstimated && !outcome.usedCopy) {
+    if (droppedEntries.length === 0 && !outcome.countEstimated && !outcome.usedCopy && !outcome.downloads?.length) {
         return [];
     }
     const state = { api: 'openai', source, model: model ?? '' };
@@ -2613,7 +2614,7 @@ router.post('/bias', async function (request, response) {
     try {
         if (state) {
             const dropped = [];
-            const result = await computeLogitBias(request.body, state.model ?? '', dropped);
+            const result = await computeLogitBias(request.body, state.model ?? '', dropped, state.source);
             response.set('X-ST-Tokenizer-Dropped', toAsciiJson(dropped));
             return response.send(result);
         }

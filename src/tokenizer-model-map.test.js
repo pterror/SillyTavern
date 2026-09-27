@@ -256,4 +256,44 @@ const addedById = new Map(llama3.added_tokens.map(t => [t.id, t.content]));
 assert.equal(addedById.get(128004), '<|reserved_special_token_2|>');
 assert.equal(addedById.get(128008), '<|reserved_special_token_4|>');
 
+// --- registry results, `supersedes`, several official files, moving aliases ---
+const { pickMapResult } = await import('./tokenizer-model-map.js');
+assert.equal(typeof pickMapResult, 'function', 'pickMapResult is exported');
+
+// A registry result `{ source }` is told apart by its entry id.
+assert.deepEqual(pickMapResult([{ result: { source: 'a' } }, { result: { source: 'a' } }]), { source: 'a' });
+assert.equal(pickMapResult([{ result: { source: 'a' } }, { result: { source: 'b' } }]), null, 'two entries with different results stay unmapped');
+assert.equal(pickMapResult([{ result: { source: 'a' } }, { result: tokenizers.QWEN2 }]), null);
+assert.equal(pickMapResult([]), null);
+
+// An entry that supersedes another wins when both match; it names a registry entry id, a
+// `tokenizers` key, or `tiktoken` for the tiktoken lookup.
+const distillQwen = { result: { source: 'r1-distill-qwen' }, supersedes: ['qwen2.5'] };
+assert.deepEqual(pickMapResult([{ result: { source: 'qwen2.5' } }, distillQwen]), { source: 'r1-distill-qwen' });
+assert.deepEqual(pickMapResult([distillQwen, { result: { source: 'qwen2.5' } }]), { source: 'r1-distill-qwen' }, 'order does not matter');
+assert.deepEqual(pickMapResult([distillQwen]), { source: 'r1-distill-qwen' });
+assert.deepEqual(pickMapResult([{ result: { source: 'qwen2.5' } }]), { source: 'qwen2.5' }, 'a superseded entry matching alone stands');
+assert.deepEqual(pickMapResult([{ result: tokenizers.LLAMA3 }, { result: { source: 'r1-distill-llama' }, supersedes: ['llama3', 'llama3.1'] }]), { source: 'r1-distill-llama' });
+assert.deepEqual(pickMapResult([{ result: 'gpt-4o' }, { result: { source: 'gpt-oss' }, supersedes: ['tiktoken'] }]), { source: 'gpt-oss' });
+assert.equal(pickMapResult([{ result: tokenizers.QWEN2 }, distillQwen]), null, 'a match with no supersedes relation still makes the name unmapped');
+assert.equal(pickMapResult([
+    { result: { source: 'a' }, supersedes: ['b'] },
+    { result: { source: 'b' }, supersedes: ['a'] },
+]), null, 'entries superseding each other leave nothing');
+
+// One model, several official files: one result carrying a file per kind of backend.
+const severalFiles = { byBackend: { vendorApis: { mistralai: { source: 'nemo-tekken' } }, hf: tokenizers.NEMO } };
+assert.deepEqual(pickMapResult([{ result: severalFiles }, { result: structuredClone(severalFiles) }]), severalFiles);
+assert.equal(pickMapResult([{ result: severalFiles }, { result: tokenizers.NEMO }]), null);
+
+// Ids that point at different models over time are never in the map.
+for (const alias of [
+    'deepseek-chat', 'deepseek-flash', 'deepseek-v4-pro', 'deepseek-reasoner',
+    'mistral-large-latest', 'mistral-small-latest', 'mistral-small', 'open-mistral-7b', 'open-mixtral-8x22b',
+    'qwen-plus-latest', 'jamba-mini', 'jamba-large', 'mistralai/mistral-large',
+]) {
+    check(GENERAL_API, alias, null);
+    check('openai', alias, null);
+}
+
 console.log('tokenizer-model-map tests passed');

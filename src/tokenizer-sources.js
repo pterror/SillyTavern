@@ -130,6 +130,24 @@ export const TOKENIZER_SOURCES = Object.freeze([
 ]);
 
 /**
+ * @param {string} id
+ * @param {readonly TokenizerSourceEntry[]} [registry]
+ * @returns {TokenizerSourceEntry|undefined}
+ */
+export function findTokenizerSource(id, registry = TOKENIZER_SOURCES) {
+    return registry.find(entry => entry.id === id);
+}
+
+/**
+ * The name an entry's tokenizer is shown under, also its Advanced Formatting → Tokenizer option.
+ * @param {TokenizerSourceEntry} entry
+ * @returns {string}
+ */
+export function getTokenizerDisplayName(entry) {
+    return `${entry.family} (official)`;
+}
+
+/**
  * Cache file extension per format. The sha256 is the file's identity and the format decides its
  * loader, so one sha256 always gets one name, whatever path it came from.
  * @type {Readonly<Record<TokenizerFileFormat, string>>}
