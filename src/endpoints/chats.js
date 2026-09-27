@@ -1515,12 +1515,38 @@ router.post('/group/delete', async (request, response) => {
         }
 
         const id = String(request.body.id);
-        // The client already dropped this chat from the group's `chats` array, so a chat-id scan can no
-        // longer find the owner - group_id is sent explicitly instead.
+        // The client drops this chat from its in-memory copy of the group's `chats` before asking, and may
+        // never save that list, so the id can still be in the group file - group_id names the owner either way.
         const group = await touchGroupOwner(request.user.directories, { chatId: id, groupId: request.body.group_id });
+        if (!group) {
+            console.error('The group chat was not deleted.');
+            return response.sendStatus(400);
+        }
 
-        if (group && await deleteBranch(request.user.directories, group.id, id)) {
+        // Same lock as /api/groups/new-chat's read-modify-write of `chats`, which would otherwise write the id back.
+        const outcome = await withGroupLock(request.user.directories, group.id, async () => {
+            if (!await deleteBranch(request.user.directories, group.id, id)) {
+                return 'not_deleted';
+            }
+            const fullGroup = /** @type {{ chats?: string[] } | null} */ (readGroupFile(request.user.directories, group.id));
+            if (!fullGroup || !Array.isArray(fullGroup.chats) || !fullGroup.chats.includes(id)) {
+                return 'ok';
+            }
+            fullGroup.chats = fullGroup.chats.filter(chatId => chatId !== id);
+            try {
+                await writeGroupFile(request.user.directories, fullGroup);
+            } catch (err) {
+                console.error(`Could not remove deleted chat id "${id}" from group ${group.id}:`, err);
+                return 'list_not_saved';
+            }
+            return 'ok';
+        });
+
+        if (outcome === 'ok') {
             return response.send({ ok: true });
+        }
+        if (outcome === 'list_not_saved') {
+            return response.status(500).send({ error: 'The chat was deleted, but it could not be removed from the group\'s chat list. See the server console for details.' });
         }
 
         console.error('The group chat was not deleted.');
