@@ -52,6 +52,13 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.DEEPSEEK_R1_DISTILL_QWEN,
     tokenizers.DEEPSEEK_R1_DISTILL_LLAMA,
     tokenizers.DEEPSEEK_R1_0528_QWEN3,
+    tokenizers.GEMMA_4,
+    tokenizers.GEMMA_4_ASSISTANT,
+    tokenizers.GEMMA_3_IT,
+    tokenizers.GEMMA_3_PT,
+    tokenizers.GEMMA_3N,
+    tokenizers.CODEGEMMA,
+    tokenizers.GEMMA_2_JPN,
 ];
 
 /**

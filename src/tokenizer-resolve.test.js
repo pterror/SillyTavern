@@ -955,6 +955,36 @@ await check('a DeepSeek-V4-Pro name: V4 on llama.cpp and Ollama; the estimate on
     }
 });
 
+await check('a Gemma 3 -it name: its file on llama.cpp and Ollama; the estimate on Google\'s API and every hosted API. A -pt name: its file everywhere', async () => {
+    const it = { id: tokenizers.GEMMA_3_IT, source: 'gemma-3-it', name: 'Gemma 3 it (official)' };
+    const pt = { id: tokenizers.GEMMA_3_PT, source: 'gemma-3-pt', name: 'Gemma 3 pt (official)' };
+
+    const llamacpp = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'gemma-3-27b-it-Q4_K_M.gguf', tokenizerSetting: tokenizers.BEST_MATCH,
+    });
+    assert.deepEqual({ kind: llamacpp.kind, localCopy: llamacpp.localCopy }, { kind: 'remote', localCopy: it });
+
+    const ollama = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1', model: 'gemma3:27b', tokenizerSetting: tokenizers.BEST_MATCH,
+    });
+    assert.deepEqual({ kind: ollama.kind, id: ollama.id, source: ollama.source, name: ollama.name, localCopy: ollama.localCopy }, { kind: 'local', ...it, localCopy: it });
+
+    const hosted = [
+        [{ api: 'openai', source: 'makersuite' }, 'gemma-3-27b-it'],
+        [{ api: 'openai', source: 'openrouter' }, 'google/gemma-3-27b-it'],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OPENROUTER }, 'google/gemma-3-27b-it:free'],
+        [{ api: 'openai', source: 'vertexai' }, 'gemma-4-26b-a4b-it-maas'],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'gemma4:31b-cloud'],
+    ];
+    for (const [backend, model] of hosted) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, `${JSON.stringify(backend)} ${model}`);
+    }
+
+    const openrouterPt = await resolveTokenizer({ api: 'openai', source: 'openrouter', model: 'google/gemma-3-27b-pt', tokenizerSetting: tokenizers.BEST_MATCH });
+    assert.deepEqual({ kind: openrouterPt.kind, source: openrouterPt.source, localCopy: openrouterPt.localCopy }, { kind: 'local', source: 'gemma-3-pt', localCopy: pt });
+});
+
 await check('the old resolvers and their llama defaults are no longer exported', async () => {
     const modules = {
         './tokenizer-resolve.js': ['getTokenizerBestMatch', 'resolveTokenizerType', 'getCurrentOpenRouterModelTokenizer', 'getCurrentDreamGenModelTokenizer'],

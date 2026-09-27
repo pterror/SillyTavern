@@ -14,9 +14,9 @@ import { setConfigFilePath } from './util.js';
 //
 // A fixture whose `file` is {"sameContentAs": <sha256>, ...} was made from a file with the same
 // content as the file of fixture <sha256>, which is the file SillyTavern reads. That fixture must
-// exist and have the same format. Its file is located and sha-checked through that fixture's own
-// `file`, `format` and `sha256`, so it is not run when that file isn't in the cache, and it must give
-// this fixture's ids.
+// exist; its format may differ (a `.model` whose json SillyTavern reads). Its file is located and
+// sha-checked through that fixture's own `file`, `format` and `sha256`, so it is not run when that
+// file isn't in the cache, and it must give this fixture's ids.
 //
 // Usage: node src/tokenizer-exactness.test.js [--dataRoot <dir>]
 // Without --dataRoot, config.yaml's dataRoot is used.
@@ -81,19 +81,13 @@ for (const name of fixtureFiles) {
     let read = fixture;
     if (fixture.file.sameContentAs) {
         const referencedPath = path.join(fixturesDir, `${fixture.file.sameContentAs}.json`);
-        const referenced = fs.existsSync(referencedPath) ? JSON.parse(fs.readFileSync(referencedPath, 'utf8')) : null;
-        const problem = !referenced
-            ? `no fixture ${fixture.file.sameContentAs}`
-            : referenced.format !== fixture.format
-                ? `fixture ${fixture.file.sameContentAs} has format ${referenced.format}, this fixture has ${fixture.format}`
-                : null;
-        if (problem) {
+        if (!fs.existsSync(referencedPath)) {
             summary.failed++;
             failures.push(descriptor);
-            console.log(`not ok - ${descriptor}: ${problem}`);
+            console.log(`not ok - ${descriptor}: no fixture ${fixture.file.sameContentAs}`);
             continue;
         }
-        read = referenced;
+        read = JSON.parse(fs.readFileSync(referencedPath, 'utf8'));
     }
     const { filePath, getEncode } = locate(read.file, read.format);
 
