@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
 import { mock } from 'node:test';
 
@@ -39,6 +39,22 @@ if (canMockDownloads) {
     });
 } else {
     console.log('tokenizers.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping the download-failure case, which needs it to stub the tokenizer download');
+}
+
+// No model maps to an official file yet, so the model map gets a stand-in name for a model with
+// several official files: the tekken file on Mistral's API, nothing elsewhere. Needs --experimental-test-module-mocks.
+const testModels = {
+    'test-several-files': { byBackend: { vendorApis: { mistralai: { source: 'nemo-tekken' } } } },
+};
+if (canMockDownloads) {
+    const modelMapUrl = pathToFileURL(path.join(__dirname, '..', 'tokenizer-model-map.js')).href;
+    const realModelMap = await import(modelMapUrl);
+    mock.module(modelMapUrl, {
+        namedExports: {
+            ...realModelMap,
+            lookupModelTokenizer: (api, name) => testModels[name] ?? realModelMap.lookupModelTokenizer(api, name),
+        },
+    });
 }
 
 const { computeLogitBias, computeTextgenLogitBias, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
@@ -291,6 +307,48 @@ for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
     });
 }
 
+if (canMockDownloads) {
+    await testCase('/openai/*: with the X-ST-Connection-State header, a several-files model on Mistral\'s API gets the tekken file; without it, the estimate as before', async () => {
+        // A stand-in under the tekken entry's cache name, so nothing is downloaded: every byte is
+        // its own token, and the ids start after 10 special tokens.
+        const { TOKENIZER_SOURCES, getCacheFileName } = await import('../tokenizer-sources.js');
+        const tekken = TOKENIZER_SOURCES.find(entry => entry.id === 'nemo-tekken');
+        fs.writeFileSync(path.join(dataRoot, '_cache', getCacheFileName(tekken)), JSON.stringify({
+            config: { pattern: String.raw`\s+|\S+`, default_vocab_size: 266, default_num_special_tokens: 10 },
+            vocab: Array.from({ length: 256 }, (_, rank) => ({ rank, token_bytes: Buffer.from([rank]).toString('base64') })),
+        }));
+        const tekkenIds = (value) => Array.from(Buffer.from(value, 'utf8'), byte => byte + 10);
+
+        const model = 'test-several-files';
+        const state = { api: 'openai', source: 'mistralai', model, tokenizerSetting: tokenizers.BEST_MATCH };
+        const withState = { 'X-ST-Connection-State': JSON.stringify(state).replace(/[\u007f-￿]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`) };
+        const post = async (route, body, headers = {}) => {
+            const response = await fetch(`${baseUrl}${route}?model=${encodeURIComponent(model)}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+            });
+            return { status: response.status, body: response.status === 200 ? await response.json() : null };
+        };
+
+        const counted = await post('/openai/count', messages, withState);
+        assert.deepEqual(counted, { status: 200, body: { token_count: tekkenIds(`user\n\n${text}`).length } }, 'count with the header');
+        const encoded = await post('/openai/encode', { text }, withState);
+        assert.equal(encoded.status, 200);
+        assert.deepEqual({ ids: encoded.body.ids, count: encoded.body.count }, { ids: tekkenIds(text), count: tekkenIds(text).length }, 'encode with the header');
+        const decoded = await post('/openai/decode', { ids: tekkenIds(text) }, withState);
+        assert.equal(decoded.body?.text, text, 'decode with the header');
+
+        assert.deepEqual(await post('/openai/count', messages), { status: 200, body: { token_count: guesstimate(JSON.stringify(messages)) } }, 'count without the header');
+        assert.deepEqual(await post('/openai/encode', { text }), { status: 200, body: { ids: [], count: guesstimate(text), chunks: [] } }, 'encode without the header');
+        assert.deepEqual(await post('/openai/decode', { ids: [1, 2, 3] }), { status: 200, body: { text: '' } }, 'decode without the header');
+
+        for (const header of ['not json', JSON.stringify({ api: 'textgenerationwebui', model })]) {
+            for (const [route, body] of [['/openai/count', messages], ['/openai/encode', { text }], ['/openai/decode', { ids: [1] }]]) {
+                assert.equal((await post(route, body, { 'X-ST-Connection-State': header })).status, 400, `${route} ${header}`);
+            }
+        }
+    });
+}
+
 // --- downloadable tokenizers ---
 
 if (canMockDownloads) {
@@ -447,6 +505,42 @@ await testCase('/current/*: a registry entry picked in Advanced Formatting is na
     const decoded = await postCurrent('decode', { state, ids: standInIds });
     assert.equal(decoded.text, text);
     assert.deepEqual(named(decoded.tokenizer), expected, 'decode');
+});
+
+await testCase('/current/*: explicitTokenizer names the tokenizer on every api, chat completion included', async () => {
+    // The same stand-in under the Qwen3 entry's cache name, so nothing is downloaded.
+    const { TOKENIZER_SOURCES } = await import('../tokenizer-sources.js');
+    const qwen3 = TOKENIZER_SOURCES.find(entry => entry.id === 'qwen3');
+    fs.copyFileSync(path.join(__dirname, '..', 'tokenizers', 'llama3.json'), path.join(dataRoot, '_cache', `${qwen3.sha256}.json`));
+    const standInIds = await encodeTextByLocalTokenizerType('llama3', text);
+    const state = { api: 'openai', source: 'openai', model: 'gpt-4o' };
+    const expected = { id: tokenizers.QWEN3, name: 'Qwen3 (official)', basis: 'local', key: 'openai|openai||gpt-4o|qwen3' };
+    const named = (answer) => ({ id: answer.id, name: answer.name, basis: answer.basis, key: answer.key });
+
+    const encoded = await postCurrent('encode', { state, texts: [text], explicitTokenizer: tokenizers.QWEN3 });
+    assert.deepEqual(encoded.ids, [standInIds]);
+    assert.equal(encoded.chunks[0].join(''), text, 'encode chunks');
+    assert.deepEqual(named(encoded.tokenizer), expected, 'encode');
+    assert.equal(encoded.warnings, undefined, 'nothing was downloaded');
+
+    const decoded = await postCurrent('decode', { state, ids: standInIds, explicitTokenizer: tokenizers.QWEN3 });
+    assert.equal(decoded.text, text);
+    assert.deepEqual(named(decoded.tokenizer), expected, 'decode');
+
+    const textgen = await postCurrent('encode', { state: remoteUnmappedState, texts: [text], explicitTokenizer: tokenizers.QWEN3 });
+    assert.deepEqual(textgen.ids, [standInIds], 'textgen state with a remote tokenizer');
+    assert.equal(textgen.tokenizer.id, tokenizers.QWEN3);
+});
+
+await testCase('/current/*: an explicitTokenizer that is not an explicit pick answers 400', async () => {
+    const state = { api: 'openai', source: 'openai', model: 'gpt-4o' };
+    for (const explicitTokenizer of [tokenizers.API_CURRENT, tokenizers.BEST_MATCH, 12345, 'qwen3', 1000.5]) {
+        const response = await fetch(`${baseUrl}/current/encode`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ state, texts: [text], explicitTokenizer }),
+        });
+        assert.equal(response.status, 400, String(explicitTokenizer));
+    }
 });
 
 await testCase('/current/count: chat-completion messages count like /openai/count, naming the model\'s tokenizer', async () => {

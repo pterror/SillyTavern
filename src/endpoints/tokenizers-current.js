@@ -3,9 +3,10 @@ import express from 'express';
 import { countChatCompletionMessages, decodeWithLocalTokenizer, getLocalEncodeChunks } from './tokenizers.js';
 import {
     resolveTokenizer, createTokenizerOutcome, countWithTokenizer, encodeWithTokenizer, estimateTokenCount,
-    tokenizerAnswer, tokenizerResponseWarnings, readTokenizerState,
+    tokenizerAnswer, tokenizerResponseWarnings, isExplicitTokenizer,
 } from '../tokenizer-resolve.js';
 import { localResolution } from '../tokenizer-map-resolution.js';
+import { readTokenizerState } from '../connection-state-header.js';
 
 // The `/api/tokenizers/current/*` routes. They live apart from ./tokenizers.js because the
 // resolver imports that module.
@@ -65,7 +66,10 @@ async function trimToTokenLimit(resolved, text, limit, direction, options) {
 
 /**
  * A `/current/*` route: resolves the tokenizer for the request's `state` and answers with what
- * `handle` gives, the tokenizer that answered, and any warnings about it.
+ * `handle` gives, the tokenizer that answered, and any warnings about it. An optional
+ * `explicitTokenizer` (a `tokenizers` value the caller named, as `getTextTokens(id, …)` does)
+ * wins over the state's resolution on every api; the answer's `key` still comes from `state`.
+ * One that isn't an explicit pick answers 400.
  * @template T
  * @param {(body: any, state: import('../tokenizer-resolve.js').TokenizerState) => T|null} parse The
  * route's input; null answers 400.
@@ -76,11 +80,12 @@ function currentTokenizerRoute(parse, handle) {
     return async function (request, response) {
         const state = readTokenizerState(request.body?.state);
         const input = state && parse(request.body, state);
-        if (!input) {
+        const explicitTokenizer = request.body?.explicitTokenizer;
+        if (!input || (explicitTokenizer !== undefined && !isExplicitTokenizer(explicitTokenizer))) {
             return response.sendStatus(400);
         }
         try {
-            const resolved = await resolveTokenizer(state, { directories: request.user?.directories });
+            const resolved = await resolveTokenizer({ ...state, explicitTokenizer }, { directories: request.user?.directories });
             const outcome = createTokenizerOutcome();
             const options = {
                 // setAdditionalHeaders() picks the backend's API key by the body's api_type.

@@ -14,6 +14,7 @@ import tiktoken from 'tiktoken';
 import { TEXTGEN_TYPES } from '../constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from '../tokenizer-ids.js';
 import { resolveChatCompletionTokenizer, describeMapEntry, localResolution } from '../tokenizer-map-resolution.js';
+import { readConnectionStateHeader } from '../connection-state-header.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { DOWNLOAD_RETRY_MS, isDownloadBackedOff, recordDownloadFailure, clearDownloadFailure } from '../tokenizer-sources.js';
 import { loadRegistryTokenizer, loadTokenizerFile, loadTokenizerFunctions } from '../tokenizer-loader.js';
@@ -1323,11 +1324,21 @@ const OPENAI_ROUTE_NAMED_TOKENIZERS = [
 ];
 
 /**
- * The tokenizer for an `/openai/*` route's `?model=`: the named tokenizer, else the model map.
- * @param {string} queryModel
- * @returns {import('../tokenizer-resolve.js').ResolvedTokenizer}
+ * The tokenizer for an `/openai/*` request: from the `X-ST-Connection-State` header's state when
+ * there is one, else from `?model=`, the named tokenizer or the model map.
+ * @param {import('express').Request} req
+ * @returns {import('../tokenizer-resolve.js').ResolvedTokenizer|null} null when the header holds no
+ * chat-completion state.
  */
-function resolveOpenAIRouteModel(queryModel) {
+function resolveOpenAIRouteRequest(req) {
+    const state = readConnectionStateHeader(req);
+    if (state === null) {
+        return null;
+    }
+    if (state) {
+        return resolveChatCompletionTokenizer(state.model, state.source);
+    }
+    const queryModel = String(req.query.model || '');
     const named = OPENAI_ROUTE_NAMED_TOKENIZERS.find(id => TOKENIZER_TYPE_KEYS[id] === queryModel);
     return named === undefined
         ? resolveChatCompletionTokenizer(queryModel)
@@ -1338,7 +1349,8 @@ router.post('/openai/encode', async function (req, res) {
     try {
         if (!req.body) return res.sendStatus(400);
 
-        const resolved = resolveOpenAIRouteModel(String(req.query.model || ''));
+        const resolved = resolveOpenAIRouteRequest(req);
+        if (!resolved) return res.sendStatus(400);
         if (resolved.kind === 'estimate') {
             return res.send({ ids: [], count: guesstimate(String(req.body.text || '')), chunks: [] });
         }
@@ -1353,7 +1365,8 @@ router.post('/openai/decode', async function (req, res) {
     try {
         if (!req.body) return res.sendStatus(400);
 
-        const resolved = resolveOpenAIRouteModel(String(req.query.model || ''));
+        const resolved = resolveOpenAIRouteRequest(req);
+        if (!resolved) return res.sendStatus(400);
         if (resolved.kind === 'estimate') {
             return res.send({ text: '' });
         }
@@ -1367,7 +1380,8 @@ router.post('/openai/decode', async function (req, res) {
 router.post('/openai/count', async function (req, res) {
     if (!req.body) return res.sendStatus(400);
 
-    const resolved = resolveOpenAIRouteModel(String(req.query.model || ''));
+    const resolved = resolveOpenAIRouteRequest(req);
+    if (!resolved) return res.sendStatus(400);
     const num_tokens = await countChatCompletionMessages(resolved, req.body, undefined, req.user?.directories);
     return res.send({ 'token_count': num_tokens });
 });

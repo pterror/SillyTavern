@@ -64,7 +64,8 @@ import { createGenerationParameters } from '../../chat-completion-generation-dat
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
-import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome, readTokenizerState } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
+import { readConnectionStateHeader } from '../../connection-state-header.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
 import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
@@ -2572,25 +2573,6 @@ async function chatCompletionSendWarnings(source, model, droppedEntries, outcome
     }
     const state = { api: 'openai', source, model: model ?? '' };
     return sendTokenizerWarnings(state, await resolveTokenizer(state), outcome, droppedEntries);
-}
-
-/**
- * The chat-completion state in a request's `X-ST-Connection-State` header.
- * @param {import('express').Request} request
- * @returns {import('../../tokenizer-resolve.js').TokenizerState|null|undefined} undefined without
- * the header; null when it holds no chat-completion state.
- */
-function readConnectionStateHeader(request) {
-    const header = request.get('X-ST-Connection-State');
-    if (header === undefined) {
-        return undefined;
-    }
-    try {
-        const state = readTokenizerState(JSON.parse(header));
-        return state?.api === 'openai' ? state : null;
-    } catch {
-        return null;
-    }
 }
 
 /**
