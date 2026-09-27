@@ -71,15 +71,26 @@ export function calculateGroupChatStats(groupChatsDir, chatIds) {
  * @param {string | number} [params.groupId] The group's own persistent id, when the caller knows it
  * @returns {{ id: string, chats: string[] } | null} `null` when no group claims this chat.
  */
-export function resolveGroupOwner(groupsDir, { chatId, groupId: givenGroupId } = {}) {
+export function resolveGroupOwner(groupsDir, params = {}) {
+    const resolved = resolveGroupOwnerFile(groupsDir, params);
+    return resolved && { id: resolved.id, chats: resolved.chats };
+}
+
+/**
+ * resolveGroupOwner(), also naming the group's JSON file within `groupsDir`.
+ * @param {string} groupsDir `directories.groups`
+ * @param {{ chatId?: string, groupId?: string | number }} [params] As resolveGroupOwner()'s
+ * @returns {{ id: string, chats: string[], fileName: string } | null}
+ */
+export function resolveGroupOwnerFile(groupsDir, { chatId, groupId: givenGroupId } = {}) {
     if (!fs.existsSync(groupsDir)) return null;
     const groupId = normalizeGroupId(givenGroupId) ?? givenGroupId;
 
-    const readDescriptor = (filePath) => {
+    const readDescriptor = (fileName) => {
         try {
-            const group = normalizeGroupRecord(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+            const group = normalizeGroupRecord(JSON.parse(fs.readFileSync(path.join(groupsDir, fileName), 'utf8')));
             if (typeof group?.id !== 'string') return null;
-            return { id: group.id, chats: Array.isArray(group.chats) ? group.chats : [] };
+            return { id: group.id, chats: Array.isArray(group.chats) ? group.chats : [], fileName };
         } catch {
             return null;
         }
@@ -90,7 +101,7 @@ export function resolveGroupOwner(groupsDir, { chatId, groupId: givenGroupId } =
         const fileName = `${path.basename(groupId)}.json`;
         const filePath = path.join(groupsDir, fileName);
         if (fs.existsSync(filePath)) {
-            const resolved = readDescriptor(filePath);
+            const resolved = readDescriptor(fileName);
             if (resolved) return resolved;
         }
         // Falls through to the scan below rather than failing outright.
@@ -99,7 +110,7 @@ export function resolveGroupOwner(groupsDir, { chatId, groupId: givenGroupId } =
     if (typeof chatId !== 'string' || !chatId) return null;
 
     for (const file of fs.readdirSync(groupsDir).filter(f => f.endsWith('.json'))) {
-        const resolved = readDescriptor(path.join(groupsDir, file));
+        const resolved = readDescriptor(file);
         if (resolved?.chats.includes(chatId)) return resolved;
     }
     return null;
