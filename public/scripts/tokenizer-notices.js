@@ -67,8 +67,10 @@ export function showTokenizerWarnings(warnings) {
  * extensions read back as a number.
  * @param {Element|JQuery} countElement
  * @param {{ name?: string, basis?: string, messages?: { unknownModel?: string } }|null|undefined} tokenizer The answer the count came from.
+ * @param {{ omitCopyLabel?: boolean }} [options] `omitCopyLabel`: leave the fallback copy's name out,
+ * for an element that already shows that name.
  */
-export function renderCountBasis(countElement, tokenizer) {
+export function renderCountBasis(countElement, tokenizer, { omitCopyLabel = false } = {}) {
     const count = $(countElement);
 
     let approx = count.prev('span.token_count_approx');
@@ -85,7 +87,7 @@ export function renderCountBasis(countElement, tokenizer) {
     const estimated = tokenizer?.basis === 'unknown' || tokenizer?.basis === 'failed';
     approx.text(estimated ? '~' : '');
     basis.empty();
-    if (tokenizer?.basis === 'fallback') {
+    if (tokenizer?.basis === 'fallback' && !omitCopyLabel) {
         basis.text(`(${tokenizer.name})`);
     } else if (estimated) {
         const marker = $('<i class="fa-solid fa-circle-question"></i>');

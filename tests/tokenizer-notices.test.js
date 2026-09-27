@@ -349,6 +349,21 @@ describe('renderCountBasis', () => {
         }
     });
 
+    test('omitCopyLabel: a fallback copy gets no label, and unknown and failed still get ~ and the marker', () => {
+        const fallback = makeCounter('120');
+        renderCountBasis(fallback.counter, answer('fallback'), { omitCopyLabel: true });
+        expect(layout(fallback.parent)).toEqual(['token_count_approx:', 'token_counter:120', 'token_count_basis:']);
+        expect(fallback.parent.children[2].children).toHaveLength(0);
+
+        for (const basis of ['unknown', 'failed']) {
+            const { parent, counter } = makeCounter('120');
+            renderCountBasis(counter, answer(basis), { omitCopyLabel: true });
+            expect(layout(parent)).toEqual(['token_count_approx:~', 'token_counter:120', 'token_count_basis:']);
+            expect(parent.children[2].children[0].className).toBe('fa-solid fa-circle-question');
+            expect(parent.children[2].children[0].attrs.title).toBe(unknownModel);
+        }
+    });
+
     test('re-rendering reuses the two siblings and never changes the count\'s text', () => {
         const { parent, counter } = makeCounter('120');
         renderCountBasis(counter, answer('unknown'));
