@@ -181,6 +181,12 @@ const idCache = new Map();
 const entryTextSources = new Map();
 
 /**
+ * Called whenever the server names a different tokenizer for the current state.
+ * @type {Set<() => void>}
+ */
+const tokenizerChangeListeners = new Set();
+
+/**
  * Guesstimates the token count for a string.
  * @param {string} str String to tokenize.
  * @returns {number} Token count.
@@ -325,6 +331,7 @@ function rememberTokenizer(stateKey, tokenizer) {
     if (changed) {
         countCache.clear();
         idCache.clear();
+        tokenizerChangeListeners.forEach(listener => listener());
     }
     rememberedTokenizer = { stateKey, tokenizer };
     if (changed) {
@@ -500,6 +507,34 @@ export function getEntryTokenIds(texts, api = main_api) {
     const answered = applyEncodeResponse(JSON.stringify(state), missing, data);
     missing.forEach((text, i) => ids.set(text, Array.isArray(answered?.[i]) ? answered[i] : null));
     return { ids, tokenizer: answered ? data.tokenizer : tokenizer };
+}
+
+/**
+ * Calls `listener` whenever the server names a different tokenizer for the current state.
+ * @param {() => void} listener
+ */
+export function onTokenizerChange(listener) {
+    tokenizerChangeListeners.add(listener);
+}
+
+/**
+ * The on-screen connection state of `api`, as JSON with non-ASCII characters escaped so it can be a
+ * header value.
+ * @param {string} [api] Main API. Defaults to the current one.
+ * @returns {string}
+ */
+export function getTokenizerStateHeader(api = main_api) {
+    return JSON.stringify(getTokenizerState(api)).replace(/[\u007f-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
+ * The server's tokenizer answer for `api`'s on-screen state: the remembered one, or one synchronous
+ * ask for it.
+ * @param {string} [api] Main API. Defaults to the current one.
+ * @returns {CurrentTokenizer|null}
+ */
+export function getTokenizerAnswer(api = main_api) {
+    return api === main_api ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState(api));
 }
 
 /**

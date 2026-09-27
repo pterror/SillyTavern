@@ -3,7 +3,7 @@ import express from 'express';
 import { countChatCompletionMessages, decodeWithLocalTokenizer, getLocalEncodeChunks } from './tokenizers.js';
 import {
     resolveTokenizer, createTokenizerOutcome, countWithTokenizer, encodeWithTokenizer, estimateTokenCount,
-    tokenizerAnswer, tokenizerResponseWarnings,
+    tokenizerAnswer, tokenizerResponseWarnings, readTokenizerState,
 } from '../tokenizer-resolve.js';
 import { localResolution } from '../tokenizer-map-resolution.js';
 
@@ -11,28 +11,6 @@ import { localResolution } from '../tokenizer-map-resolution.js';
 // resolver imports that module.
 
 export const router = express.Router();
-
-/**
- * The on-screen connection state a `/current/*` request sends, or null when it names no API.
- * @param {any} body
- * @returns {import('../tokenizer-resolve.js').TokenizerState|null}
- */
-function readTokenizerState(body) {
-    const state = body?.state;
-    if (!state || typeof state !== 'object' || typeof state.api !== 'string' || !state.api) {
-        return null;
-    }
-    const optionalString = (value) => typeof value === 'string' ? value : undefined;
-    return {
-        api: state.api,
-        type: optionalString(state.type),
-        url: optionalString(state.url),
-        model: optionalString(state.model),
-        source: optionalString(state.source),
-        tokenizerSetting: Number.isInteger(state.tokenizerSetting) ? state.tokenizerSetting : undefined,
-        hordeModels: Array.isArray(state.hordeModels) ? state.hordeModels.map(String) : undefined,
-    };
-}
 
 /**
  * The local tokenizer that turns ids back into text for a resolution: the local one, or a remote
@@ -96,7 +74,7 @@ async function trimToTokenLimit(resolved, text, limit, direction, options) {
  */
 function currentTokenizerRoute(parse, handle) {
     return async function (request, response) {
-        const state = readTokenizerState(request.body);
+        const state = readTokenizerState(request.body?.state);
         const input = state && parse(request.body, state);
         if (!input) {
             return response.sendStatus(400);
