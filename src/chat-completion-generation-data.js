@@ -187,6 +187,8 @@ function getVerbosity(settings) {
  * @property {{text?: string, value?: number}[]} [biasPresetEntries] Raw bias-preset entries -
  * settings.bias_presets[settings.bias_preset_selected] client-side - used to compute `logit_bias`
  * via computeLogitBias() (src/endpoints/tokenizers.js) when `logitBias` isn't given.
+ * @property {string[]} [droppedBiasEntries] Receives the text of each `biasPresetEntries` entry left out
+ * because the model has no tokenizer.
  * @property {(limit?: number) => string[]} [getStoppingStrings] Mirrors getCustomStoppingStrings(limit) - called with a different limit per source
  * @property {string[]} [groupNames]
  * @property {boolean} [useLogprobs]
@@ -209,6 +211,7 @@ export async function createGenerationParameters(settings, model, type, messages
         jsonSchema = null,
         logitBias: logitBiasOverride = undefined,
         biasPresetEntries = undefined,
+        droppedBiasEntries = undefined,
         getStoppingStrings = () => [],
         groupNames = [],
         useLogprobs = false,
@@ -249,7 +252,7 @@ export async function createGenerationParameters(settings, model, type, messages
     if (logitBiasOverride !== undefined) {
         logit_bias = logitBiasOverride;
     } else if (Array.isArray(biasPresetEntries) && biasPresetEntries.length && logitBiasSources.includes(settings.chat_completion_source)) {
-        logit_bias = await computeLogitBias(biasPresetEntries, model);
+        logit_bias = await computeLogitBias(biasPresetEntries, model, droppedBiasEntries);
     }
     if (Object.keys(logit_bias).length === 0) {
         logit_bias = undefined;

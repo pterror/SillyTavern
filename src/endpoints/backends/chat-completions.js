@@ -64,6 +64,7 @@ import { createGenerationParameters } from '../../chat-completion-generation-dat
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
+import { resolveTokenizer, droppedEntriesWarning } from '../../tokenizer-resolve.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
 import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
@@ -72,7 +73,7 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
 import { getEnabledServerTools, toOpenAIToolSchema } from '../../server-tools.js';
 import {
     TEXT_COMPLETION_MODELS,
-    computeLogitBias,
+    computeUpstreamLogitBias,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
@@ -2553,12 +2554,27 @@ router.post('/status', async function (request, statusResponse) {
     }
 });
 
+/**
+ * The `dropped` warning for bias entries a chat-completion send left out because its model has no tokenizer.
+ * @param {string} source
+ * @param {string|null|undefined} model
+ * @param {string[]} entries
+ * @returns {Promise<Array<{kind: string, key: string, message: string, entries?: string[]}>>} Empty when nothing was dropped.
+ */
+async function droppedBiasWarnings(source, model, entries) {
+    if (entries.length === 0) {
+        return [];
+    }
+    const state = { api: 'openai', source, model: model ?? '' };
+    return [droppedEntriesWarning(state, await resolveTokenizer(state), entries)];
+}
+
 router.post('/bias', async function (request, response) {
     if (!request.body || !Array.isArray(request.body))
         return response.sendStatus(400);
 
     try {
-        const result = await computeLogitBias(request.body, String(request.query.model || ''));
+        const result = await computeUpstreamLogitBias(request.body, String(request.query.model || ''));
         return response.send(result);
     } catch (error) {
         console.error(error);
@@ -2723,7 +2739,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * `client_tools` entry (typo, or a name that lost the name-collision policy to a server tool) is
  * simply inert, never treated as "this round should abort" for a name that was never really
  * client-only to begin with.
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string> }>}
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}> }>} `warnings`: the `dropped` warning when bias entries were left out.
  * `enabledServerTools` is the same list used to build `params.tools` (empty when no server tool is
  * currently enabled for this request) - returned so the route handler's tool-execution loop doesn't
  * need to re-query the registry (and re-run every tool's own `shouldEnable(ctx)`) a second time.
@@ -2879,9 +2895,12 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const toolsPayload = combinedToolSchemas.length > 0
         ? { tools: combinedToolSchemas, tool_choice: 'auto' }
         : undefined;
+    /** @type {string[]} */
+    const droppedBiasEntries = [];
     const { generate_data } = await createGenerationParameters(settings, orchestratorInput.model, type, messages, {
         macroContext: orchestratorInput.macroContext,
         biasPresetEntries,
+        droppedBiasEntries,
         useLogprobs,
         chatId: anchorNodeId,
         toolsPayload,
@@ -2905,7 +2924,9 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const anchorChat = orchestratorInput.macroContext.chat;
     const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
 
-    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames };
+    const warnings = await droppedBiasWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries);
+
+    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings };
 }
 
 /**
@@ -3940,7 +3961,10 @@ router.post('/generate', async function (request, response) {
             }
 
             const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
-            const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { macroContext: { name1, name2 }, biasPresetEntries });
+            /** @type {string[]} */
+            const droppedBiasEntries = [];
+            const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { macroContext: { name1, name2 }, biasPresetEntries, droppedBiasEntries });
+            warnings.push(...await droppedBiasWarnings(settings.chat_completion_source, profile.model, droppedBiasEntries));
 
             if (request.body.overrides && typeof request.body.overrides === 'object' && !Array.isArray(request.body.overrides)) {
                 Object.assign(generate_data, _.omit(request.body.overrides, ['chat_completion_source', 'model', 'messages', 'custom_url', 'reverse_proxy', 'proxy_password', 'secret_id']));
@@ -4048,6 +4072,7 @@ router.post('/generate', async function (request, response) {
                 console.error('Failed to build raw-action chat completion request:', error);
                 return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
             }
+            warnings.push(...built.warnings);
 
             // Persist the NEW USER MESSAGE - "the user sent this" - BEFORE dispatching to the
             // backend. This is a real fact that should be committed regardless of whether generation

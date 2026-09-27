@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,7 +12,8 @@ import { setConfigFilePath } from '../util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
-const { computeLogitBias, computeTextgenLogitBias, resolveTextgenTokenizerForTokenIds } = await import('./tokenizers.js');
+const { computeLogitBias, computeTextgenLogitBias, resolveTextgenTokenizerForTokenIds, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
+const { default: express } = await import('express');
 
 // --- computeLogitBias ---
 
@@ -174,5 +177,115 @@ const { computeLogitBias, computeTextgenLogitBias, resolveTextgenTokenizerForTok
     );
     assert.deepEqual(result, {});
 }
+
+const caseFailures = [];
+async function testCase(name, fn) {
+    try {
+        await fn();
+        console.log(`  pass: ${name}`);
+    } catch (error) {
+        caseFailures.push(name);
+        console.log(`  FAIL: ${name}: ${error.message}`);
+    }
+}
+
+// --- computeLogitBias on a model no tokenizer is known for ---
+
+await testCase('computeLogitBias, unmapped model: entries needing ids dropped and listed, raw ids kept', async () => {
+    const dropped = [];
+    const result = await computeLogitBias([
+        { text: 'hello', value: -5 },
+        { text: '[11, 12]', value: 2 },
+        { text: '{world}', value: 3 },
+    ], 'some-unheard-of-model', dropped);
+    assert.deepEqual(result, { 11: 2, 12: 2 });
+    assert.deepEqual(dropped, ['hello', '{world}']);
+});
+
+await testCase('computeLogitBias, claude: no bias, nothing listed as dropped', async () => {
+    const dropped = [];
+    const result = await computeLogitBias([{ text: 'hello', value: -5 }, { text: '[11]', value: 2 }], 'anthropic/claude-3-opus', dropped);
+    assert.deepEqual(result, {});
+    assert.deepEqual(dropped, []);
+});
+
+// --- /openai/encode, /openai/decode, /openai/count ---
+
+// Nemo and DeepSeek are downloaded tokenizers. The cache gets stand-in files so no download
+// happens; they are claude.json, whose ids differ from llama3 and tiktoken.
+const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-tokenizers-test-'));
+globalThis.DATA_ROOT = dataRoot;
+fs.mkdirSync(path.join(dataRoot, '_cache'));
+for (const name of ['nemo.json', 'deepseek.json']) {
+    fs.copyFileSync(path.join(__dirname, '..', 'tokenizers', 'claude.json'), path.join(dataRoot, '_cache', name));
+}
+
+const app = express();
+app.use(express.json());
+app.use('/api/tokenizers', router);
+const server = app.listen(0, '127.0.0.1');
+await new Promise(resolve => server.once('listening', resolve));
+const baseUrl = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (server.address()).port}/api/tokenizers`;
+async function postTokenizer(route, model, body) {
+    const response = await fetch(`${baseUrl}${route}?model=${encodeURIComponent(model)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+}
+
+const text = 'Antidisestablishmentarianism, naïveté and 東京.';
+const messages = [{ role: 'user', content: text }];
+
+await testCase('/openai/*: a mixed-case Mistral-Nemo name goes to nemo', async () => {
+    const nemoIds = await encodeTextByLocalTokenizerType('nemo', text);
+    assert.notDeepEqual(nemoIds, await encodeTextByLocalTokenizerType('llama3', text), 'the stand-in tells nemo from llama3');
+    assert.notDeepEqual(nemoIds, Array.from(getTiktokenTokenizer('gpt-3.5-turbo').encode(text)), 'the stand-in tells nemo from gpt-3.5-turbo');
+
+    const encoded = await postTokenizer('/openai/encode', 'Mistral-Nemo-Instruct-2407', { text });
+    assert.deepEqual(encoded.ids, nemoIds, 'encode');
+    assert.equal(encoded.count, nemoIds.length);
+
+    const decoded = await postTokenizer('/openai/decode', 'Mistral-Nemo-Instruct-2407', { ids: nemoIds });
+    assert.equal(decoded.text, text, 'decode');
+
+    const counted = await postTokenizer('/openai/count', 'Mistral-Nemo-Instruct-2407', messages);
+    assert.deepEqual(counted, { token_count: (await encodeTextByLocalTokenizerType('nemo', `user\n\n${text}`)).length }, 'count');
+});
+
+await testCase('/openai/*: an unmapped name gets the estimate, ids: [] and { text: \'\' }', async () => {
+    const encoded = await postTokenizer('/openai/encode', 'some-unheard-of-model', { text });
+    assert.deepEqual(encoded, { ids: [], count: guesstimate(text), chunks: [] }, 'encode');
+
+    const decoded = await postTokenizer('/openai/decode', 'some-unheard-of-model', { ids: [1, 2, 3] });
+    assert.deepEqual(decoded, { text: '' }, 'decode');
+
+    const counted = await postTokenizer('/openai/count', 'some-unheard-of-model', messages);
+    assert.deepEqual(counted, { token_count: guesstimate(JSON.stringify(messages)) }, 'count');
+});
+
+// A tokenizer name upstream accepts in ?model= is an explicit pick of that tokenizer, even where
+// the model map would leave the name unmapped.
+for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
+    await testCase(`/openai/*: the tokenizer name '${name}' picks that tokenizer`, async () => {
+        const ids = await encodeTextByLocalTokenizerType(name, text);
+        assert.ok(ids.length > 0);
+
+        const encoded = await postTokenizer('/openai/encode', name, { text });
+        assert.deepEqual(encoded.ids, ids, 'encode');
+        assert.equal(encoded.count, ids.length);
+
+        const decoded = await postTokenizer('/openai/decode', name, { ids });
+        assert.notEqual(decoded.text, '', 'decode');
+
+        const counted = await postTokenizer('/openai/count', name, messages);
+        assert.deepEqual(counted, { token_count: (await encodeTextByLocalTokenizerType(name, `user\n\n${text}`)).length }, 'count');
+    });
+}
+
+server.close();
+fs.rmSync(dataRoot, { recursive: true, force: true });
+
+assert.deepEqual(caseFailures, [], 'tokenizer cases');
 
 console.log('tokenizers.test.js: all tests passed');

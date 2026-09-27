@@ -11,7 +11,8 @@ import { activateWorldInfoEntries } from './world-info/activation.js';
 import { bucketActivatedEntries, world_info_position } from './world-info/result-bucketing.js';
 import { setExtensionPrompt, extension_prompt_types } from './extension-prompt-table.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
-import { getTokenizerModel, getTiktokenTokenizer } from './endpoints/tokenizers.js';
+import { countChatCompletionMessages } from './endpoints/tokenizers.js';
+import { resolveTokenizer } from './tokenizer-resolve.js';
 import { getBiasStrings } from './prompt-line-formatting.js';
 import { appendFileAttachments } from './file-attachment-inline.js';
 import { substituteParams } from './macro-substitution.js';
@@ -65,22 +66,10 @@ import { substituteParams } from './macro-substitution.js';
  *    text-completion-generation-input.js, then runs the result through `buildChatCompletionMessages()`
  *    as the one, real conversion step - not reinvented, not skipped.
  *
- * 3. TOKEN COUNTING: no already-exported, directly-reusable "count these OpenAI chat messages for
- *    real" function exists anywhere server-side - `src/endpoints/tokenizers.js`'s `/openai/count`
- *    route implements the real per-message tiktoken-counting algorithm (tokensPerMessage/tokensPerName/
- *    tokensPadding, mirroring OpenAI's own documented method) entirely INLINE in the Express route
- *    handler, with no exported standalone function wrapping it. Rather than duplicating tiktoken
- *    bootstrapping/caching logic, this module reuses that file's own EXPORTED building blocks
- *    (`getTokenizerModel(requestModel)`, `getTiktokenTokenizer(model)`) and re-implements just the
- *    per-message counting loop (a handful of lines, copied verbatim from the route) as this module's
- *    `countTokenAsyncFn` - see `createOpenAITokenCounter()` below. Non-tiktoken tokenizer families
- *    (claude/llama/mistral/etc, whatever `getTokenizerModel()` normalizes a model string to) are an
- *    explicit, documented MVP scope boundary: this resolver approximates them using the same tiktoken
- *    `'gpt-3.5-turbo'` encoding rather than wiring in every family's own dedicated
- *    sentencepiece/web-tokenizer singleton (a separate, heavier subsystem those tokenizers already
- *    have real server support for, just not stitched into one generic "count these chat-completion
- *    messages" function anywhere yet) - a caller with a real need for exact non-OpenAI-family counting
- *    can override `countTokenAsyncFn` (or supply a whole pre-built `tokenHandler`) directly.
+ * 3. TOKEN COUNTING: the model's resolveTokenizer() answer (src/tokenizer-resolve.js; the model map
+ *    on the source's model), counted per message like the `/openai/count` route, through the same
+ *    `countChatCompletionMessages()` - see `createOpenAITokenCounter()` below. An unmapped model counts
+ *    by the estimate. A caller can override `countTokenAsyncFn` (or supply a whole `tokenHandler`).
  *
  * 4. WORLD INFO: this resolver, like text-completion-generation-input.js, resolves
  *    `worldInfoCandidates` for real via `resolveWorldInfoCandidates()` (identical field mapping - see
@@ -540,11 +529,6 @@ const GENERATION_TYPE_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 
 /** Mirrors result-bucketing.js's own (unexported) local DEFAULT_DEPTH constant - see decision 4 above. */
 const WI_DEFAULT_DEPTH = 4;
 
-// Non-tiktoken tokenizer families `getTokenizerModel()` (src/endpoints/tokenizers.js) can normalize a
-// model string to - see decision 3 above for why these are approximated via tiktoken's own
-// 'gpt-3.5-turbo' encoding here rather than wiring in each family's dedicated tokenizer singleton.
-const NON_TIKTOKEN_TOKENIZER_FAMILIES = ['claude', 'llama3', 'llama', 'mistral', 'yi', 'deepseek', 'gemma', 'jamba', 'qwen2', 'command-r', 'command-a', 'nemo'];
-
 /**
  * Server-side port of `getChatCompletionModel(settings)`
  * (public/scripts/chat-completion-settings.js ~line 1717) - resolves the currently-selected model
@@ -588,39 +572,18 @@ export function getChatCompletionModel(settings) {
 }
 
 /**
- * Real per-message OpenAI chat-completion token-counting `CountTokenAsyncFn`
- * (src/chat-completion-budget.js), reusing src/endpoints/tokenizers.js's exported
- * `getTokenizerModel()`/`getTiktokenTokenizer()` - see decision 3 above for the full rationale
- * (including the non-tiktoken-family approximation) and why no already-exported "count these
- * messages" function existed to reuse wholesale instead.
- * @param {string | null} [model] The resolved chat-completion model id/slug
- * (`getChatCompletionModel()`'s output - `string | null | undefined`, see that function's own doc
- * comment for why `null` is a real, distinct value here too).
+ * Per-message chat-completion token-counting `CountTokenAsyncFn` (src/chat-completion-budget.js),
+ * counting like `/api/tokenizers/openai/count` with a resolveTokenizer() answer: the model's own
+ * tokenizer, or the estimate when the model map has none. Only string fields are counted.
+ * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @returns {import('./chat-completion-budget.js').CountTokenAsyncFn}
  */
-export function createOpenAITokenCounter(model) {
-    const normalizedModel = getTokenizerModel(model ?? '');
-    const tiktokenModel = NON_TIKTOKEN_TOKENIZER_FAMILIES.includes(normalizedModel) ? 'gpt-3.5-turbo' : normalizedModel;
-    // Mirrors src/endpoints/tokenizers.js's '/openai/count' route's own tiktoken-family branch exactly
-    // (tokensPerMessage/tokensPerName/tokensPadding), the one piece of that route with no standalone
-    // exported function to call instead.
-    const tokensPerName = normalizedModel === 'gpt-3.5-turbo-0301' ? -1 : 1;
-    const tokensPerMessage = normalizedModel === 'gpt-3.5-turbo-0301' ? 4 : 3;
+export function createOpenAITokenCounter(resolved) {
     /** @type {import('./chat-completion-budget.js').CountTokenAsyncFn} */
     const countTokenAsyncFn = async function countTokenAsyncFn(messages) {
-        const list = Array.isArray(messages) ? messages : [messages];
-        const tokenizer = getTiktokenTokenizer(tiktokenModel);
-        let numTokens = 0;
-        for (const msg of list) {
-            numTokens += tokensPerMessage;
-            for (const [key, value] of Object.entries(msg ?? {})) {
-                if (typeof value !== 'string') continue;
-                numTokens += tokenizer.encode(value).length;
-                if (key === 'name') numTokens += tokensPerName;
-            }
-        }
-        numTokens += 3; // tokensPadding
-        return numTokens;
+        const list = (Array.isArray(messages) ? messages : [messages])
+            .map(msg => Object.fromEntries(Object.entries(msg ?? {}).filter(([, value]) => typeof value === 'string')));
+        return countChatCompletionMessages(resolved, list);
     };
     return countTokenAsyncFn;
 }
@@ -1032,9 +995,10 @@ export async function resolveChatCompletionGenerationInput(directories, {
         textareaText, type, chat, userPromptBias: powerUser.user_prompt_bias, macroContext,
     });
 
-    // Real TokenHandler, wrapping a real OpenAI-family tiktoken-based counter (see doc comment
-    // decision 3) unless a caller supplies its own.
-    const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(model));
+    // See doc comment decision 3.
+    const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(
+        await resolveTokenizer({ api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '' }),
+    ));
 
     // Real world-info ACTIVATION - see doc comment decision 4 for the full rationale/settings-path
     // mapping for every option below. This is the one call site this resolver adds that
@@ -1052,7 +1016,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         creatorNotes: fields.creatorNotes,
         trigger: generationTrigger,
     };
-    // Wraps this module's own real, already-built tiktoken-based counter (tokenHandler.countTokenAsyncFn,
+    // Wraps this module's own real, already-built counter (tokenHandler.countTokenAsyncFn,
     // the `(messages, full) => Promise<number>` shape) to match activateWorldInfoEntries()'s own
     // `(text: string) => Promise<number>` countTokens shape - see decision 4 above for why a single-field
     // pseudo-message (`[{ content: text }]`) is the right shape and why tokenHandler.countAsync() itself
