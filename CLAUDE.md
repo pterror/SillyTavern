@@ -14,7 +14,7 @@ Subagents run only the tests covering what they changed, never the full suite. E
 
 ## Compat
 
-Breaking is forbidden. Upstream (upstream/staging) exports, their signatures and parameter meanings, event payloads, routes, and third-party extensions keep working. Never change third-party extensions. For every upstream parameter, handle each input exactly as upstream does.
+Nothing that works in upstream SillyTavern (the upstream/staging branch) may break here. That covers every function upstream exports, with its parameters and what they mean; every event and what it carries; every server route; and every third-party extension. Never modify a third-party extension. Where upstream accepts an argument, accept the same values and handle them the same way.
 
 ## Client
 
@@ -22,20 +22,20 @@ Clients only send actions.
 
 ## Loading
 
-Anything the client might already have is fetched conditionally against its cached hash. Nothing loads until it is on screen, except chat bodies, which always load whole. IDB space is limited.
+If the browser may already have a piece of data, it sends the server a hash of its copy and downloads the data only if it changed. Data isn't loaded until something on screen needs it. The exception is a chat's messages: opening a chat always loads all of them. Browser storage (IndexedDB) is limited, so cache only what's worth it.
 
 ## Memory
 
-The JS heap holds only what the current view needs. IDB may cache more, within a budget.
+The page's memory holds only what is currently on screen. Browser storage (IndexedDB) may keep more, within a size limit.
 
 ## Data safety
 
-Correct over fast. Never lose data. Never drop anything silently: warn, listing what was dropped. No writes without a real change.
+Correctness comes before speed. Never lose data. Never leave anything out silently: if something has to be dropped, show a warning listing exactly what. Don't write anything unless something actually changed.
 
 ## Tree model
 
-Conversations are a message tree per owner plus a pointer to a node. A chat is a minimal shim over a bookmark. Bookmarks either follow the conversation or stay pinned.
+Each character's or group's messages form a tree: a message can have several replies, and each reply starts a different branch of the conversation. The app keeps a pointer to the message you are currently at. A bookmark is a saved reference to one message (its id) plus a label you choose, so you can jump back to that message later; opening it shows the conversation from the first message down to that one. A following bookmark is updated whenever a new message is added right after the one it points to, so it always points at the newest message on that branch. A fixed bookmark always points at the same message. A "chat", as upstream code sees it, is only a thin layer over a bookmark.
 
 ## Boot and batches
 
-Nothing heavy blocks listen. Big passes run in workers, in batches that yield, and never hold a reader across writes.
+Server startup must never wait on heavy work. Large passes over the data run in background worker threads, in small batches with pauses between them, and never keep a database read open while writing.
