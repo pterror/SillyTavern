@@ -55,14 +55,85 @@ check(GENERAL_API, 'mistral-7b-instruct-v0.3', null);
 check(GENERAL_API, 'Mistral-Nemo-Instruct-2407', tokenizers.NEMO);
 check(GENERAL_API, 'nemotron-70b', null);
 
-// --- Gemma 1/2 ---
-check(GENERAL_API, 'gemma-2-9b-it', tokenizers.GEMMA);
+// --- Gemma 1/2: a name with an explicit Gemma 1 or 2 version ---
+for (const name of [
+    'gemma-2-9b-it', 'google/gemma-2-27b-it', 'gemma2-9b-it', 'gemma2:27b', 'gemma2:latest', 'gemma-2b', 'gemma-7b-it',
+    'gemma-1.1-7b-it', 'gemma:7b-instruct', 'gemma:2b', 'gemma:v1.1',
+]) {
+    check(GENERAL_API, name, tokenizers.GEMMA);
+}
 check(GENERAL_API, 'gemma-3-27b', null);
 check(GENERAL_API, 'gemma_3', null);
 check(GENERAL_API, 'gemma 3', null);
 check(GENERAL_API, 'gemma.3', null);
-check(GENERAL_API, 'gemma-3n-e4b', null);
-check(GENERAL_API, 'gemma3-12b', null);
+
+// --- Gemma: one official file each ---
+/**
+ * @param {string} name
+ * @param {string} source registry entry id
+ */
+function checkSelfHostedOnly(name, source) {
+    assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), { byBackend: { other: { source } } }, name);
+}
+
+// Gemma 3's -it file, for the models Google's API also serves.
+for (const name of [
+    'gemma-3-27b-it', 'google/gemma-3-1b-it', 'gemma-3-4b-it-Q4_K_M.gguf', 'unsloth/gemma-3-12b-it-GGUF',
+    'mlabonne/gemma-3-27b-it-abliterated', 'gemma3:27b', 'gemma3:1b', 'gemma3:12b-it-q8_0', 'gemma3-12b',
+]) {
+    checkSelfHostedOnly(name, 'gemma-3-it');
+}
+// Gemma 3's -pt file: the -pt repos, 270m and 270m-it, the -it QAT repos, MedGemma, TranslateGemma, ShieldGemma 2.
+for (const name of [
+    'gemma-3-27b-pt', 'google/gemma-3-1b-pt', 'gemma-3-270m', 'gemma-3-270m-it', 'gemma3:270m',
+    'gemma-3-12b-it-qat-q4_0-unquantized', 'gemma-3-27b-it-qat-int4-unquantized', 'gemma-3-27b-pt-qat-q4_0-gguf',
+    'gemma3:27b-it-qat', 'medgemma-4b-it', 'medgemma-27b-text-it', 'medgemma-1.5-4b-it', 'medgemma:27b',
+    'translategemma-12b-it', 'translategemma:27b', 'shieldgemma-2-4b-it',
+]) {
+    checkSource(GENERAL_API, name, 'gemma-3-pt');
+}
+// Gemma 3n: one file for E2B and E4B, base and -it.
+for (const name of ['gemma-3n-E4B', 'gemma-3n-e2b']) {
+    checkSource(GENERAL_API, name, 'gemma-3n');
+}
+for (const name of ['gemma-3n-E2B-it', 'google/gemma-3n-e4b-it', 'gemma3n:e2b', 'gemma3n:e4b-it-q8_0']) {
+    checkSelfHostedOnly(name, 'gemma-3n');
+}
+// Gemma 4: the -it and base files have the same content; the assistant file lacks `<|video|>`.
+for (const name of [
+    'gemma-4-E4B-it', 'gemma-4-12B-it', 'gemma4:e2b', 'gemma4:12b', 'gemma-4-31B-it-qat-q4_0-unquantized',
+    'gemma4:31b-it-qat', 'gemma-4-31B', 'gemma-4-E2B',
+]) {
+    checkSource(GENERAL_API, name, 'gemma-4');
+}
+for (const name of [
+    'gemma-4-31b-it', 'gemma-4-26b-a4b-it', 'google/gemma-4-31B-it', 'gemma-4-26b-a4b-it-maas', 'gemma4:31b',
+    'gemma4:26b', 'gemma4:26b-a4b-it-mtp-q4_K_M', 'gemma4:31b-cloud',
+]) {
+    checkSelfHostedOnly(name, 'gemma-4');
+}
+for (const name of ['gemma-4-31B-it-assistant', 'gemma-4-12B-it-assistant', 'gemma-4-E4B-it-qat-q4_0-unquantized-assistant']) {
+    checkSource(GENERAL_API, name, 'gemma-4-assistant');
+}
+for (const name of ['codegemma-7b-it', 'codegemma-2b', 'codegemma-1.1-7b-it', 'codegemma:7b-instruct-v1.1-q4_0', 'codegemma:2b-code']) {
+    checkSource(GENERAL_API, name, 'codegemma');
+}
+for (const name of ['gemma-2-2b-jpn-it', 'google/gemma-2-2b-jpn-it-GGUF']) {
+    checkSource(GENERAL_API, name, 'gemma-2-jpn');
+}
+
+// Unknown Gemma versions and sizes, names that pick no one model, and Gemma models whose files have no entry.
+for (const name of [
+    'gemma-5-9b', 'gemma-1.2-2b', 'gemma-2.5-9b', 'gemma-3.1-27b-it', 'gemma-4.1-31b-it', 'codegemma-2-7b',
+    'medgemma-2-4b-it', 'translategemma-2-4b-it', 'shieldgemma-3-4b', 'gemma-3-2b-it', 'gemma-4-8b-it',
+    'gemma', 'gemma:latest', 'gemma:instruct', 'gemma:text', 'gemma-it', 'Tiger-Gemma-9B-v3', 'Big-Tiger-Gemma-27B-v3',
+    'gemma3', 'gemma3:latest', 'gemma-3', 'gemma3n', 'gemma3n:latest', 'gemma4', 'gemma4:latest', 'gemma4:cloud',
+    'gemma4:31b-coding-mtp-bf16', 'codegemma', 'codegemma:latest', 'codegemma:instruct', 'codegemma:code',
+    'medgemma:latest', 'translategemma:latest', 'functiongemma-270m-it', 'embeddinggemma-300m', 'paligemma2-3b-mix-224',
+    'vaultgemma-1b',
+]) {
+    check(GENERAL_API, name, null);
+}
 
 // --- Yi ---
 check(GENERAL_API, 'yi-34b-chat', tokenizers.YI);
@@ -284,7 +355,6 @@ check(GENERAL_API, 'recurrentgemma-9b', tokenizers.GEMMA);
 check(GENERAL_API, 'recurrentgemma-2b-it-sfp-cpp', tokenizers.GEMMA);
 check(GENERAL_API, 'shieldgemma-2b', tokenizers.GEMMA);
 check(GENERAL_API, 'shieldgemma:27b', tokenizers.GEMMA);
-check(GENERAL_API, 'shieldgemma-2-4b-it', null);
 check(GENERAL_API, 'datagemma-rig-27b-it', tokenizers.GEMMA);
 check(GENERAL_API, 'datagemma-rag-27b-it', tokenizers.GEMMA);
 check(GENERAL_API, 'txgemma-2b-predict', tokenizers.GEMMA);
@@ -447,6 +517,22 @@ for (const alias of ['deepseek-v4-pro', 'deepseek-v4-flash']) {
 // DeepSeek's own API gives every id the estimate.
 for (const name of ['deepseek-v3', 'deepseek-v3.1', 'DeepSeek-V3.2', 'deepseek-v4.1-flash', 'DeepSeek-R1-0528', 'deepseek-chat']) {
     assert.equal(selectBackendResult(lookupModelTokenizer('openai', name), { api: 'openai', source: 'deepseek' }), null, name);
+}
+
+// Gemma models Google's own API also serves (gemma-4-31b-it, gemma-4-26b-a4b-it, gemma-3-*-it, gemma-3n-*-it)
+// map only on a self-hosted backend. The others map on every backend.
+/** @param {{ api: string, type?: string }} state */
+const isSelfHosted = state => state.api === 'kobold' || (state.api === GENERAL_API && selfHostedTextgen.includes(state.type));
+for (const [name, source] of [['gemma-3-27b-it', 'gemma-3-it'], ['gemma-3n-e4b-it', 'gemma-3n'], ['gemma-4-31b-it', 'gemma-4'], ['gemma-4-26b-a4b-it', 'gemma-4']]) {
+    for (const state of backendStates) {
+        assert.deepEqual(selectBackendResult(lookupModelTokenizer(state.api, name), state), isSelfHosted(state) ? { source } : null, `${name} on ${JSON.stringify(state)}`);
+    }
+}
+for (const [name, source] of [['gemma-3-27b-pt', 'gemma-3-pt'], ['gemma-4-E4B-it', 'gemma-4'], ['gemma-4-31B-it-assistant', 'gemma-4-assistant'], ['codegemma-7b-it', 'codegemma']]) {
+    for (const state of backendStates) {
+        const unmapped = state.api === 'novel' || (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
+        assert.deepEqual(selectBackendResult(lookupModelTokenizer(state.api, name), state), unmapped ? null : { source }, `${name} on ${JSON.stringify(state)}`);
+    }
 }
 
 console.log('tokenizer-model-map tests passed');

@@ -43,6 +43,13 @@ export const tokenizers = {
     DEEPSEEK_R1_DISTILL_QWEN: 1017,
     DEEPSEEK_R1_DISTILL_LLAMA: 1018,
     DEEPSEEK_R1_0528_QWEN3: 1019,
+    GEMMA_4: 1020,
+    GEMMA_4_ASSISTANT: 1021,
+    GEMMA_3_IT: 1022,
+    GEMMA_3_PT: 1023,
+    GEMMA_3N: 1024,
+    CODEGEMMA: 1025,
+    GEMMA_2_JPN: 1026,
 };
 
 /**
@@ -92,4 +99,11 @@ export const TOKENIZER_TYPE_KEYS = {
     [tokenizers.DEEPSEEK_R1_DISTILL_QWEN]: 'deepseek-r1-distill-qwen',
     [tokenizers.DEEPSEEK_R1_DISTILL_LLAMA]: 'deepseek-r1-distill-llama',
     [tokenizers.DEEPSEEK_R1_0528_QWEN3]: 'deepseek-r1-0528-qwen3',
+    [tokenizers.GEMMA_4]: 'gemma-4',
+    [tokenizers.GEMMA_4_ASSISTANT]: 'gemma-4-assistant',
+    [tokenizers.GEMMA_3_IT]: 'gemma-3-it',
+    [tokenizers.GEMMA_3_PT]: 'gemma-3-pt',
+    [tokenizers.GEMMA_3N]: 'gemma-3n',
+    [tokenizers.CODEGEMMA]: 'codegemma',
+    [tokenizers.GEMMA_2_JPN]: 'gemma-2-jpn',
 };

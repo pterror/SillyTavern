@@ -85,6 +85,122 @@ function guardedMatch(tokens, sequences, isExcluded) {
 const followedByAllDigits = rest => rest.length > 0 && ALL_DIGITS.test(rest[0]);
 
 /**
+ * The result for a model Google's own API also serves under its name: the name says which weights
+ * they are only on a self-hosted backend, and every hosted API gets the estimate.
+ * @param {string} source
+ * @returns {MapResult}
+ */
+const onSelfHostedOnly = source => ({ byBackend: { other: { source } } });
+
+/**
+ * Version numbers each Gemma name may have after it; any other is an unknown version.
+ * @type {Array<[string[], (next: string) => boolean]>}
+ */
+const GEMMA_KNOWN_VERSIONS = [
+    [['gemma'], next => ['1', '2', '3', '4'].includes(next)],
+    [['gemma', '1'], next => next === '1'],
+    [['gemma', '2'], () => false],
+    [['gemma2'], () => false],
+    [['gemma', '3'], () => false],
+    [['gemma3'], () => false],
+    [['gemma', '3n'], () => false],
+    [['gemma3n'], () => false],
+    [['gemma', '4'], () => false],
+    [['gemma4'], () => false],
+    [['codegemma'], next => next === '1'],
+    [['codegemma', '1'], next => next === '1'],
+    [['medgemma'], next => next === '1'],
+    [['medgemma', '1'], next => next === '5'],
+    [['translategemma'], () => false],
+    [['shieldgemma'], next => next === '2'],
+    [['shieldgemma', '2'], () => false],
+];
+
+/**
+ * Gemma 1/2 (the bundled gemma.model), Gemma 2 JPN, Gemma 3, 3n, 4, CodeGemma, and the Gemma 3 based
+ * MedGemma, TranslateGemma and ShieldGemma 2. A Gemma 3, 3n or 4, CodeGemma, MedGemma or
+ * TranslateGemma name without a size picks no one model.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function gemmaFamilyMatches(tokens) {
+    for (const [sequence, isKnown] of GEMMA_KNOWN_VERSIONS) {
+        if (guardedMatch(tokens, [sequence], rest => followedByAllDigits(rest) && !isKnown(rest[0])) === 'veto') {
+            return null;
+        }
+    }
+
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+    /**
+     * The one size of `sizes` the name has; null for none or several.
+     * @param {string[]} sizes
+     */
+    const onlySize = sizes => {
+        const found = sizes.filter(size => tokens.includes(size));
+        return found.length === 1 ? found[0] : null;
+    };
+    const hasIt = tokens.includes('it');
+    const hasPt = tokens.includes('pt');
+    const hasQat = tokens.includes('qat');
+
+    // Gemma 1 (gemma-2b, gemma-7b, gemma-1.1-*, Ollama's gemma:v1.1) and Gemma 2 ship gemma.model.
+    if (findSequence(tokens, ['gemma']).some(start => ['1', '2', '2b', '7b', 'v1'].includes(tokens[start + 1])) || tokens.includes('gemma2')) {
+        add(tokenizers.GEMMA);
+    }
+    // Gemma-2-2B-JPN ships its own file.
+    if (hasSequence(tokens, ['gemma', '2', '2b', 'jpn'])) {
+        matches.push({ result: { source: 'gemma-2-jpn' }, supersedes: [TOKENIZER_TYPE_KEYS[tokenizers.GEMMA]] });
+    }
+
+    // Gemma 3: google/gemma-3-{1b,4b,12b,27b}-it ship the -it file. The -pt repos, 270m and 270m-it and
+    // the -it QAT repos ship the -pt file. Ollama's `gemma3:<size>` tags are the -it models; a
+    // `gemma-3-<size>` name with neither `it` nor `pt` picks neither file.
+    if (hasSequence(tokens, ['gemma', '3']) || tokens.includes('gemma3')) {
+        const size = onlySize(['270m', '1b', '4b', '12b', '27b']);
+        const isIt = hasIt ? !hasPt : !hasPt && tokens.includes('gemma3');
+        const isPt = hasPt && !hasIt;
+        if (size === '270m' || (size && (isPt || (isIt && hasQat)))) {
+            add({ source: 'gemma-3-pt' });
+        } else if (size && isIt) {
+            add(onSelfHostedOnly('gemma-3-it'));
+        }
+    }
+    // MedGemma, TranslateGemma and ShieldGemma 2 ship the Gemma 3 -pt file.
+    if ((tokens.includes('medgemma') && onlySize(['4b', '27b']))
+        || (tokens.includes('translategemma') && onlySize(['4b', '12b', '27b']))
+        || hasSequence(tokens, ['shieldgemma', '2', '4b'])) {
+        add({ source: 'gemma-3-pt' });
+    }
+
+    // Gemma 3n: the E2B and E4B repos, base and -it, ship one file. Ollama's gemma3n tags are the -it models.
+    if (hasSequence(tokens, ['gemma', '3n']) || tokens.includes('gemma3n')) {
+        const isIt = hasIt ? !hasPt : !hasPt && tokens.includes('gemma3n');
+        if (onlySize(['e2b', 'e4b'])) add(isIt ? onSelfHostedOnly('gemma-3n') : { source: 'gemma-3n' });
+    }
+
+    // Gemma 4: the -it and base repos ship files with the same content; the -assistant repos ship one
+    // without `<|video|>`. Google's API serves the 31B and 26B-A4B -it models. Ollama's `gemma4:<size>`
+    // tags are the -it models; its `gemma4:31b-coding` file is unknown.
+    if ((hasSequence(tokens, ['gemma', '4']) || tokens.includes('gemma4')) && !tokens.includes('coding')) {
+        const size = onlySize(['e2b', 'e4b', '12b', '26b', '31b']);
+        const isIt = hasIt ? !hasPt : !hasPt && tokens.includes('gemma4');
+        if (size && tokens.includes('assistant')) {
+            add({ source: 'gemma-4-assistant' });
+        } else if (size) {
+            add(isIt && !hasQat && ['26b', '31b'].includes(size) ? onSelfHostedOnly('gemma-4') : { source: 'gemma-4' });
+        }
+    }
+
+    // CodeGemma 1.0 and 1.1, 2b and 7b, base and -it, ship one file.
+    if (tokens.includes('codegemma') && onlySize(['2b', '7b'])) add({ source: 'codegemma' });
+
+    return matches;
+}
+
+/**
  * @param {string[]} tokens
  * @param {string} lowerName
  * @returns {MapMatch[] | null} null when a guard vetoes the name
@@ -135,8 +251,6 @@ function generalMatches(tokens, lowerName) {
 
     const guarded = [
         [tokenizers.LLAMA3, [['llama', '3'], ['llama3']], followedByAllDigits],
-        [tokenizers.GEMMA, [['gemma']], rest => rest[0] === '3' || rest[0] === '3n'],
-        [tokenizers.GEMMA, [['gemma2']], () => false],
         [tokenizers.YI, [['yi']], () => false],
     ];
     for (const [result, sequences, isExcluded] of /** @type {Array<[number, string[][], (rest: string[]) => boolean]>} */ (guarded)) {
@@ -144,6 +258,10 @@ function generalMatches(tokens, lowerName) {
         if (outcome === 'veto') return null;
         if (outcome === 'match') add(result);
     }
+
+    const gemmaMatches = gemmaFamilyMatches(tokens);
+    if (gemmaMatches === null) return null;
+    matches.push(...gemmaMatches);
 
     // Qwen1.5/Qwen2 ship qwen2.json. `qwen2`,`5` (Qwen2.5) and `qwen2`,`vl` (Qwen2-VL) have their own
     // entries below; `qwen2` followed by another number is an unknown version.

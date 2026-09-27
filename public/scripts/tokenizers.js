@@ -59,6 +59,13 @@ export const tokenizers = {
     DEEPSEEK_R1_DISTILL_QWEN: 1017,
     DEEPSEEK_R1_DISTILL_LLAMA: 1018,
     DEEPSEEK_R1_0528_QWEN3: 1019,
+    GEMMA_4: 1020,
+    GEMMA_4_ASSISTANT: 1021,
+    GEMMA_3_IT: 1022,
+    GEMMA_3_PT: 1023,
+    GEMMA_3N: 1024,
+    CODEGEMMA: 1025,
+    GEMMA_2_JPN: 1026,
 };
 
 // A list of local tokenizers that support encoding and decoding token ids.
@@ -94,6 +101,13 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.DEEPSEEK_R1_DISTILL_QWEN,
     tokenizers.DEEPSEEK_R1_DISTILL_LLAMA,
     tokenizers.DEEPSEEK_R1_0528_QWEN3,
+    tokenizers.GEMMA_4,
+    tokenizers.GEMMA_4_ASSISTANT,
+    tokenizers.GEMMA_3_IT,
+    tokenizers.GEMMA_3_PT,
+    tokenizers.GEMMA_3N,
+    tokenizers.CODEGEMMA,
+    tokenizers.GEMMA_2_JPN,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,
