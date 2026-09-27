@@ -81,7 +81,6 @@ import { startSearchWorkerIfIndexed } from './endpoints/characters-search-index.
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { disposeMessageTreeStores } from './message-tree-db.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
-import { migrateGroupChatsMetadataFormat } from './endpoints/groups.js';
 import { runOnceAtBoot as runUnimportEmbeddedLoreAtBoot } from './migrations/unimport-embedded-lore.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
 
@@ -315,8 +314,6 @@ async function preSetupTasks() {
 
     const directories = await getUserDirectoriesList();
     __mark('getUserDirectoriesList');
-    await migrateGroupChatsMetadataFormat(directories);
-    __mark('migrateGroupChatsMetadataFormat');
     await checkForNewContent(directories);
     __mark('checkForNewContent');
     // No boot-time diskCache.verify(): cache keys embed file mtime, so stale entries just miss on

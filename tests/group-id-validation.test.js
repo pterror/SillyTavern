@@ -465,7 +465,7 @@ describe('each existing write of a legacy group stores chat_id and chats as stri
     });
 
     test('migrateGroupChatsMetadataFormat()', async () => {
-        writeLegacyGroup(777, { chat_metadata: { note: 'x' } });
+        writeLegacyGroup(777, { chat_metadata: {} });
         await groupsModule.migrateGroupChatsMetadataFormat([directories]);
         const file = readRawFile('777.json');
         expect(file.chat_metadata).toBeUndefined();
