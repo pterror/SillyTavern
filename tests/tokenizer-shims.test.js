@@ -344,3 +344,29 @@ describe('decode and trim ask /current/*', () => {
         await expect(tokenizersModule.trimCurrentTokens('hello world', 1, 'end')).resolves.toBeNull();
     });
 });
+
+describe('the token counter encode asks /current/encode', () => {
+    test('encodeCurrentTokens posts to /current/encode and gives the ids, chunks and tokenizer', () => {
+        respond = () => ({ ids: [[1, 2]], chunks: [['a', 'b']], tokenizer: answer() });
+        expect(tokenizersModule.encodeCurrentTokens('x')).toEqual({ ids: [1, 2], chunks: ['a', 'b'], tokenizer: answer() });
+        expect(requests).toEqual([{ url: '/api/tokenizers/current/encode', async: false, body: { state: textgenState, texts: ['x'] } }]);
+    });
+
+    test('an estimate gives no ids and no chunks, with its tokenizer', () => {
+        const estimate = answer({ id: tokenizerIds.NONE, name: 'None / Estimated', basis: 'unknown' });
+        respond = () => ({ ids: [null], tokenizer: estimate });
+        expect(tokenizersModule.encodeCurrentTokens('x')).toEqual({ ids: [], chunks: null, tokenizer: estimate });
+    });
+
+    test('a failed encode request gives no ids, no chunks and no tokenizer', () => {
+        respond = () => { throw new Error('offline'); };
+        expect(tokenizersModule.encodeCurrentTokens('x')).toEqual({ ids: [], chunks: null, tokenizer: null });
+    });
+
+    test('an encode response updates the remembered answer', () => {
+        respond = () => ({ ids: [[1, 2]], tokenizer: answer({ id: tokenizerIds.LLAMA3, name: 'Llama 3', key: 'k3' }) });
+        tokenizersModule.encodeCurrentTokens('x');
+        expect(tokenizersModule.getTokenizerBestMatch()).toBe(tokenizerIds.LLAMA3);
+        expect(requests.length).toBe(1);
+    });
+});
