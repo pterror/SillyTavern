@@ -75,10 +75,9 @@ export function guesstimate(str) {
 /**
  * Gets a path to the tokenizer model. Downloads the model if it's a URL.
  * @param {string} model Model URL or path
- * @param {string|undefined} fallbackModel Fallback model path
- * @returns {Promise<string>} Path to the tokenizer model
+ * @returns {Promise<string>} Path to the tokenizer model. Throws when the model can't be had.
  */
-async function getPathToTokenizer(model, fallbackModel) {
+async function getPathToTokenizer(model) {
     if (!isValidUrl(model)) {
         return model;
     }
@@ -142,13 +141,7 @@ async function getPathToTokenizer(model, fallbackModel) {
         writeFileAtomicSync(cachedFile, Buffer.from(arrayBuffer));
         return cachedFile;
     } catch (error) {
-        const getLastSegment = str => str?.split('/')?.pop() || '';
-        if (fallbackModel) {
-            console.error(`Could not get a tokenizer from ${getLastSegment(model)}. Reason: ${error.message}. Using a fallback model: ${getLastSegment(fallbackModel)}.`);
-            return fallbackModel;
-        }
-
-        throw new Error(`Failed to instantiate a tokenizer and fallback is not provided. Reason: ${error.message}`);
+        throw new Error(`Could not get a tokenizer from ${model.split('/').pop()}. Reason: ${error.message}`);
     }
 }
 
@@ -165,10 +158,6 @@ class SentencePieceTokenizer {
      */
     #model;
     /**
-     * @type {string|undefined} Path to the fallback model
-     */
-    #fallbackModel;
-    /**
      * @type {Promise<import('@agnai/sentencepiece-js').SentencePieceProcessor|null>|null}
      */
     #loadPromise;
@@ -176,11 +165,9 @@ class SentencePieceTokenizer {
     /**
      * Creates a new Sentencepiece tokenizer.
      * @param {string} model Path to the tokenizer model
-     * @param {string} [fallbackModel] Path to the fallback model
      */
-    constructor(model, fallbackModel) {
+    constructor(model) {
         this.#model = model;
-        this.#fallbackModel = fallbackModel;
     }
 
     /**
@@ -205,7 +192,7 @@ class SentencePieceTokenizer {
      */
     async #load() {
         try {
-            const pathToModel = await getPathToTokenizer(this.#model, this.#fallbackModel);
+            const pathToModel = await getPathToTokenizer(this.#model);
             const instance = new SentencePieceProcessor();
             await instance.load(pathToModel);
             console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
@@ -232,19 +219,13 @@ class WebTokenizer {
      * @type {string} Path to the tokenizer model
      */
     #model;
-    /**
-     * @type {string|undefined} Path to the fallback model
-     */
-    #fallbackModel;
 
     /**
      * Creates a new Web tokenizer.
      * @param {string} model Path to the tokenizer model
-     * @param {string} [fallbackModel] Path to the fallback model
      */
-    constructor(model, fallbackModel) {
+    constructor(model) {
         this.#model = model;
-        this.#fallbackModel = fallbackModel;
     }
 
     /**
@@ -257,7 +238,7 @@ class WebTokenizer {
         }
 
         try {
-            const pathToModel = await getPathToTokenizer(this.#model, this.#fallbackModel);
+            const pathToModel = await getPathToTokenizer(this.#model);
             const fileBuffer = await fs.promises.readFile(pathToModel);
             this.#instance = await Tokenizer.fromJSON(fileBuffer);
             console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
@@ -278,11 +259,11 @@ const spp_gemma = new SentencePieceTokenizer('src/tokenizers/gemma.model');
 const spp_jamba = new SentencePieceTokenizer('src/tokenizers/jamba.model');
 const claude_tokenizer = new WebTokenizer('src/tokenizers/claude.json');
 const llama3_tokenizer = new WebTokenizer('src/tokenizers/llama3.json');
-const commandRTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz', 'src/tokenizers/llama3.json');
-const commandATokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz', 'src/tokenizers/llama3.json');
-const qwen2Tokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz', 'src/tokenizers/llama3.json');
-const nemoTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/nemo.json.gz', 'src/tokenizers/llama3.json');
-const deepseekTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/deepseek.json.gz', 'src/tokenizers/llama3.json');
+const commandRTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz');
+const commandATokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz');
+const qwen2Tokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz');
+const nemoTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/nemo.json.gz');
+const deepseekTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/deepseek.json.gz');
 
 export const sentencepieceTokenizers = [
     'llama',

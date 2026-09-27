@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mock } from 'node:test';
 
 // This module reads process-wide config at import time (e.g. src/endpoints/secrets.js) - the
 // config path must be set before that import chain runs, same approach as
@@ -11,6 +12,26 @@ import { setConfigFilePath } from '../util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
+
+// Tokenizer downloads fail with 503 without touching the network. Needs --experimental-test-module-mocks.
+const canMockDownloads = typeof mock.module === 'function';
+/** @type {string[]} URLs the download stub was asked for. */
+const downloadRequests = [];
+if (canMockDownloads) {
+    const realNodeFetch = (await import(path.join(__dirname, '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
+    mock.module('node-fetch', {
+        defaultExport: async (url, opts) => {
+            if (String(url).startsWith('https://github.com/SillyTavern/SillyTavern-Tokenizers/')) {
+                downloadRequests.push(String(url));
+                return new Response('unavailable', { status: 503, statusText: 'Service Unavailable' });
+            }
+            return realNodeFetch(url, opts);
+        },
+        namedExports: {},
+    });
+} else {
+    console.log('tokenizers.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping the download-failure case, which needs it to stub the tokenizer download');
+}
 
 const { computeLogitBias, computeTextgenLogitBias, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
 const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
@@ -223,6 +244,31 @@ for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
 
         const counted = await postTokenizer('/openai/count', name, messages);
         assert.deepEqual(counted, { token_count: (await encodeTextByLocalTokenizerType(name, `user\n\n${text}`)).length }, 'count');
+    });
+}
+
+// --- downloadable tokenizers ---
+
+if (canMockDownloads) {
+    await testCase('qwen2 download failure: no llama3.json load, a throw, and a retry on the next use', async () => {
+        const readPaths = [];
+        const realReadFile = fs.promises.readFile;
+        fs.promises.readFile = function (file, ...rest) {
+            readPaths.push(String(file));
+            return realReadFile.call(this, file, ...rest);
+        };
+        try {
+            downloadRequests.length = 0;
+            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the Web tokenizer for type: qwen2/);
+            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the Web tokenizer for type: qwen2/);
+        } finally {
+            fs.promises.readFile = realReadFile;
+        }
+        assert.deepEqual(readPaths.filter(file => path.basename(file) === 'llama3.json'), [], 'no llama3.json load');
+        assert.deepEqual(downloadRequests, [
+            'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz',
+            'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz',
+        ], 'downloaded again on the next use');
     });
 }
 
