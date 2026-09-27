@@ -1,6 +1,7 @@
 import { describe, test, expect } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
+import path from 'node:path';
 
 import {
     FRAME_SENTINEL,
@@ -528,5 +529,70 @@ describe('pipeLlamaCppCompactStream - integration over a fake upstream + fake re
         // and that the compact-format headers were never set for a non-ok/no-body upstream.
         expect(res.headers['X-ST-Stream-Format']).toBeUndefined();
         expect(res.ended).toBe(true);
+    });
+});
+
+/** Builds a fake upstream fetch Response over an OpenAI-completions-shaped SSE stream (`choices[0].text`). */
+function fakeCompletionsUpstream(texts) {
+    const sseText = texts.map(t => `data: ${JSON.stringify({ choices: [{ index: 0, text: t }] })}\n\n`).join('') + 'data: [DONE]\n\n';
+    return { ok: true, status: 200, statusText: 'OK', body: Readable.from([Buffer.from(sseText, 'utf-8')]) };
+}
+
+/** Decodes everything a FakeResponse received into compact-stream events. */
+function decodeWrites(res) {
+    const allBytes = Buffer.concat(res.writes.filter(Boolean));
+    return decodeInChunks(allBytes, [allBytes.length || 1]);
+}
+
+describe('warnings control frame', () => {
+    const itemization = { total: 42 };
+    const warnings = [{ kind: 'dropped', key: 'textgenerationwebui|llamacpp|http://x|m|none', message: 'Dropped 1 entry', entries: ['foo'] }];
+    const llamaEvents = [
+        { index: 0, content: 'Hello' },
+        { index: 0, content: '', stop: true },
+    ];
+
+    /** Drives text-completions' exported forwardAndPersistCompactStream (imported lazily: the route module is heavy). */
+    async function runForward(res, extraArgs) {
+        const { setConfigFilePath } = await import('../src/util.js');
+        setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+        const { forwardAndPersistCompactStream } = await import('../src/endpoints/backends/text-completions.js');
+        await forwardAndPersistCompactStream(fakeCompletionsUpstream(['Hello']), res, null, json => json?.choices?.[0]?.text, null, ...extraArgs);
+    }
+
+    test('pipeLlamaCppCompactStream writes a {warnings} control frame right after the itemization frame', async () => {
+        const res = new FakeResponse();
+        await pipeLlamaCppCompactStream(fakeUpstream(llamaEvents), res, null, itemization, warnings);
+        const events = decodeWrites(res);
+        expect(events[0]).toEqual({ control: { itemization } });
+        expect(events[1]).toEqual({ control: { warnings } });
+        expect(replay(events).text).toBe('Hello');
+    });
+
+    test('pipeLlamaCppCompactStream writes no warnings frame for an empty or omitted array', async () => {
+        for (const extra of [[[]], []]) {
+            const res = new FakeResponse();
+            await pipeLlamaCppCompactStream(fakeUpstream(llamaEvents), res, null, itemization, ...extra);
+            const controls = decodeWrites(res).filter(e => 'control' in e);
+            expect(controls).toEqual([{ control: { itemization } }]);
+        }
+    });
+
+    test('text-completions forwardAndPersistCompactStream writes a {warnings} control frame right after the itemization frame', async () => {
+        const res = new FakeResponse();
+        await runForward(res, [itemization, warnings]);
+        const events = decodeWrites(res);
+        expect(events[0]).toEqual({ control: { itemization } });
+        expect(events[1]).toEqual({ control: { warnings } });
+        expect(replay(events).text).toBe('Hello');
+    });
+
+    test('text-completions forwardAndPersistCompactStream writes no warnings frame for an empty or omitted array', async () => {
+        for (const extra of [[itemization, []], [itemization]]) {
+            const res = new FakeResponse();
+            await runForward(res, extra);
+            const controls = decodeWrites(res).filter(e => 'control' in e);
+            expect(controls).toEqual([{ control: { itemization } }]);
+        }
     });
 });

@@ -82,6 +82,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
 import { main_api } from './generation-params.js';
+import { showTokenizerWarnings } from './tokenizer-notices.js';
 
 export {
     openai_messages_count,
@@ -3276,6 +3277,8 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                                 state.toolCallAborted = true;
                             } else if (event.control?.error) {
                                 tryParseStreamingError(response, JSON.stringify(event.control));
+                            } else if (event.control?.warnings) {
+                                showTokenizerWarnings(event.control.warnings);
                             }
                         }
                     }

@@ -19,6 +19,7 @@ import {
 } from './utils.js';
 import { BIAS_CACHE, createNewLogitBiasEntry, displayLogitBias, getLogitBiasListResult } from './logit-bias.js';
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
+import { showTokenizerWarnings } from './tokenizer-notices.js';
 
 const default_preamble = '[ Style: chat, complex, sensory, visceral ]';
 const default_order = [1, 5, 0, 2, 3, 4];
@@ -742,6 +743,8 @@ export async function generateNovelWithStreaming(generate_data, signal) {
                     state.assistantNodeId = event.assistantNodeId;
                 } else if ('control' in event && event.control?.itemization) {
                     state.itemization = event.control.itemization;
+                } else if ('control' in event && event.control?.warnings) {
+                    showTokenizerWarnings(event.control.warnings);
                 }
             }
 

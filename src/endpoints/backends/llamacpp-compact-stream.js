@@ -559,8 +559,11 @@ export function createBackpressureWriter(res) {
  * (buildRawActionTextCompletionRequest()'s own `itemization` field) - when set, written as the first
  * frame, a control-JSON frame the client's CompactStreamDecoder already decodes generically
  * (`{control: {itemization: ...}}`).
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The
+ * generate route's per-request warnings - when non-empty, written as their own control frame
+ * (`{control: {warnings: ...}}`) right after the itemization frame, before any content.
  */
-export async function pipeLlamaCppCompactStream(upstreamResponse, response, persist, itemization) {
+export async function pipeLlamaCppCompactStream(upstreamResponse, response, persist, itemization, warnings = null) {
     if (!upstreamResponse.ok || !upstreamResponse.body) {
         return forwardFetchResponse(upstreamResponse, response);
     }
@@ -575,6 +578,9 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         let writer = initialWriter;
         if (itemization) {
             writer.write(encodeControlFrame({ itemization }));
+        }
+        if (warnings?.length) {
+            writer.write(encodeControlFrame({ warnings }));
         }
         const decoder = new StringDecoder('utf8');
         let sseBuffer = '';

@@ -26,6 +26,7 @@ import { ENCODE_TOKENIZERS, TEXTGEN_TOKENIZERS, TOKENIZER_SUPPORTED_KEY, getText
 import { AbortReason } from './util/AbortReason.js';
 import { getSortableDelay, onlyUnique, arraysEqual, isObject } from './utils.js';
 import { setting_names } from './textgen-setting-names.js';
+import { showTokenizerWarnings } from './tokenizer-notices.js';
 
 export const textgen_types = {
     OOBA: 'ooba',
@@ -1294,6 +1295,8 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
                     } else if ('control' in event && event.control?.itemization) {
                         state.itemization = event.control.itemization;
                         yield { text, swipes, logprobs, toolCalls, state };
+                    } else if ('control' in event && event.control?.warnings) {
+                        showTokenizerWarnings(event.control.warnings);
                     }
                 }
             }

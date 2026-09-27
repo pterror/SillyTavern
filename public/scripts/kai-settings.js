@@ -20,6 +20,7 @@ import {
 } from './power-user.js';
 import { getSortableDelay, versionCompare } from './utils.js';
 import { main_api } from './generation-params.js';
+import { showTokenizerWarnings } from './tokenizer-notices.js';
 
 export let koboldai_settings;
 export let koboldai_setting_names;
@@ -245,6 +246,8 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
                     state.assistantNodeId = event.assistantNodeId;
                 } else if ('control' in event && event.control?.itemization) {
                     state.itemization = event.control.itemization;
+                } else if ('control' in event && event.control?.warnings) {
+                    showTokenizerWarnings(event.control.warnings);
                 }
             }
 

@@ -405,9 +405,12 @@ async function fetchHordeJobStatus(jobId, agent) {
  * (buildRawActionHordePayload()'s own `itemization` field, itself buildRawActionKoboldRequest()'s) -
  * when set, written as a control-JSON frame, same as kobold.js/text-completions.js's own raw-action
  * streaming paths.
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [params.warnings]
+ * The `/generate-text` route's per-request warnings - when non-empty, written as their own control
+ * frame (`{control: {warnings: ...}}`) right after the itemization frame, before any content.
  * @returns {Promise<void>}
  */
-async function streamHordeGeneration({ response, jobId, agent, rawActionPersist, itemization }) {
+async function streamHordeGeneration({ response, jobId, agent, rawActionPersist, itemization, warnings = null }) {
     response.setHeader('X-ST-Stream-Format', 'compact-v1');
     response.setHeader('X-Generation-Id', jobId);
 
@@ -416,6 +419,9 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
     let writer = initialWriter;
     if (itemization) {
         writer.write(encodeControlFrame({ itemization }));
+    }
+    if (warnings?.length) {
+        writer.write(encodeControlFrame({ warnings }));
     }
 
     const pollState = registerHordePoll(jobId);
@@ -501,6 +507,10 @@ router.post('/generate-text', async (request, response) => {
     // coordinator) is completely unaware of which branch produced `request.body`, same pattern.
     let rawActionPersist = null;
     let rawActionItemization = null;
+    // Per-request warnings for the screen - see text-completions.js's identical `warnings` for the
+    // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
+    /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
+    const warnings = [];
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const ownerId = request.body.owner_id;
         try {
@@ -549,7 +559,7 @@ router.post('/generate-text', async (request, response) => {
         return response.send({ error: { message: submitData?.message || 'Horde did not return a job id' } });
     }
 
-    return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist, itemization: rawActionItemization });
+    return streamHordeGeneration({ response, jobId: submitData.id, agent, rawActionPersist, itemization: rawActionItemization, warnings });
 });
 
 router.post('/sd-samplers', async (_, response) => {

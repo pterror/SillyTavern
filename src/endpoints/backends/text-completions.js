@@ -53,9 +53,12 @@ export const router = express.Router();
  * @param {Record<string, *>} [itemization] Raw-action prompt-itemization breakdown (buildRawActionTextCompletionRequest()'s
  * own `itemization` field) - when set, written as the first frame, a control-JSON frame the client's
  * CompactStreamDecoder already decodes generically (`{control: {itemization: ...}}`).
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The
+ * `/generate` route's per-request warnings - when non-empty, written as their own control frame
+ * (`{control: {warnings: ...}}`) right after the itemization frame, before any content.
  * @returns {Promise<any>} Nothing valuable
  */
-async function parseOllamaStream(jsonStream, request, response, persist, itemization) {
+async function parseOllamaStream(jsonStream, request, response, persist, itemization, warnings = null) {
     try {
         if (!jsonStream.body) {
             throw new Error('No body in the response');
@@ -68,6 +71,9 @@ async function parseOllamaStream(jsonStream, request, response, persist, itemiza
         const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
         if (itemization) {
             initialWriter.write(encodeControlFrame({ itemization }));
+        }
+        if (warnings?.length) {
+            initialWriter.write(encodeControlFrame({ warnings }));
         }
         let writer = initialWriter;
 
@@ -167,9 +173,12 @@ async function parseOllamaStream(jsonStream, request, response, persist, itemiza
  * @param {Record<string, *>} [itemization] Raw-action prompt-itemization breakdown (buildRawActionTextCompletionRequest()'s
  * own `itemization` field) - when set, written as the first frame, a control-JSON frame the client's
  * CompactStreamDecoder already decodes generically (`{control: {itemization: ...}}`).
+ * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The
+ * calling generate route's per-request warnings - when non-empty, written as their own control frame
+ * (`{control: {warnings: ...}}`) right after the itemization frame, before any content.
  * @returns {Promise<void>}
  */
-export async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractProbabilities = null, itemization = null) {
+export async function forwardAndPersistCompactStream(fetchResponse, response, persist, extractText, extractProbabilities = null, itemization = null, warnings = null) {
     if (!fetchResponse.ok || !fetchResponse.body) {
         return forwardFetchResponse(fetchResponse, response);
     }
@@ -196,6 +205,9 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     let writer = initialWriter;
     if (itemization) {
         writer.write(encodeControlFrame({ itemization }));
+    }
+    if (warnings?.length) {
+        writer.write(encodeControlFrame({ warnings }));
     }
     const safeWrite = (chunk) => writer.write(chunk);
 
@@ -770,6 +782,13 @@ router.post('/generate', async function (request, response) {
     // read by both the non-streaming response branch and the streaming branches further down.
     let rawActionItemization = null;
 
+    // Per-request warnings for the screen (dropped entries, estimate trims, tokenizer fallbacks),
+    // covering every branch below and not gated on persistence like `rawActionItemization` is.
+    // Sent as its own `{control: {warnings}}` frame on a stream and as `data.warnings` on a
+    // non-streaming reply, only when non-empty - so a reply with no warnings is byte-identical.
+    /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
+    const warnings = [];
+
     try {
         // "Generate using connection profile X" - the raw action is the profile id plus the raw
         // messages/generation-type facts; the server resolves the profile's backend, preset, and
@@ -1138,12 +1157,12 @@ router.post('/generate', async function (request, response) {
 
         if (request.body.api_type === TEXTGEN_TYPES.OLLAMA && request.body.stream) {
             const stream = await fetch(url, args);
-            parseOllamaStream(stream, request, response, pendingAssistantPersist, rawActionItemization);
+            parseOllamaStream(stream, request, response, pendingAssistantPersist, rawActionItemization, warnings);
         } else if (request.body.stream) {
             const completionsStream = await fetch(url, args);
             if (request.body.api_type === TEXTGEN_TYPES.LLAMACPP) {
                 // Compact wire format for the llama.cpp raw-completions path only - see llamacpp-compact-stream.js.
-                await pipeLlamaCppCompactStream(completionsStream, response, pendingAssistantPersist, rawActionItemization);
+                await pipeLlamaCppCompactStream(completionsStream, response, pendingAssistantPersist, rawActionItemization, warnings);
             } else if (request.body.api_type === TEXTGEN_TYPES.OPENROUTER) {
                 // OPENROUTER is dispatched through /v1/chat/completions (see the URL-construction
                 // switch above), even though this file is nominally the TEXT-completions backend -
@@ -1151,14 +1170,14 @@ router.post('/generate', async function (request, response) {
                 // (`choices[0].delta.content`), a materially different shape from every other
                 // api_type reaching this branch (`choices[0].text`). Given its own extractor rather
                 // than folded into the generic branch below.
-                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content, null, rawActionItemization);
+                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content, null, rawActionItemization, warnings);
             } else {
                 // Pipe remote SSE stream to Express response as the compact binary wire format,
                 // tapping the OpenAI TEXT-completions-shaped `choices[0].text` field for raw-action
                 // persistence - see forwardAndPersistCompactStream()'s own doc comment above.
                 // `pendingAssistantPersist` being null (connection_profile_id and legacy/default
                 // calls) only skips persistence; the client still gets the same compact-v1 stream.
-                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.text, null, rawActionItemization);
+                await forwardAndPersistCompactStream(completionsStream, response, pendingAssistantPersist, json => json?.choices?.[0]?.text, null, rawActionItemization, warnings);
             }
         } else {
             const completionsReply = await fetch(url, args);
@@ -1205,6 +1224,9 @@ router.post('/generate', async function (request, response) {
                 // client only ever reads it for a real, itemized assistant message).
                 if (rawActionItemization) {
                     data.itemization = rawActionItemization;
+                }
+                if (warnings.length) {
+                    data.warnings = warnings;
                 }
 
                 return response.send(data);
