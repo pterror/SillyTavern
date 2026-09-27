@@ -405,6 +405,10 @@ git:
 # Additional model tokenizers can be downloaded on demand.
 # Disabling will fallback to another locally available tokenizer.
 enableDownloadableTokenizers: true
+# One-time repair of group chats whose first message or chat metadata an older chat migration lost.
+# Restores them from "<chat>.jsonl.pre-migration" files and backups/_group_metadata_update, in the background
+# after startup, once per user; anything it cannot restore exactly is left untouched and listed in the log.
+restoreGroupChatMigrationLosses: false
 # -- OPENAI CONFIGURATION --
 # A placeholder message to use in strict prompt post-processing mode when the prompt doesn't start with a user message
 promptPlaceholder: "[Start a new chat]"
