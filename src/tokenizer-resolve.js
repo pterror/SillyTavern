@@ -445,7 +445,7 @@ export function sendTokenizerWarnings(state, resolved, outcome, droppedEntries) 
         warnings.push({
             kind: 'trim-estimate',
             key,
-            message: `${failedTokenizerName(resolved)} failed, so the prompt was fitted to the context by an estimated token count.`,
+            message: trimEstimateMessage(resolved),
         });
     }
     const dropped = droppedEntriesWarning(state, resolved, droppedEntries);
@@ -459,6 +459,16 @@ export function sendTokenizerWarnings(state, resolved, outcome, droppedEntries) 
  * @param {ResolvedTokenizer} resolved
  * @returns {string}
  */
+function trimEstimateMessage(resolved) {
+    return `${failedTokenizerName(resolved)} failed, so the prompt was fitted to the context by an estimated token count.`;
+}
+
+const UNKNOWN_MODEL_MESSAGE = 'No tokenizer is known for this model, so token counts are estimates. A tokenizer can be picked in Advanced Formatting → Tokenizer.';
+
+/**
+ * @param {ResolvedTokenizer} resolved
+ * @returns {string}
+ */
 function failedTokenizerName(resolved) {
     return resolved.kind === 'remote' ? 'The backend\'s tokenizer' : `The ${resolved.name} tokenizer`;
 }
@@ -466,11 +476,12 @@ function failedTokenizerName(resolved) {
 /**
  * The `tokenizer` a `/api/tokenizers/current/*` response names: the tokenizer that answered (the
  * local copy when it answered for a failed remote one), the request's basis, and the `key` its
- * warnings carry, and the wording of a `dropped` warning for a send the browser builds.
+ * warnings carry, and the wording the browser shows for it: a `dropped` or `trim-estimate` warning
+ * for a send it builds, and the on-screen marker's title for an unknown model.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {TokenizerOutcome} outcome
- * @returns {{ id: number, name: string, model?: string, basis: ResolvedTokenizer['basis'], key: string, messages: { dropped: { one: string, many: string } } }}
+ * @returns {{ id: number, name: string, model?: string, basis: ResolvedTokenizer['basis'], key: string, messages: { dropped: { one: string, many: string }, trimEstimate: string, unknownModel: string } }}
  */
 export function tokenizerAnswer(state, resolved, outcome) {
     const used = outcome.usedCopy ?? resolved;
@@ -479,7 +490,11 @@ export function tokenizerAnswer(state, resolved, outcome) {
         name: used.name,
         basis: tokenizerOutcomeBasis(resolved, outcome),
         key: tokenizerWarningKey(state, resolved),
-        messages: { dropped: droppedMessages(resolved) },
+        messages: {
+            dropped: droppedMessages(resolved),
+            trimEstimate: trimEstimateMessage(resolved),
+            unknownModel: UNKNOWN_MODEL_MESSAGE,
+        },
     };
     if (used.model) {
         answer.model = used.model;

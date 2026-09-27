@@ -46,7 +46,7 @@ import { getPresetManager } from './preset-manager.js';
 import { extractReasoningFromData, extractReasoningSignatureFromData, PromptReasoning } from './reasoning.js';
 import { sendSystemMessage, system_message_types } from './system-messages.js';
 import { getTextGenGenerationData, textgenerationwebui_settings as textgen_settings } from './textgen-settings.js';
-import { getFriendlyTokenizerName, getTokenCountAsync, saveTokenCache } from './tokenizers.js';
+import { getFriendlyTokenizerName, getTokenCountAsync, saveTokenCache, showTrimEstimateWarning } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { shiftDownByOne, shiftUpByOne, waitUntilCondition } from './utils.js';
@@ -2045,6 +2045,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         } else {
             console.debug('---calling setPromptString ' + generatedPromptCache.length);
             setPromptString();
+        }
+
+        if (!dryRun && main_api !== 'openai') {
+            showTrimEstimateWarning();
         }
 
         // For prompt bit itemization
