@@ -12,7 +12,7 @@ import { bucketActivatedEntries, world_info_position } from './world-info/result
 import { setExtensionPrompt, extension_prompt_types } from './extension-prompt-table.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
-import { resolveTokenizer } from './tokenizer-resolve.js';
+import { resolveTokenizer, createTokenizerOutcome } from './tokenizer-resolve.js';
 import { getBiasStrings } from './prompt-line-formatting.js';
 import { appendFileAttachments } from './file-attachment-inline.js';
 import { substituteParams } from './macro-substitution.js';
@@ -69,7 +69,8 @@ import { substituteParams } from './macro-substitution.js';
  * 3. TOKEN COUNTING: the model's resolveTokenizer() answer (src/tokenizer-resolve.js; the model map
  *    on the source's model), counted per message like the `/openai/count` route, through the same
  *    `countChatCompletionMessages()` - see `createOpenAITokenCounter()` below. An unmapped model counts
- *    by the estimate. A caller can override `countTokenAsyncFn` (or supply a whole `tokenHandler`).
+ *    by the estimate, as does a tokenizer that fails, which the returned `tokenizerOutcome` records for
+ *    the send's warnings. A caller can override `countTokenAsyncFn` (or supply a whole `tokenHandler`).
  *
  * 4. WORLD INFO: this resolver, like text-completion-generation-input.js, resolves
  *    `worldInfoCandidates` for real via `resolveWorldInfoCandidates()` (identical field mapping - see
@@ -576,14 +577,15 @@ export function getChatCompletionModel(settings) {
  * counting like `/api/tokenizers/openai/count` with a resolveTokenizer() answer: the model's own
  * tokenizer, or the estimate when the model map has none. Only string fields are counted.
  * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} resolved
+ * @param {import('./tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a count that fell to the estimate because the tokenizer failed.
  * @returns {import('./chat-completion-budget.js').CountTokenAsyncFn}
  */
-export function createOpenAITokenCounter(resolved) {
+export function createOpenAITokenCounter(resolved, outcome = undefined) {
     /** @type {import('./chat-completion-budget.js').CountTokenAsyncFn} */
     const countTokenAsyncFn = async function countTokenAsyncFn(messages) {
         const list = (Array.isArray(messages) ? messages : [messages])
             .map(msg => Object.fromEntries(Object.entries(msg ?? {}).filter(([, value]) => typeof value === 'string')));
-        return countChatCompletionMessages(resolved, list);
+        return countChatCompletionMessages(resolved, list, outcome);
     };
     return countTokenAsyncFn;
 }
@@ -790,7 +792,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * @param {import('./chat-completion-budget.js').CountTokenAsyncFn} [params.countTokenAsyncFn] Overrides the real, internally-resolved OpenAI token counter.
  * @param {import('./chat-completion-budget.js').TokenHandler} [params.tokenHandler] Overrides the whole internally-constructed `TokenHandler`.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
- * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[] }>}
+ * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome }>}
  */
 export async function resolveChatCompletionGenerationInput(directories, {
     avatar, groupId, ownerId, branchName, nodeId,
@@ -996,8 +998,10 @@ export async function resolveChatCompletionGenerationInput(directories, {
     });
 
     // See doc comment decision 3.
+    const tokenizerOutcome = createTokenizerOutcome();
     const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(
         await resolveTokenizer({ api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '' }),
+        tokenizerOutcome,
     ));
 
     // Real world-info ACTIVATION - see doc comment decision 4 for the full rationale/settings-path
@@ -1131,6 +1135,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
         // --- Token budget ---
         tokenHandler,
+        tokenizerOutcome,
         maxContext: oaiSettings.openai_max_context ?? 4095,
         maxTokens: oaiSettings.openai_max_tokens ?? 300,
 

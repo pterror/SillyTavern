@@ -64,7 +64,7 @@ import { createGenerationParameters } from '../../chat-completion-generation-dat
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
-import { resolveTokenizer, droppedEntriesWarning } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
 import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
@@ -2555,18 +2555,21 @@ router.post('/status', async function (request, statusResponse) {
 });
 
 /**
- * The `dropped` warning for bias entries a chat-completion send left out because its model has no tokenizer.
+ * A chat-completion send's tokenizer warnings: `trim-estimate` when its prompt was fitted by the
+ * estimate because the tokenizer failed, and `dropped` for the bias entries it had no token ids for.
  * @param {string} source
  * @param {string|null|undefined} model
- * @param {string[]} entries
- * @returns {Promise<Array<{kind: string, key: string, message: string, entries?: string[]}>>} Empty when nothing was dropped.
+ * @param {string[]} droppedEntries
+ * @param {import('../../tokenizer-resolve.js').TokenizerOutcome} [outcome] The prompt count's outcome;
+ * none for a send that counts nothing.
+ * @returns {Promise<Array<{kind: string, key: string, message: string, entries?: string[]}>>} Empty when there is nothing to report.
  */
-async function droppedBiasWarnings(source, model, entries) {
-    if (entries.length === 0) {
+async function chatCompletionSendWarnings(source, model, droppedEntries, outcome = createTokenizerOutcome()) {
+    if (droppedEntries.length === 0 && !outcome.countEstimated && !outcome.usedCopy) {
         return [];
     }
     const state = { api: 'openai', source, model: model ?? '' };
-    return [droppedEntriesWarning(state, await resolveTokenizer(state), entries)];
+    return sendTokenizerWarnings(state, await resolveTokenizer(state), outcome, droppedEntries);
 }
 
 router.post('/bias', async function (request, response) {
@@ -2924,7 +2927,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const anchorChat = orchestratorInput.macroContext.chat;
     const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
 
-    const warnings = await droppedBiasWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries);
+    const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries, orchestratorInput.tokenizerOutcome);
 
     return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings };
 }
@@ -3964,7 +3967,7 @@ router.post('/generate', async function (request, response) {
             /** @type {string[]} */
             const droppedBiasEntries = [];
             const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { macroContext: { name1, name2 }, biasPresetEntries, droppedBiasEntries });
-            warnings.push(...await droppedBiasWarnings(settings.chat_completion_source, profile.model, droppedBiasEntries));
+            warnings.push(...await chatCompletionSendWarnings(settings.chat_completion_source, profile.model, droppedBiasEntries));
 
             if (request.body.overrides && typeof request.body.overrides === 'object' && !Array.isArray(request.body.overrides)) {
                 Object.assign(generate_data, _.omit(request.body.overrides, ['chat_completion_source', 'model', 'messages', 'custom_url', 'reverse_proxy', 'proxy_password', 'secret_id']));
