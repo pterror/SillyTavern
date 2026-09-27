@@ -59,6 +59,13 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.GEMMA_3N,
     tokenizers.CODEGEMMA,
     tokenizers.GEMMA_2_JPN,
+    tokenizers.LLAMA3_1_BASE,
+    tokenizers.LLAMA3_3,
+    tokenizers.LLAMA4,
+    tokenizers.LLAMA_GUARD_3_8B,
+    tokenizers.LLAMA_GUARD_3_11B_VISION,
+    tokenizers.LLAMA_GUARD_2,
+    tokenizers.LLAMA_GUARD_4,
 ];
 
 /**

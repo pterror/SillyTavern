@@ -201,6 +201,100 @@ function gemmaFamilyMatches(tokens) {
 }
 
 /**
+ * Llama 3.0 (the bundled llama3.json), 3.1, 3.2 text, 3.3, 4 and Llama Guard 2, 3 and 4. A name
+ * without one of its version's sizes picks no one model.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when the name names an unknown version, or two versions
+ */
+function llamaFamilyMatches(tokens) {
+    // Fireworks spells Llama 3.1 `llama-v3p1`.
+    tokens = tokens.flatMap((token, i) => {
+        const fireworks = /^v3p(\d+)$/.exec(token);
+        return fireworks && tokens[i - 1] === 'llama' ? ['3', fireworks[1]] : [token];
+    });
+
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+    /**
+     * The one size of `sizes` the name has; null for none or several.
+     * @param {string[]} sizes
+     */
+    const onlySize = sizes => {
+        const found = sizes.filter(size => tokens.includes(size));
+        return found.length === 1 ? found[0] : null;
+    };
+
+    // `llama`,`3` or `llama3` followed by nothing numeric is Llama 3.0; by 1, 2 or 3 it is 3.1, 3.2 or 3.3.
+    const minors = new Set();
+    let isLlama30 = false;
+    for (const sequence of [['llama', '3'], ['llama3']]) {
+        for (const start of findSequence(tokens, sequence)) {
+            const next = tokens[start + sequence.length];
+            if (next === undefined || !ALL_DIGITS.test(next)) {
+                isLlama30 = true;
+            } else if (['1', '2', '3'].includes(next)) {
+                minors.add(next);
+            } else {
+                return null;
+            }
+        }
+    }
+    if ((isLlama30 && minors.size > 0) || minors.size > 1) return null;
+    if (isLlama30) add(tokenizers.LLAMA3);
+
+    // Nemotron models are NVIDIA's, with NVIDIA's own files.
+    const minor = tokens.includes('nemotron') ? undefined : [...minors][0];
+    if (minor === '1') {
+        const size = onlySize(['8b', '70b', '405b']);
+        // Ollama's `llama3.1:<size>` tags are the Instruct models, and so is Groq's `llama-3.1-8b-instant`.
+        const isOllamaForm = findSequence(tokens, ['llama3', '1']).length > 0;
+        const isInstruct = tokens.includes('instruct') || tokens.includes('instant')
+            || (isOllamaForm && !tokens.includes('text') && !tokens.includes('base'));
+        // Groq served its `llama-3.1-70b-versatile` and `-specdec` ids with Llama 3.3 before retiring them.
+        const isMovedGroqId = size === '70b' && (tokens.includes('versatile') || tokens.includes('specdec'));
+        // The 405B base repo also ships original/mp8/tokenizer.model, a 103,930-byte file of unknown content.
+        const isUnknown405bBase = size === '405b' && !isInstruct && !tokens.includes('fp8');
+        if (size && !isMovedGroqId && !isUnknown405bBase) {
+            add({ source: isInstruct ? 'llama3.1' : 'llama3.1-base' });
+        }
+    }
+    // Llama 3.2 1B and 3B, base and Instruct, ship the 3.1-Instruct file. The 3.2 Vision (11B, 90B)
+    // tokenizer.json and original/tokenizer.model give different ids, so which one a backend reads is unknowable.
+    if (minor === '2' && !tokens.includes('vision') && ['1b', '3b'].includes(onlySize(['1b', '3b', '11b', '90b']))) {
+        add({ source: 'llama3.1' });
+    }
+    // Llama 3.3 is 70B Instruct only; Meta's API also served a closed Llama-3.3-8B-Instruct.
+    if (minor === '3' && onlySize(['8b', '70b']) === '70b') {
+        add({ source: 'llama3.3' });
+    }
+
+    // Llama 4 Scout and Maverick, base and Instruct, ship one file. Ollama's `llama4:16x17b` is
+    // Scout, `llama4:128x17b` Maverick.
+    const llama4 = guardedMatch(tokens, [['llama', '4'], ['llama4']], followedByAllDigits);
+    if (llama4 === 'veto') return null;
+    if (llama4 === 'match' && ['scout', 'maverick', '16x17b', '128x17b'].some(token => tokens.includes(token))) {
+        add({ source: 'llama4' });
+    }
+
+    // Llama Guard 3 1B ships the 3.1-Instruct file. `llama-guard3` is Ollama's form, `LlamaGuard-2` Together's.
+    /** @type {Record<string, Record<string, string>>} version -> size -> registry entry */
+    const guardFiles = {
+        '2': { '8b': 'llama-guard-2' },
+        '3': { '1b': 'llama3.1', '8b': 'llama-guard-3-8b', '11b': 'llama-guard-3-11b-vision' },
+        '4': { '12b': 'llama-guard-4' },
+    };
+    for (const [version, files] of Object.entries(guardFiles)) {
+        const spellings = [['llama', 'guard', version], ['llama', `guard${version}`], ['llamaguard', version], [`llamaguard${version}`]];
+        const size = onlySize(Object.keys(files));
+        if (size && spellings.some(sequence => hasSequence(tokens, sequence))) add({ source: files[size] });
+    }
+
+    return matches;
+}
+
+/**
  * @param {string[]} tokens
  * @param {string} lowerName
  * @returns {MapMatch[] | null} null when a guard vetoes the name
@@ -249,15 +343,11 @@ function generalMatches(tokens, lowerName) {
     ];
     if (gemmaDerivedSequences.some(sequence => hasSequence(tokens, sequence))) add(tokenizers.GEMMA);
 
-    const guarded = [
-        [tokenizers.LLAMA3, [['llama', '3'], ['llama3']], followedByAllDigits],
-        [tokenizers.YI, [['yi']], () => false],
-    ];
-    for (const [result, sequences, isExcluded] of /** @type {Array<[number, string[][], (rest: string[]) => boolean]>} */ (guarded)) {
-        const outcome = guardedMatch(tokens, sequences, isExcluded);
-        if (outcome === 'veto') return null;
-        if (outcome === 'match') add(result);
-    }
+    if (guardedMatch(tokens, [['yi']], () => false) === 'match') add(tokenizers.YI);
+
+    const llamaMatches = llamaFamilyMatches(tokens);
+    if (llamaMatches === null) return null;
+    matches.push(...llamaMatches);
 
     const gemmaMatches = gemmaFamilyMatches(tokens);
     if (gemmaMatches === null) return null;
@@ -395,7 +485,7 @@ function generalMatches(tokens, lowerName) {
         matches.push({ result: { source: 'deepseek-r1-distill-qwen' }, supersedes: ['qwen2.5'] });
     }
     if (deepseekGate && isR1DistillOf('llama')) {
-        matches.push({ result: { source: 'deepseek-r1-distill-llama' }, supersedes: ['llama3', 'llama3.1'] });
+        matches.push({ result: { source: 'deepseek-r1-distill-llama' }, supersedes: ['llama3', 'llama3.1', 'llama3.1-base', 'llama3.3'] });
     }
     if (deepseekGate && hasSequence(tokens, ['deepseek', 'r1', '0528', 'qwen3'])) {
         matches.push({ result: { source: 'deepseek-r1-0528-qwen3' }, supersedes: ['qwen3', 'deepseek-r1'] });

@@ -66,6 +66,13 @@ export const tokenizers = {
     GEMMA_3N: 1024,
     CODEGEMMA: 1025,
     GEMMA_2_JPN: 1026,
+    LLAMA3_1_BASE: 1027,
+    LLAMA3_3: 1028,
+    LLAMA4: 1029,
+    LLAMA_GUARD_3_8B: 1030,
+    LLAMA_GUARD_3_11B_VISION: 1031,
+    LLAMA_GUARD_2: 1032,
+    LLAMA_GUARD_4: 1033,
 };
 
 // A list of local tokenizers that support encoding and decoding token ids.
@@ -108,6 +115,13 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.GEMMA_3N,
     tokenizers.CODEGEMMA,
     tokenizers.GEMMA_2_JPN,
+    tokenizers.LLAMA3_1_BASE,
+    tokenizers.LLAMA3_3,
+    tokenizers.LLAMA4,
+    tokenizers.LLAMA_GUARD_3_8B,
+    tokenizers.LLAMA_GUARD_3_11B_VISION,
+    tokenizers.LLAMA_GUARD_2,
+    tokenizers.LLAMA_GUARD_4,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,

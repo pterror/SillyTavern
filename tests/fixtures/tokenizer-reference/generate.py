@@ -15,6 +15,10 @@ MANIFEST.json is a JSON array of {"path": <local file>, "format": <format>, "fil
 - "format" is a registry format: "hf-json", "sentencepiece", "tekken" or "tiktoken".
 - "path" is the tokenizer file on this machine. For "tiktoken" (Kimi) it is the directory holding
   the repo revision's tiktoken.model, tokenization_kimi.py and tokenizer_config.json.
+- "llamaModels" (Meta's tiktoken files: Llama 3.x original/tokenizer.model, Llama 4 tokenizer.model)
+  reads the file with Meta's own code instead: {"dir": <a checkout of github.com/meta-llama/llama-models
+  holding models/>, "commit": <its full commit>, "module": "models.llama3.tokenizer" or
+  "models.llama4.tokenizer"}. "path" is then the tokenizer file itself.
 - "file" is copied into the fixture and tells src/tokenizer-exactness.test.js where SillyTavern
   keeps the file: {"bundled": "src/tokenizers/<name>"}, {"download": <url>, "cacheName": <name in
   DATA_ROOT/_cache>}, {"registry": <TOKENIZER_SOURCES id>} or {"sameContentAs": <sha256 of the
@@ -42,6 +46,21 @@ CALLS = {
 }
 
 
+def load_meta_encoder(path, llama_models):
+    import importlib
+    from pathlib import Path
+    sys.path.insert(0, llama_models["dir"])
+    t = importlib.import_module(llama_models["module"]).Tokenizer(Path(path))
+    return lambda text: t.encode(text, bos=False, eos=False)
+
+
+def meta_call(llama_models):
+    return (
+        f"{llama_models['module']}.Tokenizer(Path(p)).encode(text, bos=False, eos=False)"
+        f" (meta-llama/llama-models @ {llama_models['commit']})"
+    )
+
+
 def load_encoder(fmt, path):
     if fmt == "hf-json":
         from tokenizers import Tokenizer
@@ -63,8 +82,8 @@ def load_encoder(fmt, path):
     raise ValueError(f"unknown format {fmt}")
 
 
-def data_file(fmt, path):
-    return os.path.join(path, "tiktoken.model") if fmt == "tiktoken" else path
+def data_file(fmt, path, llama_models):
+    return os.path.join(path, "tiktoken.model") if fmt == "tiktoken" and not llama_models else path
 
 
 def main():
@@ -75,12 +94,16 @@ def main():
         samples = json.load(f)
     os.makedirs(out_dir, exist_ok=True)
     for entry in manifest:
-        fmt, path = entry["format"], entry["path"]
-        with open(data_file(fmt, path), "rb") as f:
+        fmt, path, llama_models = entry["format"], entry["path"], entry.get("llamaModels")
+        with open(data_file(fmt, path, llama_models), "rb") as f:
             blob = f.read()
         sha = hashlib.sha256(blob).hexdigest()
-        tool, call = CALLS[fmt]
-        enc = load_encoder(fmt, path)
+        if llama_models:
+            tool, call = "tiktoken", meta_call(llama_models)
+            enc = load_meta_encoder(path, llama_models)
+        else:
+            tool, call = CALLS[fmt]
+            enc = load_encoder(fmt, path)
         rows = [{"text": s, "ids": [int(i) for i in enc(s)]} for s in samples]
         head = {
             "sha256": sha,
