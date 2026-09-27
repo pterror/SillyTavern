@@ -68,10 +68,13 @@ var SelectedCharacterTab = document.getElementById('rm_button_selected_ch');
 var connection_made = false;
 var retry_delay = 500;
 let counterNonce = Date.now();
+// Set when an internal count trigger fired while the character editor wasn't showing; the count runs when it shows.
+let editorCountPending = false;
 
 const observerConfig = { childList: true, subtree: true };
 const countTokensDebounced = debounce(RA_CountCharTokens, debounce_timeout.relaxed);
-const countTokensShortDebounced = debounce(RA_CountCharTokens, debounce_timeout.short);
+const countTokensWhenShownDebounced = debounce(countCharTokensIfShown, debounce_timeout.relaxed);
+const countTokensWhenShownSoonDebounced = debounce(countCharTokensIfShown, debounce_timeout.short);
 const checkStatusDebounced = debounce(RA_checkOnlineStatus, debounce_timeout.short);
 
 const observer = new MutationObserver(function (mutations) {
@@ -82,7 +85,7 @@ const observer = new MutationObserver(function (mutations) {
         if (mutation.target.classList.contains('online_status_text')) {
             checkStatusDebounced();
         } else if (mutation.target.parentNode === SelectedCharacterTab) {
-            countTokensShortDebounced();
+            countCharTokensWhenShownSoon();
         } else if (mutation.target.classList.contains('mes_text')) {
             for (const element of mutation.target.getElementsByTagName('math')) {
                 element.childNodes.forEach(function (child) {
@@ -96,6 +99,9 @@ const observer = new MutationObserver(function (mutations) {
 });
 
 observer.observe(document.documentElement, observerConfig);
+
+// Crossing the mobile breakpoint can uncover the editor with no drawer change.
+window.matchMedia('screen and (max-width: 1000px)').addEventListener('change', onCharacterEditorMaybeShown);
 
 
 /**
@@ -194,8 +200,51 @@ $('#rm_button_create').on('click', function () {                 //when "+New Ch
 });
 //when any input is made to the create/edit character form textareas
 $('#rm_ch_create_block').on('input', function () { countTokensDebounced(); });
-//function:
+/**
+ * Whether the character editor is on screen: #char-info-panel open, not covered by another drawer
+ * (covered drawers are hidden by visibility), and showing the editor rather than the group panel.
+ * @returns {boolean}
+ */
+export function isCharacterEditorShowing() {
+    const panel = document.getElementById('char-info-panel');
+    return Boolean(panel?.classList.contains('openDrawer'))
+        && getComputedStyle(panel).visibility !== 'hidden'
+        && panel.getAttribute('data-active-menu') === 'rm_ch_create_block';
+}
+
+function countCharTokensIfShown() {
+    if (!isCharacterEditorShowing()) {
+        editorCountPending = true;
+        return;
+    }
+    RA_CountCharTokens();
+}
+
+/**
+ * Counts the character editor's tokens after the usual 1000 ms debounce, or, if the editor isn't showing
+ * then, when it next shows. For internal triggers; RA_CountCharTokens() counts right away.
+ */
+export function countCharTokensWhenShown() {
+    countTokensWhenShownDebounced();
+}
+
+/** Same as countCharTokensWhenShown(), with a 200 ms debounce. */
+export function countCharTokensWhenShownSoon() {
+    countTokensWhenShownSoonDebounced();
+}
+
+/**
+ * Runs a count held back while the character editor was hidden, if it is showing now.
+ * Called from every place that can make the editor visible.
+ */
+export function onCharacterEditorMaybeShown() {
+    if (editorCountPending && isCharacterEditorShowing()) {
+        RA_CountCharTokens();
+    }
+}
+
 export async function RA_CountCharTokens() {
+    editorCountPending = false;
     counterNonce = Date.now();
     const counterNonceLocal = counterNonce;
     let total_tokens = 0;
