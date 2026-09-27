@@ -566,6 +566,22 @@ function getTokenizerKey(tokenizerId) {
 }
 
 /**
+ * The friendly name of a server-resolved tokenizer.
+ * @param {string} api
+ * @param {CurrentTokenizer|null} tokenizer
+ * @returns {Tokenizer} Tokenizer info
+ */
+function toFriendlyTokenizer(api, tokenizer) {
+    if (api === 'openai') {
+        return { tokenizerName: tokenizer?.model ?? getChatCompletionModel() ?? '', tokenizerKey: getTokenizerKey(tokenizers.OPENAI), tokenizerId: tokenizers.OPENAI };
+    }
+
+    const tokenizerId = tokenizer?.id ?? tokenizers.NONE;
+    const tokenizerName = tokenizer?.name ?? $(`#tokenizer option[value="${tokenizers.NONE}"]`).text();
+    return { tokenizerName, tokenizerKey: getTokenizerKey(tokenizerId), tokenizerId };
+}
+
+/**
  * Gets the friendly name of the current tokenizer.
  * @param {string} forApi API to get the tokenizer for. Defaults to the main API.
  * @returns {Tokenizer} Tokenizer info
@@ -576,13 +592,10 @@ export function getFriendlyTokenizerName(forApi) {
     }
 
     if (forApi === 'openai') {
-        return { tokenizerName: getTokenizerModel(), tokenizerKey: getTokenizerKey(tokenizers.OPENAI), tokenizerId: tokenizers.OPENAI };
+        return toFriendlyTokenizer('openai', isOpenAiApi() ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState('openai')));
     }
 
-    const tokenizer = forApi === main_api ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState(forApi));
-    const tokenizerId = tokenizer?.id ?? tokenizers.NONE;
-    const tokenizerName = tokenizer?.name ?? $(`#tokenizer option[value="${tokenizers.NONE}"]`).text();
-    return { tokenizerName, tokenizerKey: getTokenizerKey(tokenizerId), tokenizerId };
+    return toFriendlyTokenizer(forApi, forApi === main_api ? getCurrentTokenizerSync() : askTokenizerSync(getTokenizerState(forApi)));
 }
 
 /**
@@ -621,7 +634,7 @@ export function getTextgenTypeTokenizer(type) {
  * @param {string[]} strings
  * @param {number} padding Added to each non-empty count.
  * @param {boolean} async
- * @returns {number[]|Promise<number[]>}
+ * @returns {{ counts: number[], tokenizer: CurrentTokenizer|null }|Promise<{ counts: number[], tokenizer: CurrentTokenizer|null }>}
  */
 function countTexts(strings, padding, async) {
     const results = new Array(strings.length).fill(0);
@@ -643,7 +656,8 @@ function countTexts(strings, padding, async) {
     }
 
     if (pending.length === 0) {
-        return async ? Promise.resolve(results) : results;
+        const done = { counts: results, tokenizer };
+        return async ? Promise.resolve(done) : done;
     }
 
     const state = getTokenizerState();
@@ -663,7 +677,7 @@ function countTexts(strings, padding, async) {
                 countCache.set(`${answered.key}-${getStringHash(strings[i])}+${padding}`, count);
             }
         });
-        return results;
+        return { counts: results, tokenizer: answered };
     };
     const body = { state, texts: pending.map(i => strings[i]), padding };
     return async ? postCurrent('count', body, true).then(apply) : apply(postCurrent('count', body, false));
@@ -680,7 +694,23 @@ export async function getTokenCountsAsyncBatch(strings, padding = 0) {
     if (isOpenAiApi()) {
         return Promise.all(strings.map(str => getTokenCountAsync(str, padding)));
     }
-    return countTexts(strings, padding, true);
+    const { counts } = await countTexts(strings, padding, true);
+    return counts;
+}
+
+/**
+ * Same as getTokenCountsAsyncBatch(), and also names the tokenizer these counts came from.
+ * @param {string[]} strings Strings to tokenize, in order
+ * @param {number} [padding=0] Padding tokens added to each non-empty result
+ * @returns {Promise<{ counts: number[], tokenizer: Tokenizer }>} Token counts, same order/length as `strings`, and their tokenizer
+ */
+export async function getTokenCountsWithTokenizer(strings, padding = 0) {
+    if (isOpenAiApi()) {
+        const counts = await Promise.all(strings.map(str => getTokenCountAsync(str, padding)));
+        return { counts, tokenizer: toFriendlyTokenizer('openai', getRememberedTokenizer()) };
+    }
+    const { counts, tokenizer } = await countTexts(strings, padding, true);
+    return { counts, tokenizer: toFriendlyTokenizer(main_api, tokenizer) };
 }
 
 /**
@@ -703,7 +733,7 @@ export async function getTokenCountAsync(str, padding = undefined) {
         return counterWrapperOpenAIAsync(str);
     }
 
-    const [count] = await countTexts([str], padding ?? 0, true);
+    const { counts: [count] } = await countTexts([str], padding ?? 0, true);
     return count;
 }
 
@@ -728,7 +758,7 @@ export function getTokenCount(str, padding = undefined) {
         return counterWrapperOpenAI(str);
     }
 
-    const [count] = /** @type {number[]} */ (countTexts([str], padding ?? 0, false));
+    const { counts: [count] } = /** @type {{ counts: number[] }} */ (countTexts([str], padding ?? 0, false));
     return count;
 }
 
