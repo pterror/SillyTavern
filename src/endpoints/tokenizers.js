@@ -195,6 +195,10 @@ class SentencePieceTokenizer {
             const pathToModel = await getPathToTokenizer(this.#model);
             const instance = new SentencePieceProcessor();
             await instance.load(pathToModel);
+            // load() ignores the load status, and a processor whose model failed to load encodes everything to [].
+            if (instance.encodeIds('a').length === 0) {
+                throw new Error('The model encodes non-empty text to no tokens');
+            }
             console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
             this.#instance = instance;
             return this.#instance;
@@ -363,17 +367,12 @@ export function getWebTokenizer(model) {
  * Counts the token ids for the given text using the Sentencepiece tokenizer.
  * @param {SentencePieceTokenizer} tokenizer Sentencepiece tokenizer
  * @param {string} text Text to tokenize
- * @returns { Promise<{ids: number[], count: number}> } Tokenization result
+ * @returns { Promise<{ids: number[], count: number}> } Tokenization result. Throws when the tokenizer fails to load.
  */
 async function countSentencepieceTokens(tokenizer, text) {
     const instance = await tokenizer?.get();
-
-    // Fallback to strlen estimation
     if (!instance) {
-        return {
-            ids: [],
-            count: guesstimate(text),
-        };
+        throw new Error('Failed to load the Sentencepiece tokenizer');
     }
 
     let cleaned = text; // cleanText(text); <-- cleaning text can result in an incorrect tokenization
@@ -868,6 +867,9 @@ function createSentencepieceEncodingHandler(tokenizer) {
 
             const text = request.body.text || '';
             const instance = await tokenizer?.get();
+            if (!instance) {
+                return response.send({ ids: [], count: guesstimate(text) });
+            }
             const { ids, count } = await countSentencepieceTokens(tokenizer, text);
             const chunks = instance?.encodePieces(text);
             return response.send({ ids, count, chunks });

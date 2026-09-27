@@ -207,6 +207,35 @@ async function postTokenizer(route, model, body) {
 const text = 'Antidisestablishmentarianism, naïveté and 東京.';
 const messages = [{ role: 'user', content: text }];
 
+// --- a sentencepiece file that fails to load ---
+
+// Runs before anything loads llama: a loaded tokenizer stays loaded, and a failed load is tried again.
+await testCase('/current/count: a corrupt llama.model is a failed tokenizer, not 0 tokens', async () => {
+    const modelPath = 'src/tokenizers/llama.model';
+    const corruptPath = path.join(dataRoot, 'llama.model');
+    fs.writeFileSync(corruptPath, fs.readFileSync(modelPath).subarray(0, 1024));
+    const realReadFileSync = fs.readFileSync;
+    fs.readFileSync = function (file, ...rest) {
+        return realReadFileSync.call(this, String(file) === modelPath ? corruptPath : file, ...rest);
+    };
+    try {
+        const response = await fetch(`${baseUrl}/current/count`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ state: { api: 'textgenerationwebui', type: 'generic', url: 'http://127.0.0.1:1', model: 'x', tokenizerSetting: tokenizers.LLAMA }, texts: [text] }),
+        });
+        assert.equal(response.status, 200);
+        const counted = await response.json();
+        assert.deepEqual(counted.counts, [guesstimate(text)]);
+        assert.deepEqual({ id: counted.tokenizer.id, basis: counted.tokenizer.basis }, { id: tokenizers.LLAMA, basis: 'failed' });
+    } finally {
+        fs.readFileSync = realReadFileSync;
+    }
+});
+
+await testCase('encodeTextByLocalTokenizerType: \'\' still encodes to []', async () => {
+    assert.deepEqual(await encodeTextByLocalTokenizerType('llama', ''), []);
+});
+
 await testCase('/openai/*: a mixed-case Mistral-Nemo name goes to nemo', async () => {
     const nemoIds = await encodeTextByLocalTokenizerType('nemo', text);
     assert.notDeepEqual(nemoIds, await encodeTextByLocalTokenizerType('llama3', text), 'the stand-in tells nemo from llama3');
