@@ -650,9 +650,9 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
 }
 
 /**
- * The `/api/backends/chat-completions/bias` route's encoding: the tokenizer upstream picks from the
- * model name with getTokenizerModel(), and the same result for the same input. It stays until the
- * route and its browser caller change together.
+ * The `/api/backends/chat-completions/bias` route's encoding for a request without an
+ * `X-ST-Connection-State` header, as upstream calls it: the tokenizer upstream picks from the model
+ * name with getTokenizerModel(), and the same result for the same input.
  * @param {{text?: string, value?: number}[]} biasPresetEntries
  * @param {string} requestModel The route's `?model=`.
  * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map

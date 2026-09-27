@@ -67,7 +67,7 @@ import {
     textValueMatcher,
     uuidv4,
 } from './utils.js';
-import { countTokensOpenAIAsync, getTokenizerModel } from './tokenizers.js';
+import { countTokensOpenAIAsync, getTokenizerAnswer, getTokenizerStateHeader, onTokenizerChange, showDroppedEntries } from './tokenizers.js';
 import { isMobile } from './RossAscends-mods.js';
 import { saveLogprobsForActiveMessage } from './logprobs.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -172,6 +172,7 @@ const textCompletionModels = [
     'code-search-ada-code-001',
 ];
 
+/** @type {{ logitBias: object, dropped: string[] } | undefined} */
 let biasCache = undefined;
 export let model_list = [];
 
@@ -2806,8 +2807,13 @@ export async function createGenerationParameters(settings, model, type, messages
         && logitBiasSources.includes(settings.chat_completion_source)
         && Array.isArray(settings.bias_presets[settings.bias_preset_selected])
         && settings.bias_presets[settings.bias_preset_selected].length) {
-        logit_bias = biasCache || await calculateLogitBias();
-        biasCache = logit_bias;
+        const bias = biasCache || await calculateLogitBias();
+        biasCache = bias;
+        logit_bias = bias.logitBias;
+        if (bias.dropped.length > 0) {
+            // Asking for the answer may name a new tokenizer, which empties biasCache.
+            showDroppedEntries(getTokenizerAnswer('openai'), bias.dropped);
+        }
     }
 
     if (Object.keys(logit_bias).length === 0) {
@@ -3409,23 +3415,31 @@ function parseOpenAITextLogprobs(logprobs) {
     });
 }
 
+/**
+ * The selected bias preset's token-id map from the server, and the entries it left out because it
+ * has no token ids for them.
+ * @returns {Promise<{ logitBias: object, dropped: string[] }>}
+ */
 async function calculateLogitBias() {
     const body = JSON.stringify(oai_settings.bias_presets[oai_settings.bias_preset_selected]);
-    let result = {};
+    let logitBias = {};
+    let dropped = [];
 
     try {
-        const reply = await fetch(`/api/backends/chat-completions/bias?model=${getTokenizerModel()}`, {
+        const reply = await fetch('/api/backends/chat-completions/bias', {
             method: 'POST',
-            headers: getRequestHeaders(),
+            headers: { ...getRequestHeaders(), 'X-ST-Connection-State': getTokenizerStateHeader('openai') },
             body,
         });
 
-        result = await reply.json();
+        logitBias = await reply.json();
+        const droppedHeader = JSON.parse(reply.headers.get('X-ST-Tokenizer-Dropped') ?? '[]');
+        dropped = Array.isArray(droppedHeader) ? droppedHeader.map(String) : [];
     } catch (err) {
-        result = {};
+        logitBias = {};
         console.error(err);
     }
-    return result;
+    return { logitBias, dropped };
 }
 
 class TokenHandler {
@@ -6768,6 +6782,7 @@ function updateFeatureSupportFlags() {
 }
 
 export function initOpenAI() {
+    onTokenizerChange(() => { biasCache = undefined; });
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'proxy',
         callback: runProxyCallback,

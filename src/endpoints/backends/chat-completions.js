@@ -64,7 +64,7 @@ import { createGenerationParameters } from '../../chat-completion-generation-dat
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
-import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome, readTokenizerState } from '../../tokenizer-resolve.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
 import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
@@ -73,6 +73,7 @@ import { persistAssistantReply } from '../../assistant-reply-persist.js';
 import { getEnabledServerTools, toOpenAIToolSchema } from '../../server-tools.js';
 import {
     TEXT_COMPLETION_MODELS,
+    computeLogitBias,
     computeUpstreamLogitBias,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
@@ -2572,11 +2573,50 @@ async function chatCompletionSendWarnings(source, model, droppedEntries, outcome
     return sendTokenizerWarnings(state, await resolveTokenizer(state), outcome, droppedEntries);
 }
 
+/**
+ * The chat-completion state in a request's `X-ST-Connection-State` header.
+ * @param {import('express').Request} request
+ * @returns {import('../../tokenizer-resolve.js').TokenizerState|null|undefined} undefined without
+ * the header; null when it holds no chat-completion state.
+ */
+function readConnectionStateHeader(request) {
+    const header = request.get('X-ST-Connection-State');
+    if (header === undefined) {
+        return undefined;
+    }
+    try {
+        const state = readTokenizerState(JSON.parse(header));
+        return state?.api === 'openai' ? state : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * JSON with every non-ASCII character escaped, so it can be a header value.
+ * @param {any} value
+ * @returns {string}
+ */
+function toAsciiJson(value) {
+    return JSON.stringify(value).replace(/[\u007f-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
 router.post('/bias', async function (request, response) {
     if (!request.body || !Array.isArray(request.body))
         return response.sendStatus(400);
 
+    const state = readConnectionStateHeader(request);
+    if (state === null) {
+        return response.sendStatus(400);
+    }
+
     try {
+        if (state) {
+            const dropped = [];
+            const result = await computeLogitBias(request.body, state.model ?? '', dropped);
+            response.set('X-ST-Tokenizer-Dropped', toAsciiJson(dropped));
+            return response.send(result);
+        }
         const result = await computeUpstreamLogitBias(request.body, String(request.query.model || ''));
         return response.send(result);
     } catch (error) {

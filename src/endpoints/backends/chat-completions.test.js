@@ -830,8 +830,9 @@ async function run() {
         console.log('chat-completions.test.js: skipping the downloadable-tokenizer failure case - run with `node --experimental-test-module-mocks`, which it needs to stub the download');
     }
 
-    // (a-3) POST /bias keeps upstream's encoding and response: a name its tokenizer guess doesn't
-    // know is encoded with gpt-3.5-turbo, a mistral name with mistral, and claude gets no bias.
+    // (a-3) POST /bias without an `X-ST-Connection-State` header keeps upstream's encoding and
+    // response: a name its tokenizer guess doesn't know is encoded with gpt-3.5-turbo, a mistral name
+    // with mistral, and claude gets no bias.
     {
         const app = buildTestApp();
         const server = app.listen(0, '127.0.0.1');
@@ -855,6 +856,46 @@ async function run() {
 
             const claude = await postBias('claude', entries);
             assert.deepEqual(claude.data, {}, 'claude: no bias');
+        } finally {
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
+    // (a-4) POST /bias with an `X-ST-Connection-State` header resolves from that state, like a
+    // server-built send, and lists the entries it left out in `X-ST-Tokenizer-Dropped`. The body
+    // stays the bare map and the `?model=` query is ignored.
+    {
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        const postBias = async (state, entries, query = '') => {
+            const res = await fetch(`http://127.0.0.1:${server.address().port}/bias${query}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-ST-Connection-State': state },
+                body: JSON.stringify(entries),
+            });
+            return { status: res.status, headers: res.headers, text: await res.text() };
+        };
+        // Non-ASCII escaped as \uXXXX, as the browser sends it: a header value can't carry UTF-8 text.
+        const asciiJson = value => JSON.stringify(value).replace(/[\u007f-￿]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+        const entries = [{ text: 'hello', value: -5 }, { text: '[11, 12]', value: 2 }, { text: 'こんにちは', value: 1 }];
+        try {
+            const unmapped = await postBias(asciiJson({ api: 'openai', source: 'custom', model: 'some-unheard-of-model' }), entries, '?model=gpt-4o');
+            assert.equal(unmapped.status, 200);
+            assert.deepEqual(JSON.parse(unmapped.text), { 11: 2, 12: 2 }, 'unmapped: raw ids only, ?model= ignored');
+            assert.deepEqual(JSON.parse(unmapped.headers.get('x-st-tokenizer-dropped') ?? 'null'), ['hello', 'こんにちは'], 'unmapped: the entries needing ids are listed');
+
+            const mapped = await postBias(asciiJson({ api: 'openai', source: 'openai', model: 'gpt-4o' }), entries, '?model=some-unheard-of-model');
+            const gpt4o = getTiktokenTokenizer('gpt-4o');
+            const expected = { 11: 2, 12: 2 };
+            for (const id of gpt4o.encode('hello')) expected[id] = -5;
+            for (const id of gpt4o.encode('こんにちは')) expected[id] = 1;
+            assert.deepEqual(JSON.parse(mapped.text), expected, 'gpt-4o state: encoded with gpt-4o, not the query');
+            assert.deepEqual(JSON.parse(mapped.headers.get('x-st-tokenizer-dropped') ?? 'null'), [], 'gpt-4o state: nothing left out');
+
+            assert.equal((await postBias('{not json', entries)).status, 400, 'an unreadable state: 400');
+            assert.equal((await postBias(asciiJson({ api: 'textgenerationwebui', model: 'gpt-4o' }), entries)).status, 400, 'a state that is not chat completion: 400');
         } finally {
             server.closeAllConnections?.();
             await new Promise(resolve => server.close(resolve));

@@ -171,6 +171,27 @@ const EXPLICIT_OPENAI_MODEL = 'gpt-3.5-turbo';
  */
 
 /**
+ * The on-screen connection state a request sends, or null when it names no API.
+ * @param {any} state
+ * @returns {TokenizerState|null}
+ */
+export function readTokenizerState(state) {
+    if (!state || typeof state !== 'object' || typeof state.api !== 'string' || !state.api) {
+        return null;
+    }
+    const optionalString = (value) => typeof value === 'string' ? value : undefined;
+    return {
+        api: state.api,
+        type: optionalString(state.type),
+        url: optionalString(state.url),
+        model: optionalString(state.model),
+        source: optionalString(state.source),
+        tokenizerSetting: Number.isInteger(state.tokenizerSetting) ? state.tokenizerSetting : undefined,
+        hordeModels: Array.isArray(state.hordeModels) ? state.hordeModels.map(String) : undefined,
+    };
+}
+
+/**
  * @typedef {object} LocalTokenizer
  * @property {number} id A `tokenizers` value.
  * @property {string} name
