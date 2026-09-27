@@ -19,7 +19,9 @@ import { getConfigValue } from './util.js';
  * @property {string} repo Hugging Face repo, `owner/name`
  * @property {string} revision Full 40-hex commit sha
  * @property {string} path File path inside the repo at that revision
- * @property {boolean} gated Whether the repo is gated. Only the model's own (official) repo can be.
+ * @property {boolean} gated Whether the repo is gated. Only an official repo can be.
+ * @property {string} [license] This repo's license, when it isn't the entry's
+ * @property {string} [licenseUrl] Given with `license`
  */
 
 /**
@@ -30,9 +32,13 @@ import { getConfigValue } from './util.js';
  * @property {TokenizerFileFormat} format
  * @property {string} sha256 64-hex sha256 of the file
  * @property {number} bytes File size in bytes
- * @property {string} license License name
+ * @property {string} license License name, of every source that names none of its own
  * @property {string} licenseUrl
- * @property {readonly TokenizerSource[]} sources Tried in order: the model's own repo first, then verified byte-identical copies
+ * @property {readonly TokenizerSource[]} sources Tried in order: the model's own repo first, then verified
+ * byte-identical copies. When several official repos ship the bytes, the ungated ones come first, the more
+ * permissive license first among them.
+ * @property {string} [nameNote] What the name's parentheses say instead of `official`: for a model whose
+ * official files disagree, its HF `tokenizer.json` entry is `official, HF tokenizer.json`
  * @property {import('./tokenizer-loader.js').TiktokenConfig} [tiktoken] For the `tiktoken` format: how the repo's own code builds its encoding
  */
 
@@ -514,6 +520,214 @@ export const TOKENIZER_SOURCES = Object.freeze([
             { repo: 'unsloth/Llama-Guard-4-12B', revision: '07ebbb7bdc44fb45bf710a9a69a82c088085f0c8', path: 'tokenizer.json', gated: false },
         ],
     },
+    // Mistral's native files (tokenizer.model.v*) and its repos' HF tokenizer.json files, which give other
+    // ids. Only the Modified MIT repos have a LICENSE file; the others' licenses
+    // are their model cards'.
+    {
+        id: 'mistral-7b-v0.3',
+        family: 'Mistral 7B v0.3',
+        format: 'sentencepiece',
+        sha256: '37f00374dea48658ee8f5d0f21895b9bc55cb0103939607c8185bfd1c6ca1f89',
+        bytes: 587404,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Mistral-7B-Instruct-v0.3', revision: 'c170c708c41dac9275d15a8fff4eca08d52bab71', path: 'tokenizer.model.v3', gated: false },
+            { repo: 'mistralai/Mistral-7B-v0.3', revision: 'caa1feb0e54d415e2df31207e5f4e273e33509b1', path: 'tokenizer.model.v3', gated: false },
+            { repo: 'mistralai/Mixtral-8x22B-Instruct-v0.1', revision: 'cc88a6cc19fbd17d9f1c0ee0b0d70a748dce698d', path: 'tokenizer.model.v3', gated: false },
+        ],
+    },
+    {
+        id: 'mathstral',
+        family: 'Mathstral',
+        format: 'sentencepiece',
+        sha256: '59f95e28944c062244741268596badc900df86c7f5ded05088d2da22a7379e06',
+        bytes: 587583,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Mathstral-7B-v0.1', revision: 'ec3a48484ef241dfe03282edcb0f25e564923823', path: 'tokenizer.model.v3', gated: false },
+            { repo: 'mistralai/Mamba-Codestral-7B-v0.1', revision: '4f086c08c1e0f07bdc50ca25125dbbf7475d21da', path: 'tokenizer.model.v3', gated: false },
+            { repo: 'mistralai/Mistral-Small-Instruct-2409', revision: '4600506f6b13c7ef89e61a54263f4c9bf483de30', path: 'tokenizer.model.v3', gated: false, license: 'Mistral AI Research License', licenseUrl: 'https://mistral.ai/licenses/MRL-0.1.md' },
+            { repo: 'mistralai/Mistral-Large-Instruct-2407', revision: 'a286006d554cb37a61d13c7ae61bc90cc1d372fc', path: 'tokenizer.model.v3', gated: true, license: 'Mistral AI Research License', licenseUrl: 'https://mistral.ai/licenses/MRL-0.1.md' },
+        ],
+    },
+    {
+        id: 'mistral-large-2411',
+        family: 'Mistral Large 2411',
+        format: 'sentencepiece',
+        sha256: '1b968b8dc352f42192367337c78ccc61e1eaddc6d641a579372d4f20694beb7a',
+        bytes: 587562,
+        license: 'Mistral AI Research License',
+        licenseUrl: 'https://mistral.ai/licenses/MRL-0.1.md',
+        sources: [
+            { repo: 'mistralai/Mistral-Large-Instruct-2411', revision: 'ba78820945ae22361b0274cf0ae6d696c967c1a4', path: 'tokenizer.model.v7', gated: false },
+            { repo: 'mistralai/Pixtral-Large-Instruct-2411', revision: 'c1e51f6f11974a1199685d35c62f5a425c2d001e', path: 'tokenizer.model.v7m1', gated: false },
+        ],
+    },
+    {
+        id: 'mistral-7b-v0.3-hf',
+        family: 'Mistral 7B v0.3',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: 'e553af6fff7d7ad76e830608b218c5c0b0822998d5a1a96099a74cd3c1cb1a49',
+        bytes: 1961548,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Mistral-7B-Instruct-v0.3', revision: 'c170c708c41dac9275d15a8fff4eca08d52bab71', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-7B-v0.3', revision: 'caa1feb0e54d415e2df31207e5f4e273e33509b1', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mixtral-8x22B-Instruct-v0.1', revision: 'cc88a6cc19fbd17d9f1c0ee0b0d70a748dce698d', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'codestral-22b-hf',
+        family: 'Codestral 22B',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: '5bbd20ebc1349f5e40b5e585330c6eb100810586de46ea22c830f7861eaa1fcc',
+        bytes: 1962462,
+        license: 'Mistral AI Non-Production License',
+        licenseUrl: 'https://mistral.ai/licences/MNPL-0.1.md',
+        sources: [
+            { repo: 'mistralai/Codestral-22B-v0.1', revision: '28b1c1a51dabe9d86ca8c41420ada1984632498f', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'codestral-mamba-hf',
+        family: 'Codestral Mamba',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: 'f9fb70f3b36291190d91add421a062b42ef517d43cdd2e1f32ca19e84096b4ca',
+        bytes: 1961706,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Mamba-Codestral-7B-v0.1', revision: '4f086c08c1e0f07bdc50ca25125dbbf7475d21da', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'mathstral-hf',
+        family: 'Mathstral',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: '9af882e8e5c737c2062f6ae3dfdf113622400951677c9514a3219b25de42d0a7',
+        bytes: 1961676,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Mathstral-7B-v0.1', revision: 'ec3a48484ef241dfe03282edcb0f25e564923823', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'mistral-large-2411-hf',
+        family: 'Mistral Large 2411',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: '2482d54bc351bc5f9ccc899ffd51b8d6cbe0fc1987e8a81a2d7c3670c0b666fc',
+        bytes: 3672086,
+        license: 'Mistral AI Research License',
+        licenseUrl: 'https://mistral.ai/licenses/MRL-0.1.md',
+        sources: [
+            { repo: 'mistralai/Mistral-Large-Instruct-2411', revision: 'ba78820945ae22361b0274cf0ae6d696c967c1a4', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'ministral-8b-2410-hf',
+        family: 'Ministral 8B 2410',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: 'd7edbeaf20dd7f571b5dd1c54d9ace4f9b6299127cc7ba2afb14a6d51a4a79a4',
+        bytes: 17078136,
+        license: 'Mistral AI Research License',
+        licenseUrl: 'https://mistral.ai/licenses/MRL-0.1.md',
+        sources: [
+            { repo: 'mistralai/Ministral-8B-Instruct-2410', revision: '2f494a194c5b980dfb9772cb92d26cbb671fce5a', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'ministral-3-instruct-hf',
+        family: 'Ministral 3 Instruct',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: '99cf274236c60277fcfad861a5a1007518687ad06ba8938760f50b55ffa0b1ef',
+        bytes: 17077420,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Ministral-3-14B-Instruct-2512', revision: '29439f81c2be264d8d393273f99e7db9c0961120', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Ministral-3-3B-Instruct-2512', revision: 'b35d4dfe56c142746f54dbd64f579faab2744308', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Ministral-3-8B-Instruct-2512', revision: '5b26027e7b19eeb4b7352e1fed3926375dd2cb4d', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Devstral-Small-2-24B-Instruct-2512', revision: '55c5b41e98c2dbd21b0c8afffc540dcfc9eb5128', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Devstral-2-123B-Instruct-2512', revision: '1613bf01adb5e1c6fdc196b46e6b173eae75eb4a', path: 'tokenizer.json', gated: false, license: 'Modified MIT License (model card: other)', licenseUrl: 'https://huggingface.co/mistralai/Devstral-2-123B-Instruct-2512/blob/1613bf01adb5e1c6fdc196b46e6b173eae75eb4a/LICENSE' },
+        ],
+    },
+    {
+        id: 'ministral-3-base-hf',
+        family: 'Ministral 3 Base',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: '577575622324b2e099e2648be26bdeb5e5815ffe66d7004e9e3ddbf421db6bf1',
+        bytes: 17078110,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Ministral-3-14B-Base-2512', revision: '5b0ceedbb42dff466ae60b258ba296f32da51384', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Ministral-3-14B-Reasoning-2512', revision: '51f9210f3cd20f3452a80d5819d15dc61cc50630', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Ministral-3-3B-Base-2512', revision: '6f9c4b12a95b139af68670a6713616b757923735', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Ministral-3-3B-Reasoning-2512', revision: '4a36357c811bf511a7b625d132e12f22408aac91', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Ministral-3-8B-Base-2512', revision: 'd4883f9b36aa2e5d775730d3fdba3d30de51a8ef', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Ministral-3-8B-Reasoning-2512', revision: '81eaece1948f3875421d9a45bc55487d10e2d894', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Large-3-675B-Base-2512', revision: '3123f82420d99a7fc9313b2d69f9a0ab6cb6ab4d', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Large-3-675B-Instruct-2512', revision: '383ffea2c7d60dfd44ca960e8e691709d4fdb9cd', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Large-3-675B-Instruct-2512-Eagle', revision: 'a2eec8837f6b4b2a434a5bbc27c534c9640aef89', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Large-3-675B-Instruct-2512-NVFP4', revision: '6f01426c721bd365f29a108f2389782e9671aab2', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'mistral-small-4-hf',
+        family: 'Mistral Small 4',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: '2ba5b3330fd84d5376fcca797cfb3b42eee6241ce23e3271e6fb2a115a8751bd',
+        bytes: 17077420,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Mistral-Small-4-119B-2603', revision: 'a11f36bebf709121056b1dbcc943d1c6afbe494d', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Small-4-119B-2603-NVFP4', revision: '45331841b631f4e281df8e959ea3cc9beb84298a', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Medium-3.5-128B', revision: '22b2b868a15677cfa6061277ed2f653d1349a9ab', path: 'tokenizer.json', gated: false, license: 'Modified MIT License (model card: other)', licenseUrl: 'https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/blob/22b2b868a15677cfa6061277ed2f653d1349a9ab/LICENSE' },
+        ],
+    },
+    {
+        id: 'shieldstral-hf',
+        family: 'Shieldstral',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: '9172cf28b79a17502736f971b560faeced38ee527540cea6882a1f40cce320c0',
+        bytes: 17077322,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Shieldstral-1.0-3B', revision: '003ec7e2b0bab5f0e6307edbaf186fa5822b76f5', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'mistral-small-3-hf',
+        family: 'Mistral Small 3',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: 'b76085f9923309d873994d444989f7eb6ec074b06f25b58f1e8d7b7741070949',
+        bytes: 17078037,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'mistralai/Mistral-Small-24B-Base-2501', revision: 'b0a2e4ed093c26997495ae625528f81ea04b749f', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Small-24B-Instruct-2501', revision: '9527884be6e5616bdd54de542f9ae13384489724', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Small-3.1-24B-Base-2503', revision: 'ba6496e3dce1d0bdc93848804b1d4b9d5f3c57bc', path: 'tokenizer.json', gated: false },
+            { repo: 'mistralai/Mistral-Small-3.1-24B-Instruct-2503', revision: '68faf511d618ef198fef186659617cfd2eb8e33a', path: 'tokenizer.json', gated: false },
+        ],
+    },
 ]);
 
 /**
@@ -531,7 +745,19 @@ export function findTokenizerSource(id, registry = TOKENIZER_SOURCES) {
  * @returns {string}
  */
 export function getTokenizerDisplayName(entry) {
-    return `${entry.family} (official)`;
+    return `${entry.family} (${entry.nameNote ?? 'official'})`;
+}
+
+/**
+ * The license of the file as downloaded from this source.
+ * @param {TokenizerSourceEntry} entry
+ * @param {TokenizerSource} source
+ * @returns {{ license: string, licenseUrl: string }}
+ */
+export function getSourceLicense(entry, source) {
+    return source.license
+        ? { license: source.license, licenseUrl: String(source.licenseUrl) }
+        : { license: entry.license, licenseUrl: entry.licenseUrl };
 }
 
 /**
@@ -605,7 +831,7 @@ export function getCacheFileName(entry) {
 
 /**
  * sha256 -> the download in flight for it, so parallel calls share one fetch.
- * @type {Map<string, Promise<string>>}
+ * @type {Map<string, Promise<{ path: string, license: string }>>}
  */
 const inFlight = new Map();
 
@@ -663,7 +889,7 @@ async function downloadSource(entry, source, hfToken) {
  * @param {TokenizerSourceEntry} entry
  * @param {string} cachedFile
  * @param {string} hfToken
- * @returns {Promise<string>} The cached file's path
+ * @returns {Promise<{ path: string, license: string }>} The cached file's path, and the license of the source it came from
  */
 async function downloadEntry(entry, cachedFile, hfToken) {
     /** @type {string[]} */
@@ -683,8 +909,9 @@ async function downloadEntry(entry, cachedFile, hfToken) {
             const body = await downloadSource(entry, source, hfToken);
             writeFileAtomicSync(cachedFile, body);
             clearDownloadFailure(url);
-            console.info(`Downloaded the ${entry.family} tokenizer. License: ${entry.license}`);
-            return cachedFile;
+            const { license } = getSourceLicense(entry, source);
+            console.info(`Downloaded the ${entry.family} tokenizer. License: ${license}`);
+            return { path: cachedFile, license };
         } catch (error) {
             recordDownloadFailure(url);
             reasons.push(`${url}: ${error.message}`);
@@ -697,7 +924,9 @@ async function downloadEntry(entry, cachedFile, hfToken) {
  * Gets a registry entry's file from the cache, downloading it from its pinned sources when absent.
  * @param {TokenizerSourceEntry} entry Registry entry
  * @param {import('./users.js').UserDirectoryList} [directories] The requesting user's directories, for their saved Hugging Face token
- * @returns {Promise<{ path: string, downloaded: boolean, license: string }>} `downloaded` is true only for the call that fetched the file
+ * @returns {Promise<{ path: string, downloaded: boolean, license: string }>} `downloaded` is true only for the
+ * call that fetched the file. `license` is that of the source the file came from when this call or one it
+ * shared fetched it, else the entry's.
  */
 export async function getPinnedTokenizerFile(entry, directories) {
     const cacheDir = path.join(globalThis.DATA_ROOT, '_cache');
@@ -709,7 +938,7 @@ export async function getPinnedTokenizerFile(entry, directories) {
     const sha256 = entry.sha256.toLowerCase();
     const pending = inFlight.get(sha256);
     if (pending) {
-        return { path: await pending, downloaded: false, license: entry.license };
+        return { ...await pending, downloaded: false };
     }
 
     if (!IS_DOWNLOAD_ALLOWED) {
@@ -724,7 +953,7 @@ export async function getPinnedTokenizerFile(entry, directories) {
     const download = downloadEntry(entry, cachedFile, hfToken);
     inFlight.set(sha256, download);
     try {
-        return { path: await download, downloaded: true, license: entry.license };
+        return { ...await download, downloaded: true };
     } finally {
         inFlight.delete(sha256);
     }

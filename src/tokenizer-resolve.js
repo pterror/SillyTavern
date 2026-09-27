@@ -66,6 +66,20 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.LLAMA_GUARD_3_11B_VISION,
     tokenizers.LLAMA_GUARD_2,
     tokenizers.LLAMA_GUARD_4,
+    tokenizers.MISTRAL_7B_V0_3,
+    tokenizers.MATHSTRAL,
+    tokenizers.MISTRAL_LARGE_2411,
+    tokenizers.MISTRAL_7B_V0_3_HF,
+    tokenizers.CODESTRAL_22B_HF,
+    tokenizers.CODESTRAL_MAMBA_HF,
+    tokenizers.MATHSTRAL_HF,
+    tokenizers.MISTRAL_LARGE_2411_HF,
+    tokenizers.MINISTRAL_8B_2410_HF,
+    tokenizers.MINISTRAL_3_INSTRUCT_HF,
+    tokenizers.MINISTRAL_3_BASE_HF,
+    tokenizers.MISTRAL_SMALL_4_HF,
+    tokenizers.SHIELDSTRAL_HF,
+    tokenizers.MISTRAL_SMALL_3_HF,
 ];
 
 /**

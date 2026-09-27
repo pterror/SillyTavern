@@ -14,5 +14,6 @@
  "[INST] Hello <s> world </s> <|im_start|>user\nHi<|im_end|> <|endoftext|> [/INST]",
  "   leading and trailing spaces   ",
  "Ở Việt Nam, việc này có nhiều điều hợp lý; jeho každý характер değişti.",
- "Watch this: <|video|> and describe it."
+ "Watch this: <|video|> and describe it.",
+ "Sources: [REFERENCE_DOC_1] [REF]a[/REF] [SYSTEM_PROMPT] [IMG] [IMG_BREAK] [THINK] [MODEL_SETTINGS]"
 ]

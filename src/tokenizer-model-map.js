@@ -1,5 +1,6 @@
 import tiktoken from 'tiktoken';
 
+import { CHAT_COMPLETION_SOURCES } from './constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 
 // Exact-only: a name the rules below don't clearly place is unmapped (null), never given a
@@ -16,8 +17,9 @@ import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
  *   chat-completion source (the vendor's own API) to the result for it, and `hf` is the repo's HF
  *   `tokenizer.json`, for a backend documented to tokenize with it. Also for a name that says which
  *   weights it is only where the user loaded them: `other` is the result on a self-hosted backend,
- *   and every hosted API gets the estimate.
- * @typedef {number | string | { source: string } | { byBackend: { vendorApis?: Record<string, MapResult>, hf?: MapResult, other?: MapResult } }} MapResult
+ *   and every hosted API gets the estimate. `rest` is the result on every backend the other keys
+ *   give none for.
+ * @typedef {number | string | { source: string } | { byBackend: { vendorApis?: Record<string, MapResult>, hf?: MapResult, other?: MapResult, rest?: MapResult } }} MapResult
  */
 
 /**
@@ -91,6 +93,114 @@ const followedByAllDigits = rest => rest.length > 0 && ALL_DIGITS.test(rest[0]);
  * @returns {MapResult}
  */
 const onSelfHostedOnly = source => ({ byBackend: { other: { source } } });
+
+/**
+ * A Mistral model's result. Mistral's own API reads the native file (`tokenizer.model.v*` or
+ * `tekken.json`); the repo's HF `tokenizer.json` gives other ids. Every other backend gets none: which
+ * of the two files it reads is unknowable.
+ * @param {MapResult} native
+ * @param {string} [hfSource] The registry entry of the repo's `tokenizer.json`, where it has one
+ * @returns {MapResult}
+ */
+const onMistralApi = (native, hfSource) => ({
+    byBackend: { vendorApis: { [CHAT_COMPLETION_SOURCES.MISTRALAI]: native }, ...(hfSource ? { hf: { source: hfSource } } : {}) },
+});
+
+/**
+ * Mistral's models after Mistral 7B v0.1/v0.2 and Mixtral 8x7B. A name picks one model only with its
+ * date or version: undated ids and `-latest` point at different models over time. Mistral's API ids
+ * `mistral-small-2409`, `mistral-tiny-2312`, `mistral-small-2312`, `mistral-tiny-2407` and
+ * `open-mixtral-8x22b-2404` are left out, because Mistral's own sources name different files for them.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function mistralFamilyMatches(tokens) {
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+    /** @param {string[]} list */
+    const hasAny = (...list) => list.some(token => tokens.includes(token));
+    /**
+     * The one size of `sizes` the name has; null for none or several.
+     * @param {string[]} sizes
+     */
+    const onlySize = sizes => {
+        const found = sizes.filter(size => tokens.includes(size));
+        return found.length === 1 ? found[0] : null;
+    };
+
+    const mathstral = guardedMatch(tokens, [['mathstral']], followedByAllDigits);
+    if (mathstral === 'veto') return null;
+
+    // The v0.3 file: Mistral 7B v0.3 and Mixtral 8x22B Instruct v0.1. mistral-common gives it (as its
+    // v2 file) to the closed Small 2402 and Large 2402, and mistral.model to the closed Medium 2312.
+    const v03 = { source: 'mistral-7b-v0.3' };
+    if ((hasSequence(tokens, ['mistral', '7b']) && hasSequence(tokens, ['v0', '3']))
+        || (hasSequence(tokens, ['mixtral', '8x22b']) && hasAny('instruct') && hasSequence(tokens, ['v0', '1']))) {
+        add(onMistralApi(v03, 'mistral-7b-v0.3-hf'));
+    }
+    if (hasSequence(tokens, ['mistral', 'small', '2402']) || hasSequence(tokens, ['mistral', 'large', '2402'])) add(onMistralApi(v03));
+    if (hasSequence(tokens, ['mistral', 'medium', '2312'])) add(onMistralApi(tokenizers.MISTRAL));
+
+    // Mathstral's file, which Mamba-Codestral, Small 2409 and Large 2407 also ship; Codestral 22B ships a
+    // file with the same content. Each has its own tokenizer.json. Only the Small 2409 repo name (with
+    // `instruct`) maps, not Mistral's API id.
+    const mathstralFile = { source: 'mathstral' };
+    const isMamba = hasSequence(tokens, ['codestral', 'mamba']) || hasSequence(tokens, ['mamba', 'codestral']);
+    if (mathstral === 'match') add(onMistralApi(mathstralFile, 'mathstral-hf'));
+    if (hasAny('codestral') && !isMamba && hasAny('22b', '2405')) add(onMistralApi(mathstralFile, 'codestral-22b-hf'));
+    if (isMamba && hasAny('7b', '2407')) add(onMistralApi(mathstralFile, 'codestral-mamba-hf'));
+    if (hasSequence(tokens, ['mistral', 'small']) && hasAny('instruct') && hasAny('2409')) add(onMistralApi(mathstralFile, 'mathstral-hf'));
+    if (hasSequence(tokens, ['mistral', 'large']) && hasAny('2407')) add(onMistralApi(mathstralFile, 'mathstral-hf'));
+
+    // Large 2411's file, which Pixtral Large also ships.
+    const large2411 = { source: 'mistral-large-2411' };
+    if (hasSequence(tokens, ['mistral', 'large']) && hasAny('2411')) add(onMistralApi(large2411, 'mistral-large-2411-hf'));
+    if (hasSequence(tokens, ['pixtral', 'large']) && hasAny('2411')) add(onMistralApi(large2411));
+
+    // Every official tekken.json has the content of Nemo's. Where a repo ships a tokenizer.json, it is
+    // the one named; the Ministral 3 Base and Reasoning repos, and its ONNX Instruct repo, ship another
+    // than its Instruct repos. `labs-` ids are Labs models, which Mistral may update silently.
+    const tekken = { source: 'nemo-tekken' };
+    /** @param {string} [hfSource] */
+    const addTekken = hfSource => add(onMistralApi(tekken, hfSource));
+    if (hasSequence(tokens, ['ministral', '8b']) && hasAny('2410')) addTekken('ministral-8b-2410-hf');
+    if (hasAny('ministral') && hasAny('2512') && onlySize(['3b', '8b', '14b'])) {
+        const variants = ['instruct', 'base', 'reasoning'].filter(variant => tokens.includes(variant));
+        if (variants.length === 0) {
+            addTekken();
+        } else if (variants.length === 1) {
+            addTekken(variants[0] === 'instruct' && !hasAny('onnx') ? 'ministral-3-instruct-hf' : 'ministral-3-base-hf');
+        }
+    }
+    if (hasSequence(tokens, ['mistral', 'small'])) {
+        if (hasAny('2501', '2503')) addTekken('mistral-small-3-hf');
+        if (hasAny('2506')) addTekken();
+        if (hasAny('2603')) addTekken('mistral-small-4-hf');
+    }
+    if (hasSequence(tokens, ['mistral', 'medium', '3', '5']) && hasAny('128b')) addTekken('mistral-small-4-hf');
+    if (hasSequence(tokens, ['mistral', 'large']) && hasAny('2512')) addTekken('ministral-3-base-hf');
+    if (hasSequence(tokens, ['pixtral', '12b']) && hasAny('2409')) addTekken();
+    if (hasSequence(tokens, ['magistral', 'small']) && hasAny('2506', '2507', '2509')) addTekken();
+    if (hasAny('devstral') && !hasAny('labs', 'medium')) {
+        if (hasAny('small') && hasAny('2505', '2507')) addTekken();
+        if (hasAny('2512')) addTekken('ministral-3-instruct-hf');
+    }
+    if (hasAny('voxtral') && ((hasAny('small') && hasAny('2507')) || (hasSequence(tokens, ['mini', '3b']) && hasAny('2507'))
+        || (hasAny('realtime') && hasAny('2602')) || (hasAny('tts') && hasAny('2603')))) {
+        addTekken();
+    }
+    if (hasAny('leanstral') && !hasAny('labs') && (hasAny('2603') || (hasSequence(tokens, ['leanstral', '1', '5']) && hasAny('119b')))) addTekken();
+    if (hasSequence(tokens, ['shieldstral', '1', '0'])) addTekken('shieldstral-hf');
+
+    // Nemo: Mistral's API reads its tekken.json; nemo.json (its tokenizer.json's content) stays everywhere else.
+    if (hasAny('nemo')) {
+        add({ byBackend: { vendorApis: { [CHAT_COMPLETION_SOURCES.MISTRALAI]: tekken }, hf: tokenizers.NEMO, rest: tokenizers.NEMO } });
+    }
+
+    return matches;
+}
 
 /**
  * Version numbers each Gemma name may have after it; any other is an unknown version.
@@ -511,7 +621,10 @@ function generalMatches(tokens, lowerName) {
         || (hasSequence(tokens, ['mixtral', '8x22b']) && hasSequence(tokens, ['v0', '1']) && !tokens.includes('instruct'));
     if (isMistralV1) add(tokenizers.MISTRAL);
 
-    if (hasSequence(tokens, ['nemo'])) add(tokenizers.NEMO);
+    const mistralMatches = mistralFamilyMatches(tokens);
+    if (mistralMatches === null) return null;
+    matches.push(...mistralMatches);
+
     // Jamba 1.5/1.6/1.7, Jamba-tiny-dev and Jamba-tiny-reward-dev ship jamba.model; Jamba v0.1, Jamba2 and Jamba
     // Reasoning don't.
     const jambaSequences = [
@@ -569,13 +682,16 @@ export function mapResultKey(result) {
     if ('source' in result) {
         return result.source;
     }
-    const { vendorApis = {}, hf, other } = result.byBackend;
+    const { vendorApis = {}, hf, other, rest } = result.byBackend;
     const parts = Object.keys(vendorApis).sort().map(source => `${source}=${mapResultKey(vendorApis[source])}`);
     if (hf !== undefined) {
         parts.push(`hf=${mapResultKey(hf)}`);
     }
     if (other !== undefined) {
         parts.push(`other=${mapResultKey(other)}`);
+    }
+    if (rest !== undefined) {
+        parts.push(`rest=${mapResultKey(rest)}`);
     }
     return `byBackend(${parts.join(',')})`;
 }

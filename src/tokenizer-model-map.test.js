@@ -111,10 +111,10 @@ for (const name of [
 // --- Mistral V1 ---
 check(GENERAL_API, 'mistral-7b-instruct-v0.2', tokenizers.MISTRAL);
 check(GENERAL_API, 'mixtral-8x7b-instruct-v0.1', tokenizers.MISTRAL);
-check(GENERAL_API, 'mistral-7b-instruct-v0.3', null);
 
-// --- Mistral NeMo ---
-check(GENERAL_API, 'Mistral-Nemo-Instruct-2407', tokenizers.NEMO);
+// --- Mistral NeMo: the tekken.json on Mistral's API, nemo.json on every other backend (below) ---
+const nemo = { byBackend: { vendorApis: { mistralai: { source: 'nemo-tekken' } }, hf: tokenizers.NEMO, rest: tokenizers.NEMO } };
+assert.deepEqual(lookupModelTokenizer(GENERAL_API, 'Mistral-Nemo-Instruct-2407'), nemo);
 check(GENERAL_API, 'nemotron-70b', null);
 
 // --- Gemma 1/2: a name with an explicit Gemma 1 or 2 version ---
@@ -379,9 +379,8 @@ check(GENERAL_API, 'Phi-3.5-vision-instruct', null);
 check(GENERAL_API, 'phi-3.1-mini', null);
 check(GENERAL_API, 'phi-4', null);
 
-// Mixtral 8x22B base v0.1 (mistral.model); the Instruct and v0.3 files differ
+// Mixtral 8x22B base v0.1 (mistral.model); the Instruct and v0.3 files differ (the Instruct: Mistral, below)
 check(GENERAL_API, 'Mixtral-8x22B-v0.1', tokenizers.MISTRAL);
-check(GENERAL_API, 'Mixtral-8x22B-Instruct-v0.1', null);
 check(GENERAL_API, 'mixtral-8x22B-v0.3', null);
 check(GENERAL_API, 'open-mixtral-8x22b', null);
 
@@ -608,6 +607,117 @@ for (const [name, source] of [
     for (const state of backendStates) {
         const unmapped = state.api === 'novel' || (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
         assert.deepEqual(selectBackendResult(lookupModelTokenizer(state.api, name), state), unmapped ? null : { source }, `${name} on ${JSON.stringify(state)}`);
+    }
+}
+
+// --- Mistral: the model's native file on Mistral's own API, its repo's HF tokenizer.json as `hf`, and
+// none on every other backend ---
+/**
+ * @param {import('./tokenizer-model-map.js').MapResult} native
+ * @param {string} [hf]
+ */
+const onMistralApi = (native, hf) => ({ byBackend: { vendorApis: { mistralai: native }, ...(hf ? { hf: { source: hf } } : {}) } });
+const v03 = { source: 'mistral-7b-v0.3' };
+const mathstralFile = { source: 'mathstral' };
+const large2411 = { source: 'mistral-large-2411' };
+const tekken = { source: 'nemo-tekken' };
+/** @type {Array<[string, import('./tokenizer-model-map.js').MapResult]>} */
+const mistralCases = [
+    // The v0.3 file; mistral-common's v2 file for the closed Small 2402 and Large 2402, and mistral.model for Medium 2312.
+    ['Mistral-7B-Instruct-v0.3', onMistralApi(v03, 'mistral-7b-v0.3-hf')],
+    ['mistralai/Mistral-7B-v0.3', onMistralApi(v03, 'mistral-7b-v0.3-hf')],
+    ['mistral:7b-instruct-v0.3-q4_K_M', onMistralApi(v03, 'mistral-7b-v0.3-hf')],
+    ['Mixtral-8x22B-Instruct-v0.1', onMistralApi(v03, 'mistral-7b-v0.3-hf')],
+    ['mistral-small-2402', onMistralApi(v03)],
+    ['mistral-large-2402', onMistralApi(v03)],
+    ['mistral-medium-2312', onMistralApi(tokenizers.MISTRAL)],
+    // Mathstral's file (Codestral 22B's has the same content), each repo with its own tokenizer.json.
+    ['Mathstral-7B-v0.1', onMistralApi(mathstralFile, 'mathstral-hf')],
+    ['mathstral:7b', onMistralApi(mathstralFile, 'mathstral-hf')],
+    ['codestral-2405', onMistralApi(mathstralFile, 'codestral-22b-hf')],
+    ['Codestral-22B-v0.1', onMistralApi(mathstralFile, 'codestral-22b-hf')],
+    ['codestral-mamba-2407', onMistralApi(mathstralFile, 'codestral-mamba-hf')],
+    ['Mamba-Codestral-7B-v0.1', onMistralApi(mathstralFile, 'codestral-mamba-hf')],
+    ['Mistral-Small-Instruct-2409', onMistralApi(mathstralFile, 'mathstral-hf')],
+    ['mistral-large-2407', onMistralApi(mathstralFile, 'mathstral-hf')],
+    ['Mistral-Large-Instruct-2407', onMistralApi(mathstralFile, 'mathstral-hf')],
+    // Large 2411's file.
+    ['mistral-large-2411', onMistralApi(large2411, 'mistral-large-2411-hf')],
+    ['Mistral-Large-Instruct-2411', onMistralApi(large2411, 'mistral-large-2411-hf')],
+    ['pixtral-large-2411', onMistralApi(large2411)],
+    ['Pixtral-Large-Instruct-2411', onMistralApi(large2411)],
+    // Tekken.
+    ['open-mistral-nemo', nemo],
+    ['open-mistral-nemo-2407', nemo],
+    ['ministral-8b-2410', onMistralApi(tekken, 'ministral-8b-2410-hf')],
+    ['Ministral-8B-Instruct-2410', onMistralApi(tekken, 'ministral-8b-2410-hf')],
+    ['ministral-3b-2512', onMistralApi(tekken)],
+    ['ministral-14b-2512', onMistralApi(tekken)],
+    ['Ministral-3-3B-Instruct-2512', onMistralApi(tekken, 'ministral-3-instruct-hf')],
+    ['Ministral-3-8B-Instruct-2512-BF16', onMistralApi(tekken, 'ministral-3-instruct-hf')],
+    ['Ministral-3-3B-Instruct-2512-ONNX', onMistralApi(tekken, 'ministral-3-base-hf')],
+    ['Ministral-3-14B-Reasoning-2512', onMistralApi(tekken, 'ministral-3-base-hf')],
+    ['Ministral-3-8B-Base-2512', onMistralApi(tekken, 'ministral-3-base-hf')],
+    ['mistral-small-2501', onMistralApi(tekken, 'mistral-small-3-hf')],
+    ['Mistral-Small-24B-Base-2501', onMistralApi(tekken, 'mistral-small-3-hf')],
+    ['mistral-small-2503', onMistralApi(tekken, 'mistral-small-3-hf')],
+    ['Mistral-Small-3.1-24B-Instruct-2503', onMistralApi(tekken, 'mistral-small-3-hf')],
+    ['mistral-small-2506', onMistralApi(tekken)],
+    ['Mistral-Small-3.2-24B-Instruct-2506', onMistralApi(tekken)],
+    ['mistral-small-2603', onMistralApi(tekken, 'mistral-small-4-hf')],
+    ['Mistral-Small-4-119B-2603', onMistralApi(tekken, 'mistral-small-4-hf')],
+    ['Mistral-Medium-3.5-128B', onMistralApi(tekken, 'mistral-small-4-hf')],
+    ['mistral-large-2512', onMistralApi(tekken, 'ministral-3-base-hf')],
+    ['Mistral-Large-3-675B-Instruct-2512', onMistralApi(tekken, 'ministral-3-base-hf')],
+    ['pixtral-12b-2409', onMistralApi(tekken)],
+    ['Pixtral-12B-Base-2409', onMistralApi(tekken)],
+    ['magistral-small-2506', onMistralApi(tekken)],
+    ['magistral-small-2507', onMistralApi(tekken)],
+    ['Magistral-Small-2509', onMistralApi(tekken)],
+    ['devstral-small-2505', onMistralApi(tekken)],
+    ['Devstral-Small-2507', onMistralApi(tekken)],
+    ['Devstral-Small-2-24B-Instruct-2512', onMistralApi(tekken, 'ministral-3-instruct-hf')],
+    ['devstral-2512', onMistralApi(tekken, 'ministral-3-instruct-hf')],
+    ['Devstral-2-123B-Instruct-2512', onMistralApi(tekken, 'ministral-3-instruct-hf')],
+    ['voxtral-small-2507', onMistralApi(tekken)],
+    ['Voxtral-Mini-3B-2507', onMistralApi(tekken)],
+    ['voxtral-mini-transcribe-realtime-2602', onMistralApi(tekken)],
+    ['voxtral-mini-tts-2603', onMistralApi(tekken)],
+    ['Voxtral-4B-TTS-2603', onMistralApi(tekken)],
+    ['Leanstral-2603', onMistralApi(tekken)],
+    ['Leanstral-1.5-119B-A6B', onMistralApi(tekken)],
+    ['Shieldstral-1.0-3B', onMistralApi(tekken, 'shieldstral-hf')],
+];
+for (const [name, expected] of mistralCases) {
+    assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), expected, name);
+    assert.deepEqual(lookupModelTokenizer('openai', name), expected, name);
+}
+// Unmapped: ids Mistral's own sources name different files for; aliases, undated ids and `labs-` ids;
+// closed models; unknown versions.
+for (const name of [
+    'mistral-small-2409', 'mistral-tiny-2312', 'mistral-small-2312', 'mistral-tiny-2407', 'open-mixtral-8x22b-2404',
+    'open-mistral-7b', 'mistral-large-latest', 'mistral-small-latest', 'mistral-medium-latest', 'codestral-latest',
+    'ministral-8b-latest', 'ministral-3b-latest', 'magistral-small-latest', 'devstral-small-latest', 'devstral-latest',
+    'devstral-medium-latest', 'pixtral-large-latest', 'pixtral-12b-latest', 'pixtral-12b', 'voxtral-small-latest',
+    'voxtral-mini-latest', 'voxtral-mini-2507', 'mistral-medium-3', 'mistral-medium-3-5', 'mistral-medium-3.5',
+    'open-codestral-mamba', 'codestral-mamba-latest', 'mistral-tiny', 'mistral-small', 'mistral-medium',
+    'labs-devstral-small-2512', 'labs-leanstral-2603', 'labs-leanstral-1-5', 'leanstral-1-5', 'labs-mistral-small-creative',
+    'mistral-medium-2505', 'mistral-medium-2508', 'magistral-medium-2506', 'magistral-medium-2509', 'devstral-medium-2507',
+    'codestral-2501', 'codestral-2508', 'mistral-saba-2502', 'ministral-3b-2410', 'voxtral-mini-2602', 'mistral-embed',
+    'codestral-embed-2505', 'mistral-ocr-2512', 'mistral-moderation-2411',
+    'Mixtral-8x22B-Instruct-v0.3', 'mathstral-2-7b', 'Ministral-3-8B-Instruct-Reasoning-2512',
+]) {
+    check(GENERAL_API, name, null);
+    check('openai', name, null);
+}
+// On Mistral's API the native file; on every other backend none, except that Nemo keeps nemo.json.
+for (const [name, expected] of mistralCases) {
+    for (const state of backendStates) {
+        const selected = selectBackendResult(lookupModelTokenizer(state.api, name), state);
+        const isMistralApi = state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.MISTRALAI;
+        const isNemoElsewhere = expected === nemo && state.api !== 'novel' && !(state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
+        const wanted = isMistralApi ? /** @type {any} */ (expected).byBackend.vendorApis.mistralai : isNemoElsewhere ? tokenizers.NEMO : null;
+        assert.deepEqual(selected, wanted, `${name} on ${JSON.stringify(state)}`);
     }
 }
 

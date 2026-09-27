@@ -771,16 +771,21 @@ const testRegistry = [
 /** @type {string[]} */
 const registryLoads = [];
 let nextLoadDownloads = false;
+/** @type {string|null} The license of the source the next download comes from, when not the entry's. */
+let nextLoadLicense = null;
 /** A stub loader: qwen3 encodes to [1000, length], kimi to [2000, length]. */
 const loadPinned = async (entry) => {
     registryLoads.push(entry.id);
     const downloaded = nextLoadDownloads;
+    const license = nextLoadLicense ?? entry.license;
     nextLoadDownloads = false;
+    nextLoadLicense = null;
     const first = entry.id === 'qwen3' ? 1000 : 2000;
     return {
         encode: async (text) => [first, text.length],
         decode: async (ids) => ids.join(','),
         downloaded,
+        license,
     };
 };
 const testModels = {
@@ -902,6 +907,16 @@ await check('the request that downloads an entry\'s file carries a license warni
     assert.deepEqual(tokenizerResponseWarnings(state, resolved, later), []);
 });
 
+await check('the download notice names the license of the source the file came from', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.GENERIC, url: '', model: 'test-qwen-model.gguf', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = await resolveTokenizer(state, registryDeps);
+    nextLoadDownloads = true;
+    nextLoadLicense = 'Second Source License';
+    const outcome = createTokenizerOutcome();
+    await countWithTokenizer(resolved, 'hi', { ...registryOptions, outcome });
+    assert.deepEqual(tokenizerResponseWarnings(state, resolved, outcome).map(warning => warning.message), ['Downloaded the Test Qwen tokenizer. License: Second Source License']);
+});
+
 await check('one model, several official files: the vendor\'s own API gets its file; other backends get none', async () => {
     const mistral = await resolveTokenizer({ api: 'openai', source: 'mistralai', model: 'test-several-files' }, registryDeps);
     assert.deepEqual({ kind: mistral.kind, source: mistral.source, localCopy: mistral.localCopy?.source }, { kind: 'local', source: 'qwen3', localCopy: 'qwen3' });
@@ -1006,6 +1021,48 @@ await check('a Llama 3.x or 4 name: its file on every backend, hosted APIs inclu
             `${JSON.stringify(backend)} ${model}`,
         );
     }
+});
+
+await check('a Mistral name: its native file on Mistral\'s API; no file on every other backend, except that Nemo keeps nemo.json', async () => {
+    const large2411 = { id: tokenizers.MISTRAL_LARGE_2411, source: 'mistral-large-2411', name: 'Mistral Large 2411 (official)' };
+    const tekken = { id: tokenizers.NEMO_TEKKEN, source: 'nemo-tekken', name: 'Mistral Nemo (official)' };
+    const mathstral = { id: tokenizers.MATHSTRAL, source: 'mathstral', name: 'Mathstral (official)' };
+    for (const [model, expected] of [['mistral-large-2411', large2411], ['codestral-2405', mathstral], ['mistral-small-2506', tekken], ['open-mistral-nemo', tekken]]) {
+        const resolved = await resolveTokenizer({ api: 'openai', source: 'mistralai', model });
+        assert.deepEqual(
+            { kind: resolved.kind, id: resolved.id, source: resolved.source, name: resolved.name, localCopy: resolved.localCopy },
+            { kind: 'local', ...expected, localCopy: expected },
+            model,
+        );
+    }
+    const medium2312 = await resolveTokenizer({ api: 'openai', source: 'mistralai', model: 'mistral-medium-2312' });
+    assert.deepEqual({ kind: medium2312.kind, id: medium2312.id }, { kind: 'local', id: tokenizers.MISTRAL });
+
+    const estimates = [
+        [{ api: 'openai', source: 'mistralai' }, 'mistral-small-2409'],
+        [{ api: 'openai', source: 'mistralai' }, 'mistral-large-latest'],
+        [{ api: 'openai', source: 'mistralai' }, 'codestral-2508'],
+        [{ api: 'openai', source: 'openrouter' }, 'mistralai/mistral-large-2411'],
+        [{ api: 'openai', source: 'nanogpt' }, 'mistralai/Mistral-Small-3.2-24B-Instruct-2506'],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'Mistral-Small-3.2-24B-Instruct-2506'],
+    ];
+    for (const [backend, model] of estimates) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, `${JSON.stringify(backend)} ${model}`);
+    }
+
+    const llamacpp = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf', tokenizerSetting: tokenizers.BEST_MATCH,
+    });
+    assert.deepEqual({ kind: llamacpp.kind, localCopy: llamacpp.localCopy }, { kind: 'remote', localCopy: null });
+
+    const nemo = { id: tokenizers.NEMO, name: 'Mistral Nemo' };
+    const nemoOnLlamacpp = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'Mistral-Nemo-Instruct-2407-Q4_K_M.gguf', tokenizerSetting: tokenizers.BEST_MATCH,
+    });
+    assert.deepEqual({ kind: nemoOnLlamacpp.kind, localCopy: nemoOnLlamacpp.localCopy }, { kind: 'remote', localCopy: nemo });
+    const nemoOnOpenRouter = await resolveTokenizer({ api: 'openai', source: 'openrouter', model: 'mistralai/mistral-nemo' });
+    assert.deepEqual({ kind: nemoOnOpenRouter.kind, id: nemoOnOpenRouter.id }, { kind: 'local', id: tokenizers.NEMO });
 });
 
 await check('the old resolvers and their llama defaults are no longer exported', async () => {
