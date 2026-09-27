@@ -38,4 +38,4 @@ Each character's or group's messages form a tree: a message can have several rep
 
 ## Boot and batches
 
-Server startup must never wait on heavy work. Large passes over the data run in background worker threads, in small batches with pauses between them, and never keep a database read open while writing.
+Server startup must never wait on heavy work. Large passes over the data run after the server is listening, either in background worker threads or on the main thread in small batches with a pause between each, so requests are never held up. They never keep a database read open while writing.
