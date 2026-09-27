@@ -75,11 +75,22 @@ function generalMatches(tokens, lowerName) {
         results.push(tokenizers.LLAMA);
     }
 
+    // Phi-3 and Phi-3.5 ship llama.model; Phi-3-small is cl100k and Phi-3(.5)-vision has no
+    // tokenizer.model, so neither is covered.
+    const phi3 = guardedMatch(tokens, [['phi', '3']], rest => followedByAllDigits(rest) && rest[0] !== '5');
+    if (phi3 === 'veto') return null;
+    if (phi3 === 'match' && !tokens.includes('small') && !tokens.includes('vision')) {
+        results.push(tokenizers.LLAMA);
+    }
+
+    // CodeLlama 34b ships llama.model; the 7b/13b base and Instruct and the 70b files differ.
+    if (hasSequence(tokens, ['codellama', '34b'])) results.push(tokenizers.LLAMA);
+
     const guarded = [
         [tokenizers.LLAMA3, [['llama', '3'], ['llama3']], followedByAllDigits],
         [tokenizers.GEMMA, [['gemma']], rest => rest[0] === '3' || rest[0] === '3n'],
         [tokenizers.GEMMA, [['gemma2']], () => false],
-        [tokenizers.YI, [['yi']], rest => rest[0] === '1' && rest[1] === '5'],
+        [tokenizers.YI, [['yi']], () => false],
         [tokenizers.QWEN2, [['qwen2']], followedByAllDigits],
         [tokenizers.DEEPSEEK, [['deepseek', 'v3']], followedByAllDigits],
     ];
@@ -91,11 +102,25 @@ function generalMatches(tokens, lowerName) {
 
     const isMistralV1 = (hasSequence(tokens, ['mistral', '7b'])
         && (hasSequence(tokens, ['v0', '1']) || hasSequence(tokens, ['v0', '2'])))
-        || hasSequence(tokens, ['mixtral', '8x7b']);
+        || hasSequence(tokens, ['mixtral', '8x7b'])
+        // Mixtral 8x22B base v0.1 ships mistral.model; the Instruct and v0.3 files differ.
+        || (hasSequence(tokens, ['mixtral', '8x22b']) && hasSequence(tokens, ['v0', '1']) && !tokens.includes('instruct'));
     if (isMistralV1) results.push(tokenizers.MISTRAL);
 
     if (hasSequence(tokens, ['nemo'])) results.push(tokenizers.NEMO);
-    if (hasSequence(tokens, ['jamba', '1', '5'])) results.push(tokenizers.JAMBA);
+    // Jamba 1.5/1.6/1.7 and Jamba-tiny-dev ship jamba.model; Jamba v0.1, Jamba2 and Jamba
+    // Reasoning don't.
+    const jambaSequences = [
+        ['jamba', '1', '5'],
+        ['jamba', '1', '6'],
+        ['jamba', '1', '7'],
+        ['jamba', 'mini', '1', '6'],
+        ['jamba', 'mini', '1', '7'],
+        ['jamba', 'large', '1', '6'],
+        ['jamba', 'large', '1', '7'],
+        ['jamba', 'tiny', 'dev'],
+    ];
+    if (jambaSequences.some(sequence => hasSequence(tokens, sequence))) results.push(tokenizers.JAMBA);
     if (hasSequence(tokens, ['command', 'r'])) results.push(tokenizers.COMMAND_R);
     if (hasSequence(tokens, ['command', 'a'])) results.push(tokenizers.COMMAND_A);
 
