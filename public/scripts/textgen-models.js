@@ -1,6 +1,6 @@
 import { DOMPurify } from '../lib.js';
 import { isMobile } from './RossAscends-mods.js';
-import { online_status, setGenerationParamsFromPreset } from '../script.js';
+import { online_status, saveSettingsDebounced, setGenerationParamsFromPreset } from '../script.js';
 import { amount_gen, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
@@ -484,6 +484,20 @@ export function updateNanoGptProvidersWarning(providersSelector) {
     $('#nanogpt_provider_warning').toggleClass('displayNone', !showWarning);
 }
 
+/**
+ * Sets a model setting and saves it only when the value changed, so re-fetching a list that still
+ * holds the saved model doesn't save. Server-built sends read the saved model, not this client's.
+ * @param {string} key The `textgen_settings` model key.
+ * @param {string} value The model ID.
+ */
+function setTextgenModel(key, value) {
+    if (textgen_settings[key] === value) {
+        return;
+    }
+    textgen_settings[key] = value;
+    saveSettingsDebounced('textgenerationwebui_settings');
+}
+
 export async function loadOllamaModels(data) {
     if (!Array.isArray(data)) {
         console.error('Invalid Ollama models data', data);
@@ -491,7 +505,7 @@ export async function loadOllamaModels(data) {
     }
 
     if (!data.find(x => x.id === textgen_settings.ollama_model)) {
-        textgen_settings.ollama_model = data[0]?.id || '';
+        setTextgenModel('ollama_model', data[0]?.id || '');
     }
 
     $('#ollama_model').empty();
@@ -515,7 +529,7 @@ export async function loadTabbyModels(data) {
     tabbyModels.unshift({ id: '' });
 
     if (!tabbyModels.find(x => x.id === textgen_settings.tabby_model)) {
-        textgen_settings.tabby_model = tabbyModels[0]?.id || '';
+        setTextgenModel('tabby_model', tabbyModels[0]?.id || '');
     }
 
     $('#tabby_model').empty();
@@ -539,7 +553,7 @@ export async function loadLlamaCppModels(data) {
     llamacppModels.unshift({ id: '' });
 
     if (!llamacppModels.find(x => x.id === textgen_settings.llamacpp_model)) {
-        textgen_settings.llamacpp_model = llamacppModels[0]?.id || '';
+        setTextgenModel('llamacpp_model', llamacppModels[0]?.id || '');
     }
 
     $('#llamacpp_model').empty();
@@ -562,7 +576,7 @@ export async function loadTogetherAIModels(data) {
     togetherModels = data;
 
     if (!data.find(x => x.id === textgen_settings.togetherai_model)) {
-        textgen_settings.togetherai_model = data[0]?.id || '';
+        setTextgenModel('togetherai_model', data[0]?.id || '');
     }
 
     $('#model_togetherai_select').empty();
@@ -590,7 +604,7 @@ export async function loadInfermaticAIModels(data) {
     infermaticAIModels = data;
 
     if (!data.find(x => x.id === textgen_settings.infermaticai_model)) {
-        textgen_settings.infermaticai_model = data[0]?.id || '';
+        setTextgenModel('infermaticai_model', data[0]?.id || '');
     }
 
     $('#model_infermaticai_select').empty();
@@ -656,7 +670,7 @@ export async function loadDreamGenModels(data) {
     dreamGenModels = data;
 
     if (!data.find(x => x.id === textgen_settings.dreamgen_model)) {
-        textgen_settings.dreamgen_model = data[0]?.id || '';
+        setTextgenModel('dreamgen_model', data[0]?.id || '');
     }
 
     $('#model_dreamgen_select').empty();
@@ -683,7 +697,7 @@ export async function loadMancerModels(data) {
     mancerModels = data;
 
     if (!data.find(x => x.id === textgen_settings.mancer_model)) {
-        textgen_settings.mancer_model = data[0]?.id || '';
+        setTextgenModel('mancer_model', data[0]?.id || '');
     }
 
     $('#mancer_model').empty();
@@ -706,7 +720,7 @@ export async function loadOpenRouterModels(data) {
     openRouterModels = data;
 
     if (!data.find(x => x.id === textgen_settings.openrouter_model)) {
-        textgen_settings.openrouter_model = data[0]?.id || '';
+        setTextgenModel('openrouter_model', data[0]?.id || '');
     }
 
     $('#openrouter_model').empty();
@@ -732,7 +746,7 @@ export async function loadVllmModels(data) {
     vllmModels = data;
 
     if (!data.find(x => x.id === textgen_settings.vllm_model)) {
-        textgen_settings.vllm_model = data[0]?.id || '';
+        setTextgenModel('vllm_model', data[0]?.id || '');
     }
 
     $('#vllm_model').empty();
@@ -754,7 +768,7 @@ export async function loadAphroditeModels(data) {
     aphroditeModels = data;
 
     if (!data.find(x => x.id === textgen_settings.aphrodite_model)) {
-        textgen_settings.aphrodite_model = data[0]?.id || '';
+        setTextgenModel('aphrodite_model', data[0]?.id || '');
     }
 
     $('#aphrodite_model').empty();
@@ -789,7 +803,7 @@ export async function loadFeatherlessModels(data) {
     featherlessModels = data;
 
     if (!data.find(x => x.id === textgen_settings.featherless_model)) {
-        textgen_settings.featherless_model = data[0]?.id || '';
+        setTextgenModel('featherless_model', data[0]?.id || '');
     }
 
     // Populate class select options with unique classes
@@ -997,7 +1011,7 @@ async function fetchFeatherlessNew() {
 
 function onFeatherlessModelSelect(modelId) {
     const model = featherlessModels.find(x => x.id === modelId);
-    textgen_settings.featherless_model = modelId;
+    setTextgenModel('featherless_model', modelId);
     $('#featherless_model').val(modelId);
     $('#api_button_textgenerationwebui').trigger('click');
     setGenerationParamsFromPreset({ max_length: model.context_length });
@@ -1028,7 +1042,7 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 function onMancerModelSelect() {
     const modelId = String($('#mancer_model').val());
-    textgen_settings.mancer_model = modelId;
+    setTextgenModel('mancer_model', modelId);
     $('#api_button_textgenerationwebui').trigger('click');
 
     const limits = mancerModels.find(x => x.id === modelId)?.limits;
@@ -1037,7 +1051,7 @@ function onMancerModelSelect() {
 
 function onTogetherModelSelect() {
     const modelName = String($('#model_togetherai_select').val());
-    textgen_settings.togetherai_model = modelName;
+    setTextgenModel('togetherai_model', modelName);
     $('#api_button_textgenerationwebui').trigger('click');
     const model = togetherModels.find(x => x.id === modelName);
     setGenerationParamsFromPreset({ max_length: model.context_length });
@@ -1045,7 +1059,7 @@ function onTogetherModelSelect() {
 
 function onInfermaticAIModelSelect() {
     const modelName = String($('#model_infermaticai_select').val());
-    textgen_settings.infermaticai_model = modelName;
+    setTextgenModel('infermaticai_model', modelName);
     $('#api_button_textgenerationwebui').trigger('click');
     const model = infermaticAIModels.find(x => x.id === modelName);
     setGenerationParamsFromPreset({ max_length: model.context_length });
@@ -1053,39 +1067,39 @@ function onInfermaticAIModelSelect() {
 
 function onDreamGenModelSelect() {
     const modelName = String($('#model_dreamgen_select').val());
-    textgen_settings.dreamgen_model = modelName;
+    setTextgenModel('dreamgen_model', modelName);
     $('#api_button_textgenerationwebui').trigger('click');
     // TODO(DreamGen): Consider retuning max_tokens from API and setting it here.
 }
 
 function onOllamaModelSelect() {
     const modelId = String($('#ollama_model').val());
-    textgen_settings.ollama_model = modelId;
+    setTextgenModel('ollama_model', modelId);
     $('#api_button_textgenerationwebui').trigger('click');
 }
 
 function onTabbyModelSelect() {
     const modelId = String($('#tabby_model').val());
-    textgen_settings.tabby_model = modelId;
+    setTextgenModel('tabby_model', modelId);
     $('#api_button_textgenerationwebui').trigger('click');
 }
 
 function onLlamaCppModelSelect() {
     const modelId = String($('#llamacpp_model').val());
-    textgen_settings.llamacpp_model = modelId;
+    setTextgenModel('llamacpp_model', modelId);
     $('#api_button_textgenerationwebui').trigger('click');
 }
 
 function onGenericModelSelect() {
     const modelId = String($('#generic_model_select').val() ?? '');
-    textgen_settings.generic_model = modelId;
+    setTextgenModel('generic_model', modelId);
     $('#generic_model_textgenerationwebui').val(modelId);
     $('#api_button_textgenerationwebui').trigger('click');
 }
 
 function onOpenRouterModelSelect() {
     const modelId = String($('#openrouter_model').val());
-    textgen_settings.openrouter_model = modelId;
+    setTextgenModel('openrouter_model', modelId);
     $('#api_button_textgenerationwebui').trigger('click');
     const model = openRouterModels.find(x => x.id === modelId);
     syncOpenRouterProvidersForModel(modelId, '#openrouter_providers_text');
@@ -1094,13 +1108,13 @@ function onOpenRouterModelSelect() {
 
 function onVllmModelSelect() {
     const modelId = String($('#vllm_model').val());
-    textgen_settings.vllm_model = modelId;
+    setTextgenModel('vllm_model', modelId);
     $('#api_button_textgenerationwebui').trigger('click');
 }
 
 function onAphroditeModelSelect() {
     const modelId = String($('#aphrodite_model').val());
-    textgen_settings.aphrodite_model = modelId;
+    setTextgenModel('aphrodite_model', modelId);
     $('#api_button_textgenerationwebui').trigger('click');
 }
 
