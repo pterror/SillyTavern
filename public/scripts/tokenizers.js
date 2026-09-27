@@ -8,6 +8,7 @@ import { debounce, getStringHash } from './utils.js';
 import { kai_settings } from './kai-settings.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer, getTextGenModel } from './textgen-settings.js';
 import { horde_settings } from './horde.js';
+import { showTokenizerWarnings } from './tokenizer-notices.js';
 export { BYTES_PER_TOKEN as CHARACTERS_PER_TOKEN_RATIO };
 
 export const BYTES_PER_TOKEN = 3.35;
@@ -166,6 +167,20 @@ const textEncoder = new TextEncoder();
 const countCache = new Map();
 
 /**
+ * Token ids for the current settings' entries (bias, banned tokens, NovelAI bad words and stop
+ * strings), keyed `${tokenizer.key}|${tokenizer.id}|${text}`; null where the tokenizer has none.
+ * Emptied whenever the server names a different tokenizer.
+ * @type {Map<string, number[]|null>}
+ */
+const idCache = new Map();
+
+/**
+ * Per API, the texts its current entries encode, for the background prefetch.
+ * @type {Map<string, () => string[]>}
+ */
+const entryTextSources = new Map();
+
+/**
  * Guesstimates the token count for a string.
  * @param {string} str String to tokenize.
  * @returns {number} Token count.
@@ -207,6 +222,8 @@ async function removeStoredTokenCache() {
  * @property {string} [model]
  * @property {'remote'|'local'|'unknown'|'none'|'fallback'|'failed'} basis
  * @property {string} key
+ * @property {{ dropped?: { one: string, many: string } }} [messages] Server-built wording, with
+ * `{count}` and `{entries}` for the browser to fill in.
  */
 
 /**
@@ -304,10 +321,16 @@ function rememberTokenizer(stateKey, tokenizer) {
         return false;
     }
     const previous = rememberedTokenizer?.tokenizer;
-    if (!previous || previous.key !== tokenizer.key || previous.id !== tokenizer.id) {
+    const changed = !previous || previous.key !== tokenizer.key || previous.id !== tokenizer.id;
+    if (changed) {
         countCache.clear();
+        idCache.clear();
     }
     rememberedTokenizer = { stateKey, tokenizer };
+    if (changed) {
+        // After the caller has stored what this response answered.
+        queueMicrotask(prefetchEntryTokenIdsDebounced);
+    }
     return true;
 }
 
@@ -390,6 +413,114 @@ async function refreshCurrentTokenizer() {
 }
 
 const refreshCurrentTokenizerDebounced = debounce(refreshCurrentTokenizer);
+
+/**
+ * @param {CurrentTokenizer} tokenizer
+ * @param {string} text
+ * @returns {string}
+ */
+function idCacheKey(tokenizer, text) {
+    return `${tokenizer.key}|${tokenizer.id}|${text}`;
+}
+
+/**
+ * Stores an encode response's ids if it answered the current state and its tokenizer didn't fail.
+ * @param {string} stateKey
+ * @param {string[]} texts
+ * @param {any} data
+ * @returns {(number[]|null)[]|null} The response's ids, null for a failed request.
+ */
+function applyEncodeResponse(stateKey, texts, data) {
+    const ids = Array.isArray(data?.ids) ? data.ids : null;
+    const tokenizer = ids && data.tokenizer ? data.tokenizer : null;
+    if (tokenizer && rememberTokenizer(stateKey, tokenizer) && tokenizer.basis !== 'failed') {
+        texts.forEach((text, i) => idCache.set(idCacheKey(tokenizer, text), Array.isArray(ids[i]) ? ids[i] : null));
+    }
+    return ids;
+}
+
+/**
+ * Registers the texts an API's current entries encode, so they are fetched in the background.
+ * @param {string} api Main API the entries are sent to.
+ * @param {() => string[]} getTexts
+ */
+export function registerEntryTextSource(api, getTexts) {
+    entryTextSources.set(api, getTexts);
+}
+
+/**
+ * Encodes the current API's entries that aren't in the id cache, in the background.
+ * @returns {Promise<void>}
+ */
+async function prefetchEntryTokenIds() {
+    const getTexts = entryTextSources.get(main_api);
+    const state = getTokenizerState();
+    if (!getTexts || !state) {
+        return;
+    }
+    const tokenizer = getRememberedTokenizer();
+    const texts = [...new Set(getTexts())].filter(text => !tokenizer || !idCache.has(idCacheKey(tokenizer, text)));
+    if (texts.length === 0) {
+        return;
+    }
+    const stateKey = JSON.stringify(state);
+    applyEncodeResponse(stateKey, texts, await postCurrent('encode', { state, texts }, true));
+}
+
+export const prefetchEntryTokenIdsDebounced = debounce(prefetchEntryTokenIds);
+
+/**
+ * Token ids for entry texts, sent to `api`: the id cache's, and one synchronous `/current/encode`
+ * for the rest.
+ * @param {string[]} texts
+ * @param {string} [api] Main API the entries are sent to. Defaults to the current one.
+ * @returns {{ ids: Map<string, number[]|null>, tokenizer: CurrentTokenizer|null }} null ids where
+ * there are none.
+ */
+export function getEntryTokenIds(texts, api = main_api) {
+    const ids = new Map();
+    const tokenizer = api === main_api ? getRememberedTokenizer() : null;
+    const missing = [];
+    for (const text of new Set(texts)) {
+        const key = tokenizer ? idCacheKey(tokenizer, text) : null;
+        if (key && idCache.has(key)) {
+            ids.set(text, idCache.get(key));
+        } else {
+            missing.push(text);
+        }
+    }
+
+    const state = getTokenizerState(api);
+    if (missing.length === 0 || !state) {
+        missing.forEach(text => ids.set(text, null));
+        return { ids, tokenizer };
+    }
+
+    const data = postCurrent('encode', { state, texts: missing }, false);
+    const answered = applyEncodeResponse(JSON.stringify(state), missing, data);
+    missing.forEach((text, i) => ids.set(text, Array.isArray(answered?.[i]) ? answered[i] : null));
+    return { ids, tokenizer: answered ? data.tokenizer : tokenizer };
+}
+
+/**
+ * Shows the `dropped` warning for the entries one send left out, in the server's words.
+ * @param {CurrentTokenizer|null} tokenizer The answer the entries' ids came from.
+ * @param {string[]} entries
+ */
+export function showDroppedEntries(tokenizer, entries) {
+    if (entries.length === 0) {
+        return;
+    }
+    const templates = tokenizer?.messages?.dropped;
+    const template = entries.length === 1 ? templates?.one : templates?.many;
+    if (typeof template !== 'string') {
+        console.warn('Left out entries that need token ids:', entries);
+        return;
+    }
+    const values = { count: String(entries.length), entries: entries.join(', ') };
+    const message = template.replace(/\{(count|entries)\}/g, (_, name) => values[name]);
+    showTokenizerWarnings([{ kind: 'dropped', key: tokenizer.key, message, entries }]);
+}
 
 /**
  * @param {number} tokenizerId
@@ -841,6 +972,7 @@ export async function initTokenizers() {
     }
     $(document).on('change', '#main_api, #textgen_type, #model_novel_select, #horde_model, #tokenizer', refreshCurrentTokenizer);
     $(document).on('input', Object.values(SERVER_INPUTS).join(', '), refreshCurrentTokenizerDebounced);
+    $(document).on('input change', '#banned_tokens_textgenerationwebui, #global_banned_tokens_textgenerationwebui, #send_banned_tokens_textgenerationwebui, #nai_banned_tokens', prefetchEntryTokenIdsDebounced);
 
     void removeStoredTokenCache();
     void refreshCurrentTokenizer();

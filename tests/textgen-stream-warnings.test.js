@@ -33,10 +33,10 @@ jest.unstable_mockModule('../public/scripts/instruct-mode.js', () => ({
     selectInstructPreset: jest.fn(),
 }));
 jest.unstable_mockModule('../public/scripts/logit-bias.js', () => ({
-    BIAS_CACHE: new Map(),
+    buildLogitBiasListResult: jest.fn(),
     createNewLogitBiasEntry: jest.fn(),
     displayLogitBias: jest.fn(),
-    getLogitBiasListResult: jest.fn(),
+    getLogitBiasEntryTexts: jest.fn(),
 }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({ power_user: {}, registerDebugFunction: jest.fn() }));
 jest.unstable_mockModule('../public/scripts/samplerSelect.js', () => ({
@@ -77,12 +77,10 @@ jest.unstable_mockModule('../public/scripts/textgen-models.js', () => ({
     updateOpenRouterProvidersWarning: jest.fn(),
 }));
 jest.unstable_mockModule('../public/scripts/tokenizers.js', () => ({
-    ENCODE_TOKENIZERS: [],
-    TEXTGEN_TOKENIZERS: [],
     TOKENIZER_SUPPORTED_KEY: 'tokenizationSupported',
-    getTextTokens: jest.fn(),
-    getTokenizerBestMatch: jest.fn(),
-    tokenizers: {},
+    getEntryTokenIds: jest.fn(),
+    registerEntryTextSource: jest.fn(),
+    showDroppedEntries: jest.fn(),
 }));
 jest.unstable_mockModule('../public/scripts/util/AbortReason.js', () => ({ AbortReason: {} }));
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({

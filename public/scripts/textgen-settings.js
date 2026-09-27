@@ -15,14 +15,14 @@ import { eventSource, event_types } from './events.js';
 import { deriveTemplatesFromChatTemplate } from './chat-templates.js';
 import { t } from './i18n.js';
 import { autoSelectInstructPreset, selectContextPreset, selectInstructPreset } from './instruct-mode.js';
-import { BIAS_CACHE, createNewLogitBiasEntry, displayLogitBias, getLogitBiasListResult } from './logit-bias.js';
+import { buildLogitBiasListResult, createNewLogitBiasEntry, displayLogitBias, getLogitBiasEntryTexts } from './logit-bias.js';
 
 import { power_user, registerDebugFunction } from './power-user.js';
 import { getActiveManualApiSamplers, loadApiSelectedSamplers, isSamplerManualPriorityEnabled } from './samplerSelect.js';
 import { SECRET_KEYS, writeSecret } from './secrets.js';
 import { CompactStreamDecoder, ResumableCompactStreamReader } from './llamacpp-compact-stream.js';
-import { getCurrentDreamGenModelTokenizer, getCurrentOpenRouterModelTokenizer, loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadLlamaCppModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels, updateOpenRouterProvidersWarning } from './textgen-models.js';
-import { ENCODE_TOKENIZERS, TEXTGEN_TOKENIZERS, TOKENIZER_SUPPORTED_KEY, getTextTokens, getTokenizerBestMatch, tokenizers } from './tokenizers.js';
+import { loadAphroditeModels, loadDreamGenModels, loadFeatherlessModels, loadGenericModels, loadInfermaticAIModels, loadLlamaCppModels, loadMancerModels, loadOllamaModels, loadOpenRouterModels, loadTabbyModels, loadTogetherAIModels, loadVllmModels, updateOpenRouterProvidersWarning } from './textgen-models.js';
+import { TOKENIZER_SUPPORTED_KEY, getEntryTokenIds, registerEntryTextSource, showDroppedEntries } from './tokenizers.js';
 import { AbortReason } from './util/AbortReason.js';
 import { getSortableDelay, onlyUnique, arraysEqual, isObject } from './utils.js';
 import { setting_names } from './textgen-setting-names.js';
@@ -306,7 +306,6 @@ async function selectPreset(name) {
         setSettingByName(name, value, true);
     }
     setGenerationParamsFromPreset(preset);
-    BIAS_CACHE.delete(BIAS_KEY);
     displayLogitBias(preset.logit_bias, BIAS_KEY, 'textgenerationwebui_settings');
     saveSettingsDebounced('textgenerationwebui_settings');
 }
@@ -330,49 +329,17 @@ function convertPresets(presets) {
     return Array.isArray(presets) ? presets.map((p) => JSON.parse(p)) : [];
 }
 
-function getTokenizerForTokenIds() {
-    const bestMatchTokenizer = getTokenizerBestMatch('textgenerationwebui');
-    if (bestMatchTokenizer === tokenizers.API_TEXTGENERATIONWEBUI) {
-        return tokenizers.API_CURRENT;
-    }
-
-    if (power_user.tokenizer === tokenizers.API_CURRENT && TEXTGEN_TOKENIZERS.includes(textgenerationwebui_settings.type)) {
-        return tokenizers.API_CURRENT;
-    }
-
-    if (ENCODE_TOKENIZERS.includes(power_user.tokenizer)) {
-        return power_user.tokenizer;
-    }
-
-    if (textgenerationwebui_settings.type === OPENROUTER) {
-        return getCurrentOpenRouterModelTokenizer();
-    }
-
-    if (textgenerationwebui_settings.type === DREAMGEN) {
-        return getCurrentDreamGenModelTokenizer();
-    }
-
-    return tokenizers.LLAMA;
-}
-
 /**
- * Gets the custom token bans from settings and macros.
+ * The ban lines to send: banned tokens, global banned tokens and macro bans, with macros
+ * substituted. Empties the macro bans for the next generation turn.
  * @param {TextCompletionSettings} settings Text completion settings to use
- * @typedef {{banned_tokens: string, banned_strings: string[]}} TokenBanResult
- * @returns {TokenBanResult} String with comma-separated banned token IDs
+ * @returns {string[]}
  */
-function getCustomTokenBans(settings = null) {
-    settings = settings ?? textgenerationwebui_settings;
+function getBanSequences(settings) {
     if (!settings.send_banned_tokens || (!settings.banned_tokens && !settings.global_banned_tokens && !textgenerationwebui_banned_in_macros.length)) {
-        return {
-            banned_tokens: '',
-            banned_strings: [],
-        };
+        return [];
     }
 
-    const tokenizer = getTokenizerForTokenIds();
-    const banned_tokens = [];
-    const banned_strings = [];
     const sequences = []
         .concat(settings.banned_tokens.split('\n'))
         .concat(settings.global_banned_tokens.split('\n'))
@@ -383,6 +350,42 @@ function getCustomTokenBans(settings = null) {
 
     //clean old temporary bans found in macros before, for the next generation turn.
     textgenerationwebui_banned_in_macros = [];
+
+    return sequences;
+}
+
+/**
+ * @param {string} line A ban line.
+ * @returns {boolean} Whether it is sent as token ids of its text: neither raw ids nor a quoted string.
+ */
+function isTokenizedBanLine(line) {
+    return !(line.startsWith('[') && line.endsWith(']')) && !(line.startsWith('"') && line.endsWith('"'));
+}
+
+/**
+ * The texts the current entries encode: ban lines without macros, and the logit bias.
+ * @returns {string[]}
+ */
+function getTextgenEntryTexts() {
+    const settings = textgenerationwebui_settings;
+    const banLines = settings.send_banned_tokens
+        ? `${settings.banned_tokens}\n${settings.global_banned_tokens}`.split('\n')
+            .filter(line => line.length > 0 && !line.includes('{{') && isTokenizedBanLine(line))
+        : [];
+    return [...banLines, ...getLogitBiasEntryTexts(settings.logit_bias)];
+}
+
+/**
+ * Gets the custom token bans from ban lines.
+ * @param {string[]} sequences Ban lines, from getBanSequences()
+ * @param {(text: string) => number[]|null} getIds Token ids for a line; null leaves it out.
+ * @param {string[]} dropped Receives each line left out.
+ * @typedef {{banned_tokens: string, banned_strings: string[]}} TokenBanResult
+ * @returns {TokenBanResult} String with comma-separated banned token IDs
+ */
+function getCustomTokenBans(sequences, getIds, dropped) {
+    const banned_tokens = [];
+    const banned_strings = [];
 
     for (const line of sequences) {
         // Raw token ids, JSON serialized
@@ -403,12 +406,12 @@ function getCustomTokenBans(settings = null) {
 
             banned_strings.push(line.slice(1, -1));
         } else {
-            try {
-                const tokens = getTextTokens(tokenizer, line);
-                banned_tokens.push(...tokens);
-            } catch {
-                console.log(`Could not tokenize raw text: ${line}`);
+            const tokens = getIds(line);
+            if (tokens === null) {
+                dropped.push(line);
+                continue;
             }
+            banned_tokens.push(...tokens);
         }
     }
 
@@ -437,16 +440,15 @@ function toggleBannedStringsKillSwitch(isEnabled, title) {
 /**
  * Calculates logit bias object from the logit bias list.
  * @param {TextCompletionSettings} settings Text completion settings
+ * @param {(text: string) => number[]|null} getIds Token ids for an entry's text; null leaves it out.
+ * @param {string[]} dropped Receives the text of each entry left out.
  * @returns {object} Logit bias object
  */
-function calculateLogitBias(settings = null) {
-    settings = settings ?? textgenerationwebui_settings;
-
+function calculateLogitBias(settings, getIds, dropped) {
     if (!Array.isArray(settings.logit_bias) || settings.logit_bias.length === 0) {
         return {};
     }
 
-    const tokenizer = getTokenizerForTokenIds();
     const result = {};
 
     /**
@@ -468,7 +470,7 @@ function calculateLogitBias(settings = null) {
         return result;
     }
 
-    getLogitBiasListResult(settings.logit_bias, tokenizer, addBias);
+    buildLogitBiasListResult(settings.logit_bias, getIds, addBias, dropped);
 
     return result;
 }
@@ -518,7 +520,6 @@ export async function loadTextGenSettings(data, loadedSettings) {
     $('#openrouter_providers_text').val(textgenerationwebui_settings.openrouter_providers).trigger('change');
     $('#openrouter_quantizations_text').val(textgenerationwebui_settings.openrouter_quantizations).trigger('change');
     showSamplerControls(textgenerationwebui_settings.type);
-    BIAS_CACHE.delete(BIAS_KEY);
     displayLogitBias(textgenerationwebui_settings.logit_bias, BIAS_KEY, 'textgenerationwebui_settings');
 
     registerDebugFunction('change-mancer-url', 'Change Mancer base URL', 'Change Mancer API server base URL', () => {
@@ -591,9 +592,6 @@ async function getStatusTextgen() {
         setOnlineStatus('no_connection');
         return resultCheckStatus();
     }
-
-    // Clear logit bias cache
-    BIAS_CACHE.delete(BIAS_KEY);
 
     if ([textgen_types.GENERIC, textgen_types.OOBA].includes(textgenerationwebui_settings.type) && textgenerationwebui_settings.bypass_status_check) {
         setOnlineStatus(t`Status check bypassed`);
@@ -736,6 +734,8 @@ async function getStatusTextgen() {
 }
 
 export function initTextGenSettings() {
+    registerEntryTextSource('textgenerationwebui', getTextgenEntryTexts);
+
     $('#send_banned_tokens_textgenerationwebui').on('change', function () {
         const checked = !!$(this).prop('checked');
         toggleBannedStringsKillSwitch(checked,
@@ -865,7 +865,6 @@ export function initTextGenSettings() {
 
         showSamplerControls(type);
         setOnlineStatus('no_connection');
-        BIAS_CACHE.delete(BIAS_KEY);
 
         $('#main_api').trigger('change');
 
@@ -1562,7 +1561,16 @@ export function createTextGenGenerationData(settings, model, finalPrompt = null,
 
     const canMultiSwipe = !isContinue && !isImpersonate && type !== 'quiet';
     const dynatemp = isDynamicTemperatureSupported(settings);
-    const { banned_tokens, banned_strings } = getCustomTokenBans(settings);
+    const banSequences = getBanSequences(settings);
+    const entryTexts = [
+        ...banSequences.filter(isTokenizedBanLine),
+        ...(Array.isArray(settings.logit_bias) ? getLogitBiasEntryTexts(settings.logit_bias) : []),
+    ];
+    const entryIds = entryTexts.length > 0 ? getEntryTokenIds(entryTexts, 'textgenerationwebui') : null;
+    /** @param {string} text */
+    const getIds = text => entryIds?.ids.get(text) ?? null;
+    const dropped = [];
+    const { banned_tokens, banned_strings } = getCustomTokenBans(banSequences, getIds, dropped);
     const jsonSchema = isObject(settings.json_schema)
         ? settings.json_schema_allow_empty
             ? settings.json_schema
@@ -1771,9 +1779,7 @@ export function createTextGenGenerationData(settings, model, finalPrompt = null,
     }
 
     if (Array.isArray(settings.logit_bias) && settings.logit_bias.length) {
-        const logitBias = BIAS_CACHE.get(BIAS_KEY) || calculateLogitBias(settings);
-        BIAS_CACHE.set(BIAS_KEY, logitBias);
-        params.logit_bias = logitBias;
+        params.logit_bias = calculateLogitBias(settings, getIds, dropped);
     }
 
     if (settings.type === LLAMACPP || settings.type === OLLAMA) {
@@ -1808,6 +1814,8 @@ export function createTextGenGenerationData(settings, model, finalPrompt = null,
             delete params.guided_json;
         }
     }
+
+    showDroppedEntries(entryIds?.tokenizer ?? null, dropped);
     return params;
 }
 

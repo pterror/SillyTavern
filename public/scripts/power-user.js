@@ -48,7 +48,6 @@ import {
 
 import { getTagsList, tag_import_setting, tag_sort_mode, tags, getAssignedTagIds } from './tags.js';
 import { tokenizers } from './tokenizers.js';
-import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
 
 import { countOccurrences, debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
@@ -4119,7 +4118,6 @@ jQuery(() => {
     $('#tokenizer').on('change', function () {
         const value = $(this).find(':selected').val();
         power_user.tokenizer = Number(value);
-        BIAS_CACHE.clear();
         saveSettingsDebounced('power_user.tokenizer');
 
         markCharacterEditorCountsStale();
