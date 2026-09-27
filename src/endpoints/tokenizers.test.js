@@ -35,6 +35,7 @@ if (canMockDownloads) {
 
 const { computeLogitBias, computeTextgenLogitBias, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
 const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
+const { router: currentRouter } = await import('./tokenizers-current.js');
 const { default: express } = await import('express');
 
 // --- computeLogitBias ---
@@ -186,7 +187,12 @@ for (const name of ['nemo.json', 'deepseek.json']) {
 
 const app = express();
 app.use(express.json());
+app.use((req, _res, next) => {
+    req.user = /** @type {any} */ ({ directories: { root: dataRoot } });
+    next();
+});
 app.use('/api/tokenizers', router);
+app.use('/api/tokenizers', currentRouter);
 const server = app.listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const baseUrl = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (server.address()).port}/api/tokenizers`;
@@ -285,6 +291,171 @@ await testCase('/remote/textgenerationwebui/encode: an unknown api_type answers 
     }
 });
 
+// --- /current/* ---
+
+// A fake llama.cpp: `/tokenize` fails, or answers one token per character.
+let fakeTokenizeMode = 'fail';
+let fakeTokenizeCalls = 0;
+const fakeLlamaCpp = express();
+fakeLlamaCpp.use(express.json());
+fakeLlamaCpp.post('/tokenize', (req, res) => {
+    fakeTokenizeCalls++;
+    if (fakeTokenizeMode === 'fail') return res.sendStatus(500);
+    return res.send({ tokens: Array.from(String(req.body.content), (_, i) => i) });
+});
+const fakeServer = fakeLlamaCpp.listen(0, '127.0.0.1');
+await new Promise(resolve => fakeServer.once('listening', resolve));
+const fakeUrl = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (fakeServer.address()).port}`;
+
+async function postCurrent(route, body) {
+    const response = await fetch(`${baseUrl}/current/${route}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200, route);
+    return response.json();
+}
+
+const llama3State = { api: 'textgenerationwebui', type: 'generic', url: 'http://127.0.0.1:1', model: 'x', tokenizerSetting: tokenizers.LLAMA3 };
+const unmappedState = { api: 'textgenerationwebui', type: 'generic', url: 'http://127.0.0.1:1', model: 'some-unheard-of-model', tokenizerSetting: tokenizers.BEST_MATCH };
+const remoteGemmaState = { api: 'textgenerationwebui', type: 'llamacpp', url: fakeUrl, model: 'gemma-2-9b-it', tokenizerSetting: tokenizers.BEST_MATCH };
+const remoteUnmappedState = { ...remoteGemmaState, model: 'some-unheard-of-model' };
+
+await testCase('/current/*: each route names the tokenizer it used', async () => {
+    const llama3Ids = await encodeTextByLocalTokenizerType('llama3', text);
+    const expected = { id: tokenizers.LLAMA3, name: 'Llama 3', basis: 'local' };
+    const check = (answer, route) => {
+        assert.deepEqual({ id: answer.id, name: answer.name, basis: answer.basis }, expected, route);
+        assert.equal(typeof answer.key, 'string', route);
+    };
+
+    const counted = await postCurrent('count', { state: llama3State, texts: ['', text], padding: 2 });
+    assert.deepEqual(counted.counts, [0, llama3Ids.length + 2], 'count');
+    assert.equal(counted.warnings, undefined);
+    check(counted.tokenizer, 'count');
+
+    const encoded = await postCurrent('encode', { state: llama3State, texts: [text] });
+    assert.deepEqual(encoded.ids, [llama3Ids], 'encode');
+    assert.equal(encoded.chunks[0].join(''), text, 'encode chunks');
+    check(encoded.tokenizer, 'encode');
+
+    const decoded = await postCurrent('decode', { state: llama3State, ids: llama3Ids });
+    assert.equal(decoded.text, text, 'decode');
+    check(decoded.tokenizer, 'decode');
+
+    const trimmed = await postCurrent('trim', { state: llama3State, text, limit: 3, direction: 'start' });
+    check(trimmed.tokenizer, 'trim');
+
+    const answered = await postCurrent('tokenizer', { state: llama3State });
+    check(answered.tokenizer, 'tokenizer');
+    assert.deepEqual(Object.keys(answered), ['tokenizer']);
+});
+
+await testCase('/current/count: chat-completion messages count like /openai/count, naming the model\'s tokenizer', async () => {
+    const counted = await postCurrent('count', { state: { api: 'openai', source: 'openai', model: 'gpt-4o' }, messages });
+    const upstream = await postTokenizer('/openai/count', 'gpt-4o', messages);
+    assert.equal(counted.count, upstream.token_count);
+    assert.deepEqual(counted.tokenizer, { id: tokenizers.OPENAI, name: 'gpt-4o', model: 'gpt-4o', basis: 'local', key: 'openai|openai||gpt-4o|openai' });
+});
+
+await testCase('/current/*: a failing llama.cpp /tokenize with a gemma-2 model counts with gemma, basis fallback', async () => {
+    fakeTokenizeMode = 'fail';
+    fakeTokenizeCalls = 0;
+    const gemmaIds = await encodeTextByLocalTokenizerType('gemma', text);
+
+    const counted = await postCurrent('count', { state: remoteGemmaState, texts: [text] });
+    assert.deepEqual(counted.counts, [gemmaIds.length]);
+    assert.equal(counted.tokenizer.basis, 'fallback');
+    assert.equal(counted.tokenizer.id, tokenizers.GEMMA);
+    assert.deepEqual(counted.warnings.map(w => w.kind), ['fallback-copy']);
+    assert.equal(counted.warnings[0].key, counted.tokenizer.key);
+
+    const encoded = await postCurrent('encode', { state: remoteGemmaState, texts: [text] });
+    assert.deepEqual(encoded.ids, [gemmaIds]);
+    assert.equal(encoded.tokenizer.basis, 'fallback');
+    assert.equal(fakeTokenizeCalls, 2, 'the remote is tried on every request');
+});
+
+await testCase('/current/*: an unmapped model gets estimate counts, basis unknown', async () => {
+    const counted = await postCurrent('count', { state: unmappedState, texts: [text] });
+    assert.deepEqual(counted.counts, [guesstimate(text)]);
+    assert.deepEqual({ id: counted.tokenizer.id, basis: counted.tokenizer.basis }, { id: tokenizers.NONE, basis: 'unknown' });
+    assert.equal(counted.warnings, undefined);
+
+    const encoded = await postCurrent('encode', { state: unmappedState, texts: [text] });
+    assert.deepEqual(encoded.ids, [null]);
+
+    const decoded = await postCurrent('decode', { state: unmappedState, ids: [1, 2] });
+    assert.equal(decoded.text, '');
+
+    // Upstream /trimtokens' character-proportion fallback.
+    const limit = 5;
+    const trimIndex = Math.floor(text.length * (limit / guesstimate(text)));
+    const trimmedEnd = await postCurrent('trim', { state: unmappedState, text, limit, direction: 'end' });
+    assert.equal(trimmedEnd.text, text.substring(0, text.length - trimIndex));
+    const trimmedStart = await postCurrent('trim', { state: unmappedState, text, limit, direction: 'start' });
+    assert.equal(trimmedStart.text, text.substring(trimIndex));
+    assert.equal(trimmedStart.tokenizer.basis, 'unknown');
+});
+
+await testCase('/current/trim: the same text as encode-slice-decode for a local tokenizer', async () => {
+    const ids = await encodeTextByLocalTokenizerType('llama3', text);
+    const limit = 4;
+    for (const [direction, slice] of [['start', ids.slice(0, limit)], ['end', ids.slice(-limit)]]) {
+        const { text: expected } = await postCurrent('decode', { state: llama3State, ids: slice });
+        const trimmed = await postCurrent('trim', { state: llama3State, text, limit, direction });
+        assert.equal(trimmed.text, expected, direction);
+    }
+    assert.equal((await postCurrent('trim', { state: llama3State, text, limit: ids.length })).text, text, 'within the limit');
+    assert.equal((await postCurrent('trim', { state: llama3State, text, limit: 0 })).text, '', 'limit 0');
+    assert.equal((await postCurrent('trim', { state: llama3State, text, limit: 'x' })).text, text, 'no limit');
+});
+
+await testCase('/current/*: a working remote tokenizer with an exact local copy decodes and trims with the copy', async () => {
+    fakeTokenizeMode = 'ok';
+    const gemmaIds = await encodeTextByLocalTokenizerType('gemma', text);
+    const remoteAnswer = { id: tokenizers.API_TEXTGENERATIONWEBUI, basis: 'remote' };
+
+    const counted = await postCurrent('count', { state: remoteGemmaState, texts: [text] });
+    assert.deepEqual(counted.counts, [text.length], 'counted by the remote');
+    assert.deepEqual({ id: counted.tokenizer.id, basis: counted.tokenizer.basis }, remoteAnswer);
+
+    const decoded = await postCurrent('decode', { state: remoteGemmaState, ids: gemmaIds });
+    assert.equal(decoded.text, text);
+    assert.deepEqual({ id: decoded.tokenizer.id, basis: decoded.tokenizer.basis }, remoteAnswer);
+
+    const limit = 4;
+    const { text: expected } = await postCurrent('decode', { state: { ...llama3State, tokenizerSetting: tokenizers.GEMMA }, ids: gemmaIds.slice(-limit) });
+    const trimmed = await postCurrent('trim', { state: remoteGemmaState, text, limit, direction: 'end' });
+    assert.equal(trimmed.text, expected);
+    assert.deepEqual({ id: trimmed.tokenizer.id, basis: trimmed.tokenizer.basis }, remoteAnswer);
+});
+
+await testCase('/current/*: a working remote tokenizer with no local copy decodes to \'\' and trims by proportion of its count', async () => {
+    fakeTokenizeMode = 'ok';
+    const decoded = await postCurrent('decode', { state: remoteUnmappedState, ids: [1, 2, 3] });
+    assert.equal(decoded.text, '');
+    assert.deepEqual(decoded.chunks, []);
+
+    const limit = 5;
+    const trimIndex = Math.floor(text.length * (limit / text.length));
+    const trimmed = await postCurrent('trim', { state: remoteUnmappedState, text, limit, direction: 'end' });
+    assert.equal(trimmed.text, text.substring(0, text.length - trimIndex));
+    assert.equal(trimmed.tokenizer.basis, 'remote');
+
+    const answered = await postCurrent('tokenizer', { state: remoteUnmappedState });
+    assert.deepEqual({ id: answered.tokenizer.id, basis: answered.tokenizer.basis }, { id: tokenizers.API_TEXTGENERATIONWEBUI, basis: 'remote' });
+});
+
+await testCase('/current/*: a request without state answers 400', async () => {
+    for (const route of ['count', 'encode', 'decode', 'trim', 'tokenizer']) {
+        const response = await fetch(`${baseUrl}/current/${route}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ texts: [text] }),
+        });
+        assert.equal(response.status, 400, route);
+    }
+});
+
+fakeServer.close();
 server.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });
 

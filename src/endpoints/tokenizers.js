@@ -1396,3 +1396,58 @@ router.post('/remote/textgenerationwebui/encode-batch', async function (request,
     const results = await Promise.all(texts.map(text => encodeViaTextgenAPI(request, text, baseUrl, model, apiType)));
     return response.send({ results });
 });
+
+/**
+ * @param {{id: number, model?: string}} tokenizer An OPENAI or GPT2 tokenizer.
+ * @returns {import('tiktoken').Tiktoken}
+ */
+function getTiktokenFor(tokenizer) {
+    return getTiktokenTokenizer(tokenizer.id === tokenizers.OPENAI ? tokenizer.model : 'gpt2');
+}
+
+/**
+ * The loaded instance of a local sentencepiece or web tokenizer. Throws when it fails to load.
+ * @param {{id: number, name: string}} tokenizer
+ * @returns {Promise<{key: string, instance: any}>}
+ */
+async function getLocalInstance(tokenizer) {
+    const key = TOKENIZER_TYPE_KEYS[tokenizer.id];
+    const instance = await LOCAL_TOKENIZER_INSTANCES[key]?.get();
+    if (!instance) {
+        throw new Error(`Failed to load the ${tokenizer.name} tokenizer`);
+    }
+    return { key, instance };
+}
+
+/**
+ * The token chunks for `ids` a local tokenizer gave for `text`, as its encode route shows them.
+ * @param {{id: number, name: string, model?: string}} tokenizer
+ * @param {string} text
+ * @param {number[]} ids
+ * @returns {Promise<string[]>}
+ */
+export async function getLocalEncodeChunks(tokenizer, text, ids) {
+    if (tokenizer.id === tokenizers.OPENAI || tokenizer.id === tokenizers.GPT2) {
+        return getTiktokenChunks(getTiktokenFor(tokenizer), ids);
+    }
+    const { key, instance } = await getLocalInstance(tokenizer);
+    return SENTENCEPIECE_TOKENIZER_TYPES.has(key) ? instance.encodePieces(text) : getWebTokenizersChunks(instance, ids);
+}
+
+/**
+ * Decodes ids with a local tokenizer, as its decode route does. Throws when it fails to load.
+ * @param {{id: number, name: string, model?: string}} tokenizer
+ * @param {number[]} ids
+ * @returns {Promise<{text: string, chunks?: string[]}>}
+ */
+export async function decodeWithLocalTokenizer(tokenizer, ids) {
+    if (tokenizer.id === tokenizers.OPENAI || tokenizer.id === tokenizers.GPT2) {
+        return { text: new TextDecoder().decode(getTiktokenFor(tokenizer).decode(new Uint32Array(ids))) };
+    }
+    const { key, instance } = await getLocalInstance(tokenizer);
+    if (SENTENCEPIECE_TOKENIZER_TYPES.has(key)) {
+        const chunks = await Promise.all(ids.map(id => instance.decodeIds([id])));
+        return { text: chunks.join(''), chunks };
+    }
+    return { text: instance.decode(new Int32Array(ids)), chunks: getWebTokenizersChunks(instance, ids) };
+}
