@@ -1441,6 +1441,16 @@ export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType
     }
 }
 
+/** The api_types `encodeViaTextgenAPI` has a remote tokenize endpoint for. */
+const TEXTGEN_ENCODE_TYPES = [
+    TEXTGEN_TYPES.TABBY,
+    TEXTGEN_TYPES.KOBOLDCPP,
+    TEXTGEN_TYPES.LLAMACPP,
+    TEXTGEN_TYPES.VLLM,
+    TEXTGEN_TYPES.APHRODITE,
+    TEXTGEN_TYPES.OOBA,
+];
+
 router.post('/remote/textgenerationwebui/encode', async function (request, response) {
     if (!request.body) {
         return response.sendStatus(400);
@@ -1449,7 +1459,12 @@ router.post('/remote/textgenerationwebui/encode', async function (request, respo
     const baseUrl = String(request.body.url);
     const model = String(request.body.model) || '';
 
-    const result = await encodeViaTextgenAPI(request, text, baseUrl, model, request.body.api_type);
+    const apiType = request.body.api_type;
+    if (!TEXTGEN_ENCODE_TYPES.includes(apiType)) {
+        return response.sendStatus(400);
+    }
+
+    const result = await encodeViaTextgenAPI(request, text, baseUrl, model, apiType);
     return response.send(result);
 });
 

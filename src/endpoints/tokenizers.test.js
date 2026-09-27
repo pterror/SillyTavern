@@ -222,6 +222,19 @@ for (const name of ['claude', 'mistral', 'llama', 'deepseek', 'jamba']) {
     });
 }
 
+// --- /remote/textgenerationwebui/encode ---
+
+// An api_type with no remote tokenize endpoint answers HTTP 400, as upstream does.
+await testCase('/remote/textgenerationwebui/encode: an unknown api_type answers 400', async () => {
+    for (const apiType of ['some-unknown-type', undefined]) {
+        const response = await fetch(`${baseUrl}/remote/textgenerationwebui/encode`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, url: 'http://127.0.0.1:1', model: 'x', api_type: apiType }),
+        });
+        assert.equal(response.status, 400, String(apiType));
+    }
+});
+
 server.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });
 
