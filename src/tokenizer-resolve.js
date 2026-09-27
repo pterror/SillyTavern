@@ -42,6 +42,16 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.QWEN3_5_BASE,
     tokenizers.QWEN3_8,
     tokenizers.CODEQWEN1_5,
+    tokenizers.DEEPSEEK_V2,
+    tokenizers.DEEPSEEK_V2_5,
+    tokenizers.DEEPSEEK_R1,
+    tokenizers.DEEPSEEK_V3_1,
+    tokenizers.DEEPSEEK_V3_2,
+    tokenizers.DEEPSEEK_V4,
+    tokenizers.DEEPSEEK_V4_1,
+    tokenizers.DEEPSEEK_R1_DISTILL_QWEN,
+    tokenizers.DEEPSEEK_R1_DISTILL_LLAMA,
+    tokenizers.DEEPSEEK_R1_0528_QWEN3,
 ];
 
 /**
@@ -287,7 +297,7 @@ export async function resolveTokenizer(state, deps = {}) {
 
     const backend = { api, type, url, directories: deps.directories };
     const model = state.model || await lookupBackendModel(backend);
-    const local = describeMapEntry(selectBackendResult(lookupModel(api, model), state), api, registry);
+    const local = describeMapEntry(selectBackendResult(lookupModel(api, model), { ...state, model }), api, registry);
 
     if (await hasRemoteTokenizer(backend, TEXTGEN_TOKENIZERS)) {
         const id = api === 'kobold' ? tokenizers.API_KOBOLD : tokenizers.API_TEXTGENERATIONWEBUI;

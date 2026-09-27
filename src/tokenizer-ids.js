@@ -33,6 +33,16 @@ export const tokenizers = {
     QWEN3_5_BASE: 1007,
     QWEN3_8: 1008,
     CODEQWEN1_5: 1009,
+    DEEPSEEK_V2: 1010,
+    DEEPSEEK_V2_5: 1011,
+    DEEPSEEK_R1: 1012,
+    DEEPSEEK_V3_1: 1013,
+    DEEPSEEK_V3_2: 1014,
+    DEEPSEEK_V4: 1015,
+    DEEPSEEK_V4_1: 1016,
+    DEEPSEEK_R1_DISTILL_QWEN: 1017,
+    DEEPSEEK_R1_DISTILL_LLAMA: 1018,
+    DEEPSEEK_R1_0528_QWEN3: 1019,
 };
 
 /**
@@ -72,4 +82,14 @@ export const TOKENIZER_TYPE_KEYS = {
     [tokenizers.QWEN3_5_BASE]: 'qwen3.5-base',
     [tokenizers.QWEN3_8]: 'qwen3.8',
     [tokenizers.CODEQWEN1_5]: 'codeqwen1.5',
+    [tokenizers.DEEPSEEK_V2]: 'deepseek-v2',
+    [tokenizers.DEEPSEEK_V2_5]: 'deepseek-v2.5',
+    [tokenizers.DEEPSEEK_R1]: 'deepseek-r1',
+    [tokenizers.DEEPSEEK_V3_1]: 'deepseek-v3.1',
+    [tokenizers.DEEPSEEK_V3_2]: 'deepseek-v3.2',
+    [tokenizers.DEEPSEEK_V4]: 'deepseek-v4',
+    [tokenizers.DEEPSEEK_V4_1]: 'deepseek-v4.1',
+    [tokenizers.DEEPSEEK_R1_DISTILL_QWEN]: 'deepseek-r1-distill-qwen',
+    [tokenizers.DEEPSEEK_R1_DISTILL_LLAMA]: 'deepseek-r1-distill-llama',
+    [tokenizers.DEEPSEEK_R1_0528_QWEN3]: 'deepseek-r1-0528-qwen3',
 };

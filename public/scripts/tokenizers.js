@@ -49,6 +49,16 @@ export const tokenizers = {
     QWEN3_5_BASE: 1007,
     QWEN3_8: 1008,
     CODEQWEN1_5: 1009,
+    DEEPSEEK_V2: 1010,
+    DEEPSEEK_V2_5: 1011,
+    DEEPSEEK_R1: 1012,
+    DEEPSEEK_V3_1: 1013,
+    DEEPSEEK_V3_2: 1014,
+    DEEPSEEK_V4: 1015,
+    DEEPSEEK_V4_1: 1016,
+    DEEPSEEK_R1_DISTILL_QWEN: 1017,
+    DEEPSEEK_R1_DISTILL_LLAMA: 1018,
+    DEEPSEEK_R1_0528_QWEN3: 1019,
 };
 
 // A list of local tokenizers that support encoding and decoding token ids.
@@ -74,6 +84,16 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.QWEN3_5_BASE,
     tokenizers.QWEN3_8,
     tokenizers.CODEQWEN1_5,
+    tokenizers.DEEPSEEK_V2,
+    tokenizers.DEEPSEEK_V2_5,
+    tokenizers.DEEPSEEK_R1,
+    tokenizers.DEEPSEEK_V3_1,
+    tokenizers.DEEPSEEK_V3_2,
+    tokenizers.DEEPSEEK_V4,
+    tokenizers.DEEPSEEK_V4_1,
+    tokenizers.DEEPSEEK_R1_DISTILL_QWEN,
+    tokenizers.DEEPSEEK_R1_DISTILL_LLAMA,
+    tokenizers.DEEPSEEK_R1_0528_QWEN3,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,

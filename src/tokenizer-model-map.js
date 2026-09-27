@@ -14,8 +14,10 @@ import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
  * - `{ source }`, a src/tokenizer-sources.js entry id;
  * - `{ byBackend }`, for a model whose vendor's own files disagree: `vendorApis` maps a
  *   chat-completion source (the vendor's own API) to the result for it, and `hf` is the repo's HF
- *   `tokenizer.json`, for a backend documented to tokenize with it.
- * @typedef {number | string | { source: string } | { byBackend: { vendorApis?: Record<string, MapResult>, hf?: MapResult } }} MapResult
+ *   `tokenizer.json`, for a backend documented to tokenize with it. Also for a name that says which
+ *   weights it is only where the user loaded them: `other` is the result on a self-hosted backend,
+ *   and every hosted API gets the estimate.
+ * @typedef {number | string | { source: string } | { byBackend: { vendorApis?: Record<string, MapResult>, hf?: MapResult, other?: MapResult } }} MapResult
  */
 
 /**
@@ -136,7 +138,6 @@ function generalMatches(tokens, lowerName) {
         [tokenizers.GEMMA, [['gemma']], rest => rest[0] === '3' || rest[0] === '3n'],
         [tokenizers.GEMMA, [['gemma2']], () => false],
         [tokenizers.YI, [['yi']], () => false],
-        [tokenizers.DEEPSEEK, [['deepseek', 'v3']], followedByAllDigits],
     ];
     for (const [result, sequences, isExcluded] of /** @type {Array<[number, string[][], (rest: string[]) => boolean]>} */ (guarded)) {
         const outcome = guardedMatch(tokens, sequences, isExcluded);
@@ -170,8 +171,9 @@ function generalMatches(tokens, lowerName) {
     // Closed DashScope ids (plus, max, omni, flash other than Flash-Next) count by estimate.
     const isClosedQwen = ['plus', 'max', 'omni'].some(token => tokens.includes(token))
         || tokens.some((token, i) => token === 'flash' && tokens[i + 1] !== 'next');
-    // DeepSeek's Qwen-based models are DeepSeek's entries.
-    const qwenGate = !tokens.includes('deepseek') && !isClosedQwen && picksOneQwenModel;
+    // DeepSeek's Qwen-based models are DeepSeek's entries. The FuseO1-DeepSeekR1-* fusions ship varying
+    // files (R1-Distill-Qwen's content, Qwen2.5's, others), so they are unmapped.
+    const qwenGate = !tokens.includes('deepseek') && !tokens.includes('deepseekr1') && !isClosedQwen && picksOneQwenModel;
 
     const hasBase = tokens.includes('base');
     const isCoderNext = hasSequence(tokens, ['coder', 'next']);
@@ -212,6 +214,87 @@ function generalMatches(tokens, lowerName) {
 
     // CodeQwen1.5 ships its own file.
     if (qwenGate && hasSequence(tokens, ['codeqwen1', '5'])) add({ source: 'codeqwen1.5' });
+
+    // `deepseek`,`v3` followed by a number other than 0324 (V3-0324), 1 (V3.1) and 2 (V3.2), and
+    // `deepseek`,`v4` followed by a number other than 1 (V4.1), are unknown versions.
+    const deepseekV3Version = guardedMatch(tokens, [['deepseek', 'v3']], rest => followedByAllDigits(rest) && !['0324', '1', '2'].includes(rest[0]));
+    if (deepseekV3Version === 'veto') return null;
+    const deepseekV4Version = guardedMatch(tokens, [['deepseek', 'v4']], rest => followedByAllDigits(rest) && rest[0] !== '1');
+    if (deepseekV4Version === 'veto') return null;
+
+    /**
+     * Whether `deepseek`,`<version>` occurs followed by a token `isNext` accepts (undefined at the end).
+     * @param {string} version
+     * @param {(next: string|undefined) => boolean} isNext
+     */
+    const deepseekVersionFollowedBy = (version, isNext) => findSequence(tokens, ['deepseek', version]).some(start => isNext(tokens[start + 2]));
+    /** @param {string|undefined} token */
+    const isNumber = token => token !== undefined && ALL_DIGITS.test(token);
+    // NousResearch's DeepSeek-V3.1-Alternate-Tokenizer ships a file that differs from V3.1's. `-latest`
+    // ids and OpenRouter's `~deepseek/…` ids are moving aliases. Ollama's `:latest` tag is not:
+    // it stays within the version its repo name pins.
+    const deepseekGate = !hasSequence(tokens, ['alternate', 'tokenizer'])
+        && !lowerName.includes('-latest') && !tokens.includes('~deepseek');
+
+    // DeepSeek-V2 (Lite), not V2.5 or V2-Chat-0628, which ship the V2.5 file, and not Coder-V2.
+    if (deepseekGate && deepseekVersionFollowedBy('v2', next => !isNumber(next))
+        && !hasSequence(tokens, ['chat', '0628']) && !tokens.includes('coder')) {
+        add({ source: 'deepseek-v2' });
+    }
+    if (deepseekGate && (hasSequence(tokens, ['deepseek', 'v2', '5']) || hasSequence(tokens, ['deepseek', 'v2', 'chat', '0628'])
+        || hasSequence(tokens, ['deepseek', 'coder', 'v2']))) {
+        add({ source: 'deepseek-v2.5' });
+    }
+
+    // DeepSeek-V3 and V3-0324 ship deepseek.json's content.
+    if (deepseekGate && deepseekVersionFollowedBy('v3', next => !isNumber(next) || next === '0324')) add(tokenizers.DEEPSEEK);
+    // V3.1 (Terminus, Base) and V3.2-Exp ship the V3.1 file.
+    if (deepseekGate && (hasSequence(tokens, ['deepseek', 'v3', '1']) || hasSequence(tokens, ['deepseek', 'v3', '2', 'exp']))) {
+        add({ source: 'deepseek-v3.1' });
+    }
+    // V3.2 (Speciale) ships its own; DevQuasar's V3.2-Speciale-Channel-INT8 repo ships the R1 file.
+    if (deepseekGate && hasSequence(tokens, ['deepseek', 'v3', '2']) && !tokens.includes('exp')
+        && !hasSequence(tokens, ['speciale', 'channel', 'int8'])) {
+        add({ source: 'deepseek-v3.2' });
+    }
+
+    // DeepSeek-R1, R1-Zero and R1-0528 ship the R1 file. A bare `deepseek-r1`, or one with a size other
+    // than 671b, is on Ollama one of the distills, so it names no one file.
+    const isDeepSeekR1 = (deepseekVersionFollowedBy('r1', next => next === 'zero' || next === '0528')
+        || (hasSequence(tokens, ['deepseek', 'r1']) && tokens.includes('671b')))
+        && !['distill', 'qwen', 'qwen3', 'llama'].some(token => tokens.includes(token))
+        && !tokens.some(token => isSizeToken(token) && token !== '671b');
+    if (deepseekGate && isDeepSeekR1) add({ source: 'deepseek-r1' });
+
+    // The distills ship their own files, which win over their base model's: an R1 name with `distill`
+    // next to its base family (`DeepSeek-R1-Distill-Qwen-7B`, Ollama's `deepseek-r1:7b-qwen-distill-q4_K_M`).
+    // Every Qwen size ships one file, and so does every Llama size. `distill` elsewhere in the name is
+    // not enough: the merge `Llama-3-DeepSeek-R1-Distill-8B-LewdPlay-Uncensored` ships llama3.json's content.
+    /** @param {string} family */
+    const isR1DistillOf = family => hasSequence(tokens, ['deepseek', 'r1'])
+        && (hasSequence(tokens, ['distill', family]) || hasSequence(tokens, [family, 'distill']));
+    if (deepseekGate && isR1DistillOf('qwen')) {
+        matches.push({ result: { source: 'deepseek-r1-distill-qwen' }, supersedes: ['qwen2.5'] });
+    }
+    if (deepseekGate && isR1DistillOf('llama')) {
+        matches.push({ result: { source: 'deepseek-r1-distill-llama' }, supersedes: ['llama3', 'llama3.1'] });
+    }
+    if (deepseekGate && hasSequence(tokens, ['deepseek', 'r1', '0528', 'qwen3'])) {
+        matches.push({ result: { source: 'deepseek-r1-0528-qwen3' }, supersedes: ['qwen3', 'deepseek-r1'] });
+    }
+
+    // DeepSeek-V4-Flash and V4-Pro (0731, 0813, DSpark, Base) ship the V4 file. The name says which
+    // weights they are only where the user loaded them, so it applies on self-hosted backends only:
+    // hosts serve these ids with other weights (DeepSeek's API serves `deepseek-v4-flash` with V4.1).
+    // Not V4-Flash-Vision-Exp (the V4.1 file), and not mlx-community's DeepSeek-V4-Pro-Qwen3.5 repos,
+    // which ship a Qwen3.5 file. `deepseek-v4` and `deepseek-v4-lite` name no one model.
+    if (deepseekGate && deepseekVersionFollowedBy('v4', next => next === 'flash' || next === 'pro')
+        && !hasSequence(tokens, ['vision', 'exp']) && !tokens.includes('qwen3')) {
+        add({ byBackend: { other: { source: 'deepseek-v4' } } });
+    }
+    if (deepseekGate && (hasSequence(tokens, ['deepseek', 'v4', '1']) || hasSequence(tokens, ['deepseek', 'v4', 'flash', 'vision', 'exp']))) {
+        add({ source: 'deepseek-v4.1' });
+    }
 
     const isMistralV1 = (hasSequence(tokens, ['mistral', '7b'])
         && (hasSequence(tokens, ['v0', '1']) || hasSequence(tokens, ['v0', '2'])))
@@ -278,10 +361,13 @@ export function mapResultKey(result) {
     if ('source' in result) {
         return result.source;
     }
-    const { vendorApis = {}, hf } = result.byBackend;
+    const { vendorApis = {}, hf, other } = result.byBackend;
     const parts = Object.keys(vendorApis).sort().map(source => `${source}=${mapResultKey(vendorApis[source])}`);
     if (hf !== undefined) {
         parts.push(`hf=${mapResultKey(hf)}`);
+    }
+    if (other !== undefined) {
+        parts.push(`other=${mapResultKey(other)}`);
     }
     return `byBackend(${parts.join(',')})`;
 }
