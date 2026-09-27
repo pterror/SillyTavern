@@ -42,6 +42,24 @@ const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternat
 // here rather than re-implementing a second copy of the decode logic for this test file.
 const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-compact-stream.js');
 const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
+const { SentencePieceProcessor } = await import('@agnai/sentencepiece-js');
+
+// Every sentencepiece encode this process makes, by model file. Installed before anything encodes,
+// so a tokenizer loaded by an earlier case is still attributed to its file.
+const sentencepieceEncodes = [];
+{
+    const load = SentencePieceProcessor.prototype.load;
+    SentencePieceProcessor.prototype.load = async function (modelPath, ...rest) {
+        this.modelPathForTest = String(modelPath);
+        return load.call(this, modelPath, ...rest);
+    };
+    const encodeIds = SentencePieceProcessor.prototype.encodeIds;
+    SentencePieceProcessor.prototype.encodeIds = function (...args) {
+        sentencepieceEncodes.push(this.modelPathForTest);
+        return encodeIds.apply(this, args);
+    };
+}
+const llamaEncodes = () => sentencepieceEncodes.filter(file => /[\\/]llama\.model$/.test(file ?? ''));
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-text-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -1541,6 +1559,144 @@ async function run() {
     // anything when zero messages are given). The guard is still real defensive code for whatever
     // future/edge case might reach it with a genuinely empty resolved chat - just not exercisable
     // with this module's own current tree invariants.
+
+    // --- Tokenizer resolution on server-built sends ---
+    const tokenizerCaseFailures = [];
+    async function tokenizerCase(name, fn) {
+        try {
+            await fn();
+            console.log(`  pass: ${name}`);
+        } catch (error) {
+            tokenizerCaseFailures.push(name);
+            console.log(`  FAIL: ${name}: ${error.message}`);
+        }
+    }
+
+    await tokenizerCase('profile generation, unmapped model: dropped warning, no llama', async () => {
+        const presetDir = path.join(root, 'TextGen Settings');
+        fs.mkdirSync(presetDir, { recursive: true });
+        directories.textGen_Settings = presetDir;
+        fs.writeFileSync(path.join(presetDir, 'BiasPreset.json'), JSON.stringify({
+            temp: 0.7,
+            logit_bias: [
+                { id: 'a', text: 'hello', value: -5 },
+                { id: 'b', text: '{world}', value: 3 },
+                { id: 'c', text: '[11,12]', value: 2 },
+            ],
+        }));
+
+        let backendBody = null;
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            backendBody = JSON.parse(body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'ok' }] }));
+        });
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        settings.extension_settings.connectionManager = {
+            profiles: [{ id: 'p-unmapped', api: 'generic', 'api-url': fakeBackend.url, model: 'some-unheard-of-model', preset: 'BiasPreset' }],
+        };
+        writeAllSettings(directories, settings);
+
+        const llamaBefore = llamaEncodes().length;
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            connection_profile_id: 'p-unmapped',
+            messages: [{ role: 'user', content: 'Hi there.' }],
+            max_tokens: 20,
+            stream: false,
+        });
+        fakeBackend.server.close();
+
+        assert.equal(status, 200);
+        assert.equal(llamaEncodes().length, llamaBefore, 'no llama encode for a model no tokenizer is known for');
+        assert.deepEqual(backendBody.logit_bias, { 11: 2, 12: 2 }, 'raw-id entries still go through');
+        const dropped = (data.warnings ?? []).filter(w => w.kind === 'dropped');
+        assert.equal(dropped.length, 1, 'one dropped warning');
+        assert.deepEqual(dropped[0].entries, ['hello', '{world}']);
+        assert.ok(dropped[0].message.includes('hello') && dropped[0].message.includes('{world}'), 'the message lists the entries');
+        assert.equal(dropped[0].key, `textgenerationwebui|generic|${fakeBackend.url}|some-unheard-of-model|none`);
+    });
+
+    await tokenizerCase('raw-action generation, unmapped model: bans and bias needing ids dropped and listed', async () => {
+        const entryAvatar = await writeCharacter('EntryDrop.png', { name: 'EntryDrop', data: { name: 'EntryDrop', first_mes: 'Hi.' } });
+        await saveChatToTree(directories, entryAvatar, 'entry-drop-chat', [
+            { chat_metadata: {} },
+            { name: 'EntryDrop', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
+        ]);
+        const entryBranch = await loadBranch(directories, entryAvatar, 'entry-drop-chat');
+
+        let backendBody = null;
+        const fakeBackend = await startFakeBackend((_req, res, body) => {
+            backendBody = JSON.parse(body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'ok' }] }));
+        });
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        Object.assign(settings.textgenerationwebui_settings, {
+            server_urls: { generic: fakeBackend.url },
+            send_banned_tokens: true,
+            banned_tokens: 'forbidden\n"quoted phrase"\n[7,8]',
+            logit_bias: [{ id: 'a', text: 'hello', value: -5 }, { id: 'b', text: '[11]', value: 2 }],
+        });
+        writeAllSettings(directories, settings);
+
+        const llamaBefore = llamaEncodes().length;
+        const app = buildTestApp();
+        const { status, data } = await postGenerate(app, {
+            owner_id: entryAvatar, character_avatar: entryAvatar, node_id: entryBranch.branch.leaf_id,
+            type: 'normal', user_message: 'Go on.', stream: false,
+        });
+        fakeBackend.server.close();
+        // The route sends a generic backend only OpenAI-compatible fields, so the bans are read off
+        // the built request.
+        const built = await buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: entryAvatar, ownerId: entryAvatar, nodeId: entryBranch.branch.leaf_id,
+            type: 'continue', isContinue: true,
+        });
+        writeAllSettings(directories, buildSettingsFixture());
+
+        assert.equal(status, 200);
+        assert.equal(llamaEncodes().length, llamaBefore, 'no llama encode');
+        assert.deepEqual(backendBody.logit_bias, { 11: 2 });
+        assert.equal(built.params.custom_token_bans, '7,8');
+        assert.deepEqual(built.params.banned_strings, ['quoted phrase']);
+        const dropped = (data.warnings ?? []).filter(w => w.kind === 'dropped');
+        assert.equal(dropped.length, 1);
+        assert.deepEqual(dropped[0].entries, ['forbidden', 'hello']);
+        assert.deepEqual(built.warnings.map(w => w.entries), [['forbidden', 'hello']]);
+    });
+
+    await tokenizerCase('over budget on an unmapped model: trimmed by the estimate, silently', async () => {
+        const trimAvatar = await writeCharacter('TrimEst.png', { name: 'TrimEst', data: { name: 'TrimEst', first_mes: 'Hi.' } });
+        const line = 'abcdefghij'.repeat(20); // 200 bytes: 60 estimated tokens, 200 per-character ones
+        const history = Array.from({ length: 40 }, (_, i) => ({ name: i % 2 ? 'Tester' : 'TrimEst', is_user: i % 2 === 1, mes: `m${String(i).padStart(2, '0')} ${line}`, send_date: i + 1, extra: {} }));
+        await saveChatToTree(directories, trimAvatar, 'trim-chat', [{ chat_metadata: {} }, ...history]);
+        const trimBranch = await loadBranch(directories, trimAvatar, 'trim-chat');
+
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        settings.max_context = 1400;
+        writeAllSettings(directories, settings);
+
+        let localEncodes = 0;
+        const built = await buildRawActionTextCompletionRequest(directories, {
+            characterAvatar: trimAvatar, ownerId: trimAvatar, nodeId: trimBranch.branch.leaf_id,
+            type: 'continue', isContinue: true,
+            tokenizerOptions: { encodeLocal: async (_key, text) => { localEncodes++; return Array.from(String(text)); } },
+        });
+        writeAllSettings(directories, buildSettingsFixture());
+
+        const kept = history.filter(m => built.params.prompt.includes(m.mes.slice(0, 4)));
+        assert.equal(localEncodes, 0, 'counted without a tokenizer');
+        assert.ok(!built.params.prompt.includes('m00 '), 'the oldest message is trimmed');
+        assert.ok(built.params.prompt.includes('m39 '), 'the newest message is kept');
+        assert.ok(kept.length >= 15, `trimmed by the estimate, not per character (kept ${kept.length})`);
+        assert.deepEqual((built.warnings ?? null), [], 'no warnings: estimate trims are silent');
+    });
+
+    assert.deepEqual(tokenizerCaseFailures, [], 'tokenizer resolution cases');
 
     console.log('text-completions.test.js: all assertions passed');
 }

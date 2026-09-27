@@ -405,6 +405,7 @@ async function run() {
     // --- mainApi: 'novel' dispatch (new in this task) ---
     const novelInput = await resolveTextCompletionGenerationInput(directories, {
         avatar, ownerId, branchName, mainApi: 'novel', countTokens, encodeTokens,
+        macroExtras: { encodeTokensByType: (_tokenizerType, text) => encodeTokens(text) },
     });
     assert.equal(novelInput.mainApi, 'novel');
     assert.equal(novelInput.settings.model_novel, 'clio-v1', 'settings resolves from the real top-level nai_settings, not textgenerationwebui_settings');

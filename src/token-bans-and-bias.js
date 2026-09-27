@@ -14,8 +14,9 @@ import { substituteParams } from './macro-substitution.js';
  * src/endpoints/tokenizers.js, but this module must NOT import that file directly - keeping
  * `encode` injected also makes it reusable for a future remote-backend tokenizer.
  *
- * @typedef {(text: string) => number[] | Promise<number[]>} EncodeFn Turns text into token ids for one
+ * @typedef {(text: string) => number[] | null | Promise<number[] | null>} EncodeFn Turns text into token ids for one
  * already-resolved tokenizer. May be async (e.g. a remote-backend tokenizer call) - always awaited.
+ * null means there is no tokenizer: the entry is left out and listed in `dropped`.
  *
  * @typedef {object} CustomTokenBansParams
  * @property {string} [bannedTokensRaw] Raw value of settings.banned_tokens (newline-separated lines).
@@ -27,6 +28,7 @@ import { substituteParams } from './macro-substitution.js';
  * @property {EncodeFn} encode Already-resolved tokenizer encode function, used for plain-text lines.
  * May return a Promise - always awaited, so a synchronous stub (e.g. in tests) works unchanged.
  * @property {object} [macroContext] Forwarded to substituteParams() for each ban line; optional, defaults to {}.
+ * @property {string[]} [dropped] Receives each line left out because `encode` gave null.
  *
  * @typedef {object} CustomTokenBansResult
  * @property {string} banned_tokens Comma-separated, deduped token ids.
@@ -40,6 +42,7 @@ import { substituteParams } from './macro-substitution.js';
  * @typedef {object} LogitBiasParams
  * @property {LogitBiasEntry[]} [logitBiasEntries] Raw value of settings.logit_bias.
  * @property {EncodeFn} encode Already-resolved tokenizer encode function.
+ * @property {string[]} [dropped] Receives each entry's text left out because `encode` gave null.
  */
 
 /** Trivial reimplementation of public/scripts/utils.js's onlyUnique array filter. */
@@ -66,6 +69,7 @@ export async function getCustomTokenBans({
     bannedWordsFromMacros = [],
     encode,
     macroContext = {},
+    dropped,
 }) {
     if (!sendBannedTokens || (!bannedTokensRaw && !globalBannedTokensRaw && !bannedWordsFromMacros.length)) {
         return {
@@ -104,6 +108,10 @@ export async function getCustomTokenBans({
         } else {
             try {
                 const tokens = await encode(line);
+                if (tokens === null) {
+                    dropped?.push(line);
+                    continue;
+                }
                 banned_tokens.push(...tokens);
             } catch {
                 console.log(`Could not tokenize raw text: ${line}`);
@@ -123,7 +131,7 @@ export async function getCustomTokenBans({
  * module is calculateLogitBias() and it needs no reuse beyond that (the client keeps them separate
  * because getLogitBiasListResult() is also used by a UI preview).
  */
-async function resolveLogitBiasEntries(entries, encode) {
+async function resolveLogitBiasEntries(entries, encode, dropped) {
     /** @type {{value: number, tokens: number[]}[]} */
     const resolved = [];
 
@@ -137,6 +145,10 @@ async function resolveLogitBiasEntries(entries, encode) {
         if (text.startsWith('{') && text.endsWith('}')) {
             // Verbatim text
             const tokens = await encode(text.slice(1, -1));
+            if (tokens === null) {
+                dropped?.push(text);
+                continue;
+            }
             resolved.push({ value: entry.value, tokens });
         } else if (text.startsWith('[') && text.endsWith(']')) {
             // Raw token ids, JSON serialized
@@ -154,6 +166,10 @@ async function resolveLogitBiasEntries(entries, encode) {
         } else {
             // Text with a leading space
             const tokens = await encode(` ${text}`);
+            if (tokens === null) {
+                dropped?.push(text);
+                continue;
+            }
             resolved.push({ value: entry.value, tokens });
         }
     }
@@ -168,13 +184,13 @@ async function resolveLogitBiasEntries(entries, encode) {
  * @param {LogitBiasParams} params
  * @returns {Promise<object>} Object keyed by string token id -> bias number.
  */
-export async function calculateLogitBias({ logitBiasEntries, encode }) {
+export async function calculateLogitBias({ logitBiasEntries, encode, dropped }) {
     if (!Array.isArray(logitBiasEntries) || logitBiasEntries.length === 0) {
         return {};
     }
 
     const result = {};
-    for (const { value, tokens } of await resolveLogitBiasEntries(logitBiasEntries, encode)) {
+    for (const { value, tokens } of await resolveLogitBiasEntries(logitBiasEntries, encode, dropped)) {
         if (tokens.length === 0) continue;
         for (const token of tokens) {
             result[String(token)] = value;

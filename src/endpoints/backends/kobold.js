@@ -6,7 +6,7 @@ import { delay } from '../../util.js';
 import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
 import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
-import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
+import { resolveTokenizerType, encodeWithTokenizerType, resolveTokenizer, encodeWithTokenizer, countWithTokenizer } from '../../tokenizer-resolve.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
@@ -125,12 +125,26 @@ export async function buildRawActionKoboldRequest(directories, {
         anchorNodeId = nodeId;
     }
 
-    const { power_user: powerUser = {} } = readSettingsAtPaths(directories, ['power_user']);
-    const tokenizerType = resolveTokenizerType({
-        userTokenizerSetting: powerUser.tokenizer, forApi: 'kobold', canUseTokenization: false,
-    });
-    const encodeTokens = (text) => encodeWithTokenizerType(tokenizerType, text, { request, ...tokenizerOptions });
-    const countTokens = async (text) => (await encodeTokens(text)).length;
+    const { power_user: powerUser = {}, kai_settings: koboldSettings = {} } = readSettingsAtPaths(directories, ['power_user', 'kai_settings']);
+    let encodeTokens;
+    let countTokens;
+    if (macroExtras.isHorde) {
+        // Horde has its own tokenizer resolution (its selected models), not wired here yet.
+        const tokenizerType = resolveTokenizerType({
+            userTokenizerSetting: powerUser.tokenizer, forApi: 'kobold', canUseTokenization: false,
+        });
+        encodeTokens = (text) => encodeWithTokenizerType(tokenizerType, text, { request, ...tokenizerOptions });
+        countTokens = async (text) => (await encodeTokens(text)).length;
+    } else {
+        const url = koboldSettings.api_server ?? '';
+        const resolvedTokenizer = await resolveTokenizer(
+            { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer },
+            { directories },
+        );
+        const encodeOptions = { request, koboldBaseUrl: url, ...tokenizerOptions };
+        encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
+        countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
+    }
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', ownerId, nodeId,

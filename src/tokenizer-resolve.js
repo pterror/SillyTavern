@@ -1,5 +1,5 @@
 import { TEXTGEN_TYPES } from './constants.js';
-import { tokenizers } from './tokenizer-ids.js';
+import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
 import { lookupModelTokenizer } from './tokenizer-model-map.js';
 import { hasRemoteTokenizer, lookupBackendModel } from './backend-status.js';
@@ -63,31 +63,7 @@ export const TEXTGEN_TOKENIZERS = [
     TEXTGEN_TYPES.APHRODITE,
 ];
 
-/**
- * Numeric tokenizer enum -> string key used by encodeTextByLocalTokenizerType() and the
- * '/api/tokenizers/<key>/encode' routes. Derived from the string segment of each entry's `encode`
- * URL in public/scripts/tokenizers.js's TOKENIZER_URLS. Only covers tokenizer types that have a
- * local encoder (i.e. every ENCODE_TOKENIZERS entry, plus CLAUDE, GPT2, NERD and NERD2, which also
- * have real local encoders even though they're not in ENCODE_TOKENIZERS - that list is about the
- * UI's encode/decode playground, not about what's locally encodable).
- */
-export const TOKENIZER_TYPE_KEYS = {
-    [tokenizers.GPT2]: 'gpt2',
-    [tokenizers.LLAMA]: 'llama',
-    [tokenizers.NERD]: 'nerdstash',
-    [tokenizers.NERD2]: 'nerdstash_v2',
-    [tokenizers.MISTRAL]: 'mistral',
-    [tokenizers.YI]: 'yi',
-    [tokenizers.CLAUDE]: 'claude',
-    [tokenizers.LLAMA3]: 'llama3',
-    [tokenizers.GEMMA]: 'gemma',
-    [tokenizers.JAMBA]: 'jamba',
-    [tokenizers.QWEN2]: 'qwen2',
-    [tokenizers.COMMAND_R]: 'command-r',
-    [tokenizers.COMMAND_A]: 'command-a',
-    [tokenizers.NEMO]: 'nemo',
-    [tokenizers.DEEPSEEK]: 'deepseek',
-};
+export { TOKENIZER_TYPE_KEYS };
 
 /**
  * Mirrors public/scripts/textgen-models.js's getCurrentOpenRouterModelTokenizer(), but as a pure
@@ -581,14 +557,54 @@ export function estimateTokenCount(text) {
  * @returns {Promise<number>}
  */
 export async function countWithTokenizer(resolved, text, options = {}) {
+    if (resolved.kind === 'estimate') {
+        return estimateTokenCount(text);
+    }
+    return (await encodeWithTokenizer(resolved, text, options)).length;
+}
+
+/**
+ * Token ids for `text` with a resolveTokenizer() answer, or null for an estimate resolution,
+ * which has no ids.
+ * @param {ResolvedTokenizer} resolved
+ * @param {string} text
+ * @param {EncodeWithTokenizerTypeOptions} [options] As for countWithTokenizer().
+ * @returns {Promise<number[]|null>}
+ */
+export async function encodeWithTokenizer(resolved, text, options = {}) {
     const str = String(text ?? '');
     if (resolved.kind === 'estimate') {
-        return estimateTokenCount(str);
+        return null;
     }
     if (resolved.id === tokenizers.OPENAI) {
-        return getTiktokenTokenizer(resolved.model).encode(str).length;
+        return Array.from(getTiktokenTokenizer(resolved.model).encode(str));
     }
-    return (await encodeWithTokenizerType(resolved.id, str, options)).length;
+    return encodeWithTokenizerType(resolved.id, str, options);
+}
+
+/**
+ * The `dropped` warning for entries a send left out because its resolution has no token ids.
+ * @param {TokenizerState} state
+ * @param {ResolvedTokenizer} resolved
+ * @param {string[]} entries
+ * @returns {{ kind: 'dropped', key: string, message: string, entries: string[] } | null} null when nothing was dropped
+ */
+export function droppedEntriesWarning(state, resolved, entries) {
+    if (entries.length === 0) {
+        return null;
+    }
+    const tokenizerKey = Object.keys(tokenizers).find(key => tokenizers[key] === resolved.id)?.toLowerCase() ?? '';
+    const key = [state.api, state.type ?? state.source ?? '', state.url ?? '', state.model ?? '', tokenizerKey].join('|');
+    const reason = resolved.basis === 'none'
+        ? 'the tokenizer is set to None'
+        : 'no tokenizer is known for this model';
+    const noun = entries.length === 1 ? 'entry' : 'entries';
+    return {
+        kind: 'dropped',
+        key,
+        message: `Left out ${entries.length} ${noun} that need token ids, because ${reason}: ${entries.join(', ')}`,
+        entries,
+    };
 }
 
 /**
