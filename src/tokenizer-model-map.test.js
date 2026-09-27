@@ -133,6 +133,40 @@ check(GENERAL_API, 'CodeLlama-34b-Instruct-hf', tokenizers.LLAMA);
 check(GENERAL_API, 'CodeLlama-34b-Python-hf', tokenizers.LLAMA);
 check(GENERAL_API, 'CodeLlama-7b-hf', null);
 check(GENERAL_API, 'CodeLlama-70b-hf', null);
+check(GENERAL_API, 'CodeLlama-7b-Python-hf', tokenizers.LLAMA);
+check(GENERAL_API, 'CodeLlama-13b-Python-hf', tokenizers.LLAMA);
+check(GENERAL_API, 'codellama:7b-python-q4_0', tokenizers.LLAMA);
+check(GENERAL_API, 'codellama:34b', tokenizers.LLAMA);
+check(GENERAL_API, 'CodeLlama-7b-Instruct-hf', null);
+check(GENERAL_API, 'CodeLlama-70b-Python-hf', null);
+check(GENERAL_API, 'codellama:python', null);
+
+// Jamba-tiny-reward-dev (jamba.model)
+check(GENERAL_API, 'Jamba-tiny-reward-dev', tokenizers.JAMBA);
+check(GENERAL_API, 'Jamba-tiny-random', null);
+
+// Ollama's single-token Phi forms (phi3 is Phi-3 mini/medium, phi3.5 is Phi-3.5-mini)
+check(GENERAL_API, 'phi3:mini', tokenizers.LLAMA);
+check(GENERAL_API, 'phi3:14b-medium-4k-instruct-q4_0', tokenizers.LLAMA);
+check(GENERAL_API, 'phi3.5:3.8b-mini-instruct-q4_0', tokenizers.LLAMA);
+// ':' is a separator like '.', so 'phi3:3.8b' reads as 'phi3.3.8b' (an unknown version)
+check(GENERAL_API, 'phi3:3.8b', null);
+check(GENERAL_API, 'phi3-small', null);
+check(GENERAL_API, 'phi3-vision', null);
+
+// Gemma-derived models whose tokenizer.model (RecurrentGemma sfp-cpp: tokenizer.spm) is gemma.model
+check(GENERAL_API, 'recurrentgemma-2b-it', tokenizers.GEMMA);
+check(GENERAL_API, 'recurrentgemma-9b', tokenizers.GEMMA);
+check(GENERAL_API, 'recurrentgemma-2b-it-sfp-cpp', tokenizers.GEMMA);
+check(GENERAL_API, 'shieldgemma-2b', tokenizers.GEMMA);
+check(GENERAL_API, 'shieldgemma:27b', tokenizers.GEMMA);
+check(GENERAL_API, 'shieldgemma-2-4b-it', null);
+check(GENERAL_API, 'datagemma-rig-27b-it', tokenizers.GEMMA);
+check(GENERAL_API, 'datagemma-rag-27b-it', tokenizers.GEMMA);
+check(GENERAL_API, 'txgemma-2b-predict', tokenizers.GEMMA);
+check(GENERAL_API, 'txgemma-9b-chat', tokenizers.GEMMA);
+check(GENERAL_API, 'txgemma-27b-predict', tokenizers.GEMMA);
+check(GENERAL_API, 'txgemma-2b-chat', null);
 
 // --- separator forms ---
 check(GENERAL_API, 'llama 2', tokenizers.LLAMA);
