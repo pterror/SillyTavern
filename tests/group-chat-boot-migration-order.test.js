@@ -603,6 +603,131 @@ describe('a refused group chat file is retried every boot', () => {
     });
 });
 
+/** Every file under `dir` except the tree database's, whose bytes may change on a read-only open. */
+function snapshotWithoutDb(dir) {
+    return Object.fromEntries(Object.entries(snapshot(dir)).filter(([k]) => !k.endsWith('.db') && !k.includes('.db-')));
+}
+
+/** Posts `/api/chats/group/get`, returning the response and every warning printed while it ran. */
+async function openCollectingWarnings(body) {
+    const warnings = [];
+    const warn = jest.spyOn(console, 'warn').mockImplementation((...args) => { warnings.push(args.join(' ')); });
+    try {
+        return { messages: await postJson('/api/chats/group/get', body), warnings };
+    } finally {
+        warn.mockRestore();
+    }
+}
+
+describe('opening a group before the pass reaches it', () => {
+    /** An old-format group with a current chat (`chat_metadata`) and a past one (`past_metadata`). */
+    function writeOldGroupWithPast(directories, groupId) {
+        writeOldFormatGroup(directories, {
+            groupId,
+            chatId: 'chat-now',
+            messages: [makeMessage('now-first'), makeMessage('now-second', 'You', true)],
+            chatMetadata: { note_prompt: 'current meta' },
+        });
+        const group = readGroup(directories, groupId);
+        group.chats.push('chat-past');
+        group.past_metadata = { 'chat-past': { note_prompt: 'past meta' } };
+        fs.writeFileSync(path.join(directories.groups, `${groupId}.json`), JSON.stringify(group, null, 4));
+        writeChatFile(directories, 'chat-past', [makeMessage('past-first')]);
+    }
+
+    test('an old-format group lands its messages and metadata on open, and the metadata leaves the group JSON only after', async () => {
+        const directories = makeDirectories();
+        requestDirectories = directories;
+        writeOldGroupWithPast(directories, 'g-early');
+
+        const gate = armChatWriteGate();
+        const open = openCollectingWarnings({ id: 'chat-now', group_id: 'g-early' });
+        await gate.reached;
+        // The metadata step is writing a chat file's header: nothing has left the group JSON yet.
+        const mid = readGroup(directories, 'g-early');
+        expect(mid.chat_metadata).toEqual({ note_prompt: 'current meta' });
+        expect(mid.past_metadata).toEqual({ 'chat-past': { note_prompt: 'past meta' } });
+        gate.release();
+        const { messages, warnings } = await open;
+
+        expect(warnings).toEqual([]);
+        expect(messages.slice(1).map(m => m.mes)).toEqual(['now-first', 'now-second']);
+        const now = await treeDb.loadBranch(directories, 'g-early', 'chat-now');
+        expect(now?.messages.map(m => m.mes)).toEqual(['now-first', 'now-second']);
+        expect(now?.metadata).toEqual({ note_prompt: 'current meta' });
+        const past = await treeDb.loadBranch(directories, 'g-early', 'chat-past');
+        expect(past?.messages.map(m => m.mes)).toEqual(['past-first']);
+        expect(past?.metadata).toEqual({ note_prompt: 'past meta' });
+        const after = readGroup(directories, 'g-early');
+        expect(Object.hasOwn(after, 'chat_metadata')).toBe(false);
+        expect(Object.hasOwn(after, 'past_metadata')).toBe(false);
+        for (const chatId of ['chat-now', 'chat-past']) {
+            expect(fs.existsSync(path.join(directories.groupChats, `${chatId}.jsonl`))).toBe(false);
+            expect(fs.existsSync(path.join(directories.groupChats, `${chatId}.jsonl.pre-migration`))).toBe(true);
+        }
+        // The first-sight backup still holds the original metadata.
+        const backup = JSON.parse(fs.readFileSync(path.join(directories.backups, '_group_metadata_update', 'g-early.json'), 'utf8'));
+        expect(backup.chat_metadata).toEqual({ note_prompt: 'current meta' });
+        expect(backup.past_metadata).toEqual({ 'chat-past': { note_prompt: 'past meta' } });
+
+        // The boot pass reaching it afterwards changes nothing and reports nothing.
+        const before = snapshotWithoutDb(directories.root);
+        treeDb.disposeMessageTreeStores();
+        const pass = await bootCollectingWarnings(directories);
+        expect(pass).toEqual({ outcome: { unmigrated: false }, warnings: [] });
+        expect(snapshotWithoutDb(directories.root)).toEqual(before);
+        expect(await treeDb.loadBranch(directories, 'g-early', 'chat-now')).toEqual(now);
+        expect(await treeDb.loadBranch(directories, 'g-early', 'chat-past')).toEqual(past);
+    });
+
+    test('a group opened by chat id alone, whose file is not named after its id, is migrated the same way', async () => {
+        const directories = makeDirectories();
+        requestDirectories = directories;
+        writeOldGroupWithPast(directories, 'g-named');
+        fs.renameSync(path.join(directories.groups, 'g-named.json'), path.join(directories.groups, 'other-name.json'));
+
+        const { messages } = await openCollectingWarnings({ id: 'chat-past' });
+
+        expect(messages.slice(1).map(m => m.mes)).toEqual(['past-first']);
+        expect((await treeDb.loadBranch(directories, 'g-named', 'chat-past'))?.metadata).toEqual({ note_prompt: 'past meta' });
+        expect((await treeDb.loadBranch(directories, 'g-named', 'chat-now'))?.metadata).toEqual({ note_prompt: 'current meta' });
+        const after = JSON.parse(fs.readFileSync(path.join(directories.groups, 'other-name.json'), 'utf8'));
+        expect(Object.hasOwn(after, 'chat_metadata')).toBe(false);
+        expect(Object.hasOwn(after, 'past_metadata')).toBe(false);
+    });
+
+    test('a new-format group opens as before: tree migrated, group JSON untouched, nothing backed up', async () => {
+        const directories = makeDirectories();
+        requestDirectories = directories;
+        writeHeaderedGroup(directories, 'g-new', { 'new-a': [makeMessage('a-1'), makeMessage('a-2')], 'new-b': [makeMessage('b-1')] });
+        const groupBytes = fs.readFileSync(path.join(directories.groups, 'g-new.json'), 'utf8');
+
+        const { messages, warnings } = await openCollectingWarnings({ id: 'new-a', group_id: 'g-new' });
+
+        expect(warnings).toEqual([]);
+        expect(messages.slice(1).map(m => m.mes)).toEqual(['a-1', 'a-2']);
+        expect((await treeDb.loadBranch(directories, 'g-new', 'new-b'))?.metadata).toEqual({ note_prompt: 'meta-new-b' });
+        expect(fs.readFileSync(path.join(directories.groups, 'g-new.json'), 'utf8')).toBe(groupBytes);
+        expect(fs.existsSync(path.join(directories.backups, '_group_metadata_update'))).toBe(false);
+    });
+
+    test('a group already in the tree is not retried on open; its refused file is left to the pass', async () => {
+        const directories = makeDirectories();
+        requestDirectories = directories;
+        writeHeaderedGroup(directories, 'g-held', { 'ok': [makeMessage('ok-1')], 'bad': [makeMessage('bad-1'), '{not json'] });
+        await bootCollectingWarnings(directories);
+        writeChatFile(directories, 'bad', [{ chat_metadata: {} }, makeMessage('bad-1')]);
+
+        const { warnings } = await openCollectingWarnings({ id: 'ok', group_id: 'g-held' });
+
+        expect(warnings).toEqual([]);
+        expect(fs.existsSync(path.join(directories.groupChats, 'bad.jsonl'))).toBe(true);
+        expect(await treeDb.loadBranch(directories, 'g-held', 'bad')).toBeFalsy();
+        expect(await bootCollectingWarnings(directories)).toEqual({ outcome: { unmigrated: false }, warnings: [] });
+        expect((await treeDb.loadBranch(directories, 'g-held', 'bad'))?.messages.map(m => m.mes)).toEqual(['bad-1']);
+    });
+});
+
 describe('the restore waits for a user\'s refused group chat files', () => {
     test('a user with a refused file is held until it migrates; other users are not held', async () => {
         const restore = await import('../src/migrations/restore-group-chat-migration-losses.js');

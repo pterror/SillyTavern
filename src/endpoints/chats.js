@@ -16,12 +16,12 @@ import {
     isPathUnderParent,
 } from '../util.js';
 import { bumpCharacterDateLastChat, bumpGroupChatStats, getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
-import { resolveGroupOwner } from '../character-shallow.js';
+import { resolveGroupOwnerFile } from '../character-shallow.js';
 import { readGroupFile, writeGroupFile } from './groups.js';
 import { withGroupLock } from '../group-lock.js';
 import { readCardContent } from './characters.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
-import { migrateOwnerOnTouch } from '../message-tree-migration.js';
+import { migrateGroupFile, migrateOwnerOnTouch } from '../message-tree-migration.js';
 import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
@@ -1399,27 +1399,19 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
 });
 
 /**
- * Resolves which group owns a chat/group id and migrates its chats into the tree before the caller touches
- * them. The migration runs under the group's lock, on the group's chat list as read inside it.
+ * Resolves which group owns a chat/group id and migrates the group before the caller touches its chats: the same
+ * per-group step as the boot pass (migrateGroupFile(): metadata format, then tree, under the group's lock, on the
+ * group's chat list as read inside it), except that a group already in the tree is not retried here.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{ chatId?: string, groupId?: string }} params
  * @returns {Promise<{ id: string, chats: string[] } | null>} `null` when no group claims this chat.
  */
 async function touchGroupOwner(directories, { chatId, groupId }) {
-    const resolved = resolveGroupOwner(directories.groups, { chatId, groupId });
+    const resolved = resolveGroupOwnerFile(directories.groups, { chatId, groupId });
     if (!resolved) return null;
 
-    return withGroupLock(directories, resolved.id, async () => {
-        const group = resolveGroupOwner(directories.groups, { chatId, groupId: resolved.id });
-        if (!group) return null;
-        await migrateOwnerOnTouch(directories, {
-            ownerId: group.id,
-            chatDir: directories.groupChats,
-            isGroup: true,
-            fileNames: group.chats.map(c => `${c}.jsonl`),
-        });
-        return group;
-    });
+    const { group } = await migrateGroupFile(directories, resolved.fileName, { retryUnmigrated: false });
+    return group;
 }
 
 router.post('/group/get', async (request, response) => {

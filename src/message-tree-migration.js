@@ -249,20 +249,28 @@ function readGroupFileId(directories, fileName) {
  * Both the group's file name and the id inside it are locked: routes lock a group by its id, which names a
  * different file when the file isn't named after its id.
  *
- * The tree migration retries every chat file of the group still at `<chatId>.jsonl`, even when the group already has
- * chats in the tree, so a file refused on an earlier boot is tried again and reported again until it migrates.
+ * The boot pass and the on-open path (touchGroupOwner) both run this, so a group opened before the pass reaches it
+ * gets its metadata into its chat files, and from there into the tree, on that open.
+ *
+ * With `retryUnmigrated` (the boot pass) the tree migration retries every chat file of the group still at
+ * `<chatId>.jsonl`, even when the group already has chats in the tree, so a file refused on an earlier boot is tried
+ * again and reported again until it migrates. Without it (on open) a group that already has chats is left to the pass.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} fileName The group's JSON file name within `directories.groups`
- * @returns {Promise<{ wrote: boolean, unmigrated: boolean }>} Whether the metadata migration wrote anything, and
- * whether any of the group's chat files may be left un-migrated (refused, not renamed, or the group unreadable)
+ * @param {object} [options]
+ * @param {boolean} [options.retryUnmigrated] See migrateCharacterChats()
+ * @returns {Promise<{ wrote: boolean, unmigrated: boolean, group: { id: string, chats: string[] } | null }>} Whether
+ * the metadata migration wrote anything; whether any of the group's chat files may be left un-migrated (refused, not
+ * renamed, or the group unreadable); and the group's id and chat list as read under the lock after the metadata
+ * migration, `null` when the file is gone, unreadable or has no id
  */
-export async function migrateGroupFile(directories, fileName) {
+export async function migrateGroupFile(directories, fileName, { retryUnmigrated = true } = {}) {
     const filePath = path.join(directories.groups, fileName);
     for (;;) {
         const lockedId = readGroupFileId(directories, fileName);
         const lockNames = lockedId === null ? [fileName] : [fileName, groupLockName(lockedId)];
         const outcome = await withGroupFilesLock(directories, lockNames, async () => {
-            if (!fs.existsSync(filePath)) return { wrote: false, unmigrated: false };
+            if (!fs.existsSync(filePath)) return { wrote: false, unmigrated: false, group: null };
             if (readGroupFileId(directories, fileName) !== lockedId) return null;
 
             const wrote = await migrateGroupFileMetadataFormat(directories, fileName);
@@ -272,19 +280,18 @@ export async function migrateGroupFile(directories, fileName) {
                 group = normalizeGroupRecord(JSON.parse(fs.readFileSync(filePath, 'utf8')));
             } catch (err) {
                 console.error(color.red(`[message-tree] Failed to read group file ${fileName} for ${directories.root}, its chats were not migrated:`), err);
-                return { wrote, unmigrated: true };
+                return { wrote, unmigrated: true, group: null };
             }
-            if (typeof group?.id === 'string' && Array.isArray(group.chats)) {
-                const { errors } = await migrateOwnerOnTouch(directories, {
-                    ownerId: group.id,
-                    chatDir: directories.groupChats,
-                    isGroup: true,
-                    fileNames: group.chats.map(c => `${c}.jsonl`),
-                    retryUnmigrated: true,
-                });
-                return { wrote, unmigrated: errors.length > 0 };
-            }
-            return { wrote, unmigrated: false };
+            if (typeof group?.id !== 'string') return { wrote, unmigrated: false, group: null };
+            if (!Array.isArray(group.chats)) return { wrote, unmigrated: false, group: { id: group.id, chats: [] } };
+            const { errors } = await migrateOwnerOnTouch(directories, {
+                ownerId: group.id,
+                chatDir: directories.groupChats,
+                isGroup: true,
+                fileNames: group.chats.map(c => `${c}.jsonl`),
+                retryUnmigrated,
+            });
+            return { wrote, unmigrated: errors.length > 0, group: { id: group.id, chats: group.chats } };
         });
         // null: the file's id changed before the lock was held, so the id's lock was the wrong one.
         if (outcome !== null) return outcome;
