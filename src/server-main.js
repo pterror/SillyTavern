@@ -43,7 +43,7 @@ import {
     migratePublicOverrides,
 } from './users.js';
 
-import { migrateAllGroupChats, migrateAllCharacterChats } from './message-tree-migration.js';
+import { startGroupChatMigrations, migrateAllCharacterChats } from './message-tree-migration.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
 import getWebpackServeMiddleware from './middleware/webpack-serve.js';
 import basicAuthMiddleware from './middleware/basicAuth.js';
@@ -504,9 +504,14 @@ async function postSetupTasks(result) {
     setupLogLevel();
     serverEvents.emit(EVENT_NAMES.SERVER_STARTED, { url: browserLaunchUrl });
 
-    // Off unless config.yaml sets restoreGroupChatMigrationLosses: true. Runs in a worker, after listening.
-    maybeStartGroupChatRestore(await getUserDirectoriesList(), {
-        enabled: getConfigValue('restoreGroupChatMigrationLosses', false, 'boolean'),
+    // Not awaited. The restore reads what the group migration left, so it starts only once that has finished.
+    // Off unless config.yaml sets restoreGroupChatMigrationLosses: true. Runs in a worker.
+    startGroupChatMigrations({
+        afterMigration: async () => {
+            maybeStartGroupChatRestore(await getUserDirectoriesList(), {
+                enabled: getConfigValue('restoreGroupChatMigrationLosses', false, 'boolean'),
+            });
+        },
     });
 }
 
@@ -561,7 +566,6 @@ initUserStorage(globalThis.DATA_ROOT)
     .then(migrateUserData)
     .then(migrateSystemPrompts)
     .then(migratePublicOverrides)
-    .then(migrateAllGroupChats)
     .then(migrateAllCharacterChats)
     .then(verifySqliteBackend)
     .then(verifySecuritySettings)

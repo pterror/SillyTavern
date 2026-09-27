@@ -1,10 +1,13 @@
 import fs from 'node:fs';
+import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
 import { color } from './util.js';
 import { parseChatFile } from './chat-header.js';
 import { getUserDirectoriesList } from './users.js';
-import { getGroupsData, migrateGroupChatsMetadataFormat } from './endpoints/groups.js';
+import { migrateGroupFileMetadataFormat, logGroupMetadataMigrationDone } from './endpoints/groups.js';
+import { groupLockName, withGroupFilesLock } from './group-lock.js';
+import { normalizeGroupRecord } from './group-id.js';
 import {
     getDbHandle, insertMessageSync, createBranchSync, hasBranchesSync, newId,
     ensureAnchorSync, setDefaultChildSync, alternativesFromMessage, nodeIdentityKey,
@@ -78,12 +81,16 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
     let errors = [];
     /** @type {string[]} */
     let migratedFileNames = [];
+    let alreadyMigrated = false;
 
     db.transaction(() => {
         // A busy retry re-runs this callback after a rollback, so nothing from a previous attempt may
         // survive into the next one - above all `index`, whose ids would name rolled-back rows.
         errors = [];
         migratedFileNames = [];
+        // Rechecked inside the transaction: another connection may have migrated this owner since the check above.
+        alreadyMigrated = hasBranchesSync(db, ownerId);
+        if (alreadyMigrated) return;
         const usedLabels = new Set();
         /** @type {Map<string, string>} */
         const index = new Map();
@@ -181,6 +188,9 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
             migratedFileNames.push(fileName);
         }
     });
+    if (alreadyMigrated) {
+        return { migrated: 0, skipped: 0, errors: [] };
+    }
 
     // Only files whose every message, name and metadata landed in the committed transaction get here.
     for (const fileName of migratedFileNames) {
@@ -204,41 +214,99 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
 }
 
 /**
- * One user's part of migrateAllGroupChats(). The group metadata-format migration runs first because
- * it can only give an old-format (headerless) chat file its header and metadata while that file is
- * still at `<chatId>.jsonl`, and the tree migration below renames every file it migrates.
  * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} fileName
+ * @returns {string | null} The id in that group file, or null when it has none or can't be read
  */
-export async function migrateUserGroupChats(directories) {
-    await migrateGroupChatsMetadataFormat([directories]);
-
-    let groups;
+function readGroupFileId(directories, fileName) {
     try {
-        groups = getGroupsData(directories);
-    } catch (err) {
-        console.error(color.red(`[message-tree] Failed to read groups for ${directories.root}:`), err);
-        return;
-    }
-
-    for (const group of groups) {
-        if (typeof group?.id !== 'string' || !Array.isArray(group.chats)) {
-            continue;
-        }
-        await migrateOwnerOnTouch(directories, {
-            ownerId: group.id,
-            chatDir: directories.groupChats,
-            isGroup: true,
-            fileNames: group.chats.map(c => `${c}.jsonl`),
-        });
+        const id = normalizeGroupRecord(JSON.parse(fs.readFileSync(path.join(directories.groups, fileName), 'utf8')))?.id;
+        return typeof id === 'string' && id !== '' ? id : null;
+    } catch {
+        return null;
     }
 }
 
 /**
- * Migrates every group's JSONL chats into the tree for every user, synchronously at server startup.
- * Next-touch migration (migrateOwnerOnTouch via touchGroupOwner) only fires when something actually
- * opens a group, so a group nobody has opened since the tree DB shipped would otherwise stay
- * JSONL-backed indefinitely - this closes that gap by forcing every group through migration once,
- * up front, instead of waiting on a request that may never come.
+ * Migrates one group: its metadata-format migration, then its tree migration, both under the group's lock. The
+ * metadata migration goes first because it can only give an old-format (headerless) chat file its header and
+ * metadata while that file is still at `<chatId>.jsonl`, and the tree migration renames every file it migrates.
+ *
+ * Both the group's file name and the id inside it are locked: routes lock a group by its id, which names a
+ * different file when the file isn't named after its id.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} fileName The group's JSON file name within `directories.groups`
+ * @returns {Promise<boolean>} Whether the metadata migration wrote anything
+ */
+export async function migrateGroupFile(directories, fileName) {
+    const filePath = path.join(directories.groups, fileName);
+    for (;;) {
+        const lockedId = readGroupFileId(directories, fileName);
+        const lockNames = lockedId === null ? [fileName] : [fileName, groupLockName(lockedId)];
+        const outcome = await withGroupFilesLock(directories, lockNames, async () => {
+            if (!fs.existsSync(filePath)) return { wrote: false };
+            if (readGroupFileId(directories, fileName) !== lockedId) return null;
+
+            const wrote = await migrateGroupFileMetadataFormat(directories, fileName);
+
+            let group;
+            try {
+                group = normalizeGroupRecord(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+            } catch (err) {
+                console.error(color.red(`[message-tree] Failed to read group file ${fileName} for ${directories.root}, its chats were not migrated:`), err);
+                return { wrote };
+            }
+            if (typeof group?.id === 'string' && Array.isArray(group.chats)) {
+                await migrateOwnerOnTouch(directories, {
+                    ownerId: group.id,
+                    chatDir: directories.groupChats,
+                    isGroup: true,
+                    fileNames: group.chats.map(c => `${c}.jsonl`),
+                });
+            }
+            return { wrote };
+        });
+        // null: the file's id changed before the lock was held, so the id's lock was the wrong one.
+        if (outcome !== null) return outcome.wrote;
+    }
+}
+
+const yieldToEventLoop = () => new Promise(resolve => setImmediate(resolve));
+
+/**
+ * One user's part of migrateAllGroupChats(): streams the user's groups directory and migrates one group at a time
+ * (migrateGroupFile()), yielding to the event loop between groups so requests are served while it runs.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} [options]
+ * @param {() => Promise<void>} [options.yieldBetweenGroups]
+ */
+export async function migrateUserGroupChats(directories, { yieldBetweenGroups = yieldToEventLoop } = {}) {
+    let dir;
+    try {
+        dir = await fsPromises.opendir(directories.groups);
+    } catch (err) {
+        if (/** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') return;
+        console.error(color.red(`[message-tree] Failed to read groups for ${directories.root}:`), err);
+        return;
+    }
+
+    let anyMetadataMigrated = false;
+    for await (const entry of dir) {
+        if (!entry.isFile() || path.extname(entry.name) !== '.json') continue;
+        try {
+            if (await migrateGroupFile(directories, entry.name)) anyMetadataMigrated = true;
+        } catch (err) {
+            console.error(color.red(`[message-tree] Failed to migrate group file ${entry.name} for ${directories.root}; it is retried on its next open and next boot:`), err);
+        }
+        await yieldBetweenGroups();
+    }
+    logGroupMetadataMigrationDone(directories, anyMetadataMigrated);
+}
+
+/**
+ * Migrates every group's chats (metadata format, then tree) for every user, one user and one group at a time.
+ * Next-touch migration (migrateOwnerOnTouch via touchGroupOwner) only fires when something actually opens a group,
+ * so a group nobody has opened since the tree DB shipped would otherwise stay JSONL-backed indefinitely.
  */
 export async function migrateAllGroupChats() {
     const directoriesList = await getUserDirectoriesList();
@@ -246,6 +314,24 @@ export async function migrateAllGroupChats() {
     for (const directories of directoriesList) {
         await migrateUserGroupChats(directories);
     }
+}
+
+/**
+ * Runs migrateAllGroupChats() in the background, for server-main.js to call once the server is listening, then
+ * `afterMigration` once every user's pass has finished, never when the pass failed. Failures are logged; the
+ * returned promise never rejects.
+ * @param {object} [options]
+ * @param {() => (Promise<void> | void)} [options.afterMigration]
+ * @param {() => Promise<void>} [options.migrate]
+ * @returns {Promise<void>}
+ */
+export function startGroupChatMigrations({ afterMigration = () => {}, migrate = migrateAllGroupChats } = {}) {
+    return migrate()
+        .then(
+            () => afterMigration(),
+            err => console.error(color.red('[message-tree] Group chat migration failed, so what waits on it was not started:'), err),
+        )
+        .catch(err => console.error(color.red('[message-tree] A task run after the group chat migration failed:'), err));
 }
 
 /**
