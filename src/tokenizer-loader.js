@@ -392,12 +392,13 @@ export async function loadTokenizerFunctions(filePath, format, options = {}) {
  * Loads a registry entry's tokenizer, downloading its file first when it isn't cached.
  * @param {import('./tokenizer-sources.js').TokenizerSourceEntry} entry
  * @param {import('./users.js').UserDirectoryList} [directories] The requesting user's directories, for their saved Hugging Face token
- * @returns {Promise<TokenizerFunctions & { downloaded: boolean }>} `downloaded` is true only for the call that fetched the file
+ * @returns {Promise<TokenizerFunctions & { downloaded: boolean, license: string }>} `downloaded` is true only for
+ * the call that fetched the file, and `license` is then that of the source it came from
  */
 export async function loadPinnedTokenizer(entry, directories) {
     const file = await getPinnedTokenizerFile(entry, directories);
     const functions = await loadTokenizerFunctions(file.path, entry.format, { tiktoken: entry.tiktoken });
-    return { ...functions, downloaded: file.downloaded };
+    return { ...functions, downloaded: file.downloaded, license: file.license };
 }
 
 /**
@@ -421,9 +422,9 @@ export async function loadRegistryTokenizer(id, { directories, outcome, registry
     if (!entry) {
         throw new Error(`No tokenizer registry entry ${id}`);
     }
-    const { encode, decode, downloaded } = await loadPinned(entry, directories);
+    const { encode, decode, downloaded, license } = await loadPinned(entry, directories);
     if (downloaded && outcome) {
-        (outcome.downloads ??= []).push({ family: entry.family, license: entry.license });
+        (outcome.downloads ??= []).push({ family: entry.family, license });
     }
     return { encode, decode };
 }

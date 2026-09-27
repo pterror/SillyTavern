@@ -95,7 +95,8 @@ function isSelfHostedBackend(state) {
  * no backend here is documented as one.
  *
  * The `other` result applies only on a self-hosted backend, where the name is the weights the user
- * loaded. Every hosted API gets the estimate for it.
+ * loaded. Every hosted API gets the estimate for it, unless there is a `rest` result, which applies on
+ * every backend the other keys give none for.
  * @param {import('./tokenizer-model-map.js').MapResult|null} result
  * @param {{ api: string, type?: string, source?: string, model?: string }} state `model` is the name the result is for
  * @returns {import('./tokenizer-model-map.js').MapResult|null}
@@ -111,7 +112,10 @@ export function selectBackendResult(result, state) {
     if (state.api === 'openai' && state.source && Object.hasOwn(vendorApis, state.source)) {
         return vendorApis[state.source];
     }
-    return result.byBackend.other !== undefined && isSelfHostedBackend(state) ? result.byBackend.other : null;
+    if (result.byBackend.other !== undefined && isSelfHostedBackend(state)) {
+        return result.byBackend.other;
+    }
+    return result.byBackend.rest ?? null;
 }
 
 /**

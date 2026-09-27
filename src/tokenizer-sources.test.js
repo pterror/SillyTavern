@@ -33,7 +33,7 @@ mock.module('node-fetch', {
     namedExports: {},
 });
 
-const { TOKENIZER_SOURCES, getPinnedTokenizerFile, getSourceUrl } = await import('./tokenizer-sources.js');
+const { TOKENIZER_SOURCES, getPinnedTokenizerFile, getSourceUrl, getTokenizerDisplayName } = await import('./tokenizer-sources.js');
 const { writeSecret, SECRET_KEYS } = await import('./endpoints/secrets.js');
 
 /**
@@ -212,6 +212,30 @@ await testCase('parallel calls on a cold cache share one download; only the call
     assert.equal(new Set(results.map(r => r.path)).size, 1);
 });
 
+await testCase('the license is that of the source the file came from: the console line, the result and the request\'s download notice name it', async () => {
+    const { loadRegistryTokenizer } = await import('./tokenizer-loader.js');
+    // A tekken file where every byte is its own token, after 10 special tokens.
+    const body = Buffer.from(JSON.stringify({
+        config: { pattern: String.raw`\S+|\s+`, default_vocab_size: 266, default_num_special_tokens: 10 },
+        vocab: Array.from({ length: 256 }, (_, rank) => ({ rank, token_bytes: Buffer.from([rank]).toString('base64') })),
+    }));
+    const entry = makeEntry(body, [{ repo: 'owner/first' }, { repo: 'owner/second' }], { format: 'tekken' });
+    entry.sources[1] = { ...entry.sources[1], license: 'Second License', licenseUrl: 'https://example.invalid/second' };
+    responses.set(getSourceUrl(entry.sources[1]), ok(body));
+
+    /** @type {{ downloads?: Array<{ family: string, license: string }> }} */
+    const outcome = {};
+    const { encode } = await loadRegistryTokenizer(entry.id, { registry: [entry], outcome });
+    assert.deepEqual(requests.map(r => r.url), entry.sources.map(getSourceUrl), 'the first source failed, the second served the file');
+    assert.deepEqual(await encode('ab'), [107, 108]);
+    assert.deepEqual(outcome.downloads, [{ family: 'Test family', license: 'Second License' }]);
+    assert.ok(infoLines.some(line => line.includes('Test family') && line.includes('License: Second License')), 'the console line');
+    assert.ok(!infoLines.some(line => line.includes('Test License 1.0')), 'not the entry\'s license');
+
+    const cached = await getPinnedTokenizerFile(entry);
+    assert.equal(cached.downloaded, false);
+});
+
 await testCase('every registry entry is pinned', () => {
     const ids = new Set();
     for (const entry of TOKENIZER_SOURCES) {
@@ -220,21 +244,33 @@ await testCase('every registry entry is pinned', () => {
         assert.match(entry.sha256, /^[0-9a-f]{64}$/, `${entry.id}: sha256`);
         assert.ok(Number.isInteger(entry.bytes) && entry.bytes > 0, `${entry.id}: bytes`);
         assert.ok(['hf-json', 'sentencepiece', 'tekken', 'tiktoken'].includes(entry.format), `${entry.id}: format`);
-        assert.ok(entry.license, `${entry.id}: license`);
+        assert.ok(entry.license && entry.licenseUrl, `${entry.id}: license`);
         assert.ok(entry.sources.length > 0, `${entry.id}: sources`);
         entry.sources.forEach((source, index) => {
             assert.match(source.revision, /^[0-9a-f]{40}$/, `${entry.id}: revision`);
             assert.ok(source.repo && source.path, `${entry.id}: repo and path`);
-            assert.ok(index === 0 || !source.gated, `${entry.id}: only the model's own repo, listed first, can be gated`);
+            // A gated repo is the model's own, listed first, or an official repo after the ungated
+            // official repos that ship the same bytes.
+            const owner = source.repo.split('/')[0];
+            const isAfterOfficialRepos = entry.sources.slice(0, index).every(earlier => !earlier.gated && earlier.repo.split('/')[0] === owner);
+            assert.ok(index === 0 || !source.gated || isAfterOfficialRepos, `${entry.id}: ${source.repo} is gated`);
+            assert.equal(Boolean(source.license), Boolean(source.licenseUrl), `${entry.id}: ${source.repo}'s license and its URL come together`);
         });
     }
     assert.ok(Object.isFrozen(TOKENIZER_SOURCES));
 });
 
+await testCase('a registry entry is named `<family> (official)`; a model\'s HF tokenizer.json, where its native file differs, `<family> (official, HF tokenizer.json)`', () => {
+    const byId = id => /** @type {any} */ (TOKENIZER_SOURCES.find(entry => entry.id === id));
+    assert.equal(getTokenizerDisplayName(byId('mistral-large-2411')), 'Mistral Large 2411 (official)');
+    assert.equal(getTokenizerDisplayName(byId('mistral-large-2411-hf')), 'Mistral Large 2411 (official, HF tokenizer.json)');
+    assert.equal(getTokenizerDisplayName(byId('qwen3')), 'Qwen3 (official)');
+});
+
 await testCase('every registry entry has its fixed `tokenizers` value, on the server, in the browser and in Advanced Formatting', async () => {
     const { tokenizers, TOKENIZER_TYPE_KEYS } = await import('./tokenizer-ids.js');
     // Fixed forever once shipped: never renumbered, reused or removed.
-    const expected = { QWEN3: 1000, LLAMA3_1: 1001, NEMO_TEKKEN: 1002, KIMI: 1003, QWEN2_VL: 1004, QWEN2_5: 1005, QWEN3_5: 1006, QWEN3_5_BASE: 1007, QWEN3_8: 1008, CODEQWEN1_5: 1009, DEEPSEEK_V2: 1010, DEEPSEEK_V2_5: 1011, DEEPSEEK_R1: 1012, DEEPSEEK_V3_1: 1013, DEEPSEEK_V3_2: 1014, DEEPSEEK_V4: 1015, DEEPSEEK_V4_1: 1016, DEEPSEEK_R1_DISTILL_QWEN: 1017, DEEPSEEK_R1_DISTILL_LLAMA: 1018, DEEPSEEK_R1_0528_QWEN3: 1019, GEMMA_4: 1020, GEMMA_4_ASSISTANT: 1021, GEMMA_3_IT: 1022, GEMMA_3_PT: 1023, GEMMA_3N: 1024, CODEGEMMA: 1025, GEMMA_2_JPN: 1026, LLAMA3_1_BASE: 1027, LLAMA3_3: 1028, LLAMA4: 1029, LLAMA_GUARD_3_8B: 1030, LLAMA_GUARD_3_11B_VISION: 1031, LLAMA_GUARD_2: 1032, LLAMA_GUARD_4: 1033 };
+    const expected = { QWEN3: 1000, LLAMA3_1: 1001, NEMO_TEKKEN: 1002, KIMI: 1003, QWEN2_VL: 1004, QWEN2_5: 1005, QWEN3_5: 1006, QWEN3_5_BASE: 1007, QWEN3_8: 1008, CODEQWEN1_5: 1009, DEEPSEEK_V2: 1010, DEEPSEEK_V2_5: 1011, DEEPSEEK_R1: 1012, DEEPSEEK_V3_1: 1013, DEEPSEEK_V3_2: 1014, DEEPSEEK_V4: 1015, DEEPSEEK_V4_1: 1016, DEEPSEEK_R1_DISTILL_QWEN: 1017, DEEPSEEK_R1_DISTILL_LLAMA: 1018, DEEPSEEK_R1_0528_QWEN3: 1019, GEMMA_4: 1020, GEMMA_4_ASSISTANT: 1021, GEMMA_3_IT: 1022, GEMMA_3_PT: 1023, GEMMA_3N: 1024, CODEGEMMA: 1025, GEMMA_2_JPN: 1026, LLAMA3_1_BASE: 1027, LLAMA3_3: 1028, LLAMA4: 1029, LLAMA_GUARD_3_8B: 1030, LLAMA_GUARD_3_11B_VISION: 1031, LLAMA_GUARD_2: 1032, LLAMA_GUARD_4: 1033, MISTRAL_7B_V0_3: 1034, MATHSTRAL: 1035, MISTRAL_LARGE_2411: 1036, MISTRAL_7B_V0_3_HF: 1037, CODESTRAL_22B_HF: 1038, CODESTRAL_MAMBA_HF: 1039, MATHSTRAL_HF: 1040, MISTRAL_LARGE_2411_HF: 1041, MINISTRAL_8B_2410_HF: 1042, MINISTRAL_3_INSTRUCT_HF: 1043, MINISTRAL_3_BASE_HF: 1044, MISTRAL_SMALL_4_HF: 1045, SHIELDSTRAL_HF: 1046, MISTRAL_SMALL_3_HF: 1047 };
     const clientEnum = fs.readFileSync(path.join(__dirname, '..', 'public', 'scripts', 'tokenizers.js'), 'utf8');
     const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
     const registryKeys = new Set();
@@ -245,7 +281,7 @@ await testCase('every registry entry has its fixed `tokenizers` value, on the se
         assert.equal(value, expected[key], `${entry.id}: tokenizers.${key}`);
         assert.equal(TOKENIZER_TYPE_KEYS[value], entry.id, `${entry.id}: TOKENIZER_TYPE_KEYS`);
         assert.ok(clientEnum.includes(`\n    ${key}: ${value},\n`), `${entry.id}: the browser's tokenizers.${key}`);
-        assert.ok(indexHtml.includes(`<option value="${value}">${entry.family} (official)</option>`), `${entry.id}: its #tokenizer option`);
+        assert.ok(indexHtml.includes(`<option value="${value}">${getTokenizerDisplayName(entry)}</option>`), `${entry.id}: its #tokenizer option`);
     }
     assert.deepEqual([...registryKeys].sort(), Object.keys(expected).sort());
     for (const [key, value] of Object.entries(tokenizers)) {
