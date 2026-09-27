@@ -143,7 +143,7 @@
         "merge:upstream": "node scripts/script-exports.mjs merge-upstream",
         "plugins:update": "node plugins update",
         "plugins:install": "node plugins install",
-        "postinstall": "patch-package"
+        "postinstall": "patch-package && node scripts/patch-web-tokenizers.cjs"
     },
     "bin": {
         "sillytavern": "./src/server-global.js"
