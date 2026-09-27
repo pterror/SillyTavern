@@ -76,15 +76,38 @@ function generalMatches(tokens, lowerName) {
     }
 
     // Phi-3 and Phi-3.5 ship llama.model; Phi-3-small is cl100k and Phi-3(.5)-vision has no
-    // tokenizer.model, so neither is covered.
-    const phi3 = guardedMatch(tokens, [['phi', '3']], rest => followedByAllDigits(rest) && rest[0] !== '5');
+    // tokenizer.model, so neither is covered. `phi3` is Ollama's form (`phi3:mini`, `phi3.5`).
+    const phi3 = guardedMatch(tokens, [['phi', '3'], ['phi3']], rest => followedByAllDigits(rest) && rest[0] !== '5');
     if (phi3 === 'veto') return null;
     if (phi3 === 'match' && !tokens.includes('small') && !tokens.includes('vision')) {
         results.push(tokenizers.LLAMA);
     }
 
-    // CodeLlama 34b ships llama.model; the 7b/13b base and Instruct and the 70b files differ.
-    if (hasSequence(tokens, ['codellama', '34b'])) results.push(tokenizers.LLAMA);
+    // CodeLlama 34b and 7b/13b Python ship llama.model; the 7b/13b base and Instruct and the 70b
+    // files differ.
+    const codellamaSequences = [
+        ['codellama', '34b'],
+        ['codellama', '7b', 'python'],
+        ['codellama', '13b', 'python'],
+    ];
+    if (codellamaSequences.some(sequence => hasSequence(tokens, sequence))) results.push(tokenizers.LLAMA);
+
+    // Gemma-derived models whose tokenizer.model is gemma.model; ShieldGemma 2 (Gemma 3) differs.
+    const gemmaDerivedSequences = [
+        ['recurrentgemma', '2b'],
+        ['recurrentgemma', '9b'],
+        ['shieldgemma', '2b'],
+        ['shieldgemma', '9b'],
+        ['shieldgemma', '27b'],
+        ['datagemma', 'rag', '27b'],
+        ['datagemma', 'rig', '27b'],
+        ['txgemma', '2b', 'predict'],
+        ['txgemma', '9b', 'chat'],
+        ['txgemma', '9b', 'predict'],
+        ['txgemma', '27b', 'chat'],
+        ['txgemma', '27b', 'predict'],
+    ];
+    if (gemmaDerivedSequences.some(sequence => hasSequence(tokens, sequence))) results.push(tokenizers.GEMMA);
 
     const guarded = [
         [tokenizers.LLAMA3, [['llama', '3'], ['llama3']], followedByAllDigits],
@@ -108,7 +131,7 @@ function generalMatches(tokens, lowerName) {
     if (isMistralV1) results.push(tokenizers.MISTRAL);
 
     if (hasSequence(tokens, ['nemo'])) results.push(tokenizers.NEMO);
-    // Jamba 1.5/1.6/1.7 and Jamba-tiny-dev ship jamba.model; Jamba v0.1, Jamba2 and Jamba
+    // Jamba 1.5/1.6/1.7, Jamba-tiny-dev and Jamba-tiny-reward-dev ship jamba.model; Jamba v0.1, Jamba2 and Jamba
     // Reasoning don't.
     const jambaSequences = [
         ['jamba', '1', '5'],
@@ -119,6 +142,7 @@ function generalMatches(tokens, lowerName) {
         ['jamba', 'large', '1', '6'],
         ['jamba', 'large', '1', '7'],
         ['jamba', 'tiny', 'dev'],
+        ['jamba', 'tiny', 'reward', 'dev'],
     ];
     if (jambaSequences.some(sequence => hasSequence(tokens, sequence))) results.push(tokenizers.JAMBA);
     if (hasSequence(tokens, ['command', 'r'])) results.push(tokenizers.COMMAND_R);
