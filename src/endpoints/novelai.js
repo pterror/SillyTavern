@@ -7,7 +7,7 @@ import express from 'express';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { readAllChunks, extractFileFromZipBuffer } from '../util.js';
 import { readSettingsAtPaths } from '../settings-store.js';
-import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, droppedEntriesWarning } from '../tokenizer-resolve.js';
+import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, createTokenizerOutcome, sendTokenizerWarnings } from '../tokenizer-resolve.js';
 import { tokenizers } from '../tokenizer-ids.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
@@ -186,9 +186,9 @@ router.post('/status', async function (req, res) {
  * Kobold's own connectable-server-URL model.
  *
  * The tokenizer is resolved with `resolveTokenizer()` from `nai_settings.model_novel` and
- * `power_user.tokenizer`. An estimate resolution counts by the estimate and has no ids, so stop
- * strings, bad words and bias entries needing ids are left out and reported in the returned
- * `warnings`.
+ * `power_user.tokenizer`. An estimate resolution, or a tokenizer that fails, counts by the
+ * estimate and has no ids, so stop strings, bad words and bias entries needing ids are left out
+ * and reported in the returned `warnings`.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {import('express').Request} [params.request]
@@ -263,7 +263,8 @@ export async function buildRawActionNovelRequest(directories, {
     const { nai_settings: naiSettings = {}, power_user: powerUser = {} } = readSettingsAtPaths(directories, ['nai_settings', 'power_user']);
     const tokenizerState = { api: 'novel', model: naiSettings.model_novel ?? '', tokenizerSetting: powerUser.tokenizer };
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
-    const encodeOptions = { request, ...tokenizerOptions };
+    const tokenizerOutcome = createTokenizerOutcome();
+    const encodeOptions = { request, ...tokenizerOptions, outcome: tokenizerOutcome };
     const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
     const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
     // createNovelGenerationData() hands back the type it was given, which is this resolution's.
@@ -293,11 +294,9 @@ export async function buildRawActionNovelRequest(directories, {
     const assembled = await assembleTextCompletionPrompt(orchestratorInput);
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
-    const droppedWarning = droppedEntriesWarning(tokenizerState, resolvedTokenizer, assembled.droppedEntries);
-
     return {
         params: assembled.generate_data, anchorNodeId, anchorContent, name1: orchestratorInput.name1, name2: orchestratorInput.name2,
-        warnings: droppedWarning ? [droppedWarning] : [],
+        warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
     };
 }
 

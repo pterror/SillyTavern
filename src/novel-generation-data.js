@@ -112,7 +112,8 @@ export function getBadWordPermutations(text) {
  * @callback EncodeTokensFn
  * @param {number} tokenizerType A `tokenizers` value.
  * @param {string} text
- * @returns {Promise<number[]>|number[]}
+ * @returns {Promise<number[]|null>|number[]|null} null when there are no ids for the text (a
+ * tokenizer that failed): the entry needing them is left out.
  */
 
 /**
@@ -122,7 +123,7 @@ export function getBadWordPermutations(text) {
  * @param {number} tokenizerType A `tokenizers` value. NONE means no tokenizer: only raw-id lines
  * go through.
  * @param {EncodeTokensFn} encodeTokens
- * @param {string[]} [dropped] Receives each line left out because it needs a tokenizer.
+ * @param {string[]} [dropped] Receives each line left out because it has no token ids.
  * @returns {Promise<number[][]>}
  */
 export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens, dropped) {
@@ -144,6 +145,10 @@ export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens, d
 
         if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
             const tokenIds = await encodeTokens(tokenizerType, trimmed.slice(1, -1));
+            if (tokenIds === null) {
+                dropped?.push(trimmed);
+                continue;
+            }
             result.push(tokenIds);
         } else if (isRawIds) {
             try {
@@ -159,9 +164,15 @@ export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens, d
             }
         } else {
             const permutations = getBadWordPermutations(trimmed);
+            const permutationIds = [];
             for (const permutation of permutations) {
-                result.push(await encodeTokens(tokenizerType, permutation));
+                permutationIds.push(await encodeTokens(tokenizerType, permutation));
             }
+            if (permutationIds.includes(null)) {
+                dropped?.push(trimmed);
+                continue;
+            }
+            result.push(...permutationIds);
         }
     }
 
@@ -192,7 +203,7 @@ export async function getBadWordIds(bannedTokens, tokenizerType, encodeTokens, d
  * @param {number} tokenizerType A `tokenizers` value. NONE means no tokenizer: only raw-id entries
  * go through.
  * @param {EncodeTokensFn} encodeTokens
- * @param {string[]} [dropped] Receives each entry's text left out because it needs a tokenizer.
+ * @param {string[]} [dropped] Receives each entry's text left out because it has no token ids.
  * @returns {Promise<NovelLogitBiasObject[]>}
  */
 export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, encodeTokens, dropped) {
@@ -227,6 +238,10 @@ export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, e
         if (text.startsWith('{') && text.endsWith('}')) {
             // Verbatim text
             const tokenIds = await encodeTokens(tokenizerType, text.slice(1, -1));
+            if (tokenIds === null) {
+                dropped?.push(text);
+                continue;
+            }
             result.push(getBiasObject(entry.value, tokenIds));
         } else if (isRawIds) {
             // Raw token ids, JSON serialized
@@ -245,6 +260,10 @@ export async function calculateNovelLogitBias(logitBiasEntries, tokenizerType, e
             // Text with a leading space
             const biasText = ` ${text}`;
             const tokenIds = await encodeTokens(tokenizerType, biasText);
+            if (tokenIds === null) {
+                dropped?.push(text);
+                continue;
+            }
             result.push(getBiasObject(entry.value, tokenIds));
         }
     }
@@ -319,7 +338,7 @@ export function getNovelMaxResponseTokens(novelDataTier) {
  * `encodeTokens`. NONE (an estimate resolution) leaves out every stop string, bad word and bias
  * entry that needs ids; raw-id entries still go through.
  * @property {EncodeTokensFn} encodeTokens
- * @property {string[]} [dropped] Receives each entry left out because there is no tokenizer.
+ * @property {string[]} [dropped] Receives each entry left out because it has no token ids.
  * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext] Forwarded
  * into the getStoppingStrings() call (merged into stoppingStringsParams).
  */
@@ -393,7 +412,12 @@ export async function createNovelGenerationData({
     if (hasTokenizer) {
         stopSequences = [];
         for (const stoppingString of sentStoppingStrings) {
-            stopSequences.push(await encodeTokens(tokenizerType, stoppingString));
+            const tokenIds = await encodeTokens(tokenizerType, stoppingString);
+            if (tokenIds === null) {
+                dropped?.push(stoppingString);
+                continue;
+            }
+            stopSequences.push(tokenIds);
         }
     } else {
         dropped?.push(...sentStoppingStrings);

@@ -91,10 +91,10 @@ const { OOBA, MANCER, VLLM, APHRODITE, TABBY, KOBOLDCPP, LLAMACPP, OLLAMA, INFER
  * @property {object} [logitBias] Escape hatch: an already-computed token-id-keyed bias map to use
  * as-is instead of computing one from `settings.logit_bias` via computeTextgenLogitBias(). Takes
  * priority when provided.
- * @property {object} [logitBiasContext] `{tokenizerOptions, remoteContext, dropped}` forwarded to
- * computeTextgenLogitBias() (src/endpoints/tokenizers.js) when `logitBias` isn't given - see that
- * function's doc comment for every field. `tokenizerOptions.resolved` is required when
- * `settings.logit_bias` is non-empty and no `logitBias` is given.
+ * @property {{encode?: (text: string) => Promise<number[]|null>, dropped?: string[]}} [logitBiasContext]
+ * Forwarded to computeTextgenLogitBias() (src/endpoints/tokenizers.js) when `logitBias` isn't
+ * given - see that function's doc comment. `encode` is required when `settings.logit_bias` is
+ * non-empty and no `logitBias` is given.
  * @property {number} [maxContext]
  * @property {boolean} [requestTokenProbabilities]
  * @property {{name1?: string, name2?: string}} [macroContext] For substituting settings.negative_prompt
@@ -130,8 +130,8 @@ export async function createTextGenGenerationData(settings, model, finalPrompt, 
     // pre-resolved override takes priority when given.
     let logitBias = logitBiasOverride;
     if (logitBias === undefined && Array.isArray(settings.logit_bias) && settings.logit_bias.length) {
-        const { tokenizerOptions = {}, remoteContext = {}, dropped } = logitBiasContext;
-        logitBias = await computeTextgenLogitBias(settings.logit_bias, tokenizerOptions, remoteContext, dropped);
+        const { encode, dropped } = logitBiasContext;
+        logitBias = await computeTextgenLogitBias(settings.logit_bias, { encode }, dropped);
     }
 
     const canMultiSwipe = !isContinue && !isImpersonate && type !== 'quiet';

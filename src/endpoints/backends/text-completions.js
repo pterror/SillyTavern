@@ -23,7 +23,7 @@ import { createTextGenGenerationData } from '../../textgen-generation-data.js';
 import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
-import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, droppedEntriesWarning, resolveProfileTokenizerSetting } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings } from '../../tokenizer-resolve.js';
 import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
@@ -442,8 +442,10 @@ router.post('/props', async function (request, response) {
  *    explicitly `null` AND this owner's conversation is genuinely empty - the owner's own anchor).
  * 3. Resolve the tokenizer with `resolveTokenizer()` (the backend's type, URL and model setting, and
  *    `power_user.tokenizer`), and build `countTokens`/`encodeTokens` from it: an estimate
- *    resolution counts by the estimate and has no ids, so entries needing ids are left out and
- *    reported in the returned `warnings`.
+ *    resolution, or a tokenizer that fails with no local copy to answer for it, counts by the
+ *    estimate and has no ids, so entries needing ids are left out. The returned `warnings` report
+ *    those entries, a local copy answering for a failed remote tokenizer, and an estimate trim
+ *    after a failure.
  * 4. Resolve the orchestrator's full input from real on-disk settings/character/chat state via
  *    `resolveTextCompletionGenerationInput()`.
  * 5. Assemble the real prompt via `assembleTextCompletionPrompt()`.
@@ -587,9 +589,10 @@ export async function buildRawActionTextCompletionRequest(directories, {
         tokenizerSetting: powerUser.tokenizer,
     };
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    const tokenizerOutcome = createTokenizerOutcome();
     const encodeOptions = {
         request, textgenBaseUrl: backend.serverUrl, textgenModel: backend.model, textgenApiType: backend.type,
-        ...tokenizerOptions,
+        ...tokenizerOptions, outcome: tokenizerOutcome,
     };
     const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
     const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
@@ -636,12 +639,10 @@ export async function buildRawActionTextCompletionRequest(directories, {
     // every other, non-continue caller shape where `chat` could legitimately be empty.
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
-    const droppedWarning = droppedEntriesWarning(tokenizerState, resolvedTokenizer, assembled.droppedEntries);
-
     return {
         params: assembled.generate_data, backend, anchorNodeId, anchorContent,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
-        warnings: droppedWarning ? [droppedWarning] : [],
+        warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         // Prompt-itemization breakdown for the client's itemizedPrompts entry - see
         // buildItemizationBreakdown()'s own doc comment (text-completion-prompt-orchestrator.js).
         itemization: buildItemizationBreakdown(assembled),
@@ -738,6 +739,11 @@ router.post('/generate', async function (request, response) {
                 tokenizerSetting: resolveProfileTokenizerSetting(profile.tokenizer, powerUser.tokenizer),
             };
             const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories: request.user.directories });
+            const tokenizerOutcome = createTokenizerOutcome();
+            const encodeOptions = {
+                request, textgenBaseUrl: apiServerUrl, textgenModel: profile.model, textgenApiType: selectedApiMap.type,
+                outcome: tokenizerOutcome,
+            };
             /** @type {string[]} */
             const droppedBiasEntries = [];
 
@@ -746,16 +752,12 @@ router.post('/generate', async function (request, response) {
                 {
                     stoppingStrings, macroContext: { name1, name2 },
                     logitBiasContext: {
-                        tokenizerOptions: { resolved: resolvedTokenizer },
-                        remoteContext: { request, baseUrl: apiServerUrl, apiType: selectedApiMap.type, model: profile.model },
+                        encode: (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions),
                         dropped: droppedBiasEntries,
                     },
                 },
             );
-            const droppedWarning = droppedEntriesWarning(tokenizerState, resolvedTokenizer, droppedBiasEntries);
-            if (droppedWarning) {
-                warnings.push(droppedWarning);
-            }
+            warnings.push(...sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, droppedBiasEntries));
 
             // Optional sampler-field overrides for this one call (e.g. a caller that wants a
             // specific temperature without a whole separate profile/preset). Deliberately excludes

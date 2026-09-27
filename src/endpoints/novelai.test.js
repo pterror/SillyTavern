@@ -432,6 +432,26 @@ async function run() {
         assert.ok(warning.message.includes('dragon') && warning.message.includes('sword'), `${label}: the message names the entries`);
     }
 
+    // A tokenizer that fails to load: counts use the estimate, entries needing ids are left out
+    // and listed, raw-id entries still go through.
+    {
+        writeAllSettings(directories, tokenizerSettings('clio-v1', undefined));
+        const built = await buildRawActionNovelRequest(directories, {
+            characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+            type: 'normal', userMessageText: 'Broken tokenizer, Rex?',
+            tokenizerOptions: { encodeLocal: async () => { throw new Error('Failed to load the tokenizer'); } },
+        });
+        writeAllSettings(directories, buildSettingsFixture());
+
+        assert.ok(!(built.params.stop_sequences ?? []).includes(null), 'no stop sequence without ids');
+        assert.deepEqual(built.params.bad_words_ids, [[5, 6]], 'only the raw-id bad word goes through');
+        assert.deepEqual(built.params.logit_bias_exp.map(entry => entry.sequence), [[7]], 'only the raw-id bias goes through');
+        assert.deepEqual(built.warnings.map(w => w.kind), ['trim-estimate', 'dropped']);
+        const dropped = built.warnings[1];
+        assert.ok(dropped.entries.includes('\nNarrator:') && dropped.entries.includes('dragon') && dropped.entries.includes('sword'), 'the entries needing ids are listed');
+        assert.ok(dropped.message.includes('NerdStash'), dropped.message);
+    }
+
     if (!canMockNovelBackend) {
         console.log('novelai.test.js: skipping all route-level /generate tests (a)-(e) - run with `node --experimental-test-module-mocks` to include them (see the canMockNovelBackend comment near the top of this file)');
         console.log('novelai.test.js: assembly/validation assertions passed (route-level tests skipped)');

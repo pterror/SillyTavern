@@ -6,7 +6,7 @@ import { delay } from '../../util.js';
 import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
 import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
-import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, createTokenizerOutcome, sendTokenizerWarnings } from '../../tokenizer-resolve.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
@@ -37,6 +37,8 @@ export const router = express.Router();
  *   `kai_settings.api_server`; for Horde (`macroExtras.isHorde`), from the saved Horde model
  *   selection (`horde_settings.models`). It only counts for budget fitting:
  *   createKoboldGenerationData() never encodes entries, so a Kobold or Horde send has none to drop.
+ *   A tokenizer that fails is answered by the model's local copy, else by the estimate; the
+ *   returned `warnings` say which.
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} params
  * @param {import('express').Request} [params.request]
@@ -68,7 +70,7 @@ export const router = express.Router();
  * real `isHorde` flag (src/kobold-generation-data.js) already produces the correct payload shape for
  * Horde too, it was just never threaded through here. Defaults to `{}` - existing callers/tests
  * (which never pass this) keep their exact prior behavior.
- * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string }>}
+ * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, warnings: object[], itemization: object }>}
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
@@ -125,7 +127,8 @@ export async function buildRawActionKoboldRequest(directories, {
         ? { api: 'koboldhorde', hordeModels: Array.isArray(hordeSettings.models) ? hordeSettings.models : [], tokenizerSetting: powerUser.tokenizer }
         : { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer };
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
-    const encodeOptions = { request, koboldBaseUrl: url, ...tokenizerOptions };
+    const tokenizerOutcome = createTokenizerOutcome();
+    const encodeOptions = { request, koboldBaseUrl: url, ...tokenizerOptions, outcome: tokenizerOutcome };
     const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
     const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
 
@@ -154,6 +157,7 @@ export async function buildRawActionKoboldRequest(directories, {
     return {
         params: assembled.generate_data, anchorNodeId, anchorContent,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
+        warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         // Prompt-itemization breakdown for the client's itemizedPrompts entry - see
         // buildItemizationBreakdown()'s own doc comment (text-completion-prompt-orchestrator.js).
         itemization: buildItemizationBreakdown(assembled),
@@ -212,6 +216,7 @@ router.post('/generate', async function (request, response_generate) {
             console.error('Failed to build raw-action Kobold request:', error);
             return response_generate.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
         }
+        warnings.push(...built.warnings);
 
         // Same three-mode persistence contract as text-completions.js's own raw-action branch - see
         // that file's own extensive comment on impersonate/quiet skipping, the swipe/regenerate
