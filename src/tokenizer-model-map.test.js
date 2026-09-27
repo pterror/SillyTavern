@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,7 +57,6 @@ check(GENERAL_API, 'gemma3-12b', null);
 
 // --- Yi ---
 check(GENERAL_API, 'yi-34b-chat', tokenizers.YI);
-check(GENERAL_API, 'yi-1.5-34b', null);
 
 // --- Jamba 1.5 ---
 check(GENERAL_API, 'jamba-1.5-large', tokenizers.JAMBA);
@@ -93,6 +93,46 @@ check('novel', 'erato-v1', tokenizers.LLAMA3);
 check('novel', 'llama-3-8b', null);
 check('novel', 'clio-kayra', null);
 check(GENERAL_API, 'kayra-v1', null);
+
+// --- models whose official tokenizer.model is byte-identical to a bundled file ---
+// Yi 1.5 (every 01-ai/Yi-1.5-* tokenizer.model is yi.model)
+check(GENERAL_API, 'Yi-1.5-34B-Chat', tokenizers.YI);
+check(GENERAL_API, 'yi-1.5-34b', tokenizers.YI);
+check(GENERAL_API, 'yi1-34b', null);
+
+// Jamba 1.6 / 1.7 and Jamba-tiny-dev (their tokenizer.model is jamba.model)
+check(GENERAL_API, 'AI21-Jamba-Mini-1.7', tokenizers.JAMBA);
+check(GENERAL_API, 'AI21-Jamba-Large-1.6', tokenizers.JAMBA);
+check(GENERAL_API, 'jamba-1.6-mini', tokenizers.JAMBA);
+check(GENERAL_API, 'jamba-1.7-large', tokenizers.JAMBA);
+check(GENERAL_API, 'Jamba-tiny-dev', tokenizers.JAMBA);
+check(GENERAL_API, 'Jamba-v0.1', null);
+check(GENERAL_API, 'AI21-Jamba2-Mini', null);
+check(GENERAL_API, 'AI21-Jamba-Reasoning-3B', null);
+check(GENERAL_API, 'jamba-large', null);
+
+// Phi-3 / Phi-3.5, not small (cl100k) and not vision (no tokenizer.model; its tokenizer.json differs)
+check(GENERAL_API, 'Phi-3.5-mini-instruct', tokenizers.LLAMA);
+check(GENERAL_API, 'Phi-3-mini-4k-instruct', tokenizers.LLAMA);
+check(GENERAL_API, 'Phi-3-medium-128k-instruct', tokenizers.LLAMA);
+check(GENERAL_API, 'Phi-3.5-MoE-instruct', tokenizers.LLAMA);
+check(GENERAL_API, 'Phi-3-small-8k-instruct', null);
+check(GENERAL_API, 'Phi-3-vision-128k-instruct', null);
+check(GENERAL_API, 'Phi-3.5-vision-instruct', null);
+check(GENERAL_API, 'phi-3.1-mini', null);
+check(GENERAL_API, 'phi-4', null);
+
+// Mixtral 8x22B base v0.1 (mistral.model); the Instruct and v0.3 files differ
+check(GENERAL_API, 'Mixtral-8x22B-v0.1', tokenizers.MISTRAL);
+check(GENERAL_API, 'Mixtral-8x22B-Instruct-v0.1', null);
+check(GENERAL_API, 'mixtral-8x22B-v0.3', null);
+check(GENERAL_API, 'open-mixtral-8x22b', null);
+
+// CodeLlama 34b (llama.model); the 7b/13b base and Instruct and all 70b files differ
+check(GENERAL_API, 'CodeLlama-34b-Instruct-hf', tokenizers.LLAMA);
+check(GENERAL_API, 'CodeLlama-34b-Python-hf', tokenizers.LLAMA);
+check(GENERAL_API, 'CodeLlama-7b-hf', null);
+check(GENERAL_API, 'CodeLlama-70b-hf', null);
 
 // --- separator forms ---
 check(GENERAL_API, 'llama 2', tokenizers.LLAMA);
@@ -160,6 +200,19 @@ const expectedPieceCounts = {
 for (const [file, expected] of Object.entries(expectedPieceCounts)) {
     const buf = fs.readFileSync(path.join(tokenizersDir, file));
     assert.equal(countSentencepiecePieces(buf), expected, `${file} piece count`);
+}
+
+// sha256 of each bundled .model, which is byte-identical to the official files named above
+const expectedSha256 = {
+    'llama.model': '9e556afd44213b6bd1be2b850ebbbd98f5481437a8021afaf58ee7fb1818d347',
+    'mistral.model': 'dadfd56d766715c61d2ef780a525ab43b8e6da4de6865bda3d95fdef5e134055',
+    'gemma.model': '61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2',
+    'yi.model': '386c49cf943d71aa110361135338c50e38beeff0a66593480421f37b319e1a39',
+    'jamba.model': '8b0df4fb43262c452ef37061951a06df4c63ca191d02a60ea08f14428af24376',
+};
+for (const [file, expected] of Object.entries(expectedSha256)) {
+    const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(tokenizersDir, file))).digest('hex');
+    assert.equal(digest, expected, `${file} sha256`);
 }
 
 const llama3 = JSON.parse(fs.readFileSync(path.join(tokenizersDir, 'llama3.json'), 'utf8'));
