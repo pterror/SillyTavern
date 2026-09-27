@@ -673,14 +673,20 @@ export async function runOnceAtBoot(directories, options = {}) {
 const defaultSpawn = workerData => new Worker(WORKER_PATH, { workerData });
 
 /**
- * @param {RestoreDirectories[]} directoriesList
+ * @param {RestoreDirectories[]} directoriesList Users to restore
  * @param {object} options
  * @param {boolean} options.enabled
+ * @param {RestoreDirectories[]} [options.held] Users not restored this boot because the group chat migration left
+ * some of their chat files un-migrated; the restore reads what that migration landed, so it waits until it has all
  * @param {(workerData: { directoriesList: RestoreDirectories[], configPath: string | null }) => import('node:worker_threads').Worker} [options.spawnWorker]
  * @returns {boolean} Whether a worker was started
  */
-export function maybeStartGroupChatRestore(directoriesList, { enabled, spawnWorker = defaultSpawn }) {
+export function maybeStartGroupChatRestore(directoriesList, { enabled, held = [], spawnWorker = defaultSpawn }) {
     if (!enabled) return false;
+    for (const directories of held) {
+        console.warn(color.yellow(`${LOG_PREFIX} ${directories.root}: not run this boot; it waits until every group chat file the migration left in place (listed above) has migrated`));
+    }
+    if (directoriesList.length === 0) return false;
     const worker = spawnWorker({ directoriesList, configPath: getConfigFilePath() });
     worker.on('error', err => console.error(color.red(`${LOG_PREFIX} worker failed:`), err));
     worker.unref?.();

@@ -294,4 +294,20 @@ describe('restoreGroupChatMigrationLosses', () => {
         expect(spawnWorker).toHaveBeenCalledTimes(1);
         expect(spawnWorker.mock.calls[0][0].directoriesList).toEqual([dirs]);
     });
+
+    test('held users are reported and not restored; with no one else, no worker starts', () => {
+        const dirs = makeDirectories();
+        const spawnWorker = jest.fn(() => ({ on: jest.fn(), unref: jest.fn() }));
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            expect(restore.maybeStartGroupChatRestore([], { enabled: true, held: [dirs], spawnWorker })).toBe(false);
+            expect(warn.mock.calls.some(call => String(call[0]).includes(dirs.root))).toBe(true);
+            warn.mockClear();
+            expect(restore.maybeStartGroupChatRestore([], { enabled: false, held: [dirs], spawnWorker })).toBe(false);
+            expect(warn).not.toHaveBeenCalled();
+        } finally {
+            warn.mockRestore();
+        }
+        expect(spawnWorker).not.toHaveBeenCalled();
+    });
 });

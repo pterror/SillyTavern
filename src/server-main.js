@@ -504,12 +504,14 @@ async function postSetupTasks(result) {
     setupLogLevel();
     serverEvents.emit(EVENT_NAMES.SERVER_STARTED, { url: browserLaunchUrl });
 
-    // Not awaited. The restore reads what the group migration left, so it starts only once that has finished.
-    // Off unless config.yaml sets restoreGroupChatMigrationLosses: true. Runs in a worker.
+    // Not awaited. The restore reads what the group migration left, so it starts only once that has finished, and only
+    // for users it left no chat file un-migrated for. Off unless config.yaml sets restoreGroupChatMigrationLosses: true.
+    // Runs in a worker.
     startGroupChatMigrations({
-        afterMigration: async () => {
-            maybeStartGroupChatRestore(await getUserDirectoriesList(), {
+        afterMigration: ({ migrated, unmigrated }) => {
+            maybeStartGroupChatRestore(migrated, {
                 enabled: getConfigValue('restoreGroupChatMigrationLosses', false, 'boolean'),
+                held: unmigrated,
             });
         },
     });

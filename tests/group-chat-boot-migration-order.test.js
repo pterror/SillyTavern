@@ -523,3 +523,119 @@ describe('group writes during the pass', () => {
         expect(Object.hasOwn(readGroup(directories, 'g-open'), 'chat_metadata')).toBe(false);
     });
 });
+
+/** A group whose chat files already have header lines, so only the tree migration has anything to do. */
+function writeHeaderedGroup(directories, groupId, chats) {
+    const group = { id: groupId, name: groupId, members: ['alice.png'], chat_id: Object.keys(chats)[0], chats: Object.keys(chats) };
+    fs.writeFileSync(path.join(directories.groups, `${groupId}.json`), JSON.stringify(group, null, 4));
+    for (const [chatId, lines] of Object.entries(chats)) {
+        writeChatFile(directories, chatId, [{ chat_metadata: { note_prompt: `meta-${chatId}` } }, ...lines]);
+    }
+}
+
+/** Runs one boot's pass for `directories`, returning its outcome and every warning it printed. */
+async function bootCollectingWarnings(directories) {
+    const warnings = [];
+    const warn = jest.spyOn(console, 'warn').mockImplementation((...args) => { warnings.push(args.join(' ')); });
+    try {
+        const outcome = await migration.migrateUserGroupChats(directories);
+        return { outcome, warnings };
+    } finally {
+        warn.mockRestore();
+    }
+}
+
+describe('a refused group chat file is retried every boot', () => {
+    test('it is warned about every boot it is refused, and migrates once fixed, though the group already has chats', async () => {
+        const directories = makeDirectories();
+        const shared = [makeMessage('shared-1'), makeMessage('shared-2', 'You', true)];
+        const other = makeMessage('other-3');
+        writeHeaderedGroup(directories, 'gr', {
+            'good': [...shared, makeMessage('good-3')],
+            'broken': [...shared, '{not json', other],
+        });
+
+        const first = await bootCollectingWarnings(directories);
+        expect(first.outcome).toEqual({ unmigrated: true });
+        expect(first.warnings.some(w => w.includes('broken.jsonl') && w.includes('left in place'))).toBe(true);
+        expect(fs.existsSync(path.join(directories.groupChats, 'good.jsonl.pre-migration'))).toBe(true);
+        expect(fs.existsSync(path.join(directories.groupChats, 'broken.jsonl'))).toBe(true);
+        const db = await treeDb.getDbHandle(directories);
+        const sharedTwo = db.get('SELECT id, default_child_id AS d FROM messages WHERE owner_id = @o AND content LIKE @c', { o: 'gr', c: '%shared-2%' });
+
+        // Next boot: the group has a chat in the tree, and the refused file is still tried and reported.
+        const second = await bootCollectingWarnings(directories);
+        expect(second.outcome).toEqual({ unmigrated: true });
+        expect(second.warnings.some(w => w.includes('broken.jsonl') && w.includes('left in place'))).toBe(true);
+        expect(await treeDb.loadBranch(directories, 'gr', 'broken')).toBeFalsy();
+
+        writeChatFile(directories, 'broken', [{ chat_metadata: { note_prompt: 'meta-broken' } }, ...shared, other]);
+        const third = await bootCollectingWarnings(directories);
+        expect(third.outcome).toEqual({ unmigrated: false });
+        expect(third.warnings).toEqual([]);
+        expect(fs.existsSync(path.join(directories.groupChats, 'broken.jsonl'))).toBe(false);
+        expect(fs.existsSync(path.join(directories.groupChats, 'broken.jsonl.pre-migration'))).toBe(true);
+        const loaded = await treeDb.loadBranch(directories, 'gr', 'broken');
+        expect(loaded?.messages.map(m => m.mes)).toEqual(['shared-1', 'shared-2', 'other-3']);
+        expect(loaded?.metadata).toEqual({ note_prompt: 'meta-broken' });
+        expect((await treeDb.loadBranch(directories, 'gr', 'good'))?.messages.map(m => m.mes)).toEqual(['shared-1', 'shared-2', 'good-3']);
+        // The shared prefix is reused, and the existing chat's default reply is kept.
+        expect(db.get('SELECT COUNT(*) AS n FROM messages WHERE owner_id = @o AND content LIKE @c', { o: 'gr', c: '%shared-2%' }).n).toBe(1);
+        expect(db.get('SELECT default_child_id AS d FROM messages WHERE id = @id', { id: sharedTwo.id }).d).toBe(sharedTwo.d);
+
+        const fourth = await bootCollectingWarnings(directories);
+        expect(fourth).toEqual({ outcome: { unmigrated: false }, warnings: [] });
+    });
+
+    test('a file named like a chat already in the tree is refused and reported every boot, never merged', async () => {
+        const directories = makeDirectories();
+        writeHeaderedGroup(directories, 'gn', { 'dup': [makeMessage('in-tree')] });
+        await bootCollectingWarnings(directories);
+        writeChatFile(directories, 'dup', [{ chat_metadata: {} }, makeMessage('stray copy')]);
+
+        for (let boot = 0; boot < 2; boot++) {
+            const { outcome, warnings } = await bootCollectingWarnings(directories);
+            expect(outcome).toEqual({ unmigrated: true });
+            expect(warnings.some(w => w.includes('dup.jsonl') && w.includes('already'))).toBe(true);
+        }
+        expect(fs.existsSync(path.join(directories.groupChats, 'dup.jsonl'))).toBe(true);
+        expect((await treeDb.loadBranch(directories, 'gn', 'dup'))?.messages.map(m => m.mes)).toEqual(['in-tree']);
+    });
+});
+
+describe('the restore waits for a user\'s refused group chat files', () => {
+    test('a user with a refused file is held until it migrates; other users are not held', async () => {
+        const restore = await import('../src/migrations/restore-group-chat-migration-losses.js');
+        const withRefused = makeDirectories();
+        const clean = makeDirectories();
+        writeHeaderedGroup(withRefused, 'gx', { 'bad': [makeMessage('x-1'), '{not json'] });
+        writeHeaderedGroup(clean, 'gy', { 'fine': [makeMessage('y-1')] });
+
+        const boot = async () => {
+            const spawnWorker = jest.fn(() => ({ on: jest.fn(), unref: jest.fn() }));
+            const warnings = [];
+            const warn = jest.spyOn(console, 'warn').mockImplementation((...args) => { warnings.push(args.join(' ')); });
+            try {
+                await migration.startGroupChatMigrations({
+                    migrate: () => migration.migrateAllGroupChats([withRefused, clean]),
+                    afterMigration: ({ migrated, unmigrated }) => {
+                        restore.maybeStartGroupChatRestore(migrated, { enabled: true, held: unmigrated, spawnWorker });
+                    },
+                });
+            } finally {
+                warn.mockRestore();
+            }
+            return { restored: spawnWorker.mock.calls.map(call => call[0].directoriesList), warnings };
+        };
+
+        const held = await boot();
+        expect(held.restored).toEqual([[clean]]);
+        expect(held.warnings.some(w => w.includes(withRefused.root) && w.includes('waits'))).toBe(true);
+        expect(held.warnings.some(w => w.includes('bad.jsonl'))).toBe(true);
+
+        writeChatFile(withRefused, 'bad', [{ chat_metadata: {} }, makeMessage('x-1')]);
+        const released = await boot();
+        expect(released.restored).toEqual([[withRefused, clean]]);
+        expect(released.warnings).toEqual([]);
+    });
+});
