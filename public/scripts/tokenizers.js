@@ -983,6 +983,42 @@ export function decodeTextTokens(tokenizerType, ids) {
     return decodeTextTokensFromServer(endpointUrl, ids);
 }
 
+/**
+ * Decodes token ids to text with the tokenizer the server resolves for the API's on-screen state.
+ * @param {number[]} ids Array of token ids
+ * @param {string} [api] Main API. Defaults to the current one.
+ * @returns {({ text: string, chunks: string[] })} Decoded token text as a single string and individual chunks. Empty on failure.
+ */
+export function decodeCurrentTokens(ids, api = main_api) {
+    const state = getTokenizerState(api);
+    if (!state) {
+        return { text: '', chunks: [] };
+    }
+    const data = postCurrent('decode', { state, ids }, false);
+    rememberTokenizer(JSON.stringify(state), data?.tokenizer);
+    return { text: typeof data?.text === 'string' ? data.text : '', chunks: Array.isArray(data?.chunks) ? data.chunks : [] };
+}
+
+/**
+ * Trims text to a token limit with the tokenizer the server resolves for the on-screen state.
+ * @param {string} text Text to trim.
+ * @param {number} limit Maximum number of tokens to keep.
+ * @param {string} direction `start` keeps the first tokens, anything else the last.
+ * @returns {Promise<{ text: string, tokenizer: CurrentTokenizer|null }|null>} The trimmed text and the tokenizer that trimmed it; null on failure.
+ */
+export async function trimCurrentTokens(text, limit, direction) {
+    const state = getTokenizerState();
+    if (!state) {
+        return null;
+    }
+    const data = await postCurrent('trim', { state, text, limit, direction }, true);
+    rememberTokenizer(JSON.stringify(state), data?.tokenizer);
+    if (typeof data?.text !== 'string') {
+        return null;
+    }
+    return { text: data.text, tokenizer: data.tokenizer ?? null };
+}
+
 export async function initTokenizers() {
     TEXTGEN_TOKENIZERS.push(
         textgen_types.OOBA,

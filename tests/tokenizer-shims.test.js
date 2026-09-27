@@ -40,6 +40,12 @@ function defaultRespond(url, body) {
     if (url === '/api/tokenizers/current/encode') {
         return { ids: body.texts.map(() => [1, 2]), tokenizer: answer() };
     }
+    if (url === '/api/tokenizers/current/decode') {
+        return { text: 'ab', chunks: ['a', 'b'], tokenizer: answer() };
+    }
+    if (url === '/api/tokenizers/current/trim') {
+        return { text: 'trimmed', tokenizer: answer() };
+    }
     return { ids: [3], count: 1, token_count: 1, text: '' };
 }
 
@@ -299,5 +305,42 @@ describe('tokenizer shims', () => {
     test('saveTokenCache stays exported and writes nothing', async () => {
         await tokenizersModule.saveTokenCache();
         expect(store.setItem).not.toHaveBeenCalled();
+    });
+});
+
+describe('decode and trim ask /current/*', () => {
+    test('decodeCurrentTokens posts the ids to /current/decode with the API\'s state', () => {
+        expect(tokenizersModule.decodeCurrentTokens([1, 2], 'novel')).toEqual({ text: 'ab', chunks: ['a', 'b'] });
+        expect(requests).toEqual([{
+            url: '/api/tokenizers/current/decode',
+            async: false,
+            body: { state: { api: 'novel', model: 'kayra-v1', tokenizerSetting: tokenizerIds.BEST_MATCH }, ids: [1, 2] },
+        }]);
+    });
+
+    test('a failed decode request gives empty text and chunks', () => {
+        respond = () => { throw new Error('offline'); };
+        expect(tokenizersModule.decodeCurrentTokens([1, 2], 'novel')).toEqual({ text: '', chunks: [] });
+    });
+
+    test('trimCurrentTokens makes one /current/trim request', async () => {
+        expect(await tokenizersModule.trimCurrentTokens('hello world', 1, 'end')).toEqual({ text: 'trimmed', tokenizer: answer() });
+        expect(requests).toEqual([{
+            url: '/api/tokenizers/current/trim',
+            async: true,
+            body: { state: textgenState, text: 'hello world', limit: 1, direction: 'end' },
+        }]);
+    });
+
+    test('a trim response updates the remembered answer', async () => {
+        respond = () => ({ text: 'trimmed', tokenizer: answer({ id: tokenizerIds.LLAMA3, name: 'Llama 3', key: 'k3' }) });
+        await tokenizersModule.trimCurrentTokens('hello world', 1, 'end');
+        expect(tokenizersModule.getTokenizerBestMatch()).toBe(tokenizerIds.LLAMA3);
+        expect(requests.length).toBe(1);
+    });
+
+    test('a failed trim request resolves null', async () => {
+        respond = () => { throw new Error('offline'); };
+        await expect(tokenizersModule.trimCurrentTokens('hello world', 1, 'end')).resolves.toBeNull();
     });
 });
