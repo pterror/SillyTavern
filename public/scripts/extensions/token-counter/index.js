@@ -2,7 +2,8 @@ import { main_api } from '../../../scripts/generation-params.js';
 import { getContext } from '../../extensions.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
-import { encodeCurrentTokens, getFriendlyTokenizerName, getTextTokens, getTokenCountAsync, tokenizers } from '../../tokenizers.js';
+import { encodeCurrentTokens, getFriendlyTokenizerName, getRememberedTokenizerAnswer, getTextTokens, getTokenCountAsync, getTokenCountWithAnswer, tokenizers } from '../../tokenizers.js';
+import { renderCountBasis } from '../../tokenizer-notices.js';
 import { resetScrollHeight, debounce } from '../../utils.js';
 import { debounce_timeout } from '../../constants.js';
 import { POPUP_TYPE, callGenericPopup } from '../../popup.js';
@@ -17,10 +18,14 @@ async function doTokenCounter() {
     const countDebounced = debounce(async () => {
         const text = String($('#token_counter_textarea').val());
         let ids;
+        // The answer the ids came from.
+        let idsAnswer;
         if (main_api == 'openai') {
             ids = getTextTokens(tokenizers.OPENAI, text);
+            idsAnswer = getRememberedTokenizerAnswer();
         } else {
             const encoded = encodeCurrentTokens(text);
+            idsAnswer = encoded.tokenizer;
             if (encoded.tokenizer) {
                 $('#token_counter_tokenizer').text(encoded.tokenizer.name);
             }
@@ -33,14 +38,16 @@ async function doTokenCounter() {
         if (Array.isArray(ids) && ids.length > 0) {
             $('#token_counter_ids').text(`[${ids.join(', ')}]`);
             $('#token_counter_result').text(ids.length);
+            renderCountBasis($('#token_counter_result'), idsAnswer);
 
             if (Object.hasOwnProperty.call(ids, 'chunks')) {
                 drawChunks(Object.getOwnPropertyDescriptor(ids, 'chunks').value, ids);
             }
         } else {
-            const count = await getTokenCountAsync(text);
+            const { count, answer } = await getTokenCountWithAnswer(text);
             $('#token_counter_ids').text('—');
             $('#token_counter_result').text(count);
+            renderCountBasis($('#token_counter_result'), answer);
             $('#tokenized_chunks_display').text('—');
         }
 

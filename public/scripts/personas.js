@@ -22,7 +22,8 @@ import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { power_user, personaStore, defaultPersonaRecord } from './power-user.js';
-import { getTokenCountAsync } from './tokenizers.js';
+import { getTokenCountWithAnswer } from './tokenizers.js';
+import { renderCountBasis } from './tokenizer-notices.js';
 import {
     PAGINATION_TEMPLATE,
     clearInfoBlock,
@@ -667,8 +668,9 @@ export async function convertCharacterToPersona(avatar = null) {
  */
 const countPersonaDescriptionTokens = debounce(async () => {
     const description = String($('#persona_description').val());
-    const count = await getTokenCountAsync(description);
+    const { count, answer } = await getTokenCountWithAnswer(description);
     $('#persona_description_token_count').text(String(count));
+    renderCountBasis($('#persona_description_token_count'), answer);
 }, debounce_timeout.relaxed);
 
 /**

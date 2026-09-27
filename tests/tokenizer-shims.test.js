@@ -376,6 +376,7 @@ describe('count batches name their tokenizer', () => {
         expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab', 'c'])).toEqual({
             counts: [2, 1],
             tokenizer: { tokenizerName: 'Gemma / Gemini', tokenizerKey: 'gemma', tokenizerId: tokenizerIds.GEMMA },
+            answer: answer(),
         });
         expect(requests.map(r => r.url)).toEqual(['/api/tokenizers/current/count']);
     });
@@ -399,6 +400,7 @@ describe('count batches name their tokenizer', () => {
         expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).toEqual({
             counts: [tokenizersModule.guesstimate('ab')],
             tokenizer: { tokenizerName: 'None / Estimated', tokenizerKey: 'none', tokenizerId: tokenizerIds.NONE },
+            answer: null,
         });
     });
 
@@ -407,6 +409,68 @@ describe('count batches name their tokenizer', () => {
         expect(await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).toEqual({
             counts: [7],
             tokenizer: { tokenizerName: 'gpt-4o', tokenizerKey: 'openai', tokenizerId: tokenizerIds.OPENAI },
+            answer: answer({ id: tokenizerIds.OPENAI, name: 'gpt-4o', model: 'gpt-4o', key: 'openai|nanogpt||gpt-4o|openai' }),
         });
+    });
+});
+
+describe('counts give the answer they came from', () => {
+    test('a batch gives the response\'s own answer', async () => {
+        tokenizersModule.getTokenizerBestMatch();
+        const own = answer({ id: tokenizerIds.LLAMA3, name: 'Llama 3', key: 'k3', basis: 'unknown' });
+        respond = (url, body) => ({ counts: body.texts.map(text => text.length), tokenizer: own });
+        expect((await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).answer).toEqual(own);
+    });
+
+    test('a batch whose request failed gives a null answer', async () => {
+        tokenizersModule.getTokenizerBestMatch();
+        respond = () => { throw new Error('offline'); };
+        expect((await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).answer).toBeNull();
+    });
+
+    test('an all-cached batch gives the remembered answer', async () => {
+        await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
+        const second = await tokenizersModule.getTokenCountsWithTokenizer(['ab']);
+        expect(requests.length).toBe(1);
+        expect(second.answer).toEqual(answer());
+    });
+
+    test('a chat-completion batch gives the remembered answer after its counts', async () => {
+        await useApi('openai');
+        expect((await tokenizersModule.getTokenCountsWithTokenizer(['ab'])).answer).toEqual(tokenizersModule.getRememberedTokenizerAnswer());
+        expect(tokenizersModule.getRememberedTokenizerAnswer()?.key).toBe('openai|nanogpt||gpt-4o|openai');
+    });
+
+    test('getTokenCountWithAnswer gives the response\'s own answer and getTokenCountAsync\'s count', async () => {
+        tokenizersModule.getTokenizerBestMatch();
+        const own = answer({ basis: 'unknown', key: 'k-own' });
+        respond = (url, body) => url.endsWith('/count')
+            ? { counts: body.texts.map(text => text.length + body.padding), tokenizer: own }
+            : defaultRespond(url, body);
+        expect(await tokenizersModule.getTokenCountWithAnswer('abcd', 2)).toEqual({ count: 6, answer: own });
+        expect(await tokenizersModule.getTokenCountAsync('abcd', 2)).toBe(6);
+    });
+
+    test('getTokenCountWithAnswer gives a null answer when the request failed, with the same estimate', async () => {
+        tokenizersModule.getTokenizerBestMatch();
+        respond = (url, body) => { if (url.endsWith('/count')) throw new Error('offline'); return defaultRespond(url, body); };
+        const text = 'x'.repeat(67);
+        expect(await tokenizersModule.getTokenCountWithAnswer(text, 3)).toEqual({ count: await tokenizersModule.getTokenCountAsync(text, 3), answer: null });
+    });
+
+    test('getTokenCountWithAnswer on an empty string counts 0 with the remembered answer, asking nothing', async () => {
+        tokenizersModule.getTokenizerBestMatch();
+        requests = [];
+        expect(await tokenizersModule.getTokenCountWithAnswer('')).toEqual({ count: 0, answer: answer() });
+        expect(requests).toEqual([]);
+    });
+
+    test('getTokenCountWithAnswer on chat completion counts like getTokenCountAsync, rough estimate and reject included', async () => {
+        await useApi('openai');
+        expect(await tokenizersModule.getTokenCountWithAnswer('hello')).toEqual({ count: await tokenizersModule.getTokenCountAsync('hello'), answer: tokenizersModule.getRememberedTokenizerAnswer() });
+        expect(tokenizersModule.getRememberedTokenizerAnswer()).not.toBeNull();
+        expect((await tokenizersModule.getTokenCountWithAnswer('abcdefg', 64)).count).toBe(await tokenizersModule.getTokenCountAsync('abcdefg', 64));
+        respond = () => { throw new Error('500'); };
+        await expect(tokenizersModule.getTokenCountWithAnswer('other')).rejects.toThrow('500');
     });
 });

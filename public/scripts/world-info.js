@@ -12,7 +12,8 @@ import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
 import { isMobile } from './RossAscends-mods.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
-import { getTokenCountAsync } from './tokenizers.js';
+import { getTokenCountAsync, getTokenCountWithAnswer } from './tokenizers.js';
+import { renderCountBasis } from './tokenizer-notices.js';
 import { power_user, personaStore } from './power-user.js';
 import { getTagKeyForEntity } from './tags.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS } from './constants.js';
@@ -3782,8 +3783,9 @@ export async function getWorldEntry(name, data, entry) {
         // Content
         const counter = editTemplate.find('.world_entry_form_token_counter');
         const countTokensDebounced = debounce(async function (counter, value) {
-            const numberOfTokens = await getTokenCountAsync(value);
+            const { count: numberOfTokens, answer } = await getTokenCountWithAnswer(value);
             $(counter).text(numberOfTokens);
+            renderCountBasis(counter, answer);
         }, debounce_timeout.relaxed);
         const contentInputId = `world_entry_content_${entry.uid}`;
         const contentInput = editTemplate.find('textarea[name="content"]');
