@@ -2,7 +2,7 @@ import { main_api } from '../../../scripts/generation-params.js';
 import { getContext } from '../../extensions.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
-import { getFriendlyTokenizerName, getTextTokens, getTokenCountAsync, tokenizers } from '../../tokenizers.js';
+import { encodeCurrentTokens, getFriendlyTokenizerName, getTextTokens, getTokenCountAsync, tokenizers } from '../../tokenizers.js';
 import { resetScrollHeight, debounce } from '../../utils.js';
 import { debounce_timeout } from '../../constants.js';
 import { POPUP_TYPE, callGenericPopup } from '../../popup.js';
@@ -10,13 +10,25 @@ import { renderExtensionTemplateAsync } from '../../extensions.js';
 import { t } from '../../i18n.js';
 
 async function doTokenCounter() {
-    const { tokenizerName, tokenizerId } = getFriendlyTokenizerName(main_api);
+    const { tokenizerName } = getFriendlyTokenizerName(main_api);
     const html = await renderExtensionTemplateAsync('token-counter', 'window', { tokenizerName });
 
     const dialog = $(html);
     const countDebounced = debounce(async () => {
         const text = String($('#token_counter_textarea').val());
-        const ids = main_api == 'openai' ? getTextTokens(tokenizers.OPENAI, text) : getTextTokens(tokenizerId, text);
+        let ids;
+        if (main_api == 'openai') {
+            ids = getTextTokens(tokenizers.OPENAI, text);
+        } else {
+            const encoded = encodeCurrentTokens(text);
+            if (encoded.tokenizer) {
+                $('#token_counter_tokenizer').text(encoded.tokenizer.name);
+            }
+            ids = encoded.ids;
+            if (encoded.chunks) {
+                Object.defineProperty(ids, 'chunks', { value: encoded.chunks });
+            }
+        }
 
         if (Array.isArray(ids) && ids.length > 0) {
             $('#token_counter_ids').text(`[${ids.join(', ')}]`);

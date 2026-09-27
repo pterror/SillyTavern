@@ -887,18 +887,31 @@ function getTextTokensFromServer(endpoint, str) {
 }
 
 /**
+ * Encodes a string with the current state's tokenizer through `/current/encode`, and remembers the tokenizer that answered.
+ * @param {string} str String to tokenize.
+ * @returns {{ ids: number[], chunks: string[]|null, tokenizer: CurrentTokenizer|null }} Token ids (empty when the tokenizer has none for it), their chunks when given, and the tokenizer named in the response.
+ */
+export function encodeCurrentTokens(str) {
+    const state = getTokenizerState();
+    if (!state) {
+        return { ids: [], chunks: null, tokenizer: null };
+    }
+    const data = postCurrent('encode', { state, texts: [str] }, false);
+    rememberTokenizer(JSON.stringify(state), data?.tokenizer);
+    return {
+        ids: Array.isArray(data?.ids?.[0]) ? data.ids[0] : [],
+        chunks: Array.isArray(data?.chunks?.[0]) ? data.chunks[0] : null,
+        tokenizer: data?.tokenizer ?? null,
+    };
+}
+
+/**
  * Encodes a string with the current state's tokenizer through `/current/encode`.
  * @param {string} str String to tokenize.
  * @returns {number[]} Array of token ids; empty when the tokenizer has none for it.
  */
 function getTextTokensFromCurrent(str) {
-    const state = getTokenizerState();
-    if (!state) {
-        return [];
-    }
-    const data = postCurrent('encode', { state, texts: [str] }, false);
-    rememberTokenizer(JSON.stringify(state), data?.tokenizer);
-    return Array.isArray(data?.ids?.[0]) ? data.ids[0] : [];
+    return encodeCurrentTokens(str).ids;
 }
 
 /**
