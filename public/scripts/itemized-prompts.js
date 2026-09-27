@@ -10,6 +10,7 @@ import { power_user, registerDebugFunction } from './power-user.js';
 import { isMobile } from './RossAscends-mods.js';
 import { renderTemplateAsync } from './templates.js';
 import { getTokenCountsWithTokenizer } from './tokenizers.js';
+import { renderCountBasis } from './tokenizer-notices.js';
 import { copyText } from './utils.js';
 
 let PromptArrayItemForRawPromptDisplay;
@@ -433,7 +434,7 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
         );
     }
 
-    const { counts: tokenCounts, tokenizer: countTokenizer } = await getTokenCountsWithTokenizer(tokenFields.map(([, text]) => text));
+    const { counts: tokenCounts, tokenizer: countTokenizer, answer: countAnswer } = await getTokenCountsWithTokenizer(tokenFields.map(([, text]) => text));
     /** @type {Record<string, number>} */
     const tokens = Object.fromEntries(tokenFields.map(([key], i) => [key, tokenCounts[i]]));
 
@@ -453,6 +454,7 @@ export async function itemizedParams(itemizedPrompts, thisPromptSet, incomingMes
                 return '';
             }
         })(),
+        tokenizerAnswer: countAnswer,
     };
 
     const getFriendlyName = (value) => $(`#rm_api_block select option[value="${value}"]`).first().text() || value;
@@ -579,6 +581,10 @@ export async function promptItemize(itemizedPrompts, requestedMesId) {
         : await renderTemplateAsync('itemizationText', params);
 
     const popup = new Popup(template, POPUP_TYPE.TEXT);
+
+    renderCountBasis(popup.dlg.querySelector('#itemizationTokenizerName'), params.tokenizerAnswer, {
+        omitCopyLabel: params.selectedTokenizer === params.tokenizerAnswer?.name,
+    });
 
     /** @type {HTMLElement} */
     const diffPrevPrompt = popup.dlg.querySelector('#diffPrevPrompt');
