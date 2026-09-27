@@ -13,7 +13,7 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
 const { createTextGenGenerationData, APHRODITE_DEFAULT_ORDER } = await import('./textgen-generation-data.js');
 const { encodeTextByLocalTokenizerType } = await import('./endpoints/tokenizers.js');
-const { resolveTokenizer, tokenizers } = await import('./tokenizer-resolve.js');
+const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('./tokenizer-resolve.js');
 
 function baseSettings(overrides = {}) {
     return {
@@ -207,7 +207,7 @@ function baseSettings(overrides = {}) {
     const settings = baseSettings({ type: 'generic', logit_bias: [{ text: 'hello', value: -5 }] });
     await assert.rejects(
         () => createTextGenGenerationData(settings, 'm', 'p', 10, false, false, null, 'normal'),
-        /tokenizerOptions\.resolved is required/,
+        /tokenizerOptions\.encode is required/,
     );
 
     // A logitBias override still takes priority over real computation when both are given.
@@ -229,7 +229,7 @@ function baseSettings(overrides = {}) {
     assert.equal(estimate.kind, 'estimate');
     const dropped = [];
     const params = await createTextGenGenerationData(settings, '', 'p', 10, false, false, null, 'normal', {
-        logitBiasContext: { tokenizerOptions: { resolved: estimate }, dropped },
+        logitBiasContext: { encode: (text) => encodeWithTokenizer(estimate, text), dropped },
     });
     assert.deepEqual(params.logit_bias, { 5: 2, 6: 2 });
     assert.deepEqual(dropped, ['hello', '{world}']);
@@ -237,7 +237,7 @@ function baseSettings(overrides = {}) {
     const mistral = await resolveTokenizer({ api: 'textgenerationwebui', type: 'ooba', url: 'http://127.0.0.1:1', model: '', tokenizerSetting: tokenizers.MISTRAL });
     assert.equal(mistral.id, tokenizers.MISTRAL);
     const explicit = await createTextGenGenerationData(baseSettings({ type: 'ooba', logit_bias: [{ text: 'hello', value: -5 }] }), '', 'p', 10, false, false, null, 'normal', {
-        logitBiasContext: { tokenizerOptions: { resolved: mistral } },
+        logitBiasContext: { encode: (text) => encodeWithTokenizer(mistral, text) },
     });
     const mistralIds = await encodeTextByLocalTokenizerType('mistral', ' hello');
     assert.deepEqual(explicit.logit_bias, Object.fromEntries(mistralIds.map(id => [String(id), -5])));

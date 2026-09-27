@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
 const { computeLogitBias, computeTextgenLogitBias, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
-const { resolveTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
+const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
 const { default: express } = await import('express');
 
 // --- computeLogitBias ---
@@ -61,8 +61,9 @@ const { default: express } = await import('express');
 
 // --- computeTextgenLogitBias ---
 
-const mistral = { resolved: await resolveTokenizer({ api: 'textgenerationwebui', type: 'ooba', model: 'x', tokenizerSetting: tokenizers.MISTRAL }) };
-assert.equal(mistral.resolved.id, tokenizers.MISTRAL);
+const mistralResolved = await resolveTokenizer({ api: 'textgenerationwebui', type: 'ooba', model: 'x', tokenizerSetting: tokenizers.MISTRAL });
+assert.equal(mistralResolved.id, tokenizers.MISTRAL);
+const mistral = { encode: (text) => encodeWithTokenizer(mistralResolved, text) };
 
 // A {...}-wrapped verbatim-text entry and a plain-text entry both resolve to real token-id-keyed
 // bias entries via a real local tokenizer.
@@ -102,19 +103,22 @@ assert.equal(mistral.resolved.id, tokenizers.MISTRAL);
     assert.equal(Object.values(result).every(v => v === -1), true);
 }
 
-// A remote resolution with no `request`/`baseUrl` in remoteContext degrades to "no tokens for
-// this entry" instead of attempting a real network call or throwing.
+// A failing remote tokenizer with no local copy leaves the entry out and lists it.
 {
     const remote = await resolveTokenizer({ api: 'textgenerationwebui', type: 'vllm', model: 'x' });
     assert.equal(remote.kind, 'remote');
-    const result = await computeTextgenLogitBias([{ text: 'hello', value: -1 }], { resolved: remote }, {});
-    assert.deepEqual(result, {});
+    assert.equal(remote.localCopy, null);
+    const encode = (text) => encodeWithTokenizer(remote, text, { encodeTextgenRemote: async () => ({ error: true }) });
+    const dropped = [];
+    const result = await computeTextgenLogitBias([{ text: 'hello', value: -1 }, { text: '[4]', value: 2 }], { encode }, dropped);
+    assert.deepEqual(result, { 4: 2 });
+    assert.deepEqual(dropped, ['hello']);
 }
 
 // A non-empty preset with no resolution throws rather than picking a tokenizer.
 {
-    await assert.rejects(() => computeTextgenLogitBias([{ text: 'hello', value: -1 }]), /tokenizerOptions\.resolved is required/);
-    await assert.rejects(() => computeTextgenLogitBias([{ text: 'hello', value: -1 }], { settingsType: 'ooba', powerUserTokenizer: 'mistral' }), /tokenizerOptions\.resolved is required/);
+    await assert.rejects(() => computeTextgenLogitBias([{ text: 'hello', value: -1 }]), /tokenizerOptions\.encode is required/);
+    await assert.rejects(() => computeTextgenLogitBias([{ text: 'hello', value: -1 }], { settingsType: 'ooba', powerUserTokenizer: 'mistral' }), /tokenizerOptions\.encode is required/);
 }
 
 const caseFailures = [];

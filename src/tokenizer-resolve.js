@@ -62,37 +62,20 @@ export { TOKENIZER_TYPE_KEYS };
  * Injected replacement for encodeViaTextgenAPI, for testing without real network calls.
  * @property {typeof fetch} [fetchImpl] Injected replacement for the global fetch, used for the
  * API_KOBOLD remote-count call.
+ * @property {TokenizerOutcome} [outcome] Records what encodeWithTokenizer()/countWithTokenizer()
+ * fell back to, for one request's warnings and basis.
  */
 
+/** A remote tokenizer answered with an HTTP error, a network error or a reply without token ids. */
+export class TokenizerFailure extends Error {}
+
 /**
- * Turns a resolved `tokenizers` type into actual token ids, trying a remote/API tokenizer first
- * where applicable and falling back to a local one on failure - the direct
- * try-then-fallback replacement for the client's sessionStorage-gated remote-tokenizer logic (see
- * module doc comment).
+ * Token ids from one `tokenizers` type, with no fallback: a remote failure throws a
+ * TokenizerFailure and a local tokenizer's own error propagates. encodeWithTokenizer() decides
+ * what a failure becomes.
  *
- * Judgment calls (flagged per the task):
- * - OPENAI vs GPT2: the client's TOKENIZER_URLS[tokenizers.OPENAI].encode points at
- *   '/api/tokenizers/openai/encode', which (see router.post('/openai/encode', ...) in
- *   src/endpoints/tokenizers.js) is model-name-aware - it picks among llama/llama3/mistral/yi/
- *   claude/gemma/jamba/qwen2/command-r/command-a/nemo/deepseek/tiktoken(model) encoders based on
- *   the *actual model name string*, not a fixed tokenizer. encodeTextByLocalTokenizerType() has no
- *   equivalent "pick by model name" entry point - it only exposes fixed-key encoding (a flat
- *   'gpt2' tiktoken call being the closest fixed key). Fully porting the real /openai/encode
- *   behavior would mean either exporting a second, model-name-aware helper from
- *   src/endpoints/tokenizers.js (out of scope - the task only asked to export
- *   encodeViaTextgenAPI), or duplicating that route's if/else chain here. Given the task's
- *   explicit instruction to use encodeTextByLocalTokenizerType('gpt2', text) for both OPENAI and
- *   GPT2, that's what's implemented below - it is an approximation for OPENAI, not a byte-for-byte
- *   port, and undercounts/mismatches tokens for non-OpenAI model names. Flagging this rather than
- *   silently guessing.
- * - Kobold remote-count helper placement: implemented inline here with `fetchImpl` (defaulting to
- *   the global fetch) rather than factoring a shared helper out of the
- *   '/remote/kobold/count' route in src/endpoints/tokenizers.js. The route's own handler is a thin
- *   ~15-line wrapper with Express-specific bits (request/response, sendStatus(400)) around one
- *   fetch call; duplicating just the fetch call here is small enough that adding a second exported
- *   function to tokenizers.js for it seemed like more indirection than value. If a second caller
- *   shows up, extracting a shared `postKoboldTokenCount(baseUrl, text, fetchImpl)` helper there
- *   (mirroring how encodeViaTextgenAPI was exported) would be the natural follow-up.
+ * OPENAI and GPT2 both encode with tiktoken's gpt2 here; an OPENAI resolution with a model is
+ * encoded with that model's tiktoken by encodeWithTokenizer() before reaching this.
  *
  * @param {number} tokenizerType A `tokenizers` value.
  * @param {string} text Text to encode.
@@ -118,33 +101,34 @@ export async function encodeWithTokenizerType(tokenizerType, text, options = {})
 
     if (tokenizerType === tokenizers.API_TEXTGENERATIONWEBUI || tokenizerType === tokenizers.API_CURRENT) {
         const result = await encodeTextgenRemote(request, text, textgenBaseUrl, textgenModel, textgenApiType);
-        if (result && !result.error && Array.isArray(result.ids)) {
+        // encodeViaTextgenAPI() shapes a reply with no token list as `ids: []` with no count.
+        if (result && !('error' in result) && Array.isArray(result.ids) && typeof result.count === 'number') {
             return result.ids;
         }
-        return encodeLocal(TOKENIZER_TYPE_KEYS[tokenizers.LLAMA], text);
+        throw new TokenizerFailure(`The ${textgenApiType ?? 'text completion'} backend's tokenizer failed`);
     }
 
     if (tokenizerType === tokenizers.API_KOBOLD) {
+        let url = String(koboldBaseUrl ?? '').replace(/\/$/, '');
+        url += '/extra/tokencount';
+        let result;
         try {
-            let url = String(koboldBaseUrl ?? '').replace(/\/$/, '');
-            url += '/extra/tokencount';
-            const result = await fetchImpl(url, {
+            result = await fetchImpl(url, {
                 method: 'POST',
                 body: JSON.stringify({ prompt: text }),
                 headers: { 'Content-Type': 'application/json' },
             });
-            if (result.ok) {
-                const data = await result.json();
-                if (Array.isArray(data?.ids)) {
-                    return data.ids;
-                }
-            } else {
-                console.warn(`API returned error: ${result.status} ${result.statusText}`);
-            }
         } catch (error) {
-            console.error(error);
+            throw new TokenizerFailure(`The KoboldAI backend's tokenizer failed: ${error.message}`);
         }
-        return encodeLocal(TOKENIZER_TYPE_KEYS[tokenizers.LLAMA], text);
+        if (!result.ok) {
+            throw new TokenizerFailure(`The KoboldAI backend's tokenizer failed: ${result.status} ${result.statusText}`);
+        }
+        const data = await result.json().catch(() => null);
+        if (!Array.isArray(data?.ids)) {
+            throw new TokenizerFailure('The KoboldAI backend\'s tokenizer gave no token ids');
+        }
+        return data.ids;
     }
 
     if (tokenizerType === tokenizers.OPENAI || tokenizerType === tokenizers.GPT2) {
@@ -200,8 +184,11 @@ const EXPLICIT_OPENAI_MODEL = 'gpt-3.5-turbo';
  * @property {number} id A `tokenizers` value; API_TEXTGENERATIONWEBUI or API_KOBOLD for remote, NONE for an estimate.
  * @property {string} name
  * @property {string} [model]
- * @property {'remote'|'local'|'unknown'|'none'} basis
+ * @property {'remote'|'local'|'unknown'|'none'|'fallback'|'failed'} basis resolveTokenizer() gives
+ * the first four; `fallback` (the local copy answered after a failure) and `failed` (no tokenizer
+ * answered, so the estimate and no ids) describe one request's outcome, from tokenizerOutcomeBasis().
  * @property {LocalTokenizer|null} localCopy The map's exact local tokenizer for the model, or null.
+ * The only fallback when the tokenizer fails.
  */
 
 /**
@@ -263,23 +250,56 @@ export function estimateTokenCount(text) {
 }
 
 /**
- * Counts `text` with a resolveTokenizer() answer; an estimate resolution gives the estimate.
+ * What one request's counts and encodes fell back to. Nothing outlives the request: the next one
+ * tries the tokenizer again.
+ * @typedef {object} TokenizerOutcome
+ * @property {LocalTokenizer|null} usedCopy The local copy that answered for a failed remote tokenizer.
+ * @property {boolean} failed Some count or encode had no tokenizer: the estimate, or no ids.
+ * @property {boolean} countEstimated Some count fell to the estimate.
+ */
+
+/** @returns {TokenizerOutcome} */
+export function createTokenizerOutcome() {
+    return { usedCopy: null, failed: false, countEstimated: false };
+}
+
+/**
+ * The basis one request's counts and ids actually had.
+ * @param {ResolvedTokenizer} resolved
+ * @param {TokenizerOutcome} outcome
+ * @returns {ResolvedTokenizer['basis']}
+ */
+export function tokenizerOutcomeBasis(resolved, outcome) {
+    if (outcome.failed) return 'failed';
+    if (outcome.usedCopy) return 'fallback';
+    return resolved.basis;
+}
+
+/**
+ * Counts `text` with a resolveTokenizer() answer; an estimate resolution gives the estimate, as
+ * does a tokenizer that fails with no local copy to answer for it.
  * @param {ResolvedTokenizer} resolved
  * @param {string} text
  * @param {EncodeWithTokenizerTypeOptions} [options] What a remote tokenizer needs (backend URL,
- * model, type, request), and test stubs.
+ * model, type, request), the request's `outcome`, and test stubs.
  * @returns {Promise<number>}
  */
 export async function countWithTokenizer(resolved, text, options = {}) {
     if (resolved.kind === 'estimate') {
         return estimateTokenCount(text);
     }
-    return (await encodeWithTokenizer(resolved, text, options)).length;
+    const ids = await encodeWithTokenizer(resolved, text, options);
+    if (ids === null) {
+        if (options.outcome) options.outcome.countEstimated = true;
+        return estimateTokenCount(text);
+    }
+    return ids.length;
 }
 
 /**
- * Token ids for `text` with a resolveTokenizer() answer, or null for an estimate resolution,
- * which has no ids.
+ * Token ids for `text` with a resolveTokenizer() answer, or null when there are none: an estimate
+ * resolution, or a tokenizer that failed (a remote failure, or a local tokenizer that throws) with
+ * no local copy to answer for it. Every call tries the tokenizer again.
  * @param {ResolvedTokenizer} resolved
  * @param {string} text
  * @param {EncodeWithTokenizerTypeOptions} [options] As for countWithTokenizer().
@@ -290,14 +310,51 @@ export async function encodeWithTokenizer(resolved, text, options = {}) {
     if (resolved.kind === 'estimate') {
         return null;
     }
-    if (resolved.id === tokenizers.OPENAI) {
-        return Array.from(getTiktokenTokenizer(resolved.model).encode(str));
+    const { outcome } = options;
+    try {
+        return await encodeWithLocalOrType(resolved, str, options);
+    } catch (error) {
+        console.warn(`Tokenizer ${resolved.name} failed:`, error.message);
     }
-    return encodeWithTokenizerType(resolved.id, str, options);
+    if (resolved.kind === 'remote' && resolved.localCopy) {
+        try {
+            const ids = await encodeWithLocalOrType(resolved.localCopy, str, options);
+            if (outcome) outcome.usedCopy = resolved.localCopy;
+            return ids;
+        } catch (error) {
+            console.warn(`Tokenizer ${resolved.localCopy.name} failed:`, error.message);
+        }
+    }
+    if (outcome) outcome.failed = true;
+    return null;
 }
 
 /**
- * The `dropped` warning for entries a send left out because its resolution has no token ids.
+ * @param {{id: number, model?: string}} tokenizer A resolution or a LocalTokenizer.
+ * @param {string} text
+ * @param {EncodeWithTokenizerTypeOptions} options
+ * @returns {Promise<number[]>}
+ */
+async function encodeWithLocalOrType(tokenizer, text, options) {
+    if (tokenizer.id === tokenizers.OPENAI) {
+        return Array.from(getTiktokenTokenizer(tokenizer.model).encode(text));
+    }
+    return encodeWithTokenizerType(tokenizer.id, text, options);
+}
+
+/**
+ * The `key` of every warning about this resolution: `api|type-or-source|url|model|tokenizer`.
+ * @param {TokenizerState} state
+ * @param {ResolvedTokenizer} resolved
+ * @returns {string}
+ */
+function tokenizerWarningKey(state, resolved) {
+    const tokenizerKey = Object.keys(tokenizers).find(key => tokenizers[key] === resolved.id)?.toLowerCase() ?? '';
+    return [state.api, state.type ?? state.source ?? '', state.url ?? '', state.model ?? '', tokenizerKey].join('|');
+}
+
+/**
+ * The `dropped` warning for entries a send left out because it had no token ids for them.
  * @param {TokenizerState} state
  * @param {ResolvedTokenizer} resolved
  * @param {string[]} entries
@@ -307,18 +364,59 @@ export function droppedEntriesWarning(state, resolved, entries) {
     if (entries.length === 0) {
         return null;
     }
-    const tokenizerKey = Object.keys(tokenizers).find(key => tokenizers[key] === resolved.id)?.toLowerCase() ?? '';
-    const key = [state.api, state.type ?? state.source ?? '', state.url ?? '', state.model ?? '', tokenizerKey].join('|');
-    const reason = resolved.basis === 'none'
-        ? 'the tokenizer is set to None'
-        : 'no tokenizer is known for this model';
     const noun = entries.length === 1 ? 'entry' : 'entries';
     return {
         kind: 'dropped',
-        key,
-        message: `Left out ${entries.length} ${noun} that need token ids, because ${reason}: ${entries.join(', ')}`,
+        key: tokenizerWarningKey(state, resolved),
+        message: `Left out ${entries.length} ${noun} that need token ids, because ${droppedReason(resolved)}: ${entries.join(', ')}`,
         entries,
     };
+}
+
+/**
+ * @param {ResolvedTokenizer} resolved
+ * @returns {string}
+ */
+function droppedReason(resolved) {
+    if (resolved.basis === 'none') return 'the tokenizer is set to None';
+    if (resolved.kind === 'estimate') return 'no tokenizer is known for this model';
+    if (resolved.kind === 'remote') return 'the backend\'s tokenizer failed and no local copy is known for this model';
+    return `the ${resolved.name} tokenizer failed`;
+}
+
+/**
+ * Every warning one server-built send carries about its tokenizer: `fallback-copy` when a local
+ * copy answered for a failed remote tokenizer, `trim-estimate` when a failure left a count to the
+ * estimate, and `dropped` for the entries it had no ids for.
+ * @param {TokenizerState} state
+ * @param {ResolvedTokenizer} resolved
+ * @param {TokenizerOutcome} outcome
+ * @param {string[]} droppedEntries
+ * @returns {Array<{kind: string, key: string, message: string, entries?: string[]}>}
+ */
+export function sendTokenizerWarnings(state, resolved, outcome, droppedEntries) {
+    const key = tokenizerWarningKey(state, resolved);
+    const warnings = [];
+    if (outcome.usedCopy) {
+        warnings.push({
+            kind: 'fallback-copy',
+            key,
+            message: `The backend's tokenizer failed, so its local copy, ${outcome.usedCopy.name}, was used.`,
+        });
+    }
+    if (outcome.countEstimated) {
+        const failedName = resolved.kind === 'remote' ? 'The backend\'s tokenizer' : `The ${resolved.name} tokenizer`;
+        warnings.push({
+            kind: 'trim-estimate',
+            key,
+            message: `${failedName} failed, so the prompt was fitted to the context by an estimated token count.`,
+        });
+    }
+    const dropped = droppedEntriesWarning(state, resolved, droppedEntries);
+    if (dropped) {
+        warnings.push(dropped);
+    }
+    return warnings;
 }
 
 /**

@@ -762,6 +762,46 @@ async function run() {
         assert.ok(!tokenCountPrompts.includes('giraffe'), 'the textgen banned tokens are not encoded for kobold');
     }
 
+    // --- tokenizer: a failing KoboldCpp tokencount is answered by the model's local copy, else the
+    // estimate, and the send says which ---
+    for (const [model, expectedKinds, expectedLocalKeys] of [
+        ['koboldcpp/gemma-2-9b-it', ['fallback-copy'], ['gemma']],
+        ['koboldcpp/some-unheard-of-model', ['trim-estimate'], []],
+    ]) {
+        let tokenCountCalls = 0;
+        const fakeBackend = await startFakeBackend((req, res) => {
+            if (req.url === '/api/extra/tokencount') {
+                tokenCountCalls++;
+                res.writeHead(500);
+                return res.end('tokencount failed');
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (req.url === '/api/extra/version') return res.end(JSON.stringify({ result: 'KoboldCpp', version: '1.70' }));
+            if (req.url === '/api/v1/model') return res.end(JSON.stringify({ result: model }));
+            res.end('{}');
+        });
+        const settings = buildSettingsFixture();
+        settings.kai_settings.api_server = `${fakeBackend.url}/api`;
+        writeAllSettings(directories, settings);
+
+        const localKeys = new Set();
+        let built;
+        try {
+            built = await buildRawActionKoboldRequest(directories, {
+                characterAvatar: avatar, ownerId, nodeId: mainLeafId,
+                type: 'normal', userMessageText: 'What happens next, Rex?',
+                tokenizerOptions: { encodeLocal: async (key) => { localKeys.add(key); return [1]; } },
+            });
+        } finally {
+            fakeBackend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+
+        assert.ok(tokenCountCalls > 1, `${model}: every count tried the backend again`);
+        assert.deepEqual([...localKeys], expectedLocalKeys, `${model}: local encodes`);
+        assert.deepEqual(built.warnings.map(w => w.kind), expectedKinds, `${model}: warnings`);
+    }
+
     console.log('kobold.test.js: all assertions passed');
 }
 

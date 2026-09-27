@@ -17,6 +17,7 @@ const {
     tokenizers,
     TOKENIZER_TYPE_KEYS,
     encodeWithTokenizerType,
+    TokenizerFailure,
 } = await import('./tokenizer-resolve.js');
 
 // --- encodeWithTokenizerType: NONE -> [] ---
@@ -93,13 +94,16 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // API_TEXTGENERATIONWEBUI / API_CURRENT: remote errors -> falls back to local llama encoder.
-    const encodeTextgenRemote = async () => ({ error: true });
-    const encodeLocal = async (key) => { assert.equal(key, 'llama'); return [9]; };
-    const ids1 = await encodeWithTokenizerType(tokenizers.API_TEXTGENERATIONWEBUI, 'hi', { encodeTextgenRemote, encodeLocal });
-    const ids2 = await encodeWithTokenizerType(tokenizers.API_CURRENT, 'hi', { encodeTextgenRemote, encodeLocal });
-    assert.deepEqual(ids1, [9]);
-    assert.deepEqual(ids2, [9]);
+    // API_TEXTGENERATIONWEBUI / API_CURRENT: a remote error or a reply without ids is a failure,
+    // not a local encode.
+    let localCalled = false;
+    const encodeLocal = async () => { localCalled = true; return [9]; };
+    for (const reply of [{ error: true }, {}, { count: 1 }]) {
+        const encodeTextgenRemote = async () => reply;
+        await assert.rejects(() => encodeWithTokenizerType(tokenizers.API_TEXTGENERATIONWEBUI, 'hi', { encodeTextgenRemote, encodeLocal }), TokenizerFailure);
+        await assert.rejects(() => encodeWithTokenizerType(tokenizers.API_CURRENT, 'hi', { encodeTextgenRemote, encodeLocal }), TokenizerFailure);
+    }
+    assert.equal(localCalled, false, 'no local encode on a remote failure');
 }
 
 {
@@ -116,15 +120,22 @@ assert.equal(TOKENIZER_TYPE_KEYS[tokenizers.NERD2], 'nerdstash_v2');
 }
 
 {
-    // API_KOBOLD: fetch fails -> falls back to local llama encoder.
-    const fetchImpl = async () => { throw new Error('connection refused'); };
-    const encodeLocal = async (key) => { assert.equal(key, 'llama'); return [99]; };
-    const ids = await encodeWithTokenizerType(tokenizers.API_KOBOLD, 'hi', {
-        koboldBaseUrl: 'http://localhost:5001',
-        fetchImpl,
-        encodeLocal,
-    });
-    assert.deepEqual(ids, [99]);
+    // API_KOBOLD: a fetch failure, an HTTP error or a reply without ids is a failure, not a local encode.
+    let localCalled = false;
+    const encodeLocal = async () => { localCalled = true; return [99]; };
+    const fetchImpls = [
+        async () => { throw new Error('connection refused'); },
+        async () => ({ ok: false, status: 500, statusText: 'Internal Server Error', json: async () => ({}) }),
+        async () => ({ ok: true, json: async () => ({ value: 1 }) }),
+    ];
+    for (const fetchImpl of fetchImpls) {
+        await assert.rejects(() => encodeWithTokenizerType(tokenizers.API_KOBOLD, 'hi', {
+            koboldBaseUrl: 'http://localhost:5001',
+            fetchImpl,
+            encodeLocal,
+        }), TokenizerFailure);
+    }
+    assert.equal(localCalled, false, 'no local encode on a remote failure');
 }
 
 {
@@ -158,9 +169,14 @@ const express = (await import('express')).default;
 const {
     resolveTokenizer,
     countWithTokenizer,
+    encodeWithTokenizer,
     estimateTokenCount,
     resolveProfileTokenizerSetting,
+    createTokenizerOutcome,
+    tokenizerOutcomeBasis,
+    sendTokenizerWarnings,
 } = await import('./tokenizer-resolve.js');
+const { encodeTextByLocalTokenizerType } = await import('./endpoints/tokenizers.js');
 const backendStatus = await import('./backend-status.js').catch(error => {
     console.log(`backend-status.js not importable: ${error.message}`);
     return {};
@@ -646,6 +662,100 @@ await check('countWithTokenizer counts with the resolved tokenizer', async () =>
     const openai = await resolveTokenizer({ api: 'openai', source: 'openai', model: 'gpt-4o' });
     assert.equal(await countWithTokenizer(openai, 'Hello world'), 2, 'tiktoken gpt-4o');
     assert.equal(await countWithTokenizer(openai, ''), 0);
+});
+
+// --- a failing tokenizer ---
+
+const failingRemote = async () => ({ error: true });
+const refusedFetch = async () => { throw new Error('connection refused'); };
+
+await check('remote error with a gemma-2 model: gemma ids and a fallback-copy warning', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'gemma-2-9b-it', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = await resolveTokenizer(state, { directories });
+    assert.equal(resolved.kind, 'remote');
+    const outcome = createTokenizerOutcome();
+    const localKeys = [];
+    const encodeLocal = async (key, text) => { localKeys.push(key); return encodeTextByLocalTokenizerType(key, text); };
+
+    const ids = await encodeWithTokenizer(resolved, 'Hello world', { encodeTextgenRemote: failingRemote, encodeLocal, outcome });
+    assert.deepEqual(ids, await encodeTextByLocalTokenizerType('gemma', 'Hello world'));
+    assert.equal(await countWithTokenizer(resolved, 'Hello world', { encodeTextgenRemote: failingRemote, encodeLocal, outcome }), ids.length);
+    assert.deepEqual(localKeys, ['gemma', 'gemma']);
+    assert.equal(tokenizerOutcomeBasis(resolved, outcome), 'fallback');
+
+    const warnings = sendTokenizerWarnings(state, resolved, outcome, []);
+    assert.deepEqual(warnings.map(w => w.kind), ['fallback-copy']);
+    assert.ok(warnings[0].message.includes('Gemma'), warnings[0].message);
+    assert.equal(warnings[0].key, `${TEXTGEN}|llamacpp|http://127.0.0.1:1|gemma-2-9b-it|api_textgenerationwebui`);
+});
+
+await check('remote error with an unmapped model: no ids, estimate counts, trim-estimate and dropped', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'some-unheard-of-model', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = await resolveTokenizer(state, { directories });
+    assert.equal(resolved.localCopy, null);
+    const outcome = createTokenizerOutcome();
+    let localCalled = false;
+    const encodeLocal = async () => { localCalled = true; return [1]; };
+
+    assert.equal(await encodeWithTokenizer(resolved, 'hello', { encodeTextgenRemote: failingRemote, encodeLocal, outcome }), null);
+    assert.equal(await countWithTokenizer(resolved, 'Hello world', { encodeTextgenRemote: failingRemote, encodeLocal, outcome }), estimateTokenCount('Hello world'));
+    assert.equal(localCalled, false, 'no local encode');
+    assert.equal(tokenizerOutcomeBasis(resolved, outcome), 'failed');
+
+    const warnings = sendTokenizerWarnings(state, resolved, outcome, ['hello']);
+    assert.deepEqual(warnings.map(w => w.kind), ['trim-estimate', 'dropped']);
+    assert.deepEqual(warnings[1].entries, ['hello']);
+    assert.ok(/tokenizer failed/.test(warnings[1].message), warnings[1].message);
+});
+
+await check('an unmapped model whose remote works: no warnings', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'some-unheard-of-model', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = await resolveTokenizer(state, { directories });
+    const outcome = createTokenizerOutcome();
+    const encodeTextgenRemote = async () => ({ count: 2, ids: [7, 8] });
+    assert.deepEqual(await encodeWithTokenizer(resolved, 'hi', { encodeTextgenRemote, outcome }), [7, 8]);
+    assert.equal(tokenizerOutcomeBasis(resolved, outcome), 'remote');
+    assert.deepEqual(sendTokenizerWarnings(state, resolved, outcome, []), []);
+});
+
+await check('kobold fetch failure: the local copy, else no ids', async () => {
+    const state = { api: 'kobold', url: 'http://127.0.0.1:1/api', model: '' };
+    const withCopy = { kind: 'remote', id: tokenizers.API_KOBOLD, name: 'API (KoboldAI Classic)', basis: 'remote', localCopy: { id: tokenizers.GEMMA, name: 'Gemma / Gemini' } };
+    const copyOutcome = createTokenizerOutcome();
+    const encodeLocal = async (key) => { assert.equal(key, 'gemma'); return [3, 4]; };
+    assert.deepEqual(await encodeWithTokenizer(withCopy, 'hi', { koboldBaseUrl: state.url, fetchImpl: refusedFetch, encodeLocal, outcome: copyOutcome }), [3, 4]);
+    assert.deepEqual(sendTokenizerWarnings(state, withCopy, copyOutcome, []).map(w => w.kind), ['fallback-copy']);
+
+    const withoutCopy = { ...withCopy, localCopy: null };
+    const outcome = createTokenizerOutcome();
+    assert.equal(await encodeWithTokenizer(withoutCopy, 'hi', { koboldBaseUrl: state.url, fetchImpl: refusedFetch, outcome }), null);
+    const warnings = sendTokenizerWarnings(state, withoutCopy, outcome, ['hi']);
+    assert.deepEqual(warnings.map(w => w.kind), ['dropped']);
+    assert.equal(tokenizerOutcomeBasis(withoutCopy, outcome), 'failed');
+});
+
+await check('two failures then a success: every call tries the remote again', async () => {
+    const resolved = { kind: 'remote', id: tokenizers.API_TEXTGENERATIONWEBUI, name: 'API (Text Completion)', basis: 'remote', localCopy: null };
+    let remoteCalls = 0;
+    const encodeTextgenRemote = async () => (++remoteCalls <= 2 ? { error: true } : { count: 1, ids: [5] });
+    assert.equal(await encodeWithTokenizer(resolved, 'hi', { encodeTextgenRemote }), null);
+    assert.equal(await encodeWithTokenizer(resolved, 'hi', { encodeTextgenRemote }), null);
+    assert.equal(remoteCalls, 2, 'the second call tried the remote again');
+    assert.deepEqual(await encodeWithTokenizer(resolved, 'hi', { encodeTextgenRemote }), [5]);
+    assert.equal(remoteCalls, 3);
+});
+
+await check('a local tokenizer that fails to load: no ids, estimate counts, dropped', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.GENERIC, url: '', model: 'Qwen2-7B', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = { kind: 'local', id: tokenizers.QWEN2, name: 'Qwen2', basis: 'local', localCopy: { id: tokenizers.QWEN2, name: 'Qwen2' } };
+    const outcome = createTokenizerOutcome();
+    const encodeLocal = async () => { throw new Error('Failed to load the Web tokenizer for type: qwen2'); };
+    assert.equal(await encodeWithTokenizer(resolved, 'hi', { encodeLocal, outcome }), null);
+    assert.equal(await countWithTokenizer(resolved, 'Hello world', { encodeLocal, outcome }), estimateTokenCount('Hello world'));
+    assert.equal(tokenizerOutcomeBasis(resolved, outcome), 'failed');
+    const warnings = sendTokenizerWarnings(state, resolved, outcome, ['hi']);
+    assert.deepEqual(warnings.map(w => w.kind), ['trim-estimate', 'dropped']);
+    assert.ok(warnings[1].message.includes('Qwen2'), warnings[1].message);
 });
 
 await check('the old resolvers and their llama defaults are no longer exported', async () => {

@@ -429,6 +429,7 @@ async function run() {
         let currentIndex = 0;
         let assistantNodeId = null;
         let itemization = null;
+        const warnings = [];
         for (const event of events) {
             if ('index' in event) {
                 currentIndex = event.index;
@@ -438,6 +439,8 @@ async function run() {
                 assistantNodeId = event.assistantNodeId;
             } else if ('control' in event && event.control?.itemization) {
                 itemization = event.control.itemization;
+            } else if ('control' in event && event.control?.warnings) {
+                warnings.push(...event.control.warnings);
             } else if ('content' in event) {
                 if (currentIndex > 0) {
                     const swipeIndex = currentIndex - 1;
@@ -447,7 +450,7 @@ async function run() {
                 }
             }
         }
-        return { text, reasoning, swipes, assistantNodeId, itemization };
+        return { text, reasoning, swipes, assistantNodeId, itemization, warnings };
     }
 
     // (a) a real non-streaming generation appends the assistant's reply onto the tree, chained
@@ -1692,6 +1695,95 @@ async function run() {
         assert.ok(built.params.prompt.includes('m39 '), 'the newest message is kept');
         assert.ok(kept.length >= 15, `trimmed by the estimate, not per character (kept ${kept.length})`);
         assert.deepEqual((built.warnings ?? null), [], 'no warnings: estimate trims are silent');
+    });
+
+    /** A llama.cpp backend whose `/tokenize` answers 500 and whose `/completion` streams `reply`. */
+    async function startFailingTokenizeLlamaCpp(reply) {
+        const paths = [];
+        const backend = await startFakeBackend((req, res) => {
+            paths.push(req.url);
+            if (req.url === '/tokenize') {
+                res.writeHead(500);
+                res.end('tokenize failed');
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.write(`data: ${JSON.stringify({ content: reply, stop: false })}\n\n`);
+            res.end(`data: ${JSON.stringify({ content: '', stop: true })}\n\n`);
+        });
+        return { ...backend, paths };
+    }
+
+    await tokenizerCase('raw-action stream, /tokenize failing, gemma-2 model: gemma copy, no llama, fallback-copy in the control frame', async () => {
+        const failAvatar = await writeCharacter('TokenizeFail.png', { name: 'TokenizeFail', data: { name: 'TokenizeFail', first_mes: 'Hi.' } });
+        await saveChatToTree(directories, failAvatar, 'tokenize-fail-chat', [
+            { chat_metadata: {} },
+            { name: 'TokenizeFail', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
+        ]);
+        const failBranch = await loadBranch(directories, failAvatar, 'tokenize-fail-chat');
+
+        const backend = await startFailingTokenizeLlamaCpp('ok');
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        Object.assign(settings.textgenerationwebui_settings, {
+            type: 'llamacpp',
+            llamacpp_model: 'gemma-2-9b-it',
+            server_urls: { llamacpp: backend.url },
+            logit_bias: [{ id: 'a', text: 'hello', value: -5 }],
+        });
+        writeAllSettings(directories, settings);
+
+        const llamaBefore = llamaEncodes().length;
+        const gemmaBefore = sentencepieceEncodes.filter(file => /[\\/]gemma\.model$/.test(file ?? '')).length;
+        const { status, bytes } = await postGenerateStreamBytes(buildTestApp(), {
+            owner_id: failAvatar, character_avatar: failAvatar, node_id: failBranch.branch.leaf_id,
+            type: 'normal', user_message: 'Go on.', stream: true,
+        });
+        backend.server.close();
+        writeAllSettings(directories, buildSettingsFixture());
+
+        assert.equal(status, 200);
+        assert.ok(backend.paths.includes('/tokenize'), 'the remote tokenizer was tried');
+        assert.equal(llamaEncodes().length, llamaBefore, 'no llama encode');
+        assert.ok(sentencepieceEncodes.filter(file => /[\\/]gemma\.model$/.test(file ?? '')).length > gemmaBefore, 'encoded with the gemma copy');
+        const decoded = decodeCompactStream(bytes);
+        assert.equal(decoded.text, 'ok');
+        assert.deepEqual(decoded.warnings.map(w => w.kind), ['fallback-copy']);
+        assert.ok(decoded.warnings[0].message.includes('Gemma'), decoded.warnings[0].message);
+    });
+
+    await tokenizerCase('raw-action stream, /tokenize failing, unmapped model over budget: trim-estimate and dropped in the control frame', async () => {
+        const trimAvatar = await writeCharacter('TokenizeFailTrim.png', { name: 'TokenizeFailTrim', data: { name: 'TokenizeFailTrim', first_mes: 'Hi.' } });
+        const line = 'abcdefghij'.repeat(20);
+        const history = Array.from({ length: 40 }, (_, i) => ({ name: i % 2 ? 'Tester' : 'TokenizeFailTrim', is_user: i % 2 === 1, mes: `m${String(i).padStart(2, '0')} ${line}`, send_date: i + 1, extra: {} }));
+        await saveChatToTree(directories, trimAvatar, 'tokenize-fail-trim-chat', [{ chat_metadata: {} }, ...history]);
+        const trimBranch = await loadBranch(directories, trimAvatar, 'tokenize-fail-trim-chat');
+
+        const backend = await startFailingTokenizeLlamaCpp('ok');
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        settings.max_context = 1400;
+        Object.assign(settings.textgenerationwebui_settings, {
+            type: 'llamacpp',
+            llamacpp_model: 'some-unheard-of-model',
+            server_urls: { llamacpp: backend.url },
+            logit_bias: [{ id: 'a', text: 'hello', value: -5 }],
+        });
+        writeAllSettings(directories, settings);
+
+        const llamaBefore = llamaEncodes().length;
+        const { status, bytes } = await postGenerateStreamBytes(buildTestApp(), {
+            owner_id: trimAvatar, character_avatar: trimAvatar, node_id: trimBranch.branch.leaf_id,
+            type: 'normal', user_message: 'Go on.', stream: true,
+        });
+        backend.server.close();
+        writeAllSettings(directories, buildSettingsFixture());
+
+        assert.equal(status, 200);
+        assert.equal(llamaEncodes().length, llamaBefore, 'no llama encode');
+        const decoded = decodeCompactStream(bytes);
+        assert.deepEqual(decoded.warnings.map(w => w.kind), ['trim-estimate', 'dropped']);
+        assert.deepEqual(decoded.warnings[1].entries, ['hello']);
     });
 
     assert.deepEqual(tokenizerCaseFailures, [], 'tokenizer resolution cases');

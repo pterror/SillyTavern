@@ -773,109 +773,32 @@ export async function encodeViaKoboldAPI(baseUrl, text) {
 }
 
 /**
- * The encode descriptor for a resolveTokenizer() answer (src/tokenizer-resolve.js).
- * @param {{kind: string, id: number, model?: string}} resolved
- * @returns {{kind: 'remote-textgen'}|{kind: 'remote-kobold'}|{kind: 'local', type: string}|{kind: 'openai', model: string}|{kind: 'estimate'}}
- */
-function descriptorForResolvedTokenizer(resolved) {
-    if (resolved.kind === 'estimate') return { kind: 'estimate' };
-    if (resolved.kind === 'remote') {
-        return resolved.id === tokenizers.API_KOBOLD ? { kind: 'remote-kobold' } : { kind: 'remote-textgen' };
-    }
-    if (resolved.id === tokenizers.OPENAI) return { kind: 'openai', model: resolved.model };
-    return { kind: 'local', type: TOKENIZER_TYPE_KEYS[resolved.id] };
-}
-
-/**
- * Encodes text per a `descriptorForResolvedTokenizer()` descriptor. Internal helper for
- * `computeTextgenLogitBias()`.
- * @param {ReturnType<typeof descriptorForResolvedTokenizer>} tokenizerDescriptor
- * @param {string} text
- * @param {{request?: import('express').Request, baseUrl?: string, model?: string, apiType?: string}} remoteContext
- * @returns {Promise<number[]|null>} null for an estimate: there is no tokenizer.
- */
-async function encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text, remoteContext) {
-    const { request, baseUrl, model, apiType } = remoteContext;
-
-    switch (tokenizerDescriptor.kind) {
-        case 'remote-textgen': {
-            if (!request || !baseUrl) return [];
-            const result = await encodeViaTextgenAPI(request, text, baseUrl, model, apiType);
-            return 'error' in result ? [] : (result.ids ?? []);
-        }
-        case 'remote-kobold': {
-            if (!baseUrl) return [];
-            const result = await encodeViaKoboldAPI(baseUrl, text);
-            return 'error' in result ? [] : (result.ids ?? []);
-        }
-        case 'local':
-            try {
-                return await encodeTextByLocalTokenizerType(tokenizerDescriptor.type, text);
-            } catch (error) {
-                console.warn('Tokenizer failed to encode:', text, error);
-                return [];
-            }
-        case 'openai': {
-            const resolvedModel = tokenizerDescriptor.model;
-            if (resolvedModel === 'claude') return [];
-            try {
-                if (sentencepieceTokenizers.includes(resolvedModel) || webTokenizers.includes(resolvedModel)) {
-                    return await encodeTextByLocalTokenizerType(resolvedModel, text);
-                }
-                const tokenizer = getTiktokenTokenizer(resolvedModel);
-                return Object.values(tokenizer.encode(text));
-            } catch (error) {
-                console.warn('Tokenizer failed to encode:', text, error);
-                return [];
-            }
-        }
-        case 'estimate':
-            return null;
-        default:
-            return [];
-    }
-}
-
-/**
  * Server-side port of public/scripts/textgen-settings.js's `calculateLogitBias()` - computes a
- * token-id-keyed logit bias map from a textgen `logit_bias` preset array. This turned out to have
- * the SAME shape of mischaracterization as the chat-completion port's `logitBias` exclusion (see
- * `computeLogitBias()` above): the client function does no computation the server lacks - it
- * encodes with the tokenizer the caller resolved (the client's `getTokenizerForTokenIds()`, here
- * resolveTokenizer() in src/tokenizer-resolve.js) and `getLogitBiasListResult()` (inlined below),
- * both of which bottom out in either an already-in-process local tokenizer, or one of the server's
- * own existing remote-tokenize routes (`encodeViaTextgenAPI`/`encodeViaKoboldAPI`).
- *
- * For the two REMOTE-tokenizer outcomes (`{kind: 'remote-textgen'}`/`{kind: 'remote-kobold'}`),
- * actually encoding text needs the Express `request` (for `encodeViaTextgenAPI`'s
- * `setAdditionalHeaders` header forwarding) plus the backend's `baseUrl`/`model`/`apiType` - passed
- * via `remoteContext`. Without a `request`/`baseUrl`, those branches degrade to "no tokens for this
- * entry" (empty bias contribution) rather than throwing - callers that never talk to a live textgen/
- * kobold backend (e.g. most local-tokenizer setups) don't need to supply them at all.
+ * token-id-keyed logit bias map from a textgen `logit_bias` preset array, encoding each entry with
+ * `tokenizerOptions.encode`: the send's resolveTokenizer() answer bound to its backend
+ * (encodeWithTokenizer() in src/tokenizer-resolve.js), which gives null when it has no ids for the
+ * text (an estimate resolution, or a failed tokenizer with no local copy).
  *
  * @param {{id?: string, text?: string, value?: number}[]} logitBiasPreset Raw
  * `textgenerationwebui_settings.logit_bias`-shaped array.
- * @param {{resolved?: import('../tokenizer-resolve.js').ResolvedTokenizer}} [tokenizerOptions]
- * `resolved`, a resolveTokenizer() answer, is required for a non-empty preset; without one this
- * throws, since any default would silently pick a tokenizer.
- * @param {{request?: import('express').Request, baseUrl?: string, model?: string, apiType?: string}} [remoteContext]
- * Only consulted when tokenizer resolution lands on a remote backend; see above.
- * @param {string[]} [dropped] Receives the text of each entry left out because the resolution is an
- * estimate (no tokenizer).
+ * @param {{encode?: (text: string) => Promise<number[]|null>}} [tokenizerOptions] `encode` is
+ * required for a non-empty preset; without one this throws, since any default would silently pick
+ * a tokenizer.
+ * @param {string[]} [dropped] Receives the text of each entry left out because `encode` gave null.
  * @returns {Promise<{[tokenId: string]: number}>} Token-id-keyed bias map. `{}` for an
  * absent/empty preset, matching `calculateLogitBias()`'s own early return.
  */
-export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions = {}, remoteContext = {}, dropped = undefined) {
+export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions = {}, dropped = undefined) {
     const result = {};
 
     if (!Array.isArray(logitBiasPreset) || logitBiasPreset.length === 0) {
         return result;
     }
 
-    if (!tokenizerOptions.resolved) {
-        throw new Error('computeTextgenLogitBias: tokenizerOptions.resolved is required');
+    const { encode } = tokenizerOptions;
+    if (!encode) {
+        throw new Error('computeTextgenLogitBias: tokenizerOptions.encode is required');
     }
-    const tokenizerDescriptor = descriptorForResolvedTokenizer(tokenizerOptions.resolved);
 
     for (const entry of logitBiasPreset) {
         if (!entry || typeof entry.text !== 'string' || entry.text.length === 0) {
@@ -890,7 +813,7 @@ export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions 
         let tokens;
         if (text.startsWith('{') && text.endsWith('}')) {
             // Verbatim text
-            tokens = await encodeTextgenLogitBiasEntryText(tokenizerDescriptor, text.slice(1, -1), remoteContext);
+            tokens = await encode(text.slice(1, -1));
         } else if (text.startsWith('[') && text.endsWith(']')) {
             // Raw token ids, JSON serialized
             try {
@@ -907,7 +830,7 @@ export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions 
             }
         } else {
             // Text with a leading space
-            tokens = await encodeTextgenLogitBiasEntryText(tokenizerDescriptor, ` ${text}`, remoteContext);
+            tokens = await encode(` ${text}`);
         }
 
         if (tokens === null) {
