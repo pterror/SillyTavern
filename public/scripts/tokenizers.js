@@ -43,6 +43,12 @@ export const tokenizers = {
     LLAMA3_1: 1001,
     NEMO_TEKKEN: 1002,
     KIMI: 1003,
+    QWEN2_VL: 1004,
+    QWEN2_5: 1005,
+    QWEN3_5: 1006,
+    QWEN3_5_BASE: 1007,
+    QWEN3_8: 1008,
+    CODEQWEN1_5: 1009,
 };
 
 // A list of local tokenizers that support encoding and decoding token ids.
@@ -62,6 +68,12 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.LLAMA3_1,
     tokenizers.NEMO_TEKKEN,
     tokenizers.KIMI,
+    tokenizers.QWEN2_VL,
+    tokenizers.QWEN2_5,
+    tokenizers.QWEN3_5,
+    tokenizers.QWEN3_5_BASE,
+    tokenizers.QWEN3_8,
+    tokenizers.CODEQWEN1_5,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,

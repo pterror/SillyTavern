@@ -2,6 +2,8 @@
 /**
  * Fills DATA_ROOT/_cache with the tokenizer file of every fixture in tests/fixtures/tokenizer-reference,
  * the way SillyTavern downloads it, so `node src/tokenizer-exactness.test.js` runs every fixture.
+ * A fixture whose file has the same content as another fixture's fetches nothing of its own: the
+ * other fixture's file is the one SillyTavern reads.
  *
  * Usage, from the project root:
  *   node scripts/fetch-tokenizer-fixtures.js
@@ -47,7 +49,9 @@ for (const name of fs.readdirSync(fixturesDir).filter(file => /^[0-9a-f]{64}\.js
     const { file } = JSON.parse(fs.readFileSync(path.join(fixturesDir, name), 'utf8'));
     const descriptor = JSON.stringify(file);
     try {
-        if (file.registry) {
+        if (file.sameContentAs) {
+            console.log(`${descriptor}: same content as ${file.sameContentAs}`);
+        } else if (file.registry) {
             const entry = TOKENIZER_SOURCES.find(source => source.id === file.registry);
             if (!entry) {
                 throw new Error('No registry entry with that id');
