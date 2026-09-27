@@ -7,6 +7,7 @@ import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } 
 import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
+import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
 import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
@@ -450,36 +451,8 @@ router.post('/status', async function (request, response) {
 
     setAdditionalHeaders(request, args, api_server);
 
-    const result = {};
-
-    /** @type {any} */
-    const [koboldUnitedResponse, koboldExtraResponse, koboldModelResponse] = await Promise.all([
-        // We catch errors both from the response not having a successful HTTP status and from JSON parsing failing
-
-        // Kobold United API version
-        fetch(`${api_server}/v1/info/version`).then(response => {
-            if (!response.ok) throw new Error(`Kobold API error: ${response.status, response.statusText}`);
-            return response.json();
-        }).catch(() => ({ result: '0.0.0' })),
-
-        // KoboldCpp version
-        fetch(`${api_server}/extra/version`).then(response => {
-            if (!response.ok) throw new Error(`Kobold API error: ${response.status, response.statusText}`);
-            return response.json();
-        }).catch(() => ({ version: '0.0' })),
-
-        // Current model
-        fetch(`${api_server}/v1/model`).then(response => {
-            if (!response.ok) throw new Error(`Kobold API error: ${response.status, response.statusText}`);
-            return response.json();
-        }).catch(() => null),
-    ]);
-
-    result.koboldUnitedVersion = koboldUnitedResponse.result;
-    result.koboldCppVersion = koboldExtraResponse.result;
-    result.model = !koboldModelResponse || koboldModelResponse.result === 'ReadOnly' ?
-        'no_connection' :
-        koboldModelResponse.result;
+    const result = await fetchKoboldStatus(api_server);
+    rememberRemoteTokenization('kobold', undefined, api_server, koboldCanUseTokenization(result.koboldCppVersion));
 
     response.send(result);
 });

@@ -1,6 +1,6 @@
 import tiktoken from 'tiktoken';
 
-import { tokenizers } from './tokenizer-resolve.js';
+import { tokenizers } from './tokenizer-ids.js';
 
 // Exact-only: a name the rules below don't clearly place is unmapped (null), never given a
 // possibly-wrong tokenizer.

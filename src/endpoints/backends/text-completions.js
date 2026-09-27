@@ -24,6 +24,7 @@ import { constructPrompt, getInstructStoppingSequences } from '../../instruct-te
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveTokenizerType, encodeWithTokenizerType } from '../../tokenizer-resolve.js';
+import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
 import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
@@ -367,113 +368,21 @@ router.post('/status', async function (request, response) {
         setAdditionalHeaders(request, args, baseUrl);
 
         const apiType = request.body.api_type;
-        let url = baseUrl;
-        let result = '';
+        const status = await fetchTextgenStatus(baseUrl, apiType, args);
 
-        switch (apiType) {
-            case TEXTGEN_TYPES.GENERIC:
-            case TEXTGEN_TYPES.OOBA:
-            case TEXTGEN_TYPES.VLLM:
-            case TEXTGEN_TYPES.APHRODITE:
-            case TEXTGEN_TYPES.KOBOLDCPP:
-            case TEXTGEN_TYPES.LLAMACPP:
-            case TEXTGEN_TYPES.INFERMATICAI:
-            case TEXTGEN_TYPES.OPENROUTER:
-            case TEXTGEN_TYPES.FEATHERLESS:
-                url += '/v1/models';
-                break;
-            case TEXTGEN_TYPES.DREAMGEN:
-                url += '/api/openai/v1/models';
-                break;
-            case TEXTGEN_TYPES.MANCER:
-                url += '/oai/v1/models';
-                break;
-            case TEXTGEN_TYPES.TABBY:
-                url += '/v1/model/list';
-                break;
-            case TEXTGEN_TYPES.TOGETHERAI:
-                url += '/api/models?&info';
-                break;
-            case TEXTGEN_TYPES.OLLAMA:
-                url += '/api/tags';
-                break;
-            case TEXTGEN_TYPES.HUGGINGFACE:
-                url += '/info';
-                break;
-        }
-
-        const modelsReply = await fetch(url, args);
-        const isPossiblyLmStudio = modelsReply.headers.get('x-powered-by') === 'Express';
-
-        if (!modelsReply.ok) {
-            console.error('Models endpoint is offline.');
+        if (!status.ok) {
             return response.sendStatus(400);
         }
 
-        /** @type {any} */
-        let data = await modelsReply.json();
-
-        // Rewrap to OAI-like response
-        if (apiType === TEXTGEN_TYPES.TOGETHERAI && Array.isArray(data)) {
-            data = { data: data.map(x => ({ id: x.name, ...x })) };
+        if (apiType === TEXTGEN_TYPES.OOBA) {
+            rememberRemoteTokenization('textgenerationwebui', apiType, baseUrl, status.supportsTokenization);
         }
 
-        if (apiType === TEXTGEN_TYPES.OLLAMA && Array.isArray(data.models)) {
-            data = { data: data.models.map(x => ({ id: x.name, ...x })) };
+        if (status.supportsTokenization) {
+            response.setHeader('x-supports-tokenization', 'true');
         }
 
-        if (apiType === TEXTGEN_TYPES.HUGGINGFACE) {
-            data = { data: [] };
-        }
-
-        if (!Array.isArray(data.data)) {
-            console.error('Models response is not an array.');
-            return response.sendStatus(400);
-        }
-
-        const modelIds = data.data.map(x => x.id);
-
-        // Set result to the first model ID
-        result = modelIds[0] || 'Valid';
-
-        if (apiType === TEXTGEN_TYPES.OOBA && !isPossiblyLmStudio) {
-            try {
-                const modelInfoUrl = baseUrl + '/v1/internal/model/info';
-                const modelInfoReply = await fetch(modelInfoUrl, args);
-
-                if (modelInfoReply.ok) {
-                    /** @type {any} */
-                    const modelInfo = await modelInfoReply.json();
-                    const modelName = modelInfo?.model_name;
-                    console.debug('Ooba model info:', { model_name: modelName });
-                    result = modelName || result;
-                    response.setHeader('x-supports-tokenization', 'true');
-                }
-            } catch (error) {
-                console.error(`Failed to get Ooba model info: ${error}`);
-            }
-        } else if (apiType === TEXTGEN_TYPES.TABBY) {
-            try {
-                const modelInfoUrl = baseUrl + '/v1/model';
-                const modelInfoReply = await fetch(modelInfoUrl, args);
-
-                if (modelInfoReply.ok) {
-                    /** @type {any} */
-                    const modelInfo = await modelInfoReply.json();
-                    const modelName = modelInfo?.id;
-                    console.debug('Tabby model info:', { id: modelName });
-                    result = modelName || result;
-                } else {
-                    // TabbyAPI returns an error 400 if a model isn't loaded
-
-                    result = 'None';
-                }
-            } catch (error) {
-                console.error(`Failed to get TabbyAPI model info: ${error}`);
-            }
-        }
-
-        return response.send({ result, data: data.data });
+        return response.send({ result: status.result, data: status.data });
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
