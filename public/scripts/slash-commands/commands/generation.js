@@ -1,7 +1,6 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { activateSendButtons, deactivateSendButtons, generateQuietPrompt, generateRaw, stopGeneration } from '../../../script.js';
-import { main_api } from '../../generation-params.js';
 import { chat_metadata } from '../../chat-state.js';
 import { characters } from '../../character-store.js';
 import { saveMetadataDebounced } from '../../extensions.js';
@@ -11,7 +10,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '
 import { SlashCommandClosure } from '../SlashCommandClosure.js';
 import { commonEnumProviders, enumIcons } from '../SlashCommandCommonEnumsProvider.js';
 import { SlashCommandEnumValue, enumTypes } from '../SlashCommandEnumValue.js';
-import { decodeTextTokens, getFriendlyTokenizerName, getTextTokens, getTokenCountAsync } from '../../tokenizers.js';
+import { getTokenCountAsync, trimCurrentTokens } from '../../tokenizers.js';
 import { findChar, isFalseBoolean, isTrueBoolean } from '../../utils.js';
 import { resolveVariable } from '../../variables.js';
 
@@ -33,33 +32,13 @@ async function trimTokensCallback(arg, value) {
     }
 
     const direction = arg.direction || 'end';
-    const tokenCount = await getTokenCountAsync(value);
-
-    if (tokenCount <= limit) {
+    const result = await trimCurrentTokens(value, limit, direction);
+    if (!result) {
+        console.warn('WARN: Tokenization failed for /trimtokens command, returning original');
         return value;
     }
-
-    const { tokenizerName, tokenizerId } = getFriendlyTokenizerName(main_api);
-    console.debug('Requesting tokenization for /trimtokens command', tokenizerName);
-
-    try {
-        const textTokens = getTextTokens(tokenizerId, value);
-
-        if (!Array.isArray(textTokens) || !textTokens.length) {
-            console.warn('WARN: No tokens returned for /trimtokens command, falling back to estimation');
-            const percentage = limit / tokenCount;
-            const trimIndex = Math.floor(value.length * percentage);
-            const trimmedText = direction === 'start' ? value.substring(trimIndex) : value.substring(0, value.length - trimIndex);
-            return trimmedText;
-        }
-
-        const sliceTokens = direction === 'start' ? textTokens.slice(0, limit) : textTokens.slice(-limit);
-        const { text } = decodeTextTokens(tokenizerId, sliceTokens);
-        return text;
-    } catch (error) {
-        console.warn('WARN: Tokenization failed for /trimtokens command, returning original', error);
-        return value;
-    }
+    console.debug('Trimmed for /trimtokens command with', result.tokenizer?.name);
+    return result.text;
 }
 
 /**

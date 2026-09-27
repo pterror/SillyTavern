@@ -11,7 +11,7 @@ import {
 import { chat } from './chat-state.js';
 import { event_types, eventSource } from './events.js';
 import { debounce, delay, getStringHash } from './utils.js';
-import { decodeTextTokens, getTokenizerBestMatch } from './tokenizers.js';
+import { decodeCurrentTokens } from './tokenizers.js';
 import { power_user } from './power-user.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
@@ -470,15 +470,13 @@ function convertTokenIdLogprobsToText(input) {
         throw new Error('convertTokenIdLogprobsToText should only be called for NovelAI');
     }
 
-    const tokenizerId = getTokenizerBestMatch(api);
-
     /** @type {any[]} Flatten unique token IDs across all logprobs */
     const tokenIds = Array.from(new Set(input.flatMap(logprobs =>
         logprobs.topLogprobs.map(([token]) => token).concat(logprobs.token),
     )));
 
     // noinspection JSCheckFunctionSignatures - mutates input in-place
-    const { chunks } = decodeTextTokens(tokenizerId, tokenIds);
+    const { chunks } = decodeCurrentTokens(tokenIds, api);
     const tokenIdText = new Map(tokenIds.map((id, i) => [id, chunks[i]]));
 
     input.forEach(logprobs => {
