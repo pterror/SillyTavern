@@ -1,5 +1,8 @@
 import { TEXTGEN_TYPES } from './constants.js';
-import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI } from './endpoints/tokenizers.js';
+import { tokenizers } from './tokenizer-ids.js';
+import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
+import { lookupModelTokenizer } from './tokenizer-model-map.js';
+import { hasRemoteTokenizer, lookupBackendModel } from './backend-status.js';
 
 /**
  * Server-side port of the tokenizer TYPE resolution logic in public/scripts/tokenizers.js
@@ -25,30 +28,7 @@ import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI } from './endpoints
  * gating - that's an intentional omission, not a gap.
  */
 
-/** Mirrors public/scripts/tokenizers.js's `tokenizers` enum exactly. */
-export const tokenizers = {
-    NONE: 0,
-    GPT2: 1,
-    OPENAI: 2,
-    LLAMA: 3,
-    NERD: 4,
-    NERD2: 5,
-    API_CURRENT: 6,
-    MISTRAL: 7,
-    YI: 8,
-    API_TEXTGENERATIONWEBUI: 9,
-    API_KOBOLD: 10,
-    CLAUDE: 11,
-    LLAMA3: 12,
-    GEMMA: 13,
-    JAMBA: 14,
-    QWEN2: 15,
-    COMMAND_R: 16,
-    NEMO: 17,
-    DEEPSEEK: 18,
-    COMMAND_A: 19,
-    BEST_MATCH: 99,
-};
+export { tokenizers };
 
 /**
  * Mirrors public/scripts/tokenizers.js's ENCODE_TOKENIZERS: local tokenizers that support
@@ -431,4 +411,195 @@ export async function encodeWithTokenizerType(tokenizerType, text, options = {})
     }
 
     throw new Error(`Unsupported tokenizer type for encoding: ${tokenizerType}`);
+}
+
+/** Explicit settings that name a local tokenizer. */
+const EXPLICIT_LOCAL_TOKENIZERS = [
+    ...ENCODE_TOKENIZERS,
+    tokenizers.GPT2,
+    tokenizers.CLAUDE,
+    tokenizers.NERD,
+    tokenizers.NERD2,
+    tokenizers.OPENAI,
+];
+
+/**
+ * The model upstream counts an explicit OpenAI setting with: `/openai/encode` gets no model and
+ * falls to `getTokenizerModel('')`'s default.
+ */
+const EXPLICIT_OPENAI_MODEL = 'gpt-3.5-turbo';
+
+/** The `#tokenizer` option labels, plus the client's names for the two API tokenizers. */
+const TOKENIZER_NAMES = {
+    [tokenizers.NONE]: 'None / Estimated',
+    [tokenizers.GPT2]: 'GPT-2',
+    [tokenizers.LLAMA]: 'Llama 1/2',
+    [tokenizers.LLAMA3]: 'Llama 3',
+    [tokenizers.GEMMA]: 'Gemma / Gemini',
+    [tokenizers.JAMBA]: 'Jamba',
+    [tokenizers.QWEN2]: 'Qwen2',
+    [tokenizers.COMMAND_R]: 'Command-R',
+    [tokenizers.COMMAND_A]: 'Command-A',
+    [tokenizers.NERD]: 'NerdStash (NovelAI Clio)',
+    [tokenizers.NERD2]: 'NerdStash v2 (NovelAI Kayra)',
+    [tokenizers.MISTRAL]: 'Mistral V1',
+    [tokenizers.NEMO]: 'Mistral Nemo',
+    [tokenizers.YI]: 'Yi',
+    [tokenizers.CLAUDE]: 'Claude 1/2',
+    [tokenizers.DEEPSEEK]: 'DeepSeek V3',
+    [tokenizers.API_TEXTGENERATIONWEBUI]: 'API (Text Completion)',
+    [tokenizers.API_KOBOLD]: 'API (KoboldAI Classic)',
+};
+
+/**
+ * @typedef {object} TokenizerState
+ * @property {string} api main_api: 'textgenerationwebui', 'kobold', 'novel', 'koboldhorde' or 'openai'.
+ * @property {string} [type] Textgen type, or the chat-completion source.
+ * @property {string} [url] Backend URL (textgen and kobold).
+ * @property {string} [model] The backend's model setting; empty asks the backend (textgen, kobold).
+ * @property {string} [source] Chat-completion source.
+ * @property {number} [tokenizerSetting] A `tokenizers` value; defaults to BEST_MATCH.
+ * @property {string[]} [hordeModels] Selected Horde models.
+ */
+
+/**
+ * @typedef {object} LocalTokenizer
+ * @property {number} id A `tokenizers` value.
+ * @property {string} name
+ * @property {string} [model] The tiktoken model for OPENAI; for chat completion, the tokenizer
+ * model string `/openai/encode` takes.
+ */
+
+/**
+ * @typedef {object} ResolvedTokenizer
+ * @property {'remote'|'local'|'estimate'} kind
+ * @property {number} id A `tokenizers` value; API_TEXTGENERATIONWEBUI or API_KOBOLD for remote, NONE for an estimate.
+ * @property {string} name
+ * @property {string} [model]
+ * @property {'remote'|'local'|'unknown'|'none'} basis
+ * @property {LocalTokenizer|null} localCopy The map's exact local tokenizer for the model, or null.
+ */
+
+/**
+ * @param {number|string|null} entry A lookupModelTokenizer() answer.
+ * @param {string} api
+ * @returns {LocalTokenizer|null}
+ */
+function describeMapEntry(entry, api) {
+    if (entry === null || entry === undefined) {
+        return null;
+    }
+    if (typeof entry === 'string') {
+        return { id: tokenizers.OPENAI, name: entry, model: entry };
+    }
+    const described = { id: entry, name: TOKENIZER_NAMES[entry] };
+    return api === 'openai' ? { ...described, model: TOKENIZER_TYPE_KEYS[entry] } : described;
+}
+
+/**
+ * @param {LocalTokenizer} local
+ * @param {LocalTokenizer|null} localCopy
+ * @returns {ResolvedTokenizer}
+ */
+function localResolution(local, localCopy) {
+    return { kind: 'local', ...local, basis: 'local', localCopy };
+}
+
+/**
+ * @param {'unknown'|'none'} basis
+ * @returns {ResolvedTokenizer}
+ */
+function estimateResolution(basis) {
+    return { kind: 'estimate', id: tokenizers.NONE, name: TOKENIZER_NAMES[tokenizers.NONE], basis, localCopy: null };
+}
+
+/**
+ * The one tokenizer resolution, used for counts and token ids alike. Never falls back to LLAMA:
+ * only the map, an explicit setting or the NovelAI list give llama.
+ * @param {TokenizerState} state
+ * @param {{ directories?: import('./users.js').UserDirectoryList }} [deps] directories give the
+ * backend's API key headers for the model lookup and capability probe.
+ * @returns {Promise<ResolvedTokenizer>}
+ */
+export async function resolveTokenizer(state, deps = {}) {
+    const { api, type, url, hordeModels } = state;
+    const tokenizerSetting = state.tokenizerSetting ?? tokenizers.BEST_MATCH;
+
+    // Upstream never applies the tokenizer setting to chat completion.
+    if (api === 'openai') {
+        const local = describeMapEntry(lookupModelTokenizer(api, state.model), api);
+        return local ? localResolution(local, local) : estimateResolution('unknown');
+    }
+
+    if (EXPLICIT_LOCAL_TOKENIZERS.includes(tokenizerSetting)) {
+        const local = tokenizerSetting === tokenizers.OPENAI
+            ? { id: tokenizers.OPENAI, name: EXPLICIT_OPENAI_MODEL, model: EXPLICIT_OPENAI_MODEL }
+            : { id: tokenizerSetting, name: TOKENIZER_NAMES[tokenizerSetting] };
+        return localResolution(local, null);
+    }
+    if (tokenizerSetting === tokenizers.NONE) {
+        return estimateResolution('none');
+    }
+
+    // Every other setting (API_CURRENT, BEST_MATCH) resolves alike: the remote tokenizer when
+    // the backend has one, else the map.
+
+    if (api === 'koboldhorde') {
+        const entries = new Set((hordeModels ?? []).map(model => lookupModelTokenizer(api, model)));
+        const [only] = entries;
+        const local = entries.size === 1 ? describeMapEntry(only, api) : null;
+        return local ? localResolution(local, local) : estimateResolution('unknown');
+    }
+
+    const backend = { api, type, url, directories: deps.directories };
+    const model = state.model || await lookupBackendModel(backend);
+    const local = describeMapEntry(lookupModelTokenizer(api, model), api);
+
+    if (await hasRemoteTokenizer(backend, TEXTGEN_TOKENIZERS)) {
+        const id = api === 'kobold' ? tokenizers.API_KOBOLD : tokenizers.API_TEXTGENERATIONWEBUI;
+        return { kind: 'remote', id, name: TOKENIZER_NAMES[id], basis: 'remote', localCopy: local };
+    }
+
+    return local ? localResolution(local, local) : estimateResolution('unknown');
+}
+
+/**
+ * Upstream's no-tokenizer count: UTF-8 bytes / 3.35, rounded up.
+ * @param {string} text
+ * @returns {number}
+ */
+export function estimateTokenCount(text) {
+    return guesstimate(String(text ?? ''));
+}
+
+/**
+ * Counts `text` with a resolveTokenizer() answer; an estimate resolution gives the estimate.
+ * @param {ResolvedTokenizer} resolved
+ * @param {string} text
+ * @param {EncodeWithTokenizerTypeOptions} [options] What a remote tokenizer needs (backend URL,
+ * model, type, request), and test stubs.
+ * @returns {Promise<number>}
+ */
+export async function countWithTokenizer(resolved, text, options = {}) {
+    const str = String(text ?? '');
+    if (resolved.kind === 'estimate') {
+        return estimateTokenCount(str);
+    }
+    if (resolved.id === tokenizers.OPENAI) {
+        return getTiktokenTokenizer(resolved.model).encode(str).length;
+    }
+    return (await encodeWithTokenizerType(resolved.id, str, options)).length;
+}
+
+/**
+ * The tokenizer setting a connection-profile send uses: the profile's own `tokenizer` (a
+ * lowercased `tokenizers` key, as the `/tokenizer` command returns it) when it names one, else
+ * the main setting.
+ * @param {string|undefined} profileTokenizer
+ * @param {number} mainSetting
+ * @returns {number}
+ */
+export function resolveProfileTokenizerSetting(profileTokenizer, mainSetting) {
+    const match = Object.entries(tokenizers).find(([key]) => key.toLowerCase() === profileTokenizer);
+    return match ? match[1] : mainSetting;
 }

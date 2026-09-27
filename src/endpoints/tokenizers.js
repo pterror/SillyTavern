@@ -65,7 +65,7 @@ const gunzip = promisify(zlib.gunzip);
  * @param {string} str String to tokenize.
  * @returns {number} Token count.
  */
-function guesstimate(str) {
+export function guesstimate(str) {
     const byteLength = Buffer.byteLength(str, 'utf8');
     return Math.ceil(byteLength / BYTES_PER_TOKEN);
 }
