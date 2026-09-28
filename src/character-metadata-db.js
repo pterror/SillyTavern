@@ -2619,7 +2619,7 @@ export async function getTagNameChangesSince(directories, sinceSeq, { limit } = 
     if (!entry) return null;
 
     const numericSince = Number.isFinite(sinceSeq) && sinceSeq >= 0 ? Math.trunc(sinceSeq) : 0;
-    const bounds = (/** @type {{ minSeq: number | null, maxSeq: number | null } | undefined} */ (entry.db.get('SELECT MIN(seq) as minSeq, MAX(seq) as maxSeq FROM tag_name_changes')));
+    const bounds = (/** @type {{ minSeq: number | null, maxSeq: number | null } | undefined} */ (entry.db.get('SELECT (SELECT MIN(seq) FROM tag_name_changes) AS minSeq, (SELECT MAX(seq) FROM tag_name_changes) AS maxSeq')));
     const minSeq = bounds?.minSeq != null ? Number(bounds.minSeq) : undefined;
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
@@ -4843,7 +4843,7 @@ export async function getChangesSince(directories, sinceSeq, { limit } = {}) {
     if (!entry) return null;
 
     const numericSince = Number.isFinite(sinceSeq) && sinceSeq >= 0 ? Math.trunc(sinceSeq) : 0;
-    const bounds = (/** @type {{ minSeq: number | null, maxSeq: number | null } | undefined} */ (entry.db.get('SELECT MIN(seq) as minSeq, MAX(seq) as maxSeq FROM changes')));
+    const bounds = (/** @type {{ minSeq: number | null, maxSeq: number | null } | undefined} */ (entry.db.get('SELECT (SELECT MIN(seq) FROM changes) AS minSeq, (SELECT MAX(seq) FROM changes) AS maxSeq')));
     const minSeq = bounds?.minSeq != null ? Number(bounds.minSeq) : undefined;
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
