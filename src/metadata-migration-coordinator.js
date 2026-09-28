@@ -9,6 +9,8 @@ const DISPOSE_TIMEOUT_MS = 10000;
 
 /** The one-time passes metadata-migration-worker.js runs, in the order they must run. */
 export const MIGRATION_PASSES = /** @type {const} */ ([
+    // First: until it has run, card tag names that only a table lookup could resolve are held, not assigned.
+    'fillTagNameKeysIfNeeded',
     'recoverNumericIdGroupsIfNeeded',
     'normalizeGroupFavIfNeeded',
     'migrateTagsJsonIfNeeded',

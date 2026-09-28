@@ -17,6 +17,15 @@ import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-wor
 import { importFailure } from './character-import-error.js';
 
 /**
+ * @param {string} avatar
+ * @param {string[]} heldTagNames
+ */
+function warnHeldTagNames(avatar, heldTagNames) {
+    if (heldTagNames.length === 0) return;
+    console.warn(color.yellow(`[local-import] ${avatar}: tags ${heldTagNames.map(n => `'${n}'`).join(', ')} will be added once the tag upgrade finishes.`));
+}
+
+/**
  * Imports characters from directories listed under `localImport.directories` in config.yaml. This module never
  * accepts a directory path from a request, so it's never an arbitrary-path-read endpoint.
  *
@@ -479,7 +488,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${pngName}.png`));
                     if (tagImportSetting !== 2) {
                         try {
-                            await seedCardTagsForSingleCharacter(directories, `${pngName}.png`);
+                            warnHeldTagNames(`${pngName}.png`, (await seedCardTagsForSingleCharacter(directories, `${pngName}.png`)).heldTagNames);
                         } catch (err) {
                             console.warn(`[local-import] Failed to seed tags for ${pngName}.png:`, err.message);
                         }
@@ -508,7 +517,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     }
                     if (tagImportSetting !== 2) {
                         try {
-                            await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`);
+                            warnHeldTagNames(`${result.fileName}.png`, (await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`)).heldTagNames);
                         } catch (err) {
                             console.warn(`[local-import] Failed to seed tags for ${result.fileName}.png:`, err.message);
                         }

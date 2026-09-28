@@ -371,6 +371,8 @@ describe('one-time group and card-tag passes resume after a mid-pass stop', () =
 
     test('backfillCardTagsIfNeeded resumes after the last committed batch, reusing the tag the first run created', async () => {
         await seedCopies(1500);
+        // As in the migration worker, which runs it first: until it has, card tag names are held, not resolved.
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
         setCardTags('1', ['Alpha']);
 
         transactionCalls = 0;
@@ -427,6 +429,8 @@ describe('one-time group, tag and card-tag passes are not marked done when a row
 
     test('backfillCardTagsIfNeeded: the failed row is listed, the flag stays unset, and the next run starts over', async () => {
         await seedCopies(2);
+        // As in the migration worker, which runs it first: until it has, card tag names are held, not resolved.
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
         setCardTags('1', ['Alpha']);
         failRead = (sql, params) => sql.startsWith('SELECT shallow_json FROM characters WHERE id') && params?.id === 'c00001.png';
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -533,6 +537,8 @@ describe('one-time group and card-tag passes never leave a row half-written', ()
 
     test('backfillCardTagsIfNeeded: a write that throws rolls back its whole batch, including a tag it created', async () => {
         await seedCopies(1500);
+        // As in the migration worker, which runs it first: until it has, card tag names are held, not resolved.
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
         setCardTags('1', ['Alpha']);
         setCardTags('id >= \'c01000.png\'', ['Alpha', 'Beta']);
         /** @param {string} id */
