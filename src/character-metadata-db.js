@@ -359,19 +359,12 @@ const SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_character_tags_tag ON character_tags(tag_id, character_id);
 
-    -- Maintained by the two triggers below, not by application code, so it can never drift from
-    -- character_tags regardless of which code path inserts/deletes a row there.
+    -- Maintained by the TAG_USAGE_TRIGGERS on character_tags and group_tags, not by application code, so it can
+    -- never drift from them regardless of which code path inserts/deletes a row there.
     CREATE TABLE IF NOT EXISTS tag_usage (
         tag_id TEXT PRIMARY KEY,
         count  INTEGER NOT NULL
     );
-    CREATE TRIGGER IF NOT EXISTS trg_character_tags_ai AFTER INSERT ON character_tags BEGIN
-        INSERT INTO tag_usage (tag_id, count) VALUES (NEW.tag_id, 1)
-        ON CONFLICT(tag_id) DO UPDATE SET count = count + 1;
-    END;
-    CREATE TRIGGER IF NOT EXISTS trg_character_tags_ad AFTER DELETE ON character_tags BEGIN
-        UPDATE tag_usage SET count = count - 1 WHERE tag_id = OLD.tag_id;
-    END;
 
     CREATE TABLE IF NOT EXISTS changes (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -418,15 +411,6 @@ const SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_group_tags_tag ON group_tags(tag_id, group_id);
 
-    -- Shares tag_usage with character_tags' triggers - one combined usage count across characters and groups.
-    CREATE TRIGGER IF NOT EXISTS trg_group_tags_ai AFTER INSERT ON group_tags BEGIN
-        INSERT INTO tag_usage (tag_id, count) VALUES (NEW.tag_id, 1)
-        ON CONFLICT(tag_id) DO UPDATE SET count = count + 1;
-    END;
-    CREATE TRIGGER IF NOT EXISTS trg_group_tags_ad AFTER DELETE ON group_tags BEGIN
-        UPDATE tag_usage SET count = count - 1 WHERE tag_id = OLD.tag_id;
-    END;
-
     -- Exact counts of what queryEntities() counts, kept by the triggers ENTITY_COUNT_TRIGGERS_SQL creates. kind is
     -- 'character' or 'group'. entity_counts holds the rows of characters / groups by fav. entity_tag_counts holds the
     -- tag rows whose entity row exists, by that entity's fav; a group_tags row whose group_id ends in .png counts for
@@ -458,10 +442,9 @@ const SCHEMA_SQL = `
     INSERT OR IGNORE INTO entity_count_fill (kind) VALUES ('character'), ('group');
 
     -- Tag *definitions* (name/color/folder_type/sort_order/... - everything tags.json's 'tags' array used to
-    -- hold). 'data' is the whole Tag object as JSON, mirroring the shallow_json pattern characters already use
-    -- above, rather than enumerating every field as its own column - this table is small (thousands of rows at
-    -- the very most) and nothing here needs to be queried/sorted server-side, so there is no cost to keeping it
-    -- schema-flexible instead of chasing every field the client's Tag typedef might ever grow.
+    -- hold). 'data' is the whole Tag object as JSON, the source of truth. The columns tags are queried by
+    -- (name_key, sort_order, folder_type, is_folder, usage_count) are added by migrateTagNameKeyColumn() and
+    -- migrateTagDerivedColumns(); they are derived from data and tag_usage, and data is never written from them.
     CREATE TABLE IF NOT EXISTS tags (
         id   TEXT PRIMARY KEY,
         data TEXT NOT NULL
@@ -1012,6 +995,100 @@ function migrateTagNameKeyColumn(db) {
     }
 }
 
+// No defaults: a row written before these columns existed reads NULL until it is filled, so it can never pass for
+// a derived value.
+const TAG_DERIVED_COLUMNS = [
+    ['sort_order', 'REAL'],
+    ['folder_type', 'TEXT'],
+    ['is_folder', 'INTEGER'],
+    ['usage_count', 'INTEGER'],
+];
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateTagDerivedColumns(db) {
+    const existing = new Set([...db.iterate('PRAGMA table_info(tags)')].map(c => /** @type {{ name: string }} */ (c).name));
+    for (const [name, type] of TAG_DERIVED_COLUMNS) {
+        if (!existing.has(name)) db.exec(`ALTER TABLE tags ADD COLUMN ${name} ${type}`);
+    }
+}
+
+// tags.usage_count is set from tag_usage.count in the same trigger, so it equals that count for its id at every
+// moment, whatever it held before. Kept as stored in sqlite_master (no IF NOT EXISTS, no trailing ';'), so
+// replaceTagUsageTriggers() can tell an old body from this one.
+const TAG_USAGE_TRIGGERS = [
+    ['trg_character_tags_ai', 'AFTER INSERT ON character_tags', 'NEW'],
+    ['trg_character_tags_ad', 'AFTER DELETE ON character_tags', 'OLD'],
+    ['trg_group_tags_ai', 'AFTER INSERT ON group_tags', 'NEW'],
+    ['trg_group_tags_ad', 'AFTER DELETE ON group_tags', 'OLD'],
+].map(([name, when, row]) => ({
+    name,
+    sql: `CREATE TRIGGER ${name} ${when} BEGIN
+    ${row === 'NEW'
+        ? 'INSERT INTO tag_usage (tag_id, count) VALUES (NEW.tag_id, 1) ON CONFLICT(tag_id) DO UPDATE SET count = count + 1;'
+        : 'UPDATE tag_usage SET count = count - 1 WHERE tag_id = OLD.tag_id;'}
+    UPDATE tags SET usage_count = COALESCE((SELECT count FROM tag_usage WHERE tag_id = ${row}.tag_id), 0) WHERE id = ${row}.tag_id;
+END`,
+}));
+
+/**
+ * Creates each TAG_USAGE_TRIGGERS trigger that is missing or has another body. Runs after
+ * migrateTagDerivedColumns(), since the bodies write tags.usage_count.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function replaceTagUsageTriggers(db) {
+    const isCurrent = (/** @type {{ name: string, sql: string }} */ trigger) => {
+        const row = /** @type {{ sql: string } | undefined} */ (db.get('SELECT sql FROM sqlite_master WHERE type = \'trigger\' AND name = @name', { name: trigger.name }));
+        return row?.sql === trigger.sql;
+    };
+    if (TAG_USAGE_TRIGGERS.every(isCurrent)) return;
+    db.transaction(() => {
+        for (const trigger of TAG_USAGE_TRIGGERS) {
+            if (isCurrent(trigger)) continue;
+            db.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
+            db.exec(trigger.sql);
+        }
+    });
+}
+
+// Every write of a tags row inserts these columns (`INSERT ... INTO tags ${TAG_ROW_VALUES_SQL}`) with
+// tagRowParams(); usage_count is the id's tag_usage.count, 0 without a tag_usage row.
+const TAG_ROW_VALUES_SQL = `(id, data, name_key, sort_order, folder_type, is_folder, usage_count)
+    VALUES (@id, @data, @nameKey, @sortOrder, @folderType, @isFolder, COALESCE((SELECT count FROM tag_usage WHERE tag_id = @id), 0))`;
+
+/**
+ * @param {TagDefinitionInput} tag
+ */
+function tagRowParams(tag) {
+    return { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag), ...tagDerivedColumns(tag) };
+}
+
+/**
+ * The tags columns derived from a tag's data (a value as JSON.parse returns it), with upstream's coercion wherever
+ * upstream defines it. sort_order: upstream orders by `a.sort_order - b.sort_order` among tags whose sort_order
+ * isn't undefined, so null, booleans and numeric strings coerce as that subtraction does; a value it can't order
+ * (NaN, a non-numeric string, an object) has no order. folder_type/is_folder follow isBogusFolder() (tags.js):
+ * a folder is any present folder_type other than the string 'NONE'.
+ * @param {unknown} tag
+ * @returns {{ sortOrder: number | null, folderType: string, isFolder: 0 | 1 }}
+ */
+export function tagDerivedColumns(tag) {
+    const fields = tag !== null && typeof tag === 'object' ? /** @type {Record<string, unknown>} */ (tag) : {};
+    const rawOrder = fields.sort_order;
+    /** @type {number | null} */
+    let sortOrder = null;
+    if (rawOrder === null) {
+        sortOrder = 0;
+    } else if (typeof rawOrder === 'number' || typeof rawOrder === 'boolean' || typeof rawOrder === 'string') {
+        const n = Number(rawOrder);
+        sortOrder = Number.isNaN(n) ? null : n;
+    }
+    const rawFolder = fields.folder_type;
+    const folderType = rawFolder === undefined ? 'NONE' : typeof rawFolder === 'string' ? rawFolder : String(JSON.stringify(rawFolder));
+    return { sortOrder, folderType, isFolder: folderType === 'NONE' ? 0 : 1 };
+}
+
 function migrateFavSortIndex(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_fav_desc_name_fold_asc ON characters(fav DESC, name_fold ASC)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_desc_name_fold_asc ON groups(fav DESC, name_fold ASC)');
@@ -1064,6 +1141,8 @@ async function getEntry(directories) {
     migrateGroupDigestColumns(db, directories);
     migrateFavSortIndex(db);
     migrateTagNameKeyColumn(db);
+    migrateTagDerivedColumns(db);
+    replaceTagUsageTriggers(db);
     // Last: the group triggers read groups.fav, which migrateGroupsColumns() adds to an old table.
     db.exec(ENTITY_COUNT_TRIGGERS_SQL);
     defineRandHash(db);
@@ -4203,7 +4282,7 @@ export async function saveTagDefinitions(directories, tagsArray) {
                 skipped.push(tag.id);
                 continue;
             }
-            entry.db.run('INSERT INTO tags (id, data, name_key) VALUES (@id, @data, @nameKey)', { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag) });
+            entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
             if (oldNames.has(tag.id) && oldNames.get(tag.id) !== (tag.name ?? '')) {
                 entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
             }
@@ -4241,8 +4320,9 @@ export async function upsertTagDefinition(directories, rawTag) {
         }
 
         entry.db.run(
-            'INSERT INTO tags (id, data, name_key) VALUES (@id, @data, @nameKey) ON CONFLICT(id) DO UPDATE SET data = @data, name_key = @nameKey',
-            { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag) },
+            `INSERT INTO tags ${TAG_ROW_VALUES_SQL} ON CONFLICT(id) DO UPDATE SET data = excluded.data, name_key = excluded.name_key,
+                sort_order = excluded.sort_order, folder_type = excluded.folder_type, is_folder = excluded.is_folder, usage_count = excluded.usage_count`,
+            tagRowParams(tag),
         );
         if (oldRow && oldName !== (tag.name ?? '')) {
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
@@ -4872,7 +4952,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
         for (const raw of tagsArray) {
             const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
-            insertedDefinitions += entry.db.run('INSERT OR IGNORE INTO tags (id, data, name_key) VALUES (@id, @data, @nameKey)', { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag) }).changes;
+            insertedDefinitions += entry.db.run(`INSERT OR IGNORE INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag)).changes;
         }
         if (insertedDefinitions > 0) {
             updateTagsHashSync(entry.db);
@@ -5199,10 +5279,9 @@ function resolveCardTagNamesSync(db, names, { ready, cachedIds, onlyExisting = f
 function createCardTagsSync(db, resolved) {
     const created = resolved.toCreate.map((name) => {
         const id = crypto.randomUUID();
-        const data = JSON.stringify({ id, name, create_date: Date.now() });
-        const key = tagNameKey(name);
-        db.run('INSERT INTO tags (id, data, name_key) VALUES (@id, @data, @key)', { id, data, key });
-        resolved.learned.push({ key, id, data });
+        const params = tagRowParams({ id, name, create_date: Date.now() });
+        db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
+        resolved.learned.push({ key: params.nameKey, id, data: params.data });
         return id;
     });
     if (created.length > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
