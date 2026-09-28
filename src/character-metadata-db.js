@@ -3231,9 +3231,10 @@ export async function assignEntityTag(directories, id, tagId) {
         return 'ok';
     }
 
-    let found = false;
+    // An object, not a let: TypeScript doesn't see the callback's assignment and narrows a let to false.
+    const result = { found: false };
     entry.db.transaction(() => {
-        found = false;
+        result.found = false;
         if (type === 'character' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
             entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
             // No updateTagsHashSync() here: this only touches character_tags, never the tags table that hashes, so
@@ -3245,15 +3246,15 @@ export async function assignEntityTag(directories, id, tagId) {
                 shallow.tag_ids = currentTagIds;
                 writeShallowJson(entry.db, id, shallow, ['tag_ids']);
             }
-            found = true;
+            result.found = true;
         } else if (type === 'group' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
             entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
             const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
             entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
-            found = true;
+            result.found = true;
         }
     });
-    return found ? 'ok' : 'not_found';
+    return result.found ? 'ok' : 'not_found';
 }
 
 // Not a 404 on a nonexistent entity: nothing to reject. Touches only the id's own type's table
@@ -4147,6 +4148,7 @@ function importTagMapSync(entry, tagMap) {
                 for (const tagId of tagIds) {
                     entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
                 }
+                if (tagIds.length > 0) syncGroupDigestTagIdsFromTable(entry.db, key);
             } else {
                 droppedKeys.push(key);
             }
@@ -4209,6 +4211,7 @@ async function importTagMap(entry, tagMap) {
         for (const tagId of tagIds) {
             if (entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId }).changes > 0) changed = true;
         }
+        if (tagIds.length > 0 && syncGroupDigestTagIdsFromTable(entry.db, key)) changed = true;
         return changed;
     };
 
@@ -4443,6 +4446,26 @@ function syncShallowTagIdsFromTable(db, avatar) {
     if (Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(currentTagIds))) return true;
     shallow.tag_ids = currentTagIds;
     writeShallowJson(db, avatar, shallow, ['tag_ids']);
+    return true;
+}
+
+// Group counterpart to syncShallowTagIdsFromTable(): a group's stored copy of its tags is digest_tag_ids.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} groupId
+ * @returns {boolean} Whether it wrote.
+ */
+function syncGroupDigestTagIdsFromTable(db, groupId) {
+    const row = /** @type {{ digest_tag_ids: number | null } | undefined} */ (db.get('SELECT digest_tag_ids FROM groups WHERE id = @id', { id: groupId }));
+    if (!row) return false;
+    /** @type {string[]} */
+    const tagIds = [];
+    for (const r of /** @type {Generator<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId }))) {
+        tagIds.push(r.tag_id);
+    }
+    const digestTagIds = groupDigestTagIdsHash({ tag_ids: tagIds });
+    if (row.digest_tag_ids !== null && Number(row.digest_tag_ids) === digestTagIds) return false;
+    db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id: groupId, digestTagIds });
     return true;
 }
 
