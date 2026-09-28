@@ -1290,7 +1290,33 @@ function deleteRowSync(db, id) {
  */
 function getTagIdsFor(directories, avatar) {
     const { tag_map } = readTagsData(directories);
-    return tag_map[avatar] ?? [];
+    return tagMapEntryTagIds(tag_map, avatar);
+}
+
+/**
+ * The tag ids a tag_map entry holds, each once. A value that isn't an array holds none, as upstream's
+ * getTagsList() and tag import read it, and gets a warning naming it.
+ * @param {Record<string, unknown>} tagMap
+ * @param {string} key
+ * @returns {string[]}
+ */
+function tagMapEntryTagIds(tagMap, key) {
+    if (!Object.hasOwn(tagMap, key)) return [];
+    const value = tagMap[key];
+    if (!Array.isArray(value)) {
+        warnTagMapEntryNotArray(key, value, 'read as no tags');
+        return [];
+    }
+    return [...new Set(value)];
+}
+
+/**
+ * @param {string} key
+ * @param {unknown} value
+ * @param {string} outcome What was done with the entry.
+ */
+function warnTagMapEntryNotArray(key, value, outcome) {
+    console.warn(color.yellow(`[character-metadata] tag_map entry for ${key} is not a list, ${outcome}: ${JSON.stringify(value)}`));
 }
 
 /**
@@ -1894,7 +1920,7 @@ export async function bootstrapIfNeeded(directories) {
                 const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
-                const tagIds = tag_map[file] ?? [];
+                const tagIds = tagMapEntryTagIds(tag_map, file);
                 const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
                 return { row, tagIds };
             } catch (err) {
@@ -2326,12 +2352,17 @@ export async function resyncTags(directories) {
         for (let i = 0; i < pageIds.length; i += FAV_LOOKUP_BATCH_SIZE) {
             for (const id of knownCharacterIdsOf(entry.db, pageIds.slice(i, i + FAV_LOOKUP_BATCH_SIZE))) known.add(id);
         }
-        /** @type {Map<string, Set<string>>} */
+        // null: the character's tag_map value isn't an array, so its rows are left as they are (warned below).
+        /** @type {Map<string, Set<string> | null>} */
         const wantedByCharacter = new Map();
         for (const id of known) {
-            wantedByCharacter.set(id, Object.hasOwn(tag_map, id) ? new Set(tag_map[id]) : new Set());
+            const value = Object.hasOwn(tag_map, id) ? tag_map[id] : [];
+            wantedByCharacter.set(id, Array.isArray(value) ? new Set(value) : null);
         }
-        const toRemove = page.filter(r => !(wantedByCharacter.get(r.character_id)?.has(r.tag_id) ?? false));
+        const toRemove = page.filter((r) => {
+            const wanted = wantedByCharacter.get(r.character_id);
+            return wanted !== null && !(wanted?.has(r.tag_id) ?? false);
+        });
         if (toRemove.length > 0) {
             entry.db.transaction(() => {
                 /** @type {Set<string>} */
@@ -2386,6 +2417,10 @@ export async function resyncTags(directories) {
     };
     for (const characterId in tag_map) {
         if (!Object.hasOwn(tag_map, characterId)) continue;
+        if (!Array.isArray(tag_map[characterId])) {
+            warnTagMapEntryNotArray(characterId, tag_map[characterId], 'its existing tags were left as they are');
+            continue;
+        }
         batch.push(characterId);
         if (batch.length >= FAV_LOOKUP_BATCH_SIZE) await applyAdditions();
     }
@@ -4134,6 +4169,9 @@ function importTagMapSync(entry, tagMap) {
     const knownGroupIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM groups'))).map(r => r.id));
     /** @type {string[]} */
     const droppedKeys = [];
+    for (const [key, tagIds] of Object.entries(tagMap)) {
+        if (!Array.isArray(tagIds)) warnTagMapEntryNotArray(key, tagIds, 'nothing imported for it');
+    }
 
     entry.db.transaction(() => {
         for (const [key, tagIds] of Object.entries(tagMap)) {
@@ -4218,6 +4256,9 @@ async function importTagMap(entry, tagMap) {
     for (let i = 0; i < entries.length; i += TAG_MAP_IMPORT_BATCH_SIZE) {
         if (i > 0) await delay(TAG_MAP_IMPORT_BATCH_PAUSE_MS);
         const batch = entries.slice(i, i + TAG_MAP_IMPORT_BATCH_SIZE);
+        for (const [key, tagIds] of batch) {
+            if (!Array.isArray(tagIds)) warnTagMapEntryNotArray(key, tagIds, 'nothing imported for it');
+        }
 
         /** @type {string[]} */
         let batchDropped = [];
