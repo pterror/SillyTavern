@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-    getTagDefinitions, getEntityTagIdsForMany,
+    getTagDefinitionsByIds, getEntityTagIdsForMany,
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
     streamDeletedIdsBetween, getMetaValue, trySetMetaValues, getCharacterFavsByIds, getCardJsonByIds,
 } from '../character-metadata-db.js';
@@ -82,18 +82,20 @@ const REBUILD_PERSIST_RETRY_MS = 100;
 
 const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
-/** @returns {Promise<Map<string, { name?: string }>>} */
-async function loadTagsById(directories) {
-    const definitions = await getTagDefinitions(directories);
-    return new Map((definitions ?? []).map(tag => [tag.id, tag]));
-}
-
-async function makeTagNamesResolver(directories, avatars, tagsById) {
-    const assignments = await getEntityTagIdsForMany(directories, avatars, { type: 'character' });
-    return (avatar) => (assignments?.[avatar] ?? [])
-        .map(id => tagsById.get(id)?.name)
-        .filter(Boolean)
-        .join(' ');
+/** @param {TickPhases} [phases] */
+async function makeTagResolvers(directories, avatars, phases) {
+    const assignments = await timeAsync(phases, 'load', () => getEntityTagIdsForMany(directories, avatars, { type: 'character' }));
+    const tagIds = [...new Set(Object.values(assignments ?? {}).flat())];
+    const definitions = await timeAsync(phases, 'tags', () => getTagDefinitionsByIds(directories, tagIds));
+    /** @type {Map<string, { name?: string }>} */
+    const tagsById = new Map((definitions ?? []).map(tag => [tag.id, tag]));
+    return {
+        tagNamesFor: (avatar) => (assignments?.[avatar] ?? [])
+            .map(id => tagsById.get(id)?.name)
+            .filter(Boolean)
+            .join(' '),
+        tagIdsFor: (avatar) => (assignments?.[avatar] ?? []).join(' '),
+    };
 }
 
 // The db's `fav` column is authoritative once a row is tracked; falls back to the card's embedded
@@ -103,11 +105,6 @@ async function makeFavResolver(directories, avatars) {
     return (character) => Object.prototype.hasOwnProperty.call(favById, character.avatar)
         ? favById[character.avatar]
         : Boolean(character.data?.extensions?.fav);
-}
-
-async function makeTagIdsResolver(directories, avatars) {
-    const assignments = await getEntityTagIdsForMany(directories, avatars, { type: 'character' });
-    return (avatar) => (assignments?.[avatar] ?? []).join(' ');
 }
 
 function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor) {
@@ -200,25 +197,22 @@ async function timeAsync(phases, phase, fn) {
 
 // Adds a doc per id, INDEX_BUILD_BATCH_SIZE ids at a time, reading each batch's card_json by id.
 /** @param {TickPhases} [phases] */
-async function addCharacterDocs(directories, tantivy, schema, writer, ids, tagsById, phases) {
+async function addCharacterDocs(directories, tantivy, schema, writer, ids, phases) {
     for (let i = 0; i < ids.length; i += INDEX_BUILD_BATCH_SIZE) {
         const batchIds = ids.slice(i, i + INDEX_BUILD_BATCH_SIZE);
         const cardJsonById = await timeAsync(phases, 'load', () => getCardJsonByIds(directories, batchIds));
-        await addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, tagsById, phases);
+        await addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, phases);
     }
 }
 
 // Adds a doc per id as one unit: tag/fav lookups cover exactly these ids. An id with no card_json has no row -
 // it was deleted after the change being applied - so it isn't indexed.
 /** @param {TickPhases} [phases] */
-async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, tagsById, phases) {
+async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, phases) {
     const ids = batchIds.filter(id => cardJsonById.has(id));
     if (ids.length === 0) return;
-    const { tagNamesFor, favFor, tagIdsFor } = await timeAsync(phases, 'load', async () => ({
-        tagNamesFor: await makeTagNamesResolver(directories, ids, tagsById),
-        favFor: await makeFavResolver(directories, ids),
-        tagIdsFor: await makeTagIdsResolver(directories, ids),
-    }));
+    const { tagNamesFor, tagIdsFor } = await makeTagResolvers(directories, ids, phases);
+    const favFor = await timeAsync(phases, 'load', () => makeFavResolver(directories, ids));
     const characters = await timeAsync(phases, 'build', () => mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
         try {
             return await processCharacter(id, directories, { shallow: false, cardJson: cardJsonById.get(id) });
@@ -356,11 +350,10 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const built = createEmptyTantivyIndexAt(tantivy, tempDir);
         const tempWriter = built.index.writer();
         try {
-            const tagsById = await loadTagsById(directories);
             let batchIndex = 0;
             // Each streamed batch is one unit: its card_json came with it, and its tag/fav lookups cover exactly it.
             for await (const rows of streamCharacterCardJsonBatches(directories)) {
-                await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row.card_json])), tagsById);
+                await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row.card_json])));
                 batchIndex++;
                 if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
                     tempWriter.commit();
@@ -436,7 +429,6 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                 }
             });
 
-            const tagsById = await timeAsync(phases, 'tags', () => loadTagsById(directories));
             const budgetLeft = () => Date.now() - start < tickBudgetMs;
 
             for (;;) {
@@ -466,7 +458,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                     }
                     deletes += page.changes.length - upsertIds.length;
                     upserts += upsertIds.length;
-                    await addCharacterDocs(directories, tantivy, schema, w, upsertIds, tagsById, phases);
+                    await addCharacterDocs(directories, tantivy, schema, w, upsertIds, phases);
                 }
                 lastSeq = page.seq;
                 if (!page.hasMore || !budgetLeft()) break;
@@ -497,7 +489,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                                 }
                             });
                             upserts += affectedIds.length;
-                            await addCharacterDocs(directories, tantivy, schema, w, affectedIds, tagsById, phases);
+                            await addCharacterDocs(directories, tantivy, schema, w, affectedIds, phases);
                         }
                     } finally {
                         await affected.return?.();

@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-// tick() calls getTagDefinitions() between its start read of the change log and its first upsert page read,
-// so an armed write lands there.
+// An armed write runs at tick()'s first getChangesSince() call, ahead of the read itself: after the tick's start
+// read of the change log and before its first upsert page read.
 /** @type {(() => Promise<unknown>) | null} */
 let injectWrite = null;
 
@@ -49,11 +49,11 @@ beforeAll(async () => {
     const actualMetadataDb = await import('../src/character-metadata-db.js');
     jest.unstable_mockModule('../src/character-metadata-db.js', () => ({
         ...actualMetadataDb,
-        getTagDefinitions: jest.fn(async (...args) => {
+        getChangesSince: jest.fn(async (...args) => {
             const write = injectWrite;
             injectWrite = null;
             await write?.();
-            return actualMetadataDb.getTagDefinitions(...args);
+            return actualMetadataDb.getChangesSince(...args);
         }),
     }));
 

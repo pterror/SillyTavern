@@ -3420,8 +3420,12 @@ export async function getTagDefinitionsByIds(directories, ids) {
     for (let i = 0; i < wanted.length; i += CHUNK) {
         const slice = wanted.slice(i, i + CHUNK);
         const placeholders = slice.map(() => '?').join(',');
-        for (const r of (/** @type {{ data: string }[]} */ (entry.db.all(`SELECT data FROM tags WHERE id IN (${placeholders})`, slice)))) {
-            try { out.push(JSON.parse(r.data)); } catch { /* a row that will not parse cannot be repaired here */ }
+        for (const r of (/** @type {Generator<TagRow>} */ (entry.db.iterate(`SELECT id, data FROM tags WHERE id IN (${placeholders})`, slice)))) {
+            try {
+                out.push(JSON.parse(r.data));
+            } catch (err) {
+                console.warn(`[character-metadata] Tag definition ${r.id} could not be parsed, skipped it: ${/** @type {Error} */ (err).message}`);
+            }
         }
     }
     return out;
