@@ -213,7 +213,7 @@ describe('characters-search-index.js: a catch-up tick looks up only its batches\
         }
 
         await setUpLibrary();
-        expect(await metadataDb.upsertTagDefinition(directories, { id: 'tag-broken', name: 'Broken' })).toBe('ok');
+        expect(await metadataDb.createTagDefinition(directories, { id: 'tag-broken', name: 'Broken' })).toEqual({ refused: [] });
         expect(await metadataDb.assignEntityTag(directories, 'Ann.png', 'tag-broken')).toBe('ok');
         await rebuiltMaintainer(tantivy);
 

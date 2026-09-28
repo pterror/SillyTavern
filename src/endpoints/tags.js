@@ -9,7 +9,8 @@ import {
     getAllTagUsage,
     getTagDefinitions,
     saveTagDefinitions,
-    upsertTagDefinition,
+    createTagDefinition,
+    editTagDefinition,
     deleteTagDefinition,
     countUnusedTags,
     pruneUnusedTags,
@@ -45,23 +46,53 @@ router.post('/save', async function (request, response) {
     }
 });
 
-/** Creates or edits one tag definition (create/rename/recolor), instead of replacing the whole set via `/save`. */
-router.post('/upsert', async (request, response) => {
+/** `{ tag }` → `{ result, refused: [{ id, reason: 'deleted' | 'exists' }] }`. */
+router.post('/create', async (request, response) => {
     try {
         const tag = request.body?.tag;
-        if (!tag || typeof tag.id !== 'string' || !tag.id) {
+        if (!tag || typeof tag !== 'object' || typeof tag.id !== 'string' || !tag.id) {
             return response.status(400).send({ error: 'tag with a non-empty id is required' });
         }
 
-        const result = await upsertTagDefinition(request.user.directories, tag);
+        const result = await createTagDefinition(request.user.directories, tag);
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
 
-        response.send({ result: 'ok' });
+        response.send({ result: 'ok', refused: result.refused });
     } catch (err) {
-        console.error('Could not upsert tag definition', err);
-        response.status(500).send({ error: 'Could not upsert tag definition' });
+        console.error('Could not create tag definition', err);
+        response.status(500).send({ error: 'Could not create tag definition' });
+    }
+});
+
+/**
+ * `{ id, patch }` → `{ result, refused: [{ id, reason: 'deleted' | 'missing' | 'unreadable' }] }`. `patch` holds only
+ * the changed fields; the rest keep their stored values.
+ */
+router.post('/edit', async (request, response) => {
+    try {
+        const id = request.body?.id;
+        const patch = request.body?.patch;
+        if (typeof id !== 'string' || !id) {
+            return response.status(400).send({ error: 'id is required' });
+        }
+        if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+            return response.status(400).send({ error: 'patch must be an object' });
+        }
+        if (Object.hasOwn(patch, 'id') && patch.id !== id) {
+            return response.status(400).send({ error: 'patch.id must match id' });
+        }
+
+        const result = await editTagDefinition(request.user.directories, id, patch);
+        if (result === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+
+        response.send({ result: 'ok', refused: result.refused });
+    } catch (err) {
+        console.error('Could not edit tag definition', err);
+        response.status(500).send({ error: 'Could not edit tag definition' });
     }
 });
 

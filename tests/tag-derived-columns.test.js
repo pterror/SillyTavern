@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,9 +11,32 @@ let Database;
 /** @type {import('../src/users.js').UserDirectoryList} */
 let directories;
 
+/** Every statement the store's handle read through get() or iterate(), while recording. */
+let recording = false;
+/** @type {{ sql: string, params: any }[]} */
+let recorded = [];
+
+/** @param {any} handle */
+function instrumentedHandle(handle) {
+    const wrapped = { ...handle };
+    wrapped.get = (sql, params) => {
+        if (recording) recorded.push({ sql, params });
+        return handle.get(sql, params);
+    };
+    wrapped.iterate = function* (sql, params) {
+        if (recording) recorded.push({ sql, params });
+        yield* handle.iterate(sql, params);
+    };
+    return wrapped;
+}
+
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+    const sqliteEngine = await import('../src/endpoints/sqlite-engine.js');
+    const engine = await sqliteEngine.getSqliteEngine();
+    const openDatabase = engine.openDatabase;
+    engine.openDatabase = (dbPath, options) => instrumentedHandle(openDatabase(dbPath, options));
     metadataDb = await import('../src/character-metadata-db.js');
     Database = (await import('better-sqlite3')).default;
 });
@@ -33,6 +56,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    jest.restoreAllMocks();
+    recording = false;
+    recorded = [];
     metadataDb.disposeMetadataStores();
     fs.rmSync(directories.root, { recursive: true, force: true });
 });
@@ -205,14 +231,14 @@ describe('every tags write sets the derived columns with data', () => {
         expect(derived('b')).toEqual({ sort_order: null, folder_type: 'NONE', is_folder: 0, usage_count: 0 });
     });
 
-    test('upsertTagDefinition, on insert and on update', async () => {
+    test('createTagDefinition, and editTagDefinition on update', async () => {
         await openStore();
-        await metadataDb.upsertTagDefinition(directories, { id: 'a', name: 'A', sort_order: null, folder_type: null });
+        await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: null, folder_type: null });
         expect(derived('a')).toEqual({ sort_order: 0, folder_type: 'null', is_folder: 1, usage_count: 0 });
-        await metadataDb.upsertTagDefinition(directories, { id: 'a', name: 'A', sort_order: 2.5, folder_type: 'NONE' });
+        await metadataDb.editTagDefinition(directories, 'a', { sort_order: 2.5, folder_type: 'NONE' });
         expect(derived('a')).toEqual({ sort_order: 2.5, folder_type: 'NONE', is_folder: 0, usage_count: 0 });
-        await metadataDb.upsertTagDefinition(directories, { id: 'a', name: 'A' });
-        expect(derived('a')).toEqual({ sort_order: null, folder_type: 'NONE', is_folder: 0, usage_count: 0 });
+        await metadataDb.editTagDefinition(directories, 'a', { sort_order: 'abc', folder_type: 'OPEN' });
+        expect(derived('a')).toEqual({ sort_order: null, folder_type: 'OPEN', is_folder: 1, usage_count: 0 });
     });
 
     test('migrateTagsJsonIfNeeded', async () => {
@@ -249,7 +275,7 @@ describe('every tags write sets the derived columns with data', () => {
         expect(usageCount('early')).toBe(1);
         expect(usageCount('zero')).toBe(0);
 
-        await metadataDb.upsertTagDefinition(directories, { id: 'early', name: 'Early' });
+        await metadataDb.createTagDefinition(directories, { id: 'early', name: 'Early' });
         await metadataDb.saveTagDefinitions(directories, [{ id: 'early', name: 'Early' }, { id: 'zero', name: 'Zero' }]);
         expect(derived('early')?.usage_count).toBe(1);
         expect(derived('zero')?.usage_count).toBe(0);
@@ -281,5 +307,240 @@ describe('the tag_usage triggers keep usage_count equal to tag_usage.count', () 
         check(1);
         expect(await metadataDb.unassignEntityTag(directories, 'b.png', 't')).toBe('ok');
         check(0);
+    });
+});
+
+/** @param {string} id @returns {unknown} the stored data, parsed, or undefined without a row */
+function storedData(id) {
+    const row = withRawDb(db => /** @type {{ data: string } | undefined} */ (db.prepare('SELECT data FROM tags WHERE id = ?').get(id)));
+    return row === undefined ? undefined : JSON.parse(row.data);
+}
+
+/**
+ * A connection that stays open, so its data_version moves exactly when the store commits a write.
+ * @returns {{ changed: () => boolean, close: () => void }}
+ */
+function watchWrites() {
+    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+    const version = () => db.pragma('data_version', { simple: true });
+    const before = version();
+    return { changed: () => version() !== before, close: () => db.close() };
+}
+
+async function makeReady() {
+    await metadataDb.fillTagNameKeysIfNeeded(directories);
+    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
+    expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(true);
+}
+
+/** @param {string} sql */
+const readsTags = sql => /\bFROM tags\b/.test(sql);
+
+/** @param {{ sql: string, params: any }} statement */
+function planOf({ sql, params }) {
+    return withRawDb(db => {
+        const explain = db.prepare(`EXPLAIN QUERY PLAN ${sql}`);
+        return (params === undefined ? explain.all() : explain.all(params)).map(row => row.detail).join(' | ');
+    });
+}
+
+describe('createTagDefinition', () => {
+    test('an id that already has a row is refused as exists, and nothing is written', async () => {
+        await openStore();
+        expect(await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' })).toEqual({ refused: [] });
+        const watcher = watchWrites();
+        try {
+            expect(await metadataDb.createTagDefinition(directories, { id: 'a', name: 'Other', sort_order: 9 })).toEqual({ refused: [{ id: 'a', reason: 'exists' }] });
+            expect(watcher.changed()).toBe(false);
+        } finally {
+            watcher.close();
+        }
+        expect(storedData('a')).toEqual({ id: 'a', name: 'A', sort_order: 1 });
+    });
+
+    test('a marked id is refused as deleted, before exists, with a warning naming it, and nothing is written', async () => {
+        await openStore();
+        await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
+        await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B' });
+        await metadataDb.deleteTagDefinition(directories, 'a', null);
+        withRawDb(db => db.prepare('DELETE FROM tags WHERE id = ?').run('b'));
+        withRawDb(db => db.prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, NULL)').run('b'));
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const watcher = watchWrites();
+        try {
+            expect(await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A2' })).toEqual({ refused: [{ id: 'a', reason: 'deleted' }] });
+            expect(await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B2' })).toEqual({ refused: [{ id: 'b', reason: 'deleted' }] });
+            expect(watcher.changed()).toBe(false);
+        } finally {
+            watcher.close();
+        }
+        expect(storedData('a')).toEqual({ id: 'a', name: 'A', sort_order: 1 });
+        expect(storedData('b')).toBeUndefined();
+        const messages = warn.mock.calls.map(args => args.join(' '));
+        expect(messages.some(m => m.includes('a'))).toBe(true);
+        expect(messages.some(m => m.includes('b'))).toBe(true);
+    });
+
+    test('a given sort_order is kept as given, null included', async () => {
+        await openStore();
+        await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: 7 });
+        await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B', sort_order: null });
+        await metadataDb.createTagDefinition(directories, { id: 'c', name: 'C', sort_order: -3 });
+        expect(storedData('a')).toEqual({ id: 'a', name: 'A', sort_order: 7 });
+        expect(storedData('b')).toEqual({ id: 'b', name: 'B', sort_order: null });
+        expect(storedData('c')).toEqual({ id: 'c', name: 'C', sort_order: -3 });
+        expect(derived('a')?.sort_order).toBe(7);
+        expect(derived('b')?.sort_order).toBe(0);
+        expect(derived('c')?.sort_order).toBe(-3);
+    });
+
+    describe.each([['after the fill', true], ['before the fill', false]])('with no sort_order, max+1, %s', (_, ready) => {
+        beforeEach(async () => {
+            await openStore();
+            if (ready) await makeReady();
+        });
+
+        /** @param {string} id @returns {unknown} */
+        const orderOf = id => /** @type {any} */ (storedData(id)).sort_order;
+
+        test('an empty table gives 1, in data and in the column', async () => {
+            expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
+            await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
+            expect(orderOf('a')).toBe(1);
+            expect(derived('a')?.sort_order).toBe(1);
+        });
+
+        test('tags with no order don\'t count', async () => {
+            await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: 3 });
+            await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B', sort_order: 'abc' });
+            await metadataDb.createTagDefinition(directories, { id: 'c', name: 'C', sort_order: 1.5 });
+            await metadataDb.createTagDefinition(directories, { id: 'd', name: 'D' });
+            expect(orderOf('d')).toBe(4);
+            expect(derived('d')?.sort_order).toBe(4);
+            await metadataDb.createTagDefinition(directories, { id: 'e', name: 'E' });
+            expect(orderOf('e')).toBe(5);
+        });
+
+        test('only negative orders gives 1', async () => {
+            await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: -5 });
+            await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B', sort_order: -1 });
+            await metadataDb.createTagDefinition(directories, { id: 'c', name: 'C' });
+            expect(orderOf('c')).toBe(1);
+        });
+
+        if (ready) {
+            test('is read through tags_sort_order as a covering-index search, never a scan of tags', async () => {
+                await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: 3 });
+                recording = true;
+                await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B' });
+                recording = false;
+                expect(orderOf('b')).toBe(4);
+                const plans = recorded.filter(s => readsTags(s.sql)).map(planOf);
+                expect(plans.some(plan => plan.includes('COVERING INDEX tags_sort_order'))).toBe(true);
+                expect(plans.filter(plan => /\bSCAN tags\b/.test(plan))).toEqual([]);
+            });
+        } else {
+            test('a row that won\'t parse is skipped', async () => {
+                await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: 2 });
+                withRawDb(db => db.prepare('INSERT INTO tags (id, data) VALUES (?, ?)').run('bad', '{not json'));
+                await metadataDb.createTagDefinition(directories, { id: 'b', name: 'B' });
+                expect(orderOf('b')).toBe(3);
+            });
+        }
+    });
+});
+
+describe('editTagDefinition', () => {
+    test('merges only the patch\'s fields, so a field another tab changed stays as stored', async () => {
+        await openStore();
+        await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', color: 'red', color2: 'black' });
+        // Another tab recolours.
+        expect(await metadataDb.editTagDefinition(directories, 'a', { color: 'blue' })).toEqual({ refused: [] });
+        // This tab only renames.
+        expect(await metadataDb.editTagDefinition(directories, 'a', { name: 'Renamed', id: 'a' })).toEqual({ refused: [] });
+        expect(storedData('a')).toEqual({ id: 'a', name: 'Renamed', color: 'blue', color2: 'black', sort_order: 1 });
+    });
+
+    test('a missing id is refused as missing and no row is created', async () => {
+        await openStore();
+        const watcher = watchWrites();
+        try {
+            expect(await metadataDb.editTagDefinition(directories, 'ghost', { name: 'Ghost' })).toEqual({ refused: [{ id: 'ghost', reason: 'missing' }] });
+            expect(watcher.changed()).toBe(false);
+        } finally {
+            watcher.close();
+        }
+        expect(storedData('ghost')).toBeUndefined();
+    });
+
+    test('a marked id is refused as deleted with a warning, whether or not its row is still there, and no row is created', async () => {
+        await openStore();
+        await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
+        await metadataDb.deleteTagDefinition(directories, 'a', null);
+        withRawDb(db => db.prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, NULL)').run('gone'));
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const watcher = watchWrites();
+        try {
+            expect(await metadataDb.editTagDefinition(directories, 'a', { name: 'A2' })).toEqual({ refused: [{ id: 'a', reason: 'deleted' }] });
+            expect(await metadataDb.editTagDefinition(directories, 'gone', { name: 'Back' })).toEqual({ refused: [{ id: 'gone', reason: 'deleted' }] });
+            expect(watcher.changed()).toBe(false);
+        } finally {
+            watcher.close();
+        }
+        expect(storedData('a')).toEqual({ id: 'a', name: 'A', sort_order: 1 });
+        expect(storedData('gone')).toBeUndefined();
+        const messages = warn.mock.calls.map(args => args.join(' '));
+        expect(messages.some(m => m.includes('a'))).toBe(true);
+        expect(messages.some(m => m.includes('gone'))).toBe(true);
+    });
+
+    test('stored data that isn\'t a JSON object is refused as unreadable and left as it is', async () => {
+        await openStore();
+        for (const [id, data] of [['broken', '{not json'], ['list', '[1,2]'], ['nothing', 'null'], ['text', '"x"']]) {
+            withRawDb(db => db.prepare('INSERT INTO tags (id, data) VALUES (?, ?)').run(id, data));
+            const watcher = watchWrites();
+            try {
+                expect(await metadataDb.editTagDefinition(directories, id, { name: 'N' })).toEqual({ refused: [{ id, reason: 'unreadable' }] });
+                expect(watcher.changed()).toBe(false);
+            } finally {
+                watcher.close();
+            }
+            expect(withRawDb(db => db.prepare('SELECT data FROM tags WHERE id = ?').get(id))).toEqual({ data });
+        }
+    });
+
+    test('an edit that changes nothing writes nothing', async () => {
+        await openStore();
+        await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', color: 'red' });
+        const seq = await metadataDb.getCurrentTagNameChangeSeq(directories);
+        const hash = await metadataDb.getTagsHash(directories);
+        const watcher = watchWrites();
+        try {
+            for (const patch of [{}, { name: 'A' }, { id: 'a', color: 'red' }]) {
+                expect(await metadataDb.editTagDefinition(directories, 'a', patch)).toEqual({ refused: [] });
+            }
+            expect(watcher.changed()).toBe(false);
+        } finally {
+            watcher.close();
+        }
+        expect(await metadataDb.getCurrentTagNameChangeSeq(directories)).toBe(seq);
+        expect(await metadataDb.getTagsHash(directories)).toBe(hash);
+    });
+
+    test('a name change updates name_key and the tags hash and is logged in tag_name_changes; other fields aren\'t logged', async () => {
+        await openStore();
+        await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
+        const hash = await metadataDb.getTagsHash(directories);
+        const before = await metadataDb.getCurrentTagNameChangeSeq(directories);
+        await metadataDb.editTagDefinition(directories, 'a', { name: 'Élan' });
+        expect(withRawDb(db => db.prepare('SELECT name_key FROM tags WHERE id = ?').get('a'))).toEqual({ name_key: 'elan' });
+        expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
+        const page = await metadataDb.getTagNameChangesSince(directories, before);
+        expect(page?.tagIds).toEqual(['a']);
+
+        const afterRename = await metadataDb.getCurrentTagNameChangeSeq(directories);
+        await metadataDb.editTagDefinition(directories, 'a', { color: 'green' });
+        expect(await metadataDb.getCurrentTagNameChangeSeq(directories)).toBe(afterRename);
+        expect(storedData('a')).toEqual({ id: 'a', name: 'Élan', sort_order: 1, color: 'green' });
     });
 });
