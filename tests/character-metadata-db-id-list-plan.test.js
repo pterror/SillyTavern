@@ -200,3 +200,69 @@ describe('a query narrowed to a hit list returns what the hit list names, once e
         expect(linked?.rows?.map(r => /** @type {any} */ (r).avatar)).toEqual(['Linked.png']);
     });
 });
+
+const INCLUDED_TAGS = [
+    ['one included tag, "and"', { include: ['tag1'], mode: 'and' }],
+    ['one included tag, "or"', { include: ['tag1'], mode: 'or' }],
+    ['three included tags, "and"', { include: ['tag1', 'tag2', 'tag3'], mode: 'and' }],
+    ['three included tags, "or"', { include: ['tag1', 'tag2', 'tag3'], mode: 'or' }],
+];
+
+const TAG_CASES = CALLS.flatMap(([callName, call]) => INCLUDED_TAGS.map(([tagsName, tags]) => /** @type {const} */ ([`${callName}, ${tagsName}`, call, { tags }])));
+
+describe('a query narrowed to a hit list checks each hit\'s included tags by its own primary key', () => {
+    test.each(TAG_CASES)('%s', async (_name, call, filter) => {
+        await metadataDb.ensureSchemaMigrated(directories);
+        recorded.length = 0;
+
+        await call(filter);
+
+        const narrowed = recorded.filter(r => Array.isArray(r.params) && r.params.includes(HIT_IDS_JSON));
+        expect(narrowed.length).toBeGreaterThan(0);
+        for (const { sql, params, handle } of narrowed) {
+            const details = handle.all(`EXPLAIN QUERY PLAN ${sql}`, params).map(row => /** @type {{ detail: string }} */ (row).detail);
+            // Newer SQLite (the wasm build) plans the EXISTS as a semi-join: `SEARCH character_tags EXISTS USING ...`.
+            const tagReads = details.filter(detail => /\b(character_tags|group_tags)\b/.test(detail));
+            expect({ sql, tagReads }).toEqual({ sql, tagReads: expect.arrayContaining([expect.any(String)]) });
+            for (const read of tagReads) {
+                expect({ sql, read }).toEqual({ sql, read: expect.stringMatching(/^SEARCH (character_tags( EXISTS)? USING (COVERING )?INDEX sqlite_autoindex_character_tags_1 \(character_id=\? AND tag_id=\?\)|group_tags( EXISTS)? USING (COVERING )?INDEX sqlite_autoindex_group_tags_1 \(group_id=\? AND tag_id=\?\))$/) });
+            }
+        }
+    });
+});
+
+describe('a query narrowed to a hit list keeps the included-tag results it had', () => {
+    // A: tag1+tag2, B: tag1, C: none, D: tag2; G1: tag1+tag2, G2: tag1. Missing ones are in the list but not the db.
+    const IDS = ['A.png', 'B.png', 'C.png', 'D.png', 'Missing.png', '1700000000001', '1700000000002', '1700000000009'];
+    const INPUTS = [
+        ['one tag, "and"', { include: ['tag1'], mode: 'and' }, ['A.png', 'B.png'], ['1700000000001', '1700000000002']],
+        ['one tag, "or"', { include: ['tag1'], mode: 'or' }, ['A.png', 'B.png'], ['1700000000001', '1700000000002']],
+        ['two tags, "and"', { include: ['tag1', 'tag2'], mode: 'and' }, ['A.png'], ['1700000000001']],
+        ['two tags, "or"', { include: ['tag1', 'tag2'], mode: 'or' }, ['A.png', 'B.png', 'D.png'], ['1700000000001', '1700000000002']],
+        ['a repeated tag, "and"', { include: ['tag1', 'tag1'], mode: 'and' }, [], []],
+        ['a repeated tag, "or"', { include: ['tag1', 'tag1'], mode: 'or' }, ['A.png', 'B.png'], ['1700000000001', '1700000000002']],
+        ['an empty string beside a tag', { include: ['', 'tag2', ''], mode: 'and' }, ['A.png', 'D.png'], ['1700000000001']],
+        ['only empty strings', { include: ['', ''], mode: 'and' }, ['A.png', 'B.png', 'C.png', 'D.png'], ['1700000000001', '1700000000002']],
+        ['a tag nobody has', { include: ['tag9'], mode: 'or' }, [], []],
+        ['no mode given', { include: ['tag1', 'tag2'] }, ['A.png'], ['1700000000001']],
+    ];
+
+    test.each(INPUTS)('%s', async (_name, tags, characters, groups) => {
+        for (const avatar of ['A.png', 'B.png', 'C.png', 'D.png']) {
+            await seedCharacter(avatar);
+        }
+        await metadataDb.upsertGroupRow(directories, '1700000000001', 'G1', { fav: false });
+        await metadataDb.upsertGroupRow(directories, '1700000000002', 'G2', { fav: false });
+        for (const [id, tagId] of [['A.png', 'tag1'], ['A.png', 'tag2'], ['B.png', 'tag1'], ['D.png', 'tag2'], ['1700000000001', 'tag1'], ['1700000000001', 'tag2'], ['1700000000002', 'tag1']]) {
+            expect(await metadataDb.assignEntityTag(directories, id, tagId)).toBe('ok');
+        }
+
+        const characterResult = await metadataDb.queryCharacters(directories, { ids: IDS, tags, sortField: 'name' });
+        expect(characterResult?.total).toBe(characters.length);
+        expect(characterResult?.rows?.map(r => /** @type {any} */ (r).avatar)).toEqual(characters);
+
+        const entityResult = await metadataDb.queryEntities(directories, { ids: IDS, tags, sortField: 'name' });
+        expect(entityResult?.total).toBe(characters.length + groups.length);
+        expect(entityResult?.rows?.map(r => r.id)).toEqual([...characters, ...groups]);
+    });
+});

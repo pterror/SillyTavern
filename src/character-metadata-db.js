@@ -4343,8 +4343,9 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     const clauses = [];
     const args = [];
     let from = 'characters';
+    const hasIds = Array.isArray(ids) && ids.length > 0;
 
-    if (Array.isArray(ids) && ids.length > 0) {
+    if (hasIds) {
         from = idListDrivenFrom('characters');
         args.push(JSON.stringify(ids));
     }
@@ -4364,7 +4365,16 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
         const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
         const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
         const mode = tags.mode === 'or' ? 'or' : 'and';
-        if (include.length > 0) {
+        if (include.length > 0 && hasIds) {
+            // Checks each hit's own rows by primary key; the `id IN` form below reads every character carrying the tag.
+            if (mode === 'and') {
+                clauses.push(`(SELECT COUNT(DISTINCT tag_id) FROM character_tags WHERE character_id = characters.id AND tag_id IN (${include.map(() => '?').join(', ')})) = ?`);
+                args.push(...include, include.length);
+            } else {
+                clauses.push(`EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id IN (${include.map(() => '?').join(', ')}))`);
+                args.push(...include);
+            }
+        } else if (include.length > 0) {
             if (mode === 'and') {
                 clauses.push(`id IN (SELECT character_id FROM character_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}) GROUP BY character_id HAVING COUNT(DISTINCT tag_id) = ?)`);
                 args.push(...include, include.length);
@@ -4731,8 +4741,9 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
     const clauses = [];
     const args = [];
     let from = 'groups';
+    const hasIds = Array.isArray(ids) && ids.length > 0;
 
-    if (Array.isArray(ids) && ids.length > 0) {
+    if (hasIds) {
         from = idListDrivenFrom('groups');
         args.push(JSON.stringify(ids));
     }
@@ -4748,7 +4759,16 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
         const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
         const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
         const mode = tags.mode === 'or' ? 'or' : 'and';
-        if (include.length > 0) {
+        if (include.length > 0 && hasIds) {
+            // Checks each hit's own rows by primary key; the `id IN` form below reads every group carrying the tag.
+            if (mode === 'and') {
+                clauses.push(`(SELECT COUNT(DISTINCT tag_id) FROM group_tags WHERE group_id = groups.id AND tag_id IN (${include.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL}) = ?`);
+                args.push(...include, include.length);
+            } else {
+                clauses.push(`EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id IN (${include.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
+                args.push(...include);
+            }
+        } else if (include.length > 0) {
             if (mode === 'and') {
                 clauses.push(`id IN (SELECT group_id FROM group_tags WHERE tag_id IN (${include.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL} GROUP BY group_id HAVING COUNT(DISTINCT tag_id) = ?)`);
                 args.push(...include, include.length);
