@@ -360,6 +360,53 @@ describe('unimport-embedded-lore - runOnceAtBoot', () => {
         expect(result.result.migrated).toBe(1);
     });
 
+    test('with a batch import open, the unlink is in the characters table before the done marker is written', async () => {
+        const book = makeBook();
+        writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
+        await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
+
+        await metadataDb.beginBatchImport(directories);
+        try {
+            const result = await migration.runOnceAtBoot(directories, { log: () => {} });
+            expect(result.status).toBe('ran');
+            expect(result.result.migrated).toBe(1);
+
+            // Still inside the batch import: a crash now drops the buffer, so the table must already hold the unlink.
+            expect(await metadataDb.isMigrationMarkedComplete(directories, 'unimport_embedded_lore_completed')).toBe(true);
+            const card = await readDbCard('Alice.png');
+            expect(card.data.extensions.world).toBeFalsy();
+        } finally {
+            await metadataDb.endBatchImport(directories);
+        }
+    });
+
+    test('with a batch import open, a retried card\'s unlink is in the characters table before its pending row goes and the done marker is written', async () => {
+        const book = makeBook();
+        writeWorldFile("Alice's Lorebook", autoImportedWorldFile(book));
+        await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
+        await indexCharacters();
+
+        const first = await migration.runOnceAtBoot(directories, { log: () => {}, writeCard: async () => { throw new Error('disk full'); } });
+        expect(first.status).toBe('ran');
+        expect(first.result.failed).toBe(1);
+        expect(await metadataDb.hasMigrationPending(directories, 'unimport-embedded-lore')).toBe(true);
+
+        await metadataDb.beginBatchImport(directories);
+        try {
+            const second = await migration.runOnceAtBoot(directories, { log: () => {} });
+            expect(second.status).toBe('retried');
+            expect(second.result.migrated).toBe(1);
+
+            expect(await metadataDb.hasMigrationPending(directories, 'unimport-embedded-lore')).toBe(false);
+            expect(await metadataDb.isMigrationMarkedComplete(directories, 'unimport_embedded_lore_completed')).toBe(true);
+            const card = await readDbCard('Alice.png');
+            expect(card.data.extensions.world).toBeFalsy();
+        } finally {
+            await metadataDb.endBatchImport(directories);
+        }
+    });
+
     test('gives up without marking complete if bootstrap never finishes in time', async () => {
         await writeCardFile('Alice.png');
         // Never call indexCharacters() - bootstrap_completed is never set.

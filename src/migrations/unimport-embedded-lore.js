@@ -6,7 +6,7 @@ import { color } from '../util.js';
 import { parse as parseCharacterCard, writeCardToFile } from '../character-card-parser.js';
 import { getCharaCardV2 } from '../character-card-normalize.js';
 import { readWorldInfoFile } from '../endpoints/worldinfo.js';
-import { upsertCharacterFromWrite, getCharacterCardJson, streamLinkedWorlds, streamCharactersLinkedToWorld, isWorldLinkedByAnyCharacter, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete, addMigrationPending, setMigrationPendingSettled, clearMigrationPending, hasMigrationPending, streamMigrationPending, commitMigrationSettled } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, getCharacterCardJson, streamLinkedWorlds, streamCharactersLinkedToWorld, isWorldLinkedByAnyCharacter, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete, addMigrationPending, setMigrationPendingSettled, clearMigrationPending, hasMigrationPending, streamMigrationPending, commitMigrationSettled, flushBatchImport } from '../character-metadata-db.js';
 import { NoticeCollector, noticeKey, readNoticeRaw, parseNotice, serializeNotice, replaceNotice, mergeRetryNotice } from './migration-notices.js';
 
 /**
@@ -597,6 +597,8 @@ async function retryPending(directories, { log, writeCard }) {
         value = serializeNotice(previous, merged);
     }
     if (anySettled || value !== undefined) {
+        // A settled row is deleted here; the card write it stands for may still sit in an open batch import's buffer.
+        await flushBatchImport(directories);
         await commitMigrationSettled(directories, NOTICE_ID, noticeKey(NOTICE_ID), value);
     }
     return { retried, migrated, failed, skipped, resolved };
@@ -700,6 +702,9 @@ export async function runOnceAtBoot(directories, options = {}) {
             onFailed: avatar => addMigrationPending(directories, NOTICE_ID, avatar),
             writeCard,
         });
+        // The pass's card writes may still sit in an open batch import's buffer; the markers below must not
+        // outlive them.
+        await flushBatchImport(directories);
     } catch (err) {
         log(color.red(`[unimport-embedded-lore] (${directories.root}) Boot migration run failed, will retry next boot: ${err.message}`));
         return { status: 'error' };
