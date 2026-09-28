@@ -15,7 +15,7 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
     ...realSqliteEngine,
     getSqliteEngine: jest.fn(async () => ({
         kind: 'wasm',
-        openDatabase: (dbPath) => openWasmDatabase(WasmDatabase, dbPath),
+        openDatabase: (dbPath, options) => openWasmDatabase(WasmDatabase, dbPath, options),
     })),
     openNativeDatabase: jest.fn(),
 }));

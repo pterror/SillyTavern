@@ -17,8 +17,8 @@ async function getRecordingSqliteEngine() {
     }
     return {
         ...engine,
-        openDatabase: (dbPath) => {
-            const handle = engine.openDatabase(dbPath);
+        openDatabase: (dbPath, options) => {
+            const handle = engine.openDatabase(dbPath, options);
             for (const method of ['all', 'get', 'iterate', 'run']) {
                 const real = handle[method];
                 handle[method] = (sql, params) => {
