@@ -1426,6 +1426,45 @@ describe('phase 3 extension: groups (owner decision - tags.json removal includes
         expect(await metadataDb.assignEntityTag(directories, 'group1', 'tag1')).toBe('not_found');
     });
 
+    describe('a tag_map import keeps a group\'s digest_tag_ids equal to its group_tags', () => {
+        async function storedDigestTagIds(/** @type {string} */ id) {
+            metadataDb.disposeMetadataStores();
+            const { default: Database } = await import('better-sqlite3');
+            const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+            try {
+                return rawDb.prepare('SELECT digest_tag_ids FROM groups WHERE id = ?').get(id).digest_tag_ids;
+            } finally {
+                rawDb.close();
+            }
+        }
+
+        async function expectedDigestTagIds(/** @type {string[]} */ tagIds) {
+            const { groupDigestTagIdsHash } = await import('../public/scripts/hash-utils.js');
+            return groupDigestTagIdsHash({ tag_ids: tagIds });
+        }
+
+        test('restoreTagMap', async () => {
+            await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
+            await metadataDb.assignEntityTag(directories, 'group1', 'a');
+
+            expect(await metadataDb.restoreTagMap(directories, { group1: ['b'] })).toEqual([]);
+
+            expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['a', 'b']);
+            expect(await storedDigestTagIds('group1')).toBe(await expectedDigestTagIds(['a', 'b']));
+        });
+
+        test('migrateTagsJsonIfNeeded', async () => {
+            await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
+            await metadataDb.assignEntityTag(directories, 'group1', 'a');
+            fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: { group1: ['b'] } }));
+
+            await metadataDb.migrateTagsJsonIfNeeded(directories);
+
+            expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['a', 'b']);
+            expect(await storedDigestTagIds('group1')).toBe(await expectedDigestTagIds(['a', 'b']));
+        });
+    });
+
     test('deleteGroupRow cascades to group_tags and tag_usage', async () => {
         await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
         await metadataDb.assignEntityTag(directories, 'group1', 'tag1');
