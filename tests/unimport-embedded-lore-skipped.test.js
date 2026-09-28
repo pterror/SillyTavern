@@ -394,8 +394,12 @@ describe('unimport-embedded-lore - report-only pass on an install the migration 
 });
 
 describe('unimport-embedded-lore - orphan report', () => {
-    test('a World file the orphan report cannot parse does not keep the migration from being marked done', async () => {
+    test('a World file the orphan report cannot parse is listed, and the Worlds around it are still reported', async () => {
         const book = makeBook();
+        // Several orphaned Worlds, so some sit after the broken file in whatever order the folder is read.
+        for (let i = 0; i < 5; i++) {
+            writeWorldFile(`Orphan ${i}`, autoImportedWorldFile(book));
+        }
         writeWorldFile('Alice\'s Lorebook', autoImportedWorldFile(book));
         await writeCardFile('Alice.png', { data: { extensions: { world: 'Alice\'s Lorebook' }, character_book: book } });
         fs.writeFileSync(path.join(worldsDir, 'Junk.json'), '{not json');
@@ -405,7 +409,13 @@ describe('unimport-embedded-lore - orphan report', () => {
         const boot = await migration.runOnceAtBoot(directories, { log: line => lines.push(line) });
         expect(boot.status).toBe('ran');
         expect(await isMarked(COMPLETED_KEY)).toBe(true);
-        expect(lines).toContainEqual(expect.stringContaining('Listing orphaned World files failed:'));
-        expect(boot.result.orphanedWorlds).toBeNull();
+        expect(lines).not.toContainEqual(expect.stringContaining('Listing orphaned World files failed:'));
+        expect(lines).toContainEqual(expect.stringContaining('World file "Junk.json" couldn\'t be read ('));
+        expect(boot.result.orphanedWorlds).toBe(6);
+        const orphanLine = lines.find(line => line.includes('came from an embedded-lore import and now have no character linking to them'));
+        for (const name of ['Alice\'s Lorebook', 'Orphan 0', 'Orphan 1', 'Orphan 2', 'Orphan 3', 'Orphan 4']) {
+            expect(orphanLine).toContain(name);
+        }
+        expect(orphanLine).not.toContain('Junk');
     });
 });

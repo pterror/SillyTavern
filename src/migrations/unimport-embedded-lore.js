@@ -296,7 +296,8 @@ const ORPHANED_WORLDS_PER_LINE = 100;
 /**
  * Logs the Worlds carrying the originalData marker that no character links as its primary world any more, for
  * manual review, at most ORPHANED_WORLDS_PER_LINE names per line. Streams the worlds folder and asks the index
- * about one World at a time, so neither the folder listing nor the linked Worlds are ever held.
+ * about one World at a time, so neither the folder listing nor the linked Worlds are ever held. An unlinked World
+ * file that can't be read gets its own line naming it and the error, and the report goes on past it.
  * @returns {Promise<number>} how many there were
  */
 async function reportOrphanedWorlds(directories, log) {
@@ -319,7 +320,14 @@ async function reportOrphanedWorlds(directories, log) {
             throw new Error(STORE_UNAVAILABLE_MESSAGE);
         }
         if (linked) continue;
-        const world = readWorldInfoFile(directories, name, false);
+        let world;
+        try {
+            world = readWorldInfoFile(directories, name, false);
+        } catch (err) {
+            log(color.yellow(`[unimport-embedded-lore] World file "${dirent.name}" couldn't be read (${err.message}), so whether it came from an embedded-lore import and now has no character linking to it can't be told - left in place.`));
+            await new Promise(resolve => setImmediate(resolve));
+            continue;
+        }
         if (world?.originalData?.entries) {
             names.push(name);
             count++;
