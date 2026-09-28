@@ -3,7 +3,7 @@ import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
 import { lookupModelTokenizer, mapResultKey } from './tokenizer-model-map.js';
 import { hasRemoteTokenizer, lookupBackendModel } from './backend-status.js';
-import { TOKENIZER_NAMES, describeMapEntry, describeTokenizerId, localResolution, estimateResolution, resolveChatCompletionTokenizer, selectBackendResult } from './tokenizer-map-resolution.js';
+import { TOKENIZER_NAMES, describeMapEntry, describeTokenizerId, localResolution, estimateResolution, resolveChatCompletionTokenizer, selectBackendResult, selectModelResult } from './tokenizer-map-resolution.js';
 import { findTokenizerSource } from './tokenizer-sources.js';
 import { loadRegistryTokenizer } from './tokenizer-loader.js';
 
@@ -364,7 +364,7 @@ export async function resolveTokenizer(state, deps = {}) {
 
     const backend = { api, type, url, directories: deps.directories };
     const model = state.model || await lookupBackendModel(backend);
-    const local = describeMapEntry(selectBackendResult(lookupModel(api, model), { ...state, model }), api, registry);
+    const local = describeMapEntry(await selectModelResult(api, model, state, deps), api, registry);
 
     if (await hasRemoteTokenizer(backend, TEXTGEN_TOKENIZERS)) {
         const id = api === 'kobold' ? tokenizers.API_KOBOLD : tokenizers.API_TEXTGENERATIONWEBUI;

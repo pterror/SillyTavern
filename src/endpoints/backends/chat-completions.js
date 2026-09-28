@@ -66,6 +66,7 @@ import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
 import { resolveTokenizer, sendTokenizerWarnings, createTokenizerOutcome } from '../../tokenizer-resolve.js';
 import { readConnectionStateHeader } from '../../connection-state-header.js';
+import { fetchOpenRouterModels, rememberOpenRouterModels } from '../../openrouter-models.js';
 import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js';
 import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
@@ -109,7 +110,6 @@ const API_SILICONFLOW = 'https://api.siliconflow.com/v1';
 const API_SILICONFLOW_CN = 'https://api.siliconflow.cn/v1';
 const API_MINIMAX = 'https://api.minimax.io/v1';
 const API_MINIMAX_CN = 'https://api.minimaxi.com/v1';
-const API_OPENROUTER = 'https://openrouter.ai/api/v1';
 const API_WORKERS_AI = 'https://api.cloudflare.com/client/v4/accounts';
 
 /**
@@ -153,26 +153,13 @@ async function isOpenRouterModelCacheable(modelId) {
     }
 
     try {
-        const response = await fetch(`${API_OPENROUTER}/models`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' },
-            signal: AbortSignal.timeout(5000),
-        });
+        const models = await fetchOpenRouterModels();
 
-        if (!response.ok) {
-            console.warn(`OpenRouter models API returned ${response.status}: ${response.statusText}`);
+        if (!models) {
             return false;
         }
 
-        /** @type {any} */
-        const data = await response.json();
-
-        if (!Array.isArray(data?.data)) {
-            console.warn('OpenRouter API response format unexpected');
-            return false;
-        }
-
-        const model = data.data.find(m => m.id === modelId);
+        const model = models.find(m => m.id === modelId);
         const supportsCache = model?.pricing?.input_cache_write != null;
 
         if (supportsCache) {
@@ -2516,6 +2503,7 @@ router.post('/status', async function (request, statusResponse) {
             }
 
             if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENROUTER && Array.isArray(data?.data)) {
+                rememberOpenRouterModels(data.data);
                 let models = [];
 
                 data.data.forEach(model => {

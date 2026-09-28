@@ -58,6 +58,10 @@ if (canMockDownloads) {
 }
 
 const { computeLogitBias, computeTextgenLogitBias, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
+// OpenRouter models resolve as if OpenRouter's model list named no hugging_face_id for them, and the
+// list is not fetched.
+const { rememberOpenRouterModels } = await import('../openrouter-models.js');
+rememberOpenRouterModels([]);
 const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
 const { router: currentRouter } = await import('./tokenizers-current.js');
 const { default: express } = await import('express');

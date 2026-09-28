@@ -683,7 +683,7 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
         return result;
     }
 
-    const resolved = resolveChatCompletionTokenizer(modelName, source);
+    const resolved = await resolveChatCompletionTokenizer(modelName, source);
     let encodeFunction = null;
     if (resolved.kind !== 'estimate') {
         encodeFunction = await getLocalEncoder(resolved);
@@ -1327,10 +1327,10 @@ const OPENAI_ROUTE_NAMED_TOKENIZERS = [
  * The tokenizer for an `/openai/*` request: from the `X-ST-Connection-State` header's state when
  * there is one, else from `?model=`, the named tokenizer or the model map.
  * @param {import('express').Request} req
- * @returns {import('../tokenizer-resolve.js').ResolvedTokenizer|null} null when the header holds no
+ * @returns {Promise<import('../tokenizer-resolve.js').ResolvedTokenizer|null>} null when the header holds no
  * chat-completion state.
  */
-function resolveOpenAIRouteRequest(req) {
+async function resolveOpenAIRouteRequest(req) {
     const state = readConnectionStateHeader(req);
     if (state === null) {
         return null;
@@ -1349,7 +1349,7 @@ router.post('/openai/encode', async function (req, res) {
     try {
         if (!req.body) return res.sendStatus(400);
 
-        const resolved = resolveOpenAIRouteRequest(req);
+        const resolved = await resolveOpenAIRouteRequest(req);
         if (!resolved) return res.sendStatus(400);
         if (resolved.kind === 'estimate') {
             return res.send({ ids: [], count: guesstimate(String(req.body.text || '')), chunks: [] });
@@ -1365,7 +1365,7 @@ router.post('/openai/decode', async function (req, res) {
     try {
         if (!req.body) return res.sendStatus(400);
 
-        const resolved = resolveOpenAIRouteRequest(req);
+        const resolved = await resolveOpenAIRouteRequest(req);
         if (!resolved) return res.sendStatus(400);
         if (resolved.kind === 'estimate') {
             return res.send({ text: '' });
@@ -1380,7 +1380,7 @@ router.post('/openai/decode', async function (req, res) {
 router.post('/openai/count', async function (req, res) {
     if (!req.body) return res.sendStatus(400);
 
-    const resolved = resolveOpenAIRouteRequest(req);
+    const resolved = await resolveOpenAIRouteRequest(req);
     if (!resolved) return res.sendStatus(400);
     const num_tokens = await countChatCompletionMessages(resolved, req.body, undefined, req.user?.directories);
     return res.send({ 'token_count': num_tokens });

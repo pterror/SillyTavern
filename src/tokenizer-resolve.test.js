@@ -182,6 +182,14 @@ const backendStatus = await import('./backend-status.js').catch(error => {
     return {};
 });
 
+const openRouterModels = await import('./openrouter-models.js').catch(error => {
+    console.log(`openrouter-models.js not importable: ${error.message}`);
+    return {};
+});
+// OpenRouter models resolve through OpenRouter's model list first. The cases below that don't pass
+// their own list resolve as if the list named no hugging_face_id for them, and nothing is fetched.
+openRouterModels.rememberOpenRouterModels?.([]);
+
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenizer-resolve-test-'));
 const directories = /** @type {any} */ ({ root: tmpRoot });
 
@@ -1223,6 +1231,94 @@ await check('a Phi or Nemotron name Microsoft\'s or NVIDIA\'s API serves: its fi
     for (const [backend, model] of estimates) {
         const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
         assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, `${JSON.stringify(backend)} ${model}`);
+    }
+});
+
+// Rows of OpenRouter's /models reply as it was on 2026-09-28, cut down to the fields read here.
+const OPENROUTER_LIST = [
+    { id: 'meta-llama/llama-3.1-8b-instruct', hugging_face_id: 'meta-llama/Meta-Llama-3.1-8B-Instruct' },
+    { id: 'qwen/qwen-2.5-72b-instruct', hugging_face_id: 'Qwen/Qwen2.5-72B-Instruct' },
+    { id: 'deepseek/deepseek-chat-v3.1', hugging_face_id: 'deepseek-ai/DeepSeek-V3.1' },
+    { id: 'deepseek/deepseek-v4-pro', hugging_face_id: 'deepseek-ai/DeepSeek-V4-Pro' },
+    { id: 'google/gemma-4-31b-it', hugging_face_id: 'google/gemma-4-31B-it' },
+    { id: 'moonshotai/kimi-k3', hugging_face_id: 'moonshotai/Kimi-K3' },
+    { id: 'microsoft/phi-4', hugging_face_id: 'microsoft/phi-4' },
+    { id: 'mistralai/mistral-nemo', hugging_face_id: 'mistralai/Mistral-Nemo-Instruct-2407' },
+    { id: 'mistralai/mistral-small-2603', hugging_face_id: 'mistralai/Mistral-Small-4-119B-2603' },
+    { id: 'mistralai/mixtral-8x22b-instruct', hugging_face_id: 'mistralai/Mixtral-8x22B-Instruct-v0.1' },
+    { id: 'meta-llama/llama-3-70b-instruct', hugging_face_id: 'meta-llama/Meta-Llama-3-70B-Instruct' },
+    { id: 'openrouter/auto' },
+    { id: 'anthropic/claude-sonnet-4', hugging_face_id: '' },
+];
+
+await check('an OpenRouter model resolves by the hugging_face_id OpenRouter lists for it, ahead of its name', async () => {
+    const deps = { fetchOpenRouterModels: async () => OPENROUTER_LIST };
+    const entry = (id, source, family) => ({ id, source, name: `${family} (official)` });
+    try {
+        openRouterModels.forgetOpenRouterModels?.();
+        const local = [
+            ['meta-llama/llama-3.1-8b-instruct', entry(tokenizers.LLAMA3_1, 'llama3.1', 'Llama 3.1')],
+            ['qwen/qwen-2.5-72b-instruct', entry(tokenizers.QWEN2_5, 'qwen2.5', 'Qwen2.5')],
+            ['deepseek/deepseek-chat-v3.1', entry(tokenizers.DEEPSEEK_V3_1, 'deepseek-v3.1', 'DeepSeek-V3.1')],
+            // Names that alone give every hosted API the estimate: the repo says which weights they are.
+            ['deepseek/deepseek-v4-pro', entry(tokenizers.DEEPSEEK_V4, 'deepseek-v4', 'DeepSeek-V4')],
+            ['google/gemma-4-31b-it', entry(tokenizers.GEMMA_4, 'gemma-4', 'Gemma 4')],
+            ['microsoft/phi-4', entry(tokenizers.PHI_4, 'phi-4', 'Phi-4')],
+            // Kimi entries share one file, so only their own repos name them.
+            ['moonshotai/kimi-k3', entry(tokenizers.KIMI_K3, 'kimi-k3', 'Kimi K3')],
+            // A variant suffix OpenRouter doesn't list is the listed model.
+            ['deepseek/deepseek-chat-v3.1:nitro', entry(tokenizers.DEEPSEEK_V3_1, 'deepseek-v3.1', 'DeepSeek-V3.1')],
+        ];
+        for (const [model, expected] of local) {
+            for (const backend of [{ api: 'openai', source: 'openrouter' }, { api: TEXTGEN, type: TEXTGEN_TYPES.OPENROUTER }]) {
+                const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH }, deps);
+                assert.deepEqual(
+                    { kind: resolved.kind, id: resolved.id, source: resolved.source, name: resolved.name },
+                    { kind: 'local', ...expected },
+                    `${JSON.stringify(backend)} ${model}`,
+                );
+            }
+        }
+
+        // Mistral's own files disagree, so on OpenRouter only Nemo keeps nemo.json; the rest get none.
+        const nemo = await resolveTokenizer({ api: 'openai', source: 'openrouter', model: 'mistralai/mistral-nemo' }, deps);
+        assert.deepEqual({ kind: nemo.kind, id: nemo.id }, { kind: 'local', id: tokenizers.NEMO });
+
+        const estimates = [
+            'mistralai/mistral-small-2603',
+            'mistralai/mixtral-8x22b-instruct',
+            'openrouter/auto',
+            '~anthropic/claude-latest',
+            'anthropic/claude-sonnet-4',
+        ];
+        for (const model of estimates) {
+            const resolved = await resolveTokenizer({ api: 'openai', source: 'openrouter', model }, deps);
+            assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, model);
+        }
+
+        // A repo that ships no registry file leaves the model to its OpenRouter id.
+        const byName = await resolveTokenizer({ api: 'openai', source: 'openrouter', model: 'meta-llama/llama-3-70b-instruct' }, deps);
+        assert.deepEqual({ kind: byName.kind, id: byName.id }, { kind: 'local', id: tokenizers.LLAMA3 });
+    } finally {
+        openRouterModels.forgetOpenRouterModels?.();
+        openRouterModels.rememberOpenRouterModels?.([]);
+    }
+});
+
+await check('without OpenRouter\'s model list, an OpenRouter model is unknown, even one its name maps', async () => {
+    try {
+        openRouterModels.forgetOpenRouterModels?.();
+        const deps = { fetchOpenRouterModels: async () => null };
+        for (const backend of [{ api: 'openai', source: 'openrouter' }, { api: TEXTGEN, type: TEXTGEN_TYPES.OPENROUTER }]) {
+            const resolved = await resolveTokenizer({ ...backend, model: 'meta-llama/llama-3-70b-instruct', tokenizerSetting: tokenizers.BEST_MATCH }, deps);
+            assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, JSON.stringify(backend));
+        }
+        // Other backends don't read the list.
+        const groq = await resolveTokenizer({ api: 'openai', source: 'groq', model: 'meta-llama/llama-3-70b-instruct' }, deps);
+        assert.deepEqual({ kind: groq.kind, id: groq.id }, { kind: 'local', id: tokenizers.LLAMA3 });
+    } finally {
+        openRouterModels.forgetOpenRouterModels?.();
+        openRouterModels.rememberOpenRouterModels?.([]);
     }
 });
 

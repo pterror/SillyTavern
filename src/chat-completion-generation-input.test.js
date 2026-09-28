@@ -25,6 +25,10 @@ const { world_info_position } = await import('./world-info/result-bucketing.js')
 const { extension_prompt_types, extension_prompt_roles } = await import('./extension-prompt-table.js');
 const { upsertCharacterFromWrite } = await import('./character-metadata-db.js');
 const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('./endpoints/tokenizers.js');
+// OpenRouter models resolve as if OpenRouter's model list named no hugging_face_id for them, and the
+// list is not fetched.
+const { rememberOpenRouterModels } = await import('./openrouter-models.js');
+rememberOpenRouterModels([]);
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completion-generation-input-test-'));
 const charactersDir = path.join(root, 'characters');
