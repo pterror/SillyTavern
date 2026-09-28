@@ -2124,7 +2124,7 @@ async function runResumableCharacterPass(db, { table = 'characters', doneKey, do
             console.warn(color.yellow(`[character-metadata] ${label}: ${batchFailed.length} row(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.id}: ${f.message}`).join('\n')}`));
         }
         if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
-            db.get('PRAGMA wal_checkpoint(PASSIVE)');
+            if (!isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
         }
         const now = Date.now();
         if (logProgress && now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
@@ -2141,7 +2141,7 @@ async function runResumableCharacterPass(db, { table = 'characters', doneKey, do
         }
         db.run('DELETE FROM meta WHERE key = @key', { key: progressKey });
     });
-    db.checkpoint();
+    if (!isReadOnlyMode()) db.checkpoint();
     if (rowsFailed > 0) {
         console.warn(color.yellow(`[character-metadata] ${label}: ${rowsFailed} row(s) failed (listed above); not marked done, so it runs again from the first row next boot.`));
     }
@@ -2481,9 +2481,10 @@ export async function clearTagCache(directories) {
 /**
  * @param {import('./users.js').UserDirectoryList[]} directoriesList
  * @returns {Promise<Promise<void>[]>} Each store's bootstrap chain, rejecting if it failed. Failures are also
- *   logged, so callers may ignore these.
+ *   logged, so callers may ignore these. None in read-only mode, which starts no chain.
  */
 export async function initializeMetadataStores(directoriesList) {
+    if (isReadOnlyMode()) return [];
     /** @type {Promise<void>[]} */
     const chains = [];
     for (const directories of directoriesList) {
@@ -3643,7 +3644,7 @@ export async function recoverNumericIdGroupsIfNeeded(directories) {
             console.warn(color.yellow(`[character-metadata] ${label}: ${batchFailed.length} group file(s) failed and were skipped:\n${batchFailed.map(f => `  ${f.file}: ${f.message}`).join('\n')}`));
         }
         if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
-            entry.db.get('PRAGMA wal_checkpoint(PASSIVE)');
+            if (!isReadOnlyMode()) entry.db.get('PRAGMA wal_checkpoint(PASSIVE)');
         }
         await delay(MIGRATION_BATCH_PAUSE_MS);
     };
@@ -3667,7 +3668,7 @@ export async function recoverNumericIdGroupsIfNeeded(directories) {
     if (filesFailed === 0) {
         entry.db.run(UPSERT_META_VALUE_SQL, { key: GROUP_NUMERIC_ID_RECOVERY_FLAG, value: String(Date.now()) });
     }
-    entry.db.checkpoint();
+    if (!isReadOnlyMode()) entry.db.checkpoint();
     if (filesFailed > 0) {
         console.warn(color.yellow(`[character-metadata] ${label}: ${filesFailed} group file(s) failed (listed above); not marked done, so it runs again next boot.`));
     }
@@ -4052,7 +4053,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
             { value: String(Date.now()) },
         );
     }
-    entry.db.checkpoint();
+    if (!isReadOnlyMode()) entry.db.checkpoint();
 
     if (droppedKeys.length > 0) {
         console.warn(`[character-metadata] tags.json migration: ${droppedKeys.length} tag_map key(s) matched neither a known character nor a known group, dropped: ${droppedKeys.slice(0, 20).join(', ')}${droppedKeys.length > 20 ? ', ...' : ''}`);
@@ -4223,7 +4224,7 @@ async function importTagMap(entry, tagMap) {
             console.warn(color.yellow(`[character-metadata] tags.json migration: ${batchFailed.length} tag_map key(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.key}: ${f.message}`).join('\n')}`));
         }
         if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
-            entry.db.get('PRAGMA wal_checkpoint(PASSIVE)');
+            if (!isReadOnlyMode()) entry.db.get('PRAGMA wal_checkpoint(PASSIVE)');
         }
     }
 
