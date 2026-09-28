@@ -4744,6 +4744,19 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
         saveSettingsDebounced('world_info_settings');
     }
 
+    // The character being created isn't stored yet, so the relink below can't reach it. Its links move with the
+    // book, like the auxiliary links above: it is created with them.
+    if (menu_type == 'create') {
+        if (create_save.world === oldName) {
+            create_save.world = newName;
+            $('#character_world').val(newName);
+            updateCharacterWorldButton();
+        }
+        if (Array.isArray(create_save.extra_books) && create_save.extra_books.includes(oldName)) {
+            create_save.extra_books = normalizeArray(create_save.extra_books.map((e) => e === oldName ? newName : e));
+        }
+    }
+
     // Update link for active persona
     if (retargetPersonaLore) {
         getOrCreatePersonaDescriptor();
