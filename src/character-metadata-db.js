@@ -4294,6 +4294,199 @@ export async function deleteTagDefinition(directories, tagId, mergeInto = null) 
     return 'ok';
 }
 
+// The same bound streamRows() pages the other migration passes by.
+const DELETED_TAG_BATCH_SIZE = 1000;
+
+/**
+ * @typedef {object} DeletedTagRowSide
+ * @property {'character_tags' | 'group_tags'} tagTable
+ * @property {'character_id' | 'group_id'} entityColumn
+ * @property {'characters' | 'groups'} entityTable
+ * @property {boolean} skipsPngRows Leaves rows whose entity id ends in `.png` (GROUP_TAG_ROW_IS_GROUP_SQL).
+ * @property {(db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle, id: string) => void} syncStoredCopy
+ */
+
+/** @type {DeletedTagRowSide[]} */
+const DELETED_TAG_ROW_SIDES = [
+    { tagTable: 'character_tags', entityColumn: 'character_id', entityTable: 'characters', skipsPngRows: false, syncStoredCopy: syncShallowTagIdsFromTable },
+    { tagTable: 'group_tags', entityColumn: 'group_id', entityTable: 'groups', skipsPngRows: true, syncStoredCopy: syncGroupDigestTagIdsFromTable },
+];
+
+/**
+ * @typedef {object} DeletedTagPassTotals
+ * @property {number} batches
+ * @property {number} rowsChanged
+ * @property {boolean} wrote
+ */
+
+/**
+ * Finishes the tags deleteTagDefinition() marked. For each, in batches: every entity carrying it gets its merge
+ * target (unless it has it already) and loses the tag's row, with its stored copy of its tags kept in sync in the
+ * same transaction. A row whose entity doesn't exist is removed with no merge and listed in a warning. Once no row
+ * carries the tag, its tags row, tag_usage row and mark are dropped together. A tag that `.png` rows in group_tags
+ * still carry is left marked, with those rows untouched.
+ *
+ * Resumable with no saved position: the rows still carrying a marked tag are what is left to do. Each batch reads
+ * a bounded list of entity ids, closes the read, then writes in its own transaction.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `rowsChanged` counts the marked tags' rows removed.
+ */
+export async function finishDeletedTags(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    /** @type {DeletedTagPassTotals} */
+    const totals = { batches: 0, rowsChanged: 0, wrote: false };
+    // Read to the end rather than stopping at a short page, so a tag marked while this runs (a merge target
+    // deleted mid-pass) is finished by the same run when its id sorts after the ones done.
+    /** @type {string | null} */
+    let after = null;
+    for (;;) {
+        /** @type {string[]} */
+        const tagIds = [];
+        const rows = after === null
+            ? entry.db.iterate('SELECT tag_id FROM tag_deletions ORDER BY tag_id LIMIT @limit', { limit: DELETED_TAG_BATCH_SIZE })
+            : entry.db.iterate('SELECT tag_id FROM tag_deletions WHERE tag_id > @after ORDER BY tag_id LIMIT @limit', { after, limit: DELETED_TAG_BATCH_SIZE });
+        for (const row of /** @type {Iterable<{ tag_id: string }>} */ (rows)) tagIds.push(row.tag_id);
+        if (tagIds.length === 0) break;
+        for (const tagId of tagIds) await finishDeletedTag(entry, tagId, totals);
+        after = tagIds[tagIds.length - 1];
+    }
+    if (totals.wrote && !isReadOnlyMode()) entry.db.checkpoint();
+    return { batches: totals.batches, rowsChanged: totals.rowsChanged };
+}
+
+/**
+ * @param {MetadataDbEntry} entry
+ * @param {string} tagId
+ * @param {DeletedTagPassTotals} totals
+ */
+async function finishDeletedTag(entry, tagId, totals) {
+    const { db } = entry;
+    const tagName = deletedTagNameForWarning(db, tagId);
+    for (;;) {
+        for (const side of DELETED_TAG_ROW_SIDES) {
+            if (await moveDeletedTagRows(db, tagId, tagName, side, totals) === 'unmarked') return;
+        }
+
+        // A row added behind a walk's position sends it round again.
+        if (db.get('SELECT 1 FROM character_tags WHERE tag_id = @tagId LIMIT 1', { tagId })
+            || db.get(`SELECT 1 FROM group_tags WHERE tag_id = @tagId AND ${GROUP_TAG_ROW_IS_GROUP_SQL} LIMIT 1`, { tagId })) {
+            continue;
+        }
+        if (db.get('SELECT 1 FROM group_tags WHERE tag_id = @tagId LIMIT 1', { tagId })) {
+            console.log(color.cyan(`[character-metadata] Deleted tag ${tagId} (${tagName}): left marked deleted, since legacy .png rows in group_tags still carry it.`));
+            return;
+        }
+
+        /** @type {{ outcome: 'unmarked' | 'rows' | 'finished' }} */
+        const state = { outcome: 'unmarked' };
+        db.transaction(() => {
+            state.outcome = 'unmarked';
+            if (!db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @tagId', { tagId })) return;
+            state.outcome = 'rows';
+            if (db.get('SELECT 1 FROM character_tags WHERE tag_id = @tagId LIMIT 1', { tagId })
+                || db.get('SELECT 1 FROM group_tags WHERE tag_id = @tagId LIMIT 1', { tagId })) return;
+            db.run('DELETE FROM tags WHERE id = @tagId', { tagId });
+            db.run('DELETE FROM tag_usage WHERE tag_id = @tagId', { tagId });
+            db.run('DELETE FROM tag_deletions WHERE tag_id = @tagId', { tagId });
+            updateTagsHashIfChangedSync(db);
+            characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            state.outcome = 'finished';
+        });
+        if (state.outcome === 'rows') continue;
+        if (state.outcome === 'finished') {
+            totals.wrote = true;
+            entry.tagCache = null;
+            console.log(color.cyan(`[character-metadata] Deleted tag ${tagId} (${tagName}): finished.`));
+        }
+        return;
+    }
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} tagId
+ * @returns {string} The tag's name, or its id when its tags row or name is missing.
+ */
+function deletedTagNameForWarning(db, tagId) {
+    const row = /** @type {{ data: string } | undefined} */ (db.get('SELECT data FROM tags WHERE id = @tagId', { tagId }));
+    try {
+        const name = row ? JSON.parse(row.data)?.name : undefined;
+        return typeof name === 'string' && name ? name : tagId;
+    } catch {
+        return tagId;
+    }
+}
+
+/**
+ * One walk over a marked tag's rows on one side, by entity id.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} tagId
+ * @param {string} tagName
+ * @param {DeletedTagRowSide} side
+ * @param {DeletedTagPassTotals} totals
+ * @returns {Promise<'walked' | 'unmarked'>} 'unmarked' when the mark was gone at a batch's start.
+ */
+async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
+    const { tagTable, entityColumn, entityTable, skipsPngRows, syncStoredCopy } = side;
+    /** @type {string | null} */
+    let after = null;
+    for (;;) {
+        /** @type {string[]} */
+        const page = [];
+        const rows = after === null
+            ? db.iterate(`SELECT ${entityColumn} AS id FROM ${tagTable} WHERE tag_id = @tagId ORDER BY ${entityColumn} LIMIT @limit`, { tagId, limit: DELETED_TAG_BATCH_SIZE })
+            : db.iterate(`SELECT ${entityColumn} AS id FROM ${tagTable} WHERE tag_id = @tagId AND ${entityColumn} > @after ORDER BY ${entityColumn} LIMIT @limit`, { tagId, after, limit: DELETED_TAG_BATCH_SIZE });
+        for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) page.push(row.id);
+        if (page.length === 0) return 'walked';
+        after = page[page.length - 1];
+        const ids = skipsPngRows ? page.filter(id => !id.endsWith('.png')) : page;
+
+        if (ids.length > 0) {
+            /** @type {{ unmarked: boolean, removed: number, orphans: string[] }} */
+            const state = { unmarked: false, removed: 0, orphans: [] };
+            db.transaction(() => {
+                // Reset here: a transaction that hits busy is rolled back and rerun.
+                state.unmarked = false;
+                state.removed = 0;
+                state.orphans = [];
+                // Re-read every batch: deleting the merge target moves this mark onto the target's own.
+                const mark = /** @type {{ merge_into: string | null } | undefined} */ (db.get('SELECT merge_into FROM tag_deletions WHERE tag_id = @tagId', { tagId }));
+                if (!mark) {
+                    state.unmarked = true;
+                    return;
+                }
+                const target = mark.merge_into ?? null;
+                for (const id of ids) {
+                    if (db.run(`DELETE FROM ${tagTable} WHERE ${entityColumn} = @id AND tag_id = @tagId`, { id, tagId }).changes === 0) continue;
+                    state.removed++;
+                    if (!db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id })) {
+                        state.orphans.push(id);
+                        continue;
+                    }
+                    if (target !== null) {
+                        db.run(`INSERT OR IGNORE INTO ${tagTable} (${entityColumn}, tag_id) VALUES (@id, @target)`, { id, target });
+                    }
+                    syncStoredCopy(db, id);
+                }
+            });
+            if (state.unmarked) return 'unmarked';
+            if (state.removed > 0) {
+                totals.batches++;
+                totals.rowsChanged += state.removed;
+                totals.wrote = true;
+                if (totals.batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+            }
+            if (state.orphans.length > 0) {
+                console.warn(color.yellow(`[character-metadata] Deleted tag ${tagId}: removed it with no merge from ${state.orphans.length} ${tagTable} row(s) whose ${entityTable} row doesn't exist:\n${state.orphans.map(id => `  ${id}: ${tagName}`).join('\n')}`));
+            }
+            await delay(MIGRATION_BATCH_PAUSE_MS);
+        }
+        if (page.length < DELETED_TAG_BATCH_SIZE) return 'walked';
+    }
+}
+
 // One-time migration off tags.json (removed entirely, not just drained). Must run after bootstrapIfNeeded()
 // AND bootstrapGroupsIfNeeded() since it classifies tag_map keys against those tables; an unmatched key is
 // dropped with a warning. On success tags.json is renamed to `tags.json.migrated`, not deleted. Gated by a meta

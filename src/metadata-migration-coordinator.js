@@ -19,6 +19,7 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'backfillTagIdsInShallowJson',
     'normalizeCharacterFavIfNeeded',
     'normalizeCharacterTagIdsIfNeeded',
+    'finishDeletedTags',
 ]);
 
 /**
