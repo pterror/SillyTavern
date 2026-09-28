@@ -93,8 +93,8 @@ checkSource(GENERAL_API, 'DeepSeek-R1-Distill-Llama-3.3-70B', 'deepseek-r1-disti
 
 // Llama names that name no one official file: 3.2 Vision (its tokenizer.json and original/tokenizer.model
 // give different ids), the 405B base (its original/mp8/tokenizer.model is unknown), the closed
-// Llama-3.3-8B-Instruct, Groq ids that served Llama 3.3, names without a size, unknown versions, NVIDIA's
-// Nemotron models, Prompt Guard, Llama Guard 1, and "LLaMA v2".
+// Llama-3.3-8B-Instruct, Groq ids that served Llama 3.3, names without a size, unknown versions, Prompt
+// Guard, Llama Guard 1, and "LLaMA v2". NVIDIA's Llama-based Nemotron models are below.
 for (const name of [
     'Llama-3.2-11B-Vision-Instruct', 'meta-llama/Llama-3.2-90B-Vision', 'llama3.2-vision:11b', 'llama-3.2-11b-text-preview',
     'accounts/fireworks/models/llama-v3p2-90b-vision-instruct', 'meta-llama/Llama-3.1-405B', 'llama3.1:405b-text-q4_0',
@@ -102,7 +102,6 @@ for (const name of [
     'llama3.1', 'llama3.1:latest', 'llama-3.1', 'llama3.2:latest', 'llama3.3', 'llama3.3:latest', 'llama-3.3',
     'llama4', 'llama4:latest', 'llama-4', 'llama-scout', 'llama-guard3', 'llama-guard3:latest', 'llama-3.1-sonar-large-128k-online',
     'llama-4.1-scout', 'EVA-UNIT-01/EVA-LLaMA-3.33-70B-v0.1', 'Envoid/Llama-3.05-NT-Storybreaker-Ministral-70B',
-    'nvidia/Llama-3.1-Nemotron-70B-Instruct-HF', 'Llama-3.1-Nemotron-Nano-VL-8B-V1', 'Llama-3_3-Nemotron-Super-49B-v1',
     'meta-llama/Llama-Prompt-Guard-2-86M', 'meta-llama/LlamaGuard-7b', 'LLaMA v2',
 ]) {
     check(GENERAL_API, name, null);
@@ -115,7 +114,6 @@ check(GENERAL_API, 'mixtral-8x7b-instruct-v0.1', tokenizers.MISTRAL);
 // --- Mistral NeMo: the tekken.json on Mistral's API, nemo.json on every other backend (below) ---
 const nemo = { byBackend: { vendorApis: { mistralai: { source: 'nemo-tekken' } }, hf: tokenizers.NEMO, rest: tokenizers.NEMO } };
 assert.deepEqual(lookupModelTokenizer(GENERAL_API, 'Mistral-Nemo-Instruct-2407'), nemo);
-check(GENERAL_API, 'nemotron-70b', null);
 
 // --- Gemma 1/2: a name with an explicit Gemma 1 or 2 version ---
 for (const name of [
@@ -369,16 +367,15 @@ check(GENERAL_API, 'AI21-Jamba2-Mini', null);
 check(GENERAL_API, 'AI21-Jamba-Reasoning-3B', null);
 check(GENERAL_API, 'jamba-large', null);
 
-// Phi-3 / Phi-3.5, not small (cl100k) and not vision (no tokenizer.model; its tokenizer.json differs)
+// Phi-3 / Phi-3.5 mini, medium and MoE (llama.model); small and vision have their own entries (below)
 check(GENERAL_API, 'Phi-3.5-mini-instruct', tokenizers.LLAMA);
 check(GENERAL_API, 'Phi-3-mini-4k-instruct', tokenizers.LLAMA);
 check(GENERAL_API, 'Phi-3-medium-128k-instruct', tokenizers.LLAMA);
 check(GENERAL_API, 'Phi-3.5-MoE-instruct', tokenizers.LLAMA);
-check(GENERAL_API, 'Phi-3-small-8k-instruct', null);
-check(GENERAL_API, 'Phi-3-vision-128k-instruct', null);
-check(GENERAL_API, 'Phi-3.5-vision-instruct', null);
+checkSource(GENERAL_API, 'Phi-3-small-8k-instruct', 'phi-3-small');
+checkSource(GENERAL_API, 'Phi-3-vision-128k-instruct', 'phi-3-vision');
+checkSource(GENERAL_API, 'Phi-3.5-vision-instruct', 'phi-3-vision');
 check(GENERAL_API, 'phi-3.1-mini', null);
-check(GENERAL_API, 'phi-4', null);
 
 // Mixtral 8x22B base v0.1 (mistral.model); the Instruct and v0.3 files differ (the Instruct: Mistral, below)
 check(GENERAL_API, 'Mixtral-8x22B-v0.1', tokenizers.MISTRAL);
@@ -411,8 +408,8 @@ check(GENERAL_API, 'phi3:14b-medium-4k-instruct-q4_0', tokenizers.LLAMA);
 check(GENERAL_API, 'phi3.5:3.8b-mini-instruct-q4_0', tokenizers.LLAMA);
 // ':' is a separator like '.', so 'phi3:3.8b' reads as 'phi3.3.8b' (an unknown version)
 check(GENERAL_API, 'phi3:3.8b', null);
-check(GENERAL_API, 'phi3-small', null);
-check(GENERAL_API, 'phi3-vision', null);
+checkSource(GENERAL_API, 'phi3-small', 'phi-3-small');
+checkSource(GENERAL_API, 'phi3-vision', 'phi-3-vision');
 
 // Gemma-derived models whose tokenizer.model (RecurrentGemma sfp-cpp: tokenizer.spm) is gemma.model
 check(GENERAL_API, 'recurrentgemma-2b-it', tokenizers.GEMMA);
@@ -907,6 +904,189 @@ for (const [name, expected] of vendorFamilyCases) {
             : expected;
         assert.deepEqual(selected, wanted, `${name} on ${JSON.stringify(state)}`);
     }
+}
+
+/**
+ * Checks each name on every backend: a `byBackend.other` result on self-hosted backends only.
+ * @param {Array<[string, import('./tokenizer-model-map.js').MapResult]>} cases
+ */
+function checkOnEveryBackend(cases) {
+    for (const [name, expected] of cases) {
+        assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), expected, name);
+        assert.deepEqual(lookupModelTokenizer('openai', name), expected, name);
+        for (const state of backendStates) {
+            const selected = selectBackendResult(lookupModelTokenizer(state.api, name), state);
+            const unmapped = state.api === 'novel' || (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
+            const wanted = unmapped ? null : typeof expected === 'object' && 'byBackend' in expected
+                ? (isSelfHosted(state) ? expected.byBackend.other : null)
+                : expected;
+            assert.deepEqual(selected, wanted, `${name} on ${JSON.stringify(state)}`);
+        }
+    }
+}
+
+// --- Phi: one entry per tokenizer. Microsoft's API serves Phi-4, Phi-4-mini-instruct, Phi-4-mini-reasoning,
+// Phi-4-multimodal-instruct and Phi-4-reasoning under their names, which map on self-hosted backends only ---
+checkOnEveryBackend([
+    // Phi-1, Phi-1.5 and Phi-2 ship one file. Ollama's `phi` is Phi-2.
+    ['microsoft/phi-1', { source: 'phi-1' }],
+    ['phi-1_5', { source: 'phi-1' }],
+    ['phi-1.5', { source: 'phi-1' }],
+    ['microsoft/phi-2', { source: 'phi-1' }],
+    ['phi-2-pytdml', { source: 'phi-1' }],
+    ['phi:2.7b', { source: 'phi-1' }],
+    ['phi:2.7b-chat-v2-q4_0', { source: 'phi-1' }],
+    // Phi-mini-MoE, Phi-tiny-MoE and the Phi-3.5-mini ONNX repo ship Phi-3's tokenizer.json and no tokenizer.model.
+    ['Phi-mini-MoE-instruct', { source: 'phi-3-hf' }],
+    ['microsoft/Phi-tiny-MoE-instruct', { source: 'phi-3-hf' }],
+    ['microsoft/Phi-3.5-mini-instruct-onnx', { source: 'phi-3-hf' }],
+    // Phi-3-small: one tiktoken file, read with its code.
+    ['Phi-3-small-128k-instruct', { source: 'phi-3-small' }],
+    ['Phi-3-small-8k-instruct-onnx-cuda', { source: 'phi-3-small' }],
+    // Phi-3-vision, Phi-3.5-vision, their ONNX repo and Phi-Ground ship files with one content.
+    ['microsoft/Phi-3-vision-128k-instruct-onnx', { source: 'phi-3-vision' }],
+    ['Phi-3.5-vision-instruct-onnx', { source: 'phi-3-vision' }],
+    ['microsoft/Phi-Ground', { source: 'phi-3-vision' }],
+    ['Phi-Ground-Any', { source: 'phi-3-vision' }],
+    // Phi-4.
+    ['microsoft/phi-4', selfHostedOnly('phi-4')],
+    ['phi4:14b', selfHostedOnly('phi-4')],
+    ['phi4', selfHostedOnly('phi-4')],
+    ['phi-4-Q4_K_M.gguf', selfHostedOnly('phi-4')],
+    ['microsoft/phi-4-onnx', selfHostedOnly('phi-4')],
+    // Phi-4-mini-instruct, Phi-4-mini-reasoning and Phi-4-mini-flash-reasoning ship files with one content.
+    ['Phi-4-mini-instruct', selfHostedOnly('phi-4-mini')],
+    ['phi4-mini:3.8b', selfHostedOnly('phi-4-mini')],
+    ['Phi-4-mini-instruct-onnx', selfHostedOnly('phi-4-mini')],
+    ['microsoft/Phi-4-mini-reasoning', selfHostedOnly('phi-4-mini')],
+    ['phi4-mini-reasoning:3.8b-q8_0', selfHostedOnly('phi-4-mini')],
+    ['Phi-4-mini-flash-reasoning', { source: 'phi-4-mini' }],
+    // Phi-4-multimodal adds two tokens.
+    ['Phi-4-multimodal-instruct', selfHostedOnly('phi-4-multimodal')],
+    ['Phi-4-multimodal-instruct-onnx', selfHostedOnly('phi-4-multimodal')],
+    ['microsoft/paza-Phi-4-multimodal-instruct', { source: 'phi-4-multimodal' }],
+    // Phi-4-reasoning and -plus ship one file; Phi-4-reasoning-vision's has <nothink>.
+    ['Phi-4-reasoning', selfHostedOnly('phi-4-reasoning')],
+    ['phi4-reasoning:14b', selfHostedOnly('phi-4-reasoning')],
+    ['Phi-4-reasoning-onnx', selfHostedOnly('phi-4-reasoning')],
+    ['microsoft/phi-4-reasoning-plus', { source: 'phi-4-reasoning' }],
+    ['phi4-reasoning:plus', { source: 'phi-4-reasoning' }],
+    ['Phi-4-reasoning-vision-15B', { source: 'phi-4-reasoning-vision' }],
+]);
+// Unmapped: names that pick no one model or version, Dolphin's Phi-2 (its file adds tokens), Phi-3-vision's
+// ONNX CPU, CUDA and DirectML repos (their files have other added tokens), MediPhi (its tokenizer.json and
+// tokenizer.model give different ids), and unknown versions.
+for (const name of [
+    'phi', 'phi:latest', 'phi:chat', 'phi-1.2', 'phi-2.5', 'dolphin-phi:2.7b', 'cognitivecomputations/dolphin-2_6-phi-2',
+    'Phi-3.5-small', 'Phi-3-vision-128k-instruct-onnx-cpu', 'microsoft/Phi-3-vision-128k-instruct-onnx-directml',
+    'MediPhi-Instruct', 'phi-4.5', 'Phi-4-vision', 'Phi-4-mini-multimodal', 'phi-5',
+]) {
+    check(GENERAL_API, name, null);
+    check('openai', name, null);
+}
+
+// --- Nemotron: each name gets the file its NVIDIA repo ships. NVIDIA's API serves Llama-3.1-Nemotron-51B-Instruct,
+// -70B-Instruct, -Ultra-253B-v1 and -Safety-Guard-8B-v3, Nemotron-4-340B-Instruct and -Reward, Nemotron 3 Nano
+// 30B-A3B, Super and Ultra, Nemotron 3.5 Lightning and Nemotron 3.5 Content Safety, which map on self-hosted
+// backends only ---
+checkOnEveryBackend([
+    // Llama 3.1 Instruct's file, whatever Llama version the name says.
+    ['nvidia/Llama-3.1-Nemotron-70B-Instruct-HF', selfHostedOnly('llama3.1')],
+    ['nvidia/Llama-3.1-Nemotron-70B-Instruct', selfHostedOnly('llama3.1')],
+    ['nemotron:70b-instruct-q4_K_M', selfHostedOnly('llama3.1')],
+    ['nemotron-70b', selfHostedOnly('llama3.1')],
+    ['Llama-3.1-Nemotron-70B-Reward-HF', { source: 'llama3.1' }],
+    ['nvidia/Llama-3.3-Nemotron-70B-Reward-Multilingual', { source: 'llama3.1' }],
+    ['Llama-3.3-Nemotron-70B-Select', { source: 'llama3.1' }],
+    ['Llama-3.1-Minitron-4B-Width-Base', { source: 'llama3.1' }],
+    ['nvidia/Llama-3.1-Minitron-4B-Depth-Base', { source: 'llama3.1' }],
+    // Llama 3.3's file.
+    ['nvidia/Llama-3.1-Nemotron-Nano-8B-v1', { source: 'llama3.3' }],
+    ['Llama-3.1-Nemotron-Nano-4B-v1.1', { source: 'llama3.3' }],
+    ['nvidia/Llama-3_1-Nemotron-Ultra-253B-v1', selfHostedOnly('llama3.3')],
+    ['Llama-3_1-Nemotron-Ultra-253B-v1-FP8', selfHostedOnly('llama3.3')],
+    ['Llama-3_1-Nemotron-Ultra-253B-CPT-v1', { source: 'llama3.3' }],
+    ['nvidia/llama-3.3-nemotron-super-49b-v1.5', { source: 'llama3.3' }],
+    ['Llama-3_3-Nemotron-Super-49B-v1-FP8', { source: 'llama3.3' }],
+    ['Llama-3_3-Nemotron-Super-49B-GenRM-Multilingual', { source: 'llama3.3' }],
+    ['Llama-3.1-Nemotron-8B-UltraLong-4M-Instruct', { source: 'llama3.3' }],
+    ['nvidia/llama-3.1-nemotron-safety-guard-8b-v3', selfHostedOnly('llama3.3')],
+    // Their own files.
+    ['Llama-3_1-Nemotron-51B-Instruct', selfHostedOnly('llama-3.1-nemotron-51b')],
+    ['nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1', { source: 'llama-3.1-nemotron-nano-vl' }],
+    ['Llama-3.1-Nemotron-Nano-VL-8B-V1-FP4-QAD', { source: 'llama-3.1-nemotron-nano-vl' }],
+    ['nvidia/Nemotron-4-340B-Instruct', selfHostedOnly('nemotron-4')],
+    ['nemotron-4-340b-reward', selfHostedOnly('nemotron-4')],
+    ['Nemotron-4-340B-Base', { source: 'nemotron-4' }],
+    // Nemotron-H and Nemotron Nano v2 ship one file; Nano 12B v2 VL adds image tokens.
+    ['nvidia/Nemotron-H-8B-Base-8K', { source: 'nemotron-h' }],
+    ['Nemotron-H-47B-Reasoning-128K-FP8', { source: 'nemotron-h' }],
+    ['NVIDIA-Nemotron-Nano-9B-v2', { source: 'nemotron-h' }],
+    ['nvidia/nemotron-nano-9b-v2', { source: 'nemotron-h' }],
+    ['NVIDIA-Nemotron-Nano-12B-v2-Base', { source: 'nemotron-h' }],
+    ['NVIDIA-Nemotron-Nano-9B-v2-Japanese', { source: 'nemotron-h' }],
+    ['nvidia/Nemotron-Elastic-12B', { source: 'nemotron-h' }],
+    ['NVIDIA-Nemotron-Nano-12B-v2-VL-BF16', { source: 'nemotron-nano-12b-v2-vl' }],
+    ['nvidia/nemotron-nano-12b-v2-vl', { source: 'nemotron-nano-12b-v2-vl' }],
+    // Nemotron-Flash ships nemo.json's content.
+    ['nvidia/Nemotron-Flash-3B-Instruct', tokenizers.NEMO],
+    // Nemotron 3 and the models built on it ship files with one content.
+    ['nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16', selfHostedOnly('nemotron-3')],
+    ['nvidia/nemotron-nano-3-30b-a3b', selfHostedOnly('nemotron-3')],
+    ['nemotron-3-nano:30b-cloud', selfHostedOnly('nemotron-3')],
+    ['nemotron-3-nano', selfHostedOnly('nemotron-3')],
+    ['NVIDIA-Nemotron-3-Nano-30B-A3B-Base-BF16', { source: 'nemotron-3' }],
+    ['nemotron-3-nano:4b', { source: 'nemotron-3' }],
+    ['NVIDIA-Nemotron-3-Nano-4B-FP8', { source: 'nemotron-3' }],
+    ['nvidia/nemotron-3-super-120b-a12b', selfHostedOnly('nemotron-3')],
+    ['nemotron-3-super:120b-a12b-q4_K_M', selfHostedOnly('nemotron-3')],
+    ['NVIDIA-Nemotron-3-Super-120B-A12B-Base-BF16', { source: 'nemotron-3' }],
+    ['NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4', selfHostedOnly('nemotron-3')],
+    ['NVIDIA-Nemotron-3-Ultra-550B-A55B-GenRM', { source: 'nemotron-3' }],
+    ['nvidia/nemotron-3.5-lightning-30b-a3b', selfHostedOnly('nemotron-3')],
+    ['nemotron-3.5-lightning:30b-a3b-mlx', selfHostedOnly('nemotron-3')],
+    ['NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Base-BF16', { source: 'nemotron-3' }],
+    ['nvidia/Nemotron-Cascade-2-30B-A3B', { source: 'nemotron-3' }],
+    ['nemotron-cascade-2', { source: 'nemotron-3' }],
+    ['NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-FP8', { source: 'nemotron-3' }],
+    ['NVIDIA-Nemotron-Labs-Teacher-STEM', { source: 'nemotron-3' }],
+    ['Nemotron-Labs-Diffusion-8B-Base', { source: 'nemotron-3' }],
+    ['Nemotron-Labs-TwoTower-30B-A3B-Base-BF16', { source: 'nemotron-3' }],
+    ['nvidia/Nemotron-3-Labs-Ultra-Math-RL', { source: 'nemotron-3' }],
+    // Nemotron Content Safety ships Gemma 3 -it's files.
+    ['nvidia/Nemotron-3-Content-Safety', { source: 'gemma-3-it' }],
+    ['Nemotron-Content-Safety-Reasoning-4B', { source: 'gemma-3-it' }],
+    ['nvidia/nemotron-3.5-content-safety', selfHostedOnly('gemma-3-it')],
+    // Built on Qwen2.5, DeepSeek-R1-Distill-Qwen and Qwen3.
+    ['nvidia/OpenReasoning-Nemotron-32B', { source: 'qwen2.5' }],
+    ['OpenCodeReasoning-Nemotron-1.1-7B', { source: 'qwen2.5' }],
+    ['OpenMath-Nemotron-14B-Kaggle', { source: 'qwen2.5' }],
+    ['nvidia/AceReason-Nemotron-14B', { source: 'deepseek-r1-distill-qwen' }],
+    ['AceMath-RL-Nemotron-7B', { source: 'deepseek-r1-distill-qwen' }],
+    ['Nemotron-Research-Reasoning-Qwen-1.5B', { source: 'deepseek-r1-distill-qwen' }],
+    ['nvidia/AceReason-Nemotron-1.1-7B', { source: 'acereason-nemotron-1.1' }],
+    ['nvidia/Nemotron-Cascade-8B-Thinking', { source: 'qwen3' }],
+    ['Nemotron-Cascade-14B-Thinking', { source: 'qwen3' }],
+    ['Nemotron-Terminal-32B', { source: 'qwen3' }],
+    ['nvidia/Nemotron-Orchestrator-8B', { source: 'qwen3' }],
+    ['Nemotron-Research-GooseReason-4B-Instruct', { source: 'qwen3' }],
+]);
+// Unmapped: names that pick no one model, unknown versions, models whose tokenizer.json and tokenizer.model
+// give different ids (Nemotron-Mini-4B, Minitron-4B and -8B, Nemotron-4-Mini-Hindi-4B) and Nemotron-Mini-4B's
+// ONNX INT4 repo, which ships that tokenizer.json's content alone; repos that ship no tokenizer file (Nano-VL
+// mcore, Super MTPv2, 3.5 Lightning DFlash and DSpark), the gated 2023 Nemotron-3-8B models, models whose files
+// differ from their family's (Nemotron 3 Nano Omni, Labs Diffusion VLM, Audex), embedding, reranking, parsing
+// and speech models, and Mistral's closed mistral-nemotron.
+for (const name of [
+    'nemotron', 'nemotron:latest', 'nemotron-3.6-nano-30b', 'nemotron-4.5-340b', 'AceReason-Nemotron-1.2-7B',
+    'Nemotron-Mini-4B-Instruct', 'nemotron-mini:4b', 'nvidia/Minitron-8B-Base', 'Nemotron-4-Mini-Hindi-4B-Instruct',
+    'Llama-3.1-Nemotron-Nano-VL-8B-V1-mcore', 'Nemotron-3-Super-120B-A12B-BF16-MTPv2', 'NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash',
+    'nemotron-3-8b-chat-4k-sft', 'Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16', 'nemotron3:33b', 'Nemotron-Labs-Diffusion-VLM-8B',
+    'Nemotron-Labs-Audex-30B-A3B', 'Nemotron-Mini-4B-Instruct-ONNX-INT4', 'Nemotron-3-Embed-1B-BF16', 'llama-nemotron-embed-1b-v2',
+    'llama-nemotron-rerank-vl-1b-v2', 'NVIDIA-Nemotron-Parse-v1.1', 'nemotron-speech-streaming-en-0.6b', 'mistralai/mistral-nemotron',
+]) {
+    check(GENERAL_API, name, null);
+    check('openai', name, null);
 }
 
 console.log('tokenizer-model-map tests passed');

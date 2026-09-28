@@ -28,13 +28,14 @@ import { getConfigValue } from './util.js';
  * @typedef {object} TiktokenConfig
  * @property {string} patStr The repo's `pat_str`
  * @property {Record<string, number>} specialTokens Named special tokens, name -> id
- * @property {{ start: number, count: number, name: string }} reservedSpecialTokens The special id
- * range; an id not named in `specialTokens` is named by `name` with `{id}` replaced by the id
+ * @property {{ start: number, count: number, name?: string }} reservedSpecialTokens The special id
+ * range; an id not named in `specialTokens` is named by `name` with `{id}` replaced by the id. Without
+ * `name`, `specialTokens` names every id in the range.
  * @property {'all' | 'none'} allowedSpecial `all`: text spelling a special token encodes to its id
  * (tiktoken's `allowed_special="all"`); `none`: it encodes as ordinary text (`disallowed_special=()`)
- * @property {{ maxChars: number, maxRun: number }} split Encode splits the text into chunks of at
- * most `maxChars` characters, and those into pieces with at most `maxRun` consecutive whitespace or
- * non-whitespace characters
+ * @property {{ maxChars: number, maxRun: number } | null} split Encode splits the text into chunks of
+ * at most `maxChars` characters, and those into pieces with at most `maxRun` consecutive whitespace or
+ * non-whitespace characters. null: the text is encoded whole.
  */
 
 /**
@@ -232,8 +233,8 @@ function splitCodePointChunks(text, maxChars) {
 }
 
 /**
- * Replicates the Kimi repo's `TikTokenTokenizer` (tokenization_kimi.py): its `encode(text)` and its
- * `decode(ids)`.
+ * Replicates the Kimi repo's `TikTokenTokenizer` (tokenization_kimi.py) and Phi-3-small's
+ * `Phi3SmallTokenizer` (tokenization_phi3_small.py): their `encode(text)` and `decode(ids)`.
  * @param {string} filePath
  * @param {TiktokenConfig} config
  * @returns {Promise<TiktokenReader>}
@@ -254,10 +255,13 @@ async function readTiktoken(filePath, config) {
     /** @type {Record<string, number>} */
     const specialTokens = {};
     for (let id = start; id < start + count; id++) {
-        specialTokens[namedById.get(id) ?? name.replace('{id}', String(id))] = id;
+        const tokenName = namedById.get(id) ?? name?.replace('{id}', String(id));
+        if (tokenName === undefined) {
+            throw new Error(`Special id ${id} has no name`);
+        }
+        specialTokens[tokenName] = id;
     }
     const encoding = new tiktoken.Tiktoken(lines.join('\n'), specialTokens, config.patStr);
-    const { maxChars, maxRun } = config.split;
     /** @type {(piece: string) => Uint32Array} */
     let encodePiece;
     if (config.allowedSpecial === 'all') {
@@ -270,6 +274,10 @@ async function readTiktoken(filePath, config) {
 
     return {
         encode(text) {
+            if (config.split === null) {
+                return Array.from(encodePiece(text));
+            }
+            const { maxChars, maxRun } = config.split;
             const ids = [];
             for (const chunk of splitCodePointChunks(text, maxChars)) {
                 for (const piece of splitWhitespaceRuns(chunk, maxRun)) {

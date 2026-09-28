@@ -418,6 +418,193 @@ function gptOssMatches(tokens) {
 }
 
 /**
+ * Which Phi-4 model a name is, by the variant words it has; any other set of them names no one model.
+ * Microsoft's API serves Phi-4, Phi-4-mini-instruct, Phi-4-mini-reasoning, Phi-4-multimodal-instruct and
+ * Phi-4-reasoning under their names, so those names apply on self-hosted backends only.
+ * @type {Record<string, { source: string, servedByMicrosoft: boolean }>}
+ */
+const PHI_4_VARIANTS = {
+    '': { source: 'phi-4', servedByMicrosoft: true },
+    'mini': { source: 'phi-4-mini', servedByMicrosoft: true },
+    'mini reasoning': { source: 'phi-4-mini', servedByMicrosoft: true },
+    'mini flash reasoning': { source: 'phi-4-mini', servedByMicrosoft: false },
+    'multimodal': { source: 'phi-4-multimodal', servedByMicrosoft: true },
+    'reasoning': { source: 'phi-4-reasoning', servedByMicrosoft: true },
+    'reasoning plus': { source: 'phi-4-reasoning', servedByMicrosoft: false },
+    'reasoning vision': { source: 'phi-4-reasoning-vision', servedByMicrosoft: false },
+};
+
+/**
+ * Microsoft's Phi models. Phi-3 and Phi-3.5 mini, medium and MoE get the bundled llama.model, their
+ * tokenizer.model, though their tokenizer.json gives other ids: it reads `<s>`, `<|user|>` and the like
+ * as special tokens. `phi3` and `phi4` are Ollama's forms (`phi3:mini`, `phi3.5`, `phi4-mini`).
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function phiFamilyMatches(tokens) {
+    if (guardedMatch(tokens, [['phi', '1']], rest => followedByAllDigits(rest) && rest[0] !== '5') === 'veto') return null;
+    if (guardedMatch(tokens, [['phi', '2']], followedByAllDigits) === 'veto') return null;
+    const phi3 = guardedMatch(tokens, [['phi', '3'], ['phi3']], rest => followedByAllDigits(rest) && rest[0] !== '5');
+    if (phi3 === 'veto') return null;
+    const phi4 = guardedMatch(tokens, [['phi', '4'], ['phi4']], followedByAllDigits);
+    if (phi4 === 'veto') return null;
+
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+    /** @param {string[]} list */
+    const hasAny = (...list) => list.some(token => tokens.includes(token));
+
+    // Phi-1, Phi-1.5 and Phi-2 ship one file; Dolphin's Phi-2 ships another.
+    if ((hasSequence(tokens, ['phi', '1']) || hasSequence(tokens, ['phi', '2'])) && !hasAny('dolphin')) add({ source: 'phi-1' });
+
+    if (phi3 === 'match') {
+        const isPhi35 = hasSequence(tokens, ['phi', '3', '5']) || hasSequence(tokens, ['phi3', '5']);
+        if (hasAny('small')) {
+            // Phi-3-small 8k and 128k read one tiktoken file with their code; there is no Phi-3.5-small.
+            if (!isPhi35) add({ source: 'phi-3-small' });
+        } else if (hasAny('vision')) {
+            // Phi-3-vision and Phi-3.5-vision ship files with one content; the Phi-3-vision ONNX CPU,
+            // CUDA and DirectML repos ship another, with other added tokens.
+            if (!(hasAny('onnx') && hasAny('cpu', 'cuda', 'directml'))) add({ source: 'phi-3-vision' });
+        } else if (isPhi35 && hasAny('mini') && hasAny('onnx')) {
+            // The Phi-3.5-mini ONNX repo ships no tokenizer.model, only files with Phi-3's tokenizer.json content.
+            add({ source: 'phi-3-hf' });
+        } else {
+            add(tokenizers.LLAMA);
+        }
+    }
+    // Phi-Ground ships a file with Phi-3-vision's content; Phi-mini-MoE and Phi-tiny-MoE ship Phi-3's tokenizer.json.
+    if (hasSequence(tokens, ['phi', 'ground'])) add({ source: 'phi-3-vision' });
+    if (hasSequence(tokens, ['phi', 'mini', 'moe']) || hasSequence(tokens, ['phi', 'tiny', 'moe'])) add({ source: 'phi-3-hf' });
+
+    if (phi4 === 'match') {
+        const variant = PHI_4_VARIANTS[['mini', 'flash', 'multimodal', 'reasoning', 'plus', 'vision'].filter(token => tokens.includes(token)).join(' ')];
+        // paza-Phi-4-multimodal-instruct ships Phi-4-multimodal's file; Microsoft's API doesn't serve it.
+        if (variant) add(variant.servedByMicrosoft && !hasAny('paza') ? onSelfHostedOnly(variant.source) : { source: variant.source });
+    }
+
+    return matches;
+}
+
+/**
+ * NVIDIA's Nemotron models, and NVIDIA's models built on other families, which ship those families'
+ * files. A Llama-based name gets the Llama 3.x file its repo ships, whatever version its name says.
+ * NVIDIA's API serves Llama-3.1-Nemotron-51B-Instruct, -70B-Instruct, -Ultra-253B-v1 and
+ * -Safety-Guard-8B-v3, Nemotron-4-340B-Instruct and -Reward, Nemotron 3 Nano 30B-A3B, Super and Ultra,
+ * Nemotron 3.5 Lightning and Nemotron 3.5 Content Safety under their names, so those names apply on
+ * self-hosted backends only.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function nemotronFamilyMatches(tokens) {
+    if (!tokens.includes('nemotron') && !tokens.includes('minitron')) return [];
+    if (guardedMatch(tokens, [['nemotron', '3']], rest => followedByAllDigits(rest) && rest[0] !== '5') === 'veto') return null;
+    if (guardedMatch(tokens, [['nemotron', '4']], followedByAllDigits) === 'veto') return null;
+
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+    /** @param {string[]} list */
+    const hasAny = (...list) => list.some(token => tokens.includes(token));
+    /**
+     * The one size of `sizes` the name has; null for none or several.
+     * @param {string[]} sizes
+     */
+    const onlySize = sizes => {
+        const found = sizes.filter(size => tokens.includes(size));
+        return found.length === 1 ? found[0] : null;
+    };
+    /** @param {boolean} servedByNvidia @param {MapResult} result */
+    const addServed = (servedByNvidia, result) => add(servedByNvidia ? { byBackend: { other: result } } : result);
+    const isLlama31Nemotron = hasSequence(tokens, ['llama', '3', '1', 'nemotron']);
+
+    // Llama 3.1 Instruct's file: every Llama-3.1- and Llama-3.3-Nemotron-70B (Ollama's `nemotron:70b` is
+    // the 3.1 Instruct model), and Llama-3.1-Minitron-4B. The 70B Instruct's NeMo repo names Meta's
+    // Llama-3.1-70B-Instruct tokenizer.
+    if (hasSequence(tokens, ['nemotron', '70b'])) {
+        const isInstruct = !hasSequence(tokens, ['llama', '3', '3']) && !hasAny('reward', 'edit', 'feedback', 'select');
+        addServed(isInstruct, { source: 'llama3.1' });
+    }
+    if (hasSequence(tokens, ['llama', '3', '1', 'minitron', '4b'])) add({ source: 'llama3.1' });
+
+    // Llama 3.3's file: Llama-3.1-Nemotron-Nano 4B and 8B, Ultra-253B, 8B-UltraLong and Safety-Guard-8B-v3,
+    // and Llama-3.3-Nemotron-Super-49B. The Ultra-253B-v1 and Super-49B-v1 FP8 repos' files add only a
+    // 512-token truncation.
+    if (isLlama31Nemotron && hasAny('nano') && !hasAny('vl') && onlySize(['4b', '8b'])) add({ source: 'llama3.3' });
+    if (hasSequence(tokens, ['llama', '3', '1', 'nemotron', 'ultra', '253b'])) addServed(!hasAny('cpt'), { source: 'llama3.3' });
+    if (hasSequence(tokens, ['llama', '3', '1', 'nemotron', '8b', 'ultralong'])) add({ source: 'llama3.3' });
+    if (hasSequence(tokens, ['llama', '3', '1', 'nemotron', 'safety', 'guard', '8b', 'v3'])) addServed(true, { source: 'llama3.3' });
+    if (hasSequence(tokens, ['llama', '3', '3', 'nemotron', 'super', '49b'])) add({ source: 'llama3.3' });
+
+    // Llama-3.1-Nemotron-51B and Nano-VL-8B ship their own; the Nano-VL mcore repo ships none.
+    if (hasSequence(tokens, ['llama', '3', '1', 'nemotron', '51b'])) addServed(true, { source: 'llama-3.1-nemotron-51b' });
+    if (hasSequence(tokens, ['llama', '3', '1', 'nemotron', 'nano', 'vl', '8b']) && !hasAny('mcore')) add({ source: 'llama-3.1-nemotron-nano-vl' });
+
+    // Nemotron-4-340B's .nemo checkpoints read one sentencepiece file. Nemotron-Mini-4B, Minitron-4B and
+    // -8B and Nemotron-4-Mini-Hindi-4B ship it with a tokenizer.json that gives other ids.
+    if (hasSequence(tokens, ['nemotron', '4', '340b'])) addServed(!hasAny('base'), { source: 'nemotron-4' });
+
+    // Nemotron-H and Nemotron Nano 9B and 12B v2 ship one file; Nano 12B v2 VL adds its image tokens.
+    // Nemotron-Flash ships nemo.json's content.
+    if (hasSequence(tokens, ['nemotron', 'h']) && onlySize(['4b', '8b', '47b', '56b'])) add({ source: 'nemotron-h' });
+    if (hasSequence(tokens, ['nemotron', 'nano']) && hasAny('v2') && onlySize(['9b', '12b'])) {
+        if (!hasAny('vl')) add({ source: 'nemotron-h' });
+        else if (hasAny('12b')) add({ source: 'nemotron-nano-12b-v2-vl' });
+    }
+    if (hasSequence(tokens, ['nemotron', 'elastic', '12b'])) add({ source: 'nemotron-h' });
+    if (hasSequence(tokens, ['nemotron', 'flash']) && onlySize(['1b', '3b'])) add(tokenizers.NEMO);
+
+    // Nemotron 3 Nano, Super and Ultra, Nemotron 3.5 Lightning, Nemotron-Cascade-2 and the Nemotron Labs
+    // models built on them ship files with one content. Nemotron 3 Nano Omni, Embed and Content Safety,
+    // and the Labs Diffusion VLM, ship others; so do the 2023 Nemotron-3-8B models.
+    if (!hasAny('omni', 'embed', 'content', 'vlm', 'audex', 'mtpv2', 'dflash', 'dspark')) {
+        const isBase = hasAny('base', 'genrm');
+        const nano = hasSequence(tokens, ['nemotron', '3', 'nano']) || hasSequence(tokens, ['nemotron', 'nano', '3']);
+        if (nano && (onlySize(['4b', '30b']) || !hasAny('4b', '30b'))) addServed(!hasAny('4b') && !isBase, { source: 'nemotron-3' });
+        if (hasSequence(tokens, ['nemotron', '3', 'super']) || hasSequence(tokens, ['nemotron', '3', 'ultra'])
+            || hasSequence(tokens, ['nemotron', '3', '5', 'lightning'])) {
+            addServed(!isBase, { source: 'nemotron-3' });
+        }
+        if (hasSequence(tokens, ['nemotron', 'cascade', '2'])
+            || hasSequence(tokens, ['nemotron', 'labs', '3', 'elastic']) || hasSequence(tokens, ['nemotron', 'labs', '3', 'puzzle'])
+            || hasSequence(tokens, ['nemotron', 'labs', 'teacher']) || hasSequence(tokens, ['nemotron', 'labs', 'diffusion'])
+            || hasSequence(tokens, ['nemotron', 'labs', 'twotower']) || hasSequence(tokens, ['nemotron', '3', 'labs', 'ultra', 'math'])) {
+            add({ source: 'nemotron-3' });
+        }
+    }
+
+    // Nemotron Content Safety models ship Gemma 3 -it's files.
+    if (hasSequence(tokens, ['nemotron', '3', 'content', 'safety']) || hasSequence(tokens, ['nemotron', 'content', 'safety', 'reasoning', '4b'])) {
+        add({ source: 'gemma-3-it' });
+    }
+    if (hasSequence(tokens, ['nemotron', '3', '5', 'content', 'safety'])) addServed(true, { source: 'gemma-3-it' });
+
+    // Qwen2.5's file: OpenCodeReasoning-, OpenMath- and OpenReasoning-Nemotron. DeepSeek-R1-Distill-Qwen's
+    // content: AceReason-Nemotron, AceMath-RL-Nemotron and Nemotron-Research-Reasoning-Qwen; AceReason-Nemotron-1.1
+    // ships its own. Qwen3's file: Nemotron-Cascade (not Cascade-2), Terminal, Orchestrator and GooseReason.
+    if (['opencodereasoning', 'openmath', 'openreasoning'].some(family => hasSequence(tokens, [family, 'nemotron']))) add({ source: 'qwen2.5' });
+    for (const start of findSequence(tokens, ['acereason', 'nemotron'])) {
+        const [major, minor] = tokens.slice(start + 2, start + 4);
+        if (major === '1' && minor === '1' && hasAny('7b')) add({ source: 'acereason-nemotron-1.1' });
+        else if (!ALL_DIGITS.test(major ?? '') && onlySize(['7b', '14b'])) add({ source: 'deepseek-r1-distill-qwen' });
+    }
+    if (hasSequence(tokens, ['acemath', 'rl', 'nemotron', '7b']) || hasSequence(tokens, ['nemotron', 'research', 'reasoning', 'qwen', '1', '5b'])) {
+        add({ source: 'deepseek-r1-distill-qwen' });
+    }
+    if ((findSequence(tokens, ['nemotron', 'cascade']).some(start => tokens[start + 2] !== '2') && onlySize(['8b', '14b']))
+        || (hasSequence(tokens, ['nemotron', 'terminal']) && onlySize(['8b', '14b', '32b']))
+        || hasSequence(tokens, ['nemotron', 'orchestrator', '8b'])
+        || hasSequence(tokens, ['nemotron', 'research', 'goosereason', '4b'])) {
+        add({ source: 'qwen3' });
+    }
+
+    return matches;
+}
+
+/**
  * Version numbers each Gemma name may have after it; any other is an unknown version.
  * @type {Array<[string[], (next: string) => boolean]>}
  */
@@ -569,7 +756,7 @@ function llamaFamilyMatches(tokens) {
     if ((isLlama30 && minors.size > 0) || minors.size > 1) return null;
     if (isLlama30) add(tokenizers.LLAMA3);
 
-    // Nemotron models are NVIDIA's, with NVIDIA's own files.
+    // A Nemotron name gets the file its NVIDIA repo ships (nemotronFamilyMatches), whatever Llama version it names.
     const minor = tokens.includes('nemotron') ? undefined : [...minors][0];
     if (minor === '1') {
         const size = onlySize(['8b', '70b', '405b']);
@@ -631,14 +818,6 @@ function generalMatches(tokens, lowerName) {
     const add = result => matches.push({ result });
 
     if (hasSequence(tokens, ['llama', '2']) || hasSequence(tokens, ['llama2'])) {
-        add(tokenizers.LLAMA);
-    }
-
-    // Phi-3 and Phi-3.5 ship llama.model; Phi-3-small is cl100k and Phi-3(.5)-vision has no
-    // tokenizer.model, so neither is covered. `phi3` is Ollama's form (`phi3:mini`, `phi3.5`).
-    const phi3 = guardedMatch(tokens, [['phi', '3'], ['phi3']], rest => followedByAllDigits(rest) && rest[0] !== '5');
-    if (phi3 === 'veto') return null;
-    if (phi3 === 'match' && !tokens.includes('small') && !tokens.includes('vision')) {
         add(tokenizers.LLAMA);
     }
 
@@ -859,7 +1038,7 @@ function generalMatches(tokens, lowerName) {
     if (cohereMatches === null) return null;
     matches.push(...cohereMatches);
 
-    for (const familyMatches of [glmFamilyMatches, kimiFamilyMatches, minimaxFamilyMatches, gptOssMatches]) {
+    for (const familyMatches of [glmFamilyMatches, kimiFamilyMatches, minimaxFamilyMatches, gptOssMatches, phiFamilyMatches, nemotronFamilyMatches]) {
         const found = familyMatches(tokens);
         if (found === null) return null;
         matches.push(...found);
