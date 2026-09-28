@@ -228,7 +228,7 @@ function groupSortValue(group, sortField) {
 
 /**
  * Every matching group, in the order tantivy would sort them among characters: descending
- * fastFieldOrderValue(), ties by id. A user's groups are few, so all of them are read and sorted here.
+ * fastFieldOrderValue(), ties by exact sort value in `order`, then by id. A user's groups are few, so all of them are read and sorted here.
  * @param {'asc'|'desc'} order The order tantivy sorts characters in (tantivySortOrder()).
  * @param {{ fav?: boolean, tags?: object, excludeIds?: string[], ids?: string[] }} [filter]
  * @returns {Promise<{ groups: { id: string, order: number }[], backend: 'tantivy' | 'unavailable' }>}
@@ -268,8 +268,12 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
         return results
             .map(r => JSON.parse(r.raw))
             .filter(group => (!allowed || allowed.has(group.id)) && !excluded.has(group.id))
-            .map(group => ({ id: String(group.id), order: fastFieldOrderValue(groupSortValue(group, sortField), order) }))
-            .sort((a, b) => b.order - a.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+            .map(group => {
+                const value = groupSortValue(group, sortField);
+                return { id: String(group.id), order: fastFieldOrderValue(value, order), value };
+            })
+            .sort((a, b) => b.order - a.order || (order === 'asc' ? a.value - b.value : b.value - a.value) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+            .map(({ id, order: groupOrder }) => ({ id, order: groupOrder }));
     });
     return { groups, backend: 'tantivy' };
 }
