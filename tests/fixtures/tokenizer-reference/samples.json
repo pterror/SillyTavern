@@ -18,5 +18,6 @@
  "Sources: [REFERENCE_DOC_1] [REF]a[/REF] [SYSTEM_PROMPT] [IMG] [IMG_BREAK] [THINK] [MODEL_SETTINGS]",
  "Cohere: <|START_THINKING|>plan <|START_OF_IMG|> <|NEW_FILE|> <|EXTRA_7_TOKEN|> done.",
  "Tags: [gMASK]<sop><|user|>hi<|assistant|><think>plan</think> <|media_begin|> <|media_start|> <|end_of_msg|> [UNK] <start_of_image> ]<]image[>[ <minimax:tool_call> <mm:think> done.",
- "Phi and Nemotron: <|endoftext10|> <nothink>x [PREFIX]a[SUFFIX]b[MIDDLE]c <img><image></img> <|placeholder7|> done."
+ "Phi and Nemotron: <|endoftext10|> <nothink>x [PREFIX]a[SUFFIX]b[MIDDLE]c <img><image></img> <|placeholder7|> done.",
+ "Meta: <|begin_of_text|>hi<|eot_id|> <|image|> done."
 ]
