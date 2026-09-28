@@ -1962,7 +1962,7 @@ const UPSERT_META_VALUE_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @valu
 /** @typedef {{ batches: number, rowsChanged: number }} CharacterPassResult */
 
 /**
- * A one-time pass over every characters row that resumes after the last batch it committed. The batch's rows are
+ * A one-time pass over every row of a table that resumes after the last batch it committed. The batch's rows are
  * re-read by prepareRow inside the batch's own transaction, so no other connection's write lands between read and
  * write. The pause between batches lets other writers take the lock. A row whose prepareRow throws is left as it is
  * and keeps doneKey unset; progressKey is still cleared at the end, so the next run retries from the first row
@@ -1970,22 +1970,27 @@ const UPSERT_META_VALUE_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @valu
  * last committed batch.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {object} options
+ * @param {'characters' | 'groups'} [options.table] The table whose rows (by id) the pass walks.
  * @param {string} options.doneKey
  * @param {string} options.doneValue
  * @param {string} options.progressKey
  * @param {string} options.label
  * @param {boolean} [options.logProgress]
  * @param {(id: string) => (null | (() => void))} options.prepareRow Does every read, parse and computation for the
- *   row and returns its writes, or null if it needs none. Neither may touch anything outside the database, since a
+ *   row and returns its writes, or null if it needs none. Neither may change anything outside the database, since a
  *   transaction that hits busy is rolled back and rerun.
+ * @param {() => void} [options.onBatchStart] Runs first inside each batch's transaction, including a rerun after
+ *   busy, so batch-local state the rows build up can be reset there.
+ * @param {() => void} [options.onBatchCommitted] Runs once each batch has committed.
+ * @param {() => void} [options.finish] Runs inside the final transaction, before doneKey is written.
  * @returns {Promise<CharacterPassResult>}
  */
-async function runResumableCharacterPass(db, { doneKey, doneValue, progressKey, label, logProgress = false, prepareRow }) {
+async function runResumableCharacterPass(db, { table = 'characters', doneKey, doneValue, progressKey, label, logProgress = false, prepareRow, onBatchStart, onBatchCommitted, finish }) {
     const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: progressKey }));
-    const nextPageSql = 'SELECT id FROM characters WHERE id > @after ORDER BY id LIMIT @limit';
+    const nextPageSql = `SELECT id FROM ${table} WHERE id > @after ORDER BY id LIMIT @limit`;
     const pages = saved
         ? streamRows(db, { firstPageSql: nextPageSql, firstPageParams: { after: saved.value }, nextPageSql, nextPageParams: {}, keyColumn: 'id' })
-        : streamRows(db, { firstPageSql: 'SELECT id FROM characters ORDER BY id LIMIT @limit', firstPageParams: {}, nextPageSql, nextPageParams: {}, keyColumn: 'id' });
+        : streamRows(db, { firstPageSql: `SELECT id FROM ${table} ORDER BY id LIMIT @limit`, firstPageParams: {}, nextPageSql, nextPageParams: {}, keyColumn: 'id' });
     if (saved) {
         console.log(color.cyan(`[character-metadata] ${label}: resuming after ${saved.value}`));
     }
@@ -2004,6 +2009,7 @@ async function runResumableCharacterPass(db, { doneKey, doneValue, progressKey, 
             // Reset here: a transaction that hits busy is rolled back and rerun.
             batchChanged = 0;
             batchFailed = [];
+            onBatchStart?.();
             for (const id of ids) {
                 let write;
                 try {
@@ -2019,6 +2025,7 @@ async function runResumableCharacterPass(db, { doneKey, doneValue, progressKey, 
             }
             db.run(UPSERT_META_VALUE_SQL, { key: progressKey, value: ids[ids.length - 1] });
         });
+        onBatchCommitted?.();
         batches++;
         rowsChanged += batchChanged;
         rowsFailed += batchFailed.length;
@@ -2037,6 +2044,7 @@ async function runResumableCharacterPass(db, { doneKey, doneValue, progressKey, 
     }
 
     db.transaction(() => {
+        finish?.();
         if (rowsFailed === 0) {
             db.run(UPSERT_META_VALUE_SQL, { key: doneKey, value: doneValue });
         }
@@ -2755,13 +2763,31 @@ export async function getTagUsageCount(directories, tagId) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function updateTagsHashSync(db) {
-    const rows = (/** @type {TagRow[]} */ (db.all('SELECT id, data FROM tags ORDER BY id')));
-    const content = rows.map(r => r.id + '\0' + r.data).join('\0');
-    const hash = crypto.createHash('sha256').update(content).digest('hex');
     db.run(
         'INSERT INTO meta (key, value) VALUES (\'tags_hash\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        { value: hash },
+        { value: computeTagsHashSync(db) },
     );
+}
+
+/**
+ * updateTagsHashSync() that writes nothing when the stored hash is already current.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function updateTagsHashIfChangedSync(db) {
+    db.run(
+        'INSERT INTO meta (key, value) VALUES (\'tags_hash\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE value IS NOT excluded.value',
+        { value: computeTagsHashSync(db) },
+    );
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @returns {string}
+ */
+function computeTagsHashSync(db) {
+    const rows = (/** @type {TagRow[]} */ (db.all('SELECT id, data FROM tags ORDER BY id')));
+    const content = rows.map(r => r.id + '\0' + r.data).join('\0');
+    return crypto.createHash('sha256').update(content).digest('hex');
 }
 
 /**
@@ -3456,102 +3482,136 @@ export async function groupRowExists(directories, id) {
 export const GROUP_NUMERIC_ID_RECOVERY_FLAG = 'group_numeric_id_recovery_v1';
 
 // One-time pass for stores whose groups bootstrap skipped every group file holding its id as a number (the legacy
-// format): inserts a row for each such group that has none. Existing rows are never touched.
+// format): inserts a row for each such group that has none. Existing rows are never touched. Groups are few and the
+// pass is idempotent, so it saves no position: it reruns from the first file until its flag is set, which happens
+// only once no file failed.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
  */
 export async function recoverNumericIdGroupsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_NUMERIC_ID_RECOVERY_FLAG })) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_NUMERIC_ID_RECOVERY_FLAG })) return { batches: 0, rowsChanged: 0 };
+
+    const label = 'Numeric-id group recovery';
+    let batches = 0;
+    let rowsChanged = 0;
+    let filesFailed = 0;
+
+    /** @param {string} file */
+    const prepareFile = (file) => {
+        const filePath = path.join(directories.groups, file);
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (typeof raw?.id !== 'number') return null;
+        const group = normalizeGroupRecord(raw);
+        if (!hasGroupIdForRow(group)) return null;
+        if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id: group.id })) return null;
+        const stat = fs.statSync(filePath);
+        const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
+        return () => upsertGroupRowSync(entry.db, {
+            id: group.id,
+            name: group.name,
+            fav: normalizeFav(group.fav),
+            group,
+            dateAdded: Math.round(stat.birthtimeMs),
+            dateLastChat,
+            chatSize,
+            insertOnly: true,
+        });
+    };
+
+    /** @param {string[]} files */
+    const runBatch = async (files) => {
+        let batchChanged = 0;
+        /** @type {{ file: string, message: string }[]} */
+        let batchFailed = [];
+        entry.db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            batchChanged = 0;
+            batchFailed = [];
+            for (const file of files) {
+                let write;
+                try {
+                    write = prepareFile(file);
+                } catch (err) {
+                    batchFailed.push({ file, message: String(/** @type {any} */ (err)?.message ?? err) });
+                    continue;
+                }
+                if (write) {
+                    write();
+                    batchChanged++;
+                }
+            }
+        });
+        batches++;
+        rowsChanged += batchChanged;
+        filesFailed += batchFailed.length;
+        if (batchFailed.length > 0) {
+            console.warn(color.yellow(`[character-metadata] ${label}: ${batchFailed.length} group file(s) failed and were skipped:\n${batchFailed.map(f => `  ${f.file}: ${f.message}`).join('\n')}`));
+        }
+        if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
+            entry.db.get('PRAGMA wal_checkpoint(PASSIVE)');
+        }
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    };
 
     if (fs.existsSync(directories.groups)) {
         const BATCH_SIZE = 500;
         const dir = await fsPromises.opendir(directories.groups);
         /** @type {string[]} */
         let batch = [];
-        const flush = () => {
-            const files = batch;
-            batch = [];
-            entry.db.transaction(() => {
-                for (const file of files) {
-                    try {
-                        const filePath = path.join(directories.groups, file);
-                        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-                        if (typeof raw?.id !== 'number') continue;
-                        const group = normalizeGroupRecord(raw);
-                        if (!hasGroupIdForRow(group)) continue;
-                        const stat = fs.statSync(filePath);
-                        const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
-                        upsertGroupRowSync(entry.db, {
-                            id: group.id,
-                            name: group.name,
-                            fav: normalizeFav(group.fav),
-                            group,
-                            dateAdded: Math.round(stat.birthtimeMs),
-                            dateLastChat,
-                            chatSize,
-                            insertOnly: true,
-                        });
-                    } catch (err) {
-                        console.error(`[character-metadata] Numeric-id group recovery failed to process group file ${file}, skipping it:`, /** @type {any} */ (err).message);
-                    }
-                }
-            });
-        };
         for await (const dirent of dir) {
             if (!dirent.isFile() || !dirent.name.endsWith('.json')) continue;
             batch.push(dirent.name);
             if (batch.length >= BATCH_SIZE) {
-                flush();
-                await new Promise(resolve => setImmediate(resolve));
+                await runBatch(batch);
+                batch = [];
             }
         }
-        flush();
+        if (batch.length > 0) await runBatch(batch);
     }
 
-    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: GROUP_NUMERIC_ID_RECOVERY_FLAG, value: String(Date.now()) });
+    if (filesFailed === 0) {
+        entry.db.run(UPSERT_META_VALUE_SQL, { key: GROUP_NUMERIC_ID_RECOVERY_FLAG, value: String(Date.now()) });
+    }
+    entry.db.checkpoint();
+    if (filesFailed > 0) {
+        console.warn(color.yellow(`[character-metadata] ${label}: ${filesFailed} group file(s) failed (listed above); not marked done, so it runs again next boot.`));
+    }
+    return { batches, rowsChanged };
 }
 
 export const GROUP_FAV_NORMALIZED_FLAG = 'group_fav_normalized_v1';
 
 // One-time pass re-deriving each group's fav column and digest_fav from its normalized JSON file (the source of
 // truth), since older writers stored the raw file value by truthiness (a file holding "false" read as a favourite).
-// Each batch's file reads and row writes run in one synchronous transaction, so a group write in this process
-// can't land between them. An unreadable file is logged and its row left alone: its next write fixes it.
+// A group's file is read inside its batch's transaction, so a group write in this process can't land between the
+// read and the row write. A group whose file can't be read is left as it is and keeps the pass from being marked done.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
  */
 export async function normalizeGroupFavIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_FAV_NORMALIZED_FLAG })) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_FAV_NORMALIZED_FLAG })) return { batches: 0, rowsChanged: 0 };
 
-    for await (const rows of streamRows(entry.db, {
-        firstPageSql: 'SELECT id FROM groups ORDER BY id LIMIT @limit',
-        firstPageParams: {},
-        nextPageSql: 'SELECT id FROM groups WHERE id > @after ORDER BY id LIMIT @limit',
-        nextPageParams: {},
-        keyColumn: 'id',
-    })) {
-        entry.db.transaction(() => {
-            for (const { id } of /** @type {{ id: string }[]} */ (rows)) {
-                try {
-                    const group = JSON.parse(fs.readFileSync(path.join(directories.groups, sanitize(`${id}.json`)), 'utf8'));
-                    const fav = normalizeFav(group?.fav);
-                    entry.db.run(
-                        'UPDATE groups SET fav = @fav, digest_fav = @digestFav WHERE id = @id AND (fav IS NOT @fav OR digest_fav IS NOT @digestFav)',
-                        { id, fav: fav ? 1 : 0, digestFav: groupDigestFavHash({ fav }) },
-                    );
-                } catch (err) {
-                    console.error(`[character-metadata] Group fav normalization failed for ${id}, leaving its row as is:`, /** @type {any} */ (err).message);
-                }
-            }
-        });
-        await new Promise(resolve => setImmediate(resolve));
-    }
-
-    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: GROUP_FAV_NORMALIZED_FLAG, value: String(Date.now()) });
+    return runResumableCharacterPass(entry.db, {
+        table: 'groups',
+        doneKey: GROUP_FAV_NORMALIZED_FLAG,
+        doneValue: String(Date.now()),
+        progressKey: `${GROUP_FAV_NORMALIZED_FLAG}_progress`,
+        label: 'Group fav normalization',
+        prepareRow: (id) => {
+            if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) return null;
+            const group = JSON.parse(fs.readFileSync(path.join(directories.groups, sanitize(`${id}.json`)), 'utf8'));
+            const fav = normalizeFav(group?.fav);
+            const params = { id, fav: fav ? 1 : 0, digestFav: groupDigestFavHash({ fav }) };
+            if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id AND (fav IS NOT @fav OR digest_fav IS NOT @digestFav)', params)) return null;
+            return () => entry.db.run('UPDATE groups SET fav = @fav, digest_fav = @digestFav WHERE id = @id', params);
+        },
+    });
 }
 
 // Returns tag definitions in no particular order - sorting is a client concern (compareTagsForSort(), tags.js).
@@ -3839,16 +3899,18 @@ export async function deleteTagDefinition(directories, tagId) {
 // One-time migration off tags.json (removed entirely, not just drained). Must run after bootstrapIfNeeded()
 // AND bootstrapGroupsIfNeeded() since it classifies tag_map keys against those tables; an unmatched key is
 // dropped with a warning. On success tags.json is renamed to `tags.json.migrated`, not deleted. Gated by a meta
-// flag; a parse failure does not set it, so a corrupt tags.json is retried next boot.
+// flag, set only if nothing failed; otherwise tags.json stays in place and the whole migration, which is
+// idempotent, reruns from the start next boot.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
  */
 export async function migrateTagsJsonIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'tags_json_migrated\'')));
-    if (already) return;
+    if (already) return { batches: 0, rowsChanged: 0 };
 
     const tagsJsonPath = path.join(directories.root, TAGS_FILE);
     if (!fs.existsSync(tagsJsonPath)) {
@@ -3856,7 +3918,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
             'INSERT INTO meta (key, value) VALUES (\'tags_json_migrated\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
             { value: String(Date.now()) },
         );
-        return;
+        return { batches: 0, rowsChanged: 0 };
     }
 
     /** @type {{ tags?: TagDefinitionInput[], tag_map?: Record<string, string[]> }} */
@@ -3865,7 +3927,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
         parsed = JSON.parse(fs.readFileSync(tagsJsonPath, 'utf8'));
     } catch (err) {
         console.error('[character-metadata] Failed to parse tags.json during migration - leaving it in place and retrying next boot:', /** @type {any} */ (err).message);
-        return;
+        return { batches: 0, rowsChanged: 0 };
     }
 
     const tagsArray = Array.isArray(parsed.tags) ? parsed.tags : [];
@@ -3875,6 +3937,8 @@ export async function migrateTagsJsonIfNeeded(directories) {
     // tags.json's and wins. Nothing is deleted, so a rerun from the start is safe.
     let insertedDefinitions = 0;
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        insertedDefinitions = 0;
         for (const raw of tagsArray) {
             const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
@@ -3886,14 +3950,25 @@ export async function migrateTagsJsonIfNeeded(directories) {
         }
     });
     if (insertedDefinitions > 0) entry.tagCache = null;
-    const droppedKeys = await importTagMap(entry, tagMap);
-    entry.db.run(
-        'INSERT INTO meta (key, value) VALUES (\'tags_json_migrated\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        { value: String(Date.now()) },
-    );
+    const imported = await importTagMap(entry, tagMap);
+    const { droppedKeys } = imported;
+    const batches = 1 + imported.batches;
+    const rowsChanged = insertedDefinitions + imported.rowsChanged;
+    if (imported.failedKeys === 0) {
+        entry.db.run(
+            'INSERT INTO meta (key, value) VALUES (\'tags_json_migrated\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            { value: String(Date.now()) },
+        );
+    }
+    entry.db.checkpoint();
 
     if (droppedKeys.length > 0) {
         console.warn(`[character-metadata] tags.json migration: ${droppedKeys.length} tag_map key(s) matched neither a known character nor a known group, dropped: ${droppedKeys.slice(0, 20).join(', ')}${droppedKeys.length > 20 ? ', ...' : ''}`);
+    }
+
+    if (imported.failedKeys > 0) {
+        console.warn(color.yellow(`[character-metadata] tags.json migration: ${imported.failedKeys} tag_map key(s) failed (listed above); not marked done and tags.json left in place, so it runs again from the start next boot.`));
+        return { batches, rowsChanged };
     }
 
     try {
@@ -3901,6 +3976,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
     } catch (err) {
         console.error('[character-metadata] Migrated tags.json successfully but could not rename it out of the way (safe to ignore - it is never read again):', /** @type {any} */ (err).message);
     }
+    return { batches, rowsChanged };
 }
 
 // Imports a `{[id]: tagId[]}` map into character_tags/group_tags. Each key is looked for only in its own type's
@@ -3943,22 +4019,71 @@ const TAG_MAP_IMPORT_BATCH_SIZE = 500;
 const TAG_MAP_IMPORT_BATCH_PAUSE_MS = 10;
 
 // importTagMapSync() in batches of keys, one transaction each, pausing between them. Leaves tags_hash alone:
-// a tag_map import never changes `tags`.
+// a tag_map import never changes `tags`. A key whose reads or parsing throw is left as it is and listed in a
+// warning; a write that throws rolls back its whole batch and fails the import.
 /**
  * @param {MetadataDbEntry} entry
  * @param {Record<string, unknown>} tagMap Externally-supplied - each value is runtime-checked as string[] below.
- * @returns {Promise<string[]>} Dropped keys.
+ * @returns {Promise<{ droppedKeys: string[], failedKeys: number, batches: number, rowsChanged: number }>}
+ *   rowsChanged counts the keys whose assignments or shallow_json changed.
  */
 async function importTagMap(entry, tagMap) {
     /** @type {string[]} */
     const droppedKeys = [];
+    let failedKeys = 0;
+    let batches = 0;
+    let rowsChanged = 0;
     const entries = Object.entries(tagMap);
+
+    /**
+     * @param {string} key
+     * @param {unknown[]} tagIds
+     * @returns {() => boolean} The key's writes; true if they changed anything.
+     */
+    const prepareCharacterKey = (key, tagIds) => {
+        const row = /** @type {{ shallow_json: string }} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: key }));
+        const shallow = JSON.parse(row.shallow_json);
+        return () => {
+            let changed = false;
+            for (const tagId of tagIds) {
+                if (entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId }).changes > 0) changed = true;
+            }
+            const currentTagIds = readCharacterTagIds(entry.db, key);
+            // writeShallowJson() stores tag_ids normalized.
+            if (Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(currentTagIds))) return changed;
+            shallow.tag_ids = currentTagIds;
+            writeShallowJson(entry.db, key, shallow, ['tag_ids']);
+            return true;
+        };
+    };
+
+    /**
+     * @param {string} key
+     * @param {unknown[]} tagIds
+     * @returns {() => boolean}
+     */
+    const prepareGroupKey = (key, tagIds) => () => {
+        let changed = false;
+        for (const tagId of tagIds) {
+            if (entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId }).changes > 0) changed = true;
+        }
+        return changed;
+    };
 
     for (let i = 0; i < entries.length; i += TAG_MAP_IMPORT_BATCH_SIZE) {
         if (i > 0) await delay(TAG_MAP_IMPORT_BATCH_PAUSE_MS);
         const batch = entries.slice(i, i + TAG_MAP_IMPORT_BATCH_SIZE);
 
+        /** @type {string[]} */
+        let batchDropped = [];
+        /** @type {{ key: string, message: string }[]} */
+        let batchFailed = [];
+        let batchChanged = 0;
         entry.db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            batchDropped = [];
+            batchFailed = [];
+            batchChanged = 0;
             const characterKeys = batch.filter(([key]) => tagEntityTypeOf(key) === 'character').map(([key]) => key);
             const groupKeys = batch.filter(([key]) => tagEntityTypeOf(key) === 'group').map(([key]) => key);
             /** @type {Set<string>} */
@@ -3979,23 +4104,38 @@ async function importTagMap(entry, tagMap) {
             for (const [key, tagIds] of batch) {
                 if (!Array.isArray(tagIds)) continue;
                 const type = tagEntityTypeOf(key);
+                /** @type {(() => boolean) | null} */
+                let write;
                 if (type === 'character' && knownCharacterIds.has(key)) {
-                    for (const tagId of tagIds) {
-                        entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
+                    if (tagIds.length === 0) continue;
+                    try {
+                        write = prepareCharacterKey(key, tagIds);
+                    } catch (err) {
+                        batchFailed.push({ key, message: String(/** @type {any} */ (err)?.message ?? err) });
+                        continue;
                     }
-                    if (tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, key);
                 } else if (type === 'group' && knownGroupIds.has(key)) {
-                    for (const tagId of tagIds) {
-                        entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
-                    }
+                    write = prepareGroupKey(key, tagIds);
                 } else {
-                    droppedKeys.push(key);
+                    batchDropped.push(key);
+                    continue;
                 }
+                if (write()) batchChanged++;
             }
         });
+        batches++;
+        rowsChanged += batchChanged;
+        droppedKeys.push(...batchDropped);
+        failedKeys += batchFailed.length;
+        if (batchFailed.length > 0) {
+            console.warn(color.yellow(`[character-metadata] tags.json migration: ${batchFailed.length} tag_map key(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.key}: ${f.message}`).join('\n')}`));
+        }
+        if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
+            entry.db.get('PRAGMA wal_checkpoint(PASSIVE)');
+        }
     }
 
-    return droppedKeys;
+    return { droppedKeys, failedKeys, batches, rowsChanged };
 }
 
 // A card's own `data.tags` array is user-authored free text, not a curated tag set - ROOT/TAVERN are structural
@@ -4032,27 +4172,6 @@ function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = fa
             tagNameToId.set(key, tagId);
         }
         tagIds.push(tagId);
-    }
-    return tagIds;
-}
-
-// Seeds character_tags from one character's card-embedded data.tags. Deliberately does not touch
-// shallow_json.tag_ids - callers are responsible for reconciling it once they know the
-// row's final tag id set (see syncShallowTagIdsFromTable()).
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} avatar
- * @param {unknown[]} cardTags
- * @param {Map<string, string>} tagNameToId
- * @param {(params: { id: string, data: string }) => void} insertTag
- * @param {(params: { characterId: string, tagId: string }) => void} insertAssignment
- * @param {{ onlyExisting?: boolean }} [options]
- * @returns {string[]}
- */
-function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, insertAssignment, options) {
-    const tagIds = resolveCardTagIds(cardTags, tagNameToId, insertTag, options);
-    for (const tagId of tagIds) {
-        insertAssignment({ characterId: avatar, tagId });
     }
     return tagIds;
 }
@@ -4150,16 +4269,17 @@ function extractCardTags(shallowJson) {
 }
 
 // One-time backfill of character_tags from each card's already-parsed shallow_json.data.tags (no disk read
-// needed). Gated by its own meta flag; INSERT OR IGNORE makes an interrupted-and-retried pass safe.
+// needed). Gated by its own meta flag; resumes after the last batch it committed.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
  */
 export async function backfillCardTagsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'card_tags_backfill_completed\'')));
-    if (already) return;
+    if (already) return { batches: 0, rowsChanged: 0 };
 
     console.log(color.cyan('[character-metadata] Backfilling tag assignments from card-embedded tags...'));
 
@@ -4176,60 +4296,81 @@ export async function backfillCardTagsIfNeeded(directories) {
         }
     }
 
-    const rows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all('SELECT id, shallow_json FROM characters')));
+    // Names minted by the rows the current batch has written so far; merged into tagNameToId only once the batch
+    // commits, so a rolled-back batch leaves no name pointing at a tag that was never written.
+    /** @type {Map<string, string>} */
+    let batchNameToId = new Map();
+    let batchNewDefinitions = 0;
+    let batchNewAssignments = 0;
+    let newDefinitions = 0;
+    let newAssignments = 0;
 
-    /** @param {{ id: string, data: string }} params */
-    const insertTag = (params) => {
-        if (entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params).changes > 0) {
-            characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
-        }
-    };
-    /** @param {{ characterId: string, tagId: string }} params */
-    const insertAssignment = (params) => entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
+    const result = await runResumableCharacterPass(entry.db, {
+        doneKey: 'card_tags_backfill_completed',
+        doneValue: '1',
+        progressKey: 'card_tags_backfill_progress',
+        label: 'Card-tags backfill',
+        logProgress: true,
+        onBatchStart: () => {
+            batchNameToId = new Map();
+            batchNewDefinitions = 0;
+            batchNewAssignments = 0;
+        },
+        onBatchCommitted: () => {
+            for (const [name, id] of batchNameToId) tagNameToId.set(name, id);
+            newDefinitions += batchNewDefinitions;
+            newAssignments += batchNewAssignments;
+        },
+        prepareRow: (id) => {
+            const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
+            if (!row) return null;
+            const cardTags = extractCardTags(row.shallow_json);
+            if (cardTags.length === 0) return null;
 
-    // Computed as before/after deltas since INSERT OR IGNORE gives no per-call signal of whether a row was added.
-    const tagDefinitionsBefore = tagNameToId.size;
-    const assignmentsBefore = (/** @type {{ n: number } | undefined} */ (entry.db.get('SELECT COUNT(*) AS n FROM character_tags')))?.n ?? 0;
+            /** @type {Map<string, string>} */
+            const rowNameToId = new Map();
+            /** @type {{ id: string, data: string }[]} */
+            const minted = [];
+            const names = /** @type {Map<string, string>} */ (/** @type {unknown} */ ({
+                get: (/** @type {string} */ name) => rowNameToId.get(name) ?? batchNameToId.get(name) ?? tagNameToId.get(name),
+                set: (/** @type {string} */ name, /** @type {string} */ tagId) => rowNameToId.set(name, tagId),
+            }));
+            const tagIds = resolveCardTagIds(cardTags, names, params => minted.push(params));
+            if (tagIds.length === 0) return null;
 
-    const backfillStart = Date.now();
-    let lastProgressLog = backfillStart;
-    let processedRows = 0;
+            const shallow = JSON.parse(row.shallow_json);
+            const currentTagIds = readCharacterTagIds(entry.db, id);
+            const current = new Set(currentTagIds);
+            const missing = [...new Set(tagIds)].filter(tagId => !current.has(tagId));
+            const finalTagIds = [...currentTagIds, ...missing];
+            // writeShallowJson() stores tag_ids normalized.
+            const shallowInSync = Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(finalTagIds));
+            if (missing.length === 0 && shallowInSync) return null;
 
-    for (let i = 0; i < rows.length; i += BATCH_FLUSH_SIZE) {
-        const chunk = rows.slice(i, i + BATCH_FLUSH_SIZE);
-
-        entry.db.transaction(() => {
-            for (const row of chunk) {
-                const cardTags = extractCardTags(row.shallow_json);
-                if (cardTags.length === 0) continue;
-                const tagIds = seedCardTagsForCharacter(entry.db, row.id, cardTags, tagNameToId, insertTag, insertAssignment);
-                // Sync shallow_json.tag_ids here rather than relying on backfillTagIdsInShallowJson()'s separate
-                // pass, which only targets rows missing a tag_ids key and would skip a row that already had one.
-                if (tagIds.length > 0) {
-                    syncShallowTagIdsFromTable(entry.db, row.id);
+            return () => {
+                for (const params of minted) {
+                    if (entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params).changes > 0) {
+                        batchNewDefinitions++;
+                        characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+                    }
                 }
-            }
-        });
+                for (const [name, tagId] of rowNameToId) batchNameToId.set(name, tagId);
+                for (const tagId of missing) {
+                    batchNewAssignments += entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: id, tagId }).changes;
+                }
+                // Synced here rather than left to backfillTagIdsInShallowJson(), which only targets rows missing a
+                // tag_ids key and would skip a row that already had one.
+                if (!shallowInSync) {
+                    shallow.tag_ids = finalTagIds;
+                    writeShallowJson(entry.db, id, shallow, ['tag_ids']);
+                }
+            };
+        },
+        finish: () => updateTagsHashIfChangedSync(entry.db),
+    });
 
-        processedRows += chunk.length;
-
-        const now = Date.now();
-        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-            console.log(color.cyan(`[character-metadata] Card-tags backfill progress: ${processedRows}/${rows.length}`));
-            lastProgressLog = now;
-        }
-
-        await new Promise(resolve => setImmediate(resolve));
-    }
-
-    updateTagsHashSync(entry.db);
-    entry.db.run('INSERT INTO meta (key, value) VALUES (\'card_tags_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
-
-    const newTagDefinitions = tagNameToId.size - tagDefinitionsBefore;
-    const assignmentsAfter = (/** @type {{ n: number } | undefined} */ (entry.db.get('SELECT COUNT(*) AS n FROM character_tags')))?.n ?? 0;
-    const newAssignments = assignmentsAfter - assignmentsBefore;
-
-    console.log(color.cyan(`[character-metadata] Card-tags backfill complete: ${newTagDefinitions} new tag definitions, ${newAssignments} new assignments.`));
+    console.log(color.cyan(`[character-metadata] Card-tags backfill: ${newDefinitions} new tag definitions, ${newAssignments} new assignments.`));
+    return result;
 }
 
 // Builds entry's tag cache from a full table scan once, then reuses/mutates the same Maps for the process's life

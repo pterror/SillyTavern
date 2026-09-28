@@ -21,6 +21,8 @@ let transactionCalls = 0;
 let checkpointCalls = [];
 /** @type {((sql: string, params: any) => boolean) | null} run() throws instead of running a statement this matches. */
 let failWrite = null;
+/** @type {((sql: string, params: any) => boolean) | null} get() throws instead of running a statement this matches. */
+let failRead = null;
 
 /** @param {any} handle */
 function instrumentedHandle(handle) {
@@ -35,6 +37,9 @@ function instrumentedHandle(handle) {
     wrapped.get = (sql, params) => {
         const match = /wal_checkpoint\((\w+)\)/.exec(String(sql));
         if (match) checkpointCalls.push(match[1]);
+        if (failRead?.(String(sql), params)) {
+            throw new Error('simulated read failure');
+        }
         return handle.get(sql, params);
     };
     wrapped.run = (sql, params) => {
@@ -85,6 +90,7 @@ beforeEach(() => {
     transactionCalls = 0;
     checkpointCalls = [];
     failWrite = null;
+    failRead = null;
 });
 
 afterEach(async () => {
@@ -287,5 +293,270 @@ describe('one-time character passes never leave a row half-written', () => {
         expect(changeRowsFor('c01200.png')).toBe(1);
         expect(rawMeta('character_fav_normalized_v1')).not.toBeNull();
         expect(rawMeta('character_fav_normalized_v1_progress')).toBeNull();
+    }, 60000);
+});
+
+/** @param {boolean} fav */
+async function groupDigestFav(fav) {
+    const { groupDigestFavHash } = await import('../public/scripts/hash-utils.js');
+    return groupDigestFavHash({ fav });
+}
+
+/** Group files g00000.json, g00001.json, ... holding fav "false", with rows whose fav column and digest_fav say true. */
+async function seedStaleGroups(count) {
+    const seed = { id: 'seedg', name: 'seedg', members: [], chats: [], fav: 'false' };
+    fs.writeFileSync(path.join(directories.groups, 'seedg.json'), JSON.stringify(seed));
+    await metadataDb.upsertGroupRow(directories, 'seedg', 'seedg', { fav: false, group: seed });
+    for (let i = 0; i < count; i++) {
+        const id = `g${String(i).padStart(5, '0')}`;
+        fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify({ ...seed, id, name: id }));
+    }
+    const staleDigest = await groupDigestFav(true);
+    withRawDb(db => {
+        const columns = db.prepare('SELECT name FROM pragma_table_info(\'groups\')').pluck().all().filter(c => c !== 'id');
+        db.prepare(`
+            WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
+            INSERT INTO groups (id, ${columns.join(', ')})
+            SELECT printf('g%05d', n.i), ${columns.map(c => `s.${c}`).join(', ')} FROM n, groups s WHERE s.id = 'seedg'
+        `).run(count);
+        db.prepare('UPDATE groups SET fav = 1, digest_fav = ?').run(staleDigest);
+    });
+}
+
+/** @param {string} id */
+function groupFavOf(id) {
+    return withRawDb(db => db.prepare('SELECT fav FROM groups WHERE id = ?').get(id).fav);
+}
+
+/** @param {string} where @param {string[]} tags */
+function setCardTags(where, tags) {
+    withRawDb(db => db.prepare(`UPDATE characters SET shallow_json = json_set(shallow_json, '$.data.tags', json(?)) WHERE ${where}`).run(JSON.stringify(tags)));
+}
+
+/** @param {string} id */
+function assignedTagIds(id) {
+    return withRawDb(db => db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?').pluck().all(id));
+}
+
+/** @param {string} name */
+function tagIdsNamed(name) {
+    return withRawDb(db => db.prepare('SELECT id FROM tags WHERE json_extract(data, \'$.name\') = ?').pluck().all(name));
+}
+
+describe('one-time group and card-tag passes resume after a mid-pass stop', () => {
+    test('normalizeGroupFavIfNeeded resumes after the last committed batch', async () => {
+        await seedStaleGroups(1500);
+
+        transactionCalls = 0;
+        crashAtTransaction = 2;
+        await expect(metadataDb.normalizeGroupFavIfNeeded(directories)).rejects.toThrow('simulated stop');
+        crashAtTransaction = 0;
+
+        expect(rawMeta(`${metadataDb.GROUP_FAV_NORMALIZED_FLAG}_progress`)).toBe('g00999');
+        expect(rawMeta(metadataDb.GROUP_FAV_NORMALIZED_FLAG)).toBeNull();
+        expect(groupFavOf('g00999')).toBe(0);
+        expect(groupFavOf('g01000')).toBe(1);
+
+        // A row before the saved key is made stale again: a resumed run must not revisit it.
+        withRawDb(db => db.prepare('UPDATE groups SET fav = 1 WHERE id = \'g00000\'').run());
+        const result = await metadataDb.normalizeGroupFavIfNeeded(directories);
+
+        expect(groupFavOf('g00000')).toBe(1);
+        expect(groupFavOf('g01000')).toBe(0);
+        expect(groupFavOf('seedg')).toBe(0);
+        expect(result).toEqual({ batches: 1, rowsChanged: 501 });
+        expect(rawMeta(metadataDb.GROUP_FAV_NORMALIZED_FLAG)).not.toBeNull();
+        expect(rawMeta(`${metadataDb.GROUP_FAV_NORMALIZED_FLAG}_progress`)).toBeNull();
+    }, 60000);
+
+    test('backfillCardTagsIfNeeded resumes after the last committed batch, reusing the tag the first run created', async () => {
+        await seedCopies(1500);
+        setCardTags('1', ['Alpha']);
+
+        transactionCalls = 0;
+        crashAtTransaction = 2;
+        await expect(metadataDb.backfillCardTagsIfNeeded(directories)).rejects.toThrow('simulated stop');
+        crashAtTransaction = 0;
+
+        expect(rawMeta('card_tags_backfill_progress')).toBe('c00999.png');
+        expect(rawMeta('card_tags_backfill_completed')).toBeNull();
+        const [alphaId] = tagIdsNamed('Alpha');
+        expect(assignedTagIds('c00999.png')).toEqual([alphaId]);
+        expect(shallowOf('c00999.png').tag_ids).toEqual([alphaId]);
+        expect(assignedTagIds('c01000.png')).toEqual([]);
+
+        withRawDb(db => db.prepare('DELETE FROM character_tags WHERE character_id = \'c00000.png\'').run());
+        const result = await metadataDb.backfillCardTagsIfNeeded(directories);
+
+        expect(assignedTagIds('c00000.png')).toEqual([]);
+        expect(assignedTagIds('c01000.png')).toEqual([alphaId]);
+        expect(shallowOf('c01000.png').tag_ids).toEqual([alphaId]);
+        expect(assignedTagIds('seed.png')).toEqual([alphaId]);
+        expect(tagIdsNamed('Alpha')).toEqual([alphaId]);
+        expect(result).toEqual({ batches: 1, rowsChanged: 501 });
+        expect(rawMeta('card_tags_backfill_completed')).not.toBeNull();
+        expect(rawMeta('card_tags_backfill_progress')).toBeNull();
+    }, 60000);
+});
+
+describe('one-time group, tag and card-tag passes are not marked done when a row fails', () => {
+    test('normalizeGroupFavIfNeeded: the failed group is listed, the flag stays unset, and the next run starts over', async () => {
+        await seedStaleGroups(2);
+        fs.writeFileSync(path.join(directories.groups, 'g00001.json'), '{broken');
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const result = await metadataDb.normalizeGroupFavIfNeeded(directories);
+
+        expect(result).toEqual({ batches: 1, rowsChanged: 2 });
+        expect(groupFavOf('g00000')).toBe(0);
+        expect(groupFavOf('g00001')).toBe(1);
+        const warnings = warn.mock.calls.map(args => args.join(' '));
+        expect(warnings.some(w => w.includes('g00001'))).toBe(true);
+        expect(warnings.some(w => w.includes('g00000') || w.includes('seedg'))).toBe(false);
+        expect(rawMeta(metadataDb.GROUP_FAV_NORMALIZED_FLAG)).toBeNull();
+        expect(rawMeta(`${metadataDb.GROUP_FAV_NORMALIZED_FLAG}_progress`)).toBeNull();
+
+        fs.writeFileSync(path.join(directories.groups, 'g00001.json'), JSON.stringify({ id: 'g00001', name: 'g00001', members: [], chats: [], fav: 'false' }));
+        warn.mockClear();
+        await metadataDb.normalizeGroupFavIfNeeded(directories);
+
+        expect(groupFavOf('g00001')).toBe(0);
+        expect(warn).not.toHaveBeenCalled();
+        expect(rawMeta(metadataDb.GROUP_FAV_NORMALIZED_FLAG)).not.toBeNull();
+    });
+
+    test('backfillCardTagsIfNeeded: the failed row is listed, the flag stays unset, and the next run starts over', async () => {
+        await seedCopies(2);
+        setCardTags('1', ['Alpha']);
+        failRead = (sql, params) => sql.startsWith('SELECT shallow_json FROM characters WHERE id') && params?.id === 'c00001.png';
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const result = await metadataDb.backfillCardTagsIfNeeded(directories);
+
+        expect(result).toEqual({ batches: 1, rowsChanged: 2 });
+        const [alphaId] = tagIdsNamed('Alpha');
+        expect(assignedTagIds('c00000.png')).toEqual([alphaId]);
+        expect(assignedTagIds('c00001.png')).toEqual([]);
+        const warnings = warn.mock.calls.map(args => args.join(' '));
+        expect(warnings.some(w => w.includes('c00001.png'))).toBe(true);
+        expect(warnings.some(w => w.includes('c00000.png') || w.includes('seed.png'))).toBe(false);
+        expect(rawMeta('card_tags_backfill_completed')).toBeNull();
+        expect(rawMeta('card_tags_backfill_progress')).toBeNull();
+
+        failRead = null;
+        warn.mockClear();
+        const rerun = await metadataDb.backfillCardTagsIfNeeded(directories);
+
+        expect(rerun).toEqual({ batches: 1, rowsChanged: 1 });
+        expect(assignedTagIds('c00001.png')).toEqual([alphaId]);
+        expect(tagIdsNamed('Alpha')).toEqual([alphaId]);
+        expect(warn).not.toHaveBeenCalled();
+        expect(rawMeta('card_tags_backfill_completed')).not.toBeNull();
+    });
+
+    test('recoverNumericIdGroupsIfNeeded: the failed file is listed by name and the flag stays unset', async () => {
+        fs.writeFileSync(path.join(directories.groups, '777.json'), JSON.stringify({ id: 777, name: 'Legacy', members: [], chats: [] }));
+        fs.writeFileSync(path.join(directories.groups, 'broken.json'), '{broken');
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const result = await metadataDb.recoverNumericIdGroupsIfNeeded(directories);
+
+        expect(result).toEqual({ batches: 1, rowsChanged: 1 });
+        expect(withRawDb(db => db.prepare('SELECT name FROM groups WHERE id = \'777\'').get())?.name).toBe('Legacy');
+        const warnings = warn.mock.calls.map(args => args.join(' '));
+        expect(warnings.some(w => w.includes('broken.json'))).toBe(true);
+        expect(warnings.some(w => w.includes('777.json'))).toBe(false);
+        expect(rawMeta(metadataDb.GROUP_NUMERIC_ID_RECOVERY_FLAG)).toBeNull();
+
+        fs.rmSync(path.join(directories.groups, 'broken.json'));
+        const rerun = await metadataDb.recoverNumericIdGroupsIfNeeded(directories);
+
+        expect(rerun).toEqual({ batches: 1, rowsChanged: 0 });
+        expect(rawMeta(metadataDb.GROUP_NUMERIC_ID_RECOVERY_FLAG)).not.toBeNull();
+    });
+
+    test('migrateTagsJsonIfNeeded: the failed key is listed, the flag stays unset and tags.json stays in place', async () => {
+        await seedCopies(2);
+        withRawDb(db => db.prepare('UPDATE characters SET shallow_json = \'{broken\' WHERE id = \'c00001.png\'').run());
+        const tagsJsonPath = path.join(directories.root, 'tags.json');
+        fs.writeFileSync(tagsJsonPath, JSON.stringify({
+            tags: [{ id: 'tag1', name: 'Funny' }],
+            tag_map: { 'c00000.png': ['tag1'], 'c00001.png': ['tag1'] },
+        }));
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const result = await metadataDb.migrateTagsJsonIfNeeded(directories);
+
+        expect(result).toEqual({ batches: 2, rowsChanged: 2 });
+        expect(assignedTagIds('c00000.png')).toEqual(['tag1']);
+        expect(shallowOf('c00000.png').tag_ids).toEqual(['tag1']);
+        expect(assignedTagIds('c00001.png')).toEqual([]);
+        const warnings = warn.mock.calls.map(args => args.join(' '));
+        expect(warnings.some(w => w.includes('c00001.png'))).toBe(true);
+        expect(warnings.some(w => w.includes('c00000.png'))).toBe(false);
+        expect(rawMeta('tags_json_migrated')).toBeNull();
+        expect(fs.existsSync(tagsJsonPath)).toBe(true);
+        expect(checkpointCalls).toContain('TRUNCATE');
+
+        withRawDb(db => db.prepare('UPDATE characters SET shallow_json = (SELECT shallow_json FROM characters WHERE id = \'seed.png\') WHERE id = \'c00001.png\'').run());
+        warn.mockClear();
+        const rerun = await metadataDb.migrateTagsJsonIfNeeded(directories);
+
+        expect(rerun).toEqual({ batches: 2, rowsChanged: 1 });
+        expect(assignedTagIds('c00001.png')).toEqual(['tag1']);
+        expect(warn).not.toHaveBeenCalled();
+        expect(rawMeta('tags_json_migrated')).not.toBeNull();
+        expect(fs.existsSync(tagsJsonPath)).toBe(false);
+        expect(fs.existsSync(`${tagsJsonPath}.migrated`)).toBe(true);
+    });
+});
+
+describe('one-time group and card-tag passes never leave a row half-written', () => {
+    test('normalizeGroupFavIfNeeded: a write that throws rolls back its whole batch and fails the pass', async () => {
+        await seedStaleGroups(1500);
+
+        failWrite = (sql, params) => sql.startsWith('UPDATE groups SET') && params?.id === 'g01200';
+        await expect(metadataDb.normalizeGroupFavIfNeeded(directories)).rejects.toThrow('simulated write failure');
+        failWrite = null;
+
+        expect(groupFavOf('g00999')).toBe(0);
+        expect(groupFavOf('g01000')).toBe(1);
+        expect(rawMeta(`${metadataDb.GROUP_FAV_NORMALIZED_FLAG}_progress`)).toBe('g00999');
+        expect(rawMeta(metadataDb.GROUP_FAV_NORMALIZED_FLAG)).toBeNull();
+
+        const result = await metadataDb.normalizeGroupFavIfNeeded(directories);
+
+        expect(result).toEqual({ batches: 1, rowsChanged: 501 });
+        expect(groupFavOf('g01200')).toBe(0);
+        expect(rawMeta(metadataDb.GROUP_FAV_NORMALIZED_FLAG)).not.toBeNull();
+    }, 60000);
+
+    test('backfillCardTagsIfNeeded: a write that throws rolls back its whole batch, including a tag it created', async () => {
+        await seedCopies(1500);
+        setCardTags('1', ['Alpha']);
+        setCardTags('id >= \'c01000.png\'', ['Alpha', 'Beta']);
+        /** @param {string} id */
+        const changeRowsFor = id => withRawDb(db => db.prepare('SELECT COUNT(*) AS n FROM changes WHERE id = ?').get(id).n);
+
+        failWrite = (sql, params) => sql.startsWith('INSERT OR IGNORE INTO character_tags') && params?.characterId === 'c01200.png';
+        await expect(metadataDb.backfillCardTagsIfNeeded(directories)).rejects.toThrow('simulated write failure');
+        failWrite = null;
+
+        const [alphaId] = tagIdsNamed('Alpha');
+        expect(assignedTagIds('c00999.png')).toEqual([alphaId]);
+        expect(assignedTagIds('c01000.png')).toEqual([]);
+        expect(changeRowsFor('c01000.png')).toBe(0);
+        expect(tagIdsNamed('Beta')).toEqual([]);
+        expect(rawMeta('card_tags_backfill_progress')).toBe('c00999.png');
+        expect(rawMeta('card_tags_backfill_completed')).toBeNull();
+
+        const result = await metadataDb.backfillCardTagsIfNeeded(directories);
+
+        expect(result).toEqual({ batches: 1, rowsChanged: 501 });
+        const [betaId] = tagIdsNamed('Beta');
+        expect(tagIdsNamed('Beta')).toHaveLength(1);
+        expect(assignedTagIds('c01200.png').sort()).toEqual([alphaId, betaId].sort());
+        expect(changeRowsFor('c01200.png')).toBe(1);
+        expect(rawMeta('card_tags_backfill_completed')).not.toBeNull();
     }, 60000);
 });

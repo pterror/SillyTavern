@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
+import { describe, test, expect, jest, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -272,18 +272,25 @@ describe('group fav migration (normalizeGroupFavIfNeeded)', () => {
         expect(withRawDb(db => db.prepare('SELECT fav FROM groups WHERE id = ?').get('gfalse')).fav).toBe(1);
     });
 
-    test('a group whose file cannot be read is left alone, and the flag is still set', async () => {
+    test('a group whose file cannot be read is left alone and listed in a warning, and the flag stays unset', async () => {
         await seedStaleGroups();
         fs.writeFileSync(path.join(directories.groups, 'gfalse.json'), '{ not json');
         fs.rmSync(path.join(directories.groups, 'gyes.json'));
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-        await metadataDb.normalizeGroupFavIfNeeded(directories);
+        try {
+            await metadataDb.normalizeGroupFavIfNeeded(directories);
+            const warnings = warn.mock.calls.map(args => args.join(' '));
+            expect(warnings.some(w => w.includes('gfalse') && w.includes('gyes'))).toBe(true);
+        } finally {
+            warn.mockRestore();
+        }
 
         const rows = Object.fromEntries(readGroupRows().map(r => [r.id, r]));
         expect(rows.gfalse).toEqual({ id: 'gfalse', fav: 1, digest_fav: groupDigestFavHash({ fav: true }) });
         expect(rows.gyes).toEqual({ id: 'gyes', fav: 1, digest_fav: groupDigestFavHash({ fav: true }) });
         expect(rows.gzero.fav).toBe(0);
-        expect(await metadataDb.getMetaValue(directories, GROUP_FLAG)).not.toBeNull();
+        expect(await metadataDb.getMetaValue(directories, GROUP_FLAG)).toBeNull();
     });
 
     test('streams the groups table in bounded batches, never an unbounded read', async () => {
