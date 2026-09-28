@@ -4526,6 +4526,34 @@ function holdWorldSaves(name) {
 }
 
 /**
+ * holdWorldSaves(), then waits until none of the book's writes is in flight, holding the saves made meanwhile too.
+ * Once it resolves, nothing of the book is pending or in flight, so a delete sent right away is the last request to
+ * reach its file: a write already on its way when the delete started can't land after it and write the book back.
+ * @param {string} name - The book's name
+ * @returns {Promise<HeldWorldSaves|null>} Everything held, or null if nothing was pending.
+ */
+async function holdWorldSavesUntilSettled(name) {
+    let held = holdWorldSaves(name);
+    while (worldWritesInFlight.has(name)) {
+        await worldWritesSettled(name);
+        const more = holdWorldSaves(name);
+        if (!more) {
+            continue;
+        }
+        if (!held) {
+            held = more;
+            continue;
+        }
+        const entries = new Set([...(held.entries ?? []), ...(more.entries ?? [])]);
+        held = {
+            data: more.data !== undefined ? more.data : held.data,
+            entries: entries.size ? entries : undefined,
+        };
+    }
+    return held;
+}
+
+/**
  * Puts saves taken out by holdWorldSaves() back in the queue, for when the book still has its file after all.
  * The whole-book save goes out with the cached copy of the book, which holds any edit saved since the hold as
  * well as the held one, so a later save of the book is never overwritten with the older held data.
@@ -4701,8 +4729,9 @@ async function renameWorldInfo(name, data) {
     if (!written) {
         return;
     }
-    // Edits saved to the old book while the new one was being written go to the new book.
-    if (holdWorldSaves(oldName) && worldInfoCache.has(oldName)) {
+    // Edits saved to the old book while the new one was being written go to the new book. The old file is deleted only
+    // once the old book's writes already sent have landed, so none of them can write it back after the delete.
+    if (await holdWorldSavesUntilSettled(oldName) && worldInfoCache.has(oldName)) {
         await saveWorldInfo(newName, worldInfoCache.get(oldName));
     }
     // The open character keeps its link to the old name, like every other linked character, so the relink below
@@ -4874,11 +4903,14 @@ export async function deleteWorldInfo(worldInfoName) {
  * from the book, or '' if it unlinked none.
  */
 async function removeWorldInfo(worldInfoName) {
-    // A save still waiting would write the book back after the delete. If the delete doesn't go through, or it is
-    // unknown whether it did, the book may still have its file, so its edits are sent after all.
-    const held = holdWorldSaves(worldInfoName);
+    // A save still waiting would write the book back after the delete, and so would one already sent, if it reached
+    // the server after the delete: the waiting ones are held, and the delete is sent once the sent ones have landed.
+    // If the delete doesn't go through, or it is unknown whether it did, the book may still have its file, so the
+    // held edits are sent after all.
+    let held = null;
     let deleted = false;
     try {
+        held = await holdWorldSavesUntilSettled(worldInfoName);
         deleted = await deleteWorldInfoFile(worldInfoName);
     } finally {
         if (!deleted) {
