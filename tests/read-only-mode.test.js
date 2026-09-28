@@ -246,4 +246,35 @@ describe('read-only mode: POST /api/characters/query against an existing library
     test('trySetMetaValues() throws SQLite\'s read-only error', async () => {
         await expect(metadataDb.trySetMetaValues(directories, { 'read-only-mode-test': 'x' })).rejects.toMatchObject({ code: 'SQLITE_READONLY' });
     });
+
+    test('initializeMetadataStores() starts no boot chain and writes nothing', async () => {
+        expect(await metadataDb.initializeMetadataStores([directories])).toEqual([]);
+        expect(await metadataDb.waitForMetadataBootChain(directories)).toBe(false);
+        expect(snapshotFile(path.join(directories.root, DB_FILE))).toEqual(dbBefore);
+        expect(fs.statSync(path.join(directories.root, `${DB_FILE}-wal`)).size).toBe(0);
+    });
+
+    // A group file that fails to parse leaves the pass's done flag unwritten, so the pass writes nothing and
+    // reaches its closing checkpoint. Another connection's write sits in the -wal, which a read-only connection
+    // can't checkpoint (SQLITE_IOERR_WRITE). Last in this block: that write changes the db.
+    test('a migration pass that writes nothing skips its checkpoint', async () => {
+        const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
+        const DatabaseCtor = await getBetterSqlite3();
+        const writer = new DatabaseCtor(path.join(directories.root, DB_FILE));
+        const brokenGroupFile = path.join(directories.groups, 'broken.json');
+        try {
+            writer.prepare('INSERT INTO meta (key, value) VALUES (\'read-only-mode-test\', \'x\')').run();
+            const dbWritten = snapshotFile(path.join(directories.root, DB_FILE));
+            const walWritten = snapshotFile(path.join(directories.root, `${DB_FILE}-wal`));
+            expect(walWritten.size).toBeGreaterThan(0);
+            fs.writeFileSync(brokenGroupFile, '{');
+
+            await expect(metadataDb.recoverNumericIdGroupsIfNeeded(directories)).resolves.toEqual({ batches: 1, rowsChanged: 0 });
+            expect(snapshotFile(path.join(directories.root, DB_FILE))).toEqual(dbWritten);
+            expect(snapshotFile(path.join(directories.root, `${DB_FILE}-wal`))).toEqual(walWritten);
+        } finally {
+            fs.rmSync(brokenGroupFile, { force: true });
+            writer.close();
+        }
+    });
 });
