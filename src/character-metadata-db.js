@@ -5994,6 +5994,64 @@ export async function commitMigrationSettled(directories, migration, metaKey, me
 }
 
 /**
+ * A /query filter's total read from entity_counts / entity_tag_counts, for the shapes one counter answers: no
+ * filter, fav alone, one included tag, or one excluded tag, each with or without fav. Null for any other shape, or
+ * while the counters of one of `kinds` aren't filled, and the caller runs its COUNT(*) statement.
+ *
+ * The tag is read as expandTagFilter() reads it: a marked tag acts on its merge target, or on no tag when it has
+ * none. A marked tag merging into the target keeps its rows, and its counters, under its own id until
+ * finishDeletedTags() moves them, and an entity can carry both, so while one exists the total is an estimate with no
+ * walk of the overlap: an included tag counts the sum of the counters, and an excluded tag, whose rows' union lies
+ * between the largest counter and the sum, counts the midpoint of (total - sum) and (total - largest), rounded,
+ * never below 0.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind['name'][]} kinds
+ * @param {object} filter
+ * @param {{ include?: unknown, exclude?: unknown }} [filter.tags]
+ * @param {unknown} [filter.fav]
+ * @param {unknown} [filter.world]
+ * @param {unknown} [filter.excludeIds]
+ * @param {unknown} [filter.ids]
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @returns {{ total: number, approxTotal: boolean } | null}
+ */
+function countFromCounters(db, kinds, { tags, fav, world, excludeIds, ids }, deletions) {
+    if (Array.isArray(ids) && ids.length > 0) return null;
+    if (Array.isArray(excludeIds) && excludeIds.length > 0) return null;
+    if (typeof world === 'string' && world) return null;
+    const include = tags && Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
+    const exclude = tags && Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
+    // Two entries, even the same tag twice ('and' mode then matches nothing), have no single counter.
+    if (include.length + exclude.length > 1) return null;
+    const named = include.length > 0 ? include[0] : exclude.length > 0 ? exclude[0] : null;
+    if (named !== null && typeof named !== 'string') return null;
+    for (const kind of kinds) {
+        const fill = /** @type {{ done: number } | undefined} */ (db.get('SELECT done FROM entity_count_fill WHERE kind = @kind', { kind }));
+        if (fill?.done !== 1) return null;
+    }
+
+    const scope = { kinds: JSON.stringify(kinds), favs: JSON.stringify(typeof fav === 'boolean' ? [fav ? 1 : 0] : [0, 1]) };
+    const scopeSql = 'kind IN (SELECT value FROM json_each(@kinds)) AND fav IN (SELECT value FROM json_each(@favs))';
+    const sumOf = (/** @type {string} */ sql, /** @type {object} */ params) => Number((/** @type {{ n: number }} */ (db.get(sql, params))).n);
+    const total = sumOf(`SELECT COALESCE(SUM(count), 0) AS n FROM entity_counts WHERE ${scopeSql}`, scope);
+    if (named === null) return { total, approxTotal: false };
+
+    const target = resolveTagId(named, deletions);
+    if (target === null) return { total: include.length > 0 ? 0 : total, approxTotal: false };
+    const tagIds = [target];
+    for (const [id, mergeInto] of deletions) {
+        if (mergeInto === target) tagIds.push(id);
+    }
+    const tagCounts = tagIds.map(tagId => sumOf(`SELECT COALESCE(SUM(count), 0) AS n FROM entity_tag_counts WHERE tag_id = @tagId AND ${scopeSql}`, { ...scope, tagId }));
+    const sum = tagCounts.reduce((a, b) => a + b, 0);
+    const approxTotal = tagIds.length > 1;
+    if (include.length > 0) return { total: sum, approxTotal };
+    if (!approxTotal) return { total: total - sum, approxTotal };
+    const largest = tagCounts.reduce((a, b) => Math.max(a, b), 0);
+    return { total: Math.max(0, Math.round(((total - sum) + (total - largest)) / 2)), approxTotal };
+}
+
+/**
  * Browse/sort/filter query backing `POST /api/characters/query`, entirely SQLite-backed.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} [params]
@@ -6014,8 +6072,9 @@ export async function commitMigrationSettled(directories, migration, metaKey, me
  * @param {boolean} [params.wantTotal]
  * @param {boolean} [params.wantHashes] Returns `hashRows` (per-row content hashes) instead of `rows`, computed
  * live from shallow_json rather than the stored digest_* columns, which can drift from a fresh recompute.
- * @returns {Promise<{ rows: object[] | undefined, hashRows: object[] | undefined, total: number | undefined, seq: number } | null>}
+ * @returns {Promise<{ rows: object[] | undefined, hashRows: object[] | undefined, total: number | undefined, approxTotal: boolean, seq: number } | null>}
  * `null` means the metadata store is unavailable - callers must not fall back to a live filesystem scan.
+ * `approxTotal` marks `total` as an estimate (countFromCounters()).
  */
 export async function queryCharacters(directories, params = {}) {
     const entry = await getEntry(directories);
@@ -6033,16 +6092,22 @@ export async function queryCharacters(directories, params = {}) {
     const seq = Number(seqRow?.seq ?? 0);
 
     if (Array.isArray(ids) && ids.length === 0) {
-        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
+        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, approxTotal: false, seq };
     }
 
     const deletions = readTagDeletionsSync(entry.db);
     const { from, where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids }, deletions);
 
     let total;
+    let approxTotal = false;
     if (wantTotal) {
-        const countRow = (/** @type {{ total: number } | undefined} */ (entry.db.get(`SELECT COUNT(*) as total FROM ${from} ${where}`, args)));
-        total = Number(countRow?.total ?? 0);
+        const counted = countFromCounters(entry.db, ['character'], { tags, fav, world, excludeIds, ids }, deletions);
+        if (counted) {
+            ({ total, approxTotal } = counted);
+        } else {
+            const countRow = (/** @type {{ total: number } | undefined} */ (entry.db.get(`SELECT COUNT(*) as total FROM ${from} ${where}`, args)));
+            total = Number(countRow?.total ?? 0);
+        }
     }
 
     // digest_fav/digest_tag_ids/digest_content are plain column reads - writeShallowJson() is the only place
@@ -6134,7 +6199,7 @@ export async function queryCharacters(directories, params = {}) {
         }
     }
 
-    return { rows, hashRows, total, seq };
+    return { rows, hashRows, total, approxTotal, seq };
 }
 
 // Mirrors characters.js's own DEFAULT_PAGE_LIMIT - a caller genuinely omitting `limit` (rather than the /query
@@ -6471,8 +6536,9 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
  * @param {boolean} [params.wantRows]
  * @param {boolean} [params.wantTotal]
  * @param {boolean} [params.wantHashes]
- * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, seq: number } | null>}
+ * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, approxTotal: boolean, seq: number } | null>}
  * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
+ * `approxTotal` marks `total` as an estimate (countFromCounters()).
  */
 export async function queryEntities(directories, params = {}) {
     const entry = await getEntry(directories);
@@ -6490,7 +6556,7 @@ export async function queryEntities(directories, params = {}) {
     const seq = Number(seqRow?.seq ?? 0);
 
     if (Array.isArray(ids) && ids.length === 0) {
-        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
+        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, approxTotal: false, seq };
     }
 
     const deletions = readTagDeletionsSync(entry.db);
@@ -6498,7 +6564,11 @@ export async function queryEntities(directories, params = {}) {
     const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids }, deletions);
 
     let total;
-    if (wantTotal) {
+    let approxTotal = false;
+    const counted = wantTotal ? countFromCounters(entry.db, ['character', 'group'], { tags, fav, world, excludeIds, ids }, deletions) : null;
+    if (counted) {
+        ({ total, approxTotal } = counted);
+    } else if (wantTotal) {
         const countRow = /** @type {{ total: number } | undefined} */ (entry.db.get(
             `SELECT COUNT(*) as total FROM (
                 SELECT id FROM ${charWhere.from} ${charWhere.where}
@@ -6629,7 +6699,7 @@ export async function queryEntities(directories, params = {}) {
         }
     }
 
-    return { rows, hashRows, total, seq };
+    return { rows, hashRows, total, approxTotal, seq };
 }
 
 /**
