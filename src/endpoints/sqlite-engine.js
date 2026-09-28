@@ -33,8 +33,8 @@ let engine = undefined;
  * @property {(name: string, fn: (...args: any[]) => any) => void} defineFunction Registers a scalar SQL function.
  * @property {() => SqliteReadHandle} [openReader] Opens a read-only connection on `path`; the caller closes it.
  *   Native only: without WAL (wasm) an open reader would block this handle's writes.
- * @property {() => void} close Native: closes readers from openReader(), TRUNCATE-checkpoints the WAL, then closes;
- *   iterate() afterwards throws, so a streamRows()/streamWrite() interrupted by close() throws instead of ending early.
+ * @property {() => void} close Native: closes readers from openReader(), TRUNCATE-checkpoints the WAL, then closes.
+ *   On both engines, iterate() afterwards throws, so a streamRows()/streamWrite() interrupted by close() throws instead of ending early.
  */
 
 /**
@@ -328,6 +328,8 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
     // No WAL on this engine, so it serializes on the whole database file - more prone to lock contention.
     db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
 
+    let closed = false;
+
     // Prepared-statement cache keyed by SQL text. Unlike better-sqlite3, statements need explicit finalize() -
     // cached ones are finalized on close(), not after each call.
     const stmtCache = new Map();
@@ -341,6 +343,9 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
     };
 
     const { iterate, assertNoOpenIterator } = createRowStreaming((sql, params) => {
+        if (closed) {
+            throw new Error(HANDLE_CLOSED_MESSAGE);
+        }
         const stmt = db.prepare(sql);
         try {
             return { rows: stmt.iterate(prefixNamedParamsForWasm(params) ?? {}), finalize: () => stmt.finalize() };
@@ -396,6 +401,7 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
         checkpoint: () => { assertNoOpenIterator(); },
         defineFunction: (name, fn) => { db.function(name, fn, { deterministic: true }); },
         close: () => {
+            closed = true;
             for (const stmt of stmtCache.values()) {
                 stmt.finalize();
             }
