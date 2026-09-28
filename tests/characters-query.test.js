@@ -389,6 +389,38 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         expect(body.rows).toHaveLength(2);
     });
 
+    test.each(['create_date', 'date_added', 'date_last_chat'])('filter.search + includeGroups + %s ascending returns 200 with a group whose file times are fractional ms', async (field) => {
+        await seedCharacterWithFile('VampireB.png', { name: 'Vampire Baron', data: { name: 'Vampire Baron', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedGroup('VampireA', { name: 'Vampire Alpha', chats: ['c1'] });
+        fs.writeFileSync(path.join(directories.groupChats, 'c1.jsonl'), 'x');
+        const fractionalMs = 1775384635918.478;
+        fs.utimesSync(path.join(directories.groupChats, 'c1.jsonl'), fractionalMs / 1000, fractionalMs / 1000);
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field, order: 'asc' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.total).toBe(2);
+        expect(body.rows).toHaveLength(2);
+    });
+
+    test('filter.search + includeGroups + create_date puts a group between characters just older and just newer than it, ascending and descending reversed', async () => {
+        await seedGroup('VampireGroup', { name: 'Vampire Group' });
+        const groupDate = fs.statSync(path.join(directories.groups, 'VampireGroup.json')).birthtimeMs;
+        // More than 2048 ms either side: tantivy reports an ascending character's order rounded to a multiple of
+        // 2048 at these magnitudes, so closer dates tie with the group.
+        const cardFor = (name, createDate) => ({ name, create_date: new Date(createDate).toISOString(), data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedCharacterWithFile('VampireOlder.png', cardFor('Vampire Older', groupDate - 5000));
+        await seedCharacterWithFile('VampireNewer.png', cardFor('Vampire Newer', groupDate + 5000));
+
+        const idsFor = async (order) => {
+            const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'create_date', order }, page: 1, pageSize: 10 });
+            expect(response.status).toBe(200);
+            return (await response.json()).rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar);
+        };
+        expect(await idsFor('asc')).toEqual(['VampireOlder.png', 'VampireGroup', 'VampireNewer.png']);
+        expect(await idsFor('desc')).toEqual(['VampireNewer.png', 'VampireGroup', 'VampireOlder.png']);
+    });
+
     test('a deleted group is not resolvable via getGroupsByIds and is simply dropped from the page rather than shipping a null item', async () => {
         await seedGroup('g1');
         // Delete the file but leave the metadata row behind (simulating drift) - the route must not crash or

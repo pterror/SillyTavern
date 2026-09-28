@@ -198,12 +198,19 @@ const U64_MAX = (1n << 64n) - 1n;
  * The `order` the binding reports on a fast-field-sorted hit whose field holds `value`: the value itself when
  * descending, `u64::MAX - value` rounded to a JS number when ascending. Hits always come back in descending
  * `order`, so comparing against this value (rounding included) places an outside item where tantivy would.
- * @param {number} value A non-negative integer.
+ * A fractional `value` gets the `order` tantivy would report for that exact value.
+ * @param {number} value A non-negative number.
  * @param {'asc'|'desc'} order
  * @returns {number}
  */
 export function fastFieldOrderValue(value, order) {
-    return order === 'asc' ? Number(U64_MAX - BigInt(value)) : value;
+    if (order !== 'asc') return value;
+    const whole = Math.floor(value);
+    const inverted = U64_MAX - BigInt(whole);
+    if (whole === value) return Number(inverted);
+    // The exact `inverted - fraction` lies strictly between two integers, so it rounds to the same number as
+    // `inverted - 0.5`; doubled, that is an integer BigInt, and halving the rounded result is exact.
+    return Number(2n * inverted - 1n) / 2;
 }
 
 /**
