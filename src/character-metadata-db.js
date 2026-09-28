@@ -4312,6 +4312,22 @@ const QUERYABLE_SORT_COLUMNS = {
     data_size: 'data_size',
 };
 
+/**
+ * The FROM of a query narrowed to an id list: the list drives it, and each listed id is looked up by primary key.
+ * SQLite always keeps the left side of a CROSS JOIN as the outer loop, so this holds whatever other filters the
+ * query has and whatever the planner would guess about them. As a plain `id IN (...)` filter, the list lost to
+ * `fav = ?` or `world = ?` (this db keeps no ANALYZE statistics), and SQLite walked every row of that index to
+ * check each against the list. GROUP BY (not DISTINCT) keeps a repeated id to one row and hands the ids over
+ * sorted, so the lookups walk the primary key in order; in search order, a long list (every match of a common
+ * word) jumps around the table and reads several times more of it. Rows therefore come back in id order, and
+ * callers that need search order restore it in JS. Takes one bind argument, the list as JSON, which goes before
+ * the WHERE clause's own.
+ * @param {'characters'|'groups'} table
+ */
+function idListDrivenFrom(table) {
+    return `(SELECT value AS want_id FROM json_each(?) GROUP BY value) CROSS JOIN ${table} ON id = want_id`;
+}
+
 // `ids: []` is handled specially by the caller (queryCharacters()): "match zero ids" is different from "no id
 // filter requested". This function only ever sees a non-empty `ids` array, or none.
 /**
@@ -4321,14 +4337,15 @@ const QUERYABLE_SORT_COLUMNS = {
  * @param {string} [filter.world]
  * @param {string[]} [filter.excludeIds]
  * @param {string[]} [filter.ids]
- * @returns {{ where: string, args: any[] }}
+ * @returns {{ from: string, where: string, args: any[] }} `args` binds `from`'s placeholders, then `where`'s.
  */
 function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     const clauses = [];
     const args = [];
+    let from = 'characters';
 
     if (Array.isArray(ids) && ids.length > 0) {
-        clauses.push('id IN (SELECT value FROM json_each(?))');
+        from = idListDrivenFrom('characters');
         args.push(JSON.stringify(ids));
     }
     if (Array.isArray(excludeIds) && excludeIds.length > 0) {
@@ -4362,7 +4379,7 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
         }
     }
 
-    return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
+    return { from, where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
 }
 
 /**
@@ -4596,11 +4613,11 @@ export async function queryCharacters(directories, params = {}) {
         return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
     }
 
-    const { where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids });
+    const { from, where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids });
 
     let total;
     if (wantTotal) {
-        const countRow = (/** @type {{ total: number } | undefined} */ (entry.db.get(`SELECT COUNT(*) as total FROM characters ${where}`, args)));
+        const countRow = (/** @type {{ total: number } | undefined} */ (entry.db.get(`SELECT COUNT(*) as total FROM ${from} ${where}`, args)));
         total = Number(countRow?.total ?? 0);
     }
 
@@ -4643,13 +4660,13 @@ export async function queryCharacters(directories, params = {}) {
             const pageWhere = where ? `${where} AND id IN (SELECT value FROM json_each(?))` : 'WHERE id IN (SELECT value FROM json_each(?))';
             const pageArgs = [...args, JSON.stringify(pageIds)];
             if (wantHashes) {
-                const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.all(`SELECT ${HASH_COLUMNS} FROM characters ${pageWhere}`, pageArgs)));
+                const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.all(`SELECT ${HASH_COLUMNS} FROM ${from} ${pageWhere}`, pageArgs)));
                 const rowById = new Map(rawRows.map(r => [r.id, r]));
                 hashRows = pageIds
                     .filter(id => rowById.has(id))
                     .map(id => toHashRow(/** @type {HashSourceRow} */ (rowById.get(id))));
             } else {
-                const rawRows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all(`SELECT id, shallow_json FROM characters ${pageWhere}`, pageArgs)));
+                const rawRows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all(`SELECT id, shallow_json FROM ${from} ${pageWhere}`, pageArgs)));
                 const shallowById = new Map(rawRows.map(r => [r.id, r.shallow_json]));
                 rows = pageIds
                     .filter(id => shallowById.has(id))
@@ -4684,10 +4701,10 @@ export async function queryCharacters(directories, params = {}) {
         // placeholders strictly in the order they appear in the SQL text.
         const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
         if (wantHashes) {
-            const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.all(`SELECT ${HASH_COLUMNS} FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
+            const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.all(`SELECT ${HASH_COLUMNS} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
             hashRows = rawRows.map(toHashRow);
         } else {
-            const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.all(`SELECT shallow_json FROM characters ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
+            const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.all(`SELECT shallow_json FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
             rows = rawRows.map(r => JSON.parse(r.shallow_json));
         }
     }
@@ -4708,14 +4725,15 @@ const DEFAULT_QUERY_LIMIT = 500;
  * @param {boolean} [filter.fav]
  * @param {string[]} [filter.excludeIds]
  * @param {string[]} [filter.ids]
- * @returns {{ where: string, args: any[] }}
+ * @returns {{ from: string, where: string, args: any[] }} `args` binds `from`'s placeholders, then `where`'s.
  */
 function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
     const clauses = [];
     const args = [];
+    let from = 'groups';
 
     if (Array.isArray(ids) && ids.length > 0) {
-        clauses.push('id IN (SELECT value FROM json_each(?))');
+        from = idListDrivenFrom('groups');
         args.push(JSON.stringify(ids));
     }
     if (Array.isArray(excludeIds) && excludeIds.length > 0) {
@@ -4745,7 +4763,7 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
         }
     }
 
-    return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
+    return { from, where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
 }
 
 // queryEntities() (below) is the `filter.includeGroups: true` half of `POST /api/characters/query` - it queries
@@ -5025,9 +5043,9 @@ export async function queryEntities(directories, params = {}) {
     if (wantTotal) {
         const countRow = /** @type {{ total: number } | undefined} */ (entry.db.get(
             `SELECT COUNT(*) as total FROM (
-                SELECT id FROM characters ${charWhere.where}
+                SELECT id FROM ${charWhere.from} ${charWhere.where}
                 UNION ALL
-                SELECT id FROM groups ${groupWhere.where}
+                SELECT id FROM ${groupWhere.from} ${groupWhere.where}
             )`,
             [...charWhere.args, ...groupWhere.args],
         ));
@@ -5066,10 +5084,10 @@ export async function queryEntities(directories, params = {}) {
         if (sortField === 'random') {
             const sortedAllIds = getRandomSortedEntityIds(entry.db, handle ?? '', Number(seed) || 0, seq);
 
-            const hasFilters = charWhere.where !== '' || groupWhere.where !== '';
+            const hasFilters = charWhere.from !== 'characters' || charWhere.where !== '' || groupWhere.from !== 'groups' || groupWhere.where !== '';
             const filterSet = hasFilters ? new Set([
-                ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM characters ${charWhere.where}`, charWhere.args))).map(r => r.id),
-                ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM groups ${groupWhere.where}`, groupWhere.args))).map(r => r.id),
+                ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM ${charWhere.from} ${charWhere.where}`, charWhere.args))).map(r => r.id),
+                ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM ${groupWhere.from} ${groupWhere.where}`, groupWhere.args))).map(r => r.id),
             ]) : null;
 
             const descending = sortOrder === 'desc';
@@ -5125,7 +5143,7 @@ export async function queryEntities(directories, params = {}) {
             const charArgs = [...charWhere.args, ...orderArgs, fetchLimit];
             const charRawRows = /** @type {EntityRow[]} */ (entry.db.all(
                 `SELECT ${ENTITY_CHARACTER_COLUMNS}
-                FROM characters ${charWhere.where}
+                FROM ${charWhere.from} ${charWhere.where}
                 ${orderBy}
                 LIMIT ?`,
                 charArgs,
@@ -5134,7 +5152,7 @@ export async function queryEntities(directories, params = {}) {
             const groupArgs = [...groupWhere.args, ...orderArgs, fetchLimit];
             const groupRawRows = /** @type {EntityRow[]} */ (entry.db.all(
                 `SELECT ${ENTITY_GROUP_COLUMNS}
-                FROM groups ${groupWhere.where}
+                FROM ${groupWhere.from} ${groupWhere.where}
                 ${groupOrderBy}
                 LIMIT ?`,
                 groupArgs,
