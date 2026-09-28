@@ -5,9 +5,9 @@ import { reindexDefaultAfterMove, reindexDefaultAfterRemoval } from './greeting-
  * Six named operations against a character's greeting list, addressing positions in the unified list
  * (see {@link import('./greeting-list.js').GreetingsModel}). Every op takes a precondition and refuses
  * with `{ ok: false, reason }` when it doesn't match: ops that target an existing greeting (edit,
- * delete, move's source, set-default) take an `expectedHash` of the greeting there, add takes the
- * `expectedLength` of the list, unset-default the `expectedDefaultPosition`. Pure: each returns either
- * `{ ok: true, model }` (new model, input never mutated) or `{ ok: false, reason }`.
+ * delete, move's source and its anchor, set-default) take an `expectedHash` of the greeting there,
+ * add takes the `expectedLength` of the list, unset-default the `expectedDefaultPosition`. Pure: each
+ * returns either `{ ok: true, model }` (new model, input never mutated) or `{ ok: false, reason }`.
  */
 
 /**
@@ -95,30 +95,41 @@ export function opDelete(model, position, expectedHash) {
 }
 
 /**
- * Moves the greeting at `sourcePosition` to `targetPosition`, order otherwise preserved.
- * `targetPosition` is pre-removal: an index into the list as it currently stands (0..length,
- * `length` meaning "move to the end"), matching how the client computes it. The post-removal
- * adjustment happens here, once.
+ * Moves the greeting at `sourcePosition` immediately before or after the anchor greeting at
+ * `targetPosition`, order otherwise preserved. Both positions are read against the list as it
+ * currently stands. "Move to the end" is `side: 'after'` with the last greeting as the anchor.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} sourcePosition
  * @param {number} expectedHash hash of the greeting at `sourcePosition`
- * @param {number} targetPosition pre-removal insertion index (0..length, inclusive of "move to the end")
+ * @param {'before'|'after'} side which side of the anchor the moved greeting lands on
+ * @param {number} targetPosition position of the anchor greeting (an existing greeting, not an insertion index)
+ * @param {number} targetExpectedHash hash of the greeting at `targetPosition`
  */
-export function opMove(model, sourcePosition, expectedHash, targetPosition) {
+export function opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash) {
     if (!positionInBounds(sourcePosition, model.greetings.length)) {
         return { ok: false, reason: 'position out of range' };
     }
     if (!hashMatches(model, sourcePosition, expectedHash)) {
         return { ok: false, reason: 'greeting at position changed since it was loaded' };
     }
-    if (!Number.isInteger(targetPosition) || targetPosition < 0 || targetPosition > model.greetings.length) {
+    if (!positionInBounds(targetPosition, model.greetings.length)) {
         return { ok: false, reason: 'target position out of range' };
+    }
+    if (!hashMatches(model, targetPosition, targetExpectedHash)) {
+        return { ok: false, reason: 'target greeting changed since it was loaded' };
+    }
+    if (targetPosition === sourcePosition) {
+        return { ok: false, reason: 'cannot move a greeting next to itself' };
+    }
+    if (side !== 'before' && side !== 'after') {
+        return { ok: false, reason: 'side must be before or after' };
     }
     const greetings = model.greetings.slice();
     const [moved] = greetings.splice(sourcePosition, 1);
-    const postRemovalTarget = targetPosition > sourcePosition ? targetPosition - 1 : targetPosition;
-    greetings.splice(postRemovalTarget, 0, moved);
-    const defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourcePosition, postRemovalTarget);
+    const anchorIndex = targetPosition > sourcePosition ? targetPosition - 1 : targetPosition;
+    const insertIndex = side === 'before' ? anchorIndex : anchorIndex + 1;
+    greetings.splice(insertIndex, 0, moved);
+    const defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourcePosition, insertIndex);
     return { ok: true, model: { greetings, defaultIndex } };
 }
 

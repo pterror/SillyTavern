@@ -6697,13 +6697,13 @@ body:not(.movingUI) .drawer-content.maximized {
     height: 32px;
 }
 
-/* greeting pick-and-place */
-.alternate_greeting.greeting-picked {
+/* pick-and-place (public/scripts/pick-and-place.js) */
+.pick-place-picked {
     outline: 2px solid var(--SmartThemeQuoteColor, #e69500);
     outline-offset: -2px;
 }
 
-.greeting-insert-point {
+.pick-place-slot {
     height: 32px;
     margin: 4px 0;
     background: color-mix(in srgb, var(--SmartThemeQuoteColor, #e69500) 15%, transparent);
@@ -6719,12 +6719,12 @@ body:not(.movingUI) .drawer-content.maximized {
     transition: opacity 0.15s, background 0.15s;
 }
 
-.greeting-insert-point::before {
+.pick-place-slot::before {
     content: 'Place here';
     font-weight: 500;
 }
 
-.greeting-insert-point:hover {
+.pick-place-slot:hover {
     opacity: 1;
     background: color-mix(in srgb, var(--SmartThemeQuoteColor, #e69500) 25%, transparent);
 }

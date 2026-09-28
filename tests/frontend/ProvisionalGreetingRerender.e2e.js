@@ -227,14 +227,14 @@ async function popupDelete(page, index, remaining) {
 }
 
 /**
+ * Moves the greeting at `source` to the end of the list.
  * @param {import('@playwright/test').Page} page
  * @param {number} source
- * @param {number} insertPosition The insertion point's data-insert-position.
  */
-async function popupMove(page, source, insertPosition) {
+async function popupMove(page, source) {
     await popupRow(page, source).locator('.pick_up_greeting').click();
     const response = greetingOpResponse(page, 'move');
-    await greetingsPopup(page).locator(`.greeting-insert-point[data-insert-position="${insertPosition}"]`).click();
+    await greetingsPopup(page).locator('.pick-place-slot').last().click();
     expect((await response).ok()).toBe(true);
 }
 
@@ -378,7 +378,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         await expectShowing([g0, g1, g2e, g3], 1);
 
         // Greeting 1 to the end of the list.
-        await popupMove(page, 1, 4);
+        await popupMove(page, 1);
         await expectShowing([g0, g2e, g3, g1], 3);
 
         await expect(greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting')).toHaveCount(4, { timeout: 10000 });

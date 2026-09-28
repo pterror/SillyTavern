@@ -320,6 +320,7 @@ import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
 import { canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/swipe-picker.js';
+import { PickAndPlace } from './scripts/pick-and-place.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 globalThis.SillyTavern = {
@@ -9805,8 +9806,72 @@ function openAlternateGreetings() {
         },
     });
 
+    const picker = new PickAndPlace({
+        container: template[0],
+        // Draft rows aren't in the array yet, so they can be neither picked nor used as an anchor.
+        getItems: () => template.find('.alternate_greetings_list .alternate_greeting:not(.greeting-draft)').toArray().map(row => ({
+            key: Number(row.getAttribute('data-index')),
+            element: row,
+            // The filter's .toggle() is the only thing that hides rows.
+            visible: row.style.display !== 'none',
+        })),
+        onPickChange: (key) => {
+            template.find('.pick_up_greeting i').removeClass('fa-xmark').addClass('fa-arrows-up-down');
+            template.find('.pick_up_greeting').attr('title', 'Pick up to move');
+            if (key !== null) {
+                const button = template.find(`.alternate_greeting[data-index="${key}"] .pick_up_greeting`);
+                button.find('i').removeClass('fa-arrows-up-down').addClass('fa-xmark');
+                button.attr('title', 'Cancel move');
+            }
+        },
+        onPlace: async ({ key: sourceIndex, side, anchorKey: targetIndex }) => {
+            const array = getArray();
+            // The landing index, computed the way the server's opMove computes it.
+            const anchor = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex;
+            const insertIndex = side === 'before' ? anchor : anchor + 1;
+
+            if (menu_type === 'create') {
+                const [moved] = array.splice(sourceIndex, 1);
+                array.splice(insertIndex, 0, moved);
+                model.defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourceIndex, insertIndex);
+                await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+                openAlternateGreetings();
+                return;
+            }
+
+            const avatar = $('.open_alternate_greetings').data('avatar');
+            const character = avatar ? charactersStore.get(avatar) : null;
+            if (!character) return;
+            const expectedHash = greetingPagerState.hashes[sourceIndex];
+            const targetExpectedHash = greetingPagerState.hashes[targetIndex];
+            if (!Number.isFinite(expectedHash) || !Number.isFinite(targetExpectedHash)) return;
+            const result = await postGreetingOp('move', { avatar_url: avatar, source_position: sourceIndex, expected_hash: expectedHash, side, target_position: targetIndex, target_expected_hash: targetExpectedHash });
+            if (!result.ok) {
+                console.error('Greeting move failed', { avatar, sourceIndex, side, targetIndex, status: result.status, reason: result.reason });
+                if (result.status === 409) {
+                    await getOneCharacter(avatar);
+                    const fresh = cardToGreetingsModel(charactersStore.get(avatar));
+                    setGreetingPagerGreetings(fresh.greetings, fresh.defaultIndex, fresh.greetings.map(hashGreetingText));
+                    await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+                    openAlternateGreetings();
+                    toastr.warning(t`The greetings were changed in another session, so this move was not made. The list has been reloaded.`, t`Greeting not moved`);
+                    return;
+                }
+                toastr.error(t`Failed to move the greeting.`, t`Greeting not moved`);
+                return;
+            }
+            const newGreetings = array.slice();
+            const [moved] = newGreetings.splice(sourceIndex, 1);
+            newGreetings.splice(insertIndex, 0, moved);
+            await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
+
+            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+            openAlternateGreetings();
+        },
+    });
+
     for (let index = 0; index < model.greetings.length; index++) {
-        addAlternateGreeting(template, model.greetings[index], index, getArray, popup, model, index + 1);
+        addAlternateGreeting(template, model.greetings[index], index, getArray, popup, model, index + 1, false, picker);
     }
 
     // Filter input handler
@@ -9816,17 +9881,14 @@ function openAlternateGreetings() {
             const content = $(this).find('.alternate_greeting_text').val().toLowerCase();
             $(this).toggle(!filterText || content.includes(filterText));
         });
-        // Refresh insertion points if something is picked up
-        if (template.hasClass('greeting-inserting')) {
-            refreshInsertionPoints(template, getArray);
-        }
+        picker.refresh();
     });
 
     template.find('.add_alternate_greeting').on('click', function () {
         const array = getArray();
         // The new row is UI-only until it has text - not pushed into the array here (see addAlternateGreeting()'s `pending` handling).
         const index = array.length;
-        addAlternateGreeting(template, '', index, getArray, popup, model, index + 1, true);
+        addAlternateGreeting(template, '', index, getArray, popup, model, index + 1, true, picker);
         updateAlternateGreetingsHintVisibility(template);
         const list = template.find('.alternate_greetings_list');
         list.scrollTop(list.prop('scrollHeight'));
@@ -9834,64 +9896,6 @@ function openAlternateGreetings() {
 
     popup.show();
     updateAlternateGreetingsHintVisibility(template);
-}
-
-/**
- * Removes all insertion points and pick state from the greeting container.
- * @param {JQuery<HTMLElement>} template
- */
-function clearPickState(template) {
-    template.find('.greeting-insert-point').remove();
-    template.find('.alternate_greeting.greeting-picked').removeClass('greeting-picked');
-    template.removeClass('greeting-inserting');
-    // Restore pick-up icons
-    template.find('.pick_up_greeting i').removeClass('fa-xmark').addClass('fa-arrows-up-down');
-    template.find('.pick_up_greeting').attr('title', 'Pick up to move');
-}
-
-/**
- * Recalculates and inserts insertion-point divs between visible greetings,
- * skipping adjacency to the currently picked greeting.
- * @param {JQuery<HTMLElement>} template
- * @param {() => any[]} getArray
- */
-function refreshInsertionPoints(template, getArray) {
-    template.find('.greeting-insert-point').remove();
-    const pickedIndex = Number(template.find('.alternate_greeting.greeting-picked').attr('data-index'));
-    const list = template.find('.alternate_greetings_list');
-    const visibleGreetings = list.find('.alternate_greeting:visible');
-    const array = getArray();
-
-    // Insert point at top of list (before the first visible greeting)
-    if (visibleGreetings.length > 0) {
-        const firstVisibleIndex = Number(visibleGreetings.first().attr('data-index'));
-        if (firstVisibleIndex !== pickedIndex && (firstVisibleIndex !== pickedIndex + 1 || pickedIndex !== 0)) {
-            // Position 0 means "insert before whatever is at index firstVisibleIndex"
-            const insertPoint = $('<div class="greeting-insert-point"></div>');
-            insertPoint.attr('data-insert-position', firstVisibleIndex);
-            visibleGreetings.first().before(insertPoint);
-        }
-    }
-
-    // Insert points between visible greetings and at the bottom
-    visibleGreetings.each(function (i) {
-        const currentIndex = Number($(this).attr('data-index'));
-        const nextVisible = visibleGreetings.eq(i + 1);
-        const nextIndex = nextVisible.length ? Number(nextVisible.attr('data-index')) : array.length;
-        const isLast = !nextVisible.length;
-
-        // Skip if this greeting or the next is the picked one and they're adjacent
-        const directlyAdjacent = (currentIndex === pickedIndex && nextIndex === pickedIndex + 1) ||
-                                  (nextIndex === pickedIndex && currentIndex === pickedIndex - 1) ||
-                                  currentIndex === pickedIndex;
-
-        if (!directlyAdjacent) {
-            const insertPosition = isLast ? array.length : nextIndex;
-            const insertPoint = $('<div class="greeting-insert-point"></div>');
-            insertPoint.attr('data-insert-position', insertPosition);
-            $(this).after(insertPoint);
-        }
-    });
 }
 
 /**
@@ -9903,11 +9907,15 @@ function refreshInsertionPoints(template, getArray) {
  * @param {GreetingsModel} model Live working model; `model.defaultIndex` is reassigned by the set/demote handlers below.
  * @param {number} [displayPosition] 1-based slot number to show the user; defaults to index + 1.
  * @param {boolean} [pending] True for a just-added, still-blank row - not yet a real array entry, so a write while blank never sees it.
+ * @param {PickAndPlace} [picker] The popup's pick-and-place, which this row's pick-up button drives.
  */
-function addAlternateGreeting(template, greeting, index, getArray, popup, model, displayPosition = index + 1, pending = false) {
+function addAlternateGreeting(template, greeting, index, getArray, popup, model, displayPosition = index + 1, pending = false, picker) {
     const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
     let committed = !pending;
     greetingBlock.attr('data-index', index);
+    if (pending) {
+        greetingBlock.addClass('greeting-draft');
+    }
 
     // Per-row debounce, so typing in a different row doesn't reset this one's pending save. Never fires in create mode.
     const debouncedRowEdit = debounce(async (rowIndex, text) => {
@@ -9943,6 +9951,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 index = array.length;
                 array.push(value);
                 committed = true;
+                greetingBlock.removeClass('greeting-draft');
                 greetingBlock.attr('data-index', index);
                 greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
                 greetingBlock.find('.greeting_index').text(index + 1);
@@ -10042,64 +10051,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             return;
         }
 
-        const isPicked = greetingBlock.hasClass('greeting-picked');
-        if (isPicked) {
-            // Cancel pick
-            clearPickState(template);
-            return;
-        }
-
-        // Clear any existing pick state first
-        clearPickState(template);
-
-        // Enter pick mode
-        greetingBlock.addClass('greeting-picked');
-        template.addClass('greeting-inserting');
-        $(this).find('i').removeClass('fa-arrows-up-down').addClass('fa-xmark');
-        $(this).attr('title', 'Cancel move');
-
-        // Create insertion points
-        refreshInsertionPoints(template, getArray);
-
-        // Bind click on insertion points
-        template.find('.greeting-insert-point').on('click', async function () {
-            let targetPosition = Number($(this).attr('data-insert-position'));
-            const array = getArray();
-            const sourceIndex = index;
-
-            if (menu_type === 'create') {
-                const [moved] = array.splice(sourceIndex, 1);
-                if (sourceIndex < targetPosition) targetPosition--;
-                array.splice(targetPosition, 0, moved);
-                model.defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourceIndex, targetPosition);
-                await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-                openAlternateGreetings();
-                return;
-            }
-
-            const avatar = $('.open_alternate_greetings').data('avatar');
-            const character = avatar ? charactersStore.get(avatar) : null;
-            if (!character) return;
-            const expectedHash = greetingPagerState.hashes[sourceIndex];
-            if (!Number.isFinite(expectedHash)) return;
-            const result = await postGreetingOp('move', { avatar_url: avatar, source_position: sourceIndex, expected_hash: expectedHash, target_position: targetPosition });
-            if (!result.ok) {
-                console.error('Greeting move failed', { avatar, sourceIndex, targetPosition, status: result.status, reason: result.reason });
-                toastr.error(result.status === 409
-                    ? t`This character was changed in another session, so this move was not saved. Close and reopen this popup to see the current version.`
-                    : t`Failed to move the greeting.`, t`Greeting not moved`);
-                return;
-            }
-            const newGreetings = array.slice();
-            const [moved] = newGreetings.splice(sourceIndex, 1);
-            const postRemovalTarget = targetPosition > sourceIndex ? targetPosition - 1 : targetPosition;
-            newGreetings.splice(postRemovalTarget, 0, moved);
-            await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
-
-            // Rebuild popup
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            openAlternateGreetings();
-        });
+        picker.pickedKey === index ? picker.cancel() : picker.pick(index);
     });
 
     // Set as default greeting - pointer move only, the stable order never changes.

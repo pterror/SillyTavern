@@ -331,6 +331,76 @@ describe('add and unset-default are conflict-checked too', () => {
     });
 });
 
+describe('/greetings/move places next to a hash-checked target', () => {
+    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+    const changeSeq = async () => (await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).change_seq;
+
+    /** Alice with greetings ['hello', 'second', 'third'], 'hello' the default. Resolves to their hashes. */
+    async function aliceWithThreeGreetings() {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'third' });
+        return (await add.json()).hashes;
+    }
+
+    test('a move lands and returns the new hashes', async () => {
+        const hashes = await aliceWithThreeGreetings();
+
+        const moved = await post('greetings/move', {
+            avatar_url: 'Alice.png', source_position: 2, expected_hash: hashes[2], side: 'before', target_position: 1, target_expected_hash: hashes[1],
+        });
+        expect(moved.status).toBe(200);
+        const body = await moved.json();
+        expect(body.hashes).toEqual([hashes[0], hashes[2], hashes[1]]);
+        expect(body.default_position).toBe(0);
+        expect((await storedCard()).data.alternate_greetings).toEqual(['third', 'second']);
+    });
+
+    test('a stale target_expected_hash is a 409 and leaves the card unchanged', async () => {
+        const hashes = await aliceWithThreeGreetings();
+        const before = await storedCard();
+
+        const moved = await post('greetings/move', {
+            avatar_url: 'Alice.png', source_position: 2, expected_hash: hashes[2], side: 'before', target_position: 1, target_expected_hash: hashes[0],
+        });
+        expect(moved.status).toBe(409);
+        expect((await moved.json()).reason).toBe('target greeting changed since it was loaded');
+        expect(await storedCard()).toEqual(before);
+    });
+
+    test('a missing target_expected_hash, a bad side and the same position are 400s', async () => {
+        const hashes = await aliceWithThreeGreetings();
+        const body = { avatar_url: 'Alice.png', source_position: 2, expected_hash: hashes[2], side: 'before', target_position: 1, target_expected_hash: hashes[1] };
+
+        const noTargetHash = await post('greetings/move', { ...body, target_expected_hash: undefined });
+        expect(noTargetHash.status).toBe(400);
+        expect((await noTargetHash.json()).reason).toBe('target_expected_hash is required');
+
+        const badSide = await post('greetings/move', { ...body, side: 'between' });
+        expect(badSide.status).toBe(400);
+        expect((await badSide.json()).reason).toBe('side must be "before" or "after"');
+
+        const samePosition = await post('greetings/move', { ...body, target_position: 2, target_expected_hash: hashes[2] });
+        expect(samePosition.status).toBe(400);
+        expect((await samePosition.json()).reason).toBe('target_position must differ from source_position');
+    });
+
+    test('a no-op move returns 200 and writes nothing', async () => {
+        const hashes = await aliceWithThreeGreetings();
+        const seqBefore = await changeSeq();
+
+        // 'second' already sits right before 'third'.
+        const moved = await post('greetings/move', {
+            avatar_url: 'Alice.png', source_position: 1, expected_hash: hashes[1], side: 'before', target_position: 2, target_expected_hash: hashes[2],
+        });
+        expect(moved.status).toBe(200);
+        const body = await moved.json();
+        expect(body.hashes).toEqual(hashes);
+        expect(body.default_position).toBe(0);
+        expect(await changeSeq()).toBe(seqBefore);
+    });
+});
+
 describe('/edit\'s content-hash conflict check survives the residency split', () => {
     // The other 409 in this area: /edit compares client-supplied hashes against freshly computed ones. The
     // client's come from /get (which reads the parked copy and stamps db-authoritative fields); the server's
