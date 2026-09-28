@@ -565,6 +565,22 @@ function snapshotLoadedCharacterFieldHashes(character) {
 }
 
 /**
+ * A conflict baseline for one field of any character, loaded in the editor or not, taken off the character
+ * object the value being edited was read from. Pass it to {@link saveCharacterField}, which sends it and
+ * keeps it current after each save.
+ * @param {object} character
+ * @param {string} formId A FORM_TO_CARD key, e.g. `'#character_book_json'`.
+ * @returns {{hash: number|undefined}}
+ */
+export function characterFieldBaseline(character, formId) {
+    const mapping = FORM_TO_CARD[formId];
+    if (!mapping) {
+        throw new Error(`characterFieldBaseline: ${formId} is not a character card field`);
+    }
+    return { hash: hashCharacterFieldValue(character, mapping.v2) };
+}
+
+/**
  * Converts a form field's string value into the value stored on the card.
  * @param {string} formId
  * @param {{transform?: string}} mapping
@@ -636,9 +652,12 @@ function characterEditedId(avatar) {
  * @param {string} avatar Avatar filename of the character being edited.
  * @param {string} formId A FORM_TO_CARD key, e.g. `'#description_textarea'`.
  * @param {string} value The field's value, in the form's own string representation.
+ * @param {{hash: number|undefined}} [baseline] The conflict baseline the value was edited from, from
+ * {@link characterFieldBaseline}; required when the character isn't the one loaded in the editor. Updated with
+ * the server's hash after each save.
  * @returns {Promise<boolean>} Whether the value was saved.
  */
-export function saveCharacterField(avatar, formId, value) {
+export function saveCharacterField(avatar, formId, value, baseline = undefined) {
     const mapping = FORM_TO_CARD[formId];
     if (!mapping) {
         throw new Error(`saveCharacterField: ${formId} is not a character card field`);
@@ -650,12 +669,18 @@ export function saveCharacterField(avatar, formId, value) {
     const key = characterFieldSaveKey(avatar, formId);
     let chain = characterFieldSaveChains.get(key);
     if (!chain) {
-        // Read synchronously, before any await: callers that switch the editor to another character
-        // flush first (see flushCharacterFieldSaves()), so the baseline here is still this character's.
-        if (_loadedCharacterFieldHashesAvatar !== avatar) {
-            throw new Error(`saveCharacterField: ${avatar} is not the character loaded in the editor`);
+        let hash;
+        if (baseline) {
+            hash = baseline.hash;
+        } else {
+            // Read synchronously, before any await: callers that switch the editor to another character
+            // flush first (see flushCharacterFieldSaves()), so the baseline here is still this character's.
+            if (_loadedCharacterFieldHashesAvatar !== avatar) {
+                throw new Error(`saveCharacterField: ${avatar} is not the character loaded in the editor`);
+            }
+            hash = _loadedCharacterFieldHashes.get(mapping.v2);
         }
-        chain = { tail: Promise.resolve(true), hash: _loadedCharacterFieldHashes.get(mapping.v2) };
+        chain = { tail: Promise.resolve(true), hash };
         characterFieldSaveChains.set(key, chain);
     }
 
@@ -729,6 +754,9 @@ export function saveCharacterField(avatar, formId, value) {
             chain.hash = Number.isFinite(savedHash) ? savedHash : hashCharacterFieldValue(character, mapping.v2);
             if (_loadedCharacterFieldHashesAvatar === avatar) {
                 _loadedCharacterFieldHashes.set(mapping.v2, chain.hash);
+            }
+            if (baseline) {
+                baseline.hash = chain.hash;
             }
 
             await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(avatar), character } });
