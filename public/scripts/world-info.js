@@ -1029,6 +1029,9 @@ export function setWorldInfoSettings(settings, data) {
         $('#world_editor_select').append(`<option value='${i}'>${item}</option>`);
     });
 
+    // Settings are read again after boot too; the book the open character links may have come or gone.
+    updateCharacterWorldButton();
+
     $('#world_info_sort_order').val(accountStorage.getItem(SORT_ORDER_KEY) || '0');
     $('#world_info').trigger('change');
 
@@ -2158,6 +2161,9 @@ export async function updateWorldInfoList() {
             $('#world_info').append(globalListOption);
             $('#world_editor_select').append(editorListOption);
         });
+
+        // A book created, imported, renamed or deleted can be the one the open character links.
+        updateCharacterWorldButton();
     }
 
     return result.ok;
@@ -4719,11 +4725,14 @@ async function removeWorldInfo(worldInfoName) {
     let unlinkedAvatar = '';
     if ($('#character_world').val() === worldInfoName) {
         $('#character_world').val('');
-        setWorldInfoButtonClass(undefined, false);
         if (menu_type != 'create') {
+            // The card links the book until this save lands; the globe shows it unlinked meanwhile.
+            setWorldInfoButtonClass(undefined, false);
             unlinkedAvatar = String($('#avatar_url_pole').val());
             saveCharacterFieldDebounced(unlinkedAvatar, '#character_world', '');
         }
+        // In create mode the new character is still created with create_save.world; updateWorldInfoList() above
+        // already showed on the globe whether that names a book.
     }
 
     if (getPersonaDescriptionLorebook() === worldInfoName) {
@@ -6332,9 +6341,44 @@ export async function openEmbeddedLoreEditor(avatarArg) {
     await displayWorldEntries(EMBEDDED_WORLD_NAME, data);
 }
 
+/** The globe's own tooltip, kept while the globe names a missing book instead. */
+let worldButtonTitle = null;
+
+/**
+ * Shows on the globe (`#world_button`) whether a character's primary lorebook link names a book that doesn't
+ * exist: no World file has the name and the card embeds no lorebook. Such a link is shown in the warning color,
+ * with a tooltip naming the book; any other link gets the globe's own tooltip back.
+ * @param {string|null} missingName The linked name when it points at nothing, null otherwise
+ */
+function setWorldButtonMissing(missingName) {
+    const button = $('#world_button');
+    button.toggleClass('warning', missingName !== null);
+    if (missingName !== null) {
+        worldButtonTitle ??= button.attr('title') ?? null;
+        button.attr('title', t`Linked lorebook "${missingName}" not found`);
+    } else if (worldButtonTitle !== null && button.attr('title') !== worldButtonTitle) {
+        button.attr('title', worldButtonTitle);
+    }
+}
+
+/**
+ * Shows a character's primary lorebook link on the globe: linked (a World file, or the card's embedded
+ * lorebook), not linked, or linked to a book that doesn't exist.
+ * @param {{shallow?: boolean, data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character The character card
+ */
+function showCharacterWorldLink(character) {
+    const worldLink = getCharacterWorldLink(character);
+    const worldSet = worldLink === character_world_link.FILE || worldLink === character_world_link.EMBEDDED;
+    $('#set_character_world, #world_button').toggleClass('world_set', worldSet);
+    // A shallow card carries no character_book, so a link to its embedded book can't be told from a missing one.
+    const missing = worldLink === character_world_link.MISSING && character?.shallow !== true;
+    setWorldButtonMissing(missing ? character.data.extensions.world : null);
+}
+
 export function setWorldInfoButtonClass(avatar, forceValue = undefined) {
     if (forceValue !== undefined) {
         $('#set_character_world, #world_button').toggleClass('world_set', forceValue);
+        setWorldButtonMissing(null);
         return;
     }
 
@@ -6342,10 +6386,25 @@ export function setWorldInfoButtonClass(avatar, forceValue = undefined) {
         return;
     }
 
-    const character = charactersStore.get(avatar);
-    const worldLink = getCharacterWorldLink(character);
-    const worldSet = worldLink === character_world_link.FILE || worldLink === character_world_link.EMBEDDED;
-    $('#set_character_world, #world_button').toggleClass('world_set', worldSet);
+    showCharacterWorldLink(charactersStore.get(avatar));
+}
+
+/**
+ * Brings the globe up to date with the character panel: in create mode, the link the new character will be
+ * created with (`create_save.world`); otherwise the card of the character the panel was opened on.
+ */
+export function updateCharacterWorldButton() {
+    if (menu_type == 'create') {
+        showCharacterWorldLink({ data: { extensions: { world: create_save.world } } });
+        return;
+    }
+
+    const avatar = $('#set_character_world').data('avatar');
+    if (avatar === undefined || avatar === null) {
+        return;
+    }
+
+    setWorldInfoButtonClass(avatar);
 }
 
 /**
@@ -6745,6 +6804,7 @@ export async function charUpdatePrimaryWorld(name) {
 
     if (menu_type == 'create') {
         create_save.world = name;
+        updateCharacterWorldButton();
         return;
     }
 
@@ -6752,7 +6812,8 @@ export async function charUpdatePrimaryWorld(name) {
 
     await saveCharacterField(String($('#avatar_url_pole').val()), '#character_world', name);
 
-    setWorldInfoButtonClass(undefined, !!name);
+    // What the card links now, as saved: a name can be linked with no book behind it.
+    updateCharacterWorldButton();
 }
 
 /**
@@ -6857,6 +6918,14 @@ async function updateAuxBooks(fileName, op, books) {
 }
 
 export function initWorldInfo() {
+    // A save, a re-read or another session's edit to the open card can link another name, or add or remove its
+    // embedded lorebook.
+    charactersStore.onChange((change) => {
+        if (change.op === 'reset' || (change.op === 'updated' && change.id === $('#set_character_world').data('avatar'))) {
+            updateCharacterWorldButton();
+        }
+    });
+
     $('#world_info').on('mousedown change', async function (e) {
         // If there's no world names, don't do anything
         if (world_names.length === 0) {
