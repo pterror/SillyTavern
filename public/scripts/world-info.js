@@ -4707,12 +4707,16 @@ async function renameWorldInfo(name, data) {
     }
     // The open character keeps its link to the old name, like every other linked character, so the relink below
     // can move it to the new name. Unlinking it here would clear the link once its delayed save lands.
-    if (await deleteWorldInfoFile(oldName)) {
+    const oldDeleted = await deleteWorldInfoFile(oldName);
+    if (oldDeleted) {
         unlinkWorldInfo(oldName, { keepOpenCharacterLink: true });
-        await warnCharactersStillLinked(oldName, '');
     }
 
-    await updateWorldInfoLinks(oldName, newName, { retargetPersonaLore });
+    const primaryLinksLeft = await updateWorldInfoLinks(oldName, newName, { retargetPersonaLore });
+    // Warned only after the relink prompt: before it, the list would be out of date as soon as the answer is yes.
+    if (oldDeleted && primaryLinksLeft) {
+        await warnCharactersStillLinked(oldName, '', { renamedTo: newName });
+    }
 
     if (entryPreviouslySelected !== -1) {
         const wiElement = getWIElement(newName);
@@ -4731,7 +4735,8 @@ async function renameWorldInfo(name, data) {
  * @param {string} oldName Previous WI file name
  * @param {string} newName New WI file name
  * @param {{ retargetPersonaLore?: boolean }} [options] Additional relink options
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} Whether characters had the old name as their primary lorebook and not all of them
+ * were moved to the new one (the prompt was declined, or the relink failed for some or all of them).
  */
 async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = {}) {
     const existingCharLores = world_info.charLore?.filter((e) => e.extraBooks.includes(oldName));
@@ -4787,7 +4792,7 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
     const linkedAvatars = linkedCharacters.map(character => character.avatar);
 
     if (!linkedAvatars.length) {
-        return;
+        return false;
     }
 
     // Trigger the confirmation popup
@@ -4809,7 +4814,7 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
 
         if (!response.ok) {
             toastr.error(t`Failed to update primary lorebook links.`);
-            return;
+            return true;
         }
 
         const { updated, failed } = await response.json();
@@ -4843,7 +4848,9 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
             select_selected_character(avatar, { switchMenu: false });
             setWorldInfoButtonClass(avatar, true);
         }
+        return failed.length > 0;
     }
+    return true;
 }
 
 /**
@@ -5134,11 +5141,14 @@ const STILL_LINKED_NAMED_LIMIT = 20;
  * counts the rest.
  * @param {string} worldInfoName Name of the deleted lorebook
  * @param {string} unlinkedAvatar Avatar of the open character deleteWorldInfo() unlinked, or '' if it unlinked none
+ * @param {{ renamedTo?: string }} [options] renamedTo: the lorebook was renamed to this name, and the characters
+ * warned about are the ones the rename's relink left on the old name.
  * @returns {Promise<void>}
  */
-async function warnCharactersStillLinked(worldInfoName, unlinkedAvatar) {
+async function warnCharactersStillLinked(worldInfoName, unlinkedAvatar, { renamedTo } = {}) {
     const title = t`World Info`;
     const escapedName = escapeHtml(worldInfoName);
+    const escapedNewName = renamedTo ? escapeHtml(renamedTo) : '';
     const filter = unlinkedAvatar ? { world: worldInfoName, excludeIds: [unlinkedAvatar] } : { world: worldInfoName };
 
     let result;
@@ -5146,7 +5156,10 @@ async function warnCharactersStillLinked(worldInfoName, unlinkedAvatar) {
         result = await characterRepository.query(filter, { field: 'name', order: 'asc' }, 1, STILL_LINKED_NAMED_LIMIT, ['rows', 'total']);
     } catch (error) {
         console.error(`Could not look up the characters whose primary lorebook is the deleted ${worldInfoName}`, error);
-        toastr.warning(t`Deleted lorebook ${escapedName}, but could not check which other characters still have it as their primary lorebook.`, title, { escapeHtml: false });
+        const failure = renamedTo
+            ? t`Renamed lorebook ${escapedName} to ${escapedNewName}, but could not check which characters still have ${escapedName} as their primary lorebook.`
+            : t`Deleted lorebook ${escapedName}, but could not check which other characters still have it as their primary lorebook.`;
+        toastr.warning(failure, title, { escapeHtml: false });
         return;
     }
 
@@ -5158,7 +5171,10 @@ async function warnCharactersStillLinked(worldInfoName, unlinkedAvatar) {
     }
 
     const rest = total - names.length;
-    const message = t`Deleted lorebook ${escapedName} is still the primary lorebook of ${total} other character(s):`
+    const heading = renamedTo
+        ? t`Renamed lorebook ${escapedName} to ${escapedNewName}, but ${total} character(s) still have ${escapedName} as their primary lorebook:`
+        : t`Deleted lorebook ${escapedName} is still the primary lorebook of ${total} other character(s):`;
+    const message = heading
         + `<br />${names.join(', ')}`
         + (rest > 0 ? `<br />${t`and ${rest} more.`}` : '');
     toastr.warning(message, title, { escapeHtml: false });
