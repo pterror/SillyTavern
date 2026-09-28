@@ -2358,15 +2358,16 @@ export async function normalizeCharacterTagIdsIfNeeded(directories) {
 
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {'characters' | 'groups'} table
  * @param {string[]} ids at most FAV_LOOKUP_BATCH_SIZE
- * @returns {Set<string>} the ones with a characters row
+ * @returns {Set<string>} the ones with a row in `table`
  */
-function knownCharacterIdsOf(db, ids) {
+function knownEntityIdsOf(db, table, ids) {
     /** @type {Set<string>} */
     const known = new Set();
     if (ids.length === 0) return known;
     const placeholders = ids.map(() => '?').join(',');
-    for (const row of db.iterate(`SELECT id FROM characters WHERE id IN (${placeholders})`, ids)) {
+    for (const row of db.iterate(`SELECT id FROM ${table} WHERE id IN (${placeholders})`, ids)) {
         known.add(/** @type {{ id: string }} */ (row).id);
     }
     return known;
@@ -2396,7 +2397,7 @@ export async function resyncTags(directories) {
         /** @type {Set<string>} */
         const known = new Set();
         for (let i = 0; i < pageIds.length; i += FAV_LOOKUP_BATCH_SIZE) {
-            for (const id of knownCharacterIdsOf(entry.db, pageIds.slice(i, i + FAV_LOOKUP_BATCH_SIZE))) known.add(id);
+            for (const id of knownEntityIdsOf(entry.db, 'characters', pageIds.slice(i, i + FAV_LOOKUP_BATCH_SIZE))) known.add(id);
         }
         // null: the character's tag_map value isn't an array, so its rows are left as they are (warned below).
         /** @type {Map<string, Set<string> | null>} */
@@ -2428,7 +2429,7 @@ export async function resyncTags(directories) {
     /** @type {string[]} */
     let batch = [];
     const applyAdditions = async () => {
-        const known = [...knownCharacterIdsOf(entry.db, batch)];
+        const known = [...knownEntityIdsOf(entry.db, 'characters', batch)];
         batch = [];
         if (known.length === 0) return;
         /** @type {Map<string, Set<string>>} */
@@ -4298,7 +4299,7 @@ export async function deleteTagDefinition(directories, tagId, mergeInto = null) 
 const DELETED_TAG_BATCH_SIZE = 1000;
 
 /**
- * @typedef {object} DeletedTagRowSide
+ * @typedef {object} TagRowSide
  * @property {'character_tags' | 'group_tags'} tagTable
  * @property {'character_id' | 'group_id'} entityColumn
  * @property {'characters' | 'groups'} entityTable
@@ -4306,8 +4307,8 @@ const DELETED_TAG_BATCH_SIZE = 1000;
  * @property {(db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle, id: string) => void} syncStoredCopy
  */
 
-/** @type {DeletedTagRowSide[]} */
-const DELETED_TAG_ROW_SIDES = [
+/** @type {TagRowSide[]} */
+const TAG_ROW_SIDES = [
     { tagTable: 'character_tags', entityColumn: 'character_id', entityTable: 'characters', skipsPngRows: false, syncStoredCopy: syncShallowTagIdsFromTable },
     { tagTable: 'group_tags', entityColumn: 'group_id', entityTable: 'groups', skipsPngRows: true, syncStoredCopy: syncGroupDigestTagIdsFromTable },
 ];
@@ -4363,9 +4364,9 @@ export async function finishDeletedTags(directories) {
  */
 async function finishDeletedTag(entry, tagId, totals) {
     const { db } = entry;
-    const tagName = deletedTagNameForWarning(db, tagId);
+    const tagName = tagNameForWarning(db, tagId);
     for (;;) {
-        for (const side of DELETED_TAG_ROW_SIDES) {
+        for (const side of TAG_ROW_SIDES) {
             if (await moveDeletedTagRows(db, tagId, tagName, side, totals) === 'unmarked') return;
         }
 
@@ -4409,7 +4410,7 @@ async function finishDeletedTag(entry, tagId, totals) {
  * @param {string} tagId
  * @returns {string} The tag's name, or its id when its tags row or name is missing.
  */
-function deletedTagNameForWarning(db, tagId) {
+function tagNameForWarning(db, tagId) {
     const row = /** @type {{ data: string } | undefined} */ (db.get('SELECT data FROM tags WHERE id = @tagId', { tagId }));
     try {
         const name = row ? JSON.parse(row.data)?.name : undefined;
@@ -4424,7 +4425,7 @@ function deletedTagNameForWarning(db, tagId) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} tagId
  * @param {string} tagName
- * @param {DeletedTagRowSide} side
+ * @param {TagRowSide} side
  * @param {DeletedTagPassTotals} totals
  * @returns {Promise<'walked' | 'unmarked'>} 'unmarked' when the mark was gone at a batch's start.
  */
@@ -4485,6 +4486,99 @@ async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
         }
         if (page.length < DELETED_TAG_BATCH_SIZE) return 'walked';
     }
+}
+
+export const ORPHAN_TAG_ROWS_REMOVED_FLAG = 'orphan_tag_rows_removed_v1';
+const ORPHAN_TAG_ROWS_PROGRESS_KEY = `${ORPHAN_TAG_ROWS_REMOVED_FLAG}_progress`;
+
+/**
+ * One-time pass removing every character_tags row with no characters row and every group_tags row with no groups
+ * row, whatever its id looks like, and listing each in a warning (entity id: tag name). tag_usage follows through
+ * its triggers.
+ *
+ * Walks each tag table by its primary key, a bounded page at a time, closing each page's read before writing. A
+ * page's orphans are re-checked and removed in one transaction that also saves the position, so a page with none
+ * writes nothing, and a restart re-reads from the last page that removed rows.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `batches` and `rowsChanged` count the pages that removed rows
+ *   and the rows removed.
+ */
+export async function removeOrphanTagRowsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: ORPHAN_TAG_ROWS_REMOVED_FLAG })) return { batches: 0, rowsChanged: 0 };
+
+    const label = 'Orphan tag row removal';
+    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: ORPHAN_TAG_ROWS_PROGRESS_KEY }));
+    let progressSaved = !!saved;
+    /** @type {{ table: string, id: string, tagId: string } | null} */
+    const resumeAt = saved ? JSON.parse(saved.value) : null;
+    if (resumeAt) {
+        console.log(color.cyan(`[character-metadata] ${label}: resuming after ${resumeAt.table} (${resumeAt.id}, ${resumeAt.tagId})`));
+    }
+
+    let batches = 0;
+    let rowsChanged = 0;
+    const sides = resumeAt ? TAG_ROW_SIDES.slice(TAG_ROW_SIDES.findIndex(side => side.tagTable === resumeAt.table)) : TAG_ROW_SIDES;
+    for (const { tagTable, entityColumn, entityTable } of sides) {
+        /** @type {{ id: string, tagId: string } | null} */
+        let after = resumeAt?.table === tagTable ? { id: resumeAt.id, tagId: resumeAt.tagId } : null;
+        for (;;) {
+            /** @type {{ id: string, tagId: string }[]} */
+            const page = [];
+            const rows = after === null
+                ? db.iterate(`SELECT ${entityColumn} AS id, tag_id FROM ${tagTable} ORDER BY ${entityColumn}, tag_id LIMIT @limit`, { limit: DELETED_TAG_BATCH_SIZE })
+                : db.iterate(`SELECT ${entityColumn} AS id, tag_id FROM ${tagTable} WHERE (${entityColumn}, tag_id) > (@id, @tagId) ORDER BY ${entityColumn}, tag_id LIMIT @limit`, { ...after, limit: DELETED_TAG_BATCH_SIZE });
+            for (const row of /** @type {Iterable<{ id: string, tag_id: string }>} */ (rows)) page.push({ id: row.id, tagId: row.tag_id });
+            if (page.length === 0) break;
+            const last = page[page.length - 1];
+            after = { id: last.id, tagId: last.tagId };
+
+            const pageIds = [...new Set(page.map(row => row.id))];
+            /** @type {Set<string>} */
+            const known = new Set();
+            for (let i = 0; i < pageIds.length; i += FAV_LOOKUP_BATCH_SIZE) {
+                for (const id of knownEntityIdsOf(db, entityTable, pageIds.slice(i, i + FAV_LOOKUP_BATCH_SIZE))) known.add(id);
+            }
+            const candidates = page.filter(row => !known.has(row.id));
+
+            if (candidates.length > 0) {
+                /** @type {{ removed: string[] }} */
+                const state = { removed: [] };
+                db.transaction(() => {
+                    // Reset here: a transaction that hits busy is rolled back and rerun.
+                    state.removed = [];
+                    /** @type {Map<string, string>} */
+                    const names = new Map();
+                    for (const row of candidates) {
+                        if (db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id: row.id })) continue;
+                        if (db.run(`DELETE FROM ${tagTable} WHERE ${entityColumn} = @id AND tag_id = @tagId`, row).changes === 0) continue;
+                        if (!names.has(row.tagId)) names.set(row.tagId, tagNameForWarning(db, row.tagId));
+                        state.removed.push(`  ${row.id}: ${names.get(row.tagId)}`);
+                    }
+                    if (state.removed.length === 0) return;
+                    db.run(UPSERT_META_VALUE_SQL, { key: ORPHAN_TAG_ROWS_PROGRESS_KEY, value: JSON.stringify({ table: tagTable, id: last.id, tagId: last.tagId }) });
+                });
+                if (state.removed.length > 0) {
+                    progressSaved = true;
+                    batches++;
+                    rowsChanged += state.removed.length;
+                    if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+                    console.warn(color.yellow(`[character-metadata] ${label}: removed ${state.removed.length} ${tagTable} row(s) whose ${entityTable} row doesn't exist:\n${state.removed.join('\n')}`));
+                }
+            }
+            await delay(MIGRATION_BATCH_PAUSE_MS);
+            if (page.length < DELETED_TAG_BATCH_SIZE) break;
+        }
+    }
+
+    db.transaction(() => {
+        db.run(UPSERT_META_VALUE_SQL, { key: ORPHAN_TAG_ROWS_REMOVED_FLAG, value: String(Date.now()) });
+        if (progressSaved) db.run('DELETE FROM meta WHERE key = @key', { key: ORPHAN_TAG_ROWS_PROGRESS_KEY });
+    });
+    if (!isReadOnlyMode()) db.checkpoint();
+    return { batches, rowsChanged };
 }
 
 // One-time migration off tags.json (removed entirely, not just drained). Must run after bootstrapIfNeeded()
