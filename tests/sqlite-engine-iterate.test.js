@@ -124,6 +124,12 @@ describe.each([
         expect(() => Array.from(handle.iterate('SELECT nope FROM missing_table'))).toThrow();
         expect(() => handle.run('DELETE FROM t WHERE id = 1')).not.toThrow();
     });
+
+    test('iterate() after close() throws \'database handle is closed\'', () => {
+        const closed = open(path.join(tmpDir, 'closed.sqlite'));
+        closed.close();
+        expect(() => Array.from(closed.iterate('SELECT 1'))).toThrow('database handle is closed');
+    });
 });
 
 describe('native read connection', () => {
