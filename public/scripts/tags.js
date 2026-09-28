@@ -675,13 +675,23 @@ async function upsertTagOnServer(tag) {
     }
 }
 
-/** Deletes one tag definition on the server by id. */
-async function deleteTagOnServer(id) {
+/**
+ * Merge target chosen in the delete dialog, per tag id, for persistTagChange() to send with that tag's delete.
+ * @type {Map<string, string | null>}
+ */
+const tagDeleteMergeTargets = new Map();
+
+/**
+ * Deletes one tag definition on the server by id. The server gives `mergeInto` to every entity carrying the tag.
+ * @param {string} id
+ * @param {string | null} mergeInto
+ */
+async function deleteTagOnServer(id, mergeInto) {
     try {
         const response = await fetch('/api/tags/delete', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ id }),
+            body: JSON.stringify({ id, mergeInto }),
             cache: 'no-cache',
         });
 
@@ -707,9 +717,12 @@ function persistTagChange(change) {
         case 'updated':
             upsertTagOnServer(change.entity);
             break;
-        case 'removed':
-            deleteTagOnServer(change.id);
+        case 'removed': {
+            const mergeInto = tagDeleteMergeTargets.get(change.id) ?? null;
+            tagDeleteMergeTargets.delete(change.id);
+            deleteTagOnServer(change.id, mergeInto);
             break;
+        }
         case 'reset':
             saveTagsDebounced();
             break;
@@ -3151,7 +3164,10 @@ async function onTagDeleteClick() {
         return;
     }
 
-    const mergeTagId = $('#merge_tag_select').val() ? String($('#merge_tag_select').val()) : null;
+    // Read from popupContent, not the document: the popup has left the DOM by the time its promise resolves. The
+    // select is one of popupContent's own top-level nodes, which find() alone doesn't search.
+    const mergeSelect = popupContent.find('#merge_tag_select').addBack('#merge_tag_select');
+    const mergeTagId = mergeSelect.val() ? String(mergeSelect.val()) : null;
 
     // Snapshotted before removeTagIdEverywhere() strips the tag - a row carrying it now is exactly a row whose
     // pills need repainting once it's gone (or replaced by the merge target).
@@ -3160,6 +3176,7 @@ async function onTagDeleteClick() {
 
     removeTagIdEverywhere(id, { replaceWithId: mergeTagId });
 
+    tagDeleteMergeTargets.set(id, mergeTagId);
     tagsStore.remove(id);
     $(`.tag[id="${id}"]`).remove();
     $(`.tag_view_item[id="${id}"]`).remove();
