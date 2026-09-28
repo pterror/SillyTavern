@@ -346,12 +346,16 @@ describe('the numeric-id group recovery pass', () => {
         expect(readRow('778')).toBeUndefined();
     });
 
-    test('is part of the store bootstrap chain', async () => {
+    test('runs in the store\'s migration worker, after its boot chain', async () => {
         await bootstrappedStore();
         writeLegacyGroup(777);
         metadataDb.disposeMetadataStores();
 
         await Promise.all(await metadataDb.initializeMetadataStores([directories]));
+        expect(readRow('777')).toBeUndefined();
+
+        const { createMetadataMigrationCoordinator } = await import('../src/metadata-migration-coordinator.js');
+        await createMetadataMigrationCoordinator().start(directories);
 
         expect(readRow('777')).toMatchObject({ id: '777' });
     });
