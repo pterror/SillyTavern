@@ -30,7 +30,8 @@ import { getConfigValue } from './util.js';
  * @property {Record<string, number>} specialTokens Named special tokens, name -> id
  * @property {{ start: number, count: number, name: string }} reservedSpecialTokens The special id
  * range; an id not named in `specialTokens` is named by `name` with `{id}` replaced by the id
- * @property {'all'} allowedSpecial
+ * @property {'all' | 'none'} allowedSpecial `all`: text spelling a special token encodes to its id
+ * (tiktoken's `allowed_special="all"`); `none`: it encodes as ordinary text (`disallowed_special=()`)
  * @property {{ maxChars: number, maxRun: number }} split Encode splits the text into chunks of at
  * most `maxChars` characters, and those into pieces with at most `maxRun` consecutive whitespace or
  * non-whitespace characters
@@ -39,6 +40,9 @@ import { getConfigValue } from './util.js';
 /**
  * @typedef {object} TokenizerFileOptions
  * @property {TiktokenConfig} [tiktoken] Required for the `tiktoken` format
+ * @property {string} [entryId] The registry entry the file is read for. Its reader is kept under the
+ * entry's id: two entries can share one file and read it differently (a tiktoken file's specials).
+ * Without it, the reader is kept under the file's format and path.
  */
 
 /**
@@ -254,13 +258,22 @@ async function readTiktoken(filePath, config) {
     }
     const encoding = new tiktoken.Tiktoken(lines.join('\n'), specialTokens, config.patStr);
     const { maxChars, maxRun } = config.split;
+    /** @type {(piece: string) => Uint32Array} */
+    let encodePiece;
+    if (config.allowedSpecial === 'all') {
+        encodePiece = piece => encoding.encode(piece, 'all');
+    } else if (config.allowedSpecial === 'none') {
+        encodePiece = piece => encoding.encode_ordinary(piece);
+    } else {
+        throw new Error(`Unknown allowedSpecial: ${config.allowedSpecial}`);
+    }
 
     return {
         encode(text) {
             const ids = [];
             for (const chunk of splitCodePointChunks(text, maxChars)) {
                 for (const piece of splitWhitespaceRuns(chunk, maxRun)) {
-                    for (const id of encoding.encode(piece, config.allowedSpecial)) {
+                    for (const id of encodePiece(piece)) {
                         ids.push(id);
                     }
                 }
@@ -332,7 +345,7 @@ function remember(key, reader, size) {
  * @returns {Promise<any>}
  */
 export async function loadTokenizerFile(filePath, format, options = {}) {
-    const key = `${format}:${path.resolve(filePath)}`;
+    const key = options.entryId !== undefined ? `entry:${options.entryId}` : `${format}:${path.resolve(filePath)}`;
     const cached = loaded.get(key);
     if (cached) {
         loaded.delete(key);
@@ -397,7 +410,7 @@ export async function loadTokenizerFunctions(filePath, format, options = {}) {
  */
 export async function loadPinnedTokenizer(entry, directories) {
     const file = await getPinnedTokenizerFile(entry, directories);
-    const functions = await loadTokenizerFunctions(file.path, entry.format, { tiktoken: entry.tiktoken });
+    const functions = await loadTokenizerFunctions(file.path, entry.format, { tiktoken: entry.tiktoken, entryId: entry.id });
     return { ...functions, downloaded: file.downloaded, license: file.license };
 }
 

@@ -1125,6 +1125,59 @@ await check('a Cohere name: Cohere\'s file on Cohere\'s API; the same file elsew
     assert.deepEqual({ kind: tinyAyaOnLlamacpp.kind, localCopy: tinyAyaOnLlamacpp.localCopy }, { kind: 'remote', localCopy: tinyAya });
 });
 
+await check('a GLM, Kimi, MiniMax or gpt-oss name its vendor\'s API serves: its file on self-hosted backends, the estimate on every hosted API; other names: their file everywhere', async () => {
+    const entry = (id, source, family) => ({ id, source, name: `${family} (official)` });
+    const glm45 = entry(tokenizers.GLM_4_5, 'glm-4.5', 'GLM-4.5');
+    const gptOss = entry(tokenizers.GPT_OSS, 'gpt-oss', 'gpt-oss');
+    const kimiK3 = entry(tokenizers.KIMI_K3, 'kimi-k3', 'Kimi K3');
+    const minimaxM2 = entry(tokenizers.MINIMAX_M2, 'minimax-m2', 'MiniMax-M2');
+
+    const remote = [
+        [TEXTGEN_TYPES.LLAMACPP, 'GLM-4.5-Air-UD-Q4_K_XL-00001-of-00002.gguf', glm45],
+        [TEXTGEN_TYPES.VLLM, 'moonshotai/Kimi-K3', kimiK3],
+        [TEXTGEN_TYPES.TABBY, 'MiniMax-M2.7', minimaxM2],
+    ];
+    for (const [type, model, expected] of remote) {
+        const resolved = await resolveTokenizer({ api: TEXTGEN, type, url: 'http://127.0.0.1:1', model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual({ kind: resolved.kind, localCopy: resolved.localCopy }, { kind: 'remote', localCopy: expected }, `${type} ${model}`);
+    }
+
+    const local = [
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'gpt-oss:20b', gptOss],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'kimi-k3', kimiK3],
+        [{ api: 'openai', source: 'openrouter' }, 'openai/gpt-oss-safeguard-20b', gptOss],
+        [{ api: 'openai', source: 'openrouter' }, 'moonshotai/kimi-k2.5', entry(tokenizers.KIMI_K2_5, 'kimi-k2.5', 'Kimi K2.5')],
+        [{ api: 'openai', source: 'groq' }, 'moonshotai/kimi-k2-instruct-0905', entry(tokenizers.KIMI, 'kimi', 'Kimi K2')],
+        [{ api: 'openai', source: 'openrouter' }, 'minimax/minimax-m1', entry(tokenizers.MINIMAX_M1, 'minimax-m1', 'MiniMax-M1')],
+        [{ api: 'openai', source: 'openrouter' }, 'z-ai/glm-4.5-air-base', glm45],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'glm4:9b', entry(tokenizers.GLM_4_0414, 'glm-4-0414', 'GLM-4-0414')],
+    ];
+    for (const [backend, model, expected] of local) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual(
+            { kind: resolved.kind, id: resolved.id, source: resolved.source, name: resolved.name, localCopy: resolved.localCopy },
+            { kind: 'local', ...expected, localCopy: expected },
+            `${JSON.stringify(backend)} ${model}`,
+        );
+    }
+
+    const estimates = [
+        [{ api: 'openai', source: 'zai' }, 'glm-4.6'],
+        [{ api: 'openai', source: 'openrouter' }, 'z-ai/glm-4.6'],
+        [{ api: 'openai', source: 'moonshot' }, 'kimi-k3'],
+        [{ api: 'openai', source: 'minimax' }, 'MiniMax-M2.7'],
+        [{ api: 'openai', source: 'openai' }, 'gpt-oss-120b'],
+        [{ api: 'openai', source: 'groq' }, 'openai/gpt-oss-120b'],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'gpt-oss:120b-cloud'],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'kimi-k3:cloud'],
+        [{ api: 'openai', source: 'zai' }, 'glm-4.5-flash'],
+    ];
+    for (const [backend, model] of estimates) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, `${JSON.stringify(backend)} ${model}`);
+    }
+});
+
 await check('the old resolvers and their llama defaults are no longer exported', async () => {
     const modules = {
         './tokenizer-resolve.js': ['getTokenizerBestMatch', 'resolveTokenizerType', 'getCurrentOpenRouterModelTokenizer', 'getCurrentDreamGenModelTokenizer'],

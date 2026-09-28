@@ -111,6 +111,30 @@ await testCase('parallel loads of one file share one load', async () => {
     }
 });
 
+await testCase('two registry entries sharing one file get their own readers', async () => {
+    // A tiktoken file where every byte is its own token; ids 256-259 are special.
+    const file = path.join(tempDir, 'shared.tiktoken');
+    fs.writeFileSync(file, Array.from({ length: 256 }, (_, rank) => `${Buffer.from([rank]).toString('base64')} ${rank}`).join('\n'));
+    /** @param {Record<string, number>} specialTokens @param {'all' | 'none'} allowedSpecial */
+    const config = (specialTokens, allowedSpecial) => ({
+        patStr: String.raw`\S+|\s+`,
+        specialTokens,
+        reservedSpecialTokens: { start: 256, count: 4, name: '<|reserved_token_{id}|>' },
+        allowedSpecial,
+        split: { maxChars: 400000, maxRun: 25000 },
+    });
+    const encodeWith = async (entryId, tiktokenConfig) => {
+        const reader = await loadTokenizerFile(file, 'tiktoken', { entryId, tiktoken: tiktokenConfig });
+        return reader.encode('<think>');
+    };
+    const bytes = Array.from(Buffer.from('<think>'));
+
+    assert.deepEqual(await encodeWith('named', config({ '<think>': 256 }, 'all')), [256], 'the entry naming <think> reads it as its special id');
+    assert.deepEqual(await encodeWith('unnamed', config({}, 'all')), bytes, 'the entry not naming it reads it as text');
+    assert.deepEqual(await encodeWith('as-text', config({ '<think>': 256 }, 'none')), bytes, 'allowedSpecial none reads special text as text');
+    assert.deepEqual(await encodeWith('named', config({ '<think>': 256 }, 'all')), [256], 'each entry keeps its own reader');
+});
+
 await testCase('web tokenizers are not unloaded', async () => {
     const claude = await getWebTokenizer('claude').get();
     assert.ok(claude);

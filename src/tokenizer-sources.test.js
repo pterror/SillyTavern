@@ -33,7 +33,7 @@ mock.module('node-fetch', {
     namedExports: {},
 });
 
-const { TOKENIZER_SOURCES, getPinnedTokenizerFile, getSourceUrl, getTokenizerDisplayName } = await import('./tokenizer-sources.js');
+const { TOKENIZER_SOURCES, getPinnedTokenizerFile, getSourceUrl, getTokenizerDisplayName, getTokenizerConfigHash, getTokenizerIdentity } = await import('./tokenizer-sources.js');
 const { writeSecret, SECRET_KEYS } = await import('./endpoints/secrets.js');
 
 /**
@@ -284,11 +284,33 @@ await testCase('the license is that of the source the file came from: the consol
     assert.equal(cached.downloaded, false);
 });
 
+await testCase('two entries sharing one file are told apart by their tokenizer configs', () => {
+    const body = Buffer.from('shared tiktoken file');
+    const config = { patStr: String.raw`\S+|\s+`, specialTokens: { '[BOS]': 0 }, reservedSpecialTokens: { start: 0, count: 1, name: '<|reserved_token_{id}|>' }, allowedSpecial: 'all', split: { maxChars: 400000, maxRun: 25000 } };
+    const withKeysReordered = { split: config.split, allowedSpecial: 'all', reservedSpecialTokens: config.reservedSpecialTokens, specialTokens: config.specialTokens, patStr: config.patStr };
+    const plain = makeEntry(body, [{ repo: 'owner/plain' }]);
+    const all = makeEntry(body, [{ repo: 'owner/all' }], { format: 'tiktoken', tiktoken: config });
+    const reordered = makeEntry(body, [{ repo: 'owner/reordered' }], { format: 'tiktoken', tiktoken: withKeysReordered });
+    const none = makeEntry(body, [{ repo: 'owner/none' }], { format: 'tiktoken', tiktoken: { ...config, allowedSpecial: 'none' } });
+
+    assert.equal(getTokenizerConfigHash(plain), null);
+    assert.equal(getTokenizerIdentity(plain), plain.sha256, 'a file with no config is its sha256');
+    assert.match(getTokenizerIdentity(all), new RegExp(`^${all.sha256}\\.[0-9a-f]{64}$`));
+    assert.equal(getTokenizerIdentity(reordered), getTokenizerIdentity(all), 'key order doesn\'t matter');
+    assert.notEqual(getTokenizerIdentity(none), getTokenizerIdentity(all), 'the special-token mode does');
+});
+
 await testCase('every registry entry is pinned', () => {
     const ids = new Set();
+    const identities = new Set();
     for (const entry of TOKENIZER_SOURCES) {
         assert.ok(!ids.has(entry.id), `${entry.id}: unique id`);
         ids.add(entry.id);
+        assert.ok(!identities.has(getTokenizerIdentity(entry)), `${entry.id}: no other entry has its file and tokenizer config`);
+        identities.add(getTokenizerIdentity(entry));
+        if (entry.tiktoken) {
+            assert.ok(['all', 'none'].includes(entry.tiktoken.allowedSpecial), `${entry.id}: allowedSpecial`);
+        }
         assert.match(entry.sha256, /^[0-9a-f]{64}$/, `${entry.id}: sha256`);
         assert.ok(Number.isInteger(entry.bytes) && entry.bytes > 0, `${entry.id}: bytes`);
         assert.ok(['hf-json', 'sentencepiece', 'tekken', 'tiktoken'].includes(entry.format), `${entry.id}: format`);
@@ -333,7 +355,7 @@ await testCase('a file only Cohere publishes is pinned to the URL Cohere\'s API 
 await testCase('every registry entry has its fixed `tokenizers` value, on the server, in the browser and in Advanced Formatting', async () => {
     const { tokenizers, TOKENIZER_TYPE_KEYS } = await import('./tokenizer-ids.js');
     // Fixed forever once shipped: never renumbered, reused or removed.
-    const expected = { QWEN3: 1000, LLAMA3_1: 1001, NEMO_TEKKEN: 1002, KIMI: 1003, QWEN2_VL: 1004, QWEN2_5: 1005, QWEN3_5: 1006, QWEN3_5_BASE: 1007, QWEN3_8: 1008, CODEQWEN1_5: 1009, DEEPSEEK_V2: 1010, DEEPSEEK_V2_5: 1011, DEEPSEEK_R1: 1012, DEEPSEEK_V3_1: 1013, DEEPSEEK_V3_2: 1014, DEEPSEEK_V4: 1015, DEEPSEEK_V4_1: 1016, DEEPSEEK_R1_DISTILL_QWEN: 1017, DEEPSEEK_R1_DISTILL_LLAMA: 1018, DEEPSEEK_R1_0528_QWEN3: 1019, GEMMA_4: 1020, GEMMA_4_ASSISTANT: 1021, GEMMA_3_IT: 1022, GEMMA_3_PT: 1023, GEMMA_3N: 1024, CODEGEMMA: 1025, GEMMA_2_JPN: 1026, LLAMA3_1_BASE: 1027, LLAMA3_3: 1028, LLAMA4: 1029, LLAMA_GUARD_3_8B: 1030, LLAMA_GUARD_3_11B_VISION: 1031, LLAMA_GUARD_2: 1032, LLAMA_GUARD_4: 1033, MISTRAL_7B_V0_3: 1034, MATHSTRAL: 1035, MISTRAL_LARGE_2411: 1036, MISTRAL_7B_V0_3_HF: 1037, CODESTRAL_22B_HF: 1038, CODESTRAL_MAMBA_HF: 1039, MATHSTRAL_HF: 1040, MISTRAL_LARGE_2411_HF: 1041, MINISTRAL_8B_2410_HF: 1042, MINISTRAL_3_INSTRUCT_HF: 1043, MINISTRAL_3_BASE_HF: 1044, MISTRAL_SMALL_4_HF: 1045, SHIELDSTRAL_HF: 1046, MISTRAL_SMALL_3_HF: 1047, COMMAND_A_VISION: 1048, COMMAND_A_PLUS: 1049, AYA_VISION_32B: 1050, TINY_AYA: 1051, TINY_AYA_BASE: 1052, COMMAND_R_08_2024_HF: 1053, AYA_VISION_32B_HF: 1054 };
+    const expected = { QWEN3: 1000, LLAMA3_1: 1001, NEMO_TEKKEN: 1002, KIMI: 1003, QWEN2_VL: 1004, QWEN2_5: 1005, QWEN3_5: 1006, QWEN3_5_BASE: 1007, QWEN3_8: 1008, CODEQWEN1_5: 1009, DEEPSEEK_V2: 1010, DEEPSEEK_V2_5: 1011, DEEPSEEK_R1: 1012, DEEPSEEK_V3_1: 1013, DEEPSEEK_V3_2: 1014, DEEPSEEK_V4: 1015, DEEPSEEK_V4_1: 1016, DEEPSEEK_R1_DISTILL_QWEN: 1017, DEEPSEEK_R1_DISTILL_LLAMA: 1018, DEEPSEEK_R1_0528_QWEN3: 1019, GEMMA_4: 1020, GEMMA_4_ASSISTANT: 1021, GEMMA_3_IT: 1022, GEMMA_3_PT: 1023, GEMMA_3N: 1024, CODEGEMMA: 1025, GEMMA_2_JPN: 1026, LLAMA3_1_BASE: 1027, LLAMA3_3: 1028, LLAMA4: 1029, LLAMA_GUARD_3_8B: 1030, LLAMA_GUARD_3_11B_VISION: 1031, LLAMA_GUARD_2: 1032, LLAMA_GUARD_4: 1033, MISTRAL_7B_V0_3: 1034, MATHSTRAL: 1035, MISTRAL_LARGE_2411: 1036, MISTRAL_7B_V0_3_HF: 1037, CODESTRAL_22B_HF: 1038, CODESTRAL_MAMBA_HF: 1039, MATHSTRAL_HF: 1040, MISTRAL_LARGE_2411_HF: 1041, MINISTRAL_8B_2410_HF: 1042, MINISTRAL_3_INSTRUCT_HF: 1043, MINISTRAL_3_BASE_HF: 1044, MISTRAL_SMALL_4_HF: 1045, SHIELDSTRAL_HF: 1046, MISTRAL_SMALL_3_HF: 1047, COMMAND_A_VISION: 1048, COMMAND_A_PLUS: 1049, AYA_VISION_32B: 1050, TINY_AYA: 1051, TINY_AYA_BASE: 1052, COMMAND_R_08_2024_HF: 1053, AYA_VISION_32B_HF: 1054, GLM_4_0414: 1055, GLM_4_5: 1056, GLM_5: 1057, GLM_EDGE: 1058, AUTOGLM_PHONE: 1059, KIMI_K2_BASE: 1060, KIMI_K2_THINKING: 1061, KIMI_K2_5: 1062, KIMI_K3: 1063, KIMI_VL: 1064, MOONLIGHT: 1065, MINIMAX_TEXT_01: 1066, MINIMAX_M1: 1067, MINIMAX_M2: 1068, MINIMAX_M3: 1069, GPT_OSS: 1070 };
     const clientEnum = fs.readFileSync(path.join(__dirname, '..', 'public', 'scripts', 'tokenizers.js'), 'utf8');
     const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
     const registryKeys = new Set();

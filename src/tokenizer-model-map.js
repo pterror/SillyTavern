@@ -87,7 +87,7 @@ function guardedMatch(tokens, sequences, isExcluded) {
 const followedByAllDigits = rest => rest.length > 0 && ALL_DIGITS.test(rest[0]);
 
 /**
- * The result for a model Google's own API also serves under its name: the name says which weights
+ * The result for a model its vendor's own API also serves under its name: the name says which weights
  * they are only on a self-hosted backend, and every hosted API gets the estimate.
  * @param {string} source
  * @returns {MapResult}
@@ -279,6 +279,142 @@ function cohereFamilyMatches(tokens) {
     }
 
     return matches;
+}
+
+/**
+ * Z.ai's GLM models. Z.ai's API serves GLM-4.5 (Air, V), 4.6 (V, V-Flash), 4.7 (Flash), 5, 5.1, 5.2,
+ * 5.3 (Flash) and GLM-4-32B-0414 under their names, so those names apply on self-hosted backends only;
+ * the base models and the models it doesn't serve apply everywhere. Its API-only ids (`-x`, `-airx`,
+ * `-flashx`, `-turbo`, `-plus`, `-long`, `glm-4.5-flash`) name no open weights. LongWriter, LongCite
+ * and LongReward GLM-4-9B encode GLM-4's special-token text as ordinary text, and WebRL GLM-4-9B's code
+ * fails to encode with the reference transformers, so none of them is mapped.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function glmFamilyMatches(tokens) {
+    if (guardedMatch(tokens, [['glm', '4']], rest => followedByAllDigits(rest) && !['5', '6', '7'].includes(rest[0])) === 'veto') return null;
+    if (guardedMatch(tokens, [['glm', '5']], rest => followedByAllDigits(rest) && !['1', '2', '3'].includes(rest[0])) === 'veto') return null;
+    if (['x', 'airx', 'flashx', 'turbo', 'plus', 'long'].some(token => tokens.includes(token))) return [];
+
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+    /** @param {string} source */
+    const servedByZai = source => add(tokens.includes('base') ? { source } : onSelfHostedOnly(source));
+    const hasFlash = tokens.includes('flash');
+
+    // GLM-4-0414's file: GLM-4-9B-0414, GLM-4-32B(-Base)-0414, GLM-Z1 and GLM-4.1V-9B. The GLM-4-9B repos
+    // (2024, Ollama's `glm4:9b`), GLM-4V-9B and GLM-4-Voice-9B ship files with its content.
+    if (tokens.includes('0414') && hasSequence(tokens, ['glm', '4', '32b'])) servedByZai('glm-4-0414');
+    if (tokens.includes('0414') && hasSequence(tokens, ['glm', '4', '9b'])) add({ source: 'glm-4-0414' });
+    if (tokens.includes('0414') && (hasSequence(tokens, ['glm', 'z1', '9b']) || hasSequence(tokens, ['glm', 'z1', '32b'])
+        || hasSequence(tokens, ['glm', 'z1', 'rumination', '32b']))) {
+        add({ source: 'glm-4-0414' });
+    }
+    if (hasSequence(tokens, ['glm', '4', '1v', '9b'])) add({ source: 'glm-4-0414' });
+    const isGlm4Research = ['longwriter', 'longcite', 'longreward', 'webrl'].some(token => tokens.includes(token));
+    if (!tokens.includes('0414') && !isGlm4Research && (hasSequence(tokens, ['glm', '4', '9b']) || hasSequence(tokens, ['glm4', '9b'])
+        || hasSequence(tokens, ['glm', '4v', '9b']) || hasSequence(tokens, ['glm', '4', 'voice', '9b']))) {
+        add({ source: 'glm-4-0414' });
+    }
+
+    // GLM-4.5's file: GLM-4.5 (Air, V, Base), 4.6 (V, V-Flash) and 4.7.
+    if (hasSequence(tokens, ['glm', '4', '5']) && !hasFlash) servedByZai('glm-4.5');
+    if (hasSequence(tokens, ['glm', '4', '5v']) || hasSequence(tokens, ['glm', '4', '6']) || hasSequence(tokens, ['glm', '4', '6v'])
+        || (hasSequence(tokens, ['glm', '4', '7']) && !hasFlash)) {
+        servedByZai('glm-4.5');
+    }
+
+    // GLM-5's file: GLM-4.7-Flash, GLM-5, 5.1, 5.2 and 5.3 (Flash).
+    if (hasSequence(tokens, ['glm', '4', '7', 'flash']) || hasSequence(tokens, ['glm', '5'])) servedByZai('glm-5');
+
+    // GLM-Edge 1.5B and 4B Chat and GLM-Edge-V 2B and 5B ship one file.
+    if ([['glm', 'edge', '1', '5b'], ['glm', 'edge', '4b'], ['glm', 'edge', 'v', '2b'], ['glm', 'edge', 'v', '5b']].some(sequence => hasSequence(tokens, sequence))) {
+        add({ source: 'glm-edge' });
+    }
+
+    // AutoGLM-Phone-9B and its Multilingual repo ship one file.
+    if (hasSequence(tokens, ['autoglm', 'phone', '9b'])) add({ source: 'autoglm-phone' });
+
+    return matches;
+}
+
+/**
+ * Moonshot's Kimi and Moonlight models. Every repo ships one tiktoken.model; each model's code and
+ * tokenizer_config.json make its tokenizer. Moonshot's API serves Kimi K2.6, K2.7 Code and K3 under
+ * their names, so those names apply on self-hosted backends only. Bare `kimi-k2` and the `-turbo`
+ * ids name no one model, and Kimi-Audio's code fails to load with the reference transformers.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function kimiFamilyMatches(tokens) {
+    if (guardedMatch(tokens, [['kimi', 'k2']], rest => followedByAllDigits(rest) && !['5', '6', '7', '0905'].includes(rest[0])) === 'veto') return null;
+    if (guardedMatch(tokens, [['kimi', 'k3']], followedByAllDigits) === 'veto') return null;
+    if (tokens.includes('turbo')) return [];
+
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+
+    // Kimi K2 Instruct and Instruct 0905 and Kimi-Linear ship one tokenizer; K2 Base encodes special-token
+    // text as text; K2 Thinking adds <think>; K2.5, K2.6 and K2.7 Code add the media tokens too.
+    if (hasSequence(tokens, ['kimi', 'k2', 'instruct']) || hasSequence(tokens, ['kimi', 'k2', '0905'])) add({ source: 'kimi' });
+    if (hasSequence(tokens, ['kimi', 'linear', '48b'])) add({ source: 'kimi' });
+    if (hasSequence(tokens, ['kimi', 'k2', 'base'])) add({ source: 'kimi-k2-base' });
+    if (hasSequence(tokens, ['kimi', 'k2', 'thinking'])) add({ source: 'kimi-k2-thinking' });
+    if (hasSequence(tokens, ['kimi', 'k2', '5'])) add({ source: 'kimi-k2.5' });
+    if (hasSequence(tokens, ['kimi', 'k2', '6']) || hasSequence(tokens, ['kimi', 'k2', '7', 'code'])) add(onSelfHostedOnly('kimi-k2.5'));
+    if (hasSequence(tokens, ['kimi', 'k3'])) add(onSelfHostedOnly('kimi-k3'));
+
+    // Kimi-VL-A3B (Instruct, Thinking) and Moonlight-16B-A3B read it with tokenization_moonshot.py.
+    if (hasSequence(tokens, ['kimi', 'vl', 'a3b']) && ['instruct', 'thinking'].some(token => tokens.includes(token))) add({ source: 'kimi-vl' });
+    if (hasSequence(tokens, ['moonlight', '16b', 'a3b'])) add({ source: 'moonlight' });
+
+    // Kimi-Dev-72B ships the Qwen2.5 file.
+    if (hasSequence(tokens, ['kimi', 'dev', '72b'])) add({ source: 'qwen2.5' });
+
+    return matches;
+}
+
+/**
+ * MiniMax's models. MiniMax's API serves M2, M2.1, M2.5, M2.7 and M3 under their names, so those names
+ * apply on self-hosted backends only. M2-her is its own model.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function minimaxFamilyMatches(tokens) {
+    if (guardedMatch(tokens, [['minimax', 'm1'], ['minimax', 'm3']], followedByAllDigits) === 'veto') return null;
+    if (guardedMatch(tokens, [['minimax', 'm2']], rest => followedByAllDigits(rest) && !['1', '5', '7'].includes(rest[0])) === 'veto') return null;
+
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+
+    // MiniMax-Text-01 and MiniMax-VL-01 ship one file.
+    if (hasSequence(tokens, ['minimax', 'text', '01']) || hasSequence(tokens, ['minimax', 'vl', '01'])) add({ source: 'minimax-text-01' });
+    if (hasSequence(tokens, ['minimax', 'm1'])) add({ source: 'minimax-m1' });
+    if (hasSequence(tokens, ['minimax', 'm2']) && !tokens.includes('her')) add(onSelfHostedOnly('minimax-m2'));
+    if (hasSequence(tokens, ['minimax', 'm3'])) add(onSelfHostedOnly('minimax-m3'));
+
+    return matches;
+}
+
+/**
+ * gpt-oss 20B and 120B and gpt-oss-safeguard ship one tokenizer.json. OpenAI's API documents
+ * `gpt-oss-20b` and `gpt-oss-120b` as its model ids, so those names apply on self-hosted backends only.
+ * tiktoken 1.0.22 doesn't know them; the entry wins over the tiktoken lookup should it learn them.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function gptOssMatches(tokens) {
+    if (guardedMatch(tokens, [['gpt', 'oss']], followedByAllDigits) === 'veto') return null;
+    const sizes = ['20b', '120b'].filter(size => tokens.includes(size));
+    if (!hasSequence(tokens, ['gpt', 'oss']) || sizes.length !== 1) return [];
+    const result = tokens.includes('safeguard') ? { source: 'gpt-oss' } : onSelfHostedOnly('gpt-oss');
+    return [{ result, supersedes: ['tiktoken'] }];
 }
 
 /**
@@ -722,6 +858,12 @@ function generalMatches(tokens, lowerName) {
     const cohereMatches = cohereFamilyMatches(tokens);
     if (cohereMatches === null) return null;
     matches.push(...cohereMatches);
+
+    for (const familyMatches of [glmFamilyMatches, kimiFamilyMatches, minimaxFamilyMatches, gptOssMatches]) {
+        const found = familyMatches(tokens);
+        if (found === null) return null;
+        matches.push(...found);
+    }
 
     // tiktoken's model list is the authority on the raw (lowercased, not separator-split) name,
     // so separators do matter here: 'gpt-4o' is known, 'gpt_4o' is not.

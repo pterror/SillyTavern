@@ -87,6 +87,22 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.TINY_AYA_BASE,
     tokenizers.COMMAND_R_08_2024_HF,
     tokenizers.AYA_VISION_32B_HF,
+    tokenizers.GLM_4_0414,
+    tokenizers.GLM_4_5,
+    tokenizers.GLM_5,
+    tokenizers.GLM_EDGE,
+    tokenizers.AUTOGLM_PHONE,
+    tokenizers.KIMI_K2_BASE,
+    tokenizers.KIMI_K2_THINKING,
+    tokenizers.KIMI_K2_5,
+    tokenizers.KIMI_K3,
+    tokenizers.KIMI_VL,
+    tokenizers.MOONLIGHT,
+    tokenizers.MINIMAX_TEXT_01,
+    tokenizers.MINIMAX_M1,
+    tokenizers.MINIMAX_M2,
+    tokenizers.MINIMAX_M3,
+    tokenizers.GPT_OSS,
 ];
 
 /**

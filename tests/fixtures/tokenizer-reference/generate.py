@@ -13,8 +13,11 @@ mistral-common transformers tiktoken. Their versions are recorded in each fixtur
 
 MANIFEST.json is a JSON array of {"path": <local file>, "format": <format>, "file": <descriptor>}:
 - "format" is a registry format: "hf-json", "sentencepiece", "tekken" or "tiktoken".
-- "path" is the tokenizer file on this machine. For "tiktoken" (Kimi) it is the directory holding
-  the repo revision's tiktoken.model, tokenization_kimi.py and tokenizer_config.json.
+- "path" is the tokenizer file on this machine. For "tiktoken" (Kimi, GLM-4-9B) it is the directory
+  holding the repo revision's rank file, tokenizer_config.json and the tokenization code its auto_map
+  names, with the modules that code imports. The rank file is "vocabFile" (default "tiktoken.model"),
+  and "addSpecialTokens": false passes add_special_tokens=False to that code's encode, for code that
+  adds special tokens by default.
 - "llamaModels" (Meta's tiktoken files: Llama 3.x original/tokenizer.model, Llama 4 tokenizer.model)
   reads the file with Meta's own code instead: {"dir": <a checkout of github.com/meta-llama/llama-models
   holding models/>, "commit": <its full commit>, "module": "models.llama3.tokenizer" or
@@ -24,9 +27,12 @@ MANIFEST.json is a JSON array of {"path": <local file>, "format": <format>, "fil
   DATA_ROOT/_cache>}, {"registry": <TOKENIZER_SOURCES id>} or {"sameContentAs": <sha256 of the
   fixture of the file SillyTavern reads>, "repo": <repo>, "revision": <full commit>, "path": <path in
   the repo>} for a file with the same content as that one. A file on a host without revisions has
-  {"sameContentAs": <sha256>, "url": <its URL>} instead.
+  {"sameContentAs": <sha256>, "url": <its URL>} instead. <sha256> is the other fixture's name
+  without ".json".
+- "configHash", for a registry entry with a tokenizer config: that config's hash
+  (getTokenizerConfigHash() in src/tokenizer-sources.js).
 
-Each fixture is written as OUT_DIR/<sha256>.json.
+Each fixture is written as OUT_DIR/<sha256>.json, or OUT_DIR/<sha256>.<configHash>.json.
 """
 import hashlib
 import json
@@ -42,7 +48,7 @@ CALLS = {
     "tiktoken": (
         "transformers",
         "AutoTokenizer.from_pretrained(d, trust_remote_code=True).encode(text)"
-        " (HF_HUB_OFFLINE=1; d = local dir with the revision's tiktoken.model, tokenization_kimi.py, tokenizer_config.json)",
+        " (HF_HUB_OFFLINE=1; d = local dir with the revision's rank file, tokenizer_config.json and tokenization code)",
     ),
 }
 
@@ -62,7 +68,7 @@ def meta_call(llama_models):
     )
 
 
-def load_encoder(fmt, path):
+def load_encoder(fmt, path, add_special_tokens):
     if fmt == "hf-json":
         from tokenizers import Tokenizer
         tok = Tokenizer.from_file(path)
@@ -79,12 +85,14 @@ def load_encoder(fmt, path):
         os.environ["HF_HUB_OFFLINE"] = "1"
         from transformers import AutoTokenizer
         t = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+        if add_special_tokens is False:
+            return lambda text: t.encode(text, add_special_tokens=False)
         return lambda text: t.encode(text)
     raise ValueError(f"unknown format {fmt}")
 
 
-def data_file(fmt, path, llama_models):
-    return os.path.join(path, "tiktoken.model") if fmt == "tiktoken" and not llama_models else path
+def data_file(fmt, path, llama_models, vocab_file):
+    return os.path.join(path, vocab_file) if fmt == "tiktoken" and not llama_models else path
 
 
 def main():
@@ -96,7 +104,8 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     for entry in manifest:
         fmt, path, llama_models = entry["format"], entry["path"], entry.get("llamaModels")
-        with open(data_file(fmt, path, llama_models), "rb") as f:
+        add_special_tokens = entry.get("addSpecialTokens")
+        with open(data_file(fmt, path, llama_models, entry.get("vocabFile", "tiktoken.model")), "rb") as f:
             blob = f.read()
         sha = hashlib.sha256(blob).hexdigest()
         if llama_models:
@@ -104,7 +113,9 @@ def main():
             enc = load_meta_encoder(path, llama_models)
         else:
             tool, call = CALLS[fmt]
-            enc = load_encoder(fmt, path)
+            if add_special_tokens is False:
+                call = call.replace(".encode(text)", ".encode(text, add_special_tokens=False)")
+            enc = load_encoder(fmt, path, add_special_tokens)
         rows = [{"text": s, "ids": [int(i) for i in enc(s)]} for s in samples]
         head = {
             "sha256": sha,
@@ -115,9 +126,10 @@ def main():
         }
         head_json = json.dumps(head, ensure_ascii=False)
         lines = ",\n".join("  " + json.dumps(r, ensure_ascii=False) for r in rows)
-        with open(os.path.join(out_dir, f"{sha}.json"), "w", encoding="utf-8") as f:
+        name = f"{sha}.{entry['configHash']}" if entry.get("configHash") else sha
+        with open(os.path.join(out_dir, f"{name}.json"), "w", encoding="utf-8") as f:
             f.write(head_json[:-1] + ', "samples": [\n' + lines + "\n]}\n")
-        print(sha, fmt, json.dumps(entry["file"]))
+        print(name, fmt, json.dumps(entry["file"]))
 
 
 if __name__ == "__main__":
