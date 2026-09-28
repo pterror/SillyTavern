@@ -719,10 +719,12 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                     .replace(/^data\.extensions\./, '')
                     .replace(/^data\./, '')
                     .replace(/_/g, ' ');
+                // Named, since the save may be for a character other than the one the panel now shows.
+                const characterName = escapeHtml(String(charactersStore.get(avatar)?.name ?? avatar));
 
                 const confirmOverwrite = await callGenericPopup(
                     t`<h3>Character edited in another session</h3>
-                      <p>The following fields were changed by another session:</p>
+                      <p>The following fields of <strong>${characterName}</strong> were changed by another session:</p>
                       <p><strong>${fieldName}</strong></p>
                       <p>Overwrite with your version, or discard your changes?</p>`,
                     POPUP_TYPE.CONFIRM,

@@ -189,6 +189,48 @@ test.describe('embedded lorebook edits are saved into the card they were made on
         }
     });
 
+    test('a conflict on an embedded lorebook edit made after the panel moved names the character the lorebook belongs to', async ({ page }) => {
+        const stamp = Date.now();
+        const nameA = `EmbeddedLoreConflictA-${stamp}`;
+        const nameB = `EmbeddedLoreConflictB-${stamp}`;
+        const avatarA = await createCharacterWithEmbeddedLorebook(page, nameA, 'A original');
+        const avatarB = await createCharacter(page, nameB);
+        try {
+            const comment = page.locator('#world_popup_entries_list textarea[name="comment"]');
+            await openCharacterManagementDrawer(page);
+            await switchCharacterPanel(page, avatarA);
+            await openEmbeddedLoreEditor(page, avatarA);
+            await expect(comment).toHaveValue('A original');
+
+            await switchCharacterPanel(page, avatarB);
+            await page.locator('#WIDrawerIcon').click();
+            await expect(page.locator('#WorldInfo')).toBeVisible();
+            await expect(comment).toHaveValue('A original');
+
+            // Another session changes A's lorebook, so this session's edit meets a conflict.
+            await page.evaluate(async (avatar) => {
+                const { getRequestHeaders } = await import('./script.js');
+                const stored = await (await fetch('/api/characters/get', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) })).json();
+                const characterBook = stored.data.character_book;
+                characterBook.entries[0].comment = 'A edited elsewhere';
+                const response = await fetch('/api/characters/merge-attributes', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ avatar, data: { character_book: characterBook } }) });
+                if (!response.ok) throw new Error(`merge failed: ${response.status}`);
+            }, avatarA);
+
+            await comment.fill('A edited here');
+
+            const popup = page.locator('dialog.popup[open]', { hasText: 'Character edited in another session' });
+            await expect(popup).toBeVisible({ timeout: 10000 });
+            await expect(popup.locator('.popup-content')).toContainText(`The following fields of ${nameA} were changed by another session:`);
+            await expect(popup.locator('.popup-content')).not.toContainText(nameB);
+
+            await popup.locator('.popup-button-ok').click();
+            await expect.poll(() => storedEntryComments(page, avatarA), { timeout: 10000 }).toEqual(['A edited here']);
+        } finally {
+            await deleteCharacters(page, [avatarA, avatarB]);
+        }
+    });
+
     test('embedded lorebook edits that belong to no character are reported as not saved', async ({ page }) => {
         const mergeBodies = recordMergeRequests(page);
         await page.evaluate(async () => {
