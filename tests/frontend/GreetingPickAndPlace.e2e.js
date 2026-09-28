@@ -197,6 +197,65 @@ test.describe('greetings popup pick and place', () => {
         await expect(greetingsPopup(page).locator('.pick-place-picked')).toHaveCount(0);
     });
 
+    test('a refused move whose reload fails blocks moves on the stale list until a retry reloads it', async ({ page }) => {
+        const s = stamp();
+        const [alpha, bravo, charlie, delta] = greetingsFor(s);
+        const avatar = await createCharacter(page, `PickReloadFail-${s}`, [alpha, bravo, charlie, delta]);
+        await openCharacter(page, avatar);
+        await openGreetingsPopup(page, 4);
+
+        await popupRow(page, 0).locator('.pick_up_greeting').click();
+
+        const deltaChanged = `Delta changed ${s}`;
+        const editStatus = await page.evaluate(async ({ avatar, delta, deltaChanged }) => {
+            const { getStringHash } = await import('/scripts/hash-utils.js');
+            // @ts-ignore
+            const headers = SillyTavern.getContext().getRequestHeaders();
+            const body = { avatar_url: avatar, position: 3, expected_hash: getStringHash(JSON.stringify(delta)), text: deltaChanged };
+            const response = await fetch('/api/characters/greetings/edit', { method: 'POST', headers, body: JSON.stringify(body) });
+            return response.status;
+        }, { avatar, delta, deltaChanged });
+        expect(editStatus).toBe(200);
+
+        await page.route('**/api/characters/get', route => route.fulfill({ status: 500 }));
+
+        const refusedResponse = greetingOpResponse(page, 'move');
+        await greetingsPopup(page).locator('.pick-place-slot').last().click();
+        expect((await refusedResponse).status()).toBe(409);
+
+        const refreshFailed = greetingsPopup(page).locator('.greeting-refresh-failed');
+        const pickButtons = greetingsPopup(page).locator('.pick_up_greeting');
+        await expect(page.locator('.toast-error', { hasText: 'Greeting not moved' })).toBeVisible({ timeout: 10000 });
+        await expect(refreshFailed).toBeVisible();
+        await expect(pickButtons).not.toHaveCount(0);
+        await expect(greetingsPopup(page).locator('.pick_up_greeting:not(.disabled)')).toHaveCount(0);
+        await expect(greetingsPopup(page).locator('.pick-place-slot')).toHaveCount(0);
+        await expect(greetingsPopup(page).locator('.pick-place-picked')).toHaveCount(0);
+        await expect(popupRow(page, 3).locator('.alternate_greeting_text')).toHaveValue(delta);
+
+        const blockedPick = popupRow(page, 1).locator('.pick_up_greeting');
+        expect(await blockedPick.evaluate(element => getComputedStyle(element).pointerEvents)).toBe('none');
+        await blockedPick.dispatchEvent('click');
+        await expect(greetingsPopup(page).locator('.pick-place-slot')).toHaveCount(0);
+        await expect(greetingsPopup(page).locator('.pick-place-picked')).toHaveCount(0);
+
+        await greetingsPopup(page).locator('.greeting_refresh_retry').click();
+        await expect(page.locator('.toast-error', { hasText: 'Greeting list not refreshed' })).toBeVisible({ timeout: 10000 });
+        await expect(refreshFailed).toBeVisible();
+
+        await page.unroute('**/api/characters/get');
+        await greetingsPopup(page).locator('.greeting_refresh_retry').click();
+        await expect(popupRow(page, 3).locator('.alternate_greeting_text')).toHaveValue(deltaChanged, { timeout: 10000 });
+        await expect(greetingsPopup(page).locator('.greeting-refresh-failed')).toBeHidden();
+        await expect(greetingsPopup(page).locator('.pick_up_greeting.disabled')).toHaveCount(0);
+
+        await popupRow(page, 1).locator('.pick_up_greeting').click();
+        const moveResponse = greetingOpResponse(page, 'move');
+        await greetingsPopup(page).locator('.pick-place-slot').last().click();
+        expect((await moveResponse).ok()).toBe(true);
+        expect(await serverGreetings(page, avatar)).toEqual([alpha, charlie, deltaChanged, bravo]);
+    });
+
     test('picking the picked greeting again cancels', async ({ page }) => {
         const s = stamp();
         const avatar = await createCharacter(page, `PickCancel-${s}`, greetingsFor(s));

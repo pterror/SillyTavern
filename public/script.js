@@ -9806,6 +9806,31 @@ function openAlternateGreetings() {
         },
     });
 
+    // Set when a reload after a refused move failed: this popup's copy is stale until a retry reloads it.
+    let movesBlocked = false;
+
+    async function reloadGreetingsFromServer(avatar) {
+        let ok = false;
+        try {
+            ok = await getOneCharacter(avatar);
+        } catch (error) {
+            console.error('Greeting list reload failed', error);
+        }
+        if (!ok) return false;
+        const fresh = cardToGreetingsModel(charactersStore.get(avatar));
+        setGreetingPagerGreetings(fresh.greetings, fresh.defaultIndex, fresh.greetings.map(hashGreetingText));
+        await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+        openAlternateGreetings();
+        return true;
+    }
+
+    function blockMoves() {
+        movesBlocked = true;
+        picker.cancel();
+        template.find('.pick_up_greeting').addClass('disabled');
+        template.find('.greeting-refresh-failed').show();
+    }
+
     const picker = new PickAndPlace({
         container: template[0],
         // Draft rows aren't in the array yet, so they can be neither picked nor used as an anchor.
@@ -9825,6 +9850,7 @@ function openAlternateGreetings() {
             }
         },
         onPlace: async ({ key: sourceIndex, side, anchorKey: targetIndex }) => {
+            if (movesBlocked) return;
             const array = getArray();
             // The landing index, computed the way the server's opMove computes it.
             const anchor = targetIndex > sourceIndex ? targetIndex - 1 : targetIndex;
@@ -9849,12 +9875,12 @@ function openAlternateGreetings() {
             if (!result.ok) {
                 console.error('Greeting move failed', { avatar, sourceIndex, side, targetIndex, status: result.status, reason: result.reason });
                 if (result.status === 409) {
-                    await getOneCharacter(avatar);
-                    const fresh = cardToGreetingsModel(charactersStore.get(avatar));
-                    setGreetingPagerGreetings(fresh.greetings, fresh.defaultIndex, fresh.greetings.map(hashGreetingText));
-                    await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-                    openAlternateGreetings();
-                    toastr.warning(t`The greetings were changed in another session, so this move was not made. The list has been reloaded.`, t`Greeting not moved`);
+                    if (await reloadGreetingsFromServer(avatar)) {
+                        toastr.warning(t`The greetings were changed in another session, so this move was not made. The list has been reloaded.`, t`Greeting not moved`);
+                    } else {
+                        blockMoves();
+                        toastr.error(t`The greetings were changed in another session, so this move was not made, and the list couldn't be refreshed.`, t`Greeting not moved`);
+                    }
                     return;
                 }
                 toastr.error(t`Failed to move the greeting.`, t`Greeting not moved`);
@@ -9889,9 +9915,22 @@ function openAlternateGreetings() {
         // The new row is UI-only until it has text - not pushed into the array here (see addAlternateGreeting()'s `pending` handling).
         const index = array.length;
         addAlternateGreeting(template, '', index, getArray, popup, model, index + 1, true, picker);
+        if (movesBlocked) {
+            template.find('.alternate_greetings_list .alternate_greeting').last().find('.pick_up_greeting').addClass('disabled');
+        }
         updateAlternateGreetingsHintVisibility(template);
         const list = template.find('.alternate_greetings_list');
         list.scrollTop(list.prop('scrollHeight'));
+    });
+
+    template.find('.greeting_refresh_retry').on('click', async function () {
+        const retryButton = $(this);
+        if (retryButton.hasClass('disabled')) return;
+        retryButton.addClass('disabled');
+        const avatar = $('.open_alternate_greetings').data('avatar');
+        if (await reloadGreetingsFromServer(avatar)) return;
+        retryButton.removeClass('disabled');
+        toastr.error(t`Couldn't refresh the greeting list.`, t`Greeting list not refreshed`);
     });
 
     popup.show();
@@ -10045,6 +10084,11 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
     greetingBlock.find('.pick_up_greeting').on('click', function (event) {
         event.preventDefault();
         event.stopPropagation();
+
+        // Disabled while the popup's list is stale (a reload after a refused move failed).
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
 
         if (!committed) {
             // Draft row isn't in the array - nothing to move.

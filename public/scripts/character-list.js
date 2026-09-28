@@ -734,6 +734,12 @@ async function getFolderTileEntities() {
     return entities.filter(entity => entity.type === 'tag');
 }
 
+/**
+ * Re-reads one character from the server and updates it in the store.
+ * @param {string} avatarUrl The character's avatar key.
+ * @returns {Promise<boolean>} True when the store was updated; false on a non-ok response, or when the character is
+ *   not in the store. A failed request (network error) still throws.
+ */
 export async function getOneCharacter(avatarUrl) {
     const fetchStamp = tagFetchStamp();
     const response = await fetch('/api/characters/get', {
@@ -757,10 +763,12 @@ export async function getOneCharacter(avatarUrl) {
 
         if (charactersStore.has(avatarUrl)) {
             charactersStore.update(avatarUrl, getData);
+            return true;
         } else {
             toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
         }
     }
+    return false;
 }
 
 /**
