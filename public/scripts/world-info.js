@@ -2408,18 +2408,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     // Do not put this code behind.
     $('#world_popup_delete').off('click').on('click', async () => {
         if (name === EMBEDDED_WORLD_NAME) {
-            const confirmation = await Popup.show.confirm(t`Remove the embedded lorebook from this character?`, t`This action is irreversible!`);
-            if (!confirmation) {
-                return;
-            }
-
-            const avatar = embeddedLoreCharacterAvatar;
-            if (avatar && $('#avatar_url_pole').val() === avatar) {
-                $('#character_book_json').val('');
-                await saveCharacterField(avatar, '#character_book_json', '');
-            }
-
-            await hideWorldEditor();
+            await removeEmbeddedLore(data);
             return;
         }
 
@@ -6191,15 +6180,13 @@ export function convertToCharacterBook(data) {
  * to write straight back into the bound character's card instead of hitting the worldinfo API. */
 export const EMBEDDED_WORLD_NAME = '__embedded__';
 
-/** Avatar of the character whose embedded lorebook is currently open in the WI editor, or null. */
-let embeddedLoreCharacterAvatar = null;
-
 /**
  * The character each embedded-lorebook editor's edits belong to, keyed by the data object that editor was
  * opened with (every save from it passes that same object), with the conflict baseline of that card's
  * character_book and the editor's own debounced save. Read per save instead of off the character panel or
- * the last editor opened, so edits always go to the card they were made on.
- * @type {WeakMap<object, {avatar: string, baseline: {hash: number|undefined}, saveDebounced: () => void}>}
+ * the last editor opened, so edits always go to the card they were made on. `savePending` is whether that debounce
+ * is still waiting to save an edit.
+ * @type {WeakMap<object, {avatar: string, baseline: {hash: number|undefined}, saveDebounced: () => void, savePending: boolean}>}
  */
 const embeddedLoreOwners = new WeakMap();
 
@@ -6214,6 +6201,7 @@ function saveEmbeddedLoreDebounced(data) {
         // Nothing to debounce against; saveEmbeddedLore() reports these edits as not saved.
         return saveEmbeddedLore(data);
     }
+    owner.savePending = true;
     owner.saveDebounced();
 }
 
@@ -6248,6 +6236,54 @@ async function saveEmbeddedLore(data) {
 }
 
 /**
+ * Removes the embedded lorebook open in the editor from the card of the character it belongs to, whichever
+ * character the panel shows by then, once the user confirms. If it can't be removed, the user is told, the
+ * editor stays open and an edit still waiting to be saved is saved.
+ * @param {{entries: Record<string, any>, originalData?: object}} data The editor's embedded lorebook
+ */
+async function removeEmbeddedLore(data) {
+    const owner = embeddedLoreOwners.get(data);
+    if (!owner) {
+        console.error('[WI] Embedded lorebook with no character bound to it was not removed.', data);
+        toastr.error(t`This embedded lorebook doesn't belong to any character, so nothing was removed.`, t`Embedded lorebook not removed`);
+        return;
+    }
+
+    const { avatar, baseline } = owner;
+    const characterName = charactersStore.get(avatar)?.name ?? avatar;
+    const confirmation = await Popup.show.confirm(t`Remove the embedded lorebook from ${escapeHtml(characterName)}?`, t`This action is irreversible!`);
+    if (!confirmation) {
+        return;
+    }
+
+    // An edit still waiting out its debounce would put the lorebook back once it fired.
+    const hadPendingSave = owner.savePending;
+    cancelDebounce(owner.saveDebounced);
+    owner.savePending = false;
+
+    let removed = false;
+    try {
+        removed = await saveCharacterField(avatar, '#character_book_json', '', baseline);
+    } catch (error) {
+        console.error(`[WI] Failed to remove the embedded lorebook of ${avatar}.`, error);
+    }
+
+    if (!removed) {
+        toastr.error(t`The embedded lorebook of ${characterName} was not removed.`, t`Embedded lorebook not removed`);
+        if (hadPendingSave) {
+            saveEmbeddedLoreDebounced(data);
+        }
+        return;
+    }
+
+    if ($('#avatar_url_pole').val() === avatar) {
+        $('#character_book_json').val('');
+    }
+    embeddedLoreOwners.delete(data);
+    await hideWorldEditor();
+}
+
+/**
  * Opens the shared World Info editor against a character's embedded lorebook (character_book)
  * directly, in memory - no World file gets created or saved just to look at or edit it. Any edits
  * made in the editor while it's open are written straight back into the character's own card via
@@ -6268,13 +6304,17 @@ export async function openEmbeddedLoreEditor(avatarArg) {
         return;
     }
 
-    embeddedLoreCharacterAvatar = avatar;
     const data = convertCharacterBook(character.data.character_book);
-    embeddedLoreOwners.set(data, {
+    const owner = {
         avatar,
         baseline: characterFieldBaseline(character, '#character_book_json'),
-        saveDebounced: debounce(() => saveEmbeddedLore(data), debounce_timeout.relaxed),
-    });
+        saveDebounced: debounce(() => {
+            owner.savePending = false;
+            return saveEmbeddedLore(data);
+        }, debounce_timeout.relaxed),
+        savePending: false,
+    };
+    embeddedLoreOwners.set(data, owner);
 
     if (!$('#WorldInfo').is(':visible')) {
         $('#WIDrawerIcon').trigger('click');
