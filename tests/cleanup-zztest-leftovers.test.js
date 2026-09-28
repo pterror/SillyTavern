@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
-import { openWasmDatabase, streamRows } from '../src/endpoints/sqlite-engine.js';
+import { isBusyError, openWasmDatabase, streamRows } from '../src/endpoints/sqlite-engine.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -19,6 +19,7 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
     openWasmDatabase,
     openNativeDatabase: jest.fn(),
     streamRows,
+    isBusyError,
 }));
 
 /** @param {object | undefined} params */
