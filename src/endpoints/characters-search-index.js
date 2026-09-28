@@ -234,7 +234,7 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
 
 /**
  * One committed catch-up. seqFrom..seq and tagNameSeqFrom..tagNameSeq are the change-log and tag-rename cursors
- * before and after. backlog: the change-log seq read at the tick's start minus the new cursor. writers: upserted
+ * before and after. backlog: the change-log seq read at the tick's end minus the new cursor. writers: upserted
  * ids per changed field name (`null` for a whole-record change); an id with several fields counts under each.
  * tagRenames: distinct renamed tag ids applied. lockWaitMs: time this tick's writes spent on a database lock.
  * @typedef {{ changed: boolean, deletes: number, upserts: number, ms: number, seq: number, seqFrom: number,
@@ -246,7 +246,7 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
 export function formatCatchUpLine(r) {
     const p = r.phases;
     const tagSeq = r.tagNameSeq !== r.tagNameSeqFrom ? ` tagseq=${r.tagNameSeqFrom}..${r.tagNameSeq}` : '';
-    const writers = Object.entries(r.writers).map(([field, n]) => `${field}:${n}`).join(',');
+    const writers = Object.entries(r.writers).map(([field, n]) => `${field === 'null' ? 'whole-record' : field}:${n}`).join(',');
     return `[search] catch-up: seq=${r.seqFrom}..${r.seq}${tagSeq} backlog=${r.backlog} writers=${writers} tagrenames=${r.tagRenames}`
         + ` deletes=${r.deletes} upserts=${r.upserts} total_ms=${r.ms} read_ms=${p.read} deletes_ms=${p.deletes} tags_ms=${p.tags}`
         + ` load_ms=${p.load} build_ms=${p.build} add_ms=${p.add} commit_ms=${p.commit} persist_ms=${p.persist} lockwait_ms=${r.lockWaitMs}`;
@@ -513,6 +513,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         if (moved) {
             await timeAsync(phases, 'persist', () => persistCursors());
         }
+        // Not maxSeq: upsert pages aren't capped at it, so a change written during the tick puts seqCursor past it.
+        const endSeq = await timeAsync(phases, 'read', () => getCurrentSeq(directories));
         return {
             changed,
             deletes,
@@ -522,8 +524,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             seqFrom,
             tagNameSeqFrom,
             tagNameSeq: tagNameCursor,
-            // Upsert pages aren't capped at maxSeq, so this goes negative when the log grew during the tick.
-            backlog: maxSeq - seqCursor,
+            backlog: endSeq !== null ? endSeq - seqCursor : Math.max(0, maxSeq - seqCursor),
             writers: Object.fromEntries(writers),
             tagRenames: renamedTagIds.size,
             phases,
