@@ -1815,7 +1815,7 @@ export async function backfillContentIdentityHashes(directories) {
             if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
                 const elapsedSec = (now - backfillStart) / 1000;
                 const rate = processedRows / elapsedSec;
-                console.log(color.cyan(`[character-metadata] Content-identity backfill progress: ${processedRows} (${rate.toFixed(1)} cards/sec)`));
+                console.log(color.cyan(`[character-metadata] Content-identity backfill progress: ${processedRows} rows done (${rate.toFixed(1)} rows/sec)`));
                 lastProgressLog = now;
             }
 
@@ -1887,7 +1887,7 @@ export async function backfillActiveChatFromCards(directories) {
             if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
                 const elapsedSec = (now - backfillStart) / 1000;
                 const rate = processedRows / elapsedSec;
-                console.log(color.cyan(`[character-metadata] Active-chat backfill progress: ${processedRows} (${rate.toFixed(1)} cards/sec)`));
+                console.log(color.cyan(`[character-metadata] Active-chat backfill progress: ${processedRows} rows done (${rate.toFixed(1)} rows/sec)`));
                 lastProgressLog = now;
             }
 

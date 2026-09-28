@@ -186,6 +186,50 @@ describe('a keyset stream\'s later page seeks on its key instead of re-reading f
         expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
     }, 60000);
 
+    test('backfillContentIdentityHashes() SEARCHes characters on (import_poisoned=? AND rowid>?)', async () => {
+        await addCharacters(() => '');
+        metadataDb.disposeMetadataStores();
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        rawDb.prepare('UPDATE characters SET import_poisoned = 1, content_identity_hash = NULL').run();
+        rawDb.close();
+        recordedIterates.length = 0;
+
+        // No PNG is on disk, so every row's read fails and logs.
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            await metadataDb.backfillContentIdentityHashes(directories);
+        } finally {
+            errorSpy.mockRestore();
+        }
+
+        const plan = planOf(recordedLaterPage());
+        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(import_poisoned=\? AND rowid>\?\)/));
+        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
+    }, 60000);
+
+    test('backfillActiveChatFromCards() SEARCHes characters on (active_chat_checked=? AND rowid>?)', async () => {
+        await addCharacters(() => '');
+        metadataDb.disposeMetadataStores();
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        rawDb.prepare('UPDATE characters SET active_chat_checked = 0').run();
+        rawDb.close();
+        recordedIterates.length = 0;
+
+        // No PNG is on disk, so every row's read fails and logs.
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            await metadataDb.backfillActiveChatFromCards(directories);
+        } finally {
+            errorSpy.mockRestore();
+        }
+
+        const plan = planOf(recordedLaterPage());
+        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(active_chat_checked=\? AND rowid>\?\)/));
+        expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
+    }, 60000);
+
     test('streamCharacterCardJsonBatches() SEARCHes characters on (id>?)', async () => {
         await addCharacters(() => '');
         recordedIterates.length = 0;
