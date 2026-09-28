@@ -22,6 +22,9 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'removeOrphanTagRowsIfNeeded',
     'refreshGroupDigestTagIdsIfNeeded',
     'finishDeletedTags',
+    // Last: until its walk passes an entity, the counter triggers skip that entity's writes, so the passes above
+    // don't also write counters.
+    'fillEntityCountsIfNeeded',
 ]);
 
 /**
