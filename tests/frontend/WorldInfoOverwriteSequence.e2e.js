@@ -5,6 +5,9 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 // deletion can never land after the write and remove the new book. The links to the name (the open character's
 // primary lorebook, the global selection, the persona's lorebook) stay while a book has that name after the write;
 // if none does, they are removed and a warning lists each one.
+//
+// Only an overwrite under a name that differs from the old one (here, in case) deletes the old book first; one under
+// exactly the old name replaces its file in place (WorldInfoOverwriteSameName.e2e.js).
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -108,7 +111,7 @@ async function serverWorld(page, worldName) {
  * Overwrites an existing book through createNewWorldInfo() or importWorldInfo(), confirming the overwrite prompt.
  * @param {import('@playwright/test').Page} page
  * @param {'create'|'import'} how
- * @param {string} worldName
+ * @param {string} worldName - The new book's name, matching the existing one's ignoring case.
  * @returns {Promise<unknown>} What the create or import returned.
  */
 async function overwriteWorld(page, how, worldName) {
@@ -171,15 +174,13 @@ test.describe('overwriting a lorebook', () => {
     test.beforeEach(testSetup.awaitST);
 
     for (const how of /** @type {const} */ (['create', 'import'])) {
-        test(`${how}: writes the new book only after the old one's deletion is done, and keeps every link`, async ({ page }) => {
+        test(`${how}: writes the new book only after the old one's deletion is done`, async ({ page }) => {
             const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
             const worldName = `WI_OVERWRITE_SEQ_${how.toUpperCase()}_${s}`;
+            const newName = worldName.toLowerCase();
 
             await createWorldWithEntry(page, worldName);
-            const avatar = await createCharacter(page, `WIOverwriteSeq-${s}`, worldName);
             try {
-                await linkOpenCharacterAndGlobal(page, avatar, worldName);
-
                 /** @type {string[]} */
                 const events = [];
                 // The deletion's response is held back, so a write sent without waiting for it would be seen first.
@@ -194,26 +195,21 @@ test.describe('overwriting a lorebook', () => {
                     if (new URL(request.url()).pathname === WRITE_PATH[how]) events.push('write sent');
                 });
                 try {
-                    expect(await overwriteWorld(page, how, worldName)).toBeTruthy();
+                    expect(await overwriteWorld(page, how, newName)).toBeTruthy();
                 } finally {
                     await page.unroute('**/api/worldinfo/delete');
                 }
 
                 expect(events).toEqual(['delete sent', 'delete done', 'write sent']);
 
-                // The new, empty book is what the server has.
-                const book = await serverWorld(page, worldName);
+                // The new, empty book is what the server has, and the old one is gone.
+                const book = await serverWorld(page, newName);
                 expect(book).not.toBeNull();
                 expect(Object.keys(book.entries ?? {})).toEqual([]);
-
-                // Nothing was unlinked.
-                await expect(page.locator('#character_world')).toHaveValue(worldName);
-                expect(await globallySelected(page, worldName)).toBe(true);
-                expect(await storedWorld(page, avatar)).toBe(worldName);
-                await expect(removedToast(page, worldName)).toHaveCount(0);
+                expect(await serverWorld(page, worldName)).toBeNull();
             } finally {
                 await deleteWorld(page, worldName);
-                await deleteCharacter(page, avatar);
+                await deleteWorld(page, newName);
             }
         });
 
@@ -229,7 +225,7 @@ test.describe('overwriting a lorebook', () => {
                 });
                 await page.route('**/api/worldinfo/delete', route => route.abort('failed'));
                 try {
-                    expect(await overwriteWorld(page, how, worldName)).toBe(false);
+                    expect(await overwriteWorld(page, how, worldName.toLowerCase())).toBe(false);
                 } finally {
                     await page.unroute('**/api/worldinfo/delete');
                 }
@@ -257,12 +253,13 @@ test.describe('overwriting a lorebook', () => {
 
             await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
             try {
-                expect(await overwriteWorld(page, 'create', worldName)).toBe(false);
+                expect(await overwriteWorld(page, 'create', worldName.toLowerCase())).toBe(false);
             } finally {
                 await page.unroute('**/api/worldinfo/edit');
             }
 
             expect(await serverWorld(page, worldName)).toBeNull();
+            expect(await serverWorld(page, worldName.toLowerCase())).toBeNull();
             const toast = removedToast(page, worldName);
             await expect(toast).toHaveCount(1);
             const text = await toast.innerText();

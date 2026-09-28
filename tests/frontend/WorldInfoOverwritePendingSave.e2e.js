@@ -4,6 +4,9 @@ import { testSetup } from './frontent-test-utils.js';
 // A create or import that overwrites a book never lets an older save of that book land after it. A debounced save
 // still pending when the overwrite starts is written before the deletion; one made while the deletion is under way
 // is dropped, with a warning.
+//
+// These overwrite under a name differing in case, which deletes the old book first. An overwrite under exactly the
+// old name writes over its file without deleting it: WorldInfoOverwriteSameName.e2e.js.
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -98,10 +101,11 @@ async function overwriteWorld(page, how, worldName) {
  * Records, in order, the old book's saves, the deletion and the new book's write.
  * @param {import('@playwright/test').Page} page
  * @param {'create'|'import'} how
- * @param {string} worldName
+ * @param {string} worldName - The old book's name.
+ * @param {string} newName - The new book's name.
  * @returns {string[]}
  */
-function recordRequests(page, how, worldName) {
+function recordRequests(page, how, worldName, newName) {
     /** @type {string[]} */
     const events = [];
     page.on('request', (request) => {
@@ -112,7 +116,7 @@ function recordRequests(page, how, worldName) {
             events.push('new book sent');
         } else if (pathname === '/api/worldinfo/edit') {
             const body = JSON.parse(request.postData() ?? '{}');
-            if (body.name !== worldName) return;
+            if (body.name !== worldName && body.name !== newName) return;
             const isOld = Object.keys(body.data?.entries ?? {}).length > 0;
             events.push(isOld ? 'old save sent' : (how === 'create' ? 'new book sent' : 'empty save sent'));
         }
@@ -129,33 +133,36 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
         test(`${how}: a save pending before the overwrite is written before the deletion, and never after the new book`, async ({ page }) => {
             const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
             const worldName = `WI_OVERWRITE_PENDING_${how.toUpperCase()}_${s}`;
+            const newName = worldName.toLowerCase();
 
             await createWorldWithEntry(page, worldName);
             try {
-                const events = recordRequests(page, how, worldName);
+                const events = recordRequests(page, how, worldName, newName);
                 await saveOldBookDebounced(page, worldName);
-                expect(await overwriteWorld(page, how, worldName)).toBeTruthy();
+                expect(await overwriteWorld(page, how, newName)).toBeTruthy();
                 // eslint-disable-next-line playwright/no-wait-for-timeout
                 await page.waitForTimeout(AFTER_DEBOUNCE_MS);
 
                 expect(events).toEqual(['old save sent', 'delete sent', 'new book sent']);
-                const book = await serverWorld(page, worldName);
+                const book = await serverWorld(page, newName);
                 expect(book).not.toBeNull();
                 expect(Object.keys(book.entries ?? {})).toEqual([]);
                 // Nothing was dropped, so nothing is warned about.
                 await expect(droppedToast(page, worldName)).toHaveCount(0);
             } finally {
                 await deleteWorld(page, worldName);
+                await deleteWorld(page, newName);
             }
         });
 
         test(`${how}: a save made while the deletion is under way is dropped with a warning`, async ({ page }) => {
             const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
             const worldName = `WI_OVERWRITE_DURING_${how.toUpperCase()}_${s}`;
+            const newName = worldName.toLowerCase();
 
             await createWorldWithEntry(page, worldName);
             try {
-                const events = recordRequests(page, how, worldName);
+                const events = recordRequests(page, how, worldName, newName);
                 // The deletion is held back until the old book has been saved again while it is under way.
                 let releaseDelete = () => {};
                 const deleteReleased = new Promise(resolve => { releaseDelete = () => resolve(undefined); });
@@ -167,7 +174,7 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
                     await route.continue();
                 });
                 try {
-                    const overwrite = overwriteWorld(page, how, worldName);
+                    const overwrite = overwriteWorld(page, how, newName);
                     await deleteArrived;
                     await saveOldBookDebounced(page, worldName);
                     releaseDelete();
@@ -180,7 +187,7 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
                 await page.waitForTimeout(AFTER_DEBOUNCE_MS);
 
                 expect(events).toEqual(['delete sent', 'new book sent']);
-                const book = await serverWorld(page, worldName);
+                const book = await serverWorld(page, newName);
                 expect(book).not.toBeNull();
                 expect(Object.keys(book.entries ?? {})).toEqual([]);
                 await expect(droppedToast(page, worldName)).toHaveCount(1);
@@ -193,6 +200,7 @@ test.describe('overwriting a lorebook with a save of it pending', () => {
                 expect(cached).toEqual([]);
             } finally {
                 await deleteWorld(page, worldName);
+                await deleteWorld(page, newName);
             }
         });
     }

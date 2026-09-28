@@ -400,14 +400,20 @@ export function importWorldInfoFromRaw(directories, desiredName, fileContents) {
         throw new Error('World file must have a name');
     }
 
-    // Legacy format written directly, so clear any orphaned sidecar directory from a prior migration.
-    const { entriesDir } = getWorldInfoPaths(directories, worldName);
-    if (fs.existsSync(entriesDir)) {
-        fs.rmSync(entriesDir, { recursive: true, force: true });
-    }
-
     writeFileAtomicSync(pathToNewFile, fileContents);
     forgetWorldInfoMiss(pathToNewFile);
+
+    // Legacy format written directly, so clear any orphaned sidecar directory from a prior migration. Only once the
+    // new file is in place: if the write fails, a sidecar-format book it would have replaced keeps its entries. A
+    // directory left behind can't be read as entries, since the legacy file has no sidecar format marker.
+    const { entriesDir } = getWorldInfoPaths(directories, worldName);
+    try {
+        if (fs.existsSync(entriesDir)) {
+            fs.rmSync(entriesDir, { recursive: true, force: true });
+        }
+    } catch (err) {
+        console.warn(`Could not remove the old sidecar directory ${entriesDir} of the imported World Info ${worldName}:`, err);
+    }
     return worldName;
 }
 

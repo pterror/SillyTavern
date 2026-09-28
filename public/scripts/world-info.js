@@ -4952,7 +4952,8 @@ function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) 
 /**
  * @typedef {object} OverwrittenWorldInfo
  * @property {string} name - The overwritten book's name.
- * @property {Promise<boolean>} removal - Its deletion, from deleteWorldInfoFile().
+ * @property {Promise<boolean>} removal - Its deletion, from deleteWorldInfoFile(), or, for a book whose own file the
+ * write replaces (replaceOverwrittenWorldInfo()), its pending saves being written, resolving true.
  */
 
 /**
@@ -4967,6 +4968,19 @@ function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) 
  */
 function deleteOverwrittenWorldInfo(worldInfoName) {
     const removal = flushWorldSaves(worldInfoName).then(() => deleteWorldInfoFile(worldInfoName));
+    return { name: worldInfoName, removal };
+}
+
+/**
+ * deleteOverwrittenWorldInfo() for a create or import whose write replaces the book's own file: the book isn't
+ * deleted, so a write that fails leaves it as it was. Its pending saves are written and its writes in flight waited
+ * for all the same, and overwrittenWorldInfoRemoved() drops (with a warning) the saves made meanwhile, so no earlier
+ * save of the book lands over the new one.
+ * @param {string} worldInfoName - The name of the book being overwritten
+ * @returns {OverwrittenWorldInfo}
+ */
+function replaceOverwrittenWorldInfo(worldInfoName) {
+    const removal = flushWorldSaves(worldInfoName).then(() => true);
     return { name: worldInfoName, removal };
 }
 
@@ -5015,6 +5029,20 @@ async function dropWorldSavesAfterOverwrite(name, actionName) {
         toastr.warning(t`Changes to lorebook ${escapedName} made while it was being overwritten were not saved.`, `World Info ${actionName}`, { escapeHtml: false });
     }
     await worldWritesSettled(name);
+}
+
+/**
+ * For a create or import whose write replaces the existing book's own file: nothing is deleted first, so a write
+ * that fails leaves the old book as it was. Drops the book's cached copy, which no longer matches its file (or, for
+ * a create, is the new book that failed to be written), and reloads the editor if it shows the book, as deleting
+ * it would have.
+ * @param {string} worldInfoName - The book's name
+ */
+function forgetReplacedWorldInfo(worldInfoName) {
+    worldInfoCache.delete(worldInfoName);
+    if (String($('#world_editor_select').find(':selected').text()) === worldInfoName) {
+        $('#world_editor_select').trigger('change');
+    }
 }
 
 /**
@@ -5175,7 +5203,14 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
 
     /** @type {OverwrittenWorldInfo|undefined} */
     let overwritten;
-    const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive: interactive, actionName: 'Create', deleteAction: (existingName) => { overwritten = deleteOverwrittenWorldInfo(existingName); } });
+    // The existing book's own file, which the write replaces in place (the server resolves both names the same
+    // way), so it isn't deleted first. A name matching only in case or accents may be another file.
+    let replacesExisting = false;
+    const deleteAction = (existingName) => {
+        replacesExisting = existingName === worldName;
+        overwritten = replacesExisting ? replaceOverwrittenWorldInfo(existingName) : deleteOverwrittenWorldInfo(existingName);
+    };
+    const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive: interactive, actionName: 'Create', deleteAction });
     if (!allowed) {
         return false;
     }
@@ -5183,13 +5218,20 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
         return false;
     }
 
+    let written = false;
     try {
-        if (!await saveWorldInfo(worldName, worldInfoTemplate, true)) {
+        written = await saveWorldInfo(worldName, worldInfoTemplate, true);
+        if (!written) {
             return false;
         }
         await updateWorldInfoList();
     } finally {
-        await warnIfOverwrittenWorldInfoGone(overwritten);
+        if (replacesExisting && !written) {
+            // saveWorldInfo() cached the empty book that wasn't written.
+            forgetReplacedWorldInfo(worldName);
+        }
+        // A book whose own file was written over was never deleted: its name still has a book, so every link stays.
+        await warnIfOverwrittenWorldInfoGone(replacesExisting ? undefined : overwritten);
     }
 
     const selectedIndex = world_names.indexOf(worldName);
@@ -6921,7 +6963,15 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
     const sanitizedWorldName = await getSanitizedFilename(worldName);
     /** @type {OverwrittenWorldInfo|undefined} */
     let overwritten;
-    const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive, actionName: 'Import', deleteAction: (existingName) => { overwritten = deleteOverwrittenWorldInfo(existingName); } });
+    // The server writes the book under the file's name without its extension, sanitized. When that name needs no
+    // sanitizing and is exactly the existing book's, the write replaces that book's own file in place, so it isn't
+    // deleted first. A name matching only in case or accents, or only once sanitized, may be another file.
+    let replacesExisting = false;
+    const deleteAction = (existingName) => {
+        replacesExisting = existingName === worldName && worldName === sanitizedWorldName;
+        overwritten = replacesExisting ? replaceOverwrittenWorldInfo(existingName) : deleteOverwrittenWorldInfo(existingName);
+    };
+    const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive, actionName: 'Import', deleteAction });
     if (!allowed) {
         return false;
     }
@@ -6930,15 +6980,28 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
     }
 
     try {
-        const result = await fetch('/api/worldinfo/import', {
-            method: 'POST',
-            headers: getRequestHeaders({ omitContentType: true }),
-            body: formData,
-            cache: 'no-cache',
-        });
+        let result;
+        try {
+            result = await fetch('/api/worldinfo/import', {
+                method: 'POST',
+                headers: getRequestHeaders({ omitContentType: true }),
+                body: formData,
+                cache: 'no-cache',
+            });
+        } catch (error) {
+            // Whether the server replaced the book is unknown.
+            if (replacesExisting) {
+                forgetReplacedWorldInfo(worldName);
+            }
+            throw error;
+        }
 
         if (!result.ok) {
+            // The server refused the import before replacing the file, so the old book and its cached copy stand.
             throw new Error(`Failed to import world info: ${result.statusText}`);
+        }
+        if (replacesExisting) {
+            forgetReplacedWorldInfo(worldName);
         }
 
         const data = await result.json();
@@ -6960,7 +7023,7 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
         console.error('Error importing world info:', error);
         toastr.error(t`Failed to import World Info`);
     } finally {
-        await warnIfOverwrittenWorldInfoGone(overwritten);
+        await warnIfOverwrittenWorldInfoGone(replacesExisting ? undefined : overwritten);
     }
 }
 
