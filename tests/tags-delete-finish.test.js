@@ -257,31 +257,31 @@ describe('finishDeletedTags', () => {
         expect(markOf('x')).toBeUndefined();
     });
 
-    test('.png rows in group_tags are left alone, and X stays marked while they remain', async () => {
+    test('a group_tags row ending in .png is a group\'s row like any other: merged if its group exists, removed as an orphan if not', async () => {
         await saveTags(['x', 'y']);
         await seedCharacter('c1.png');
-        await seedGroup('g1');
+        await seedGroup('legacy.png');
         await assign('c1.png', 'x');
-        await assign('g1', 'x');
-        withRawDb(db => db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run('legacy.png', 'x'));
+        withRawDb(db => {
+            const insert = db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)');
+            insert.run('legacy.png', 'x');
+            insert.run('ghost.png', 'x');
+        });
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toBe('ok');
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
         await metadataDb.finishDeletedTags(directories);
 
-        expect(rawTagsOf('group_tags', 'group_id', 'legacy.png')).toEqual(['x']);
+        expect(rawTagsOf('group_tags', 'group_id', 'legacy.png')).toEqual(['y']);
+        expect(rawTagsOf('group_tags', 'group_id', 'ghost.png')).toEqual([]);
         expect(rawTagsOf('character_tags', 'character_id', 'c1.png')).toEqual(['y']);
-        expect(rawTagsOf('group_tags', 'group_id', 'g1')).toEqual(['y']);
-        expect(markOf('x')).toEqual({ merge_into: 'y' });
-        expect(tagsRowExists('x')).toBe(true);
-        expect(usageRowOf('x')).toEqual({ count: 1 });
-        expect(withRawDb(db => tagUsageMismatches(db))).toEqual([]);
-
-        // A rerun has nothing left it may move, so it writes nothing.
-        transactionCalls = 0;
-        runCalls = 0;
-        expect(await metadataDb.finishDeletedTags(directories)).toEqual({ batches: 0, rowsChanged: 0 });
-        expect(transactionCalls).toBe(0);
-        expect(runCalls).toBe(0);
+        const warned = warn.mock.calls.map(args => String(args[0])).join('\n');
+        expect(warned).toMatch(/ghost\.png: name-x/);
+        expect(warned).not.toMatch(/legacy\.png/);
+        expect(withRawDb(db => [characterCopiesOutOfSync(db), groupCopiesOutOfSync(db), tagUsageMismatches(db)])).toEqual([[], [], []]);
+        expect(markOf('x')).toBeUndefined();
+        expect(tagsRowExists('x')).toBe(false);
+        expect(usageRowOf('x')).toBeUndefined();
     });
 
     test('re-reads the mark every batch: a target marked mid-pass sends the rest of X onto the new target', async () => {
@@ -338,7 +338,7 @@ async function seedCharacterCopies(count, tagIdsOf) {
     });
 }
 
-/** Group rows g00000, g00001, ... carrying `tagIdsOf(i)`, with legacy .png rows in group_tags between them. */
+/** Group rows g00000, g00001, ... carrying `tagIdsOf(i)`. */
 async function seedGroupCopies(count, tagIdsOf) {
     await seedGroup('seedg');
     withRawDb(db => {
@@ -366,7 +366,7 @@ describe('finishDeletedTags over many batches', () => {
     const GROUPS = 1500;
     const tagsOf = (/** @type {number} */ i) => (i % 3 === 0 ? ['x', 'y'] : ['x']);
 
-    test('tag_usage and the stored copies are exact at every batch boundary, and .png rows between groups are skipped', async () => {
+    test('tag_usage and the stored copies are exact at every batch boundary, and .png orphan rows between groups are removed', async () => {
         await saveTags(['x', 'y']);
         await seedCharacterCopies(CHARACTERS, tagsOf);
         await seedGroupCopies(GROUPS, tagsOf);
@@ -375,6 +375,7 @@ describe('finishDeletedTags over many batches', () => {
             for (const id of ['g00500.png', 'g01200.png']) insert.run(id, 'x');
         });
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toBe('ok');
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
         /** @type {any[]} */
         const boundaries = [];
@@ -392,11 +393,14 @@ describe('finishDeletedTags over many batches', () => {
         expect(boundaries.length).toBeGreaterThanOrEqual(5);
         for (const boundary of boundaries) expect(boundary).toEqual([[], [], []]);
         expect(withRawDb(db => db.prepare('SELECT COUNT(*) FROM character_tags WHERE tag_id = \'x\'').pluck().get())).toBe(0);
-        expect(withRawDb(db => db.prepare('SELECT group_id FROM group_tags WHERE tag_id = \'x\' ORDER BY group_id').pluck().all())).toEqual(['g00500.png', 'g01200.png']);
+        expect(withRawDb(db => db.prepare('SELECT COUNT(*) FROM group_tags WHERE tag_id = \'x\'').pluck().get())).toBe(0);
         expect(withRawDb(db => db.prepare('SELECT COUNT(*) FROM character_tags WHERE tag_id = \'y\'').pluck().get())).toBe(CHARACTERS);
         expect(withRawDb(db => db.prepare('SELECT COUNT(*) FROM group_tags WHERE tag_id = \'y\'').pluck().get())).toBe(GROUPS);
-        expect(result).toEqual({ batches: 5, rowsChanged: CHARACTERS + GROUPS });
-        expect(markOf('x')).toEqual({ merge_into: 'y' });
+        expect(result).toEqual({ batches: 5, rowsChanged: CHARACTERS + GROUPS + 2 });
+        const warned = warn.mock.calls.map(args => String(args[0])).join('\n');
+        expect(warned).toMatch(/g00500\.png: name-x/);
+        expect(warned).toMatch(/g01200\.png: name-x/);
+        expect(markOf('x')).toBeUndefined();
     }, 60000);
 
     test('a pass stopped mid-way resumes from the rows still left and finishes the tag', async () => {

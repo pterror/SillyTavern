@@ -4303,14 +4303,13 @@ const DELETED_TAG_BATCH_SIZE = 1000;
  * @property {'character_tags' | 'group_tags'} tagTable
  * @property {'character_id' | 'group_id'} entityColumn
  * @property {'characters' | 'groups'} entityTable
- * @property {boolean} skipsPngRows Leaves rows whose entity id ends in `.png` (GROUP_TAG_ROW_IS_GROUP_SQL).
  * @property {(db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle, id: string) => void} syncStoredCopy
  */
 
 /** @type {TagRowSide[]} */
 const TAG_ROW_SIDES = [
-    { tagTable: 'character_tags', entityColumn: 'character_id', entityTable: 'characters', skipsPngRows: false, syncStoredCopy: syncShallowTagIdsFromTable },
-    { tagTable: 'group_tags', entityColumn: 'group_id', entityTable: 'groups', skipsPngRows: true, syncStoredCopy: syncGroupDigestTagIdsFromTable },
+    { tagTable: 'character_tags', entityColumn: 'character_id', entityTable: 'characters', syncStoredCopy: syncShallowTagIdsFromTable },
+    { tagTable: 'group_tags', entityColumn: 'group_id', entityTable: 'groups', syncStoredCopy: syncGroupDigestTagIdsFromTable },
 ];
 
 /**
@@ -4324,8 +4323,7 @@ const TAG_ROW_SIDES = [
  * Finishes the tags deleteTagDefinition() marked. For each, in batches: every entity carrying it gets its merge
  * target (unless it has it already) and loses the tag's row, with its stored copy of its tags kept in sync in the
  * same transaction. A row whose entity doesn't exist is removed with no merge and listed in a warning. Once no row
- * carries the tag, its tags row, tag_usage row and mark are dropped together. A tag that `.png` rows in group_tags
- * still carry is left marked, with those rows untouched.
+ * carries the tag, its tags row, tag_usage row and mark are dropped together.
  *
  * Resumable with no saved position: the rows still carrying a marked tag are what is left to do. Each batch reads
  * a bounded list of entity ids, closes the read, then writes in its own transaction.
@@ -4372,12 +4370,8 @@ async function finishDeletedTag(entry, tagId, totals) {
 
         // A row added behind a walk's position sends it round again.
         if (db.get('SELECT 1 FROM character_tags WHERE tag_id = @tagId LIMIT 1', { tagId })
-            || db.get(`SELECT 1 FROM group_tags WHERE tag_id = @tagId AND ${GROUP_TAG_ROW_IS_GROUP_SQL} LIMIT 1`, { tagId })) {
+            || db.get('SELECT 1 FROM group_tags WHERE tag_id = @tagId LIMIT 1', { tagId })) {
             continue;
-        }
-        if (db.get('SELECT 1 FROM group_tags WHERE tag_id = @tagId LIMIT 1', { tagId })) {
-            console.log(color.cyan(`[character-metadata] Deleted tag ${tagId} (${tagName}): left marked deleted, since legacy .png rows in group_tags still carry it.`));
-            return;
         }
 
         /** @type {{ outcome: 'unmarked' | 'rows' | 'finished' }} */
@@ -4430,7 +4424,7 @@ function tagNameForWarning(db, tagId) {
  * @returns {Promise<'walked' | 'unmarked'>} 'unmarked' when the mark was gone at a batch's start.
  */
 async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
-    const { tagTable, entityColumn, entityTable, skipsPngRows, syncStoredCopy } = side;
+    const { tagTable, entityColumn, entityTable, syncStoredCopy } = side;
     /** @type {string | null} */
     let after = null;
     for (;;) {
@@ -4442,48 +4436,44 @@ async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
         for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) page.push(row.id);
         if (page.length === 0) return 'walked';
         after = page[page.length - 1];
-        const ids = skipsPngRows ? page.filter(id => !id.endsWith('.png')) : page;
-
-        if (ids.length > 0) {
-            /** @type {{ unmarked: boolean, removed: number, orphans: string[] }} */
-            const state = { unmarked: false, removed: 0, orphans: [] };
-            db.transaction(() => {
-                // Reset here: a transaction that hits busy is rolled back and rerun.
-                state.unmarked = false;
-                state.removed = 0;
-                state.orphans = [];
-                // Re-read every batch: deleting the merge target moves this mark onto the target's own.
-                const mark = /** @type {{ merge_into: string | null } | undefined} */ (db.get('SELECT merge_into FROM tag_deletions WHERE tag_id = @tagId', { tagId }));
-                if (!mark) {
-                    state.unmarked = true;
-                    return;
-                }
-                const target = mark.merge_into ?? null;
-                for (const id of ids) {
-                    if (db.run(`DELETE FROM ${tagTable} WHERE ${entityColumn} = @id AND tag_id = @tagId`, { id, tagId }).changes === 0) continue;
-                    state.removed++;
-                    if (!db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id })) {
-                        state.orphans.push(id);
-                        continue;
-                    }
-                    if (target !== null) {
-                        db.run(`INSERT OR IGNORE INTO ${tagTable} (${entityColumn}, tag_id) VALUES (@id, @target)`, { id, target });
-                    }
-                    syncStoredCopy(db, id);
-                }
-            });
-            if (state.unmarked) return 'unmarked';
-            if (state.removed > 0) {
-                totals.batches++;
-                totals.rowsChanged += state.removed;
-                totals.wrote = true;
-                if (totals.batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+        /** @type {{ unmarked: boolean, removed: number, orphans: string[] }} */
+        const state = { unmarked: false, removed: 0, orphans: [] };
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            state.unmarked = false;
+            state.removed = 0;
+            state.orphans = [];
+            // Re-read every batch: deleting the merge target moves this mark onto the target's own.
+            const mark = /** @type {{ merge_into: string | null } | undefined} */ (db.get('SELECT merge_into FROM tag_deletions WHERE tag_id = @tagId', { tagId }));
+            if (!mark) {
+                state.unmarked = true;
+                return;
             }
-            if (state.orphans.length > 0) {
-                console.warn(color.yellow(`[character-metadata] Deleted tag ${tagId}: removed it with no merge from ${state.orphans.length} ${tagTable} row(s) whose ${entityTable} row doesn't exist:\n${state.orphans.map(id => `  ${id}: ${tagName}`).join('\n')}`));
+            const target = mark.merge_into ?? null;
+            for (const id of page) {
+                if (db.run(`DELETE FROM ${tagTable} WHERE ${entityColumn} = @id AND tag_id = @tagId`, { id, tagId }).changes === 0) continue;
+                state.removed++;
+                if (!db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id })) {
+                    state.orphans.push(id);
+                    continue;
+                }
+                if (target !== null) {
+                    db.run(`INSERT OR IGNORE INTO ${tagTable} (${entityColumn}, tag_id) VALUES (@id, @target)`, { id, target });
+                }
+                syncStoredCopy(db, id);
             }
-            await delay(MIGRATION_BATCH_PAUSE_MS);
+        });
+        if (state.unmarked) return 'unmarked';
+        if (state.removed > 0) {
+            totals.batches++;
+            totals.rowsChanged += state.removed;
+            totals.wrote = true;
+            if (totals.batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
         }
+        if (state.orphans.length > 0) {
+            console.warn(color.yellow(`[character-metadata] Deleted tag ${tagId}: removed it with no merge from ${state.orphans.length} ${tagTable} row(s) whose ${entityTable} row doesn't exist:\n${state.orphans.map(id => `  ${id}: ${tagName}`).join('\n')}`));
+        }
+        await delay(MIGRATION_BATCH_PAUSE_MS);
         if (page.length < DELETED_TAG_BATCH_SIZE) return 'walked';
     }
 }
