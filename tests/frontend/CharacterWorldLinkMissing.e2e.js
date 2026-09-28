@@ -198,6 +198,88 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
         }
     });
 
+    test('is shown set in the Link to World Info popup, and choosing "None" there clears it', async ({ page }) => {
+        const missingName = `Popup Missing Book ${Date.now()}`;
+
+        const avatar = await page.evaluate(async (missingName) => {
+            const { getRequestHeaders } = await import('./script.js');
+            const card = {
+                spec: 'chara_card_v2',
+                spec_version: '2.0',
+                data: { name: 'Popup Lost Link', extensions: { world: missingName } },
+            };
+            const form = new FormData();
+            form.set('ch_name', 'Popup Lost Link');
+            form.set('world', missingName);
+            form.set('fav', 'false');
+            form.set('json_data', JSON.stringify(card));
+            const response = await fetch('/api/characters/create', {
+                method: 'POST',
+                headers: getRequestHeaders({ omitContentType: true }),
+                body: form,
+            });
+            if (!response.ok) {
+                throw new Error(`create failed: ${response.status}`);
+            }
+            return await response.text();
+        }, missingName);
+
+        /** The link as the server has it saved. */
+        const savedLink = () => page.evaluate(async (avatar) => {
+            const { getRequestHeaders } = await import('./script.js');
+            const response = await fetch('/api/characters/get', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar_url: avatar }),
+            });
+            const character = await response.json();
+            return character?.data?.extensions?.world;
+        }, avatar);
+
+        try {
+            await testSetup.awaitST({ page });
+            await openCharacterManagementDrawer(page);
+            await page.evaluate(async (avatar) => {
+                const { selectCharacterByAvatar } = await import('./script.js');
+                await selectCharacterByAvatar(avatar);
+            }, avatar);
+            const globe = page.locator('#world_button');
+            await expect(globe).toBeVisible();
+            await expect(globe).toHaveClass(/\bwarning\b/);
+
+            // The popup (shift-click on the globe) shows the link selected, not "None".
+            const select = page.locator('dialog[open] .character_world_info_selector');
+            await globe.click({ modifiers: ['Shift'] });
+            await expect(select.locator('option:checked')).toHaveText(`${missingName} (not found)`);
+
+            // Choosing "None" clears the link, and it is saved.
+            // The popup binds its handlers once its opening animation is over.
+            await expect(page.locator('dialog[open]:not([opening]) .character_world_info_selector')).toHaveCount(1);
+            await select.selectOption('');
+            await expect(globe).not.toHaveClass(/\bwarning\b/);
+            await expect(globe).not.toHaveClass(/\bworld_set\b/);
+            await expect.poll(savedLink).toBe('');
+            await page.locator('dialog[open] .popup-button-ok').click();
+            await expect(select).toHaveCount(0);
+
+            // Opened again: "None", with no option for the old name.
+            await globe.click({ modifiers: ['Shift'] });
+            await expect(select.locator('option:checked')).toHaveText('--- None ---');
+            await expect(select.locator('option', { hasText: missingName })).toHaveCount(0);
+            await page.locator('dialog[open] .popup-button-ok').click();
+            await expect(select).toHaveCount(0);
+        } finally {
+            await page.evaluate(async (avatar) => {
+                const { getRequestHeaders } = await import('./script.js');
+                await fetch('/api/characters/delete', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ avatar_url: avatar, delete_chats: true }),
+                });
+            }, avatar);
+        }
+    });
+
     test('shows on the globe in create mode, for the link the new character will be created with', async ({ page }) => {
         const bookName = `Create Mode Book ${Date.now()}`;
         const globe = page.locator('#world_button');
