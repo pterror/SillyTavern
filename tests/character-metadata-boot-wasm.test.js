@@ -11,7 +11,7 @@ const { Database: WasmDatabase } = NodeSqlite3Wasm;
 jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
     getSqliteEngine: jest.fn(async () => ({
         kind: 'wasm',
-        openDatabase: (dbPath) => openWasmDatabase(WasmDatabase, dbPath),
+        openDatabase: (dbPath, options) => openWasmDatabase(WasmDatabase, dbPath, options),
     })),
     openWasmDatabase,
     openNativeDatabase: jest.fn(),
