@@ -13,7 +13,7 @@ import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readC
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, calculateGroupChatStats, resolveGroupOwner, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
-import { getSqliteEngine, streamRows } from './endpoints/sqlite-engine.js';
+import { getSqliteEngine, isBusyError, streamRows } from './endpoints/sqlite-engine.js';
 import { TAGS_FILE } from './constants.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
@@ -2238,6 +2238,14 @@ export function disposeMetadataStores() {
     // The random-order cache holds these connections; its warm timer must not run on a closed one.
     clearTimeout(randomCacheWarmTimer);
     randomSortCache.clear();
+    for (const db of noWaitMetaConnections.values()) {
+        try {
+            db.close();
+        } catch {
+            // Best-effort on shutdown.
+        }
+    }
+    noWaitMetaConnections.clear();
     for (const entry of entries.values()) {
         try {
             entry.db.close();
@@ -2591,6 +2599,8 @@ export async function getMetaValue(directories, key) {
     return row ? String(row.value) : null;
 }
 
+const UPSERT_META_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value';
+
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} key
@@ -2599,10 +2609,38 @@ export async function getMetaValue(directories, key) {
 export async function setMetaValue(directories, key, value) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    entry.db.run(
-        'INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        { key, value: String(value) },
-    );
+    entry.db.run(UPSERT_META_SQL, { key, value: String(value) });
+}
+
+/** @type {Map<string, import('./endpoints/sqlite-engine.js').SqliteEngineHandle>} Keyed by directories.root. */
+const noWaitMetaConnections = new Map();
+
+/**
+ * Writes every key in `values` in one transaction, on a connection of its own that fails at once on a lock
+ * instead of waiting for it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {Record<string, unknown>} values
+ * @returns {Promise<boolean>} false: another connection held the write lock, and nothing was written. With no
+ * usable SQLite engine there is nothing to write, and it returns true, as setMetaValue() does nothing then.
+ */
+export async function trySetMetaValues(directories, values) {
+    const entry = await getEntry(directories);
+    const engine = await getSqliteEngine();
+    if (!entry || !engine) return true;
+    const db = noWaitMetaConnections.get(directories.root)
+        ?? engine.openDatabase(getDbPath(directories), { busyTimeoutMs: 0, retryOnBusy: false });
+    noWaitMetaConnections.set(directories.root, db);
+    try {
+        db.transaction(() => {
+            for (const [key, value] of Object.entries(values)) {
+                db.run(UPSERT_META_SQL, { key, value: String(value) });
+            }
+        });
+    } catch (err) {
+        if (isBusyError(err)) return false;
+        throw err;
+    }
+    return true;
 }
 
 // Tag ids whose *name* changed since sinceSeq - mirrors getChangesSince()'s truncation handling.

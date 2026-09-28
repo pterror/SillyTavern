@@ -168,6 +168,26 @@ describe('sqlite-engine lock handling', () => {
         expect(getBusyWaitMs()).toBe(before);
     });
 
+    it('opened with { busyTimeoutMs: 0, retryOnBusy: false }, sets that timeout and throws the first lock error', () => {
+        let attempts = 0;
+        const { ctor, calls } = makeFakeCtor({
+            transactionImpl: () => { attempts++; throw busyError(); },
+        });
+        const handle = openNativeDatabase(/** @type {any} */(ctor), path.join(tmpDir, 'i.sqlite'), { busyTimeoutMs: 0, retryOnBusy: false });
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        try {
+            expect(calls.pragmas).toContain('busy_timeout = 0');
+            const before = getBusyWaitMs();
+            expect(() => handle.transaction(() => {})).toThrow(/database is locked/);
+            expect(attempts).toBe(1);
+            expect(errorSpy).not.toHaveBeenCalled();
+            expect(getBusyWaitMs()).toBe(before);
+        } finally {
+            errorSpy.mockRestore();
+        }
+    });
+
     it('does not retry errors that are not lock contention', () => {
         let attempts = 0;
         const { ctor } = makeFakeCtor({
@@ -238,6 +258,32 @@ describe('sqlite-engine lock handling', () => {
 
             expect(handle.get('SELECT v FROM t WHERE id = @id', { id: 1 }).v).toBe('seed-updated');
             handle.close();
+        });
+
+        it('a handle opened with { busyTimeoutMs: 0, retryOnBusy: false } fails at once while another connection holds the write lock', () => {
+            const dbPath = path.join(tmpDir, 'real3.sqlite');
+            const setup = openNativeDatabase(Database, dbPath);
+            setup.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+
+            const noWait = openNativeDatabase(Database, dbPath, { busyTimeoutMs: 0, retryOnBusy: false });
+            const blocker = new Database(dbPath);
+            try {
+                blocker.exec('BEGIN IMMEDIATE');
+                const started = Date.now();
+                let ran = 0;
+                expect(() => noWait.transaction(() => { ran++; })).toThrow(/database is locked/);
+                // The default 15000 ms busy_timeout would have held it here.
+                expect(Date.now() - started).toBeLessThan(1000);
+                expect(ran).toBe(0);
+                blocker.exec('ROLLBACK');
+
+                noWait.transaction(() => { noWait.run('INSERT INTO t (id, v) VALUES (@id, @v)', { id: 1, v: 'landed' }); });
+                expect(setup.get('SELECT v FROM t WHERE id = @id', { id: 1 }).v).toBe('landed');
+            } finally {
+                blocker.close();
+                noWait.close();
+                setup.close();
+            }
         });
     });
 });

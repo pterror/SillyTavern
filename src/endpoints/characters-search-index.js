@@ -4,7 +4,7 @@ import path from 'node:path';
 import {
     getTagDefinitions, getEntityTagIdsForMany,
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
-    streamDeletedIdsBetween, getMetaValue, setMetaValue, getCharacterFavsByIds, getCardJsonByIds,
+    streamDeletedIdsBetween, getMetaValue, trySetMetaValues, getCharacterFavsByIds, getCardJsonByIds,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter, stringToSortKey } from './tantivy-search.js';
@@ -77,6 +77,8 @@ const TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
 
 const CHECKPOINT_EVERY_N_BATCHES = 20;
+
+const REBUILD_PERSIST_RETRY_MS = 100;
 
 const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
@@ -237,9 +239,11 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
  * before and after. backlog: the change-log seq read at the tick's end minus the new cursor. writers: upserted
  * ids per changed field name (`null` for a whole-record change); an id with several fields counts under each.
  * tagRenames: distinct renamed tag ids applied. lockWaitMs: time this tick's writes spent on a database lock.
+ * persistSkipped: the cursors couldn't be persisted because the database was locked, so they stayed at their
+ * values from before the tick (seq === seqFrom) and the next tick redoes this one's work.
  * @typedef {{ changed: boolean, deletes: number, upserts: number, ms: number, seq: number, seqFrom: number,
  *   tagNameSeqFrom: number, tagNameSeq: number, backlog: number, writers: Record<string, number>, tagRenames: number,
- *   phases: TickPhases, lockWaitMs: number }} TickResult
+ *   phases: TickPhases, lockWaitMs: number, persistSkipped?: boolean }} TickResult
  */
 
 /** @param {TickResult} r */
@@ -249,7 +253,8 @@ export function formatCatchUpLine(r) {
     const writers = Object.entries(r.writers).map(([field, n]) => `${field === 'null' ? 'whole-record' : field}:${n}`).join(',');
     return `[search] catch-up: seq=${r.seqFrom}..${r.seq}${tagSeq} backlog=${r.backlog} writers=${writers} tagrenames=${r.tagRenames}`
         + ` deletes=${r.deletes} upserts=${r.upserts} total_ms=${r.ms} read_ms=${p.read} deletes_ms=${p.deletes} tags_ms=${p.tags}`
-        + ` load_ms=${p.load} build_ms=${p.build} add_ms=${p.add} commit_ms=${p.commit} persist_ms=${p.persist} lockwait_ms=${r.lockWaitMs}`;
+        + ` load_ms=${p.load} build_ms=${p.build} add_ms=${p.add} commit_ms=${p.commit} persist_ms=${p.persist}`
+        + `${r.persistSkipped ? ' persist=skipped' : ''} lockwait_ms=${r.lockWaitMs}`;
 }
 
 /**
@@ -285,10 +290,13 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         deleteCursor = Math.max(deleteCursor, seq);
     }
 
-    async function persistCursors() {
-        await setMetaValue(directories, TANTIVY_INDEX_SEQ_META_KEY, String(seqCursor));
-        await setMetaValue(directories, TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, String(tagNameCursor));
-        await setMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY, String(TANTIVY_SCHEMA_VERSION));
+    /** @returns {Promise<boolean>} false: the database was locked and nothing was persisted. */
+    function persistCursors() {
+        return trySetMetaValues(directories, {
+            [TANTIVY_INDEX_SEQ_META_KEY]: String(seqCursor),
+            [TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY]: String(tagNameCursor),
+            [TANTIVY_INDEX_SCHEMA_VERSION_META_KEY]: String(TANTIVY_SCHEMA_VERSION),
+        });
     }
 
     /**
@@ -376,7 +384,11 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
 
         deleteCursor = 0;
         setCursors(lastSeq, lastTagNameChangeSeq);
-        await persistCursors();
+        // Not skipped on a lock like a tick's: the new index is already in place, and the cursors persisted for the
+        // old one would have the next start replay the change log from there.
+        while (!await persistCursors()) {
+            await new Promise(resolve => setTimeout(resolve, REBUILD_PERSIST_RETRY_MS));
+        }
         return indexDir;
     }
 
@@ -405,6 +417,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         let upserts = 0;
         const seqFrom = seqCursor;
         const tagNameSeqFrom = tagNameCursor;
+        const deleteCursorFrom = deleteCursor;
         let lastSeq = seqCursor;
         let lastTagNameChangeSeq = tagNameCursor;
         /** @type {Map<string, number>} */
@@ -510,8 +523,16 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const moved = lastSeq !== seqCursor || lastTagNameChangeSeq !== tagNameCursor;
         setCursors(lastSeq, lastTagNameChangeSeq);
         deleteCursor = Math.max(deleteCursor, maxSeq);
+        let persistSkipped = false;
         if (moved) {
-            await timeAsync(phases, 'persist', () => persistCursors());
+            persistSkipped = !await timeAsync(phases, 'persist', () => persistCursors());
+        }
+        // Rather than wait on the lock, the next tick redoes this one's work: every doc it touched is deleted and
+        // re-added by id, so applying it twice changes nothing.
+        if (persistSkipped) {
+            seqCursor = seqFrom;
+            tagNameCursor = tagNameSeqFrom;
+            deleteCursor = deleteCursorFrom;
         }
         // Not maxSeq: upsert pages aren't capped at it, so a change written during the tick puts seqCursor past it.
         const endSeq = await timeAsync(phases, 'read', () => getCurrentSeq(directories));
@@ -529,6 +550,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             tagRenames: renamedTagIds.size,
             phases,
             lockWaitMs: getBusyWaitMs() - lockWaitAtStart,
+            persistSkipped,
         };
     }
 
