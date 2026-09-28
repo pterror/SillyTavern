@@ -190,10 +190,17 @@ export function removeCharacterListRow(id) {
 export function refreshCharacterListCurrentPage() {
     if (!canUseServerQueryForEntitiesList()) return false;
     const pager = document.getElementById('rm_print_characters_pagination');
-    if (!pager || !$(pager).data('pagination')?.initialized) return false;
+    const pagination = pager ? $(pager).data('pagination') : undefined;
+    if (!pagination?.initialized) return false;
+    // pagination.js drops a refresh while its own fetch runs (disabled), so there is no render to keep the scroll for.
+    keepScrollOnNextRender = !pagination.model?.disabled;
     $(pager).pagination('refresh');
     return true;
 }
+
+// Set by refreshCharacterListCurrentPage() for the re-render it starts: that render keeps the list's scroll
+// distance as it is then, instead of printCharacters()'s afterRender restoring the one saved when it built the pager.
+let keepScrollOnNextRender = false;
 
 // Page fetches of the characters list still running: printCharacters()'s page-1 probe through to the pager it
 // builds, and every pager ajaxFunction call. pagination.js drops a refresh while its own fetch runs, so a
@@ -369,6 +376,10 @@ export async function printCharacters(fullRefresh = false) {
             saveCharactersPage = e;
         },
         afterRender: function () {
+            if (keepScrollOnNextRender) {
+                keepScrollOnNextRender = false;
+                return;
+            }
             $(listId).scrollTop(currentScrollTop);
         },
     };
@@ -481,6 +492,8 @@ export async function printCharacters(fullRefresh = false) {
                         })
                         .catch(error => {
                             console.error('[printCharacters] server-paginated /query failed:', error);
+                            // No render follows, so a refresh's keep-scroll must not carry over to a later page turn.
+                            keepScrollOnNextRender = false;
                             ajaxParams.error(error);
                         })
                         .finally(pageFetchSettled);

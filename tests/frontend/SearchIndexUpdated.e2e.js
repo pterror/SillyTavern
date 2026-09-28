@@ -291,3 +291,108 @@ test.describe('change message ({}) on /changes/stream', () => {
         expect(topSearchQueries(log, from)).toEqual([]);
     });
 });
+
+test.describe('re-rendering the visible page keeps the list\'s scroll distance', () => {
+    const CHARACTER_COUNT = 40;
+    const SCROLLED_TO = 200;
+
+    /** @type {Awaited<ReturnType<typeof instrument>>} */
+    let log;
+
+    /**
+     * Creates CHARACTER_COUNT characters whose names all contain `term`.
+     * @param {import('@playwright/test').Page} page
+     * @param {string} term
+     */
+    async function createCharacters(page, term) {
+        await page.evaluate(async ({ term, count }) => {
+            // @ts-ignore
+            const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+            for (let i = 0; i < count; i++) {
+                const form = new FormData();
+                form.set('ch_name', `${term} ${i}`);
+                const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
+                if (!response.ok) throw new Error(`create failed: ${response.status}`);
+            }
+        }, { term, count: CHARACTER_COUNT });
+    }
+
+    /** @param {import('@playwright/test').Page} page */
+    async function listScrollTop(page) {
+        return page.locator('#rm_print_characters_block').evaluate(el => el.scrollTop);
+    }
+
+    /**
+     * Searches for `term` until the list shows every character created for it.
+     * @param {import('@playwright/test').Page} page
+     * @param {string} term
+     */
+    async function showSearchResults(page, term) {
+        await setSearchTerm(page, log, term);
+        const rows = page.locator('#rm_print_characters_block .character_select');
+        // The search index takes up the new characters in the background.
+        await expect.poll(async () => {
+            if (await rows.count() >= CHARACTER_COUNT) return true;
+            await sendStreamMessage(page, searchIndexUpdated());
+            await waitForQuiet(log);
+            return false;
+        }, { timeout: 60000 }).toBe(true);
+    }
+
+    /**
+     * Scrolls the list to SCROLLED_TO.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function scrollList(page) {
+        await page.locator('#rm_print_characters_block').evaluate((el, top) => { el.scrollTop = top; }, SCROLLED_TO);
+        expect(await listScrollTop(page)).toBe(SCROLLED_TO);
+    }
+
+    test.beforeEach(async ({ page }) => {
+        log = await instrument(page);
+        await page.setViewportSize({ width: 1280, height: 400 });
+        await testSetup.awaitST({ page });
+        await awaitAppReady(page);
+    });
+
+    test('on search-index-updated with a search term', async ({ page }) => {
+        const term = `Scrollkeep${Date.now()}`;
+        await createCharacters(page, term);
+        await page.reload();
+        await awaitAppReady(page);
+        await openCharacterManagementDrawer(page);
+        await expect.poll(() => listShowing(page)).toBe(true);
+        await waitForQuiet(log);
+        await showSearchResults(page, term);
+        await scrollList(page);
+        const from = log.queries.length;
+
+        await sendStreamMessage(page, searchIndexUpdated());
+        await waitForQuiet(log);
+
+        expect(pageQueries(log, from)).toHaveLength(1);
+        expect(await listScrollTop(page)).toBe(SCROLLED_TO);
+    });
+
+    test('on refreshCharacterListCurrentPage(), as after duplicating a character', async ({ page }) => {
+        const term = `Scrollkeep${Date.now()}`;
+        await createCharacters(page, term);
+        await page.reload();
+        await awaitAppReady(page);
+        await openCharacterManagementDrawer(page);
+        await expect.poll(() => listShowing(page)).toBe(true);
+        await waitForQuiet(log);
+        await showSearchResults(page, term);
+        await scrollList(page);
+        const from = log.queries.length;
+
+        expect(await page.evaluate(async () => {
+            const { refreshCharacterListCurrentPage } = await import('/scripts/character-list.js');
+            return refreshCharacterListCurrentPage();
+        })).toBe(true);
+        await waitForQuiet(log);
+
+        expect(pageQueries(log, from)).toHaveLength(1);
+        expect(await listScrollTop(page)).toBe(SCROLLED_TO);
+    });
+});
