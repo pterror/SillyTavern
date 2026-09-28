@@ -401,3 +401,48 @@ describe('migrateCharacterIds - cross-cutting reference sweep', () => {
         expect(group.members).toEqual(['Judy.png', newAvatar]);
     });
 });
+
+describe('migrateCharacterIds - tags of an old id with no metadata row', () => {
+    test('are copied to the new id, and the output lists each one by name and id', async () => {
+        await writeCardFile('Orphan.png');
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Orphan.png', JSON.stringify({ name: 'Orphan', data: { name: 'Orphan' } }));
+        await metadataDb.assignEntityTag(directories, 'Orphan.png', 'tag1');
+        await metadataDb.assignEntityTag(directories, 'Orphan.png', 'tag2');
+        const Database = (await import('better-sqlite3')).default;
+        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        try {
+            raw.prepare('DELETE FROM characters WHERE id = ?').run('Orphan.png');
+        } finally {
+            raw.close();
+        }
+
+        const lines = [];
+        const result = await migration.migrateCharacterIds(directories, { rebuildSearchIndex: false, log: line => lines.push(line) });
+
+        expect(result.migrated).toBe(1);
+        expect(result.failed).toBe(0);
+        const [newAvatar] = fs.readdirSync(charactersDir);
+        expect((await metadataDb.getCharacterTagIds(directories, newAvatar)).sort()).toEqual(['tag1', 'tag2']);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Orphan.png')).toEqual([]);
+        const listing = lines.find(line => line.includes('had no metadata row but had tags'));
+        expect(listing).toContain('Orphan.png');
+        expect(listing).toContain(newAvatar);
+        expect(listing).toContain('Funny (tag1)');
+        expect(listing).toContain('(no tag definition) (tag2)');
+    });
+
+    test('are not listed when the old id had a row', async () => {
+        await writeCardFile('Kept.png');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Kept.png', JSON.stringify({ name: 'Kept', data: { name: 'Kept' } }));
+        await metadataDb.assignEntityTag(directories, 'Kept.png', 'tag1');
+
+        const lines = [];
+        const result = await migration.migrateCharacterIds(directories, { rebuildSearchIndex: false, log: line => lines.push(line) });
+
+        expect(result.migrated).toBe(1);
+        const [newAvatar] = fs.readdirSync(charactersDir);
+        expect(await metadataDb.getCharacterTagIds(directories, newAvatar)).toEqual(['tag1']);
+        expect(lines.some(line => line.includes('had no metadata row but had tags'))).toBe(false);
+    });
+});

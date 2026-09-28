@@ -10,6 +10,7 @@ import {
     upsertCharacterFromWrite,
     getCharacterCardJson,
     renameCharacterRow,
+    getTagDefinitionsByIds,
     recordIdMigrationMapping,
     getIdMigrationMapping,
     isIdMigrationTargetTaken,
@@ -101,7 +102,14 @@ async function migrateOne(directories, oldId, newId, log) {
             ? computeAvatarIdentityHashFromImageBuffer(await fsPromises.readFile(newPath))
             : computeDefaultAvatarIdentityHash();
         await upsertCharacterFromWrite(directories, newId, normalized, null, avatarIdentityHash);
-        await renameCharacterRow(directories, oldId, newId);
+        const renamed = await renameCharacterRow(directories, oldId, newId);
+        const copiedOrphanTagIds = renamed?.copiedOrphanTagIds ?? [];
+        if (copiedOrphanTagIds.length > 0) {
+            const definitions = /** @type {{ id: unknown, name?: unknown }[]} */ (await getTagDefinitionsByIds(directories, copiedOrphanTagIds) ?? []);
+            const nameById = new Map(definitions.map(tag => [String(tag.id), tag.name]));
+            const listed = copiedOrphanTagIds.map(tagId => `  ${nameById.has(tagId) ? nameById.get(tagId) : '(no tag definition)'} (${tagId})`).join('\n');
+            log(color.yellow(`[migrate-character-ids] ${oldId} had no metadata row but had tags; copied them to ${newId}:\n${listed}`));
+        }
     } catch (err) {
         log(color.red(`[migrate-character-ids] Failed to update the metadata store for ${oldId} -> ${newId}: ${err.message}`));
         return false;

@@ -1262,6 +1262,22 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
 
         expect((await metadataDb.getCharacterTagIds(directories, 'Robert.png')).sort()).toEqual(['tag1', 'tag2']);
     });
+
+    test('renameCharacterRow throws naming both ids and changes nothing when the new id has no row', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+
+        const error = await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png').catch(err => err);
+
+        expect(error).toBeInstanceOf(Error);
+        expect(error.message).toContain('Bob.png');
+        expect(error.message).toContain('Robert.png');
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toEqual(before);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Robert.png')).toBeUndefined();
+        expect(await metadataDb.getCharacterTagIds(directories, 'Robert.png')).toEqual([]);
+    });
 });
 
 describe('phase 3 extension: groups (owner decision - tags.json removal includes group tags)', () => {
