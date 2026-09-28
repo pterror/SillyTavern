@@ -6,7 +6,7 @@ import { color } from '../util.js';
 import { parse as parseCharacterCard, writeCardToFile } from '../character-card-parser.js';
 import { getCharaCardV2 } from '../character-card-normalize.js';
 import { readWorldInfoFile } from '../endpoints/worldinfo.js';
-import { upsertCharacterFromWrite, getCharacterCardJson, getCharactersWithLinkedWorld, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, getCharacterCardJson, streamLinkedWorlds, streamCharactersLinkedToWorld, isWorldLinkedByAnyCharacter, isMigrationMarkedComplete, markMigrationComplete, isBootstrapComplete } from '../character-metadata-db.js';
 
 /**
  * One-time reversal for characters auto-linked to a World file by the old importEmbeddedWorldInfo()
@@ -26,14 +26,15 @@ import { upsertCharacterFromWrite, getCharacterCardJson, getCharactersWithLinked
  * Never deletes/renames the World file itself - it may still be referenced elsewhere this migration
  * can't reliably enumerate. `run()` just reports orphaned worlds for manual cleanup.
  *
- * findCandidates() never walks the full character corpus - it starts from
- * getCharactersWithLinkedWorld() (indexed `WHERE world IS NOT NULL`) and only opens a character PNG per
- * remaining candidate. An earlier full-corpus-read version OOM-crashed on this repo's own character
- * library; this design replaced it.
+ * findCandidates() never walks the full character corpus - it starts from streamLinkedWorlds() (indexed
+ * on `world`) and only opens a character PNG per remaining candidate. An earlier full-corpus-read version
+ * OOM-crashed on this repo's own character library; this design replaced it. Nothing is gathered up front
+ * either: run() handles each world as soon as it is classified, a page of worlds at a time, with no
+ * database read open while it writes.
  *
  * runOnceAtBoot() (called by server-main.js, unawaited, after initializeMetadataStores()) runs at most
  * once per user, gated on isMigrationMarkedComplete()/markMigrationComplete(). It waits for
- * isBootstrapComplete() before trusting getCharactersWithLinkedWorld(), since that index isn't
+ * isBootstrapComplete() before trusting streamLinkedWorlds(), since that index isn't
  * populated until the metadata backfill finishes; on timeout it retries next boot without marking done.
  *
  * `run()`/`findCandidates()` also work as a manual CLI: `node src/migrations/unimport-embedded-lore.js
@@ -60,79 +61,99 @@ function characterBookEntriesMatch(characterBook, originalData) {
     return JSON.stringify(canonicalize(characterBook.entries ?? [])) === JSON.stringify(canonicalize(originalData.entries ?? []));
 }
 
-/** Works out, without mutating anything, which characters are safe to unimport vs. ambiguous. See module header. */
-export async function findCandidates(directories, log) {
-    const linked = await getCharactersWithLinkedWorld(directories);
-    if (linked === null) {
-        throw new Error('Character metadata store is unavailable on this install (no usable SQLite backend) - cannot find candidates without an indexed lookup, and this migration deliberately refuses to fall back to a full-corpus scan to get one. Aborting.');
+const STORE_UNAVAILABLE_MESSAGE = 'Character metadata store is unavailable on this install (no usable SQLite backend) - cannot find candidates without an indexed lookup, and this migration deliberately refuses to fall back to a full-corpus scan to get one. Aborting.';
+
+/**
+ * @typedef {{ avatar: string, worldName: string, action: 'restore-and-unlink' | 'unlink-only' }} SafeCandidate
+ * @typedef {{ avatar: string, worldName: string, reason: string }} AmbiguousCandidate
+ * @typedef {{ safe: SafeCandidate[], ambiguous: AmbiguousCandidate[] }} Findings
+ */
+
+/** Classifies the only character linking a World that carries the originalData marker. */
+async function classifySoleLinker(directories, avatar, worldName, world, log) {
+    let card;
+    try {
+        // Prefer the metadata db's parked copy over the PNG - classifying against stale content
+        // would misjudge a card the user already edited.
+        const rawJson = await getCharacterCardJson(directories, avatar)
+            ?? await parseCharacterCard(path.join(directories.characters, avatar), 'png');
+        card = getCharaCardV2(JSON.parse(rawJson), directories, false);
+    } catch (err) {
+        log(color.red(`[unimport-embedded-lore] Failed to read candidate ${avatar}, skipping: ${err.message}`));
+        return null;
     }
 
-    /** @type {Map<string, string[]>} worldName -> avatars currently linking to it as their primary world */
-    const linkersByWorld = new Map();
-    for (const { id: avatar, world: worldName } of linked) {
-        const list = linkersByWorld.get(worldName) ?? [];
-        list.push(avatar);
-        linkersByWorld.set(worldName, list);
+    // Metadata row can lag a live edit.
+    if (card?.data?.extensions?.world !== worldName) return null;
+
+    const characterBook = card?.data?.character_book;
+    if (!characterBook) {
+        return { safe: [{ avatar, worldName, action: 'restore-and-unlink' }], ambiguous: [] };
     }
 
-    /** @type {Map<string, object|null>} worldName -> parsed World file (null if missing/unreadable) */
-    const worldCache = new Map();
-    const loadWorld = (worldName) => {
-        if (worldCache.has(worldName)) return worldCache.get(worldName);
-        let world = null;
-        try {
-            world = readWorldInfoFile(directories, worldName, false);
-        } catch (err) {
-            log(color.red(`[unimport-embedded-lore] Failed to read World "${worldName}": ${err.message}`));
-        }
-        worldCache.set(worldName, world);
-        return world;
-    };
-
-    const safe = [];
-    const ambiguous = [];
-
-    for (const { id: avatar, world: worldName } of linked) {
-        const world = loadWorld(worldName);
-        const hasOriginalDataMarker = !!(world && world.originalData && Array.isArray(world.originalData.entries));
-        if (!hasOriginalDataMarker) continue;
-
-        const linkers = linkersByWorld.get(worldName) ?? [];
-        if (linkers.length > 1) {
-            ambiguous.push({ avatar, worldName, reason: `World is currently linked by ${linkers.length} characters (${linkers.join(', ')}) - treated as deliberate sharing, not touched` });
-            continue;
-        }
-
-        let card;
-        try {
-            // Prefer the metadata db's parked copy over the PNG - classifying against stale content
-            // would misjudge a card the user already edited.
-            const rawJson = await getCharacterCardJson(directories, avatar)
-                ?? await parseCharacterCard(path.join(directories.characters, avatar), 'png');
-            card = getCharaCardV2(JSON.parse(rawJson), directories, false);
-        } catch (err) {
-            log(color.red(`[unimport-embedded-lore] Failed to read candidate ${avatar}, skipping: ${err.message}`));
-            continue;
-        }
-
-        // Metadata row can lag a live edit.
-        if (card?.data?.extensions?.world !== worldName) continue;
-
-        const characterBook = card?.data?.character_book;
-        if (!characterBook) {
-            safe.push({ avatar, worldName, action: 'restore-and-unlink' });
-            continue;
-        }
-
-        if (characterBookEntriesMatch(characterBook, world.originalData)) {
-            safe.push({ avatar, worldName, action: 'unlink-only' });
-            continue;
-        }
-
-        ambiguous.push({ avatar, worldName, reason: 'Character has its own embedded lorebook that no longer matches the linked World\'s original import snapshot - cannot tell which version to keep' });
+    if (characterBookEntriesMatch(characterBook, world.originalData)) {
+        return { safe: [{ avatar, worldName, action: 'unlink-only' }], ambiguous: [] };
     }
 
-    return { safe, ambiguous };
+    return { safe: [], ambiguous: [{ avatar, worldName, reason: 'Character has its own embedded lorebook that no longer matches the linked World\'s original import snapshot - cannot tell which version to keep' }] };
+}
+
+/**
+ * One linked World's findings: nothing unless the World carries the originalData marker; then its sole linker
+ * classified, or every linker of a shared World as ambiguous, one page of linkers per yield.
+ * @returns {AsyncGenerator<Findings, void, undefined>}
+ */
+async function* classifyWorld(directories, worldName, linkers, log) {
+    let world = null;
+    try {
+        world = readWorldInfoFile(directories, worldName, false);
+    } catch (err) {
+        log(color.red(`[unimport-embedded-lore] Failed to read World "${worldName}": ${err.message}`));
+    }
+    const hasOriginalDataMarker = !!(world && world.originalData && Array.isArray(world.originalData.entries));
+    if (!hasOriginalDataMarker) return;
+
+    const linkerPages = await streamCharactersLinkedToWorld(directories, worldName);
+    if (linkerPages === null) {
+        throw new Error(STORE_UNAVAILABLE_MESSAGE);
+    }
+
+    // Shared once the world list or this World's own linkers show more than one; a World that became shared
+    // since the world list was read is never treated as a sole link.
+    let sharedBy = linkers > 1 ? linkers : 0;
+    for await (const avatars of linkerPages) {
+        if (!sharedBy && avatars.length > 1) {
+            sharedBy = avatars.length;
+        }
+        if (!sharedBy) {
+            const findings = await classifySoleLinker(directories, avatars[0], worldName, world, log);
+            if (findings) yield findings;
+            continue;
+        }
+        const reason = `World is currently linked by ${sharedBy} characters - treated as deliberate sharing, not touched`;
+        yield { safe: [], ambiguous: avatars.map(avatar => ({ avatar, worldName, reason })) };
+    }
+}
+
+/**
+ * Works out, without mutating anything, which characters are safe to unimport vs. ambiguous (see module header),
+ * one World at a time. Holds at most one page of the world list and one page of a World's linkers, and no database
+ * read is open while the consumer holds a yield, so it may write before asking for the next.
+ * @returns {AsyncGenerator<Findings, void, undefined>}
+ */
+export async function* findCandidates(directories, log) {
+    const linkedWorlds = await streamLinkedWorlds(directories);
+    if (linkedWorlds === null) {
+        throw new Error(STORE_UNAVAILABLE_MESSAGE);
+    }
+
+    for await (const worlds of linkedWorlds) {
+        for (const { world: worldName, linkers } of worlds) {
+            yield* classifyWorld(directories, worldName, Number(linkers), log);
+            // Each World is a synchronous file read on the main thread; let requests in between.
+            await new Promise(resolve => setImmediate(resolve));
+        }
+    }
 }
 
 /** Unlinks `extensions.world`, restoring `character_book` from `originalData` first if missing. Never touches the World file. */
@@ -179,53 +200,82 @@ async function unimportOne(directories, candidate, log) {
     }
 }
 
-/** Runs the full unimport pass for one user. Dry run by default - pass `{ apply: true }` to actually write. */
+const ORPHANED_WORLDS_PER_LINE = 100;
+
+/**
+ * Logs the Worlds carrying the originalData marker that no character links as its primary world any more, for
+ * manual review, at most ORPHANED_WORLDS_PER_LINE names per line. Streams the worlds folder and asks the index
+ * about one World at a time, so neither the folder listing nor the linked Worlds are ever held.
+ * @returns {Promise<number>} how many there were
+ */
+async function reportOrphanedWorlds(directories, log) {
+    if (!fs.existsSync(directories.worlds)) return 0;
+
+    let count = 0;
+    /** @type {string[]} */
+    let names = [];
+    const flush = () => {
+        if (names.length === 0) return;
+        log(color.cyan(`[unimport-embedded-lore] ${names.length} World file(s) came from an embedded-lore import and now have no character linking to them - left in place, review/delete manually if wanted: ${names.join(', ')}`));
+        names = [];
+    };
+
+    for await (const dirent of await fsPromises.opendir(directories.worlds)) {
+        if (!dirent.name.endsWith('.json')) continue;
+        const name = path.parse(dirent.name).name;
+        const linked = await isWorldLinkedByAnyCharacter(directories, name);
+        if (linked === null) {
+            throw new Error(STORE_UNAVAILABLE_MESSAGE);
+        }
+        if (linked) continue;
+        const world = readWorldInfoFile(directories, name, false);
+        if (world?.originalData?.entries) {
+            names.push(name);
+            count++;
+            if (names.length >= ORPHANED_WORLDS_PER_LINE) flush();
+        }
+        // Each World is a synchronous file read on the main thread; let requests in between.
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    flush();
+    return count;
+}
+
+/**
+ * Runs the full unimport pass for one user. Dry run by default - pass `{ apply: true }` to actually write.
+ * @returns {Promise<{ safe: number, migrated: number, failed: number, ambiguous: number, orphanedWorlds: number }>} counts
+ */
 export async function run(directories, options = {}) {
     const log = options.log ?? console.log;
     const apply = options.apply === true;
 
-    const { safe, ambiguous } = await findCandidates(directories, log);
-
-    log(`[unimport-embedded-lore] ${safe.length} character(s) safe to unimport, ${ambiguous.length} ambiguous (left untouched).`);
-    for (const { avatar, worldName, reason } of ambiguous) {
-        log(color.yellow(`[unimport-embedded-lore] AMBIGUOUS, not touched: ${avatar} (linked to "${worldName}") - ${reason}`));
-    }
-
+    let safe = 0;
+    let ambiguous = 0;
     let migrated = 0;
     let failed = 0;
 
-    if (!apply) {
-        for (const { avatar, worldName, action } of safe) {
-            log(color.cyan(`[unimport-embedded-lore] DRY RUN would ${action === 'restore-and-unlink' ? 'restore character_book and unlink' : 'unlink'}: ${avatar} from "${worldName}"`));
+    for await (const findings of findCandidates(directories, log)) {
+        for (const { avatar, worldName, reason } of findings.ambiguous) {
+            log(color.yellow(`[unimport-embedded-lore] AMBIGUOUS, not touched: ${avatar} (linked to "${worldName}") - ${reason}`));
         }
-    } else {
-        for (const candidate of safe) {
+        ambiguous += findings.ambiguous.length;
+        safe += findings.safe.length;
+
+        for (const candidate of findings.safe) {
+            if (!apply) {
+                const { avatar, worldName, action } = candidate;
+                log(color.cyan(`[unimport-embedded-lore] DRY RUN would ${action === 'restore-and-unlink' ? 'restore character_book and unlink' : 'unlink'}: ${avatar} from "${worldName}"`));
+                continue;
+            }
             const ok = await unimportOne(directories, candidate, log);
             if (ok) migrated++; else failed++;
         }
     }
 
-    // Worlds carrying the originalData marker with no primary linker left, for manual review.
-    const stillLinkedRows = await getCharactersWithLinkedWorld(directories);
-    const stillLinked = new Set((stillLinkedRows ?? []).map(r => r.world).filter(Boolean));
-    const orphanedWorlds = [];
-    if (fs.existsSync(directories.worlds)) {
-        const worldFiles = (await fsPromises.readdir(directories.worlds)).filter(f => f.endsWith('.json'));
-        for (const file of worldFiles) {
-            const name = path.parse(file).name;
-            if (stillLinked.has(name)) continue;
-            const world = readWorldInfoFile(directories, name, false);
-            if (world?.originalData?.entries) {
-                orphanedWorlds.push(name);
-            }
-        }
-    }
-    if (orphanedWorlds.length > 0) {
-        log(color.cyan(`[unimport-embedded-lore] ${orphanedWorlds.length} World file(s) came from an embedded-lore import and now have no character linking to them - left in place, review/delete manually if wanted: ${orphanedWorlds.join(', ')}`));
-    }
+    const orphanedWorlds = await reportOrphanedWorlds(directories, log);
 
-    log(color.green(`[unimport-embedded-lore] Done${apply ? '' : ' (dry run, nothing written - pass --apply to write)'}: ${migrated}/${safe.length} unimported, ${failed} failed, ${ambiguous.length} left ambiguous.`));
-    return { safe: safe.length, migrated, failed, ambiguous, orphanedWorlds };
+    log(color.green(`[unimport-embedded-lore] Done${apply ? '' : ' (dry run, nothing written - pass --apply to write)'}: ${migrated}/${safe} unimported, ${failed} failed, ${ambiguous} left ambiguous.`));
+    return { safe, migrated, failed, ambiguous, orphanedWorlds };
 }
 
 const BOOT_MIGRATION_KEY = 'unimport_embedded_lore_completed';
@@ -237,7 +287,7 @@ const BOOTSTRAP_POLL_INTERVAL_MS = 5000;
 /**
  * Auto-run entry point (server-main.js calls this, unawaited, after initializeMetadataStores()).
  * Runs at most once per user, gated on isMigrationMarkedComplete(). Waits for isBootstrapComplete()
- * before trusting getCharactersWithLinkedWorld(), since that index isn't populated until the metadata
+ * before trusting streamLinkedWorlds(), since that index isn't populated until the metadata
  * backfill finishes; on timeout it returns without marking complete, so the next boot retries.
  * @param {number} [options.bootstrapWaitTimeoutMs] Test hook only.
  * @param {number} [options.bootstrapPollIntervalMs] Test hook only.

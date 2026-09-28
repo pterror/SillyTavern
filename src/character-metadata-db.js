@@ -4136,16 +4136,62 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
 }
 
+// The keyset pages below bound `after` with COALESCE rather than streamRows()'s usual `(@after IS NULL OR key > @after)`:
+// SQLite can't seek on that OR, so every page would re-read the index from its start.
+
 /**
- * Indexed lookup, not a filesystem scan.
- * @returns {Promise<Array<{id: string, world: string}>|null>} `null` if the metadata store is unavailable.
+ * Every world some character links as its primary world, with how many characters link it, in world order, in
+ * batches. Reads idx_characters_world only; each batch's read is finished before it is yielded, so the caller may
+ * write between batches.
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<AsyncGenerator<{ world: string, linkers: number }[], void, undefined> | null>} `null` if the
+ * metadata store is unavailable.
  */
-export async function getCharactersWithLinkedWorld(directories) {
+export async function streamLinkedWorlds(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    return (/** @type {{ id: string, world: string }[]} */ (entry.db.all('SELECT id, world FROM characters WHERE world IS NOT NULL AND world != \'\'')));
+    // world has TEXT affinity, so `> ''` keeps exactly the rows that are neither NULL nor ''.
+    return /** @type {AsyncGenerator<{ world: string, linkers: number }[], void, undefined>} */ (streamRows(entry.db, {
+        readSql: 'SELECT world, COUNT(*) AS linkers FROM characters WHERE world > COALESCE(@after, \'\') GROUP BY world ORDER BY world LIMIT @limit',
+        keyColumn: 'world',
+    }));
+}
+
+/**
+ * Ids of the characters that link `world` as their primary world, in batches. Pages by rowid, the order
+ * idx_characters_world keeps within one world, so a page seeks instead of sorting every linker; each batch's read is
+ * finished before it is yielded.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} world
+ * @returns {Promise<AsyncGenerator<string[], void, undefined> | null>} `null` if the metadata store is unavailable.
+ */
+export async function streamCharactersLinkedToWorld(directories, world) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    return (async function* () {
+        for await (const rows of streamRows(entry.db, {
+            readSql: 'SELECT rowid AS rid, id FROM characters WHERE world = @world AND rowid > COALESCE(@after, -9223372036854775808) ORDER BY rowid LIMIT @limit',
+            params: { world },
+            keyColumn: 'rid',
+        })) {
+            yield (/** @type {{ rid: number, id: string }[]} */ (rows)).map(row => row.id);
+        }
+    })();
+}
+
+/**
+ * Whether any character links `world` as its primary world - one indexed lookup.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} world
+ * @returns {Promise<boolean | null>} `null` if the metadata store is unavailable.
+ */
+export async function isWorldLinkedByAnyCharacter(directories, world) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    return !!entry.db.get('SELECT 1 FROM characters WHERE world = @world LIMIT 1', { world });
 }
 
 // A boot-time migration reading this store must check this first - bootstrapIfNeeded() runs in the
