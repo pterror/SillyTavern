@@ -7018,8 +7018,11 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
                 cache: 'no-cache',
             });
         } catch (error) {
-            // Whether the server replaced the book is unknown.
+            // Whether the server replaced the book is unknown, so saves of the old book made while the import was
+            // sent can't be written: they could land on the imported book. They are dropped with a warning, where
+            // forgetting the cached copy would otherwise lose them silently.
             if (replacesExisting) {
+                await dropWorldSavesAfterOverwrite(worldName, 'Import');
                 forgetReplacedWorldInfo(worldName);
             }
             throw error;
