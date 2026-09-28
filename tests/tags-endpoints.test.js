@@ -124,6 +124,29 @@ describe('POST /api/tags/for', () => {
     });
 });
 
+describe('POST /api/tags/by-ids', () => {
+    const idsOf = count => Array.from({ length: count }, (_, i) => `tag${i}`);
+
+    test('answers 500 distinct ids', async () => {
+        await postJson('/api/tags/save', { tags: [{ id: 'tag0', name: 'Funny' }, { id: 'tag499', name: 'Serious' }] });
+        const response = await postJson('/api/tags/by-ids', { ids: idsOf(500) });
+        expect(response.status).toBe(200);
+        const { tags } = await response.json();
+        expect(tags.map(tag => tag.id).sort()).toEqual(['tag0', 'tag499']);
+    });
+
+    test('400s above 500 distinct ids instead of a cut-short list', async () => {
+        const response = await postJson('/api/tags/by-ids', { ids: idsOf(501) });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: 'at most 500 distinct ids per request' });
+    });
+
+    test('counts a repeated id once', async () => {
+        const response = await postJson('/api/tags/by-ids', { ids: [...idsOf(500), 'tag0', 'tag499', 'tag0'] });
+        expect(response.status).toBe(200);
+    });
+});
+
 describe('POST /api/tags/assign and /api/tags/unassign', () => {
     test('assign then unassign round-trips through /for, single-row semantics (no whole-file rewrite)', async () => {
         await seedCharacter('Alice.png');
