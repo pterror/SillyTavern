@@ -1,4 +1,5 @@
-import { readWorldInfoFile } from '../endpoints/worldinfo.js';
+import { readWorldInfoFile, getCharacterWorldLink } from '../endpoints/worldinfo.js';
+import { character_world_link } from '../../public/scripts/character-world-link.js';
 import { parseDecorators } from './decorators.js';
 import { getStringHash } from '../../public/scripts/hash-utils.js';
 import { world_info_position } from './result-bucketing.js';
@@ -174,12 +175,12 @@ function getGlobalLore(directories, selectedWorldInfo) {
  * got exported/renamed alongside them), and the character card carries its own embedded
  * `character_book` with at least one entry, that embedded book's entries are converted via
  * `convertCharacterBook()` (above) and appended, tagged with the `EMBEDDED_WORLD_NAME` sentinel -
- * exactly matching the client. "Does not actually exist" is checked the same way the client's
- * `world_names.includes(baseWorldName)` does, but via `readWorldInfoFile(directories, baseWorldName,
- * false)` returning non-null (i.e. the file is actually present) instead of needing a separate
- * "list every lorebook name" primitive - no such primitive exists server-side yet, and this
- * existence check is behaviorally identical (a WI file with zero entries still "resolves", matching
- * the client's own name-list-membership semantics, not an entry-count check). The client's
+ * exactly matching the client. Whether the linked World exists is answered by
+ * `getCharacterWorldLink()` (src/endpoints/worldinfo.js), the same rule the client's
+ * getCharacterWorldLink() applies to `world_names`: a WI file with zero entries still exists (file
+ * presence, not an entry count). A linked name with no file, on a card that embeds a
+ * `character_book`, is a link to that embedded book, whatever the book's own name: that name is
+ * never read as a file, so it costs no file read and prints no "doesn't exist" line. The client's
  * `WORLDINFO_ENTRIES_LOADED` event emission is NOT ported - it exists purely for other client-side
  * subscribers (e.g. the WI editor UI) to react to a fresh load, which has no server-side analog to
  * be wired to yet; flagged as a real, narrow scope boundary, not an oversight.
@@ -202,17 +203,19 @@ function getCharacterLore(directories, character, characterExtraBooks, selectedW
         worldsToSearch.add(extraBook);
     }
 
+    const worldLink = getCharacterWorldLink(directories, character);
+
     let entries = [];
     for (const worldName of worldsToSearch) {
         if (selectedWorldInfo?.includes(worldName)) continue; // already in global
         if (chatWorldName === worldName) continue; // already in chat lore
         if (personaWorldLorebook === worldName) continue; // already in persona lore
+        if (worldName === baseWorldName && worldLink === character_world_link.EMBEDDED) continue; // no such file: the link is the embedded book, added below
         entries = entries.concat(loadWorldEntries(directories, worldName));
     }
 
-    const baseWorldResolves = !!baseWorldName && readWorldInfoFile(directories, baseWorldName, false) !== null;
     const characterBook = character?.data?.character_book;
-    if (!baseWorldResolves && characterBook?.entries?.length) {
+    if (worldLink !== character_world_link.FILE && characterBook?.entries?.length) {
         const converted = convertCharacterBook(characterBook);
         const embeddedEntries = Object.keys(converted.entries)
             .map((x) => converted.entries[x])

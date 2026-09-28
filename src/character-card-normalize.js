@@ -3,7 +3,8 @@ import crypto from 'node:crypto';
 import _ from 'lodash';
 
 import { deepMerge, humanizedDateTime, tryParse } from './util.js';
-import { readWorldInfoFile } from './endpoints/worldinfo.js';
+import { readWorldInfoFile, getCharacterWorldLink } from './endpoints/worldinfo.js';
+import { character_world_link } from '../public/scripts/character-world-link.js';
 
 /**
  * Normalizes an arbitrary parsed character JSON object (V1 or V2) into Spec V2 shape.
@@ -267,7 +268,9 @@ export function charaFormatData(data, directories) {
     _.set(char, 'data.extensions.depth_prompt.depth', depth_value);
     _.set(char, 'data.extensions.depth_prompt.role', role_value);
 
-    if (data.world) {
+    // A name with no World file, on a card that embeds its own lorebook (json_data's character_book), links
+    // that embedded book: there's no file to read, and the card's book is kept as sent.
+    if (data.world && getCharacterWorldLink(directories, char) !== character_world_link.EMBEDDED) {
         try {
             const file = readWorldInfoFile(directories, data.world, false);
 

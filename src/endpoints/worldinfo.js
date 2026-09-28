@@ -7,6 +7,7 @@ import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { tryParse } from '../util.js';
 import { readSettingsAtPaths, writeSettingsKeys } from '../settings-store.js';
+import { resolveCharacterWorldLink } from '../../public/scripts/character-world-link.js';
 
 /** Marks a World Info file as migrated to the sidecar format; absent means entries live inline. */
 const WORLD_INFO_SIDECAR_FORMAT = 'sidecar-v1';
@@ -98,6 +99,18 @@ export function worldInfoFileExists(directories, worldInfoName) {
         return false;
     }
     return findWorldInfoMiss(directories.worlds, getWorldInfoPaths(directories, worldInfoName).pathToWorldInfo) === null;
+}
+
+/**
+ * What a character's primary lorebook link points at: no link, a World file, the card's own embedded
+ * lorebook (no file has the linked name, the card has a `character_book`), or nothing. Never logs; the
+ * file check goes through {@link worldInfoFileExists}.
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {{data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character The character card
+ * @returns {string} One of `character_world_link` (public/scripts/character-world-link.js)
+ */
+export function getCharacterWorldLink(directories, character) {
+    return resolveCharacterWorldLink(character, (name) => worldInfoFileExists(directories, name));
 }
 
 /** Guards against a crafted uid (e.g. containing path separators) escaping the sidecar directory. */
