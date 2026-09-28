@@ -5732,7 +5732,9 @@ function pushExpandedTagClauses(clauses, args, expanded, { tagTable, entityColum
         }
     }
     if (exclude.length > 0) {
-        clauses.push(`id NOT IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (${placeholders(exclude)})${rowCondition})`);
+        clauses.push(perRow
+            ? `NOT EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id IN (${placeholders(exclude)})${rowCondition})`
+            : `id NOT IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (${placeholders(exclude)})${rowCondition})`);
         args.push(...exclude);
     }
 }
@@ -5797,7 +5799,10 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}, deletions 
             }
         }
         if (exclude.length > 0) {
-            clauses.push(`id NOT IN (SELECT character_id FROM character_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}))`);
+            // With an id list, each hit's own rows are checked by primary key, as for an included tag above.
+            clauses.push(hasIds
+                ? `NOT EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id IN (${exclude.map(() => '?').join(', ')}))`
+                : `id NOT IN (SELECT character_id FROM character_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}))`);
             args.push(...exclude);
         }
     }
@@ -5993,10 +5998,14 @@ export async function commitMigrationSettled(directories, migration, metaKey, me
     });
 }
 
+const COUNT_SAMPLE_RUNS = 20;
+const COUNT_SAMPLE_RUN_SIZE = 500;
+/** Rows a count estimate reads at most, across every kind and tag it samples. */
+const COUNT_SAMPLE_BUDGET = COUNT_SAMPLE_RUNS * COUNT_SAMPLE_RUN_SIZE;
+
 /**
  * A /query filter's total read from entity_counts / entity_tag_counts, for the shapes one counter answers: no
- * filter, fav alone, one included tag, or one excluded tag, each with or without fav. Null for any other shape, or
- * while the counters of one of `kinds` aren't filled, and the caller runs its COUNT(*) statement.
+ * filter, fav alone, one included tag, or one excluded tag, each with or without fav. Null for any other shape.
  *
  * The tag is read as expandTagFilter() reads it: a marked tag acts on its merge target, or on no tag when it has
  * none. A marked tag merging into the target keeps its rows, and its counters, under its own id until
@@ -6007,48 +6016,333 @@ export async function commitMigrationSettled(directories, migration, metaKey, me
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {EntityCountKind['name'][]} kinds
  * @param {object} filter
- * @param {{ include?: unknown, exclude?: unknown }} [filter.tags]
- * @param {unknown} [filter.fav]
- * @param {unknown} [filter.world]
- * @param {unknown} [filter.excludeIds]
- * @param {unknown} [filter.ids]
+ * @param {string[]} filter.include
+ * @param {string[]} filter.exclude
+ * @param {unknown} filter.fav
+ * @param {unknown} filter.world
  * @param {import('./tag-deletions.js').TagDeletions} deletions
  * @returns {{ total: number, approxTotal: boolean } | null}
  */
-function countFromCounters(db, kinds, { tags, fav, world, excludeIds, ids }, deletions) {
-    if (Array.isArray(ids) && ids.length > 0) return null;
-    if (Array.isArray(excludeIds) && excludeIds.length > 0) return null;
+function countFromCounters(db, kinds, { include, exclude, fav, world }, deletions) {
     if (typeof world === 'string' && world) return null;
-    const include = tags && Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
-    const exclude = tags && Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
     // Two entries, even the same tag twice ('and' mode then matches nothing), have no single counter.
     if (include.length + exclude.length > 1) return null;
     const named = include.length > 0 ? include[0] : exclude.length > 0 ? exclude[0] : null;
-    if (named !== null && typeof named !== 'string') return null;
-    for (const kind of kinds) {
-        const fill = /** @type {{ done: number } | undefined} */ (db.get('SELECT done FROM entity_count_fill WHERE kind = @kind', { kind }));
-        if (fill?.done !== 1) return null;
-    }
 
-    const scope = { kinds: JSON.stringify(kinds), favs: JSON.stringify(typeof fav === 'boolean' ? [fav ? 1 : 0] : [0, 1]) };
-    const scopeSql = 'kind IN (SELECT value FROM json_each(@kinds)) AND fav IN (SELECT value FROM json_each(@favs))';
-    const sumOf = (/** @type {string} */ sql, /** @type {object} */ params) => Number((/** @type {{ n: number }} */ (db.get(sql, params))).n);
-    const total = sumOf(`SELECT COALESCE(SUM(count), 0) AS n FROM entity_counts WHERE ${scopeSql}`, scope);
+    const favs = favScope(fav);
+    const total = kinds.reduce((n, kind) => n + storedEntityCount(db, kind, favs), 0);
     if (named === null) return { total, approxTotal: false };
 
     const target = resolveTagId(named, deletions);
     if (target === null) return { total: include.length > 0 ? 0 : total, approxTotal: false };
-    const tagIds = [target];
-    for (const [id, mergeInto] of deletions) {
-        if (mergeInto === target) tagIds.push(id);
-    }
-    const tagCounts = tagIds.map(tagId => sumOf(`SELECT COALESCE(SUM(count), 0) AS n FROM entity_tag_counts WHERE tag_id = @tagId AND ${scopeSql}`, { ...scope, tagId }));
+    const tagIds = tagIdsCountedAs(target, deletions);
+    const tagCounts = tagIds.map(tagId => kinds.reduce((n, kind) => n + storedTagCount(db, tagId, kind, favs), 0));
     const sum = tagCounts.reduce((a, b) => a + b, 0);
     const approxTotal = tagIds.length > 1;
     if (include.length > 0) return { total: sum, approxTotal };
     if (!approxTotal) return { total: total - sum, approxTotal };
     const largest = tagCounts.reduce((a, b) => Math.max(a, b), 0);
     return { total: Math.max(0, Math.round(((total - sum) + (total - largest)) / 2)), approxTotal };
+}
+
+/** @param {unknown} fav @returns {number[]} The fav values a filter's fav keeps. */
+function favScope(fav) {
+    return typeof fav === 'boolean' ? [fav ? 1 : 0] : [0, 1];
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind['name']} kind
+ * @param {number[]} favs
+ */
+function storedEntityCount(db, kind, favs) {
+    const row = /** @type {{ n: number }} */ (db.get('SELECT COALESCE(SUM(count), 0) AS n FROM entity_counts WHERE kind = @kind AND fav IN (SELECT value FROM json_each(@favs))', { kind, favs: JSON.stringify(favs) }));
+    return Number(row.n);
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} tagId
+ * @param {EntityCountKind['name']} kind
+ * @param {number[]} favs
+ */
+function storedTagCount(db, tagId, kind, favs) {
+    const row = /** @type {{ n: number }} */ (db.get('SELECT COALESCE(SUM(count), 0) AS n FROM entity_tag_counts WHERE tag_id = @tagId AND kind = @kind AND fav IN (SELECT value FROM json_each(@favs))', { tagId, kind, favs: JSON.stringify(favs) }));
+    return Number(row.n);
+}
+
+/**
+ * The tag ids whose rows a filter naming the unmarked tag `target` matches: itself and every marked tag merging into it.
+ * @param {string} target
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ */
+function tagIdsCountedAs(target, deletions) {
+    const tagIds = [target];
+    for (const [id, mergeInto] of deletions) {
+        if (mergeInto === target) tagIds.push(id);
+    }
+    return tagIds;
+}
+
+/**
+ * A /query filter's total without reading every match, or null when the caller runs its COUNT(*) statement: for a
+ * non-empty id list (that statement reads only the listed rows), a tag id that isn't a string, or while the counters
+ * of one of `kindNames` aren't filled.
+ * - A shape countFromCounters() answers takes its total from there, less the excludeIds that exist and match the rest
+ *   of the filter, each looked up by primary key, so it is exact whenever the counters' answer is.
+ * - Any other shape is estimated by sampleEstimate(). world narrows characters only, so the groups of a world filter
+ *   can still be a countFromCounters() shape while the characters are sampled.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind['name'][]} kindNames
+ * @param {object} filter
+ * @param {{ include?: unknown, exclude?: unknown, mode?: unknown }} [filter.tags]
+ * @param {unknown} [filter.fav]
+ * @param {unknown} [filter.world]
+ * @param {unknown} [filter.excludeIds]
+ * @param {unknown} [filter.ids]
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @param {number} seq The store's change seq, which seeds the sample with the filter.
+ * @returns {{ total: number, approxTotal: boolean } | null}
+ */
+function totalWithoutCount(db, kindNames, { tags, fav, world, excludeIds, ids }, deletions, seq) {
+    if (Array.isArray(ids) && ids.length > 0) return null;
+    const include = tags && Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
+    const exclude = tags && Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
+    if (![...include, ...exclude].every(tagId => typeof tagId === 'string')) return null;
+    for (const kind of kindNames) {
+        const fill = /** @type {{ done: number } | undefined} */ (db.get('SELECT done FROM entity_count_fill WHERE kind = @kind', { kind }));
+        if (fill?.done !== 1) return null;
+    }
+    const mode = tags?.mode === 'or' ? 'or' : 'and';
+    const listed = Array.isArray(excludeIds) && excludeIds.length > 0 ? excludeIds : null;
+    const kinds = ENTITY_COUNT_KINDS.filter(kind => kindNames.includes(kind.name));
+    const worldOf = (/** @type {EntityCountKind} */ kind) => kind.name === 'character' ? world : undefined;
+
+    let total = 0;
+    let approxTotal = false;
+    /** @type {EntityCountKind[]} */
+    const counted = [];
+    /** @type {EntityCountKind[]} */
+    const sampled = [];
+    const whole = countFromCounters(db, kindNames, { include, exclude, fav, world }, deletions);
+    if (whole) {
+        ({ total, approxTotal } = whole);
+        counted.push(...kinds);
+    } else {
+        for (const kind of kinds) {
+            const part = countFromCounters(db, [kind.name], { include, exclude, fav, world: worldOf(kind) }, deletions);
+            if (!part) {
+                sampled.push(kind);
+                continue;
+            }
+            total += part.total;
+            approxTotal ||= part.approxTotal;
+            counted.push(kind);
+        }
+    }
+    if (listed) {
+        for (const kind of counted) {
+            const { from, where, args } = kind.name === 'character'
+                ? buildWhereClause({ tags, fav, world, ids: listed }, deletions)
+                : buildGroupWhereClause({ tags, fav, ids: listed }, deletions);
+            total -= Number((/** @type {{ n: number }} */ (db.get(`SELECT COUNT(*) AS n FROM ${from} ${where}`, args))).n);
+        }
+    }
+    if (sampled.length > 0) {
+        const seed = JSON.stringify([
+            kindNames, typeof fav === 'boolean' ? fav : null, [...include].sort(), [...exclude].sort(), mode,
+            typeof world === 'string' && world ? world : null, listed ? listed.map(String).sort() : null, seq,
+        ]);
+        const estimate = sampleEstimate(db, sampled, { tags, include, exclude, mode, fav, world, excludeIds }, deletions, seededRandom(seed));
+        total += estimate.total;
+        approxTotal ||= estimate.approxTotal;
+    }
+    return { total: approxTotal ? Math.max(0, total) : total, approxTotal };
+}
+
+/**
+ * A deterministic stream of numbers in [0, 1) from a string: an FNV-1a hash of it seeds mulberry32.
+ * @param {string} text
+ * @returns {() => number}
+ */
+function seededRandom(text) {
+    let state = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        state = Math.imul(state ^ text.charCodeAt(i), 0x01000193);
+    }
+    return () => {
+        state = (state + 0x6d2b79f5) | 0;
+        let t = Math.imul(state ^ (state >>> 15), 1 | state);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+/**
+ * The total of a filter no counter answers, for `kinds`, from at most COUNT_SAMPLE_BUDGET sampled rows. Each sampled
+ * entity is checked against the filter by primary key.
+ * - With an included tag ('and' mode, or a single included tag): sample the included tag with the smallest counter
+ *   (summed over `kinds` and both fav values, since fav is checked per row), preferring one no marked tag merges
+ *   into, and scale the share of sampled entities that match by its counter.
+ * - 'or' mode with 2+ included tags, the union estimator: taking the tags in id order, sample each and scale by its
+ *   counter the share of its sampled entities that match the rest of the filter and carry no tag earlier in the
+ *   order. Then clamp each kind's sum between its largest counter and the sum of its counters, at the filter's fav;
+ *   the lower bound only while nothing but fav narrows the set further.
+ * - Otherwise: sample the whole entity table and scale by its count.
+ * A tag with marked tags merging into it is sampled over its rows and theirs, each entity once, and scaled by the sum
+ * of their counters.
+ *
+ * The budget is split between kinds, then between the tag ids of each kind, in proportion to their counters. A
+ * share that covers its whole tag or table is read in full, and a term whose rows are all read counts its matches
+ * exactly. Otherwise the share is read as runs of COUNT_SAMPLE_RUN_SIZE rows in id order, each starting at the entity
+ * of the kind's table at a random rowid, so starts follow the ids' real distribution, and wrapping to the start of
+ * the tag or table if it runs off the end. A tag whose rows cluster in id space is sampled slightly unevenly; only
+ * sampling random ranks of a dense numbering of the tag's rows would be uniform.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind[]} kinds
+ * @param {object} filter
+ * @param {{ include?: unknown, exclude?: unknown, mode?: unknown }} [filter.tags]
+ * @param {string[]} filter.include
+ * @param {string[]} filter.exclude
+ * @param {'and' | 'or'} filter.mode
+ * @param {unknown} filter.fav
+ * @param {unknown} filter.world
+ * @param {unknown} filter.excludeIds
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @param {() => number} random
+ * @returns {{ total: number, approxTotal: boolean }}
+ */
+function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, excludeIds }, deletions, random) {
+    /** @type {string[][]} Each included tag as the tag ids whose rows it matches. */
+    const included = [];
+    for (const id of include) {
+        const target = resolveTagId(id, deletions);
+        if (target === null) {
+            if (mode === 'and') return { total: 0, approxTotal: false };
+            continue;
+        }
+        if (!included.some(group => group[0] === target)) included.push(tagIdsCountedAs(target, deletions));
+    }
+    if (include.length > 0 && included.length === 0) return { total: 0, approxTotal: false };
+
+    const bothFavs = [0, 1];
+    const groupSize = (/** @type {string[]} */ group) => kinds.reduce((n, kind) => n + group.reduce((m, tagId) => m + storedTagCount(db, tagId, kind.name, bothFavs), 0), 0);
+    /** @type {{ tagIds: string[] | null, earlier: string[] }[]} tagIds null samples the whole table. */
+    let terms;
+    if (included.length === 0) {
+        terms = [{ tagIds: null, earlier: [] }];
+    } else if (mode === 'and' || included.length === 1) {
+        const unmerged = included.filter(group => group.length === 1);
+        const candidates = unmerged.length > 0 ? unmerged : included;
+        let source = candidates[0];
+        let sourceSize = groupSize(source);
+        for (const group of candidates.slice(1)) {
+            const size = groupSize(group);
+            if (size < sourceSize) [source, sourceSize] = [group, size];
+        }
+        terms = [{ tagIds: source, earlier: [] }];
+    } else {
+        const ordered = [...included].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+        terms = ordered.map((group, i) => ({ tagIds: group, earlier: ordered.slice(0, i).flat() }));
+    }
+
+    const populations = kinds.map(kind => terms.map(term => (term.tagIds === null
+        ? [{ tagId: null, size: storedEntityCount(db, kind.name, bothFavs) }]
+        : term.tagIds.map(tagId => ({ tagId, size: storedTagCount(db, tagId, kind.name, bothFavs) })))));
+    const kindSizes = populations.map(perTerm => perTerm.flat().reduce((n, population) => n + population.size, 0));
+    const allSize = kindSizes.reduce((a, b) => a + b, 0);
+    if (allSize === 0) return { total: 0, approxTotal: false };
+
+    let total = 0;
+    let approxTotal = false;
+    for (const [k, kind] of kinds.entries()) {
+        const kindBudget = Math.floor(COUNT_SAMPLE_BUDGET * kindSizes[k] / allSize);
+        const kindWorld = kind.name === 'character' ? world : undefined;
+        let kindTotal = 0;
+        let kindApprox = false;
+        for (const [t, term] of terms.entries()) {
+            /** @type {Set<string>} */
+            const ids = new Set();
+            let full = true;
+            let termSize = 0;
+            for (const { tagId, size } of populations[k][t]) {
+                const share = kindSizes[k] > 0 ? Math.floor(kindBudget * size / kindSizes[k]) : 0;
+                full = readCountSample(db, kind, tagId, size, share, random, ids) && full;
+                termSize += size;
+            }
+            if (ids.size === 0) continue;
+            const idsJson = JSON.stringify([...ids]);
+            const checked = term.tagIds !== null && terms.length > 1
+                ? { tags: { exclude: [...exclude, ...term.earlier] }, fav, world: kindWorld, excludeIds, ids: [...ids] }
+                : { tags, fav, world: kindWorld, excludeIds, ids: [...ids] };
+            const { from, where, args } = kind.name === 'character' ? buildWhereClause(checked, deletions) : buildGroupWhereClause(checked, deletions);
+            const hits = Number((/** @type {{ n: number }} */ (db.get(`SELECT COUNT(*) AS n FROM ${from} ${where}`, args))).n);
+            if (full) {
+                kindTotal += hits;
+                continue;
+            }
+            const existing = Number((/** @type {{ n: number }} */ (db.get(`SELECT COUNT(*) AS n FROM ${idListDrivenFrom(kind.table)}`, [idsJson]))).n);
+            kindTotal += existing > 0 ? termSize * hits / existing : 0;
+            kindApprox = true;
+        }
+        if (kindApprox && terms.length > 1) {
+            const favs = favScope(fav);
+            const counts = terms.flatMap(term => /** @type {string[]} */ (term.tagIds)).map(tagId => storedTagCount(db, tagId, kind.name, favs));
+            const onlyFav = exclude.length === 0 && !(typeof kindWorld === 'string' && kindWorld) && !(Array.isArray(excludeIds) && excludeIds.length > 0);
+            const lower = onlyFav ? counts.reduce((a, b) => Math.max(a, b), 0) : 0;
+            const upper = counts.reduce((a, b) => a + b, 0);
+            kindTotal = Math.min(Math.max(kindTotal, lower), upper);
+        }
+        total += kindTotal;
+        approxTotal ||= kindApprox;
+    }
+    return { total: Math.round(total), approxTotal };
+}
+
+/**
+ * Reads `share` entity ids of one sampled population into `ids`: the rows of `tagId` for `kind`, or with tagId null
+ * the kind's entity table. See sampleEstimate() for how.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind} kind
+ * @param {string | null} tagId
+ * @param {number} size The population's counter.
+ * @param {number} share
+ * @param {() => number} random
+ * @param {Set<string>} ids
+ * @returns {boolean} Whether every row of the population was read.
+ */
+function readCountSample(db, kind, tagId, size, share, random, ids) {
+    if (size === 0) return true;
+    if (share <= 0) return false;
+    const column = tagId === null ? 'id' : kind.entityColumn;
+    const from = tagId === null ? kind.table : kind.tagTable;
+    const rowsOf = tagId === null ? '' : `tag_id = @tagId AND ${kind.tagRowCounts(kind.entityColumn)} AND `;
+    const base = tagId === null ? {} : { tagId };
+    const read = (/** @type {string} */ condition, /** @type {object} */ params) => {
+        let n = 0;
+        for (const row of /** @type {Iterable<{ id: string }>} */ (db.iterate(`SELECT ${column} AS id FROM ${from} WHERE ${rowsOf}${condition} ORDER BY ${column} LIMIT @len`, { ...base, ...params }))) {
+            ids.add(row.id);
+            n++;
+        }
+        return n;
+    };
+
+    if (size <= share) {
+        read('1', { len: share });
+        return true;
+    }
+    const bounds = /** @type {{ lo: number | null }} */ (db.get(`SELECT MIN(rowid) AS lo FROM ${kind.table}`));
+    const top = /** @type {{ hi: number | null }} */ (db.get(`SELECT MAX(rowid) AS hi FROM ${kind.table}`));
+    if (bounds.lo === null || top.hi === null) return false;
+    for (let offset = 0; offset < share; offset += COUNT_SAMPLE_RUN_SIZE) {
+        const len = Math.min(COUNT_SAMPLE_RUN_SIZE, share - offset);
+        const rowid = bounds.lo + Math.floor(random() * (top.hi - bounds.lo + 1));
+        const startRow = /** @type {{ id: string } | undefined} */ (db.get(`SELECT id FROM ${kind.table} WHERE rowid >= @rowid ORDER BY rowid LIMIT 1`, { rowid }));
+        if (!startRow) continue;
+        const got = read(`${column} >= @start`, { start: startRow.id, len });
+        if (got < len) read(`${column} < @start`, { start: startRow.id, len: len - got });
+    }
+    return false;
 }
 
 /**
@@ -6074,7 +6368,7 @@ function countFromCounters(db, kinds, { tags, fav, world, excludeIds, ids }, del
  * live from shallow_json rather than the stored digest_* columns, which can drift from a fresh recompute.
  * @returns {Promise<{ rows: object[] | undefined, hashRows: object[] | undefined, total: number | undefined, approxTotal: boolean, seq: number } | null>}
  * `null` means the metadata store is unavailable - callers must not fall back to a live filesystem scan.
- * `approxTotal` marks `total` as an estimate (countFromCounters()).
+ * `approxTotal` marks `total` as an estimate (totalWithoutCount()).
  */
 export async function queryCharacters(directories, params = {}) {
     const entry = await getEntry(directories);
@@ -6101,7 +6395,7 @@ export async function queryCharacters(directories, params = {}) {
     let total;
     let approxTotal = false;
     if (wantTotal) {
-        const counted = countFromCounters(entry.db, ['character'], { tags, fav, world, excludeIds, ids }, deletions);
+        const counted = totalWithoutCount(entry.db, ['character'], { tags, fav, world, excludeIds, ids }, deletions, seq);
         if (counted) {
             ({ total, approxTotal } = counted);
         } else {
@@ -6262,7 +6556,9 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = 
             }
         }
         if (exclude.length > 0) {
-            clauses.push(`id NOT IN (SELECT group_id FROM group_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
+            clauses.push(hasIds
+                ? `NOT EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id IN (${exclude.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`
+                : `id NOT IN (SELECT group_id FROM group_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
             args.push(...exclude);
         }
     }
@@ -6538,7 +6834,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
  * @param {boolean} [params.wantHashes]
  * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, approxTotal: boolean, seq: number } | null>}
  * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
- * `approxTotal` marks `total` as an estimate (countFromCounters()).
+ * `approxTotal` marks `total` as an estimate (totalWithoutCount()).
  */
 export async function queryEntities(directories, params = {}) {
     const entry = await getEntry(directories);
@@ -6565,7 +6861,7 @@ export async function queryEntities(directories, params = {}) {
 
     let total;
     let approxTotal = false;
-    const counted = wantTotal ? countFromCounters(entry.db, ['character', 'group'], { tags, fav, world, excludeIds, ids }, deletions) : null;
+    const counted = wantTotal ? totalWithoutCount(entry.db, ['character', 'group'], { tags, fav, world, excludeIds, ids }, deletions, seq) : null;
     if (counted) {
         ({ total, approxTotal } = counted);
     } else if (wantTotal) {
