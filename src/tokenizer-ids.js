@@ -71,6 +71,13 @@ export const tokenizers = {
     MISTRAL_SMALL_4_HF: 1045,
     SHIELDSTRAL_HF: 1046,
     MISTRAL_SMALL_3_HF: 1047,
+    COMMAND_A_VISION: 1048,
+    COMMAND_A_PLUS: 1049,
+    AYA_VISION_32B: 1050,
+    TINY_AYA: 1051,
+    TINY_AYA_BASE: 1052,
+    COMMAND_R_08_2024_HF: 1053,
+    AYA_VISION_32B_HF: 1054,
 };
 
 /**
@@ -148,4 +155,11 @@ export const TOKENIZER_TYPE_KEYS = {
     [tokenizers.MISTRAL_SMALL_4_HF]: 'mistral-small-4-hf',
     [tokenizers.SHIELDSTRAL_HF]: 'shieldstral-hf',
     [tokenizers.MISTRAL_SMALL_3_HF]: 'mistral-small-3-hf',
+    [tokenizers.COMMAND_A_VISION]: 'command-a-vision',
+    [tokenizers.COMMAND_A_PLUS]: 'command-a-plus',
+    [tokenizers.AYA_VISION_32B]: 'aya-vision-32b',
+    [tokenizers.TINY_AYA]: 'tiny-aya',
+    [tokenizers.TINY_AYA_BASE]: 'tiny-aya-base',
+    [tokenizers.COMMAND_R_08_2024_HF]: 'command-r-08-2024-hf',
+    [tokenizers.AYA_VISION_32B_HF]: 'aya-vision-32b-hf',
 };

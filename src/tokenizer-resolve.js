@@ -80,6 +80,13 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.MISTRAL_SMALL_4_HF,
     tokenizers.SHIELDSTRAL_HF,
     tokenizers.MISTRAL_SMALL_3_HF,
+    tokenizers.COMMAND_A_VISION,
+    tokenizers.COMMAND_A_PLUS,
+    tokenizers.AYA_VISION_32B,
+    tokenizers.TINY_AYA,
+    tokenizers.TINY_AYA_BASE,
+    tokenizers.COMMAND_R_08_2024_HF,
+    tokenizers.AYA_VISION_32B_HF,
 ];
 
 /**

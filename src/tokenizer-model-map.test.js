@@ -268,7 +268,8 @@ check(GENERAL_API, 'qwen3.7-27b', null);
 
 // --- Command-R ---
 check(GENERAL_API, 'command-r-plus', tokenizers.COMMAND_R);
-check(GENERAL_API, 'command-r7b-12-2024', null);
+// Command R7B ships command-a.json's content (below).
+check(GENERAL_API, 'command-r7b-12-2024', tokenizers.COMMAND_A);
 
 // --- Command-A ---
 check(GENERAL_API, 'command-a-03-2025', tokenizers.COMMAND_A);
@@ -717,6 +718,97 @@ for (const [name, expected] of mistralCases) {
         const isMistralApi = state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.MISTRALAI;
         const isNemoElsewhere = expected === nemo && state.api !== 'novel' && !(state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
         const wanted = isMistralApi ? /** @type {any} */ (expected).byBackend.vendorApis.mistralai : isNemoElsewhere ? tokenizers.NEMO : null;
+        assert.deepEqual(selected, wanted, `${name} on ${JSON.stringify(state)}`);
+    }
+}
+
+// --- Cohere: one file per content. Cohere's API reads the file its `tokenizer_url` names; where a
+// repo's HF tokenizer.json gives other ids (Aya Vision 32B, Command R 08-2024), Cohere's API gets
+// Cohere's file and every other backend none ---
+/**
+ * @param {import('./tokenizer-model-map.js').MapResult} native
+ * @param {string} hf
+ */
+const onCohereApi = (native, hf) => ({ byBackend: { vendorApis: { cohere: native }, hf: { source: hf } } });
+/** @type {Array<[string, import('./tokenizer-model-map.js').MapResult]>} */
+const cohereCases = [
+    // command-r.json's content: Command R and R+ (v01, 04-2024, 08-2024 R+), Aya 23 and Aya Expanse.
+    ['command-r', tokenizers.COMMAND_R],
+    ['command-r-plus', tokenizers.COMMAND_R],
+    ['command-r-03-2024', tokenizers.COMMAND_R],
+    ['command-r-plus-04-2024', tokenizers.COMMAND_R],
+    ['command-r-plus-08-2024', tokenizers.COMMAND_R],
+    ['c4ai-command-r-v01', tokenizers.COMMAND_R],
+    ['c4ai-command-r-v01-4bit', tokenizers.COMMAND_R],
+    ['CohereLabs/c4ai-command-r-plus-08-2024', tokenizers.COMMAND_R],
+    ['cohere/command-r', tokenizers.COMMAND_R],
+    ['c4ai-aya-23-8b', tokenizers.COMMAND_R],
+    ['c4ai-aya-23-35b', tokenizers.COMMAND_R],
+    ['CohereLabs/aya-23-35B', tokenizers.COMMAND_R],
+    ['c4ai-aya-expanse-8b', tokenizers.COMMAND_R],
+    ['c4ai-aya-expanse-32b', tokenizers.COMMAND_R],
+    ['aya-expanse:8b', tokenizers.COMMAND_R],
+    // Command R 08-2024: Cohere's file is command-r.json's content, its HF tokenizer.json has FIM tokens.
+    ['command-r-08-2024', onCohereApi(tokenizers.COMMAND_R, 'command-r-08-2024-hf')],
+    ['CohereLabs/c4ai-command-r-08-2024', onCohereApi(tokenizers.COMMAND_R, 'command-r-08-2024-hf')],
+    ['c4ai-command-r-08-2024-Q4_K_M.gguf', onCohereApi(tokenizers.COMMAND_R, 'command-r-08-2024-hf')],
+    // command-a.json's content: Command A, Reasoning, Translate, and Command R7B.
+    ['command-a-03-2025', tokenizers.COMMAND_A],
+    ['c4ai-command-a-03-2025', tokenizers.COMMAND_A],
+    ['command-a-reasoning-08-2025', tokenizers.COMMAND_A],
+    ['command-a-translate-08-2025', tokenizers.COMMAND_A],
+    ['command-r7b-12-2024', tokenizers.COMMAND_A],
+    ['CohereLabs/c4ai-command-r7b-12-2024', tokenizers.COMMAND_A],
+    ['command-r7b-arabic-02-2025', tokenizers.COMMAND_A],
+    ['c4ai-command-r7b-arabic-02-2025', tokenizers.COMMAND_A],
+    // Command A Vision's file: Command A Vision and Aya Vision 8B.
+    ['command-a-vision-07-2025', { source: 'command-a-vision' }],
+    ['CohereLabs/command-a-vision-07-2025', { source: 'command-a-vision' }],
+    ['c4ai-aya-vision-8b', { source: 'command-a-vision' }],
+    ['CohereLabs/aya-vision-8b', { source: 'command-a-vision' }],
+    // Aya Vision 32B: Cohere's file and its HF tokenizer.json give different ids.
+    ['c4ai-aya-vision-32b', onCohereApi({ source: 'aya-vision-32b' }, 'aya-vision-32b-hf')],
+    ['CohereLabs/aya-vision-32b', onCohereApi({ source: 'aya-vision-32b' }, 'aya-vision-32b-hf')],
+    // Command A Plus's file: Command A Plus and North Mini Code 1.0.
+    ['command-a-plus-05-2026', { source: 'command-a-plus' }],
+    ['CohereLabs/command-a-plus-05-2026-bf16', { source: 'command-a-plus' }],
+    ['north-mini-code-1-0', { source: 'command-a-plus' }],
+    ['CohereLabs/North-Mini-Code-1.0-fp8', { source: 'command-a-plus' }],
+    // Tiny Aya: Global, Earth, Fire, Water, Base 32K and the Thinkers ship one file; Tiny Aya Base its own.
+    ['tiny-aya-global', { source: 'tiny-aya' }],
+    ['tiny-aya-earth', { source: 'tiny-aya' }],
+    ['tiny-aya-fire', { source: 'tiny-aya' }],
+    ['CohereLabs/tiny-aya-water', { source: 'tiny-aya' }],
+    ['tiny-aya-global-q4_k_m.gguf', { source: 'tiny-aya' }],
+    ['CohereLabs/tiny-aya-base-32K', { source: 'tiny-aya' }],
+    ['tiny-aya-l2-thinker', { source: 'tiny-aya' }],
+    ['tiny-aya-en-thinker', { source: 'tiny-aya' }],
+    ['CohereLabs/tiny-aya-base', { source: 'tiny-aya-base' }],
+];
+for (const [name, expected] of cohereCases) {
+    assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), expected, name);
+    assert.deepEqual(lookupModelTokenizer('openai', name), expected, name);
+}
+// Unmapped: ids with no version or size, which name no one model; Cohere's older command models;
+// unknown versions; models whose files weren't researched.
+for (const name of [
+    'command', 'command-light', 'command-nightly', 'command-light-nightly', 'command-r7b', 'command-a-vision',
+    'command-a-plus', 'north-mini-code', 'c4ai-aya-23', 'aya-expanse', 'c4ai-aya-vision', 'tiny-aya',
+    'aya-vision-2-8b', 'tiny-aya-2-global', 'aya-expanse-2-8b', 'North-Mini-Code-1.1', 'command-a-plus-09-2026',
+    'North-Small-Translate-1.0', 'North-Micro-Vision-Instruct', 'aya-101',
+]) {
+    check(GENERAL_API, name, null);
+    check('openai', name, null);
+}
+// On Cohere's API Cohere's file; on every other backend, the same file where Cohere's and the repo's
+// agree, none where they don't.
+for (const [name, expected] of cohereCases) {
+    for (const state of backendStates) {
+        const selected = selectBackendResult(lookupModelTokenizer(state.api, name), state);
+        const isCohereApi = state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.COHERE;
+        const unmapped = state.api === 'novel' || (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
+        const severalFiles = typeof expected === 'object' && 'byBackend' in expected;
+        const wanted = unmapped ? null : severalFiles ? (isCohereApi ? expected.byBackend.vendorApis.cohere : null) : expected;
         assert.deepEqual(selected, wanted, `${name} on ${JSON.stringify(state)}`);
     }
 }

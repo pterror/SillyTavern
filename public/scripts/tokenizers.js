@@ -87,6 +87,13 @@ export const tokenizers = {
     MISTRAL_SMALL_4_HF: 1045,
     SHIELDSTRAL_HF: 1046,
     MISTRAL_SMALL_3_HF: 1047,
+    COMMAND_A_VISION: 1048,
+    COMMAND_A_PLUS: 1049,
+    AYA_VISION_32B: 1050,
+    TINY_AYA: 1051,
+    TINY_AYA_BASE: 1052,
+    COMMAND_R_08_2024_HF: 1053,
+    AYA_VISION_32B_HF: 1054,
 };
 
 // A list of local tokenizers that support encoding and decoding token ids.
@@ -150,6 +157,13 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.MISTRAL_SMALL_4_HF,
     tokenizers.SHIELDSTRAL_HF,
     tokenizers.MISTRAL_SMALL_3_HF,
+    tokenizers.COMMAND_A_VISION,
+    tokenizers.COMMAND_A_PLUS,
+    tokenizers.AYA_VISION_32B,
+    tokenizers.TINY_AYA,
+    tokenizers.TINY_AYA_BASE,
+    tokenizers.COMMAND_R_08_2024_HF,
+    tokenizers.AYA_VISION_32B_HF,
     // uncomment when NovelAI releases Kayra and Clio weights, lol
     //tokenizers.NERD,
     //tokenizers.NERD2,

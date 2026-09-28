@@ -23,7 +23,8 @@ MANIFEST.json is a JSON array of {"path": <local file>, "format": <format>, "fil
   keeps the file: {"bundled": "src/tokenizers/<name>"}, {"download": <url>, "cacheName": <name in
   DATA_ROOT/_cache>}, {"registry": <TOKENIZER_SOURCES id>} or {"sameContentAs": <sha256 of the
   fixture of the file SillyTavern reads>, "repo": <repo>, "revision": <full commit>, "path": <path in
-  the repo>} for a file with the same content as that one.
+  the repo>} for a file with the same content as that one. A file on a host without revisions has
+  {"sameContentAs": <sha256>, "url": <its URL>} instead.
 
 Each fixture is written as OUT_DIR/<sha256>.json.
 """

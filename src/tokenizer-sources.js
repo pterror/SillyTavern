@@ -14,13 +14,16 @@ import { getConfigValue } from './util.js';
  */
 
 /**
- * One place a registry entry's file can be downloaded from, pinned to a commit.
+ * One place a registry entry's file can be downloaded from: a Hugging Face repo pinned to a commit, or
+ * a `url` on a host with no revisions to pin, such as Cohere's `tokenizer_url` files. Only the entry's
+ * `sha256` and `bytes` pin a `url` source, so a file changed there is a failed download of that source.
  * @typedef {object} TokenizerSource
- * @property {string} repo Hugging Face repo, `owner/name`
- * @property {string} revision Full 40-hex commit sha
- * @property {string} path File path inside the repo at that revision
- * @property {boolean} gated Whether the repo is gated. Only an official repo can be.
- * @property {string} [license] This repo's license, when it isn't the entry's
+ * @property {string} [repo] Hugging Face repo, `owner/name`
+ * @property {string} [revision] Full 40-hex commit sha
+ * @property {string} [path] File path inside the repo at that revision
+ * @property {boolean} [gated] Whether the repo is gated. Only an official repo can be.
+ * @property {string} [url] Instead of `repo`, `revision`, `path` and `gated`: the file's URL as its host publishes it
+ * @property {string} [license] This source's license, when it isn't the entry's
  * @property {string} [licenseUrl] Given with `license`
  */
 
@@ -728,6 +731,106 @@ export const TOKENIZER_SOURCES = Object.freeze([
             { repo: 'mistralai/Mistral-Small-3.1-24B-Instruct-2503', revision: '68faf511d618ef198fef186659617cfd2eb8e33a', path: 'tokenizer.json', gated: false },
         ],
     },
+    // Cohere. No Cohere repo has a LICENSE file; each license is its model card's.
+    {
+        id: 'command-a-vision',
+        family: 'Command A Vision',
+        format: 'hf-json',
+        sha256: 'e22a9a0f4ebeea673bc56f836c0ccb462a4daf1441316a93b3197ef615a46ec8',
+        bytes: 20125691,
+        license: 'CC-BY-NC-4.0',
+        licenseUrl: 'https://cohere.com/c4ai-cc-by-nc-license',
+        sources: [
+            { repo: 'CohereLabs/command-a-vision-07-2025', revision: 'e1016a8105950a626e7dd91b0a3030f7ae522411', path: 'tokenizer.json', gated: true },
+            { repo: 'mlx-community/command-a-vision-07-2025-4bit', revision: '8864bb543540a9db3433293a3bf91baa8140d310', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'command-a-plus',
+        family: 'Command A+',
+        format: 'hf-json',
+        sha256: '14bd1c49d7d11874921d324986713df4be21cd06060530c497dacef99919b7a5',
+        bytes: 28217141,
+        license: 'Apache-2.0',
+        licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
+        sources: [
+            { repo: 'CohereLabs/command-a-plus-05-2026-bf16', revision: '5fb6fde5fd12ff89356aae552e11883bc49f069b', path: 'tokenizer.json', gated: false },
+            { repo: 'CohereLabs/command-a-plus-05-2026-fp8', revision: 'b2773839a95560b2bf0443865b118d6debe2d1b5', path: 'tokenizer.json', gated: false },
+            { repo: 'CohereLabs/command-a-plus-05-2026-w4a4', revision: 'ebd2d72c0f9a84389c6b057136d38c435aea2700', path: 'tokenizer.json', gated: false },
+            { repo: 'CohereLabs/North-Mini-Code-1.0', revision: 'd11e61a842617a22dc328552fa5bb86231ee4f37', path: 'tokenizer.json', gated: false },
+            { repo: 'CohereLabs/North-Mini-Code-1.0-eagle', revision: '8c7fcb575f107e9968b61cc93a756e6fc2c86713', path: 'tokenizer.json', gated: false },
+            { repo: 'CohereLabs/North-Mini-Code-1.0-fp8', revision: '736dde3c255d7726551e6e12af59967f08a20eb6', path: 'tokenizer.json', gated: false },
+            { repo: 'CohereLabs/North-Mini-Code-1.0-w4a16', revision: '1e55f4aa327aba4c0b7a1da0d0f24626d3af5c90', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        // The file Cohere's API names for c4ai-aya-vision-32b. No Hugging Face repo ships its content.
+        id: 'aya-vision-32b',
+        family: 'Aya Vision 32B',
+        format: 'hf-json',
+        sha256: '90e3d2e4d903f3c2b9485c54bc3501c62a011f7289226f7ecdbdeb2d99e3c7dd',
+        bytes: 12777712,
+        license: 'Not stated (Cohere public tokenizer file)',
+        licenseUrl: 'https://storage.googleapis.com/cohere-public/tokenizers/c4ai-aya-vision-32b.json',
+        sources: [
+            { url: 'https://storage.googleapis.com/cohere-public/tokenizers/c4ai-aya-vision-32b.json' },
+        ],
+    },
+    {
+        id: 'tiny-aya',
+        family: 'Tiny Aya',
+        format: 'hf-json',
+        sha256: '2227ea9c52e8afb3f98bfed2679008b275f2664de69dfde174b374389eb0225d',
+        bytes: 21376527,
+        license: 'CC-BY-NC-4.0',
+        licenseUrl: 'https://cohere.com/c4ai-cc-by-nc-license',
+        sources: [
+            { repo: 'CohereLabs/tiny-aya-global', revision: '00590ff258ccd84a805f13efcd1c34c2a542654f', path: 'tokenizer.json', gated: true },
+            { repo: '1-800-LLMs/tiny-aya-global', revision: '6ca951521be5148dec4e679f7cab4aca5362c523', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'tiny-aya-base',
+        family: 'Tiny Aya Base',
+        format: 'hf-json',
+        sha256: '8f21f6c4f761c192f486ea2c5b06b62b3ef30819b33dc105bdf8b26c8e7974f6',
+        bytes: 21374973,
+        license: 'CC-BY-NC-4.0',
+        licenseUrl: 'https://cohere.com/c4ai-cc-by-nc-license',
+        sources: [
+            { repo: 'CohereLabs/tiny-aya-base', revision: '1c1166cbc8bbd17760e85d9e1c40d61725f60ae8', path: 'tokenizer.json', gated: true },
+            { repo: 'optimum-intel-internal-testing/tiny-random-aya-base', revision: 'e85478d37f912454b23ff2a9c7af16a960837644', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'command-r-08-2024-hf',
+        family: 'Command R 08-2024',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: 'f7e773a231706a3ee5d05050ff27aa122a19df09ee7dd59eafa906b7487035b9',
+        bytes: 12778456,
+        license: 'CC-BY-NC-4.0',
+        licenseUrl: 'https://cohere.com/c4ai-cc-by-nc-license',
+        sources: [
+            { repo: 'CohereLabs/c4ai-command-r-08-2024', revision: 'dc835b893cd3fb8f14b24970dbc2a0a6d3c22ee3', path: 'tokenizer.json', gated: true },
+            { repo: 'mlx-community/c4ai-command-r-08-2024-8bit', revision: '7b61a579ab276ff708a5316fca91d5e69748fdfe', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'aya-vision-32b-hf',
+        family: 'Aya Vision 32B',
+        nameNote: 'official, HF tokenizer.json',
+        format: 'hf-json',
+        sha256: 'dbb2974c7ff2633f0dce4490be28531dca552e3ecfafad7a2dfd0e8b212534fc',
+        bytes: 20124863,
+        license: 'CC-BY-NC-4.0',
+        licenseUrl: 'https://cohere.com/cohere-labs-cc-by-nc-license',
+        sources: [
+            { repo: 'CohereLabs/aya-vision-32b', revision: '0554d66834922fc0f2e5f47a12f78464f4a98533', path: 'tokenizer.json', gated: true },
+            { repo: 'mlx-community/aya-vision-32b-bf16', revision: '349313b5e6427b52c5f2744835c37c66c840db3e', path: 'tokenizer.json', gated: false },
+            { repo: 'unsloth/aya-vision-32b', revision: '5b4c653757c1876eb98709ab0f2c05df446826a7', path: 'tokenizer.json', gated: false },
+        ],
+    },
 ]);
 
 /**
@@ -814,7 +917,7 @@ export function clearDownloadFailure(url) {
  * @returns {string}
  */
 export function getSourceUrl(source) {
-    return `https://huggingface.co/${source.repo}/resolve/${source.revision}/${source.path}`;
+    return source.url ?? `https://huggingface.co/${source.repo}/resolve/${source.revision}/${source.path}`;
 }
 
 /**
