@@ -1122,6 +1122,31 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
         expect(after.content_identity_hash).toBe(before.content_identity_hash);
         expect(after.import_poisoned).toBe(0);
     });
+
+    test('backfillContentIdentityHashes() over more than one 1000-row page processes every matching row exactly once', async () => {
+        const avatars = [];
+        for (let i = 0; i < 1001; i++) {
+            avatars.push(`Poisoned${String(i).padStart(4, '0')}.png`);
+            await metadataDb.upsertCharacterFromWrite(directories, avatars[i], cardJson());
+        }
+        metadataDb.disposeMetadataStores();
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        rawDb.prepare('UPDATE characters SET import_poisoned = 1, content_identity_hash = NULL').run();
+        rawDb.close();
+
+        // No PNG is on disk, so each row processed logs one failure naming it.
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            await metadataDb.backfillContentIdentityHashes(directories);
+            const processed = errorSpy.mock.calls
+                .map(([message]) => String(message).match(/Content-identity backfill failed to process (\S+),/)?.[1])
+                .filter(id => id !== undefined);
+            expect(processed.sort()).toEqual(avatars);
+        } finally {
+            errorSpy.mockRestore();
+        }
+    }, 60000);
 });
 
 describe('phase 3: character_tags as source of truth (not a tags.json mirror)', () => {
@@ -2145,6 +2170,31 @@ describe('active_chat_checked (regression: a genuinely chatless card must conver
         expect(after.active_chat).toBe('Eve - Switched Chat');
         expect(after.active_chat_checked).toBe(1);
     });
+
+    test('backfillActiveChatFromCards() over more than one 1000-row page processes every matching row exactly once', async () => {
+        const avatars = [];
+        for (let i = 0; i < 1001; i++) {
+            avatars.push(`Unchecked${String(i).padStart(4, '0')}.png`);
+            await metadataDb.upsertCharacterFromWrite(directories, avatars[i], cardJson());
+        }
+        metadataDb.disposeMetadataStores();
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        rawDb.prepare('UPDATE characters SET active_chat_checked = 0').run();
+        rawDb.close();
+
+        // No PNG is on disk, so each row processed logs one failure naming it.
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            await metadataDb.backfillActiveChatFromCards(directories);
+            const processed = errorSpy.mock.calls
+                .map(([message]) => String(message).match(/Active-chat backfill failed to process (\S+),/)?.[1])
+                .filter(id => id !== undefined);
+            expect(processed.sort()).toEqual(avatars);
+        } finally {
+            errorSpy.mockRestore();
+        }
+    }, 60000);
 });
 
 describe('getChangesSince / getTagNameChangesSince with { limit }', () => {
