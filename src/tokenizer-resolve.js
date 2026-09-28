@@ -103,6 +103,22 @@ export const ENCODE_TOKENIZERS = [
     tokenizers.MINIMAX_M2,
     tokenizers.MINIMAX_M3,
     tokenizers.GPT_OSS,
+    tokenizers.PHI_1,
+    tokenizers.PHI_3_HF,
+    tokenizers.PHI_3_SMALL,
+    tokenizers.PHI_3_VISION,
+    tokenizers.PHI_4,
+    tokenizers.PHI_4_MINI,
+    tokenizers.PHI_4_MULTIMODAL,
+    tokenizers.PHI_4_REASONING,
+    tokenizers.PHI_4_REASONING_VISION,
+    tokenizers.NEMOTRON_4,
+    tokenizers.LLAMA_3_1_NEMOTRON_51B,
+    tokenizers.NEMOTRON_H,
+    tokenizers.LLAMA_3_1_NEMOTRON_NANO_VL,
+    tokenizers.ACEREASON_NEMOTRON_1_1,
+    tokenizers.NEMOTRON_NANO_12B_V2_VL,
+    tokenizers.NEMOTRON_3,
 ];
 
 /**

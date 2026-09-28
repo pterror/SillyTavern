@@ -135,6 +135,28 @@ await testCase('two registry entries sharing one file get their own readers', as
     assert.deepEqual(await encodeWith('named', config({ '<think>': 256 }, 'all')), [256], 'each entry keeps its own reader');
 });
 
+await testCase('a tiktoken config with no split encodes the text whole; one with no reserved name names every special id', async () => {
+    // Every byte is its own token, then `aa` and `aaa`; ids 258-259 are special.
+    const file = path.join(tempDir, 'merges.tiktoken');
+    const ranks = [...Array.from({ length: 256 }, (_, rank) => Buffer.from([rank])), Buffer.from('aa'), Buffer.from('aaa')];
+    fs.writeFileSync(file, ranks.map((token, rank) => `${token.toString('base64')} ${rank}`).join('\n'));
+    /** @param {{ maxChars: number, maxRun: number } | null} split @param {Record<string, number>} specialTokens @param {string} [name] */
+    const config = (split, specialTokens, name) => ({
+        patStr: String.raw`\S+|\s+`,
+        specialTokens,
+        reservedSpecialTokens: { start: 258, count: 2, ...(name === undefined ? {} : { name }) },
+        allowedSpecial: /** @type {'all'} */ ('all'),
+        split,
+    });
+    const loadEntry = (entryId, tiktokenConfig) => loadTokenizerFile(file, 'tiktoken', { entryId, tiktoken: tiktokenConfig });
+    const bothNamed = { '<a>': 258, '<b>': 259 };
+
+    assert.deepEqual((await loadEntry('runs-of-2', config({ maxChars: 400000, maxRun: 2 }, bothNamed))).encode('aaa'), [256, 97], 'split into runs of 2');
+    assert.deepEqual((await loadEntry('whole', config(null, bothNamed))).encode('aaa<b>'), [257, 259], 'encoded whole');
+    assert.deepEqual((await loadEntry('template', config(null, { '<a>': 258 }, '<|reserved_{id}|>'))).encode('<|reserved_259|>'), [259], 'the template names the rest');
+    await assert.rejects(loadEntry('no-reserved-name', config(null, { '<a>': 258 })), /Special id 259 has no name/);
+});
+
 await testCase('web tokenizers are not unloaded', async () => {
     const claude = await getWebTokenizer('claude').get();
     assert.ok(claude);

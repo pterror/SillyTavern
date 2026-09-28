@@ -1178,6 +1178,54 @@ await check('a GLM, Kimi, MiniMax or gpt-oss name its vendor\'s API serves: its 
     }
 });
 
+await check('a Phi or Nemotron name Microsoft\'s or NVIDIA\'s API serves: its file on self-hosted backends, the estimate on every hosted API; other names: their file everywhere', async () => {
+    const entry = (id, source, name) => ({ id, source, name });
+    const phi4 = entry(tokenizers.PHI_4, 'phi-4', 'Phi-4 (official)');
+    const nemotron3 = entry(tokenizers.NEMOTRON_3, 'nemotron-3', 'Nemotron 3 (official)');
+    const llama33 = entry(tokenizers.LLAMA3_3, 'llama3.3', 'Llama 3.3 (official)');
+
+    const remote = [
+        [TEXTGEN_TYPES.LLAMACPP, 'phi-4-Q4_K_M.gguf', phi4],
+        [TEXTGEN_TYPES.VLLM, 'nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8', nemotron3],
+        [TEXTGEN_TYPES.TABBY, 'Llama-3_1-Nemotron-Ultra-253B-v1', llama33],
+    ];
+    for (const [type, model, expected] of remote) {
+        const resolved = await resolveTokenizer({ api: TEXTGEN, type, url: 'http://127.0.0.1:1', model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual({ kind: resolved.kind, localCopy: resolved.localCopy }, { kind: 'remote', localCopy: expected }, `${type} ${model}`);
+    }
+
+    const local = [
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'phi4:14b', phi4],
+        [{ api: 'openai', source: 'openrouter' }, 'microsoft/phi-4-reasoning-plus', entry(tokenizers.PHI_4_REASONING, 'phi-4-reasoning', 'Phi-4-reasoning (official)')],
+        [{ api: 'openai', source: 'openrouter' }, 'microsoft/Phi-3-small-128k-instruct', entry(tokenizers.PHI_3_SMALL, 'phi-3-small', 'Phi-3-small (official)')],
+        [{ api: 'openai', source: 'openrouter' }, 'nvidia/llama-3.3-nemotron-super-49b-v1.5', llama33],
+        [{ api: 'openai', source: 'nanogpt' }, 'nvidia/NVIDIA-Nemotron-Nano-9B-v2', entry(tokenizers.NEMOTRON_H, 'nemotron-h', 'Nemotron-H (official)')],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'nemotron-3-nano:30b', nemotron3],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'nemotron-cascade-2:30b', nemotron3],
+    ];
+    for (const [backend, model, expected] of local) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual(
+            { kind: resolved.kind, id: resolved.id, source: resolved.source, name: resolved.name, localCopy: resolved.localCopy },
+            { kind: 'local', ...expected, localCopy: expected },
+            `${JSON.stringify(backend)} ${model}`,
+        );
+    }
+
+    const estimates = [
+        [{ api: 'openai', source: 'openrouter' }, 'microsoft/phi-4'],
+        [{ api: 'openai', source: 'openrouter' }, 'microsoft/phi-4-multimodal-instruct'],
+        [{ api: 'openai', source: 'openrouter' }, 'nvidia/llama-3.1-nemotron-70b-instruct'],
+        [{ api: 'openai', source: 'nanogpt' }, 'nvidia/nemotron-3-super-120b-a12b'],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'nemotron-3-super:cloud'],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'nemotron-mini:4b'],
+    ];
+    for (const [backend, model] of estimates) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, `${JSON.stringify(backend)} ${model}`);
+    }
+});
+
 await check('the old resolvers and their llama defaults are no longer exported', async () => {
     const modules = {
         './tokenizer-resolve.js': ['getTokenizerBestMatch', 'resolveTokenizerType', 'getCurrentOpenRouterModelTokenizer', 'getCurrentDreamGenModelTokenizer'],
