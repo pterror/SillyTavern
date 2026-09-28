@@ -3,7 +3,9 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 
 // deleteWorldInfo() unlinks only the open character, as upstream does. Every other character whose primary
 // lorebook is the deleted one keeps its link, and a warning names the first 20 of them and counts the rest.
-// A create or import that overwrites a book deletes it too, but warns only if no book has that name afterwards.
+// A create or import that overwrites a book under a name differing from it (here, in case) deletes it too, but warns
+// only if no book has that name afterwards. One under exactly its name writes over its file without deleting it, so
+// it never warns.
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -229,11 +231,14 @@ test.describe('deleting a lorebook other characters still link to', () => {
             const avatars = await createCharacters(page, names, worldName);
             try {
                 const lookups = recordStillLinkedQueries(page, worldName);
-                const deleted = page.waitForResponse(response => new URL(response.url()).pathname === '/api/worldinfo/delete');
+                let deletes = 0;
+                page.on('request', (request) => {
+                    if (new URL(request.url()).pathname === '/api/worldinfo/delete') deletes++;
+                });
                 await overwriteWorld(page, how, worldName);
-                await deleted;
                 await page.waitForTimeout(QUIET_MS);
 
+                expect(deletes).toBe(0);
                 expect(await worldExists(page, worldName)).toBe(true);
                 expect(lookups).toEqual([]);
                 await expect(stillLinkedToast(page, worldName)).toHaveCount(0);
@@ -249,6 +254,8 @@ test.describe('deleting a lorebook other characters still link to', () => {
     test('warns when the write after an overwrite fails and the book is gone', async ({ page }) => {
         const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const worldName = `WI_OVERWRITE_FAILED_${s}`;
+        // Differs only in case, so the overwrite deletes the old book before its write.
+        const newName = worldName.toLowerCase();
         const names = [`WIOverwriteFailed-${s}-00`, `WIOverwriteFailed-${s}-01`];
 
         await createWorld(page, worldName);
@@ -256,12 +263,13 @@ test.describe('deleting a lorebook other characters still link to', () => {
         try {
             await page.route('**/api/worldinfo/edit', route => route.fulfill({ status: 500, body: 'synthetic write failure' }));
             try {
-                await overwriteWorld(page, 'create', worldName);
+                await overwriteWorld(page, 'create', newName);
             } finally {
                 await page.unroute('**/api/worldinfo/edit');
             }
 
             expect(await worldExists(page, worldName)).toBe(false);
+            expect(await worldExists(page, newName)).toBe(false);
             const toast = stillLinkedToast(page, worldName);
             await expect(toast).toHaveCount(1);
             const text = await toast.innerText();
@@ -270,6 +278,7 @@ test.describe('deleting a lorebook other characters still link to', () => {
             expect(text).not.toContain('more.');
         } finally {
             await deleteWorld(page, worldName);
+            await deleteWorld(page, newName);
             await deleteCharacters(page, avatars);
         }
     });
