@@ -49,10 +49,12 @@ import {
     openEmbeddedLoreEditor,
     checkEmbeddedWorld,
     setWorldInfoButtonClass,
+    getCharacterWorldLink,
     initWorldInfo,
     charUpdatePrimaryWorld,
     charSetAuxWorlds,
 } from './scripts/world-info.js';
+import { character_world_link } from './scripts/character-world-link.js';
 
 import {
     groupsStore,
@@ -9359,12 +9361,19 @@ async function openCharacterWorldPopup() {
     const fileName = worldCharacter ? getCharaFilename(avatar) : undefined;
     const charName = (menu_type == 'create' ? create_save.name : worldCharacter?.data?.name) || 'Nameless';
     const worldId = (menu_type == 'create' ? create_save.world : worldCharacter?.data?.extensions?.world) || '';
+    // A name with no World file, on a card with its own embedded lorebook, links that embedded book.
+    const linksEmbeddedBook = menu_type != 'create' && getCharacterWorldLink(worldCharacter) === character_world_link.EMBEDDED;
+    const embeddedBookValue = 'embedded';
     const template = $('#character_world_template .character_world').clone();
     template.find('.character_name').text(charName);
 
     // --- Event Handlers ---
     async function handlePrimaryWorldSelect() {
         const selectedValue = $(this).val();
+        if (linksEmbeddedBook && selectedValue === embeddedBookValue) {
+            await charUpdatePrimaryWorld(worldId);
+            return;
+        }
         const worldIndex = selectedValue !== '' ? Number(selectedValue) : NaN;
         const name = !isNaN(worldIndex) ? world_names[worldIndex] : '';
         await charUpdatePrimaryWorld(name);
@@ -9382,6 +9391,9 @@ async function openCharacterWorldPopup() {
     // --- Populate Dropdowns ---
     // Append to primary dropdown.
     const primarySelect = template.find('.character_world_info_selector');
+    if (linksEmbeddedBook) {
+        primarySelect.append(new Option(t`${worldId} (Embedded Lore)`, embeddedBookValue, true, true));
+    }
     world_names.forEach((item, i) => {
         primarySelect.append(new Option(item, String(i), item === worldId, item === worldId));
     });

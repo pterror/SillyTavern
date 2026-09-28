@@ -32,6 +32,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { getOrCreatePersonaDescriptor, getPersonaDescriptionLorebook, setPersonaDescription, user_avatar } from './personas.js';
 import { characterRepository } from './character-repository.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
+import { character_world_link, resolveCharacterWorldLink } from './character-world-link.js';
 
 /**
  * Whether the verbose [WI] step-by-step scan trace should print. Off by default - the trace fires
@@ -4917,6 +4918,8 @@ async function getCharacterLore() {
         worldsToSearch = new Set([...worldsToSearch, ...extraCharLore.extraBooks]);
     }
 
+    const worldLink = getCharacterWorldLink(character);
+
     let entries = [];
     for (const worldName of worldsToSearch) {
         if (selected_world_info.includes(worldName)) {
@@ -4934,6 +4937,11 @@ async function getCharacterLore() {
             continue;
         }
 
+        if (worldName === baseWorldName && worldLink === character_world_link.EMBEDDED) {
+            if (isWorldInfoTracingEnabled()) console.debug(`[WI] Character ${name}'s world ${worldName} has no World file, so it links the embedded lorebook. Not requesting it.`);
+            continue;
+        }
+
         const data = await loadWorldInfo(worldName);
         const newEntries = data ? Object.keys(data.entries).map((x) => data.entries[x]).map(({ uid, ...rest }) => ({ uid, world: worldName, ...rest })) : [];
         entries = entries.concat(newEntries);
@@ -4945,8 +4953,7 @@ async function getCharacterLore() {
 
     // Fall back to the embedded character_book when extensions.world names a World that doesn't exist
     // (common on imported cards) - otherwise a dangling link silently blocks the fallback.
-    const baseWorldResolves = !!baseWorldName && world_names.includes(baseWorldName);
-    if (!baseWorldResolves && character?.data?.character_book?.entries?.length) {
+    if (worldLink !== character_world_link.FILE && character?.data?.character_book?.entries?.length) {
         const converted = convertCharacterBook(character.data.character_book);
         const embeddedEntries = Object.keys(converted.entries)
             .map(x => converted.entries[x])
@@ -6278,6 +6285,8 @@ async function removeEmbeddedLore(data) {
 
     if ($('#avatar_url_pole').val() === avatar) {
         $('#character_book_json').val('');
+        // A link to a name with no World file was a link to this book; the globe shows it gone.
+        setWorldInfoButtonClass(avatar);
     }
     embeddedLoreOwners.delete(data);
     await hideWorldEditor();
@@ -6334,9 +6343,20 @@ export function setWorldInfoButtonClass(avatar, forceValue = undefined) {
     }
 
     const character = charactersStore.get(avatar);
-    const world = character?.data?.extensions?.world;
-    const worldSet = Boolean(world && world_names.includes(world));
+    const worldLink = getCharacterWorldLink(character);
+    const worldSet = worldLink === character_world_link.FILE || worldLink === character_world_link.EMBEDDED;
     $('#set_character_world, #world_button').toggleClass('world_set', worldSet);
+}
+
+/**
+ * What a character's primary lorebook link points at, judged against the World files this page knows
+ * of (`world_names`): no link, a World file, the card's own embedded lorebook (no file has the linked
+ * name and the card has a `character_book`, whatever that book's name), or nothing.
+ * @param {{data?: {extensions?: {world?: string}, character_book?: object}}|null|undefined} character The character card
+ * @returns {string} One of {@link character_world_link}
+ */
+export function getCharacterWorldLink(character) {
+    return resolveCharacterWorldLink(character, (name) => world_names.includes(name));
 }
 
 export function checkEmbeddedWorld(avatar) {
