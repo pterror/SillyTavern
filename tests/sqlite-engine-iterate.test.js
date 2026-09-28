@@ -132,7 +132,8 @@ describe.each([
     });
 });
 
-const KEYED_READ_SQL = 'SELECT id, v FROM t WHERE (@after IS NULL OR id > @after) AND id % @mod = 0 ORDER BY id LIMIT @limit';
+const KEYED_FIRST_PAGE_SQL = 'SELECT id, v FROM t WHERE id % @mod = 0 ORDER BY id LIMIT @limit';
+const KEYED_NEXT_PAGE_SQL = 'SELECT id, v FROM t WHERE id > @after AND id % @mod = 0 ORDER BY id LIMIT @limit';
 
 describe.each([
     ['native', (dbPath) => openNativeDatabase(Database, dbPath)],
@@ -157,8 +158,10 @@ describe.each([
         const batchSizes = [];
         const seen = [];
         streamWrite(handle, {
-            readSql: KEYED_READ_SQL,
-            params: { mod: 1 },
+            firstPageSql: KEYED_FIRST_PAGE_SQL,
+            firstPageParams: { mod: 1 },
+            nextPageSql: KEYED_NEXT_PAGE_SQL,
+            nextPageParams: { mod: 1 },
             keyColumn: 'id',
             onBatch: (rows) => {
                 batchSizes.push(rows.length);
@@ -176,28 +179,30 @@ describe.each([
 
     test('passes the caller\'s params through alongside after/limit', () => {
         const seen = [];
-        streamWrite(handle, { readSql: KEYED_READ_SQL, params: { mod: 1000 }, keyColumn: 'id', onBatch: (rows) => seen.push(...rows.map(r => r.id)) });
+        streamWrite(handle, { firstPageSql: KEYED_FIRST_PAGE_SQL, firstPageParams: { mod: 1000 }, nextPageSql: KEYED_NEXT_PAGE_SQL, nextPageParams: { mod: 1000 }, keyColumn: 'id', onBatch: (rows) => seen.push(...rows.map(r => r.id)) });
         expect(seen).toEqual([1000, 2000]);
     });
 
     test('an exact multiple of the batch size produces no empty trailing batch', () => {
         handle.run('DELETE FROM t WHERE id > 2000');
         const batchSizes = [];
-        streamWrite(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id', onBatch: (rows) => batchSizes.push(rows.length) });
+        streamWrite(handle, { firstPageSql: KEYED_FIRST_PAGE_SQL, firstPageParams: { mod: 1 }, nextPageSql: KEYED_NEXT_PAGE_SQL, nextPageParams: { mod: 1 }, keyColumn: 'id', onBatch: (rows) => batchSizes.push(rows.length) });
         expect(batchSizes).toEqual([1000, 1000]);
     });
 
     test('no matching rows means onBatch is never called', () => {
         let calls = 0;
-        streamWrite(handle, { readSql: KEYED_READ_SQL, params: { mod: 100000 }, keyColumn: 'id', onBatch: () => { calls++; } });
+        streamWrite(handle, { firstPageSql: KEYED_FIRST_PAGE_SQL, firstPageParams: { mod: 100000 }, nextPageSql: KEYED_NEXT_PAGE_SQL, nextPageParams: { mod: 100000 }, keyColumn: 'id', onBatch: () => { calls++; } });
         expect(calls).toBe(0);
     });
 
     test('a throwing onBatch rolls back that batch only, propagates, and leaves the handle writable', () => {
         let batch = 0;
         expect(() => streamWrite(handle, {
-            readSql: KEYED_READ_SQL,
-            params: { mod: 1 },
+            firstPageSql: KEYED_FIRST_PAGE_SQL,
+            firstPageParams: { mod: 1 },
+            nextPageSql: KEYED_NEXT_PAGE_SQL,
+            nextPageParams: { mod: 1 },
             keyColumn: 'id',
             onBatch: (rows) => {
                 batch++;
@@ -235,8 +240,10 @@ describe('native streamWrite() over 100001 rows', () => {
         let outOfOrder = 0;
         const batchSizes = [];
         streamWrite(handle, {
-            readSql: KEYED_READ_SQL,
-            params: { mod: 1 },
+            firstPageSql: KEYED_FIRST_PAGE_SQL,
+            firstPageParams: { mod: 1 },
+            nextPageSql: KEYED_NEXT_PAGE_SQL,
+            nextPageParams: { mod: 1 },
             keyColumn: 'id',
             onBatch: (rows) => {
                 batchSizes.push(rows.length);
@@ -278,7 +285,7 @@ describe.each([
         let expectedId = 1;
         let outOfOrder = 0;
         let oversized = 0;
-        for await (const rows of streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' })) {
+        for await (const rows of streamRows(handle, { firstPageSql: KEYED_FIRST_PAGE_SQL, firstPageParams: { mod: 1 }, nextPageSql: KEYED_NEXT_PAGE_SQL, nextPageParams: { mod: 1 }, keyColumn: 'id' })) {
             if (rows.length === 0 || rows.length > 1000) oversized++;
             for (const row of rows) {
                 if (row.id !== expectedId) outOfOrder++;
@@ -292,7 +299,7 @@ describe.each([
 
     test('the main handle is writable while the consumer is suspended between yields', async () => {
         let batches = 0;
-        for await (const rows of streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' })) {
+        for await (const rows of streamRows(handle, { firstPageSql: KEYED_FIRST_PAGE_SQL, firstPageParams: { mod: 1 }, nextPageSql: KEYED_NEXT_PAGE_SQL, nextPageParams: { mod: 1 }, keyColumn: 'id' })) {
             await new Promise(resolve => setImmediate(resolve));
             handle.transaction(() => {
                 for (const row of rows) {
@@ -320,7 +327,7 @@ describe.each([
             })()).rejects.toThrow('boom after 1000');
         }],
     ])('ending the for-await early by %s leaves the handle writable', async (_how, consume) => {
-        await consume(streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' }));
+        await consume(streamRows(handle, { firstPageSql: KEYED_FIRST_PAGE_SQL, firstPageParams: { mod: 1 }, nextPageSql: KEYED_NEXT_PAGE_SQL, nextPageParams: { mod: 1 }, keyColumn: 'id' }));
         expect(() => handle.run('UPDATE t SET v = ? WHERE id = ?', ['after', 1])).not.toThrow();
     });
 });
@@ -360,7 +367,7 @@ describe('native WAL housekeeping and close()', () => {
         const other = new Database(dbPath);
         const checkpoints = [];
         try {
-            for await (const rows of streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' })) {
+            for await (const rows of streamRows(handle, { firstPageSql: KEYED_FIRST_PAGE_SQL, firstPageParams: { mod: 1 }, nextPageSql: KEYED_NEXT_PAGE_SQL, nextPageParams: { mod: 1 }, keyColumn: 'id' })) {
                 handle.transaction(() => {
                     for (const row of rows) {
                         handle.run('UPDATE t SET v = ? WHERE id = ?', ['new', row.id]);
@@ -381,7 +388,7 @@ describe('native WAL housekeeping and close()', () => {
     });
 
     test('a streamRows() suspended between batches throws when resumed after close()', async () => {
-        const stream = streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' });
+        const stream = streamRows(handle, { firstPageSql: KEYED_FIRST_PAGE_SQL, firstPageParams: { mod: 1 }, nextPageSql: KEYED_NEXT_PAGE_SQL, nextPageParams: { mod: 1 }, keyColumn: 'id' });
         const first = await stream.next();
         expect(first.value.length).toBe(1000);
         handle.close();
@@ -391,8 +398,10 @@ describe('native WAL housekeeping and close()', () => {
     test('a streamWrite() whose onBatch closes the handle throws instead of ending early', () => {
         let batches = 0;
         expect(() => streamWrite(handle, {
-            readSql: KEYED_READ_SQL,
-            params: { mod: 1 },
+            firstPageSql: KEYED_FIRST_PAGE_SQL,
+            firstPageParams: { mod: 1 },
+            nextPageSql: KEYED_NEXT_PAGE_SQL,
+            nextPageParams: { mod: 1 },
             keyColumn: 'id',
             onBatch: () => {
                 batches++;

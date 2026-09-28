@@ -142,11 +142,12 @@ describe('unimport-embedded-lore - streamed linked-world reads', () => {
             expect(plan).toContainEqual(expect.stringMatching(/\bidx_characters_world\b/));
         }
 
-        // One World's linkers page by seeking past the last rowid read, not by re-reading the World from its start.
+        // One World's linkers are read by seeking to that World in idx_characters_world. A later page's seek past the
+        // last rowid read needs more than one page of linkers; character-metadata-db-page-plan.test.js checks it.
         const linkerPage = worldReads.find(c => /\browid\b/.test(c.sql));
         expect(linkerPage).toBeDefined();
         expect(linkerPage.handle.all(`EXPLAIN QUERY PLAN ${linkerPage.sql}`, linkerPage.params).map(row => row.detail))
-            .toContainEqual(expect.stringMatching(/\(world=\? AND rowid>\?\)/));
+            .toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\bidx_characters_world \(world=\?\)/));
     });
 
     test('a world list longer than one page is handled in full, with the unlinks written between its pages', async () => {
