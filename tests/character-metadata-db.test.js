@@ -478,6 +478,92 @@ describe('batch import mode', () => {
         // character_tags table - that's the field the client's getTagsList()/entityTagIds fallback reads.
         expect(JSON.parse(row.shallow_json).tag_ids).toEqual(['tag1']);
     });
+
+    // Regression: an edit of a character that already has a row is buffered too, and at flush writeRowSync() keeps
+    // the table's tags for an existing row, so a tag change made into the buffer was dropped after returning 'ok'.
+    describe('a tag change on a character that already has a row lands, with its buffered edit', () => {
+        const editedCardJson = (/** @type {string} */ name, /** @type {string[]} */ tags = []) => storedCardJson({ name, data: { name, tags, creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+        /**
+         * Both the tag change and the buffered edit are in the table before the batch ends and after it.
+         * @param {string} avatar
+         * @param {string} name The buffered edit's name.
+         * @param {string[]} tagIds
+         */
+        async function expectLanded(avatar, name, tagIds) {
+            for (const end of [false, true]) {
+                if (end) await metadataDb.endBatchImport(directories);
+                const row = await metadataDb.getCharacterMetadataRow(directories, avatar);
+                expect(row.name).toBe(name);
+                expect((await metadataDb.getCharacterTagIds(directories, avatar)).sort()).toEqual(tagIds);
+                expect(JSON.parse(row.shallow_json).tag_ids).toEqual(tagIds);
+            }
+        }
+
+        test('assignEntityTag', async () => {
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+            await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
+            await metadataDb.beginBatchImport(directories);
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'));
+
+            expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
+
+            await expectLanded('Bob.png', 'Bobby', ['keep', 'tag1']);
+        });
+
+        test('unassignEntityTag', async () => {
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+            await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
+            await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+            await metadataDb.beginBatchImport(directories);
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'));
+
+            expect(await metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
+
+            await expectLanded('Bob.png', 'Bobby', ['keep']);
+        });
+
+        test('setEntityTagIdsMany', async () => {
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+            await metadataDb.assignEntityTag(directories, 'Bob.png', 'old');
+            await metadataDb.beginBatchImport(directories);
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'));
+
+            expect(await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['a', 'b'] })).toEqual({ 'Bob.png': 'ok' });
+
+            await expectLanded('Bob.png', 'Bobby', ['a', 'b']);
+        });
+
+        test('seedCardTagsForSingleCharacter', async () => {
+            await metadataDb.fillTagNameKeysIfNeeded(directories);
+            await metadataDb.saveTagDefinitions(directories, [{ id: 'elan', name: 'Élan' }]);
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+            await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
+            await metadataDb.beginBatchImport(directories);
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby', ['elan']));
+
+            const { tagIds, heldTagNames } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
+            expect(tagIds).toEqual(['elan']);
+            expect(heldTagNames).toEqual([]);
+
+            await expectLanded('Bob.png', 'Bobby', ['elan', 'keep']);
+        });
+
+        test('renameCharacterRow\'s tag copy', async () => {
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+            await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+            await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', editedCardJson('Robert'));
+            await metadataDb.assignEntityTag(directories, 'Robert.png', 'keep');
+            await metadataDb.beginBatchImport(directories);
+            await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', editedCardJson('Rob'));
+
+            await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
+
+            await expectLanded('Robert.png', 'Rob', ['keep', 'tag1']);
+            expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
+            expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual([]);
+        });
+    });
 });
 
 describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplicate dedup)', () => {
