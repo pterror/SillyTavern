@@ -1717,6 +1717,18 @@ export async function endBatchImport(directories) {
     entry.batch = null;
 }
 
+// Commits whatever an open batch import has buffered so far and leaves batch mode on - for a caller about to record
+// that its own writes are done, which must not outlive a crash that loses the buffer. No-op outside batch mode.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function flushBatchImport(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    flushBatch(entry);
+}
+
 // One-time backfill for a library predating this metadata store. Seeds date_added from ctimeMs, recorded in meta so it runs once.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
