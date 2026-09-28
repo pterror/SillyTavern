@@ -3231,26 +3231,29 @@ export async function assignEntityTag(directories, id, tagId) {
         return 'ok';
     }
 
-    if (type === 'character' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
-        entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-        // No updateTagsHashSync() here: this only touches character_tags, never the tags table that hashes, so
-        // it would be a full O(library-wide tag count) scan for zero signal.
-        const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-        if (charRow) {
-            const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
-            const shallow = JSON.parse(charRow.shallow_json);
-            shallow.tag_ids = currentTagIds;
-            writeShallowJson(entry.db, id, shallow, ['tag_ids']);
+    let found = false;
+    entry.db.transaction(() => {
+        found = false;
+        if (type === 'character' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
+            entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+            // No updateTagsHashSync() here: this only touches character_tags, never the tags table that hashes, so
+            // it would be a full O(library-wide tag count) scan for zero signal.
+            const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
+            if (charRow) {
+                const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
+                const shallow = JSON.parse(charRow.shallow_json);
+                shallow.tag_ids = currentTagIds;
+                writeShallowJson(entry.db, id, shallow, ['tag_ids']);
+            }
+            found = true;
+        } else if (type === 'group' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
+            entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+            const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
+            entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
+            found = true;
         }
-        return 'ok';
-    }
-    if (type === 'group' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
-        entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-        const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
-        entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
-        return 'ok';
-    }
-    return 'not_found';
+    });
+    return found ? 'ok' : 'not_found';
 }
 
 // Not a 404 on a nonexistent entity: nothing to reject. Touches only the id's own type's table
@@ -3276,23 +3279,25 @@ export async function unassignEntityTag(directories, id, tagId) {
         return 'ok';
     }
 
-    if (type === 'group') {
-        entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
-        entry.db.run(
-            'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
-            { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) }) },
-        );
-        return 'ok';
-    }
+    entry.db.transaction(() => {
+        if (type === 'group') {
+            entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
+            entry.db.run(
+                'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
+                { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) }) },
+            );
+            return;
+        }
 
-    entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
-    const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-    if (charRow) {
-        const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
-        const shallow = JSON.parse(charRow.shallow_json);
-        shallow.tag_ids = currentTagIds;
-        writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-    }
+        entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
+        const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
+        if (charRow) {
+            const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
+            const shallow = JSON.parse(charRow.shallow_json);
+            shallow.tag_ids = currentTagIds;
+            writeShallowJson(entry.db, id, shallow, ['tag_ids']);
+        }
+    });
     return 'ok';
 }
 
