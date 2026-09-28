@@ -2316,6 +2316,35 @@ export async function reconcile(directories) {
     );
 }
 
+// Emitted on characterChangeEmitter, inside the transaction, when a migration pass writes a tag definition.
+export const TAG_DEFINITIONS_CHANGED_EVENT = 'tag-definitions-changed';
+
+/**
+ * Waits for the store's boot chain from initializeMetadataStores().
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<boolean>} false when the chain failed, or the store has none (it is unavailable or was never
+ *   initialized).
+ */
+export async function waitForMetadataBootChain(directories) {
+    const entry = await getEntry(directories);
+    if (!entry?.bootstrapPromise) return false;
+    try {
+        await entry.bootstrapPromise;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// For tag definitions written through another connection, which this process's tag cache can't see.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function clearTagCache(directories) {
+    const entry = await getEntry(directories);
+    if (entry) entry.tagCache = null;
+}
+
 // Bootstrap runs in the background so a large corpus doesn't delay the server listening.
 /**
  * @param {import('./users.js').UserDirectoryList[]} directoriesList
@@ -2347,17 +2376,10 @@ export async function initializeMetadataStores(directoriesList) {
             return result;
         };
 
-        // migrateTagsJsonIfNeeded() classifies tag_map's keys against characters/groups, so both bootstraps
-        // must populate them first.
+        // The one-time migration passes run after this chain, in the store's migration worker
+        // (metadata-migration-coordinator.js, started once the server listens).
         entry.bootstrapPromise = __stage('bootstrapIfNeeded', () => bootstrapIfNeeded(directories))
             .then(() => __stage('bootstrapGroupsIfNeeded', () => bootstrapGroupsIfNeeded(directories)))
-            .then(() => __stage('recoverNumericIdGroupsIfNeeded', () => recoverNumericIdGroupsIfNeeded(directories)))
-            .then(() => __stage('normalizeGroupFavIfNeeded', () => normalizeGroupFavIfNeeded(directories)))
-            .then(() => __stage('migrateTagsJsonIfNeeded', () => migrateTagsJsonIfNeeded(directories)))
-            .then(() => __stage('backfillCardTagsIfNeeded', () => backfillCardTagsIfNeeded(directories)))
-            .then(() => __stage('backfillTagIdsInShallowJson', () => backfillTagIdsInShallowJson(directories)))
-            .then(() => __stage('normalizeCharacterFavIfNeeded', () => normalizeCharacterFavIfNeeded(directories)))
-            .then(() => __stage('normalizeCharacterTagIdsIfNeeded', () => normalizeCharacterTagIdsIfNeeded(directories)))
             .then(() => __stage('reconcile', () => reconcile(directories)))
             // After reconcile() so this pass sees any rows reconcile() itself just inserted.
             .then(() => __stage('backfillContentIdentityHashes', () => backfillContentIdentityHashes(directories)))
@@ -3825,7 +3847,10 @@ export async function migrateTagsJsonIfNeeded(directories) {
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
             insertedDefinitions += entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', { id: tag.id, data: JSON.stringify(tag) }).changes;
         }
-        if (insertedDefinitions > 0) updateTagsHashSync(entry.db);
+        if (insertedDefinitions > 0) {
+            updateTagsHashSync(entry.db);
+            characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+        }
     });
     if (insertedDefinitions > 0) entry.tagCache = null;
     const droppedKeys = await importTagMap(entry, tagMap);
@@ -4121,7 +4146,11 @@ export async function backfillCardTagsIfNeeded(directories) {
     const rows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all('SELECT id, shallow_json FROM characters')));
 
     /** @param {{ id: string, data: string }} params */
-    const insertTag = (params) => entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
+    const insertTag = (params) => {
+        if (entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params).changes > 0) {
+            characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+        }
+    };
     /** @param {{ characterId: string, tagId: string }} params */
     const insertAssignment = (params) => entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
 

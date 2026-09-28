@@ -77,6 +77,7 @@ import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
 import { initializeMetadataStores, disposeMetadataStores } from './character-metadata-db.js';
+import { startMetadataMigrations, disposeMetadataMigrationWorkers } from './metadata-migration-coordinator.js';
 import { startSearchWorkerIfIndexed } from './endpoints/characters-search-index.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { disposeMessageTreeStores } from './message-tree-db.js';
@@ -372,6 +373,7 @@ async function preSetupTasks() {
             await cleanupPlugins();
         }
         diskCache.dispose();
+        await disposeMetadataMigrationWorkers();
         disposeMetadataStores();
         disposeLocalImportScan();
         disposeMessageTreeStores();
@@ -503,6 +505,10 @@ async function postSetupTasks(result) {
 
     setupLogLevel();
     serverEvents.emit(EVENT_NAMES.SERVER_STARTED, { url: browserLaunchUrl });
+
+    // Not awaited. Each store's one-time metadata migration passes, in a worker per store, once its boot chain ends.
+    startMetadataMigrations(await getUserDirectoriesList())
+        .catch(err => console.error(color.red('[metadata-migrations] Starting the metadata migration workers failed:'), err));
 
     // Not awaited. The restore reads what the group migration left, so it starts only once that has finished, and only
     // for users it left no chat file un-migrated for. Off unless config.yaml sets restoreGroupChatMigrationLosses: true.
