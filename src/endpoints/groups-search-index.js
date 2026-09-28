@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getTagDefinitions, getEntityTagIdsForMany, getTagsHash, getGroupFavsByIds, getMetaValue, GROUP_FAV_NORMALIZED_FLAG } from '../character-metadata-db.js';
+import { getTagDefinitions, getEntityTagIdsForMany, getTagDeletions, getTagsHash, getGroupFavsByIds, getMetaValue, GROUP_FAV_NORMALIZED_FLAG } from '../character-metadata-db.js';
 import { getGroupsData } from './groups.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery, fastFieldOrderValue } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { getSearchIndex } from './search-index-coordinator.js';
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { timePhase } from '../search-timing.js';
+import { expandTagFilter } from '../tag-deletions.js';
 
 /** Fast full-content group search, mirroring characters-search-index.js. The index is maintained by the same
  * per-handle search index worker (search-index-coordinator.js). */
@@ -169,13 +170,17 @@ async function runGroupSearch(handle, directories, searchTerm, maxRows, filter =
         if (!tantivyIndex) {
             return { results: [], total: 0, backend: 'unavailable' };
         }
+        const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+        if (expandedTags?.none) {
+            return { results: [], total: 0, backend: 'tantivy' };
+        }
         const query = timePhase('groups_query_build', () => {
             const { tantivy } = engine;
             const { schema } = tantivyIndex;
             let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
             if (!q) return null;
             q = withFavFilter(tantivy, schema, q, fav);
-            const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD) : null;
+            const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, expandedTags) : null;
             if (tagQuery) {
                 q = tantivy.Query.booleanQuery([
                     { occur: tantivy.Occur.Must, query: q },
@@ -243,13 +248,17 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
     if (!tantivyIndex) {
         return { groups: [], backend: 'unavailable' };
     }
+    const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+    if (expandedTags?.none) {
+        return { groups: [], backend: 'tantivy' };
+    }
     const query = timePhase('groups_query_build', () => {
         const { tantivy } = engine;
         const { schema } = tantivyIndex;
         let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
         if (!q) return null;
         q = withFavFilter(tantivy, schema, q, fav);
-        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD) : null;
+        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, expandedTags) : null;
         if (tagQuery) {
             q = tantivy.Query.booleanQuery([
                 { occur: tantivy.Occur.Must, query: q },

@@ -261,9 +261,12 @@ export function buildExcludeIdsQuery(tantivy, schema, excludeIds) {
 /**
  * tantivy's booleanQuery does not implicitly match-all, so with only excluded tags the query gets an explicit
  * Query.allQuery() Must clause as its positive base.
+ * @param {import('../tag-deletions.js').ExpandedTagFilter | null} [expanded] expandTagFilter()'s form of `tags`, used
+ * in its place when a deleted tag touches the filter. Its `none` is the caller's to handle.
  * @returns {import('@oxdev03/node-tantivy-binding').Query | null} null if the tags object produces no constraints
  */
-export function buildTagFilterQuery(tantivy, schema, tags, fieldName) {
+export function buildTagFilterQuery(tantivy, schema, tags, fieldName, expanded = null) {
+    if (expanded) return buildExpandedTagFilterQuery(tantivy, schema, expanded, fieldName);
     const subqueries = [];
     const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
     const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
@@ -282,6 +285,32 @@ export function buildTagFilterQuery(tantivy, schema, tags, fieldName) {
         subqueries.push({ occur: tantivy.Occur.MustNot, query: tantivy.Query.termQuery(schema, fieldName, id) });
     }
 
+    if (subqueries.length === 0) return null;
+    return tantivy.Query.booleanQuery(subqueries);
+}
+
+/**
+ * buildTagFilterQuery() for an expanded filter: an included group matches a document carrying any of its ids.
+ * @param {import('../tag-deletions.js').ExpandedTagFilter} expanded
+ * @returns {import('@oxdev03/node-tantivy-binding').Query | null}
+ */
+function buildExpandedTagFilterQuery(tantivy, schema, { include, exclude, mode }, fieldName) {
+    const term = (/** @type {string} */ id) => tantivy.Query.termQuery(schema, fieldName, id);
+    const anyOf = (/** @type {string[]} */ ids) => ids.length === 1
+        ? term(ids[0])
+        : tantivy.Query.booleanQuery(ids.map(id => ({ occur: tantivy.Occur.Should, query: term(id) })));
+    const subqueries = [];
+    if (include.length > 0) {
+        const includeQuery = mode === 'or'
+            ? anyOf(include.flat())
+            : tantivy.Query.booleanQuery(include.map(group => ({ occur: tantivy.Occur.Must, query: anyOf(group) })));
+        subqueries.push({ occur: tantivy.Occur.Must, query: includeQuery });
+    } else if (exclude.length > 0) {
+        subqueries.push({ occur: tantivy.Occur.Must, query: tantivy.Query.allQuery() });
+    }
+    for (const id of exclude) {
+        subqueries.push({ occur: tantivy.Occur.MustNot, query: term(id) });
+    }
     if (subqueries.length === 0) return null;
     return tantivy.Query.booleanQuery(subqueries);
 }

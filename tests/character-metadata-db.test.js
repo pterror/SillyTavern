@@ -1280,7 +1280,7 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
         await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag2');
 
-        expect(await metadataDb.getAllTagUsage(directories)).toEqual({ tag1: 2, tag2: 1 });
+        expect(await metadataDb.getAllTagUsage(directories)).toEqual({ counts: { tag1: 2, tag2: 1 }, approximate: [] });
     });
 
     test('an ordinary metadata write (upsertCharacterFromWrite on an existing row) does not touch existing direct tag assignments', async () => {

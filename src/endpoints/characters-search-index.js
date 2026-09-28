@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-    getTagDefinitionsByIds, getEntityTagIdsForMany,
+    getTagDefinitionsByIds, getEntityTagIdsForMany, getTagDeletions,
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
     streamDeletedIdsBetween, getMetaValue, trySetMetaValues, getCharacterFavsByIds, getCardJsonByIds,
 } from '../character-metadata-db.js';
@@ -13,6 +13,7 @@ import { getSearchIndex, rebuildSearchIndex, startSearchWorker } from './search-
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 import { timePhase } from '../search-timing.js';
+import { expandTagFilter } from '../tag-deletions.js';
 import { getBusyWaitMs } from './sqlite-engine.js';
 
 // Mirrors fuzzySearchCharacters() (public/scripts/power-user.js) so ranking is consistent client/server.
@@ -581,13 +582,17 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}
     if (!tantivyIndex) {
         return { hits: [], total: 0, backend: 'unavailable' };
     }
+    const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+    if (expandedTags?.none) {
+        return { hits: [], total: 0, backend: 'tantivy' };
+    }
     const query = timePhase('chars_query_build', () => {
         const { tantivy } = engine;
         const { schema } = tantivyIndex;
         let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
         if (!q) return null;
         q = withFavFilter(tantivy, schema, q, fav);
-        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD) : null;
+        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, expandedTags) : null;
         if (tagQuery) {
             q = tantivy.Query.booleanQuery([
                 { occur: tantivy.Occur.Must, query: q },
@@ -662,6 +667,8 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
 
     const tantivyIndex = await timePhase('chars_index_get', () => getSearchIndex(handle, directories, 'characters'));
     if (!tantivyIndex) return { hits: [], total: 0, backend: 'unavailable' };
+    const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+    if (expandedTags?.none) return { hits: [], total: 0, backend: 'tantivy' };
 
     const query = timePhase('chars_query_build', () => {
         const { tantivy } = engine;
@@ -669,7 +676,7 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
         let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
         if (!q) return null;
         q = withFavFilter(tantivy, schema, q, fav);
-        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD) : null;
+        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, expandedTags) : null;
         if (tagQuery) {
             q = tantivy.Query.booleanQuery([
                 { occur: tantivy.Occur.Must, query: q },
