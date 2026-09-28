@@ -1475,6 +1475,37 @@ describe('resyncTags / tag_usage', () => {
         expect(await metadataDb.getCharacterTagIds(directories, 'Alice.png')).toEqual([]);
         expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(1);
     });
+
+    test('applies the delta across more than one page of character_tags and more than one batch of tag_map', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice Smith.png', cardJson({ name: 'Alice Smith' }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Carol.png', cardJson({ name: 'Carol' }));
+
+        const manyTags = Array.from({ length: 1200 }, (_, i) => `t${i}`);
+        /** @type {Record<string, string[]>} */
+        const tagMap = { 'Bob.png': manyTags, 'Alice Smith.png': ['a'] };
+        for (let i = 0; i < 600; i++) tagMap[`ghost${i}.png`] = ['g'];
+        tagMap['Carol.png'] = ['c'];
+        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: tagMap }));
+
+        await metadataDb.resyncTags(directories);
+
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual([...manyTags].sort());
+        expect(await metadataDb.getCharacterTagIds(directories, 'Alice Smith.png')).toEqual(['a']);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Carol.png')).toEqual(['c']);
+        expect(await metadataDb.getTagUsageCount(directories, 'g')).toBe(0);
+
+        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({
+            tags: [],
+            tag_map: { 'Bob.png': ['t5'], 'Alice Smith.png': ['a', 'b'] },
+        }));
+        await metadataDb.resyncTags(directories);
+
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['t5']);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Alice Smith.png')).toEqual(['a', 'b']);
+        expect(await metadataDb.getCharacterTagIds(directories, 'Carol.png')).toEqual([]);
+        expect(await metadataDb.getTagUsageCount(directories, 't0')).toBe(0);
+    });
 });
 
 describe('groups schema extension (owner decision - fav/date_added/date_last_chat/chat_size/name_fold)', () => {
