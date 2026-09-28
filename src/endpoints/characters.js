@@ -2360,12 +2360,12 @@ async function handleQuery(request, response) {
             // gone (the rows read below drop them, since the index can lag a delete); any other sort needs the full
             // matched set since ordering comes from SQL. Undefined tells the search engine to return all matches.
             const idFetchCap = sort.field === 'search' ? offset + pageSize + pageOverFetch(pageSize) : undefined;
-            const favOnly = filter.fav === true;
-            // tags is applied inside the search engine itself (runIdSearch/buildTagFilterQuery) so the ranked id
-            // list this returns is already tags-filtered - queryCharacters()'s search-sort branch can then page
-            // it directly. world isn't: the search engine has no world field, so a world-filtered search-sorted
-            // request still needs queryCharacters()'s own WHERE-clause check (see that function's comment).
-            const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly, filter.tags);
+            // fav, tags, ids and excludeIds (for groups: fav and tags) are applied inside the search engine itself
+            // (runIdSearch/runGroupSearch), before idFetchCap, so a hit they rule out never takes a place in the
+            // capped list and leaves the page short. world isn't: the search engine has no world field. The SQL
+            // below still checks fav, tags and excludeIds, and explicitIds still intersects, because the index can
+            // lag the db by about a second.
+            const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags, ids: Array.isArray(filter.ids) ? filter.ids : undefined, excludeIds: filter.excludeIds });
 
             // filter.ids and filter.search both restrict the candidate set - when both are present they
             // intersect, not override each other, for both types when includeGroups is active.
@@ -2375,7 +2375,7 @@ async function handleQuery(request, response) {
             let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy' };
             let effectiveGroupIds = [];
             if (includeGroups) {
-                groupSearchResult = await searchGroupIds(handle, request.user.directories, searchTerm, idFetchCap, favOnly);
+                groupSearchResult = await searchGroupIds(handle, request.user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags });
                 effectiveGroupIds = timePhase('merge_ids', () => explicitIds ? groupSearchResult.ids.filter(id => explicitIds.has(id)) : groupSearchResult.ids);
             }
 
