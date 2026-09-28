@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterField, saveCharacterFieldDebounced, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, select_selected_character } from '../script.js';
+import { saveSettingsDebounced, substituteParams, getCurrentCharacter, saveCharacterField, saveCharacterFieldDebounced, characterFieldBaseline, menu_type, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, select_selected_character } from '../script.js';
 import { getOneCharacter } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat_metadata } from './chat-state.js';
@@ -6194,32 +6194,56 @@ export const EMBEDDED_WORLD_NAME = '__embedded__';
 /** Avatar of the character whose embedded lorebook is currently open in the WI editor, or null. */
 let embeddedLoreCharacterAvatar = null;
 
-const saveEmbeddedLoreDebounced = debounce(async (data) => await saveEmbeddedLore(data), debounce_timeout.relaxed);
+/**
+ * The character each embedded-lorebook editor's edits belong to, keyed by the data object that editor was
+ * opened with (every save from it passes that same object), with the conflict baseline of that card's
+ * character_book and the editor's own debounced save. Read per save instead of off the character panel or
+ * the last editor opened, so edits always go to the card they were made on.
+ * @type {WeakMap<object, {avatar: string, baseline: {hash: number|undefined}, saveDebounced: () => void}>}
+ */
+const embeddedLoreOwners = new WeakMap();
 
 /**
- * Persists edits made to an embedded lorebook back into the owning character's card (never as a
- * saved World file). Refuses to write if the character panel has since navigated away from the
- * character the edit belongs to, rather than risk saving it into the wrong card.
+ * Debounced {@link saveEmbeddedLore}, one debounce per embedded-lorebook editor, so a pending save for one
+ * character's lorebook is never absorbed by an edit to another's.
+ * @param {{entries: Record<string, any>, originalData?: object}} data
+ */
+function saveEmbeddedLoreDebounced(data) {
+    const owner = embeddedLoreOwners.get(data);
+    if (!owner) {
+        // Nothing to debounce against; saveEmbeddedLore() reports these edits as not saved.
+        return saveEmbeddedLore(data);
+    }
+    owner.saveDebounced();
+}
+
+/**
+ * Persists edits made to an embedded lorebook back into the card of the character they were made on
+ * (never as a saved World file), whichever character the panel shows by then. Anything that can't be
+ * saved is reported to the user.
  * @param {{entries: Record<string, any>, originalData?: object}} data Current WI-editor-shaped entries for the embedded lorebook
  */
 async function saveEmbeddedLore(data) {
-    const avatar = embeddedLoreCharacterAvatar;
-    if (!avatar) {
-        console.warn('[WI] No character bound for embedded lorebook edit, discarding change.');
+    const owner = embeddedLoreOwners.get(data);
+    if (!owner) {
+        console.error('[WI] Embedded lorebook edits with no character bound to them were not saved.', data);
+        toastr.error(t`These embedded lorebook edits don't belong to any character, so they were not saved.`, t`Embedded lorebook not saved`);
         return;
     }
 
-    if ($('#avatar_url_pole').val() !== avatar) {
-        console.warn('[WI] Active character panel no longer matches the embedded lorebook being edited, discarding change.');
-        return;
-    }
-
+    const { avatar, baseline } = owner;
     try {
         const characterBookJson = JSON.stringify(convertToCharacterBook(data));
-        $('#character_book_json').val(characterBookJson);
-        await saveCharacterField(avatar, '#character_book_json', characterBookJson);
+        // The panel's hidden field holds the card of whichever character the panel shows; only mirror the
+        // edit into it while that is still the one these edits belong to.
+        if ($('#avatar_url_pole').val() === avatar) {
+            $('#character_book_json').val(characterBookJson);
+        }
+        await saveCharacterField(avatar, '#character_book_json', characterBookJson, baseline);
     } catch (error) {
-        console.error('[WI] Failed to save embedded lorebook changes.', error);
+        console.error(`[WI] Failed to save embedded lorebook changes for ${avatar}.`, error);
+        const characterName = charactersStore.get(avatar)?.name ?? avatar;
+        toastr.error(t`Your edits to the embedded lorebook of ${characterName} are still shown in the editor, but they were not saved.`, t`Embedded lorebook not saved`);
     }
 }
 
@@ -6246,6 +6270,11 @@ export async function openEmbeddedLoreEditor(avatarArg) {
 
     embeddedLoreCharacterAvatar = avatar;
     const data = convertCharacterBook(character.data.character_book);
+    embeddedLoreOwners.set(data, {
+        avatar,
+        baseline: characterFieldBaseline(character, '#character_book_json'),
+        saveDebounced: debounce(() => saveEmbeddedLore(data), debounce_timeout.relaxed),
+    });
 
     if (!$('#WorldInfo').is(':visible')) {
         $('#WIDrawerIcon').trigger('click');
