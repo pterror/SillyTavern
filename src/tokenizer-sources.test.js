@@ -58,9 +58,9 @@ const sha256Of = body => crypto.createHash('sha256').update(body).digest('hex');
 
 let revisionCounter = 0;
 /**
- * A test-only entry for `body`, one source per repo name.
+ * A test-only entry for `body`, one source per repo name or URL.
  * @param {Buffer} body
- * @param {{ repo: string, gated?: boolean, path?: string }[]} sources
+ * @param {({ repo: string, gated?: boolean, path?: string } | { url: string })[]} sources
  * @param {object} [extra]
  */
 function makeEntry(body, sources, extra = {}) {
@@ -72,12 +72,12 @@ function makeEntry(body, sources, extra = {}) {
         bytes: body.length,
         license: 'Test License 1.0',
         licenseUrl: 'https://example.invalid/license',
-        sources: sources.map(source => ({
+        sources: sources.map(source => 'url' in source ? { url: source.url } : {
             repo: source.repo,
             revision: String(++revisionCounter).padStart(40, '0'),
             path: source.path ?? 'tokenizer.json',
             gated: source.gated ?? false,
-        })),
+        }),
         ...extra,
     };
 }
@@ -202,6 +202,54 @@ await testCase('with a saved Hugging Face token, the gated official repo is trie
     ]);
 });
 
+await testCase('a source on another host is fetched at its own URL with no auth header, and pinned by the entry\'s sha256 and bytes', async () => {
+    const directories = /** @type {any} */ ({ root: userRoot, backups: path.join(userRoot, 'backups') });
+    writeSecret(directories, SECRET_KEYS.HUGGINGFACE, 'hf_test_token');
+
+    const body = Buffer.from('{"host":1}');
+    const url = 'https://files.example.invalid/tokenizers/model.json';
+    const entry = makeEntry(body, [{ url }]);
+    assert.equal(getSourceUrl(entry.sources[0]), url);
+    responses.set(url, ok(body));
+
+    const result = await getPinnedTokenizerFile(entry, directories);
+    assert.deepEqual(result, { path: path.join(cacheDir, `${entry.sha256}.json`), downloaded: true, license: 'Test License 1.0' });
+    assert.deepEqual(fs.readFileSync(result.path), body);
+    assert.deepEqual(requests, [{ url, authorization: undefined }]);
+});
+
+await testCase('a changed file at a URL is a failed download of that source: the next source is tried, and the URL waits out the 60 s backoff', async () => {
+    const body = Buffer.from('{"host":2}');
+    const url = 'https://files.example.invalid/tokenizers/changed.json';
+    const entry = makeEntry(body, [{ url }, { repo: 'mirror/host-copy' }]);
+    const copyUrl = getSourceUrl(entry.sources[1]);
+    responses.set(url, ok(Buffer.from('{"host":3}')));
+    responses.set(copyUrl, ok(body));
+
+    const realNow = performance.now();
+    const clock = mock.method(performance, 'now', () => realNow);
+    try {
+        const first = await getPinnedTokenizerFile(entry);
+        assert.deepEqual(requests.map(r => r.url), [url, copyUrl], 'the URL failed its sha256, the copy served the file');
+        assert.deepEqual(fs.readFileSync(first.path), body);
+
+        fs.rmSync(first.path);
+        requests.length = 0;
+        clock.mock.mockImplementation(() => realNow + 59_999);
+        await getPinnedTokenizerFile(entry);
+        assert.deepEqual(requests.map(r => r.url), [copyUrl], 'the URL is not tried again within 60 s');
+
+        fs.rmSync(first.path);
+        requests.length = 0;
+        responses.set(url, ok(body));
+        clock.mock.mockImplementation(() => realNow + 60_000);
+        await getPinnedTokenizerFile(entry);
+        assert.deepEqual(requests.map(r => r.url), [url], 'after 60 s the URL is tried first again');
+    } finally {
+        clock.mock.restore();
+    }
+});
+
 await testCase('parallel calls on a cold cache share one download; only the call that fetched reports downloaded', async () => {
     const body = Buffer.from('{"parallel":1}');
     const entry = makeEntry(body, [{ repo: 'owner/parallel' }]);
@@ -247,14 +295,20 @@ await testCase('every registry entry is pinned', () => {
         assert.ok(entry.license && entry.licenseUrl, `${entry.id}: license`);
         assert.ok(entry.sources.length > 0, `${entry.id}: sources`);
         entry.sources.forEach((source, index) => {
+            assert.equal(Boolean(source.license), Boolean(source.licenseUrl), `${entry.id}: ${source.repo ?? source.url}'s license and its URL come together`);
+            if ('url' in source) {
+                // A file on another host has no revision: the entry's sha256 and bytes pin it.
+                assert.match(source.url, /^https:\/\/[^/]+\/./, `${entry.id}: url`);
+                assert.deepEqual(Object.keys(source).filter(key => !['url', 'license', 'licenseUrl'].includes(key)), [], `${entry.id}: a URL source has no repo, revision, path or gated`);
+                return;
+            }
             assert.match(source.revision, /^[0-9a-f]{40}$/, `${entry.id}: revision`);
             assert.ok(source.repo && source.path, `${entry.id}: repo and path`);
             // A gated repo is the model's own, listed first, or an official repo after the ungated
             // official repos that ship the same bytes.
             const owner = source.repo.split('/')[0];
-            const isAfterOfficialRepos = entry.sources.slice(0, index).every(earlier => !earlier.gated && earlier.repo.split('/')[0] === owner);
+            const isAfterOfficialRepos = entry.sources.slice(0, index).every(earlier => !earlier.gated && earlier.repo?.split('/')[0] === owner);
             assert.ok(index === 0 || !source.gated || isAfterOfficialRepos, `${entry.id}: ${source.repo} is gated`);
-            assert.equal(Boolean(source.license), Boolean(source.licenseUrl), `${entry.id}: ${source.repo}'s license and its URL come together`);
         });
     }
     assert.ok(Object.isFrozen(TOKENIZER_SOURCES));
@@ -265,12 +319,21 @@ await testCase('a registry entry is named `<family> (official)`; a model\'s HF t
     assert.equal(getTokenizerDisplayName(byId('mistral-large-2411')), 'Mistral Large 2411 (official)');
     assert.equal(getTokenizerDisplayName(byId('mistral-large-2411-hf')), 'Mistral Large 2411 (official, HF tokenizer.json)');
     assert.equal(getTokenizerDisplayName(byId('qwen3')), 'Qwen3 (official)');
+    assert.equal(getTokenizerDisplayName(byId('aya-vision-32b')), 'Aya Vision 32B (official)');
+    assert.equal(getTokenizerDisplayName(byId('aya-vision-32b-hf')), 'Aya Vision 32B (official, HF tokenizer.json)');
+});
+
+await testCase('a file only Cohere publishes is pinned to the URL Cohere\'s API names for it, and its license says none is stated', () => {
+    const entry = /** @type {any} */ (TOKENIZER_SOURCES.find(source => source.id === 'aya-vision-32b'));
+    const url = 'https://storage.googleapis.com/cohere-public/tokenizers/c4ai-aya-vision-32b.json';
+    assert.deepEqual(entry.sources, [{ url }]);
+    assert.deepEqual({ license: entry.license, licenseUrl: entry.licenseUrl }, { license: 'Not stated (Cohere public tokenizer file)', licenseUrl: url });
 });
 
 await testCase('every registry entry has its fixed `tokenizers` value, on the server, in the browser and in Advanced Formatting', async () => {
     const { tokenizers, TOKENIZER_TYPE_KEYS } = await import('./tokenizer-ids.js');
     // Fixed forever once shipped: never renumbered, reused or removed.
-    const expected = { QWEN3: 1000, LLAMA3_1: 1001, NEMO_TEKKEN: 1002, KIMI: 1003, QWEN2_VL: 1004, QWEN2_5: 1005, QWEN3_5: 1006, QWEN3_5_BASE: 1007, QWEN3_8: 1008, CODEQWEN1_5: 1009, DEEPSEEK_V2: 1010, DEEPSEEK_V2_5: 1011, DEEPSEEK_R1: 1012, DEEPSEEK_V3_1: 1013, DEEPSEEK_V3_2: 1014, DEEPSEEK_V4: 1015, DEEPSEEK_V4_1: 1016, DEEPSEEK_R1_DISTILL_QWEN: 1017, DEEPSEEK_R1_DISTILL_LLAMA: 1018, DEEPSEEK_R1_0528_QWEN3: 1019, GEMMA_4: 1020, GEMMA_4_ASSISTANT: 1021, GEMMA_3_IT: 1022, GEMMA_3_PT: 1023, GEMMA_3N: 1024, CODEGEMMA: 1025, GEMMA_2_JPN: 1026, LLAMA3_1_BASE: 1027, LLAMA3_3: 1028, LLAMA4: 1029, LLAMA_GUARD_3_8B: 1030, LLAMA_GUARD_3_11B_VISION: 1031, LLAMA_GUARD_2: 1032, LLAMA_GUARD_4: 1033, MISTRAL_7B_V0_3: 1034, MATHSTRAL: 1035, MISTRAL_LARGE_2411: 1036, MISTRAL_7B_V0_3_HF: 1037, CODESTRAL_22B_HF: 1038, CODESTRAL_MAMBA_HF: 1039, MATHSTRAL_HF: 1040, MISTRAL_LARGE_2411_HF: 1041, MINISTRAL_8B_2410_HF: 1042, MINISTRAL_3_INSTRUCT_HF: 1043, MINISTRAL_3_BASE_HF: 1044, MISTRAL_SMALL_4_HF: 1045, SHIELDSTRAL_HF: 1046, MISTRAL_SMALL_3_HF: 1047 };
+    const expected = { QWEN3: 1000, LLAMA3_1: 1001, NEMO_TEKKEN: 1002, KIMI: 1003, QWEN2_VL: 1004, QWEN2_5: 1005, QWEN3_5: 1006, QWEN3_5_BASE: 1007, QWEN3_8: 1008, CODEQWEN1_5: 1009, DEEPSEEK_V2: 1010, DEEPSEEK_V2_5: 1011, DEEPSEEK_R1: 1012, DEEPSEEK_V3_1: 1013, DEEPSEEK_V3_2: 1014, DEEPSEEK_V4: 1015, DEEPSEEK_V4_1: 1016, DEEPSEEK_R1_DISTILL_QWEN: 1017, DEEPSEEK_R1_DISTILL_LLAMA: 1018, DEEPSEEK_R1_0528_QWEN3: 1019, GEMMA_4: 1020, GEMMA_4_ASSISTANT: 1021, GEMMA_3_IT: 1022, GEMMA_3_PT: 1023, GEMMA_3N: 1024, CODEGEMMA: 1025, GEMMA_2_JPN: 1026, LLAMA3_1_BASE: 1027, LLAMA3_3: 1028, LLAMA4: 1029, LLAMA_GUARD_3_8B: 1030, LLAMA_GUARD_3_11B_VISION: 1031, LLAMA_GUARD_2: 1032, LLAMA_GUARD_4: 1033, MISTRAL_7B_V0_3: 1034, MATHSTRAL: 1035, MISTRAL_LARGE_2411: 1036, MISTRAL_7B_V0_3_HF: 1037, CODESTRAL_22B_HF: 1038, CODESTRAL_MAMBA_HF: 1039, MATHSTRAL_HF: 1040, MISTRAL_LARGE_2411_HF: 1041, MINISTRAL_8B_2410_HF: 1042, MINISTRAL_3_INSTRUCT_HF: 1043, MINISTRAL_3_BASE_HF: 1044, MISTRAL_SMALL_4_HF: 1045, SHIELDSTRAL_HF: 1046, MISTRAL_SMALL_3_HF: 1047, COMMAND_A_VISION: 1048, COMMAND_A_PLUS: 1049, AYA_VISION_32B: 1050, TINY_AYA: 1051, TINY_AYA_BASE: 1052, COMMAND_R_08_2024_HF: 1053, AYA_VISION_32B_HF: 1054 };
     const clientEnum = fs.readFileSync(path.join(__dirname, '..', 'public', 'scripts', 'tokenizers.js'), 'utf8');
     const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
     const registryKeys = new Set();

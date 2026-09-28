@@ -15,5 +15,6 @@
  "   leading and trailing spaces   ",
  "Ở Việt Nam, việc này có nhiều điều hợp lý; jeho každý характер değişti.",
  "Watch this: <|video|> and describe it.",
- "Sources: [REFERENCE_DOC_1] [REF]a[/REF] [SYSTEM_PROMPT] [IMG] [IMG_BREAK] [THINK] [MODEL_SETTINGS]"
+ "Sources: [REFERENCE_DOC_1] [REF]a[/REF] [SYSTEM_PROMPT] [IMG] [IMG_BREAK] [THINK] [MODEL_SETTINGS]",
+ "Cohere: <|START_THINKING|>plan <|START_OF_IMG|> <|NEW_FILE|> <|EXTRA_7_TOKEN|> done."
 ]

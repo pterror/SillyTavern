@@ -1065,6 +1065,66 @@ await check('a Mistral name: its native file on Mistral\'s API; no file on every
     assert.deepEqual({ kind: nemoOnOpenRouter.kind, id: nemoOnOpenRouter.id }, { kind: 'local', id: tokenizers.NEMO });
 });
 
+await check('a Cohere name: Cohere\'s file on Cohere\'s API; the same file elsewhere where the repo\'s agrees, none where it doesn\'t', async () => {
+    const commandA = { id: tokenizers.COMMAND_A, name: 'Command-A', model: 'command-a' };
+    const commandR = { id: tokenizers.COMMAND_R, name: 'Command-R', model: 'command-r' };
+    const vision = { id: tokenizers.COMMAND_A_VISION, source: 'command-a-vision', name: 'Command A Vision (official)' };
+    const plus = { id: tokenizers.COMMAND_A_PLUS, source: 'command-a-plus', name: 'Command A+ (official)' };
+    const aya32b = { id: tokenizers.AYA_VISION_32B, source: 'aya-vision-32b', name: 'Aya Vision 32B (official)' };
+    const tinyAya = { id: tokenizers.TINY_AYA, source: 'tiny-aya', name: 'Tiny Aya (official)' };
+    const onCohere = [
+        ['command-r7b-12-2024', commandA],
+        ['command-a-vision-07-2025', vision],
+        ['c4ai-aya-vision-8b', vision],
+        ['command-a-plus-05-2026', plus],
+        ['north-mini-code-1-0', plus],
+        ['c4ai-aya-vision-32b', aya32b],
+        ['command-r-08-2024', commandR],
+        ['c4ai-aya-expanse-32b', commandR],
+        ['tiny-aya-global', tinyAya],
+    ];
+    for (const [model, expected] of onCohere) {
+        const resolved = await resolveTokenizer({ api: 'openai', source: 'cohere', model });
+        assert.deepEqual(
+            { kind: resolved.kind, id: resolved.id, name: resolved.name, localCopy: resolved.localCopy },
+            { kind: 'local', id: expected.id, name: expected.name, localCopy: expected },
+            model,
+        );
+    }
+
+    const elsewhere = [
+        [{ api: 'openai', source: 'openrouter' }, 'cohere/command-a-plus-05-2026', plus],
+        [{ api: 'openai', source: 'openrouter' }, 'cohere/command-r7b-12-2024', commandA],
+        [{ api: TEXTGEN, type: TEXTGEN_TYPES.OLLAMA, url: 'http://127.0.0.1:1' }, 'aya-expanse:8b', commandR],
+        [{ api: 'openai', source: 'nanogpt' }, 'CohereLabs/command-a-vision-07-2025', vision],
+    ];
+    for (const [backend, model, expected] of elsewhere) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.equal(resolved.kind, 'local', `${JSON.stringify(backend)} ${model}`);
+        assert.equal(resolved.id, expected.id, `${JSON.stringify(backend)} ${model}`);
+    }
+
+    const estimates = [
+        [{ api: 'openai', source: 'openrouter' }, 'cohere/command-r-08-2024'],
+        [{ api: 'openai', source: 'nanogpt' }, 'CohereLabs/aya-vision-32b'],
+        [{ api: 'openai', source: 'cohere' }, 'command-a-vision'],
+        [{ api: 'openai', source: 'cohere' }, 'command-nightly'],
+    ];
+    for (const [backend, model] of estimates) {
+        const resolved = await resolveTokenizer({ ...backend, model, tokenizerSetting: tokenizers.BEST_MATCH });
+        assert.deepEqual({ kind: resolved.kind, basis: resolved.basis }, { kind: 'estimate', basis: 'unknown' }, `${JSON.stringify(backend)} ${model}`);
+    }
+
+    const llamacpp = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'c4ai-command-r-08-2024-Q4_K_M.gguf', tokenizerSetting: tokenizers.BEST_MATCH,
+    });
+    assert.deepEqual({ kind: llamacpp.kind, localCopy: llamacpp.localCopy }, { kind: 'remote', localCopy: null });
+    const tinyAyaOnLlamacpp = await resolveTokenizer({
+        api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'tiny-aya-global-q4_k_m.gguf', tokenizerSetting: tokenizers.BEST_MATCH,
+    });
+    assert.deepEqual({ kind: tinyAyaOnLlamacpp.kind, localCopy: tinyAyaOnLlamacpp.localCopy }, { kind: 'remote', localCopy: tinyAya });
+});
+
 await check('the old resolvers and their llama defaults are no longer exported', async () => {
     const modules = {
         './tokenizer-resolve.js': ['getTokenizerBestMatch', 'resolveTokenizerType', 'getCurrentOpenRouterModelTokenizer', 'getCurrentDreamGenModelTokenizer'],

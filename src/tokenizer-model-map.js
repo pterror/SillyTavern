@@ -203,6 +203,85 @@ function mistralFamilyMatches(tokens) {
 }
 
 /**
+ * A Cohere model whose repo's HF `tokenizer.json` gives other ids than the file Cohere's API names for
+ * it (its `tokenizer_url`). Cohere's API reads its own file; every other backend gets none, because
+ * which of the two it reads is unknowable.
+ * @param {MapResult} native
+ * @param {string} hfSource The registry entry of the repo's `tokenizer.json`
+ * @returns {MapResult}
+ */
+const onCohereApi = (native, hfSource) => ({
+    byBackend: { vendorApis: { [CHAT_COMPLETION_SOURCES.COHERE]: native }, hf: { source: hfSource } },
+});
+
+/**
+ * Cohere's models. Where Cohere's file and the repo's give the same ids, one file serves every backend.
+ * A name picks one model only with its date, version or size: `command-r7b`, `c4ai-aya-23`, `tiny-aya`
+ * and `north-mini-code` alone name none, and `command`, `command-light` and the `-nightly` ids point at
+ * different models over time.
+ * @param {string[]} tokens
+ * @returns {MapMatch[] | null} null when an unknown version vetoes the name
+ */
+function cohereFamilyMatches(tokens) {
+    for (const sequence of [['aya', 'vision'], ['aya', 'expanse'], ['tiny', 'aya']]) {
+        if (guardedMatch(tokens, [sequence], followedByAllDigits) === 'veto') return null;
+    }
+
+    /** @type {MapMatch[]} */
+    const matches = [];
+    /** @param {MapResult} result */
+    const add = result => matches.push({ result });
+    /**
+     * The one size of `sizes` the name has; null for none or several.
+     * @param {string[]} sizes
+     */
+    const onlySize = sizes => {
+        const found = sizes.filter(size => tokens.includes(size));
+        return found.length === 1 ? found[0] : null;
+    };
+
+    // command-r.json's content: Command R and R+, Aya 23 and Aya Expanse. Command R 08-2024's own
+    // tokenizer.json adds <|NEW_FILE|> and four FIM tokens, which Cohere's file for it lacks.
+    const isCommandR0824 = hasSequence(tokens, ['command', 'r', '08', '2024']);
+    if (hasSequence(tokens, ['command', 'r']) && !isCommandR0824) add(tokenizers.COMMAND_R);
+    if (isCommandR0824) add(onCohereApi(tokenizers.COMMAND_R, 'command-r-08-2024-hf'));
+    if (hasSequence(tokens, ['aya', '23']) && onlySize(['8b', '35b'])) add(tokenizers.COMMAND_R);
+    if (hasSequence(tokens, ['aya', 'expanse']) && onlySize(['8b', '32b'])) add(tokenizers.COMMAND_R);
+
+    // command-a.json's content: Command A (Reasoning, Translate) and Command R7B, not Command A Vision or A+.
+    if (findSequence(tokens, ['command', 'a']).some(start => !['vision', 'plus'].includes(tokens[start + 2]))) {
+        add(tokenizers.COMMAND_A);
+    }
+    if (hasSequence(tokens, ['command', 'r7b', '12', '2024']) || hasSequence(tokens, ['command', 'r7b', 'arabic', '02', '2025'])) {
+        add(tokenizers.COMMAND_A);
+    }
+
+    // Command A Vision's file: command-a.json's content plus four image tokens. Aya Vision 8B's has its content.
+    const ayaVisionSize = hasSequence(tokens, ['aya', 'vision']) ? onlySize(['8b', '32b']) : null;
+    if (hasSequence(tokens, ['command', 'a', 'vision', '07', '2025']) || ayaVisionSize === '8b') add({ source: 'command-a-vision' });
+    if (ayaVisionSize === '32b') add(onCohereApi({ source: 'aya-vision-32b' }, 'aya-vision-32b-hf'));
+
+    // Command A+ and North Mini Code 1.0 ship one file.
+    if (hasSequence(tokens, ['command', 'a', 'plus', '05', '2026']) || hasSequence(tokens, ['north', 'mini', 'code', '1', '0'])) {
+        add({ source: 'command-a-plus' });
+    }
+
+    // Tiny Aya Global, Earth, Fire, Water, Base 32K and the L2 and EN Thinkers ship one file; Tiny Aya
+    // Base's lacks its eight <|START_RESPONSE|> … <|END_THINKING|> tokens.
+    for (const start of findSequence(tokens, ['tiny', 'aya'])) {
+        const [variant, next] = tokens.slice(start + 2, start + 4);
+        if (['global', 'earth', 'fire', 'water'].includes(variant) || (variant === 'base' && next === '32k')
+            || (['l2', 'en'].includes(variant) && next === 'thinker')) {
+            add({ source: 'tiny-aya' });
+        } else if (variant === 'base') {
+            add({ source: 'tiny-aya-base' });
+        }
+    }
+
+    return matches;
+}
+
+/**
  * Version numbers each Gemma name may have after it; any other is an unknown version.
  * @type {Array<[string[], (next: string) => boolean]>}
  */
@@ -639,8 +718,10 @@ function generalMatches(tokens, lowerName) {
         ['jamba', 'tiny', 'reward', 'dev'],
     ];
     if (jambaSequences.some(sequence => hasSequence(tokens, sequence))) add(tokenizers.JAMBA);
-    if (hasSequence(tokens, ['command', 'r'])) add(tokenizers.COMMAND_R);
-    if (hasSequence(tokens, ['command', 'a'])) add(tokenizers.COMMAND_A);
+
+    const cohereMatches = cohereFamilyMatches(tokens);
+    if (cohereMatches === null) return null;
+    matches.push(...cohereMatches);
 
     // tiktoken's model list is the authority on the raw (lowercased, not separator-split) name,
     // so separators do matter here: 'gpt-4o' is known, 'gpt_4o' is not.
