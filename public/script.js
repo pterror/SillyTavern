@@ -901,6 +901,24 @@ export function saveSettingsDebounced(loopCounter, ...keys) {
 // With a search term the list isn't re-queried here; the visible page is, on 'search-index-updated'.
 const getCharactersDebounced = debounce(() => getCharacters({ skipPrint: hasActiveCharacterSearch() }), 2000);
 
+/**
+ * The warning for a queued tag move the server couldn't apply. src/character-metadata-db.js's tagMoveFailedText()
+ * says the same.
+ * @param {{ tagId: string, tagName: string | null, anchorId: string | null, anchorName: string | null, refusedId: string, reason: string }} message
+ */
+function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, reason }) {
+    const tag = tagName ?? tagId;
+    if (anchorId === null) return `Couldn't set the order of tag "${tag}": its stored data couldn't be read.`;
+    const anchor = anchorName ?? anchorId;
+    const prefix = `Couldn't move tag "${tag}" next to "${anchor}": `;
+    switch (reason) {
+        case 'deleted': return `${prefix}"${anchor}" was deleted.`;
+        case 'unreadable': return `${prefix}the stored data of "${refusedId === tagId ? tag : refusedId === anchorId ? anchor : refusedId}" couldn't be read.`;
+        case 'unordered': return `${prefix}"${anchor}" is too far into the tags with no order.`;
+        case 'no-room': return `${prefix}there was no room left in the order.`;
+    }
+}
+
 // One SSE connection per tab, doubling as change notification and presence heartbeat - avoids exhausting the per-origin connection pool.
 function setupCharacterChangeStream() {
     if (typeof EventSource === 'undefined') return;
@@ -914,6 +932,10 @@ function setupCharacterChangeStream() {
         }
         if (message?.type === 'search-index-updated') {
             onSearchIndexUpdated();
+            return;
+        }
+        if (message?.type === 'tag-move-failed') {
+            toastr.warning(tagMoveFailedText(message));
             return;
         }
         if (isCharacterListShowing()) {

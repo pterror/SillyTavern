@@ -153,3 +153,23 @@ test('search-index-updated reaches only the streams of the commit\'s handle', as
         other.close();
     }
 });
+
+test('a tag move failure for the stream\'s store is written as data: {"type":"tag-move-failed",...} and acked; another store\'s isn\'t', async () => {
+    const { characterChangeEmitter, TAG_MOVE_FAILED_EVENT } = await import('../src/character-metadata-db.js');
+    const stream = await openStream('sse-user-tag-move');
+    try {
+        const payload = { tagId: 'x', tagName: 'Ex', anchorId: 'a', anchorName: null, refusedId: 'a', reason: 'deleted' };
+        const other = { delivered: false };
+        characterChangeEmitter.emit(TAG_MOVE_FAILED_EVENT, `${tempDir}-other`, payload, other);
+        expect(other.delivered).toBe(false);
+        const ack = { delivered: false };
+        characterChangeEmitter.emit(TAG_MOVE_FAILED_EVENT, tempDir, payload, ack);
+        expect(ack.delivered).toBe(true);
+        expect(await stream.nextMessage(1000)).toBe(true);
+        expect(stream.messages).toEqual([`data: ${JSON.stringify({ type: 'tag-move-failed', ...payload })}`]);
+    } finally {
+        stream.close();
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(characterChangeEmitter.listenerCount(TAG_MOVE_FAILED_EVENT)).toBe(0);
+});

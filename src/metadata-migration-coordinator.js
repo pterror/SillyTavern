@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
-import { characterChangeEmitter, clearTagCache, waitForMetadataBootChain } from './character-metadata-db.js';
+import { characterChangeEmitter, clearTagCache, reportTagMoveFailed, waitForMetadataBootChain } from './character-metadata-db.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { color, getConfigFilePath } from './util.js';
 
@@ -50,18 +50,20 @@ function spawnMigrationWorker(workerData) {
  * chain (initializeMetadataStores()) has finished, and not at all if the chain failed, since the passes rely on what
  * it populates. Keeps this process in step with what the worker writes: after each batch that
  * wrote tag definitions the store's tag cache is cleared, and after each batch that wrote change rows 'change' is
- * emitted once.
+ * emitted once. A queued tag move the worker couldn't apply is reported here (reportTagMoveFailed()).
  * @param {object} [options]
  * @param {(workerData: object) => MigrationWorker} [options.spawnWorker]
  * @param {(directories: import('./users.js').UserDirectoryList) => Promise<boolean>} [options.waitForBootChain]
  * @param {(directories: import('./users.js').UserDirectoryList) => Promise<void>} [options.onTagDefinitionsChanged]
  * @param {() => void} [options.onChanged]
+ * @param {(directories: import('./users.js').UserDirectoryList, payload: import('./character-metadata-db.js').TagMoveFailedPayload) => void} [options.onTagMoveFailed]
  */
 export function createMetadataMigrationCoordinator({
     spawnWorker = spawnMigrationWorker,
     waitForBootChain = waitForMetadataBootChain,
     onTagDefinitionsChanged = clearTagCache,
     onChanged = () => characterChangeEmitter.emit('change'),
+    onTagMoveFailed = (directories, payload) => reportTagMoveFailed(directories.root, payload),
 } = {}) {
     /** @type {Map<string, WorkerEntry>} */
     const entries = new Map();
@@ -81,6 +83,10 @@ export function createMetadataMigrationCoordinator({
             case 'batch': {
                 if (msg.tagDefinitionsChanged) await onTagDefinitionsChanged(directories);
                 if (msg.changed) onChanged();
+                return;
+            }
+            case 'tag-move-failed': {
+                onTagMoveFailed(directories, msg.payload);
                 return;
             }
             case 'error': {

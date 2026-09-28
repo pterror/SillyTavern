@@ -461,6 +461,20 @@ const SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_tag_deletions_merge_into ON tag_deletions(merge_into);
 
+    -- A tag move (moveTagDefinition()) or sort_order value that arrived before fillTagSortOrdersIfNeeded() finished,
+    -- waiting to be applied when it does (tag-actions D16, D18, D19). seq is the arrival order, the order they apply
+    -- in. An entry is either anchored (side and anchor_id: put tag_id right before/after anchor_id) or a value
+    -- (sort_order: write it as tag_id's sort_order), never both.
+    CREATE TABLE IF NOT EXISTS tag_pending_moves (
+        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+        tag_id     TEXT NOT NULL,
+        side       TEXT CHECK (side IN ('before', 'after')),
+        anchor_id  TEXT,
+        sort_order REAL,
+        CHECK ((side IS NOT NULL AND anchor_id IS NOT NULL AND sort_order IS NULL)
+            OR (side IS NULL AND anchor_id IS NULL AND sort_order IS NOT NULL))
+    );
+
     -- One row per change to the name a tag's rows read as: a tag *name* edit (saveTagDefinitions() below), or a tag
     -- marked deleted, which then reads as its merge target or as nothing (deleteTagDefinition()). Never per tag
     -- creation or non-name field - a change log a caller can page through with seq > sinceSeq, the same shape as
@@ -2684,6 +2698,46 @@ export async function reconcile(directories) {
 export const TAG_DEFINITIONS_CHANGED_EVENT = 'tag-definitions-changed';
 
 /**
+ * @typedef {'deleted' | 'unreadable' | 'unordered' | 'no-room'} TagMoveFailedReason
+ * @typedef {{ tagId: string, tagName: string | null, anchorId: string | null, anchorName: string | null,
+ *   refusedId: string, reason: TagMoveFailedReason }} TagMoveFailedPayload anchorId and anchorName are null for a
+ *   sort_order entry. refusedId is the id the refusal named.
+ */
+
+// Emitted on characterChangeEmitter as (root, payload, ack) when a queued tag move can't be applied. A listener that
+// hands the warning on (to a client, or to the main process) sets ack.delivered.
+export const TAG_MOVE_FAILED_EVENT = 'tag-move-failed';
+
+/**
+ * The warning shown for a queued tag move that couldn't be applied. public/script.js's tagMoveFailedText() says
+ * the same.
+ * @param {TagMoveFailedPayload} payload
+ */
+function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, reason }) {
+    const tag = tagName ?? tagId;
+    if (anchorId === null) return `Couldn't set the order of tag "${tag}": its stored data couldn't be read.`;
+    const anchor = anchorName ?? anchorId;
+    const prefix = `Couldn't move tag "${tag}" next to "${anchor}": `;
+    switch (reason) {
+        case 'deleted': return `${prefix}"${anchor}" was deleted.`;
+        case 'unreadable': return `${prefix}the stored data of "${refusedId === tagId ? tag : refusedId === anchorId ? anchor : refusedId}" couldn't be read.`;
+        case 'unordered': return `${prefix}"${anchor}" is too far into the tags with no order.`;
+        case 'no-room': return `${prefix}there was no room left in the order.`;
+    }
+}
+
+/**
+ * Hands a queued tag move's failure to whoever listens for TAG_MOVE_FAILED_EVENT, or logs it when none takes it.
+ * @param {string} root The store's directories.root.
+ * @param {TagMoveFailedPayload} payload
+ */
+export function reportTagMoveFailed(root, payload) {
+    const ack = { delivered: false };
+    characterChangeEmitter.emit(TAG_MOVE_FAILED_EVENT, root, payload, ack);
+    if (!ack.delivered) console.warn(color.yellow('[character-metadata] ' + tagMoveFailedText(payload)));
+}
+
+/**
  * Waits for the store's boot chain from initializeMetadataStores().
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<boolean>} false when the chain failed, or the store has none (it is unavailable or was never
@@ -4297,7 +4351,7 @@ export async function saveTagDefinitions(directories, tagsArray) {
 }
 
 /**
- * @typedef {'deleted' | 'exists' | 'missing' | 'unreadable'} TagWriteRefusalReason
+ * @typedef {'deleted' | 'exists' | 'missing' | 'unreadable' | 'same' | 'unordered' | 'no-room'} TagWriteRefusalReason
  * @typedef {{ refused: { id: string, reason: TagWriteRefusalReason }[] }} TagWriteResult
  */
 
@@ -5868,9 +5922,11 @@ function writeTagSortOrderSync(db, rowid, tag, sortOrder) {
  * moves `base` once 1 doesn't.
  * @param {number} base
  * @param {number} count
- * @returns {number[]} Shorter than `count` where the values would stop being finite.
+ * @returns {number[]} Shorter than `count` where the values would stop being finite; empty for a non-finite `base`,
+ *   which no step moves.
  */
 function valuesAfter(base, count) {
+    if (!Number.isFinite(base)) return [];
     let step = 1;
     while (base + step === base) step *= 2;
     /** @type {number[]} */
@@ -5881,6 +5937,27 @@ function valuesAfter(base, count) {
         values.push(value);
     }
     return values;
+}
+
+/**
+ * valuesAfter()'s mirror: `count` distinct finite values before `base`, ascending.
+ * @param {number} base
+ * @param {number} count
+ * @returns {number[]} Shorter than `count` where the values would stop being finite, dropping the farthest from
+ *   `base`; empty for a non-finite `base`.
+ */
+function valuesBefore(base, count) {
+    if (!Number.isFinite(base)) return [];
+    let step = 1;
+    while (base - step === base) step *= 2;
+    /** @type {number[]} */
+    const values = [];
+    for (let i = 1; i <= count; i++) {
+        const value = base - step * i;
+        if (!Number.isFinite(value)) break;
+        values.push(value);
+    }
+    return values.reverse();
 }
 
 /**
@@ -6022,6 +6099,9 @@ async function spreadLargeTie(entry, value, totals) {
  *
  * Every write changes a row's order value without changing the order, so each commit shows the order the user
  * sees. Each page is read to the end and written in one transaction. A restart resumes from the place kept in meta.
+ *
+ * 3. Once the flag is set, the moves queued in tag_pending_moves while the pass ran (moveTagDefinition()) are applied
+ *    in arrival order (drainTagPendingMoves()). A run that finds the flag already set applies what is left of them.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<CharacterPassResult | undefined>} `batches` counts the transactions that wrote or moved the
  *   place; `rowsChanged` the tags written.
@@ -6030,7 +6110,11 @@ export async function fillTagSortOrdersIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
     const { db } = entry;
-    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })) {
+        const totals = { batches: 0, rowsChanged: 0 };
+        await drainTagPendingMoves(entry, directories, totals);
+        return totals;
+    }
     if (!tagQueryColumnsReady(entry) || !db.get('SELECT 1 FROM meta WHERE key = \'tags_json_migrated\'')) {
         console.log(color.cyan('[character-metadata] Tag sort_order fill: waiting for the tag query columns fill and the tags.json migration to finish.'));
         return { batches: 0, rowsChanged: 0 };
@@ -6153,6 +6237,7 @@ export async function fillTagSortOrdersIfNeeded(directories) {
                 saveAt({ phase: 'ties', s: state.s });
             }
         });
+        if (state.done) await drainTagPendingMoves(entry, directories, totals);
         for (const value of state.noRoom) await warnTagsLeftTied(db, value);
         if (state.large !== null) {
             const outcome = await spreadLargeTie(entry, state.large, totals);
@@ -6174,6 +6259,426 @@ export async function fillTagSortOrdersIfNeeded(directories) {
     return totals;
 }
 
+/** The rows a move's first renumbering window covers (tag-actions D11); it doubles while there's no room. */
+const TAG_MOVE_WINDOW_ROWS = 16;
+
+/** @typedef {{ rowid: number, id: string, data: string, sort_order: number | null, name_key: string }} TagMoveRow */
+
+const TAG_MOVE_ROW_COLUMNS = 'rowid, id, data, sort_order, name_key';
+
+/** Thrown inside moveTagDefinition()'s transaction to roll back the tail it numbered when the move is refused after. */
+class TagMoveRollback extends Error {}
+
+/**
+ * Rows of the manual order (sort_order, rowid) next to the place (s, r), nearest first, through tags_sort_order.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {number} s
+ * @param {number} r
+ * @param {'down' | 'up'} direction 'down' reads the rows before the place, 'up' those after it.
+ * @param {boolean} inclusive Whether the row at (s, r) itself is read.
+ * @param {number | null} skip A rowid never read; null skips none.
+ * @param {number} limit
+ * @returns {TagMoveRow[]}
+ */
+function tagOrderRowsSync(db, s, r, direction, inclusive, skip, limit) {
+    const down = direction === 'down';
+    const rowidOp = `${down ? '<' : '>'}${inclusive ? '=' : ''}`;
+    const order = down ? 'sort_order DESC, rowid DESC' : 'sort_order, rowid';
+    const rows = /** @type {TagMoveRow[]} */ ([...db.iterate(`SELECT ${TAG_MOVE_ROW_COLUMNS} FROM tags INDEXED BY tags_sort_order
+        WHERE sort_order = @s AND rowid ${rowidOp} @r AND rowid IS NOT @skip ORDER BY ${order} LIMIT @limit`, { s, r, skip, limit })]);
+    if (rows.length < limit) {
+        rows.push(...db.iterate(`SELECT ${TAG_MOVE_ROW_COLUMNS} FROM tags INDEXED BY tags_sort_order
+            WHERE sort_order ${down ? '<' : '>'} @s AND rowid IS NOT @skip ORDER BY ${order} LIMIT @limit`, { s, skip, limit: limit - rows.length }));
+    }
+    return rows;
+}
+
+/**
+ * Gives the moved tag a sort_order right before or after the anchor: the midpoint with the anchor's neighbour on
+ * that side, or past the anchor at an end of the order; failing that, spreads a window of rows around the anchor,
+ * doubling it until there is room.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {TagMoveRow} moved
+ * @param {Record<string, unknown>} tag moved's data.
+ * @param {TagMoveRow & { sort_order: number }} anchor
+ * @param {'before' | 'after'} side
+ * @returns {number | 'no-room'} The rows written; 0 when the tag is already in that place.
+ */
+function placeTagNextToSync(db, moved, tag, anchor, side) {
+    const a = anchor.sort_order;
+    const neighbour = tagOrderRowsSync(db, a, anchor.rowid, side === 'before' ? 'down' : 'up', false, null, 1).at(0);
+    if (neighbour?.rowid === moved.rowid) return 0;
+    /** @type {number | undefined} */
+    let value;
+    if (neighbour !== undefined) {
+        const b = /** @type {number} */ (neighbour.sort_order);
+        const m = (a + b) / 2;
+        if (Number.isFinite(m) && Math.min(a, b) < m && m < Math.max(a, b)) value = m;
+    } else {
+        const v = (side === 'after' ? valuesAfter(a, 1) : valuesBefore(a, 1)).at(0);
+        if (v !== undefined && Number.isFinite(v) && (side === 'after' ? v > a : v < a)) value = v;
+    }
+    if (value !== undefined) {
+        writeTagSortOrderSync(db, moved.rowid, tag, value);
+        return 1;
+    }
+
+    for (let size = TAG_MOVE_WINDOW_ROWS; ; size *= 2) {
+        const half = size / 2;
+        // The gap is between the two sides: "before" puts the anchor first on the right, "after" first on the left.
+        const left = tagOrderRowsSync(db, a, anchor.rowid, 'down', side === 'after', moved.rowid, half + 1);
+        const right = tagOrderRowsSync(db, a, anchor.rowid, 'up', side === 'before', moved.rowid, half + 1);
+        // A side with more than `half` rows hasn't reached its end of the order; its extra row is the bound.
+        const leftBound = left.length > half ? left.pop() : undefined;
+        const rightBound = right.length > half ? right.pop() : undefined;
+        const sequence = [...left.reverse(), moved, ...right];
+        const n = sequence.length;
+        const lo = leftBound && leftBound.sort_order !== -Infinity ? /** @type {number} */ (leftBound.sort_order) : null;
+        const hi = rightBound && rightBound.sort_order !== Infinity ? /** @type {number} */ (rightBound.sort_order) : null;
+        const values = lo !== null && hi !== null
+            ? sequence.map((_, i) => lo + (hi - lo) * (i + 1) / (n + 1))
+            : lo !== null ? valuesAfter(lo, n) : hi !== null ? valuesBefore(hi, n) : valuesAfter(0, n);
+        const valid = values.length === n && values.every((v, i) => Number.isFinite(v)
+            && (i === 0 ? lo === null || v > lo : v > values[i - 1])
+            && (i < n - 1 || hi === null || v < hi));
+        if (valid) {
+            let rows = 0;
+            sequence.forEach((row, i) => {
+                if (values[i] === row.sort_order) return;
+                // Stored data under a sort_order is always an object: tagDerivedColumns() gives any other NULL.
+                const rowTag = row === moved ? tag : /** @type {Record<string, unknown>} */ (parseTagObject(row.data));
+                writeTagSortOrderSync(db, row.rowid, rowTag, values[i]);
+                rows++;
+            });
+            return rows;
+        }
+        if (!leftBound && !rightBound) return 'no-room';
+    }
+}
+
+/**
+ * Numbers the tail (tags without a sort_order, by (name_key, rowid)) from its start through the anchor, after the
+ * current max as fillTagSortOrdersIfNeeded() does, reading at most TAG_QUERY_WORK_CAP rows. The moved tag and rows
+ * whose data isn't a JSON object stay in the tail.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {TagMoveRow} anchor
+ * @param {number} movedRowid
+ * @param {{ unwritable: string[], replaced: string[] }} logs Get, once numbered, a line per row left in the tail
+ *   because its data isn't a JSON object, and one per row whose present sort_order (which had no order) was replaced.
+ * @returns {'unordered' | 'no-room' | number} The rows written, once numbered.
+ */
+function numberTagTailThroughSync(db, anchor, movedRowid, logs) {
+    const rows = /** @type {TagMoveRow[]} */ ([...db.iterate(`SELECT ${TAG_MOVE_ROW_COLUMNS} FROM tags INDEXED BY tags_unordered_name_key
+        WHERE sort_order IS NULL AND name_key < @k ORDER BY name_key, rowid LIMIT @limit`, { k: anchor.name_key, limit: TAG_QUERY_WORK_CAP })]);
+    if (rows.length < TAG_QUERY_WORK_CAP) {
+        rows.push(...db.iterate(`SELECT ${TAG_MOVE_ROW_COLUMNS} FROM tags INDEXED BY tags_unordered_name_key
+            WHERE sort_order IS NULL AND name_key = @k AND rowid <= @r ORDER BY name_key, rowid LIMIT @limit`,
+        { k: anchor.name_key, r: anchor.rowid, limit: TAG_QUERY_WORK_CAP - rows.length }));
+    }
+    if (rows.length === 0 || rows[rows.length - 1].rowid !== anchor.rowid) return 'unordered';
+
+    /** @type {{ rowid: number, id: string, tag: Record<string, unknown> }[]} */
+    const targets = [];
+    /** @type {string[]} */
+    const skipped = [];
+    for (const row of rows) {
+        if (row.rowid === movedRowid) continue;
+        const tag = parseTagObject(row.data);
+        if (tag) targets.push({ rowid: row.rowid, id: row.id, tag });
+        else skipped.push(`  ${row.id}`);
+    }
+    const max = /** @type {{ max: number | null }} */ (db.get('SELECT MAX(sort_order) AS max FROM tags')).max;
+    // Upstream newTag()'s Math.max(0, ...orders) + 1.
+    const values = valuesAfter(Math.max(0, max ?? 0), targets.length);
+    if (values.length < targets.length) return 'no-room';
+    targets.forEach(({ rowid, id, tag }, i) => {
+        if (tag.sort_order !== undefined) logs.replaced.push(`  ${tagWarningLabel(id, tag)}: ${JSON.stringify(tag.sort_order)}`);
+        writeTagSortOrderSync(db, rowid, tag, values[i]);
+    });
+    logs.unwritable.push(...skipped);
+    return targets.length;
+}
+
+/** @typedef {{ unwritable: string[], replaced: string[] }} TagTailLogs */
+
+/**
+ * @typedef {object} TagMoveOutcome
+ * @property {{ id: string, reason: TagWriteRefusalReason }[]} refused
+ * @property {number} rows The tags rows written.
+ * @property {TagTailLogs | null} logs Set once the tail was numbered.
+ * @property {string | null} noRoom The log line for a 'no-room' refusal.
+ * @property {boolean} rollback Whether the rows written must be rolled back: the tail was numbered, then the move
+ *   was refused.
+ */
+
+/**
+ * Whether fillTagSortOrdersIfNeeded() has finished: its flag is set and no move queued before then is left.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function tagSortOrdersSettledSync(db) {
+    return !!db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })
+        && !db.get('SELECT 1 FROM tag_pending_moves LIMIT 1');
+}
+
+/**
+ * Reads a move's two tags, refusing what holds whatever the order: the tag as its own anchor ('same', and nothing
+ * else is read), then per id a deletion mark or no row, and the moved tag's data not being a JSON object.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @param {string} anchorId
+ * @returns {{ refused: TagMoveOutcome['refused'], moved: TagMoveRow | null, tag: Record<string, unknown> | null,
+ *   anchor: TagMoveRow | null }} moved and anchor are null when refused as deleted or missing.
+ */
+function readTagMoveSync(db, id, anchorId) {
+    if (id === anchorId) return { refused: [{ id, reason: 'same' }], moved: null, tag: null, anchor: null };
+    /** @param {string} tagId */
+    const read = tagId => ({
+        marked: !!db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tagId }),
+        row: /** @type {TagMoveRow | undefined} */ (db.get(`SELECT ${TAG_MOVE_ROW_COLUMNS} FROM tags WHERE id = @id`, { id: tagId })),
+    });
+    const moved = read(id);
+    const anchor = read(anchorId);
+    const tag = moved.row ? parseTagObject(moved.row.data) : null;
+    /** @type {TagMoveOutcome['refused']} */
+    const refused = [];
+    if (moved.marked) refused.push({ id, reason: 'deleted' });
+    else if (!moved.row) refused.push({ id, reason: 'missing' });
+    else if (!tag) refused.push({ id, reason: 'unreadable' });
+    if (anchor.marked) refused.push({ id: anchorId, reason: 'deleted' });
+    else if (!anchor.row) refused.push({ id: anchorId, reason: 'missing' });
+    return {
+        refused,
+        moved: moved.marked || !moved.row ? null : moved.row,
+        tag,
+        anchor: anchor.marked || !anchor.row ? null : anchor.row,
+    };
+}
+
+/**
+ * Moves tag `id` right before or after `anchorId` in the manual order, inside the caller's transaction, and updates
+ * the tags hash when it wrote. A refusal writes nothing, except that a move refused after numbering the tail comes
+ * back with `rollback` set, and the caller must roll its transaction back.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @param {string} anchorId
+ * @param {'before' | 'after'} side
+ * @returns {TagMoveOutcome}
+ */
+function moveTagSync(db, id, anchorId, side) {
+    const read = readTagMoveSync(db, id, anchorId);
+    /** @type {TagMoveOutcome} */
+    const result = { refused: read.refused, rows: 0, logs: null, noRoom: null, rollback: false };
+    const anchorTag = read.anchor ? parseTagObject(read.anchor.data) : null;
+    if (read.anchor && read.anchor.sort_order === null && !anchorTag) result.refused.push({ id: anchorId, reason: 'unreadable' });
+    if (result.refused.length > 0) return result;
+    const movedRow = /** @type {TagMoveRow} */ (read.moved);
+    const tag = /** @type {Record<string, unknown>} */ (read.tag);
+    let anchorRow = /** @type {TagMoveRow} */ (read.anchor);
+    const noRoom = () => {
+        result.refused.push({ id, reason: 'no-room' });
+        result.noRoom = `[character-metadata] Couldn't move tag ${tagWarningLabel(id, tag)} ${side} ${tagWarningLabel(anchorId, anchorTag)}: there is no room for a sort_order there.`;
+    };
+
+    if (anchorRow.sort_order === null) {
+        if (side === 'before' && movedRow.sort_order === null) {
+            const k = anchorRow.name_key;
+            const previous = /** @type {{ rowid: number }[]} */ ([
+                ...db.iterate(`SELECT rowid FROM tags INDEXED BY tags_unordered_name_key
+                    WHERE sort_order IS NULL AND name_key = @k AND rowid < @r ORDER BY name_key DESC, rowid DESC LIMIT 1`, { k, r: anchorRow.rowid }),
+                ...db.iterate(`SELECT rowid FROM tags INDEXED BY tags_unordered_name_key
+                    WHERE sort_order IS NULL AND name_key < @k ORDER BY name_key DESC, rowid DESC LIMIT 1`, { k }),
+            ]).at(0);
+            if (previous?.rowid === movedRow.rowid) return result;
+        }
+        /** @type {TagTailLogs} */
+        const logs = { unwritable: [], replaced: [] };
+        const outcome = numberTagTailThroughSync(db, anchorRow, movedRow.rowid, logs);
+        if (outcome === 'unordered') {
+            result.refused.push({ id: anchorId, reason: 'unordered' });
+            return result;
+        }
+        if (outcome === 'no-room') {
+            noRoom();
+            return result;
+        }
+        result.rows = outcome;
+        result.logs = logs;
+        anchorRow = /** @type {TagMoveRow} */ (db.get(`SELECT ${TAG_MOVE_ROW_COLUMNS} FROM tags WHERE rowid = @r`, { r: anchorRow.rowid }));
+    }
+
+    const outcome = placeTagNextToSync(db, movedRow, tag, /** @type {TagMoveRow & { sort_order: number }} */ (anchorRow), side);
+    if (outcome === 'no-room') {
+        noRoom();
+        if (result.rows > 0) {
+            result.rows = 0;
+            result.logs = null;
+            result.rollback = true;
+        }
+        return result;
+    }
+    result.rows += outcome;
+    if (result.rows > 0) updateTagsHashSync(db);
+    return result;
+}
+
+/**
+ * Logs what numbering the tail changed or skipped.
+ * @param {TagTailLogs | null} logs
+ */
+function warnTagTailNumbering(logs) {
+    const { replaced = [], unwritable = [] } = logs ?? {};
+    if (replaced.length > 0) {
+        console.warn(color.yellow(`[character-metadata] Tag move: ${replaced.length} tag(s) whose sort_order had no order (non-numeric, NaN or an object) were given one; their old values:\n${replaced.join('\n')}`));
+    }
+    if (unwritable.length > 0) {
+        console.warn(color.yellow(`[character-metadata] Tag move: ${unwritable.length} tag(s) whose stored data isn't a JSON object were left without a sort_order:\n${unwritable.join('\n')}`));
+    }
+}
+
+/**
+ * Moves a tag to right before or right after an anchor tag in the manual order, both by id (tag-actions step 5).
+ * Only the moved tag's sort_order changes, unless there's no room next to the anchor: then a window of rows around
+ * it is spread too. An anchor without a sort_order first gets one, along with the tail before it.
+ *
+ * Until fillTagSortOrdersIfNeeded() has finished (tagSortOrdersSettledSync()), the move is only checked for what
+ * the order can't change ('same', a deleted or missing id, an unreadable moved tag) and queued in
+ * tag_pending_moves, writing nothing else; that pass applies it when it ends.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {unknown} id
+ * @param {unknown} placement `{ before: anchorId }` or `{ after: anchorId }`.
+ * @returns {Promise<(TagWriteResult & { queued?: true }) | null>} queued is set when the move was queued.
+ */
+export async function moveTagDefinition(directories, id, placement) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    if (typeof id !== 'string' || !id) return null;
+    if (placement === null || typeof placement !== 'object') return null;
+    const { before, after } = /** @type {{ before?: unknown, after?: unknown }} */ (placement);
+    if ((before === undefined) === (after === undefined)) return null;
+    const side = before !== undefined ? 'before' : 'after';
+    const anchorId = side === 'before' ? before : after;
+    if (typeof anchorId !== 'string' || !anchorId) return null;
+    const { db } = entry;
+
+    /** @type {TagMoveOutcome} */
+    let result = { refused: [], rows: 0, logs: null, noRoom: null, rollback: false };
+    const state = { queued: false };
+    try {
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            state.queued = false;
+            if (!tagSortOrdersSettledSync(db)) {
+                result = { refused: readTagMoveSync(db, id, anchorId).refused, rows: 0, logs: null, noRoom: null, rollback: false };
+                if (result.refused.length > 0) return;
+                db.run('INSERT INTO tag_pending_moves (tag_id, side, anchor_id) VALUES (@id, @side, @anchorId)', { id, side, anchorId });
+                state.queued = true;
+                return;
+            }
+            result = moveTagSync(db, id, anchorId, side);
+            if (result.rollback) throw new TagMoveRollback();
+        });
+    } catch (err) {
+        if (!(err instanceof TagMoveRollback)) throw err;
+    }
+    warnStaleDeletedTagSave(result.refused.filter(r => r.reason === 'deleted').map(r => r.id));
+    if (result.noRoom !== null) console.warn(color.yellow(result.noRoom));
+    warnTagTailNumbering(result.logs);
+    if (result.rows > 0) entry.tagCache = null;
+    return state.queued ? { refused: result.refused, queued: true } : { refused: result.refused };
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @returns {string | null} The tag's name when its data is a JSON object with a string name.
+ */
+function tagNameSync(db, id) {
+    const row = /** @type {{ data: string } | undefined} */ (db.get('SELECT data FROM tags WHERE id = @id', { id }));
+    const name = row ? parseTagObject(row.data)?.name : undefined;
+    return typeof name === 'string' ? name : null;
+}
+
+/**
+ * Applies tag_pending_moves in arrival order, one entry per transaction, deleting each (tag-actions D16, D18, D19).
+ * An anchored entry is moved as moveTagDefinition() moves; a value entry's value is written as the tag's sort_order.
+ * An entry whose tag was deleted or is gone is dropped, and one whose tag is its own anchor does nothing, both
+ * without a warning. Any other refusal leaves the tags as they are and is reported by reportTagMoveFailed(), once
+ * per refusal.
+ * @param {MetadataDbEntry} entry
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ batches: number, rowsChanged: number }} totals Gets a batch per entry and the rows it wrote.
+ */
+async function drainTagPendingMoves(entry, directories, totals) {
+    const { db } = entry;
+    // So a store with nothing queued runs no transaction; each transaction below still reads its own entry.
+    if (!db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return;
+    for (;;) {
+        /** @type {{ seq: number, tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, sort_order: number | null } | undefined} */
+        let pending;
+        /** @type {TagMoveOutcome | null} */
+        let moved = null;
+        let rows = 0;
+        /** @type {TagMoveFailedPayload[]} */
+        let failures = [];
+        try {
+            db.transaction(() => {
+                // Reset here: a transaction that hits busy is rolled back and rerun.
+                moved = null;
+                rows = 0;
+                failures = [];
+                pending = /** @type {typeof pending} */ (db.get('SELECT seq, tag_id, side, anchor_id, sort_order FROM tag_pending_moves ORDER BY seq LIMIT 1'));
+                if (!pending) return;
+                const { tag_id: tagId, side, anchor_id: anchorId } = pending;
+                if (side !== null && anchorId !== null) {
+                    moved = moveTagSync(db, tagId, anchorId, side);
+                    const { refused } = moved;
+                    if (refused.length > 0) {
+                        const dropped = refused.some(r => r.id === tagId && (r.reason === 'deleted' || r.reason === 'missing'))
+                            || refused.some(r => r.reason === 'same');
+                        if (!dropped) {
+                            const tagName = tagNameSync(db, tagId);
+                            const anchorName = tagNameSync(db, anchorId);
+                            failures = refused.map(r => ({
+                                tagId, tagName, anchorId, anchorName, refusedId: r.id,
+                                reason: /** @type {TagMoveFailedReason} */ (r.reason === 'missing' ? 'deleted' : r.reason),
+                            }));
+                        }
+                        // Rolls back what the move wrote; the entry is deleted in a transaction of its own below.
+                        throw new TagMoveRollback();
+                    }
+                    rows = moved.rows;
+                } else {
+                    const value = /** @type {number} */ (pending.sort_order);
+                    const marked = !!db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tagId });
+                    const row = /** @type {{ rowid: number, data: string, sort_order: number | null } | undefined} */ (marked ? undefined
+                        : db.get('SELECT rowid, data, sort_order FROM tags WHERE id = @id', { id: tagId }));
+                    const tag = row ? parseTagObject(row.data) : null;
+                    if (row && !tag) {
+                        failures = [{ tagId, tagName: null, anchorId: null, anchorName: null, refusedId: tagId, reason: 'unreadable' }];
+                    } else if (row && tag && row.sort_order !== value) {
+                        writeTagSortOrderSync(db, row.rowid, tag, value);
+                        updateTagsHashSync(db);
+                        rows = 1;
+                    }
+                }
+                db.run('DELETE FROM tag_pending_moves WHERE seq = @seq', { seq: pending.seq });
+                if (rows > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            });
+        } catch (err) {
+            if (!(err instanceof TagMoveRollback)) throw err;
+            const { seq } = /** @type {NonNullable<typeof pending>} */ (pending);
+            db.transaction(() => db.run('DELETE FROM tag_pending_moves WHERE seq = @seq', { seq }));
+        }
+        if (!pending) return;
+        if (rows > 0) warnTagTailNumbering(/** @type {TagMoveOutcome | null} */ (moved)?.logs ?? null);
+        for (const payload of failures) reportTagMoveFailed(directories.root, payload);
+        if (rows > 0) entry.tagCache = null;
+        totals.batches++;
+        totals.rowsChanged += rows;
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+}
+
 /** The sorts queryTags() takes: the client's tag_sort_mode values (public/scripts/tags.js). */
 export const TAG_QUERY_SORTS = /** @type {const} */ (['manual', 'alphabetical', 'by_entries']);
 /** @typedef {typeof TAG_QUERY_SORTS[number]} TagQuerySort */
@@ -6192,12 +6697,18 @@ const TAG_QUERY_ID_CHUNK = 500;
  * A place in a sort's order, the keyset cursor (D1). Manual is two phases: tags with a sort_order by
  * (sort_order, rowid), then those without by (name_key, rowid). Alphabetical is (name_key, rowid); by_entries is
  * (usage_count DESC, name_key, rowid). Ties go by rowid, upstream's insertion order.
+ *
+ * Manual only, while moves wait in tag_pending_moves (readTagPendingOverlaySync()): a tag a pending move placed
+ * sits in a gap right before (g -1) or after (g +1) the place (phase, s, k, c, r) of its anchor, at index i of the
+ * gap. A place without g is a row's own (g 0, i 0).
  * @typedef {object} TagQueryPosition
  * @property {1 | 2} phase Manual only; 1 elsewhere.
  * @property {number | null} s sort_order.
  * @property {string} k name_key.
  * @property {number} c usage_count.
  * @property {number} r rowid.
+ * @property {-1 | 0 | 1} [g] Manual only: the side of the gap a pending move placed the tag in; 0 when none.
+ * @property {number} [i] Manual only: the tag's index in that gap; 0 when none.
  */
 
 /**
@@ -6226,20 +6737,31 @@ function compareTagKeys(sort, a, b) {
 }
 
 /**
+ * The full order of positions of one sort; a missing g or i counts as 0.
+ * @param {TagQuerySort} sort
+ * @param {TagQueryPosition} a
+ * @param {TagQueryPosition} b
+ */
+function compareTagPositions(sort, a, b) {
+    return compareTagKeys(sort, a, b) || a.r - b.r || (a.g ?? 0) - (b.g ?? 0) || (a.i ?? 0) - (b.i ?? 0);
+}
+
+/**
  * @param {TagQuerySort} sort
  * @param {TagQueryPosition} position
  * @returns {string}
  */
 function encodeTagQueryCursor(sort, position) {
     const values = sort === 'manual'
-        ? (position.phase === 1 ? [sort, 1, String(position.s), position.r] : [sort, 2, position.k, position.r])
+        ? [sort, position.phase, position.phase === 1 ? String(position.s) : position.k, position.r, position.g ?? 0, position.i ?? 0]
         : sort === 'alphabetical' ? [sort, position.k, position.r] : [sort, position.c, position.k, position.r];
     return Buffer.from(JSON.stringify(values), 'utf8').toString('base64url');
 }
 
 /**
- * Reads a cursor queryTags() returned for `sort`. The sort_order is carried as a string, so an infinite one
- * survives JSON.
+ * Reads a cursor queryTags() returned for `sort` (encodeTagQueryCursor()). The sort_order is carried as a string,
+ * so an infinite one survives JSON. A 4-element manual cursor [sort, phase, key, rowid] is still accepted, as
+ * g 0, i 0.
  * @param {unknown} cursor
  * @param {TagQuerySort} sort
  * @returns {TagQueryPosition | null} null when it isn't one, or was made for another sort.
@@ -6256,13 +6778,16 @@ export function decodeTagQueryCursor(cursor, sort) {
     if (!Array.isArray(values) || values[0] !== sort) return null;
     const isRowid = (/** @type {unknown} */ r) => Number.isSafeInteger(r);
     if (sort === 'manual') {
-        if (values.length !== 4 || !isRowid(values[3])) return null;
+        if ((values.length !== 4 && values.length !== 6) || !isRowid(values[3])) return null;
+        const g = values.length === 6 ? values[4] : 0;
+        const i = values.length === 6 ? values[5] : 0;
+        if ((g !== -1 && g !== 0 && g !== 1) || !Number.isSafeInteger(i) || i < 0) return null;
         if (values[1] === 1 && typeof values[2] === 'string') {
             const s = Number(values[2]);
             if (Number.isNaN(s) || values[2].trim() === '') return null;
-            return { phase: 1, s, k: '', c: 0, r: values[3] };
+            return { phase: 1, s, k: '', c: 0, r: values[3], g, i };
         }
-        if (values[1] === 2 && typeof values[2] === 'string') return { phase: 2, s: null, k: values[2], c: 0, r: values[3] };
+        if (values[1] === 2 && typeof values[2] === 'string') return { phase: 2, s: null, k: values[2], c: 0, r: values[3], g, i };
         return null;
     }
     if (sort === 'alphabetical') {
@@ -6453,6 +6978,178 @@ function parseTagQueryRow(row) {
 }
 
 /**
+ * @typedef {object} TagPendingOverlay
+ * @property {Map<string, TagQueryPosition>} keys The manual place of every tag a pending entry placed or gave a
+ *   value; its own row's place no longer counts.
+ * @property {Map<string, TagQueryRow>} rows The tags rows the pending entries name.
+ */
+
+/**
+ * The manual order as it will be once drainTagPendingMoves() has applied tag_pending_moves (tag-actions D16): the
+ * entries run in arrival order over the rows' current places, skipping what the drain drops or refuses. A tag moved
+ * next to an anchor sits in a gap right before or after the anchor's place at the time; a tag moved next to a tag
+ * in a gap joins that gap next to it. A gap stays where it is when its anchor moves on, and an anchor keeps one gap
+ * per side and place. A value entry gives the tag the place (phase 1, value, its rowid).
+ * Bounded by the number of pending entries.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {boolean} derive The derived columns aren't filled yet: sort_order, is_folder and name_key come from data
+ *   as queryTagsFromList() derives them, and usage_count from tag_usage.
+ * @returns {TagPendingOverlay | null} null when nothing is pending.
+ */
+function readTagPendingOverlaySync(db, derive) {
+    if (!db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return null;
+    /** @type {{ tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, sort_order: number | null }[]} */
+    const entries = [...db.iterate('SELECT tag_id, side, anchor_id, sort_order FROM tag_pending_moves ORDER BY seq')];
+    const ids = [...new Set(entries.flatMap(e => e.anchor_id === null ? [e.tag_id] : [e.tag_id, e.anchor_id]))];
+    const columns = derive
+        ? `rowid AS r, id, data, COALESCE((SELECT count FROM tag_usage WHERE tag_id = tags.id), 0) AS usage_count,
+            EXISTS (SELECT 1 FROM tag_deletions WHERE tag_id = tags.id) AS marked`
+        : TAG_QUERY_ROW_COLUMNS;
+    /** @type {Map<string, TagQueryRow>} */
+    const rows = new Map();
+    for (let i = 0; i < ids.length; i += TAG_QUERY_ID_CHUNK) {
+        const slice = ids.slice(i, i + TAG_QUERY_ID_CHUNK);
+        const sql = `SELECT ${columns} FROM tags WHERE id IN (${slice.map(() => '?').join(',')}) LIMIT ${slice.length}`;
+        for (const row of /** @type {Generator<TagQueryRow>} */ (db.iterate(sql, slice))) {
+            if (!derive) {
+                rows.set(row.id, row);
+                continue;
+            }
+            /** @type {unknown} */
+            let tag = null;
+            try {
+                tag = JSON.parse(row.data);
+            } catch {
+                // Derived as data with no fields.
+            }
+            const { sortOrder, isFolder } = tagDerivedColumns(tag);
+            rows.set(row.id, { ...row, sort_order: sortOrder, is_folder: isFolder, name_key: tagDefinitionNameKey(tag) });
+        }
+    }
+
+    /** @typedef {{ base: TagQueryPosition, side: 'before' | 'after', items: string[] }} TagPendingGap */
+    /** @type {Map<string, TagPendingGap[]>} */
+    const gapsByAnchor = new Map();
+    /** @type {Map<string, TagPendingGap>} */
+    const placed = new Map();
+    /** @type {Map<string, number>} */
+    const values = new Map();
+    /** @param {TagQueryRow | undefined} row */
+    const usable = row => row !== undefined && !row.marked;
+    /** @param {string} id */
+    const unplace = id => {
+        const gap = placed.get(id);
+        if (!gap) return;
+        gap.items.splice(gap.items.indexOf(id), 1);
+        placed.delete(id);
+    };
+    for (const { tag_id: id, side, anchor_id: anchorId, sort_order: value } of entries) {
+        const row = rows.get(id);
+        if (!usable(row) || !parseTagObject(/** @type {TagQueryRow} */ (row).data)) continue;
+        if (side === null || anchorId === null) {
+            unplace(id);
+            values.set(id, /** @type {number} */ (value));
+            continue;
+        }
+        const anchor = rows.get(anchorId);
+        if (id === anchorId || !usable(anchor)) continue;
+        const anchorRow = /** @type {TagQueryRow} */ (anchor);
+        if (anchorRow.sort_order === null && !parseTagObject(anchorRow.data)) continue;
+        unplace(id);
+        values.delete(id);
+        const anchorGap = placed.get(anchorId);
+        if (anchorGap) {
+            anchorGap.items.splice(anchorGap.items.indexOf(anchorId) + (side === 'after' ? 1 : 0), 0, id);
+            placed.set(id, anchorGap);
+            continue;
+        }
+        const anchorValue = values.get(anchorId);
+        const base = anchorValue === undefined ? tagRowPosition('manual', anchorRow)
+            : { phase: /** @type {1} */ (1), s: anchorValue, k: anchorRow.name_key, c: anchorRow.usage_count, r: anchorRow.r };
+        const gaps = gapsByAnchor.get(anchorId) ?? [];
+        gapsByAnchor.set(anchorId, gaps);
+        let gap = gaps.find(g => g.side === side && compareTagPositions('manual', g.base, base) === 0);
+        if (!gap) {
+            gap = { base, side, items: [] };
+            gaps.push(gap);
+        }
+        if (side === 'before') gap.items.push(id);
+        else gap.items.unshift(id);
+        placed.set(id, gap);
+    }
+
+    /** @type {Map<string, TagQueryPosition>} */
+    const keys = new Map();
+    for (const [id, value] of values) {
+        const row = /** @type {TagQueryRow} */ (rows.get(id));
+        keys.set(id, { phase: 1, s: value, k: row.name_key, c: row.usage_count, r: row.r });
+    }
+    for (const gaps of gapsByAnchor.values()) {
+        for (const { base, side, items } of gaps) {
+            items.forEach((id, i) => keys.set(id, { ...base, g: side === 'before' ? -1 : 1, i }));
+        }
+    }
+    return { keys, rows };
+}
+
+/**
+ * Whether a row passes a page's filters other than ids.
+ * @param {TagQueryRow} row
+ * @param {TagQueryParams} params
+ * @param {ReturnType<typeof tagNameMatchers>} names
+ */
+function tagRowPassesFilters(row, params, names) {
+    return !row.marked && names.matches(row.name_key)
+        && (params.folders !== true || row.is_folder === 1)
+        && (params.used !== true || row.usage_count > 0);
+}
+
+/**
+ * The overlay's tags on a page: those passing its filters, after its cursor, in order.
+ * @param {TagPendingOverlay | null} overlay
+ * @param {TagQueryParams} params
+ * @param {ReturnType<typeof tagNameMatchers>} names
+ * @returns {{ key: TagQueryPosition, row: TagQueryRow }[]}
+ */
+function tagOverlayPageItems(overlay, params, names) {
+    if (overlay === null) return [];
+    const ids = params.ids ? new Set(params.ids) : null;
+    const after = params.after ?? null;
+    /** @type {{ key: TagQueryPosition, row: TagQueryRow }[]} */
+    const items = [];
+    for (const [id, key] of overlay.keys) {
+        const row = /** @type {TagQueryRow} */ (overlay.rows.get(id));
+        if (!tagRowPassesFilters(row, params, names) || (ids && !ids.has(id))) continue;
+        if (after !== null && compareTagPositions('manual', key, after) <= 0) continue;
+        items.push({ key, row });
+    }
+    return items.sort((a, b) => compareTagPositions('manual', a.key, b.key));
+}
+
+/**
+ * Merges the overlay's page items into a page in order: emitBefore(place) adds the items before `place` (every one
+ * left, for null) to `rows`.
+ * @param {TagQuerySort} sort
+ * @param {{ key: TagQueryPosition, row: TagQueryRow }[]} items
+ * @param {object[]} rows The page.
+ * @param {number} pageSize
+ * @returns {(place: TagQueryPosition | null) => string | null} The cursor once the page is full.
+ */
+function tagOverlayEmitter(sort, items, rows, pageSize) {
+    let next = 0;
+    return place => {
+        while (next < items.length && (place === null || compareTagPositions(sort, items[next].key, place) < 0)) {
+            const { key, row } = items[next++];
+            const tag = parseTagQueryRow(row);
+            if (tag === undefined) continue;
+            rows.push(tag);
+            if (rows.length === pageSize) return encodeTagQueryCursor(sort, key);
+        }
+        return null;
+    };
+}
+
+/**
  * Whether a name_key lies after every key the exact name or search prefix matches, so a walk in name_key order
  * has nothing left to find.
  * @param {string} nameKey
@@ -6466,7 +7163,8 @@ function isPastNameRange(nameKey, names, nameLow) {
 }
 
 /**
- * The indexed path: walks the sort's phases through their indexes under TAG_QUERY_WORK_CAP.
+ * The indexed path: walks the sort's phases through their indexes under TAG_QUERY_WORK_CAP, merging in the pending
+ * moves' overlay (manual) by place. Overlay tags don't count toward the cap; their own rows do, and are left out.
  * @param {MetadataDbEntry} entry
  * @param {TagQueryParams} params
  * @returns {TagQueryResult}
@@ -6484,23 +7182,30 @@ function queryTagsIndexed(entry, params) {
     /** @type {TagQueryPosition | null} */
     let last = null;
     const after = params.after ?? null;
+    // A cursor in the gap before a place was cut before the place's own row was shown, so the walk starts at it.
+    const walkAfter = after !== null && after.g === -1 ? { ...after, r: after.r - 1, g: /** @type {0} */ (0), i: 0 } : after;
+    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, false) : null;
+    const emitBefore = tagOverlayEmitter(sort, tagOverlayPageItems(overlay, params, names), rows, pageSize);
 
     for (const phase of tagWalkPhases(sort, { used, folders })) {
-        if (after !== null && after.phase > phase.phase) continue;
+        if (walkAfter !== null && walkAfter.phase > phase.phase) continue;
         const leadsWithName = phase.keys[0].column === 'name_key';
         let phaseDone = false;
-        for (const { sql, params: queryParams } of tagWalkQueries(phase, after !== null && after.phase === phase.phase ? after : null, nameLow)) {
+        for (const { sql, params: queryParams } of tagWalkQueries(phase, walkAfter !== null && walkAfter.phase === phase.phase ? walkAfter : null, nameLow)) {
             if (phaseDone) break;
             const limit = TAG_QUERY_WORK_CAP - examined;
             for (const row of /** @type {Generator<TagQueryRow>} */ (entry.db.iterate(sql, { ...queryParams, limit }))) {
+                const position = tagRowPosition(sort, row);
+                const full = emitBefore(position);
+                if (full !== null) return { rows, cursor: full, more: false };
                 examined++;
-                last = tagRowPosition(sort, row);
+                last = position;
                 const nameMatches = names.matches(row.name_key);
                 if (!nameMatches && leadsWithName && nameLow !== null && isPastNameRange(row.name_key, names, nameLow)) {
                     phaseDone = true;
                     break;
                 }
-                const passes = nameMatches && !row.marked
+                const passes = nameMatches && !row.marked && overlay?.keys.has(row.id) !== true
                     && (phase.coversFolders || !folders || row.is_folder === 1)
                     && (phase.coversUsed || !used || row.usage_count > 0);
                 if (passes) {
@@ -6516,12 +7221,12 @@ function queryTagsIndexed(entry, params) {
             }
         }
     }
-    return { rows, cursor: null, more: false };
+    return { rows, cursor: emitBefore(null), more: false };
 }
 
 /**
  * The ids path: reads the ids through the primary key, checks every other filter per row, and orders them by the
- * sort in memory; bounded by the ids' own cap.
+ * sort in memory (manual: a tag the pending moves' overlay holds at its overlay place); bounded by the ids' own cap.
  * @param {MetadataDbEntry} entry
  * @param {TagQueryParams} params
  * @returns {TagQueryResult}
@@ -6529,6 +7234,7 @@ function queryTagsIndexed(entry, params) {
 function queryTagsByIds(entry, params) {
     const { sort, pageSize } = params;
     const names = tagNameMatchers(params);
+    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, false) : null;
     const wanted = [...new Set(params.ids)];
     /** @type {{ position: TagQueryPosition, row: TagQueryRow }[]} */
     const found = [];
@@ -6540,12 +7246,12 @@ function queryTagsByIds(entry, params) {
             if (params.folders === true && row.is_folder !== 1) continue;
             if (params.used === true && !(row.usage_count > 0)) continue;
             if (!names.matches(row.name_key)) continue;
-            const position = tagRowPosition(sort, row);
-            if (params.after && (compareTagKeys(sort, position, params.after) || position.r - params.after.r) <= 0) continue;
+            const position = overlay?.keys.get(row.id) ?? tagRowPosition(sort, row);
+            if (params.after && compareTagPositions(sort, position, params.after) <= 0) continue;
             found.push({ position, row });
         }
     }
-    found.sort((a, b) => compareTagKeys(sort, a.position, b.position) || a.position.r - b.position.r);
+    found.sort((a, b) => compareTagPositions(sort, a.position, b.position));
     /** @type {object[]} */
     const rows = [];
     for (const { position, row } of found) {
@@ -6561,7 +7267,8 @@ function queryTagsByIds(entry, params) {
  * Today's path, until tagQueryColumnsReady(): the whole list from getTagDefinitions() (and, for by_entries or
  * used, the counts from getAllTagUsage()), filtered and ordered in JS with the same keys and coercion the columns
  * hold, then cut to the page. Ties are ordered by rowid, read through the primary key for the tied rows the page
- * reaches, so the order and the cursor are the indexed path's.
+ * reaches, so the order and the cursor are the indexed path's. Manual merges in the pending moves' overlay the same
+ * way as the indexed path.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {MetadataDbEntry} entry
  * @param {TagQueryParams} params
@@ -6580,12 +7287,14 @@ async function queryTagsFromList(directories, entry, params) {
     }
     const names = tagNameMatchers(params);
     const ids = params.ids ? new Set(params.ids) : null;
+    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, true) : null;
     /** @type {{ tag: any, position: TagQueryPosition }[]} */
     const candidates = [];
     for (const tag of all) {
         const id = tag.id;
         if (typeof id !== 'string') continue;
         if (ids && !ids.has(id)) continue;
+        if (overlay?.keys.has(id) === true) continue;
         const { sortOrder, isFolder } = tagDerivedColumns(tag);
         const nameKey = tagDefinitionNameKey(tag);
         const count = counts ? Number(counts[id] ?? 0) : 0;
@@ -6600,6 +7309,7 @@ async function queryTagsFromList(directories, entry, params) {
     const after = params.after ?? null;
     /** @type {object[]} */
     const rows = [];
+    const emitBefore = tagOverlayEmitter(sort, tagOverlayPageItems(overlay, params, names), rows, pageSize);
     let i = 0;
     while (i < candidates.length) {
         let end = i + 1;
@@ -6621,20 +7331,23 @@ async function queryTagsFromList(directories, entry, params) {
         // A tag whose row went away since the list was read is gone, and is left out.
         const ordered = group.filter(g => rowids.has(g.tag.id))
             .map(g => ({ ...g, position: { ...g.position, r: /** @type {number} */ (rowids.get(g.tag.id)) } }))
-            .filter(g => vsAfter > 0 || g.position.r > /** @type {TagQueryPosition} */ (after).r)
+            .filter(g => vsAfter > 0 || compareTagPositions(sort, g.position, /** @type {TagQueryPosition} */ (after)) > 0)
             .sort((a, b) => a.position.r - b.position.r);
         for (const g of ordered) {
+            const full = emitBefore(g.position);
+            if (full !== null) return { rows, cursor: full, more: false };
             rows.push(g.tag);
             if (rows.length === pageSize) return { rows, cursor: encodeTagQueryCursor(sort, g.position), more: false };
         }
         i = end;
     }
-    return { rows, cursor: null, more: false };
+    return { rows, cursor: emitBefore(null), more: false };
 }
 
 /**
  * One keyset page of tag definitions (tags-paging step 2, D1, D11-D14). Tags marked deleted are left out, as
- * getTagDefinitions() leaves them.
+ * getTagDefinitions() leaves them. Manual, while tag_pending_moves holds entries, shows the order they will leave
+ * once applied (readTagPendingOverlaySync(), tag-actions D16).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {TagQueryParams} params
  * @returns {Promise<TagQueryResult | null>} null when no SQLite engine is usable.

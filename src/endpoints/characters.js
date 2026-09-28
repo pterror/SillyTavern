@@ -35,7 +35,7 @@ import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuild
 import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -2592,7 +2592,9 @@ router.post('/changes', async function (request, response) {
  * SSE endpoint that pushes an empty "something changed, go ask" notification whenever the metadata store's
  * `changes` table gets a new row, so a client can call `/changes` instead of polling, and a
  * `{ type: 'search-index-updated', seq }` message when a commit or a rebuild-and-swap changed this user's characters
- * search index (seq: the change-log seq the index now covers). Also carries the former
+ * search index (seq: the change-log seq the index now covers), and a `{ type: 'tag-move-failed', tagId, tagName,
+ * anchorId, anchorName, refusedId, reason }` message when a tag move queued for this user couldn't be applied
+ * (reportTagMoveFailed(); the client shows it as a warning). Also carries the former
  * `/api/browser-heartbeat` job (touches browser-presence on connect/ping) - merged in because the browser's
  * per-origin connection pool is shared across tabs, and two permanent per-tab SSE connections each was enough
  * to exhaust it at only ~3 tabs open and stall every other request.
@@ -2632,9 +2634,18 @@ router.get('/changes/stream', function (request, response) {
     };
     characterChangeEmitter.on('search-index-updated', onSearchIndexUpdated);
 
+    const root = request.user.directories.root;
+    const onTagMoveFailed = (failedRoot, payload, ack) => {
+        if (failedRoot !== root) return;
+        response.write(`data: ${JSON.stringify({ type: 'tag-move-failed', ...payload })}\n\n`);
+        ack.delivered = true;
+    };
+    characterChangeEmitter.on(TAG_MOVE_FAILED_EVENT, onTagMoveFailed);
+
     request.on('close', () => {
         characterChangeEmitter.off('change', onChange);
         characterChangeEmitter.off('search-index-updated', onSearchIndexUpdated);
+        characterChangeEmitter.off(TAG_MOVE_FAILED_EVENT, onTagMoveFailed);
         onChange.cancel();
         clearInterval(presenceInterval);
     });
