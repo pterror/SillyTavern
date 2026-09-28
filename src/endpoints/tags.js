@@ -17,6 +17,9 @@ import {
     getTagsDigest,
     getTagsBucketMembers,
     getTagDefinitionsByIds,
+    queryTags,
+    decodeTagQueryCursor,
+    TAG_QUERY_SORTS,
 } from '../character-metadata-db.js';
 import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.js';
 
@@ -177,6 +180,76 @@ router.post('/bucket', async (request, response) => {
     } catch (err) {
         console.error('Could not read tag bucket members', err);
         response.sendStatus(500);
+    }
+});
+
+const DEFAULT_QUERY_PAGE_SIZE = 50;
+const MAX_QUERY_PAGE_SIZE = 500;
+const QUERY_MAX_IDS = 500;
+
+/**
+ * One page of tag definitions: `{ filter: { search, name, ids, used, folders }, sort: { field }, pageSize, cursor }`
+ * → `{ rows, cursor, more }`. `sort.field` is a tag_sort_mode value, manual by default. `cursor` is the one a
+ * previous page returned, for the same sort. `more` means the server's work cap cut the page short and `cursor`
+ * carries on; otherwise a null `cursor` is the end.
+ */
+router.post('/query', async (request, response) => {
+    try {
+        const body = request.body ?? {};
+        const filter = body.filter ?? {};
+        const sortField = body.sort?.field ?? 'manual';
+        if (!TAG_QUERY_SORTS.includes(sortField)) {
+            return response.status(400).send({ error: true, reason: 'invalid-sort-field' });
+        }
+        if (filter.search !== undefined && typeof filter.search !== 'string') {
+            return response.status(400).send({ error: true, reason: 'invalid-search' });
+        }
+        if (filter.name !== undefined && typeof filter.name !== 'string') {
+            return response.status(400).send({ error: true, reason: 'invalid-name' });
+        }
+        for (const flag of ['used', 'folders']) {
+            if (filter[flag] !== undefined && typeof filter[flag] !== 'boolean') {
+                return response.status(400).send({ error: true, reason: `invalid-${flag}` });
+            }
+        }
+        let ids;
+        if (filter.ids !== undefined) {
+            if (!Array.isArray(filter.ids) || !filter.ids.every(id => typeof id === 'string')) {
+                return response.status(400).send({ error: true, reason: 'invalid-ids', message: 'filter.ids must be an array of strings' });
+            }
+            ids = [...new Set(filter.ids)];
+            if (ids.length > QUERY_MAX_IDS) {
+                return response.status(400).send({ error: true, reason: 'too-many-ids', message: `at most ${QUERY_MAX_IDS} distinct ids per request` });
+            }
+        }
+        let after = null;
+        if (body.cursor !== undefined && body.cursor !== null) {
+            after = decodeTagQueryCursor(body.cursor, sortField);
+            if (after === null) {
+                return response.status(400).send({ error: true, reason: 'invalid-cursor' });
+            }
+        }
+        const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) >= 1
+            ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
+            : DEFAULT_QUERY_PAGE_SIZE;
+
+        const result = await queryTags(request.user.directories, {
+            sort: sortField,
+            search: filter.search?.trim() || undefined,
+            name: filter.name,
+            ids,
+            used: filter.used === true,
+            folders: filter.folders === true,
+            pageSize,
+            after,
+        });
+        if (result === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        response.send(result);
+    } catch (err) {
+        console.error('Could not query tag definitions', err);
+        response.status(500).send({ error: true });
     }
 });
 

@@ -5733,6 +5733,479 @@ export async function areTagQueryColumnsReady(directories) {
     return !!entry && tagQueryColumnsReady(entry);
 }
 
+/** The sorts queryTags() takes: the client's tag_sort_mode values (public/scripts/tags.js). */
+export const TAG_QUERY_SORTS = /** @type {const} */ (['manual', 'alphabetical', 'by_entries']);
+/** @typedef {typeof TAG_QUERY_SORTS[number]} TagQuerySort */
+
+/**
+ * The most tags rows one queryTags() request examines on the indexed path, counting every row a walk reads,
+ * whether it lands on the page or not; past it the page comes back with `more` and a cursor at the last row
+ * examined (the search plan's work cap, T2/O1).
+ */
+export const TAG_QUERY_WORK_CAP = 20000;
+
+/** ids chunk for the primary key reads of queryTags(). */
+const TAG_QUERY_ID_CHUNK = 500;
+
+/**
+ * A place in a sort's order, the keyset cursor (D1). Manual is two phases: tags with a sort_order by
+ * (sort_order, rowid), then those without by (name_key, rowid). Alphabetical is (name_key, rowid); by_entries is
+ * (usage_count DESC, name_key, rowid). Ties go by rowid, upstream's insertion order.
+ * @typedef {object} TagQueryPosition
+ * @property {1 | 2} phase Manual only; 1 elsewhere.
+ * @property {number | null} s sort_order.
+ * @property {string} k name_key.
+ * @property {number} c usage_count.
+ * @property {number} r rowid.
+ */
+
+/**
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} SQLite's BINARY order on the UTF-8 bytes.
+ */
+function compareNameKeys(a, b) {
+    return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+}
+
+/**
+ * Compares two positions of one sort, without their rowids.
+ * @param {TagQuerySort} sort
+ * @param {TagQueryPosition} a
+ * @param {TagQueryPosition} b
+ */
+function compareTagKeys(sort, a, b) {
+    if (sort === 'manual') {
+        if (a.phase !== b.phase) return a.phase - b.phase;
+        if (a.phase === 1) return /** @type {number} */ (a.s) < /** @type {number} */ (b.s) ? -1 : /** @type {number} */ (a.s) > /** @type {number} */ (b.s) ? 1 : 0;
+        return compareNameKeys(a.k, b.k);
+    }
+    if (sort === 'by_entries' && a.c !== b.c) return b.c - a.c;
+    return compareNameKeys(a.k, b.k);
+}
+
+/**
+ * @param {TagQuerySort} sort
+ * @param {TagQueryPosition} position
+ * @returns {string}
+ */
+function encodeTagQueryCursor(sort, position) {
+    const values = sort === 'manual'
+        ? (position.phase === 1 ? [sort, 1, String(position.s), position.r] : [sort, 2, position.k, position.r])
+        : sort === 'alphabetical' ? [sort, position.k, position.r] : [sort, position.c, position.k, position.r];
+    return Buffer.from(JSON.stringify(values), 'utf8').toString('base64url');
+}
+
+/**
+ * Reads a cursor queryTags() returned for `sort`. The sort_order is carried as a string, so an infinite one
+ * survives JSON.
+ * @param {unknown} cursor
+ * @param {TagQuerySort} sort
+ * @returns {TagQueryPosition | null} null when it isn't one, or was made for another sort.
+ */
+export function decodeTagQueryCursor(cursor, sort) {
+    if (typeof cursor !== 'string') return null;
+    /** @type {unknown} */
+    let values;
+    try {
+        values = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    } catch {
+        return null;
+    }
+    if (!Array.isArray(values) || values[0] !== sort) return null;
+    const isRowid = (/** @type {unknown} */ r) => Number.isSafeInteger(r);
+    if (sort === 'manual') {
+        if (values.length !== 4 || !isRowid(values[3])) return null;
+        if (values[1] === 1 && typeof values[2] === 'string') {
+            const s = Number(values[2]);
+            if (Number.isNaN(s) || values[2].trim() === '') return null;
+            return { phase: 1, s, k: '', c: 0, r: values[3] };
+        }
+        if (values[1] === 2 && typeof values[2] === 'string') return { phase: 2, s: null, k: values[2], c: 0, r: values[3] };
+        return null;
+    }
+    if (sort === 'alphabetical') {
+        if (values.length !== 3 || typeof values[1] !== 'string' || !isRowid(values[2])) return null;
+        return { phase: 1, s: null, k: values[1], c: 0, r: values[2] };
+    }
+    if (values.length !== 4 || !Number.isSafeInteger(values[1]) || typeof values[2] !== 'string' || !isRowid(values[3])) return null;
+    return { phase: 1, s: null, k: values[2], c: values[1], r: values[3] };
+}
+
+/**
+ * @typedef {object} TagQueryParams
+ * @property {TagQuerySort} sort
+ * @property {string} [search] A prefix of the folded name (tagNameKey()); empty is no search.
+ * @property {string} [name] An exact name, matched as name_key = tagNameKey(name).
+ * @property {string[]} [ids] At most TAG_QUERY_ID_CHUNK distinct ids; the caller enforces it.
+ * @property {boolean} [used] Only tags with usage_count > 0.
+ * @property {boolean} [folders] Only folder tags (is_folder = 1).
+ * @property {number} pageSize
+ * @property {TagQueryPosition | null} [after] A decoded cursor.
+ */
+
+/**
+ * @typedef {object} TagQueryResult
+ * @property {object[]} rows Tag definitions (parsed data), in the sort's order.
+ * @property {string | null} cursor Where the next page starts; null once the order is walked to its end.
+ * @property {boolean} more The work cap stopped the walk: the page may be short and the cursor carries on.
+ */
+
+/**
+ * Byte-level name_key tests for a search prefix or an exact name, as SQLite compares them.
+ * @param {TagQueryParams} params
+ */
+function tagNameMatchers(params) {
+    const exact = typeof params.name === 'string' ? Buffer.from(tagNameKey(params.name), 'utf8') : null;
+    const prefix = typeof params.search === 'string' && params.search !== '' ? Buffer.from(tagNameKey(params.search), 'utf8') : null;
+    /** @param {string} key */
+    const matches = (key) => {
+        const bytes = Buffer.from(key, 'utf8');
+        if (exact && !bytes.equals(exact)) return false;
+        if (prefix && (bytes.length < prefix.length || !bytes.subarray(0, prefix.length).equals(prefix))) return false;
+        return true;
+    };
+    return { exact, prefix, matches };
+}
+
+/**
+ * One phase of a sort's walk: the index it reads through and the WHERE it needs for that index.
+ * @typedef {object} TagWalkPhase
+ * @property {1 | 2} phase
+ * @property {string} index
+ * @property {string[]} where Conditions every query of the phase carries (partial index, equality prefix).
+ * @property {{ column: 'sort_order' | 'name_key' | 'usage_count', desc?: boolean }[]} keys The order before rowid.
+ * @property {boolean} coversFolders is_folder is fixed by the index.
+ * @property {boolean} coversUsed usage_count > 0 is fixed by the index.
+ */
+
+/**
+ * The phases a sort walks for a filter set, each through the index tags-paging D11 lists for it. A filter the
+ * index doesn't fix is checked per row.
+ * @param {TagQuerySort} sort
+ * @param {{ used: boolean, folders: boolean }} filter
+ * @returns {TagWalkPhase[]}
+ */
+function tagWalkPhases(sort, { used, folders }) {
+    const folderWhere = folders ? ['is_folder = 1'] : [];
+    if (sort === 'by_entries') {
+        return [{
+            phase: 1,
+            index: 'tags_usage_count',
+            where: used ? ['usage_count > 0'] : [],
+            keys: [{ column: 'usage_count', desc: true }, { column: 'name_key' }],
+            coversFolders: false,
+            coversUsed: used,
+        }];
+    }
+    const nameKeyIndex = folders ? 'tags_folder_name_key' : used ? 'tags_used_name_key' : 'tags_name_key';
+    const nameKeyWhere = folders ? folderWhere : used ? ['usage_count > 0'] : [];
+    if (sort === 'alphabetical') {
+        return [{ phase: 1, index: nameKeyIndex, where: nameKeyWhere, keys: [{ column: 'name_key' }], coversFolders: folders, coversUsed: used && !folders }];
+    }
+    return [
+        {
+            phase: 1,
+            index: folders ? 'tags_folder_sort_order' : used ? 'tags_used_sort_order' : 'tags_sort_order',
+            where: [...(folders ? folderWhere : used ? ['usage_count > 0'] : []), 'sort_order IS NOT NULL'],
+            keys: [{ column: 'sort_order' }],
+            coversFolders: folders,
+            coversUsed: used && !folders,
+        },
+        {
+            phase: 2,
+            index: folders ? 'tags_folder_unordered_name_key' : used ? 'tags_used_unordered_name_key' : 'tags_unordered_name_key',
+            where: [...(folders ? folderWhere : used ? ['usage_count > 0'] : []), 'sort_order IS NULL'],
+            keys: [{ column: 'name_key' }],
+            coversFolders: folders,
+            coversUsed: used && !folders,
+        },
+    ];
+}
+
+const TAG_QUERY_ROW_COLUMNS = `rowid AS r, id, data, name_key, sort_order, usage_count, is_folder,
+    EXISTS (SELECT 1 FROM tag_deletions WHERE tag_id = tags.id) AS marked`;
+
+/**
+ * @typedef {object} TagQueryRow
+ * @property {number} r
+ * @property {string} id
+ * @property {string} data
+ * @property {string} name_key
+ * @property {number | null} sort_order
+ * @property {number} usage_count
+ * @property {number} is_folder
+ * @property {number} marked
+ */
+
+/**
+ * The queries that walk one phase from `after` on, in order, each seeking its start through the phase's index:
+ * for keys (k1, k2, rowid) after (v1, v2, r) they are k1 = v1 AND k2 = v2 AND rowid > r, then k1 = v1 AND
+ * k2 > v2, then k1 > v1. A name_key range (search prefix or exact name) bounds the name_key key when it leads.
+ * @param {TagWalkPhase} phase
+ * @param {TagQueryPosition | null} after In this phase, or null to walk it from its start.
+ * @param {Buffer | null} nameLow The least name_key a match can have, when name_key leads the keys.
+ * @returns {{ sql: string, params: Record<string, unknown> }[]}
+ */
+function tagWalkQueries(phase, after, nameLow) {
+    const value = (/** @type {string} */ column) => column === 'sort_order' ? after?.s : column === 'name_key' ? after?.k : after?.c;
+    /** @type {{ sql: string, params: Record<string, unknown> }[]} */
+    const queries = [];
+    /**
+     * @param {string[]} where
+     * @param {typeof phase.keys} orderKeys
+     * @param {Record<string, unknown>} params
+     * @param {boolean} nameKeyFixed
+     */
+    const add = (where, orderKeys, params, nameKeyFixed) => {
+        const all = [...phase.where, ...where];
+        if (nameLow !== null && phase.keys[0].column === 'name_key' && !nameKeyFixed) {
+            all.push('name_key >= @nameLow');
+            params.nameLow = nameLow.toString('utf8');
+        }
+        const order = [...orderKeys.map(k => `${k.column}${k.desc === true ? ' DESC' : ''}`), 'rowid'].join(', ');
+        queries.push({
+            sql: `SELECT ${TAG_QUERY_ROW_COLUMNS} FROM tags INDEXED BY ${phase.index}${all.length ? ` WHERE ${all.join(' AND ')}` : ''} ORDER BY ${order} LIMIT @limit`,
+            params,
+        });
+    };
+    if (after === null) {
+        add([], phase.keys, {}, false);
+        return queries;
+    }
+    for (let depth = phase.keys.length; depth >= 0; depth--) {
+        const where = phase.keys.slice(0, depth).map((k, i) => `${k.column} = @eq${i}`);
+        /** @type {Record<string, unknown>} */
+        const params = Object.fromEntries(phase.keys.slice(0, depth).map((k, i) => [`eq${i}`, value(k.column)]));
+        if (depth === phase.keys.length) {
+            add([...where, 'rowid > @afterRowid'], [], { ...params, afterRowid: after.r }, true);
+        } else {
+            const key = phase.keys[depth];
+            add([...where, `${key.column} ${key.desc === true ? '<' : '>'} @past`], phase.keys.slice(depth), { ...params, past: value(key.column) }, depth > 0 && phase.keys[0].column === 'name_key');
+        }
+    }
+    return queries;
+}
+
+/**
+ * The position of a row read from tags.
+ * @param {TagQuerySort} sort
+ * @param {TagQueryRow} row
+ * @returns {TagQueryPosition}
+ */
+function tagRowPosition(sort, row) {
+    const phase = sort === 'manual' && row.sort_order === null ? 2 : 1;
+    return { phase, s: row.sort_order, k: row.name_key, c: row.usage_count, r: row.r };
+}
+
+/**
+ * Parses a row's data, warning and returning undefined when it can't be.
+ * @param {TagQueryRow} row
+ */
+function parseTagQueryRow(row) {
+    try {
+        return JSON.parse(row.data);
+    } catch (err) {
+        console.warn(`[character-metadata] Tag definition ${row.id} could not be parsed, skipped it: ${/** @type {Error} */ (err).message}`);
+        return undefined;
+    }
+}
+
+/**
+ * Whether a name_key lies after every key the exact name or search prefix matches, so a walk in name_key order
+ * has nothing left to find.
+ * @param {string} nameKey
+ * @param {ReturnType<typeof tagNameMatchers>} names
+ * @param {Buffer} nameLow
+ */
+function isPastNameRange(nameKey, names, nameLow) {
+    const key = Buffer.from(nameKey, 'utf8');
+    if (Buffer.compare(key, nameLow) <= 0) return false;
+    return names.exact !== null || !key.subarray(0, nameLow.length).equals(nameLow);
+}
+
+/**
+ * The indexed path: walks the sort's phases through their indexes under TAG_QUERY_WORK_CAP.
+ * @param {MetadataDbEntry} entry
+ * @param {TagQueryParams} params
+ * @returns {TagQueryResult}
+ */
+function queryTagsIndexed(entry, params) {
+    const { sort, pageSize } = params;
+    const used = params.used === true;
+    const folders = params.folders === true;
+    const names = tagNameMatchers(params);
+    // The least name_key a match can have: the exact name, else the prefix.
+    const nameLow = names.exact ?? names.prefix;
+    /** @type {object[]} */
+    const rows = [];
+    let examined = 0;
+    /** @type {TagQueryPosition | null} */
+    let last = null;
+    const after = params.after ?? null;
+
+    for (const phase of tagWalkPhases(sort, { used, folders })) {
+        if (after !== null && after.phase > phase.phase) continue;
+        const leadsWithName = phase.keys[0].column === 'name_key';
+        let phaseDone = false;
+        for (const { sql, params: queryParams } of tagWalkQueries(phase, after !== null && after.phase === phase.phase ? after : null, nameLow)) {
+            if (phaseDone) break;
+            const limit = TAG_QUERY_WORK_CAP - examined;
+            for (const row of /** @type {Generator<TagQueryRow>} */ (entry.db.iterate(sql, { ...queryParams, limit }))) {
+                examined++;
+                last = tagRowPosition(sort, row);
+                const nameMatches = names.matches(row.name_key);
+                if (!nameMatches && leadsWithName && nameLow !== null && isPastNameRange(row.name_key, names, nameLow)) {
+                    phaseDone = true;
+                    break;
+                }
+                const passes = nameMatches && !row.marked
+                    && (phase.coversFolders || !folders || row.is_folder === 1)
+                    && (phase.coversUsed || !used || row.usage_count > 0);
+                if (passes) {
+                    const tag = parseTagQueryRow(row);
+                    if (tag !== undefined) {
+                        rows.push(tag);
+                        if (rows.length === pageSize) return { rows, cursor: encodeTagQueryCursor(sort, last), more: false };
+                    }
+                }
+                if (examined === TAG_QUERY_WORK_CAP) {
+                    return { rows, cursor: encodeTagQueryCursor(sort, last), more: true };
+                }
+            }
+        }
+    }
+    return { rows, cursor: null, more: false };
+}
+
+/**
+ * The ids path: reads the ids through the primary key, checks every other filter per row, and orders them by the
+ * sort in memory; bounded by the ids' own cap.
+ * @param {MetadataDbEntry} entry
+ * @param {TagQueryParams} params
+ * @returns {TagQueryResult}
+ */
+function queryTagsByIds(entry, params) {
+    const { sort, pageSize } = params;
+    const names = tagNameMatchers(params);
+    const wanted = [...new Set(params.ids)];
+    /** @type {{ position: TagQueryPosition, row: TagQueryRow }[]} */
+    const found = [];
+    for (let i = 0; i < wanted.length; i += TAG_QUERY_ID_CHUNK) {
+        const slice = wanted.slice(i, i + TAG_QUERY_ID_CHUNK);
+        const sql = `SELECT ${TAG_QUERY_ROW_COLUMNS} FROM tags WHERE id IN (${slice.map(() => '?').join(',')}) LIMIT ${slice.length}`;
+        for (const row of /** @type {Generator<TagQueryRow>} */ (entry.db.iterate(sql, slice))) {
+            if (row.marked) continue;
+            if (params.folders === true && row.is_folder !== 1) continue;
+            if (params.used === true && !(row.usage_count > 0)) continue;
+            if (!names.matches(row.name_key)) continue;
+            const position = tagRowPosition(sort, row);
+            if (params.after && (compareTagKeys(sort, position, params.after) || position.r - params.after.r) <= 0) continue;
+            found.push({ position, row });
+        }
+    }
+    found.sort((a, b) => compareTagKeys(sort, a.position, b.position) || a.position.r - b.position.r);
+    /** @type {object[]} */
+    const rows = [];
+    for (const { position, row } of found) {
+        const tag = parseTagQueryRow(row);
+        if (tag === undefined) continue;
+        rows.push(tag);
+        if (rows.length === pageSize) return { rows, cursor: encodeTagQueryCursor(sort, position), more: false };
+    }
+    return { rows, cursor: null, more: false };
+}
+
+/**
+ * Today's path, until tagQueryColumnsReady(): the whole list from getTagDefinitions() (and, for by_entries or
+ * used, the counts from getAllTagUsage()), filtered and ordered in JS with the same keys and coercion the columns
+ * hold, then cut to the page. Ties are ordered by rowid, read through the primary key for the tied rows the page
+ * reaches, so the order and the cursor are the indexed path's.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {MetadataDbEntry} entry
+ * @param {TagQueryParams} params
+ * @returns {Promise<TagQueryResult | null>}
+ */
+async function queryTagsFromList(directories, entry, params) {
+    const { sort, pageSize } = params;
+    const all = await getTagDefinitions(directories);
+    if (all === null) return null;
+    /** @type {Record<string, number> | null} */
+    let counts = null;
+    if (sort === 'by_entries' || params.used === true) {
+        const usage = await getAllTagUsage(directories);
+        if (usage === null) return null;
+        counts = usage.counts;
+    }
+    const names = tagNameMatchers(params);
+    const ids = params.ids ? new Set(params.ids) : null;
+    /** @type {{ tag: any, position: TagQueryPosition }[]} */
+    const candidates = [];
+    for (const tag of all) {
+        const id = tag.id;
+        if (typeof id !== 'string') continue;
+        if (ids && !ids.has(id)) continue;
+        const { sortOrder, isFolder } = tagDerivedColumns(tag);
+        const nameKey = tagDefinitionNameKey(tag);
+        const count = counts ? Number(counts[id] ?? 0) : 0;
+        if (params.folders === true && isFolder !== 1) continue;
+        if (params.used === true && !(count > 0)) continue;
+        if (!names.matches(nameKey)) continue;
+        const phase = sort === 'manual' && sortOrder === null ? 2 : 1;
+        candidates.push({ tag, position: { phase, s: sortOrder, k: nameKey, c: count, r: 0 } });
+    }
+    candidates.sort((a, b) => compareTagKeys(sort, a.position, b.position));
+
+    const after = params.after ?? null;
+    /** @type {object[]} */
+    const rows = [];
+    let i = 0;
+    while (i < candidates.length) {
+        let end = i + 1;
+        while (end < candidates.length && compareTagKeys(sort, candidates[i].position, candidates[end].position) === 0) end++;
+        const vsAfter = after === null ? 1 : compareTagKeys(sort, candidates[i].position, after);
+        if (vsAfter < 0) {
+            i = end;
+            continue;
+        }
+        const group = candidates.slice(i, end);
+        /** @type {Map<string, number>} */
+        const rowids = new Map();
+        for (let j = 0; j < group.length; j += TAG_QUERY_ID_CHUNK) {
+            const slice = group.slice(j, j + TAG_QUERY_ID_CHUNK).map(g => g.tag.id);
+            for (const row of /** @type {Generator<{ id: string, r: number }>} */ (entry.db.iterate(`SELECT id, rowid AS r FROM tags WHERE id IN (${slice.map(() => '?').join(',')}) LIMIT ${slice.length}`, slice))) {
+                rowids.set(row.id, row.r);
+            }
+        }
+        // A tag whose row went away since the list was read is gone, and is left out.
+        const ordered = group.filter(g => rowids.has(g.tag.id))
+            .map(g => ({ ...g, position: { ...g.position, r: /** @type {number} */ (rowids.get(g.tag.id)) } }))
+            .filter(g => vsAfter > 0 || g.position.r > /** @type {TagQueryPosition} */ (after).r)
+            .sort((a, b) => a.position.r - b.position.r);
+        for (const g of ordered) {
+            rows.push(g.tag);
+            if (rows.length === pageSize) return { rows, cursor: encodeTagQueryCursor(sort, g.position), more: false };
+        }
+        i = end;
+    }
+    return { rows, cursor: null, more: false };
+}
+
+/**
+ * One keyset page of tag definitions (tags-paging step 2, D1, D11-D14). Tags marked deleted are left out, as
+ * getTagDefinitions() leaves them.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {TagQueryParams} params
+ * @returns {Promise<TagQueryResult | null>} null when no SQLite engine is usable.
+ */
+export async function queryTags(directories, params) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    if (!tagQueryColumnsReady(entry)) return queryTagsFromList(directories, entry, params);
+    if (params.ids) return queryTagsByIds(entry, params);
+    return queryTagsIndexed(entry, params);
+}
+
 // Builds entry's tag cache from a full table scan once, then reuses/mutates the same Maps for the process's life
 // (previously re-scanned+re-parsed the whole tags table per character, causing OOM on large libraries). Keyed like
 // resolveCardTagNamesSync()'s lookup: tagNameKey(), the first row by rowid winning.
