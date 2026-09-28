@@ -1770,55 +1770,63 @@ export async function backfillContentIdentityHashes(directories) {
 
     if (!fs.existsSync(directories.characters)) return;
 
-    const poisonedIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL'))).map(r => r.id);
-    if (poisonedIds.length === 0) return;
-
     const backfillStart = Date.now();
     let lastProgressLog = backfillStart;
     let processedRows = 0;
 
-    for (let i = 0; i < poisonedIds.length; i += BATCH_FLUSH_SIZE) {
-        const chunkIds = poisonedIds.slice(i, i + BATCH_FLUSH_SIZE);
-        const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
-            try {
-                const filePath = path.join(directories.characters, id);
-                const buffer = await fs.promises.readFile(filePath);
-                const chunks = extract(new Uint8Array(buffer));
-                const pristine = readCharaChunkPristineFromChunks(chunks);
-                const character = getCharaCardV2(JSON.parse(pristine), directories, false);
-                return { id, hash: computeContentIdentityHash(character), avatarHash: computeAvatarIdentityHashFromChunks(chunks) };
-            } catch (err) {
-                console.error(`[character-metadata] Content-identity backfill failed to process ${id}, leaving it poisoned (will retry next boot):`, /** @type {any} */ (err).message);
-                return null;
-            }
-        });
-
-        const updates = chunkResults.filter((r) => r !== null);
-        if (updates.length > 0) {
-            entry.db.transaction(() => {
-                for (const { id, hash, avatarHash } of updates) {
-                    entry.db.run('UPDATE characters SET content_identity_hash = @hash, avatar_identity_hash = COALESCE(avatar_identity_hash, @avatarHash) WHERE id = @id', { hash, avatarHash, id });
+    // Paged by rowid, not id: idx_characters_import_poisoned keeps rowid order within import_poisoned = 1, so a page
+    // seeks instead of sorting every match.
+    for await (const rows of streamRows(entry.db, {
+        firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL ORDER BY rowid LIMIT @limit',
+        firstPageParams: {},
+        nextPageSql: 'SELECT rowid AS rid, id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL AND rowid > @after ORDER BY rowid LIMIT @limit',
+        nextPageParams: {},
+        keyColumn: 'rid',
+    })) {
+        const poisonedIds = (/** @type {{ rid: number, id: string }[]} */ (rows)).map(r => r.id);
+        for (let i = 0; i < poisonedIds.length; i += BATCH_FLUSH_SIZE) {
+            const chunkIds = poisonedIds.slice(i, i + BATCH_FLUSH_SIZE);
+            const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
+                try {
+                    const filePath = path.join(directories.characters, id);
+                    const buffer = await fs.promises.readFile(filePath);
+                    const chunks = extract(new Uint8Array(buffer));
+                    const pristine = readCharaChunkPristineFromChunks(chunks);
+                    const character = getCharaCardV2(JSON.parse(pristine), directories, false);
+                    return { id, hash: computeContentIdentityHash(character), avatarHash: computeAvatarIdentityHashFromChunks(chunks) };
+                } catch (err) {
+                    console.error(`[character-metadata] Content-identity backfill failed to process ${id}, leaving it poisoned (will retry next boot):`, /** @type {any} */ (err).message);
+                    return null;
                 }
             });
+
+            const updates = chunkResults.filter((r) => r !== null);
+            if (updates.length > 0) {
+                entry.db.transaction(() => {
+                    for (const { id, hash, avatarHash } of updates) {
+                        entry.db.run('UPDATE characters SET content_identity_hash = @hash, avatar_identity_hash = COALESCE(avatar_identity_hash, @avatarHash) WHERE id = @id', { hash, avatarHash, id });
+                    }
+                });
+            }
+
+            processedRows += chunkIds.length;
+
+            const now = Date.now();
+            if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+                const elapsedSec = (now - backfillStart) / 1000;
+                const rate = processedRows / elapsedSec;
+                console.log(color.cyan(`[character-metadata] Content-identity backfill progress: ${processedRows} (${rate.toFixed(1)} cards/sec)`));
+                lastProgressLog = now;
+            }
+
+            await new Promise(resolve => setImmediate(resolve));
         }
-
-        processedRows += chunkIds.length;
-
-        const now = Date.now();
-        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-            const elapsedSec = (now - backfillStart) / 1000;
-            const rate = processedRows / elapsedSec;
-            const remaining = poisonedIds.length - processedRows;
-            const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
-            console.log(color.cyan(`[character-metadata] Content-identity backfill progress: ${processedRows}/${poisonedIds.length} (${rate.toFixed(1)} cards/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
-            lastProgressLog = now;
-        }
-
-        await new Promise(resolve => setImmediate(resolve));
     }
 
+    if (processedRows === 0) return;
+
     const totalSec = (Date.now() - backfillStart) / 1000;
-    console.log(color.cyan(`[character-metadata] Content-identity backfill complete: processed ${poisonedIds.length} poisoned row(s) in ${totalSec.toFixed(1)}s (${(poisonedIds.length / totalSec).toFixed(1)} cards/sec).`));
+    console.log(color.cyan(`[character-metadata] Content-identity backfill complete: processed ${processedRows} poisoned row(s) in ${totalSec.toFixed(1)}s (${(processedRows / totalSec).toFixed(1)} cards/sec).`));
 }
 
 // Keyed on active_chat_checked, not active_chat IS NULL, since the latter can't distinguish "confirmed no
@@ -1832,57 +1840,65 @@ export async function backfillActiveChatFromCards(directories) {
 
     if (!fs.existsSync(directories.characters)) return;
 
-    const uncheckedIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters WHERE active_chat_checked = 0'))).map(r => r.id);
-    if (uncheckedIds.length === 0) return;
-
     const backfillStart = Date.now();
     let lastProgressLog = backfillStart;
     let processedRows = 0;
 
-    for (let i = 0; i < uncheckedIds.length; i += BATCH_FLUSH_SIZE) {
-        const chunkIds = uncheckedIds.slice(i, i + BATCH_FLUSH_SIZE);
-        const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
-            try {
-                const filePath = path.join(directories.characters, id);
-                const imgData = await parseCharacterCard(filePath, 'png');
-                const character = JSON.parse(imgData);
-                const chat = character.chat ?? null;
-                return { id, chat, resolved: true };
-            } catch (err) {
-                console.error(`[character-metadata] Active-chat backfill failed to process ${id}, leaving it unchecked (will retry next boot):`, /** @type {any} */ (err).message);
-                return { id, resolved: false };
-            }
-        });
-
-        const resolved = chunkResults.filter(r => r.resolved);
-        if (resolved.length > 0) {
-            entry.db.transaction(() => {
-                for (const { id, chat } of resolved) {
-                    entry.db.run(
-                        'UPDATE characters SET active_chat = @chat, active_chat_checked = 1 WHERE id = @id AND active_chat_checked = 0',
-                        { chat: chat ?? null, id },
-                    );
+    // Paged by rowid, not id: idx_characters_active_chat_checked keeps rowid order within active_chat_checked = 0, so a
+    // page seeks instead of sorting every match.
+    for await (const rows of streamRows(entry.db, {
+        firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE active_chat_checked = 0 ORDER BY rowid LIMIT @limit',
+        firstPageParams: {},
+        nextPageSql: 'SELECT rowid AS rid, id FROM characters WHERE active_chat_checked = 0 AND rowid > @after ORDER BY rowid LIMIT @limit',
+        nextPageParams: {},
+        keyColumn: 'rid',
+    })) {
+        const uncheckedIds = (/** @type {{ rid: number, id: string }[]} */ (rows)).map(r => r.id);
+        for (let i = 0; i < uncheckedIds.length; i += BATCH_FLUSH_SIZE) {
+            const chunkIds = uncheckedIds.slice(i, i + BATCH_FLUSH_SIZE);
+            const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
+                try {
+                    const filePath = path.join(directories.characters, id);
+                    const imgData = await parseCharacterCard(filePath, 'png');
+                    const character = JSON.parse(imgData);
+                    const chat = character.chat ?? null;
+                    return { id, chat, resolved: true };
+                } catch (err) {
+                    console.error(`[character-metadata] Active-chat backfill failed to process ${id}, leaving it unchecked (will retry next boot):`, /** @type {any} */ (err).message);
+                    return { id, resolved: false };
                 }
             });
+
+            const resolved = chunkResults.filter(r => r.resolved);
+            if (resolved.length > 0) {
+                entry.db.transaction(() => {
+                    for (const { id, chat } of resolved) {
+                        entry.db.run(
+                            'UPDATE characters SET active_chat = @chat, active_chat_checked = 1 WHERE id = @id AND active_chat_checked = 0',
+                            { chat: chat ?? null, id },
+                        );
+                    }
+                });
+            }
+
+            processedRows += chunkIds.length;
+
+            const now = Date.now();
+            if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+                const elapsedSec = (now - backfillStart) / 1000;
+                const rate = processedRows / elapsedSec;
+                console.log(color.cyan(`[character-metadata] Active-chat backfill progress: ${processedRows} (${rate.toFixed(1)} cards/sec)`));
+                lastProgressLog = now;
+            }
+
+            await new Promise(resolve => setImmediate(resolve));
         }
-
-        processedRows += chunkIds.length;
-
-        const now = Date.now();
-        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-            const elapsedSec = (now - backfillStart) / 1000;
-            const rate = processedRows / elapsedSec;
-            const remaining = uncheckedIds.length - processedRows;
-            const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
-            console.log(color.cyan(`[character-metadata] Active-chat backfill progress: ${processedRows}/${uncheckedIds.length} (${rate.toFixed(1)} cards/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
-            lastProgressLog = now;
-        }
-
-        await new Promise(resolve => setImmediate(resolve));
     }
 
+    if (processedRows === 0) return;
+
     const totalSec = (Date.now() - backfillStart) / 1000;
-    console.log(color.cyan(`[character-metadata] Active-chat backfill complete: processed ${uncheckedIds.length} row(s) in ${totalSec.toFixed(1)}s (${(uncheckedIds.length / totalSec).toFixed(1)} cards/sec).`));
+    console.log(color.cyan(`[character-metadata] Active-chat backfill complete: processed ${processedRows} row(s) in ${totalSec.toFixed(1)}s (${(processedRows / totalSec).toFixed(1)} cards/sec).`));
 }
 
 // Gated by a meta flag, set only once the NOT LIKE discovery scan (unindexable) finds nothing left to backfill.
