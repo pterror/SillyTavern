@@ -19,6 +19,8 @@ let crashAtTransaction = 0;
 let transactionCalls = 0;
 /** @type {string[]} */
 let checkpointCalls = [];
+/** @type {((sql: string, params: any) => boolean) | null} run() throws instead of running a statement this matches. */
+let failWrite = null;
 
 /** @param {any} handle */
 function instrumentedHandle(handle) {
@@ -34,6 +36,12 @@ function instrumentedHandle(handle) {
         const match = /wal_checkpoint\((\w+)\)/.exec(String(sql));
         if (match) checkpointCalls.push(match[1]);
         return handle.get(sql, params);
+    };
+    wrapped.run = (sql, params) => {
+        if (failWrite?.(String(sql), params)) {
+            throw new Error('simulated write failure');
+        }
+        return handle.run(sql, params);
     };
     wrapped.checkpoint = () => {
         checkpointCalls.push('TRUNCATE');
@@ -76,6 +84,7 @@ beforeEach(() => {
     crashAtTransaction = 0;
     transactionCalls = 0;
     checkpointCalls = [];
+    failWrite = null;
 });
 
 afterEach(async () => {
@@ -248,5 +257,35 @@ describe('one-time character passes checkpoint the WAL', () => {
 
         expect(result.batches).toBe(11);
         expect(checkpointCalls).toEqual(['PASSIVE', 'TRUNCATE']);
+    }, 60000);
+});
+
+describe('one-time character passes never leave a row half-written', () => {
+    test('a write that throws rolls back its whole batch and fails the pass, which resumes after the last committed batch', async () => {
+        await seedCopies(1500);
+        markFavStale('1');
+        /** @param {string} id */
+        const changeRowsFor = id => withRawDb(db => db.prepare('SELECT COUNT(*) AS n FROM changes WHERE id = ?').get(id).n);
+
+        // c01200.png's change row is written before its UPDATE, which then throws.
+        failWrite = (sql, params) => sql.startsWith('UPDATE characters SET') && params?.id === 'c01200.png';
+        await expect(metadataDb.normalizeCharacterFavIfNeeded(directories)).rejects.toThrow('simulated write failure');
+        failWrite = null;
+
+        expect(shallowOf('c00999.png').fav).toBe(false);
+        expect(shallowOf('c01000.png').fav).toBe(true);
+        expect(shallowOf('c01200.png').fav).toBe(true);
+        expect(changeRowsFor('c01000.png')).toBe(0);
+        expect(changeRowsFor('c01200.png')).toBe(0);
+        expect(rawMeta('character_fav_normalized_v1_progress')).toBe('c00999.png');
+        expect(rawMeta('character_fav_normalized_v1')).toBeNull();
+
+        const result = await metadataDb.normalizeCharacterFavIfNeeded(directories);
+
+        expect(result).toEqual({ batches: 1, rowsChanged: 501 });
+        expect(shallowOf('c01200.png').fav).toBe(false);
+        expect(changeRowsFor('c01200.png')).toBe(1);
+        expect(rawMeta('character_fav_normalized_v1')).not.toBeNull();
+        expect(rawMeta('character_fav_normalized_v1_progress')).toBeNull();
     }, 60000);
 });
