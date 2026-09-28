@@ -7055,6 +7055,9 @@ const TAG_QUERY_ID_CHUNK = 500;
  * Manual only, while moves wait in tag_pending_moves (readTagPendingOverlaySync()): a tag a pending move placed
  * sits in a gap right before (g -1) or after (g +1) the place (phase, s, k, c, r) of its anchor, at index i of the
  * gap. A place without g is a row's own (g 0, i 0).
+ *
+ * While a reorder pass is recorded and not yet draining (tagQueryPassSync()), manual reads walk that pass's mode
+ * order instead (tag-actions step 6, D24, D26, D27), and their places are that mode's (phase 1, k, c, r, g, i).
  * @typedef {object} TagQueryPosition
  * @property {1 | 2} phase Manual only; 1 elsewhere.
  * @property {number | null} s sort_order.
@@ -7063,7 +7066,25 @@ const TAG_QUERY_ID_CHUNK = 500;
  * @property {number} r rowid.
  * @property {-1 | 0 | 1} [g] Manual only: the side of the gap a pending move placed the tag in; 0 when none.
  * @property {number} [i] Manual only: the tag's index in that gap; 0 when none.
+ * @property {TagQueryPass | null} [pass] A decoded manual cursor only: the reorder pass whose mode order it was
+ *   made in; null or absent for the stored order.
  */
+
+/**
+ * The order manual reads walk while a reorder pass is recorded: its id and mode.
+ * @typedef {{ id: number, mode: TagReorderMode }} TagQueryPass
+ */
+
+/**
+ * The reorder pass manual reads follow: the recorded one, unless it is draining, when every tag but the queued
+ * ones has its final value and the stored order is the right one (tag-actions D26).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @returns {TagQueryPass | null}
+ */
+function tagQueryPassSync(db) {
+    const pass = tagReorderPassSync(db);
+    return pass !== null && pass.at?.phase !== 'drain' ? { id: pass.id, mode: pass.mode } : null;
+}
 
 /**
  * @param {string} a
@@ -7101,21 +7122,27 @@ function compareTagPositions(sort, a, b) {
 }
 
 /**
+ * A manual cursor made under a reorder pass is ['manual', 'pass', id, ...the mode's keys, r, g, i] (tag-actions
+ * D27.4).
  * @param {TagQuerySort} sort
  * @param {TagQueryPosition} position
+ * @param {TagQueryPass | null} [pass] The reorder pass a manual read followed.
  * @returns {string}
  */
-function encodeTagQueryCursor(sort, position) {
-    const values = sort === 'manual'
-        ? [sort, position.phase, position.phase === 1 ? String(position.s) : position.k, position.r, position.g ?? 0, position.i ?? 0]
-        : sort === 'alphabetical' ? [sort, position.k, position.r] : [sort, position.c, position.k, position.r];
+function encodeTagQueryCursor(sort, position, pass = null) {
+    const modeKeys = pass?.mode === 'by_entries' ? [position.c, position.k] : [position.k];
+    let values;
+    if (sort === 'manual' && pass !== null) values = [sort, 'pass', pass.id, ...modeKeys, position.r, position.g ?? 0, position.i ?? 0];
+    else if (sort === 'manual') values = [sort, position.phase, position.phase === 1 ? String(position.s) : position.k, position.r, position.g ?? 0, position.i ?? 0];
+    else values = sort === 'alphabetical' ? [sort, position.k, position.r] : [sort, position.c, position.k, position.r];
     return Buffer.from(JSON.stringify(values), 'utf8').toString('base64url');
 }
 
 /**
  * Reads a cursor queryTags() returned for `sort` (encodeTagQueryCursor()). The sort_order is carried as a string,
  * so an infinite one survives JSON. A 4-element manual cursor [sort, phase, key, rowid] is still accepted, as
- * g 0, i 0.
+ * g 0, i 0. A manual cursor made under a reorder pass comes back with `pass`; queryTags() checks it against the
+ * order it reads.
  * @param {unknown} cursor
  * @param {TagQuerySort} sort
  * @returns {TagQueryPosition | null} null when it isn't one, or was made for another sort.
@@ -7131,6 +7158,16 @@ export function decodeTagQueryCursor(cursor, sort) {
     }
     if (!Array.isArray(values) || values[0] !== sort) return null;
     const isRowid = (/** @type {unknown} */ r) => Number.isSafeInteger(r);
+    if (sort === 'manual' && values[1] === 'pass') {
+        const id = values[2];
+        if (!Number.isSafeInteger(id) || id < 1) return null;
+        const mode = values.length === 7 ? 'alphabetical' : values.length === 8 ? 'by_entries' : null;
+        if (mode === null) return null;
+        const [c, k, r, g, i] = mode === 'by_entries' ? values.slice(3) : [0, ...values.slice(3)];
+        if (!Number.isSafeInteger(c) || typeof k !== 'string' || !isRowid(r)) return null;
+        if ((g !== -1 && g !== 0 && g !== 1) || !Number.isSafeInteger(i) || i < 0) return null;
+        return { phase: 1, s: null, k, c, r, g, i, pass: { id, mode } };
+    }
     if (sort === 'manual') {
         if ((values.length !== 4 && values.length !== 6) || !isRowid(values[3])) return null;
         const g = values.length === 6 ? values[4] : 0;
@@ -7345,13 +7382,19 @@ function parseTagQueryRow(row) {
  * in a gap joins that gap next to it. A gap stays where it is when its anchor moves on, and an anchor keeps one gap
  * per side and place. A value entry gives the tag the place its value coerces to: (phase 1, value, its rowid), or
  * among the tags without an order (phase 2) for a value with none.
+ *
+ * Under a reorder pass, places are the pass mode's. A value lands next to the tag the walk numbers with it, which
+ * can't be found without counting rows, so a value entry leaves its tag at its own place in the mode's order
+ * (tag-actions D24).
  * Bounded by the number of pending entries.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {boolean} derive The derived columns aren't filled yet: sort_order, is_folder and name_key come from data
  *   as queryTagsFromList() derives them, and usage_count from tag_usage.
+ * @param {TagQueryPass | null} pass
  * @returns {TagPendingOverlay | null} null when nothing is pending.
  */
-function readTagPendingOverlaySync(db, derive) {
+function readTagPendingOverlaySync(db, derive, pass) {
+    const order = pass?.mode ?? 'manual';
     if (!db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return null;
     /** @type {{ tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, value: string | null }[]} */
     const entries = [...db.iterate('SELECT tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq')];
@@ -7409,7 +7452,7 @@ function readTagPendingOverlaySync(db, derive) {
         if (!usable(row) || !parseTagObject(/** @type {TagQueryRow} */ (row).data)) continue;
         if (side === null || anchorId === null) {
             unplace(id);
-            values.set(id, tagDerivedColumns({ sort_order: JSON.parse(/** @type {string} */ (value)) }).sortOrder);
+            if (pass === null) values.set(id, tagDerivedColumns({ sort_order: JSON.parse(/** @type {string} */ (value)) }).sortOrder);
             continue;
         }
         const anchor = rows.get(anchorId);
@@ -7425,10 +7468,10 @@ function readTagPendingOverlaySync(db, derive) {
             continue;
         }
         const anchorValue = values.get(anchorId);
-        const base = anchorValue === undefined ? tagRowPosition('manual', anchorRow) : valuePosition(anchorRow, anchorValue);
+        const base = anchorValue === undefined ? tagRowPosition(order, anchorRow) : valuePosition(anchorRow, anchorValue);
         const gaps = gapsByAnchor.get(anchorId) ?? [];
         gapsByAnchor.set(anchorId, gaps);
-        let gap = gaps.find(g => g.side === side && compareTagPositions('manual', g.base, base) === 0);
+        let gap = gaps.find(g => g.side === side && compareTagPositions(order, g.base, base) === 0);
         if (!gap) {
             gap = { base, side, items: [] };
             gaps.push(gap);
@@ -7469,9 +7512,10 @@ function tagRowPassesFilters(row, params, names) {
  * @param {TagPendingOverlay | null} overlay
  * @param {TagQueryParams} params
  * @param {ReturnType<typeof tagNameMatchers>} names
+ * @param {TagQuerySort} order The order the places are in.
  * @returns {{ key: TagQueryPosition, row: TagQueryRow }[]}
  */
-function tagOverlayPageItems(overlay, params, names) {
+function tagOverlayPageItems(overlay, params, names, order) {
     if (overlay === null) return [];
     const ids = params.ids ? new Set(params.ids) : null;
     const after = params.after ?? null;
@@ -7480,30 +7524,31 @@ function tagOverlayPageItems(overlay, params, names) {
     for (const [id, key] of overlay.keys) {
         const row = /** @type {TagQueryRow} */ (overlay.rows.get(id));
         if (!tagRowPassesFilters(row, params, names) || (ids && !ids.has(id))) continue;
-        if (after !== null && compareTagPositions('manual', key, after) <= 0) continue;
+        if (after !== null && compareTagPositions(order, key, after) <= 0) continue;
         items.push({ key, row });
     }
-    return items.sort((a, b) => compareTagPositions('manual', a.key, b.key));
+    return items.sort((a, b) => compareTagPositions(order, a.key, b.key));
 }
 
 /**
  * Merges the overlay's page items into a page in order: emitBefore(place) adds the items before `place` (every one
  * left, for null) to `rows`.
- * @param {TagQuerySort} sort
+ * @param {TagQuerySort} order The order the places are in.
  * @param {{ key: TagQueryPosition, row: TagQueryRow }[]} items
  * @param {object[]} rows The page.
  * @param {number} pageSize
+ * @param {(place: TagQueryPosition) => string} encode
  * @returns {(place: TagQueryPosition | null) => string | null} The cursor once the page is full.
  */
-function tagOverlayEmitter(sort, items, rows, pageSize) {
+function tagOverlayEmitter(order, items, rows, pageSize, encode) {
     let next = 0;
     return place => {
-        while (next < items.length && (place === null || compareTagPositions(sort, items[next].key, place) < 0)) {
+        while (next < items.length && (place === null || compareTagPositions(order, items[next].key, place) < 0)) {
             const { key, row } = items[next++];
             const tag = parseTagQueryRow(row);
             if (tag === undefined) continue;
             rows.push(tag);
-            if (rows.length === pageSize) return encodeTagQueryCursor(sort, key);
+            if (rows.length === pageSize) return encode(key);
         }
         return null;
     };
@@ -7527,10 +7572,14 @@ function isPastNameRange(nameKey, names, nameLow) {
  * moves' overlay (manual) by place. Overlay tags don't count toward the cap; their own rows do, and are left out.
  * @param {MetadataDbEntry} entry
  * @param {TagQueryParams} params
+ * @param {TagQueryPass | null} pass Manual only: the reorder pass whose mode order to walk.
  * @returns {TagQueryResult}
  */
-function queryTagsIndexed(entry, params) {
+function queryTagsIndexed(entry, params, pass) {
     const { sort, pageSize } = params;
+    const order = pass?.mode ?? sort;
+    /** @param {TagQueryPosition} place */
+    const encode = place => encodeTagQueryCursor(sort, place, pass);
     const used = params.used === true;
     const folders = params.folders === true;
     const names = tagNameMatchers(params);
@@ -7544,10 +7593,10 @@ function queryTagsIndexed(entry, params) {
     const after = params.after ?? null;
     // A cursor in the gap before a place was cut before the place's own row was shown, so the walk starts at it.
     const walkAfter = after !== null && after.g === -1 ? { ...after, r: after.r - 1, g: /** @type {0} */ (0), i: 0 } : after;
-    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, false) : null;
-    const emitBefore = tagOverlayEmitter(sort, tagOverlayPageItems(overlay, params, names), rows, pageSize);
+    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, false, pass) : null;
+    const emitBefore = tagOverlayEmitter(order, tagOverlayPageItems(overlay, params, names, order), rows, pageSize, encode);
 
-    for (const phase of tagWalkPhases(sort, { used, folders })) {
+    for (const phase of tagWalkPhases(order, { used, folders })) {
         if (walkAfter !== null && walkAfter.phase > phase.phase) continue;
         const leadsWithName = phase.keys[0].column === 'name_key';
         let phaseDone = false;
@@ -7555,7 +7604,7 @@ function queryTagsIndexed(entry, params) {
             if (phaseDone) break;
             const limit = TAG_QUERY_WORK_CAP - examined;
             for (const row of /** @type {Generator<TagQueryRow>} */ (entry.db.iterate(sql, { ...queryParams, limit }))) {
-                const position = tagRowPosition(sort, row);
+                const position = tagRowPosition(order, row);
                 const full = emitBefore(position);
                 if (full !== null) return { rows, cursor: full, more: false };
                 examined++;
@@ -7572,11 +7621,11 @@ function queryTagsIndexed(entry, params) {
                     const tag = parseTagQueryRow(row);
                     if (tag !== undefined) {
                         rows.push(tag);
-                        if (rows.length === pageSize) return { rows, cursor: encodeTagQueryCursor(sort, last), more: false };
+                        if (rows.length === pageSize) return { rows, cursor: encode(last), more: false };
                     }
                 }
                 if (examined === TAG_QUERY_WORK_CAP) {
-                    return { rows, cursor: encodeTagQueryCursor(sort, last), more: true };
+                    return { rows, cursor: encode(last), more: true };
                 }
             }
         }
@@ -7589,12 +7638,14 @@ function queryTagsIndexed(entry, params) {
  * sort in memory (manual: a tag the pending moves' overlay holds at its overlay place); bounded by the ids' own cap.
  * @param {MetadataDbEntry} entry
  * @param {TagQueryParams} params
+ * @param {TagQueryPass | null} pass Manual only: the reorder pass whose mode order to use.
  * @returns {TagQueryResult}
  */
-function queryTagsByIds(entry, params) {
+function queryTagsByIds(entry, params, pass) {
     const { sort, pageSize } = params;
+    const order = pass?.mode ?? sort;
     const names = tagNameMatchers(params);
-    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, false) : null;
+    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, false, pass) : null;
     const wanted = [...new Set(params.ids)];
     /** @type {{ position: TagQueryPosition, row: TagQueryRow }[]} */
     const found = [];
@@ -7606,19 +7657,19 @@ function queryTagsByIds(entry, params) {
             if (params.folders === true && row.is_folder !== 1) continue;
             if (params.used === true && !(row.usage_count > 0)) continue;
             if (!names.matches(row.name_key)) continue;
-            const position = overlay?.keys.get(row.id) ?? tagRowPosition(sort, row);
-            if (params.after && compareTagPositions(sort, position, params.after) <= 0) continue;
+            const position = overlay?.keys.get(row.id) ?? tagRowPosition(order, row);
+            if (params.after && compareTagPositions(order, position, params.after) <= 0) continue;
             found.push({ position, row });
         }
     }
-    found.sort((a, b) => compareTagPositions(sort, a.position, b.position));
+    found.sort((a, b) => compareTagPositions(order, a.position, b.position));
     /** @type {object[]} */
     const rows = [];
     for (const { position, row } of found) {
         const tag = parseTagQueryRow(row);
         if (tag === undefined) continue;
         rows.push(tag);
-        if (rows.length === pageSize) return { rows, cursor: encodeTagQueryCursor(sort, position), more: false };
+        if (rows.length === pageSize) return { rows, cursor: encodeTagQueryCursor(sort, position, pass), more: false };
     }
     return { rows, cursor: null, more: false };
 }
@@ -7632,22 +7683,26 @@ function queryTagsByIds(entry, params) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {MetadataDbEntry} entry
  * @param {TagQueryParams} params
+ * @param {TagQueryPass | null} pass Manual only: the reorder pass whose mode order to use.
  * @returns {Promise<TagQueryResult | null>}
  */
-async function queryTagsFromList(directories, entry, params) {
+async function queryTagsFromList(directories, entry, params, pass) {
     const { sort, pageSize } = params;
+    const order = pass?.mode ?? sort;
+    /** @param {TagQueryPosition} place */
+    const encode = place => encodeTagQueryCursor(sort, place, pass);
     const all = await getTagDefinitions(directories);
     if (all === null) return null;
     /** @type {Record<string, number> | null} */
     let counts = null;
-    if (sort === 'by_entries' || params.used === true) {
+    if (order === 'by_entries' || params.used === true) {
         const usage = await getAllTagUsage(directories);
         if (usage === null) return null;
         counts = usage.counts;
     }
     const names = tagNameMatchers(params);
     const ids = params.ids ? new Set(params.ids) : null;
-    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, true) : null;
+    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, true, pass) : null;
     /** @type {{ tag: any, position: TagQueryPosition }[]} */
     const candidates = [];
     for (const tag of all) {
@@ -7661,20 +7716,20 @@ async function queryTagsFromList(directories, entry, params) {
         if (params.folders === true && isFolder !== 1) continue;
         if (params.used === true && !(count > 0)) continue;
         if (!names.matches(nameKey)) continue;
-        const phase = sort === 'manual' && sortOrder === null ? 2 : 1;
+        const phase = order === 'manual' && sortOrder === null ? 2 : 1;
         candidates.push({ tag, position: { phase, s: sortOrder, k: nameKey, c: count, r: 0 } });
     }
-    candidates.sort((a, b) => compareTagKeys(sort, a.position, b.position));
+    candidates.sort((a, b) => compareTagKeys(order, a.position, b.position));
 
     const after = params.after ?? null;
     /** @type {object[]} */
     const rows = [];
-    const emitBefore = tagOverlayEmitter(sort, tagOverlayPageItems(overlay, params, names), rows, pageSize);
+    const emitBefore = tagOverlayEmitter(order, tagOverlayPageItems(overlay, params, names, order), rows, pageSize, encode);
     let i = 0;
     while (i < candidates.length) {
         let end = i + 1;
-        while (end < candidates.length && compareTagKeys(sort, candidates[i].position, candidates[end].position) === 0) end++;
-        const vsAfter = after === null ? 1 : compareTagKeys(sort, candidates[i].position, after);
+        while (end < candidates.length && compareTagKeys(order, candidates[i].position, candidates[end].position) === 0) end++;
+        const vsAfter = after === null ? 1 : compareTagKeys(order, candidates[i].position, after);
         if (vsAfter < 0) {
             i = end;
             continue;
@@ -7691,13 +7746,13 @@ async function queryTagsFromList(directories, entry, params) {
         // A tag whose row went away since the list was read is gone, and is left out.
         const ordered = group.filter(g => rowids.has(g.tag.id))
             .map(g => ({ ...g, position: { ...g.position, r: /** @type {number} */ (rowids.get(g.tag.id)) } }))
-            .filter(g => vsAfter > 0 || compareTagPositions(sort, g.position, /** @type {TagQueryPosition} */ (after)) > 0)
+            .filter(g => vsAfter > 0 || compareTagPositions(order, g.position, /** @type {TagQueryPosition} */ (after)) > 0)
             .sort((a, b) => a.position.r - b.position.r);
         for (const g of ordered) {
             const full = emitBefore(g.position);
             if (full !== null) return { rows, cursor: full, more: false };
             rows.push(g.tag);
-            if (rows.length === pageSize) return { rows, cursor: encodeTagQueryCursor(sort, g.position), more: false };
+            if (rows.length === pageSize) return { rows, cursor: encode(g.position), more: false };
         }
         i = end;
     }
@@ -7707,17 +7762,25 @@ async function queryTagsFromList(directories, entry, params) {
 /**
  * One keyset page of tag definitions (tags-paging step 2, D1, D11-D14). Tags marked deleted are left out, as
  * getTagDefinitions() leaves them. Manual, while tag_pending_moves holds entries, shows the order they will leave
- * once applied (readTagPendingOverlaySync(), tag-actions D16).
+ * once applied (readTagPendingOverlaySync(), tag-actions D16). Manual while a reorder pass is recorded and not
+ * draining walks the pass mode's live order instead, with the pending moves on top in that order's places
+ * (tag-actions step 6, D24, D26); a manual cursor is good only for the order it was made in (D25.8).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {TagQueryParams} params
- * @returns {Promise<TagQueryResult | null>} null when no SQLite engine is usable.
+ * @returns {Promise<TagQueryResult | 'invalid-cursor' | null>} null when no SQLite engine is usable;
+ *   'invalid-cursor' for a manual cursor made in another order than the one read now.
  */
 export async function queryTags(directories, params) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    if (!tagQueryColumnsReady(entry)) return queryTagsFromList(directories, entry, params);
-    if (params.ids) return queryTagsByIds(entry, params);
-    return queryTagsIndexed(entry, params);
+    const pass = params.sort === 'manual' ? tagQueryPassSync(entry.db) : null;
+    if (params.sort === 'manual' && params.after) {
+        const made = params.after.pass ?? null;
+        if (made?.id !== pass?.id || made?.mode !== pass?.mode) return 'invalid-cursor';
+    }
+    if (!tagQueryColumnsReady(entry)) return queryTagsFromList(directories, entry, params, pass);
+    if (params.ids) return queryTagsByIds(entry, params, pass);
+    return queryTagsIndexed(entry, params, pass);
 }
 
 // Builds entry's tag cache from a full table scan once, then reuses/mutates the same Maps for the process's life
