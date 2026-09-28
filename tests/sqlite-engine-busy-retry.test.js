@@ -117,6 +117,27 @@ describe('sqlite-engine lock handling', () => {
         errorSpy.mockRestore();
     });
 
+    it('logs the number of attempts actually made when the time budget runs out first', () => {
+        let now = 1_000_000;
+        const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        let attempts = 0;
+        const { ctor } = makeFakeCtor({
+            // Each attempt stands in for a full busy_timeout wait before it throws.
+            transactionImpl: () => { attempts++; now += 15000; throw busyError(); },
+        });
+        const handle = openNativeDatabase(/** @type {any} */(ctor), path.join(tmpDir, 'h.sqlite'));
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        try {
+            expect(() => handle.transaction(() => {})).toThrow(/database is locked/);
+            expect(attempts).toBe(2);
+            expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('after 2 attempts over 30000ms'));
+        } finally {
+            errorSpy.mockRestore();
+            nowSpy.mockRestore();
+        }
+    });
+
     it('counts a call that hit a lock in getBusyWaitMs(), from its start until it succeeds', () => {
         let attempts = 0;
         const { ctor } = makeFakeCtor({

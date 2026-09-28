@@ -171,7 +171,9 @@ export function getBusyWaitMs() {
 
 function retryWhileBusy(fn, label, startedAt, onBusy) {
     let lastError;
+    let attempts = 0;
     for (let attempt = 0; attempt < BUSY_RETRY_MAX_ATTEMPTS; attempt++) {
+        attempts++;
         try {
             return fn();
         } catch (err) {
@@ -185,7 +187,7 @@ function retryWhileBusy(fn, label, startedAt, onBusy) {
             sleepSync(delay + Math.floor(Math.random() * delay));
         }
     }
-    console.error(`[sqlite-engine] ${label} still blocked by a database lock after ${BUSY_RETRY_MAX_ATTEMPTS} attempts over ${Date.now() - startedAt}ms - giving up and rethrowing.`);
+    console.error(`[sqlite-engine] ${label} still blocked by a database lock after ${attempts} attempts over ${Date.now() - startedAt}ms - giving up and rethrowing.`);
     throw lastError;
 }
 
