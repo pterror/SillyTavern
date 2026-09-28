@@ -253,10 +253,18 @@ router.post('/query', async (request, response) => {
     }
 });
 
-/** The definitions for a named set of ids. */
+const BY_IDS_MAX_IDS = 500;
+
+/**
+ * The definitions for a named set of ids. More than BY_IDS_MAX_IDS distinct ids is a 400 rather than a truncated
+ * answer, which would read as those tags not existing.
+ */
 router.post('/by-ids', async (request, response) => {
     try {
         const ids = Array.isArray(request.body?.ids) ? request.body.ids : [];
+        if (new Set(ids.map(String)).size > BY_IDS_MAX_IDS) {
+            return response.status(400).send({ error: `at most ${BY_IDS_MAX_IDS} distinct ids per request` });
+        }
         const tags = await getTagDefinitionsByIds(request.user.directories, ids);
         if (tags === null) {
             return response.send({ tags: null });
