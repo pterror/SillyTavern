@@ -4730,13 +4730,27 @@ export async function deleteWorldInfo(worldInfoName) {
 }
 
 /**
- * deleteWorldInfo() without the still-linked warning, for a caller that writes a book under the same name right
- * after and warns only if that name is gone afterwards (see deleteOverwrittenWorldInfo()).
+ * deleteWorldInfo() without the still-linked warning.
  * @param {string} worldInfoName - The name of the world info to delete
  * @returns {Promise<{ deleted: boolean, unlinkedAvatar: string }>} unlinkedAvatar: the open character this unlinked
  * from the book, or '' if it unlinked none.
  */
 async function removeWorldInfo(worldInfoName) {
+    if (!await deleteWorldInfoFile(worldInfoName)) {
+        return { deleted: false, unlinkedAvatar: '' };
+    }
+    const { unlinkedAvatar } = unlinkWorldInfo(worldInfoName);
+    return { deleted: true, unlinkedAvatar };
+}
+
+/**
+ * Deletes a book's file and drops it from the cache, the lists and the editor. Leaves every link to its name as it
+ * is (see unlinkWorldInfo()).
+ * @param {string} worldInfoName - The name of the world info to delete
+ * @returns {Promise<boolean>} Whether the server deleted it. Rejects if the request fails outright, in which case
+ * whether the server deleted it, or will, is unknown.
+ */
+async function deleteWorldInfoFile(worldInfoName) {
     const response = await fetch('/api/worldinfo/delete', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -4744,21 +4758,35 @@ async function removeWorldInfo(worldInfoName) {
     });
 
     if (!response.ok) {
-        return { deleted: false, unlinkedAvatar: '' };
+        return false;
     }
 
     if (worldInfoCache.has(worldInfoName)) {
         worldInfoCache.delete(worldInfoName);
     }
 
+    await updateWorldInfoList();
+    $('#world_editor_select').trigger('change');
+    return true;
+}
+
+/**
+ * Removes a deleted book's name from the global lorebook selection, the open character and the current persona,
+ * as deleting a book does.
+ * @param {string} worldInfoName - The deleted book's name
+ * @returns {{ unlinkedAvatar: string, unlinked: string[] }} unlinkedAvatar: the open character this unlinked from
+ * the book, or '' if it unlinked none. unlinked: what it unlinked, escaped for HTML, for a warning to list.
+ */
+function unlinkWorldInfo(worldInfoName) {
+    /** @type {string[]} */
+    const unlinked = [];
+
     const existingWorldIndex = selected_world_info.findIndex((e) => e === worldInfoName);
     if (existingWorldIndex !== -1) {
         selected_world_info.splice(existingWorldIndex, 1);
         saveSettingsDebounced('world_info_settings');
+        unlinked.push(t`the global lorebook selection`);
     }
-
-    await updateWorldInfoList();
-    $('#world_editor_select').trigger('change');
 
     // Avatar of the open character unlinked below, left out of the still-linked warning: its save is debounced,
     // so the metadata store still lists it as linked when that warning's query runs.
@@ -4770,6 +4798,10 @@ async function removeWorldInfo(worldInfoName) {
             setWorldInfoButtonClass(undefined, false);
             unlinkedAvatar = String($('#avatar_url_pole').val());
             saveCharacterFieldDebounced(unlinkedAvatar, '#character_world', '');
+            const name = escapeHtml(String(charactersStore.get(unlinkedAvatar)?.name ?? unlinkedAvatar));
+            unlinked.push(t`the primary lorebook of ${name}`);
+        } else {
+            unlinked.push(t`the primary lorebook of the character being created`);
         }
         // In create mode the new character is still created with create_save.world; updateWorldInfoList() above
         // already showed on the globe whether that names a book.
@@ -4780,31 +4812,58 @@ async function removeWorldInfo(worldInfoName) {
         personaStore.update(user_avatar, { lorebook: '' });
         $('#persona_lore_button').toggleClass('world_set', false);
         saveSettingsDebounced('power_user.persona_data');
+        unlinked.push(t`the current persona's lorebook`);
     }
 
-    return { deleted: true, unlinkedAvatar };
+    return { unlinkedAvatar, unlinked };
 }
 
 /**
  * @typedef {object} OverwrittenWorldInfo
  * @property {string} name - The overwritten book's name.
- * @property {Promise<{ deleted: boolean, unlinkedAvatar: string }>} removal - Its deletion, from removeWorldInfo().
+ * @property {Promise<boolean>} removal - Its deletion, from deleteWorldInfoFile().
  */
 
 /**
- * Deletes a book a create or import is about to overwrite. Its still-linked warning waits for
- * warnIfOverwrittenWorldInfoGone(), called after the write: the characters still linked to the name only lose
- * their book if no book has that name once the write is done.
+ * Deletes a book a create or import is about to overwrite, leaving the links to its name as they are. The caller
+ * waits for overwrittenWorldInfoRemoved() before it writes, so the deletion can never land after the new book and
+ * remove it, then calls warnIfOverwrittenWorldInfoGone() after the write: the links to the name only go if no book
+ * has that name once the write is done.
  * @param {string} worldInfoName - The name of the book being overwritten
  * @returns {OverwrittenWorldInfo}
  */
 function deleteOverwrittenWorldInfo(worldInfoName) {
-    return { name: worldInfoName, removal: removeWorldInfo(worldInfoName) };
+    return { name: worldInfoName, removal: deleteWorldInfoFile(worldInfoName) };
 }
 
 /**
- * After a create or import that overwrote a book, warns about the characters still linked to the overwritten
- * name if no book has that name any more: the write failed, or wrote a name differing in case or accents.
+ * Waits for an overwrite's deletion to finish before the create or import writes the new book.
+ * @param {OverwrittenWorldInfo|undefined} overwritten - From deleteOverwrittenWorldInfo(), or undefined if nothing
+ * is overwritten.
+ * @param {string} actionName - 'Create' or 'Import', as passed to checkOverwriteExistingData().
+ * @returns {Promise<boolean>} False if the deletion request failed outright: the server may still delete the name
+ * after a write, so nothing is written. The deletion itself having been refused doesn't stop the write.
+ */
+async function overwrittenWorldInfoRemoved(overwritten, actionName) {
+    if (!overwritten) {
+        return true;
+    }
+    try {
+        await overwritten.removal;
+        return true;
+    } catch (error) {
+        console.error(`Could not delete the overwritten lorebook ${overwritten.name}`, error);
+        const escapedName = escapeHtml(overwritten.name);
+        toastr.error(t`Could not delete the existing lorebook ${escapedName}, so nothing was written.`, `World Info ${actionName}`, { escapeHtml: false });
+        await warnIfOverwrittenWorldInfoGone(overwritten);
+        return false;
+    }
+}
+
+/**
+ * After a create or import that overwrote a book, if no book has the overwritten name any more (the write failed,
+ * or wrote a name differing in case or accents), unlinks it as deleting a book does and warns, listing what it
+ * unlinked and the characters still linked to it. If a book has the name, every link to it stays.
  * @param {OverwrittenWorldInfo|undefined} overwritten - From deleteOverwrittenWorldInfo(), or undefined if nothing
  * was overwritten.
  * @returns {Promise<void>}
@@ -4813,15 +4872,8 @@ async function warnIfOverwrittenWorldInfoGone(overwritten) {
     if (!overwritten) {
         return;
     }
-    let unlinkedAvatar = '';
-    try {
-        ({ unlinkedAvatar } = await overwritten.removal);
-    } catch (error) {
-        // Whether it was deleted is unknown; the list read below decides whether the name is gone.
-        console.error(`Could not delete the overwritten lorebook ${overwritten.name}`, error);
-    }
-    // The deletion and the write run concurrently, so the list is read again once both are done. If it can't be
-    // read, whether the name exists is unknown, and the warning shows.
+    // If the list can't be read, whether the name exists is unknown: nothing is unlinked, and the still-linked
+    // warning shows.
     let listed = false;
     try {
         listed = await updateWorldInfoList();
@@ -4830,6 +4882,15 @@ async function warnIfOverwrittenWorldInfoGone(overwritten) {
     }
     if (listed && world_names.includes(overwritten.name)) {
         return;
+    }
+    let unlinkedAvatar = '';
+    if (listed) {
+        let unlinked;
+        ({ unlinkedAvatar, unlinked } = unlinkWorldInfo(overwritten.name));
+        if (unlinked.length) {
+            const escapedName = escapeHtml(overwritten.name);
+            toastr.warning(t`Overwritten lorebook ${escapedName} no longer exists, so it was removed from:` + `<br />${unlinked.join('<br />')}`, t`World Info`, { escapeHtml: false });
+        }
     }
     await warnCharactersStillLinked(overwritten.name, unlinkedAvatar);
 }
@@ -4927,6 +4988,9 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
     let overwritten;
     const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive: interactive, actionName: 'Create', deleteAction: (existingName) => { overwritten = deleteOverwrittenWorldInfo(existingName); } });
     if (!allowed) {
+        return false;
+    }
+    if (!await overwrittenWorldInfoRemoved(overwritten, 'Create')) {
         return false;
     }
 
@@ -6670,6 +6734,9 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
     let overwritten;
     const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive, actionName: 'Import', deleteAction: (existingName) => { overwritten = deleteOverwrittenWorldInfo(existingName); } });
     if (!allowed) {
+        return false;
+    }
+    if (!await overwrittenWorldInfoRemoved(overwritten, 'Import')) {
         return false;
     }
 
