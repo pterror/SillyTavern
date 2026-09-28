@@ -6,6 +6,8 @@ import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.
 // after a write, the old one after a failed write. Every link to the name stays either way. As for an overwrite that
 // deletes, a save of the book pending when the overwrite starts is written before the new book (so a failed write
 // keeps it), and one made while that save is in flight is dropped with a warning, so no older save lands after it.
+// An import request that fails outright may or may not have replaced the book, so a save of the old book made while
+// it was sent is dropped with the same warning, never silently.
 // (An overwrite under a name differing in case deletes first: WorldInfoOverwriteSequence.e2e.js.)
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -377,4 +379,51 @@ test.describe('overwriting a lorebook under exactly its name', () => {
             }
         });
     }
+
+    test('import: an entry edit made while an import request fails outright is dropped with a warning', async ({ page }) => {
+        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        const worldName = `WI_OVERWRITE_SAME_ABORT_${s}`;
+
+        await createWorldWithEntry(page, worldName);
+        try {
+            let entrySaves = 0;
+            page.on('request', (request) => {
+                if (new URL(request.url()).pathname !== '/api/worldinfo/entry/edit') return;
+                if (JSON.parse(request.postData() ?? '{}').name === worldName) entrySaves++;
+            });
+            // The import request is held until the book's entry has been edited meanwhile, then fails outright.
+            let releaseImport = () => {};
+            const importReleased = new Promise(resolve => { releaseImport = () => resolve(undefined); });
+            let importSeen = () => {};
+            const importArrived = new Promise(resolve => { importSeen = () => resolve(undefined); });
+            await page.route('**/api/worldinfo/import', async (route) => {
+                importSeen();
+                await importReleased;
+                await route.abort('failed');
+            });
+            try {
+                const overwrite = overwriteWorld(page, 'import', worldName);
+                await importArrived;
+                await page.evaluate(async (worldName) => {
+                    const { saveWorldInfoEntry } = await import('./scripts/world-info.js');
+                    const data = { entries: { 0: { uid: 0, key: ['old'], content: 'old book, edited during import' } } };
+                    await saveWorldInfoEntry(worldName, data, 0, false);
+                }, worldName);
+                releaseImport();
+                expect(await overwrite).toBeFalsy();
+            } finally {
+                releaseImport();
+                await page.unroute('**/api/worldinfo/import');
+            }
+            // eslint-disable-next-line playwright/no-wait-for-timeout
+            await page.waitForTimeout(AFTER_DEBOUNCE_MS);
+
+            expect(entrySaves).toBe(0);
+            await expect(droppedToast(page, worldName)).toHaveCount(1);
+            expect(await serverEntries(page, worldName)).toEqual(['old book']);
+            expect(await loadedEntries(page, worldName)).toEqual(['old book']);
+        } finally {
+            await deleteWorld(page, worldName);
+        }
+    });
 });
