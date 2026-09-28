@@ -100,54 +100,13 @@ export let world_info_use_group_scoring = false;
 export let world_info_character_strategy = world_info_insertion_strategy.character_first;
 export let world_info_budget_cap = 0;
 export let world_info_max_recursion_steps = 0;
-/**
- * Debounced whole-book saves still waiting to run, one per book name, each holding the data of its latest call.
- * A book's entry is removed when its save runs or is cancelled, so only books with a save pending are kept.
- * One debounce per book means a save for one book never absorbs or cancels another book's pending save.
- * @type {Map<string, {data: any, save: () => void}>}
- */
-const pendingWorldSaves = new Map();
-
-/**
- * Saves a whole book once `debounce_timeout.relaxed` has passed without another debounced save of the same book.
- * @param {string} name - The name of the world info
- * @param {any} data - The data to be saved
- */
-function saveWorldDebounced(name, data) {
-    let pending = pendingWorldSaves.get(name);
-    if (!pending) {
-        const entry = {
-            data,
-            save: debounce(async () => {
-                if (pendingWorldSaves.get(name) === entry) {
-                    pendingWorldSaves.delete(name);
-                }
-                try {
-                    await _save(name, entry.data);
-                } catch {
-                    // _save has already shown and logged the failure.
-                }
-            }, debounce_timeout.relaxed),
-        };
-        pending = entry;
-        pendingWorldSaves.set(name, pending);
+const saveWorldDebounced = debounce(async (name, data) => {
+    try {
+        await _save(name, data);
+    } catch {
+        // _save has already shown and logged the failure.
     }
-    pending.data = data;
-    pending.save();
-}
-
-/**
- * Cancels a book's pending debounced save, if it has one. Other books' pending saves are left alone.
- * @param {string} name - The name of the world info
- */
-function cancelWorldSaveDebounced(name) {
-    const pending = pendingWorldSaves.get(name);
-    if (!pending) {
-        return;
-    }
-    cancelDebounce(pending.save);
-    pendingWorldSaves.delete(name);
-}
+}, debounce_timeout.relaxed);
 const sortFn = (a, b) => b.order - a.order;
 let updateEditor = (navigation, flashOnNav = true) => { console.debug('Triggered WI navigation', navigation, flashOnNav); };
 let worldInfoOneTimeInitDone = false;
@@ -4392,8 +4351,8 @@ function refuseEmbeddedWorldName(name) {
  * resolves false; a request that fails outright shows the same toast and rejects.
  */
 async function _save(name, data) {
-    // This write carries the book's latest data, so a debounced save of the same book still pending is dropped.
-    cancelWorldSaveDebounced(name);
+    // Prevent double saving if both immediate and debounced save are called
+    cancelDebounce(saveWorldDebounced);
 
     let response;
     try {
@@ -4431,7 +4390,8 @@ function dropUnwrittenBookFromCache(name) {
 }
 
 /**
- * uids with a pending single-entry save, keyed by book name. A shared debounce timer only ever fires with the arguments of its *last* call, so instead of
+ * uids with a pending single-entry save, keyed by book name. A shared debounce timer (like
+ * saveWorldDebounced above) only ever fires with the arguments of its *last* call, so instead of
  * passing entry data through the debounce, this only records which entries are dirty; the flush below
  * re-reads each one from worldInfoCache, which is always current since callers update it synchronously
  * before scheduling. That's what lets edits to two different entries inside one debounce window each
