@@ -1803,6 +1803,113 @@ describe('resyncTags / tag_usage', () => {
     });
 });
 
+describe('tags.json tag_map values: a repeated id is stored once, a non-array is read as no tags with a warning', () => {
+    /** @param {Record<string, unknown>} tagMap */
+    function writeTagMap(tagMap) {
+        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [], tag_map: tagMap }));
+    }
+
+    async function storedTagIds(/** @type {string} */ avatar) {
+        const row = await metadataDb.getCharacterMetadataRow(directories, avatar);
+        return { table: (await metadataDb.getCharacterTagIds(directories, avatar)).sort(), shallow: JSON.parse(row.shallow_json).tag_ids };
+    }
+
+    /**
+     * Runs fn with console.warn captured, and expects one warning naming `key` and showing `value`.
+     * @param {string} key
+     * @param {unknown} value
+     * @param {() => Promise<unknown>} fn
+     */
+    async function expectWarnsAbout(key, value, fn) {
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            await fn();
+            const messages = warnSpy.mock.calls.map(([message]) => String(message));
+            expect(messages.filter(m => m.includes(key) && m.includes(JSON.stringify(value)))).toHaveLength(1);
+        } finally {
+            warnSpy.mockRestore();
+        }
+    }
+
+    test('a repeated id, through upsertCharacterFromWrite', async () => {
+        writeTagMap({ 'Bob.png': ['t1', 't2', 't1'] });
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1', 't2'], shallow: ['t1', 't2'] });
+    });
+
+    test('a repeated id, through bootstrapIfNeeded', async () => {
+        await writeCardFile('Alice.png');
+        writeTagMap({ 'Alice.png': ['t1', 't1'] });
+        await metadataDb.bootstrapIfNeeded(directories);
+        expect(await storedTagIds('Alice.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
+    });
+
+    test('a repeated id, through reconcile', async () => {
+        await writeCardFile('Alice.png');
+        writeTagMap({ 'Alice.png': ['t1', 't1'] });
+        await metadataDb.reconcile(directories);
+        expect(await storedTagIds('Alice.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
+    });
+
+    test('a string, through upsertCharacterFromWrite', async () => {
+        writeTagMap({ 'Bob.png': 'ab' });
+        await expectWarnsAbout('Bob.png', 'ab', () => metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson()));
+        expect(await storedTagIds('Bob.png')).toEqual({ table: [], shallow: [] });
+    });
+
+    test('a number and an object, through bootstrapIfNeeded, write their rows and throw nothing', async () => {
+        await writeCardFile('Alice.png');
+        await writeCardFile('Carol.png', { name: 'Carol' });
+        writeTagMap({ 'Alice.png': 5, 'Carol.png': { t1: true } });
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            await metadataDb.bootstrapIfNeeded(directories);
+            const messages = warnSpy.mock.calls.map(([message]) => String(message));
+            expect(messages.some(m => m.includes('Alice.png') && m.includes('5'))).toBe(true);
+            expect(messages.some(m => m.includes('Carol.png') && m.includes(JSON.stringify({ t1: true })))).toBe(true);
+        } finally {
+            warnSpy.mockRestore();
+        }
+        expect(await storedTagIds('Alice.png')).toEqual({ table: [], shallow: [] });
+        expect(await storedTagIds('Carol.png')).toEqual({ table: [], shallow: [] });
+    });
+
+    test('resyncTags leaves a character\'s existing tags alone when its value is not an array', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }));
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 't1');
+        await metadataDb.assignEntityTag(directories, 'Alice.png', 't2');
+        writeTagMap({ 'Bob.png': null, 'Alice.png': 7 });
+
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            await metadataDb.resyncTags(directories);
+            const messages = warnSpy.mock.calls.map(([message]) => String(message));
+            expect(messages.filter(m => m.includes('Bob.png') && m.includes('null'))).toHaveLength(1);
+            expect(messages.filter(m => m.includes('Alice.png') && m.includes('7'))).toHaveLength(1);
+        } finally {
+            warnSpy.mockRestore();
+        }
+        expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
+        expect(await storedTagIds('Alice.png')).toEqual({ table: ['t2'], shallow: ['t2'] });
+    });
+
+    test('restoreTagMap', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 't1');
+        await expectWarnsAbout('Bob.png', 'x', () => metadataDb.restoreTagMap(directories, { 'Bob.png': 'x' }));
+        expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
+    });
+
+    test('migrateTagsJsonIfNeeded', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 't1');
+        writeTagMap({ 'Bob.png': { t2: true } });
+        await expectWarnsAbout('Bob.png', { t2: true }, () => metadataDb.migrateTagsJsonIfNeeded(directories));
+        expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
+    });
+});
+
 describe('groups schema extension (owner decision - fav/date_added/date_last_chat/chat_size/name_fold)', () => {
     function writeGroupFile(id, overrides = {}) {
         fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify({ id, name: id, members: [], chats: [], ...overrides }));
