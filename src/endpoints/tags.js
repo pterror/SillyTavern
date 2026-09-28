@@ -94,15 +94,22 @@ router.post('/prune', async (request, response) => {
     }
 });
 
-/** Deletes one tag definition by id, instead of replacing the whole set via `/save`. */
+/**
+ * Deletes one tag definition by id, instead of replacing the whole set via `/save`. `mergeInto`, when given, is the
+ * tag every entity carrying the deleted one gets instead, as upstream's delete-and-merge does.
+ */
 router.post('/delete', async (request, response) => {
     try {
         const id = request.body?.id;
         if (typeof id !== 'string' || !id) {
             return response.status(400).send({ error: 'id is required' });
         }
+        const mergeInto = request.body?.mergeInto ?? null;
+        if (mergeInto !== null && typeof mergeInto !== 'string') {
+            return response.status(400).send({ error: 'mergeInto must be a string or null' });
+        }
 
-        const result = await deleteTagDefinition(request.user.directories, id);
+        const result = await deleteTagDefinition(request.user.directories, id, mergeInto);
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
@@ -314,7 +321,9 @@ router.get('/usage', async (request, response) => {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
 
-        response.send(result);
+        // The ids whose count may be too high (see getAllTagUsage()), as a JSON array, so the body stays {id: count}.
+        response.set('X-Tag-Usage-Approximate', JSON.stringify(result.approximate));
+        response.send(result.counts);
     } catch (err) {
         console.error('Could not get tag usage', err);
         response.sendStatus(500);

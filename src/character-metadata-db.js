@@ -18,6 +18,7 @@ import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { TAGS_FILE } from './constants.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
+import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
@@ -436,10 +437,21 @@ const SCHEMA_SQL = `
         data TEXT NOT NULL
     );
 
-    -- One row per tag *name* edit (saveTagDefinitions() below), never per tag creation/deletion/non-name field -
-    -- a change log a caller can page through with seq > sinceSeq, the same shape as 'changes' above, so reading
-    -- "which tag ids had their name changed since I last looked" costs work proportional to how many name edits
-    -- happened in that window, never to how many tags exist in total.
+    -- A tag definition deleted by deleteTagDefinition(), whose tags row and tag rows are still waiting to be removed.
+    -- Every read treats tag_id as merge_into (or as absent when NULL); see tag-deletions.js. merge_into is never
+    -- itself a row here: marking a tag rewrites the rows that merged into it. Kept apart from tags because a
+    -- whole-set saveTagDefinitions() deletes and re-inserts tags rows.
+    CREATE TABLE IF NOT EXISTS tag_deletions (
+        tag_id     TEXT PRIMARY KEY,
+        merge_into TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_tag_deletions_merge_into ON tag_deletions(merge_into);
+
+    -- One row per change to the name a tag's rows read as: a tag *name* edit (saveTagDefinitions() below), or a tag
+    -- marked deleted, which then reads as its merge target or as nothing (deleteTagDefinition()). Never per tag
+    -- creation or non-name field - a change log a caller can page through with seq > sinceSeq, the same shape as
+    -- 'changes' above, so reading "which tag ids had their name changed since I last looked" costs work proportional
+    -- to how many such changes happened in that window, never to how many tags exist in total.
     CREATE TABLE IF NOT EXISTS tag_name_changes (
         seq    INTEGER PRIMARY KEY AUTOINCREMENT,
         tag_id TEXT NOT NULL
@@ -1139,6 +1151,33 @@ function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
 }
 
 /**
+ * A stored shallow_json as readers get it: tag_ids resolved through tag_deletions.
+ * @param {string} shallowJson
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @returns {any}
+ */
+function parseShallowResolvingTags(shallowJson, deletions) {
+    const shallow = JSON.parse(shallowJson);
+    if (Array.isArray(shallow?.tag_ids)) shallow.tag_ids = resolveTagIds(shallow.tag_ids, deletions);
+    return shallow;
+}
+
+/**
+ * The tag_ids digest of a character row as readers get it: the stored digest_tag_ids, unless a marked tag is in
+ * shallow_json.tag_ids, which is then hashed resolved (the digest parseShallowResolvingTags()' row hashes to).
+ * @param {number} storedDigest
+ * @param {string | null | undefined} shallowJson Needed only when `deletions` isn't empty.
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @returns {number}
+ */
+function characterTagIdsDigestForReader(storedDigest, shallowJson, deletions) {
+    if (!deletions.size || typeof shallowJson !== 'string') return storedDigest >>> 0;
+    const tagIds = JSON.parse(shallowJson)?.tag_ids;
+    const resolved = resolveTagIds(tagIds, deletions);
+    return resolved === tagIds ? storedDigest >>> 0 : characterDigestTagIdsHash({ tag_ids: resolved }) >>> 0;
+}
+
+/**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} id
  * @returns {string[]}
@@ -1262,10 +1301,15 @@ function writeRowSync(db, row, tagIds) {
     const lastInsertRowid = insertChange(db, row.id, 'upsert', null);
     db.run(UPSERT_SQL, { ...row, changeSeq: Number(lastInsertRowid) });
 
-    if (!existed) {
-        for (const tagId of tagIds) {
+    if (!existed && tagIds.length > 0) {
+        const deletions = readTagDeletionsSync(db);
+        const { tagIds: toAssign, dropped } = resolveTagIdsToAssign(tagIds, deletions);
+        for (const tagId of toAssign) {
             db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: row.id, tagId });
         }
+        warnDeletedTagsNotAssigned(row.id, dropped);
+        // row.shallow_json was built from the unresolved ids.
+        if (tagIds.some(tagId => deletions.has(tagId))) syncShallowTagIdsFromTable(db, row.id);
     }
 }
 
@@ -1532,8 +1576,9 @@ export async function getCharacterTagIdsByIds(directories, ids) {
         }
     }
     // Sorted in JS even after ORDER BY: SQLite compares UTF-8 bytes, normalizeTagIds() UTF-16 code units.
+    const deletions = readTagDeletionsSync(entry.db);
     for (const id of Object.keys(result)) {
-        result[id] = normalizeTagIds(result[id]);
+        result[id] = resolveTagIds(normalizeTagIds(result[id]), deletions);
     }
     return result;
 }
@@ -1571,6 +1616,7 @@ export async function getShallowByIds(directories, ids) {
     const entry = await getEntry(directories);
     if (!entry || !Array.isArray(ids) || ids.length === 0) return {};
 
+    const deletions = readTagDeletionsSync(entry.db);
     /** @type {{[id: string]: object}} */
     const result = {};
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
@@ -1579,7 +1625,7 @@ export async function getShallowByIds(directories, ids) {
         const rows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch)));
         for (const row of rows) {
             try {
-                result[row.id] = JSON.parse(row.shallow_json);
+                result[row.id] = parseShallowResolvingTags(row.shallow_json, deletions);
             } catch {
                 // Skip unparseable rows - same tolerance every other shallow_json consumer has.
             }
@@ -2905,7 +2951,7 @@ export async function clearLocalImportMtime(directories, sourcePath) {
 export async function getCharacterTagIds(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return [];
-    return (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))).map(r => r.tag_id);
+    return resolveTagIds((/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))).map(r => r.tag_id), readTagDeletionsSync(entry.db));
 }
 
 /**
@@ -2916,7 +2962,13 @@ export async function getCharacterTagIds(directories, avatar) {
 export async function getTagUsageCount(directories, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return 0;
-    const row = (/** @type {{ count: number } | undefined} */ (entry.db.get('SELECT count FROM tag_usage WHERE tag_id = @tagId', { tagId })));
+    // Counted the way getAllTagUsage() counts it.
+    if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @tagId', { tagId })) return 0;
+    const row = (/** @type {{ count: number } | undefined} */ (entry.db.get(
+        `SELECT (SELECT COALESCE(SUM(count), 0) FROM tag_usage WHERE tag_id = @tagId)
+            + (SELECT COALESCE(SUM(u.count), 0) FROM tag_deletions d JOIN tag_usage u ON u.tag_id = d.tag_id WHERE d.merge_into = @tagId) AS count`,
+        { tagId },
+    )));
     return row ? Number(row.count) : 0;
 }
 
@@ -2947,7 +2999,7 @@ function updateTagsHashIfChangedSync(db) {
  * @returns {string}
  */
 function computeTagsHashSync(db) {
-    const rows = (/** @type {TagRow[]} */ (db.all('SELECT id, data FROM tags ORDER BY id')));
+    const rows = (/** @type {TagRow[]} */ (db.all(`SELECT id, data FROM tags WHERE ${NOT_MARKED_DELETED_SQL} ORDER BY id`)));
     const content = rows.map(r => r.id + '\0' + r.data).join('\0');
     return crypto.createHash('sha256').update(content).digest('hex');
 }
@@ -3222,8 +3274,9 @@ export async function getEntityTagIdsForMany(directories, ids, { type: onlyType 
     }
 
     // Sorted in JS even after ORDER BY: SQLite compares UTF-8 bytes, normalizeTagIds() UTF-16 code units.
+    const deletions = readTagDeletionsSync(entry.db);
     for (const id of Object.keys(result)) {
-        result[id] = normalizeTagIds(result[id]);
+        result[id] = resolveTagIds(normalizeTagIds(result[id]), deletions);
     }
     return result;
 }
@@ -3255,6 +3308,17 @@ export async function assignEntityTag(directories, id, tagId) {
 
     const type = tagEntityTypeOf(id);
     if (type === null) return 'not_found';
+
+    // A marked tag is now its merge target, so that is what gets assigned.
+    const resolvedTagId = resolveTagId(tagId, readTagDeletionsSync(entry.db));
+    if (resolvedTagId === null) {
+        const exists = type === 'character'
+            ? entry.batch?.pending.has(id) === true || !!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })
+            : !!entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id });
+        if (exists) warnDeletedTagsNotAssigned(id, [tagId]);
+        return exists ? 'ok' : 'not_found';
+    }
+    tagId = resolvedTagId;
 
     if (type === 'character') flushBufferedRowOverExisting(entry, id);
     const pending = type === 'character' ? entry.batch?.pending.get(id) : undefined;
@@ -3292,8 +3356,39 @@ export async function assignEntityTag(directories, id, tagId) {
     return result.found ? 'ok' : 'not_found';
 }
 
+/**
+ * The tags a write naming `tagIds` assigns: each marked tag is now its merge target, each once; one deleted with
+ * no merge target is left out and listed in `dropped`.
+ * @param {unknown[]} tagIds
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @returns {{ tagIds: string[], dropped: string[] }}
+ */
+function resolveTagIdsToAssign(tagIds, deletions) {
+    /** @type {Set<string>} */
+    const resolved = new Set();
+    /** @type {string[]} */
+    const dropped = [];
+    for (const tagId of tagIds) {
+        const target = resolveTagId(/** @type {string} */ (tagId), deletions);
+        if (target !== null) resolved.add(target);
+        else dropped.push(/** @type {string} */ (tagId));
+    }
+    return { tagIds: [...resolved], dropped };
+}
+
+/**
+ * @param {string} entityId
+ * @param {string[]} tagIds Tags deleted with no merge target.
+ */
+function warnDeletedTagsNotAssigned(entityId, tagIds) {
+    if (tagIds.length === 0) return;
+    console.warn(color.yellow(`[character-metadata] Not assigned to ${entityId}: tag(s) deleted with no merge target: ${tagIds.join(', ')}`));
+}
+
 // Not a 404 on a nonexistent entity: nothing to reject. Touches only the id's own type's table
 // (tagEntityTypeOf()). Checks the batch-import pending buffer too, same reasoning as assignEntityTag().
+// Unassigning a marked tag removes that tag's own row, never its merge target's: the client's delete-and-merge sends
+// it for every loaded entity carrying the marked tag, including one that already had the target.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id
@@ -3373,12 +3468,17 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
     const result = {};
     /** @type {{ id: string, row: PendingRow }[]} */
     let flushed = [];
+    /** @type {Map<string, string[]>} */
+    let notAssigned = new Map();
 
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         flushed = [];
+        notAssigned = new Map();
+        const deletions = readTagDeletionsSync(entry.db);
         for (const id of ids) {
-            const tagIds = Array.isArray(tagIdsByEntity[id]) ? [...new Set(tagIdsByEntity[id])] : [];
+            const { tagIds, dropped } = resolveTagIdsToAssign(Array.isArray(tagIdsByEntity[id]) ? tagIdsByEntity[id] : [], deletions);
+            if (dropped.length > 0) notAssigned.set(id, dropped);
 
             const flushedRow = tagEntityTypeOf(id) === 'character' ? writeBufferedRowOverExistingSync(entry, id) : undefined;
             if (flushedRow) flushed.push({ id, row: flushedRow });
@@ -3415,6 +3515,9 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
         }
     });
     for (const { id, row } of flushed) dropFromBuffer(entry, id, row);
+    for (const [id, tagIds] of notAssigned) {
+        if (result[id] === 'ok') warnDeletedTagsNotAssigned(id, tagIds);
+    }
 
     return result;
 }
@@ -3427,24 +3530,38 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
 export async function getGroupTagIds(directories, groupId) {
     const entry = await getEntry(directories);
     if (!entry || tagEntityTypeOf(groupId) !== 'group') return [];
-    return normalizeTagIds((/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId }))).map(r => r.tag_id));
+    return resolveTagIds(normalizeTagIds((/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId }))).map(r => r.tag_id)), readTagDeletionsSync(entry.db));
 }
 
 /**
+ * A marked tag's count is added to its merge target's and the marked tag is left out. An entity carrying both counts
+ * twice until the migration worker merges its rows, so each target that has a marked tag with rows merging into it
+ * is listed in `approximate`: finding the overlap would read every row of the marked tag.
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<Record<string, number> | null>}
+ * @returns {Promise<{ counts: Record<string, number>, approximate: string[] } | null>}
  */
 export async function getAllTagUsage(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
+    const deletions = readTagDeletionsSync(entry.db);
     const rows = (/** @type {{ tag_id: string, count: number }[]} */ (entry.db.all('SELECT tag_id, count FROM tag_usage')));
     /** @type {Record<string, number>} */
-    const result = {};
+    const counts = {};
+    /** @type {Set<string>} */
+    const approximate = new Set();
     for (const row of rows) {
-        result[row.tag_id] = Number(row.count);
+        const count = Number(row.count);
+        if (!deletions.has(row.tag_id)) {
+            counts[row.tag_id] = (counts[row.tag_id] ?? 0) + count;
+            continue;
+        }
+        const target = deletions.get(row.tag_id);
+        if (typeof target !== 'string') continue;
+        counts[target] = (counts[target] ?? 0) + count;
+        if (count > 0) approximate.add(target);
     }
-    return result;
+    return { counts, approximate: [...approximate] };
 }
 
 // SQL counterpart to tagEntityTypeOf(id) === 'group' for a group_tags row (case-sensitive, like endsWith()).
@@ -3792,6 +3909,32 @@ export async function normalizeGroupFavIfNeeded(directories) {
     });
 }
 
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @returns {import('./tag-deletions.js').TagDeletions}
+ */
+function readTagDeletionsSync(db) {
+    /** @type {import('./tag-deletions.js').TagDeletions} */
+    const deletions = new Map();
+    for (const row of /** @type {Iterable<{ tag_id: string, merge_into: string | null }>} */ (db.iterate('SELECT tag_id, merge_into FROM tag_deletions'))) {
+        deletions.set(row.tag_id, row.merge_into ?? null);
+    }
+    return deletions;
+}
+
+/**
+ * Every marked tag and its merge target, for callers outside this module that apply tag-deletions.js themselves.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<import('./tag-deletions.js').TagDeletions>}
+ */
+export async function getTagDeletions(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return new Map();
+    return readTagDeletionsSync(entry.db);
+}
+
+const NOT_MARKED_DELETED_SQL = 'id NOT IN (SELECT tag_id FROM tag_deletions)';
+
 // Returns tag definitions in no particular order - sorting is a client concern (compareTagsForSort(), tags.js).
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -3800,7 +3943,7 @@ export async function normalizeGroupFavIfNeeded(directories) {
 export async function getTagDefinitions(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    return (/** @type {{ data: string }[]} */ (entry.db.all('SELECT data FROM tags'))).map(r => JSON.parse(r.data));
+    return (/** @type {{ data: string }[]} */ (entry.db.all(`SELECT data FROM tags WHERE ${NOT_MARKED_DELETED_SQL}`))).map(r => JSON.parse(r.data));
 }
 
 // Bucketed digest over every tag definition, computed on demand and stored nowhere - a tag row is small
@@ -3815,7 +3958,7 @@ export async function getTagsDigest(directories, bucketCount = DEFAULT_DIGEST_BU
     if (!entry) return null;
 
     const buckets = Array.from({ length: bucketCount }, () => emptyDigest());
-    for (const row of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags')))) {
+    for (const row of (/** @type {TagRow[]} */ (entry.db.all(`SELECT id, data FROM tags WHERE ${NOT_MARKED_DELETED_SQL}`)))) {
         let parsed;
         try { parsed = JSON.parse(row.data); } catch { continue; }
         const b = bucketOf(row.id, bucketCount);
@@ -3837,7 +3980,7 @@ export async function getTagsBucketMembers(directories, bucket, bucketCount = DE
     if (!entry) return null;
 
     const members = [];
-    for (const row of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags')))) {
+    for (const row of (/** @type {TagRow[]} */ (entry.db.all(`SELECT id, data FROM tags WHERE ${NOT_MARKED_DELETED_SQL}`)))) {
         if (bucketOf(row.id, bucketCount) !== bucket) continue;
         let parsed;
         try { parsed = JSON.parse(row.data); } catch { continue; }
@@ -3863,7 +4006,7 @@ export async function getTagDefinitionsByIds(directories, ids) {
     for (let i = 0; i < wanted.length; i += CHUNK) {
         const slice = wanted.slice(i, i + CHUNK);
         const placeholders = slice.map(() => '?').join(',');
-        for (const r of (/** @type {Generator<TagRow>} */ (entry.db.iterate(`SELECT id, data FROM tags WHERE id IN (${placeholders})`, slice)))) {
+        for (const r of (/** @type {Generator<TagRow>} */ (entry.db.iterate(`SELECT id, data FROM tags WHERE id IN (${placeholders}) AND ${NOT_MARKED_DELETED_SQL}`, slice)))) {
             try {
                 out.push(JSON.parse(r.data));
             } catch (err) {
@@ -3899,8 +4042,11 @@ export async function getAllEntityTagAssignments(directories) {
     /** @type {number[][]} */
     const map = [];
 
-    /** @param {string} entityId @param {string} tagId */
-    const addAssignment = (entityId, tagId) => {
+    const deletions = readTagDeletionsSync(entry.db);
+    /** @param {string} entityId @param {string} rowTagId */
+    const addAssignment = (entityId, rowTagId) => {
+        const tagId = resolveTagId(rowTagId, deletions);
+        if (tagId === null) return;
         let entityIdx = avatarIndex.get(entityId);
         if (entityIdx === undefined) {
             entityIdx = avatarIndex.size;
@@ -3912,6 +4058,8 @@ export async function getAllEntityTagAssignments(directories) {
             tagIdx = tagIdIndex.size;
             tagIdIndex.set(tagId, tagIdx);
         }
+        // A marked tag and its merge target on one entity are one tag.
+        if (deletions.size && map[entityIdx].includes(tagIdx)) return;
         map[entityIdx].push(tagIdx);
     };
 
@@ -3944,7 +4092,11 @@ export async function saveTagDefinitions(directories, tagsArray) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
+    /** @type {string[]} */
+    let skipped = [];
     entry.db.transaction(() => {
+        skipped = [];
+        const deletions = readTagDeletionsSync(entry.db);
         const oldNames = new Map((/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags'))).map(row => {
             let parsed = null;
             try { parsed = JSON.parse(row.data); } catch { /* an unparseable old row has no name to compare against */ }
@@ -3955,6 +4107,10 @@ export async function saveTagDefinitions(directories, tagsArray) {
         for (const raw of tagsArray) {
             const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
+            if (deletions.has(tag.id)) {
+                skipped.push(tag.id);
+                continue;
+            }
             entry.db.run('INSERT INTO tags (id, data, name_key) VALUES (@id, @data, @nameKey)', { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag) });
             if (oldNames.has(tag.id) && oldNames.get(tag.id) !== (tag.name ?? '')) {
                 entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
@@ -3962,6 +4118,7 @@ export async function saveTagDefinitions(directories, tagsArray) {
         }
         updateTagsHashSync(entry.db);
     });
+    warnStaleDeletedTagSave(skipped);
     // Invalidate: a whole-table replace can't be patched into getTagCache()'s Maps incrementally.
     entry.tagCache = null;
     return 'ok';
@@ -3980,7 +4137,11 @@ export async function upsertTagDefinition(directories, rawTag) {
     const tag = /** @type {TagDefinitionInput | null | undefined} */ (rawTag);
     if (!tag || typeof tag.id !== 'string' || !tag.id) return null;
 
+    // An object, not a let: TypeScript doesn't see the callback's assignment and narrows a let to false.
+    const result = { skipped: false };
     entry.db.transaction(() => {
+        result.skipped = !!entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tag.id });
+        if (result.skipped) return;
         const oldRow = (/** @type {{ data: string } | undefined} */ (entry.db.get('SELECT data FROM tags WHERE id = @id', { id: tag.id })));
         let oldName = null;
         if (oldRow) {
@@ -3996,14 +4157,29 @@ export async function upsertTagDefinition(directories, rawTag) {
         }
         updateTagsHashSync(entry.db);
     });
+    if (result.skipped) {
+        warnStaleDeletedTagSave([tag.id]);
+        return 'ok';
+    }
     entry.tagCache = null;
     return 'ok';
 }
 
-// A tag is in use if tag_usage counts an assignment for it, or a batch-import row not yet flushed into
-// character_tags carries it. `@pending` is that buffer's tag ids as JSON (at most BATCH_IMPORT_FLUSH_SIZE rows).
+// A deleted tag's id is never reused (a new tag always gets a new id), so a save naming one is a stale copy.
+/** @param {string[]} ids */
+function warnStaleDeletedTagSave(ids) {
+    if (ids.length === 0) return;
+    console.warn(color.yellow(`[character-metadata] Skipped saving deleted tag(s), a stale copy: ${ids.join(', ')}`));
+}
+
+// A tag is in use if tag_usage counts an assignment for it or for a marked tag merging into it, or a batch-import
+// row not yet flushed into character_tags carries it. `@pending` is that buffer's tag ids as JSON (at most
+// BATCH_IMPORT_FLUSH_SIZE rows), already resolved through tag_deletions. A marked tag is never listed: it is
+// already deleted.
 const UNUSED_TAGS_WHERE = `
     NOT EXISTS (SELECT 1 FROM tag_usage u WHERE u.tag_id = t.id AND u.count > 0)
+    AND NOT EXISTS (SELECT 1 FROM tag_deletions d JOIN tag_usage u ON u.tag_id = d.tag_id WHERE d.merge_into = t.id AND u.count > 0)
+    AND t.id NOT IN (SELECT tag_id FROM tag_deletions)
     AND t.id NOT IN (SELECT value FROM json_each(@pending))`;
 
 /** @param {MetadataDbEntry} entry @returns {string} */
@@ -4012,7 +4188,7 @@ function pendingImportTagIdsJson(entry) {
     for (const pending of entry.batch?.pending.values() ?? []) {
         for (const tagId of pending.tagIds) ids.add(tagId);
     }
-    return JSON.stringify([...ids]);
+    return JSON.stringify(resolveTagIds([...ids], readTagDeletionsSync(entry.db)));
 }
 
 /**
@@ -4057,22 +4233,64 @@ export async function pruneUnusedTags(directories, limit) {
     return deleted;
 }
 
-/** Deletes a single tag definition by id. */
 /**
+ * Marks a tag definition deleted, merging into `mergeInto` when given. Its tags row and tag rows stay until the
+ * migration worker's batched pass removes them; every read treats it as deleted from now on.
+ * - No tags row for `tagId`, or already marked: writes nothing (a marked tag keeps its first merge target).
+ * - `mergeInto` marked itself: its own merge target is used, so no mark ever points at another mark.
+ * - `mergeInto` unknown, or `tagId` itself: deleted with no merge, and a warning names it.
+ * Tags that merged into `tagId` move onto its merge target. Each marked tag whose resolved name changed is logged in
+ * tag_name_changes, so the search index re-indexes the entities carrying it.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} tagId
+ * @param {string | null} [mergeInto]
  * @returns {Promise<'ok' | null>}
  */
-export async function deleteTagDefinition(directories, tagId) {
+export async function deleteTagDefinition(directories, tagId, mergeInto = null) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     if (typeof tagId !== 'string' || !tagId) return null;
 
+    // An object, not lets: TypeScript doesn't see the callback's assignments and narrows lets to their initial values.
+    /** @type {{ warning: string | null, changed: boolean }} */
+    const result = { warning: null, changed: false };
     entry.db.transaction(() => {
-        entry.db.run('DELETE FROM tags WHERE id = @id', { id: tagId });
+        result.warning = null;
+        result.changed = false;
+        if (!entry.db.get('SELECT 1 FROM tags WHERE id = @id', { id: tagId })) return;
+        if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tagId })) return;
+
+        /** @type {string | null} */
+        let target = null;
+        if (typeof mergeInto === 'string' && mergeInto) {
+            const targetMark = /** @type {{ merge_into: string | null } | undefined} */ (entry.db.get('SELECT merge_into FROM tag_deletions WHERE tag_id = @id', { id: mergeInto }));
+            if (mergeInto === tagId) {
+                result.warning = `Tag ${tagId} was deleted with itself as its merge target; deleted it with no merge.`;
+            } else if (targetMark) {
+                target = targetMark.merge_into ?? null;
+                if (target === null) result.warning = `Tag ${tagId}'s merge target ${mergeInto} was already deleted with no merge target; deleted ${tagId} with no merge.`;
+            } else if (entry.db.get('SELECT 1 FROM tags WHERE id = @id', { id: mergeInto })) {
+                target = mergeInto;
+            } else {
+                result.warning = `Tag ${tagId}'s merge target ${mergeInto} doesn't exist; deleted ${tagId} with no merge.`;
+            }
+        }
+
+        /** @type {string[]} */
+        const movedIds = [];
+        for (const row of /** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM tag_deletions WHERE merge_into = @id', { id: tagId }))) {
+            movedIds.push(row.tag_id);
+        }
+        entry.db.run('UPDATE tag_deletions SET merge_into = @target WHERE merge_into = @id', { id: tagId, target });
+        entry.db.run('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (@id, @target)', { id: tagId, target });
+        for (const id of [tagId, ...movedIds]) {
+            entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
+        }
         updateTagsHashSync(entry.db);
+        result.changed = true;
     });
-    entry.tagCache = null;
+    if (result.warning !== null) console.warn(color.yellow(`[character-metadata] ${result.warning}`));
+    if (result.changed) entry.tagCache = null;
     return 'ok';
 }
 
@@ -4175,10 +4393,16 @@ function importTagMapSync(entry, tagMap) {
         if (!Array.isArray(tagIds)) warnTagMapEntryNotArray(key, tagIds, 'nothing imported for it');
     }
 
+    /** @type {Map<string, string[]>} */
+    let notAssigned = new Map();
     entry.db.transaction(() => {
-        for (const [key, tagIds] of Object.entries(tagMap)) {
-            if (!Array.isArray(tagIds)) continue;
+        notAssigned = new Map();
+        const deletions = readTagDeletionsSync(entry.db);
+        for (const [key, rawTagIds] of Object.entries(tagMap)) {
+            if (!Array.isArray(rawTagIds)) continue;
             const type = tagEntityTypeOf(key);
+            const { tagIds, dropped } = resolveTagIdsToAssign(rawTagIds, deletions);
+            if (dropped.length > 0 && ((type === 'character' && knownCharacterIds.has(key)) || (type === 'group' && knownGroupIds.has(key)))) notAssigned.set(key, dropped);
             if (type === 'character' && knownCharacterIds.has(key)) {
                 for (const tagId of tagIds) {
                     entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
@@ -4195,6 +4419,7 @@ function importTagMapSync(entry, tagMap) {
         }
         updateTagsHashSync(entry.db);
     });
+    for (const [key, tagIds] of notAssigned) warnDeletedTagsNotAssigned(key, tagIds);
 
     return droppedKeys;
 }
@@ -4267,11 +4492,15 @@ async function importTagMap(entry, tagMap) {
         /** @type {{ key: string, message: string }[]} */
         let batchFailed = [];
         let batchChanged = 0;
+        /** @type {Map<string, string[]>} */
+        let batchNotAssigned = new Map();
         entry.db.transaction(() => {
             // Reset here: a transaction that hits busy is rolled back and rerun.
             batchDropped = [];
             batchFailed = [];
             batchChanged = 0;
+            batchNotAssigned = new Map();
+            const deletions = readTagDeletionsSync(entry.db);
             const characterKeys = batch.filter(([key]) => tagEntityTypeOf(key) === 'character').map(([key]) => key);
             const groupKeys = batch.filter(([key]) => tagEntityTypeOf(key) === 'group').map(([key]) => key);
             /** @type {Set<string>} */
@@ -4289,9 +4518,11 @@ async function importTagMap(entry, tagMap) {
                 }
             }
 
-            for (const [key, tagIds] of batch) {
-                if (!Array.isArray(tagIds)) continue;
+            for (const [key, rawTagIds] of batch) {
+                if (!Array.isArray(rawTagIds)) continue;
                 const type = tagEntityTypeOf(key);
+                const { tagIds, dropped } = resolveTagIdsToAssign(rawTagIds, deletions);
+                if (dropped.length > 0 && ((type === 'character' && knownCharacterIds.has(key)) || (type === 'group' && knownGroupIds.has(key)))) batchNotAssigned.set(key, dropped);
                 /** @type {(() => boolean) | null} */
                 let write;
                 if (type === 'character' && knownCharacterIds.has(key)) {
@@ -4314,6 +4545,7 @@ async function importTagMap(entry, tagMap) {
         batches++;
         rowsChanged += batchChanged;
         droppedKeys.push(...batchDropped);
+        for (const [key, tagIds] of batchNotAssigned) warnDeletedTagsNotAssigned(key, tagIds);
         failedKeys += batchFailed.length;
         if (batchFailed.length > 0) {
             console.warn(color.yellow(`[character-metadata] tags.json migration: ${batchFailed.length} tag_map key(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.key}: ${f.message}`).join('\n')}`));
@@ -4407,10 +4639,18 @@ function resolveCardTagNamesSync(db, names, { ready, cachedIds, onlyExisting = f
             resolved.held.push(name);
             continue;
         }
-        const row = /** @type {{ id: string, data: string } | undefined} */ (db.get('SELECT id, data FROM tags WHERE name_key = @key ORDER BY rowid LIMIT 1', { key }));
+        // A marked tag with a merge target stands for that target; one with none matches nothing.
+        const row = /** @type {{ id: string, data: string, merge_into: string | null } | undefined} */ (db.get(
+            `SELECT t.id, t.data, d.merge_into FROM tags t LEFT JOIN tag_deletions d ON d.tag_id = t.id
+             WHERE t.name_key = @key AND (d.tag_id IS NULL OR d.merge_into IS NOT NULL) ORDER BY t.rowid LIMIT 1`,
+            { key },
+        ));
+        const target = typeof row?.merge_into === 'string'
+            ? /** @type {{ id: string, data: string } | undefined} */ (db.get('SELECT id, data FROM tags WHERE id = @id', { id: row.merge_into }))
+            : row;
         if (row) {
-            resolved.tagIds.push(row.id);
-            resolved.learned.push({ key, id: row.id, data: row.data });
+            resolved.tagIds.push(row.merge_into ?? row.id);
+            if (target) resolved.learned.push({ key, id: target.id, data: target.data });
         } else if (!onlyExisting) {
             resolved.toCreate.push(name);
         }
@@ -4748,13 +4988,16 @@ function getTagCache(entry) {
     const tagNameToId = new Map();
     /** @type {Map<string, object>} */
     const tagIdToDefinition = new Map();
+    const deletions = readTagDeletionsSync(entry.db);
     for (const tagRow of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags ORDER BY rowid')))) {
         try {
             const tag = JSON.parse(tagRow.data);
-            if (tag && typeof tag.name === 'string' && tag.name) {
+            // Keyed the way resolveCardTagNamesSync() looks names up.
+            const id = resolveTagId(tagRow.id, deletions);
+            if (id !== null && tag && typeof tag.name === 'string' && tag.name) {
                 const key = tagNameKey(tag.name);
-                if (!tagNameToId.has(key)) tagNameToId.set(key, tagRow.id);
-                tagIdToDefinition.set(tagRow.id, tag);
+                if (!tagNameToId.has(key)) tagNameToId.set(key, id);
+                if (id === tagRow.id) tagIdToDefinition.set(tagRow.id, tag);
             }
         } catch {
             // Malformed tag definition row - skip it.
@@ -4839,14 +5082,15 @@ export async function getFullTagMapExport(directories) {
     // individual array pushes on a large library. \x1f (unit separator) instead of comma to avoid any collision
     // with a tag_id, even though tag ids are UUIDs in practice.
     const SEP = '\x1f';
+    const deletions = readTagDeletionsSync(entry.db);
     /** @type {Record<string, string[]>} */
     const result = {};
     for (const row of (/** @type {{ id: string, tags: string }[]} */ (entry.db.all(`SELECT character_id as id, group_concat(tag_id, '${SEP}') as tags FROM character_tags GROUP BY character_id`)))) {
-        result[row.id] = row.tags.split(SEP);
+        result[row.id] = resolveTagIds(row.tags.split(SEP), deletions);
     }
     for (const row of (/** @type {{ id: string, tags: string }[]} */ (entry.db.all(`SELECT group_id as id, group_concat(tag_id, '${SEP}') as tags FROM group_tags GROUP BY group_id`)))) {
         if (tagEntityTypeOf(row.id) !== 'group') continue;
-        result[row.id] = row.tags.split(SEP);
+        result[row.id] = resolveTagIds(row.tags.split(SEP), deletions);
     }
     return result;
 }
@@ -4895,6 +5139,55 @@ function idListDrivenFrom(table) {
     return `(SELECT value AS want_id FROM json_each(?) GROUP BY value) CROSS JOIN ${table} ON id = want_id`;
 }
 
+/**
+ * Pushes the clauses for a tag filter that a marked tag touches (expandTagFilter()). Each included group counts as
+ * one tag, so 'and' mode counts distinct groups, not distinct tag ids.
+ * @param {string[]} clauses
+ * @param {any[]} args
+ * @param {import('./tag-deletions.js').ExpandedTagFilter} expanded
+ * @param {object} table
+ * @param {'character_tags' | 'group_tags'} table.tagTable
+ * @param {'character_id' | 'group_id'} table.entityColumn
+ * @param {'characters' | 'groups'} table.outer
+ * @param {string} table.rowSql Extra condition on each tag row, '' for none.
+ * @param {boolean} perRow Check each row's own tag rows (an id list drives the query) rather than read every row
+ *   carrying the tag.
+ */
+function pushExpandedTagClauses(clauses, args, expanded, { tagTable, entityColumn, outer, rowSql }, perRow) {
+    if (expanded.none) {
+        clauses.push('0');
+        return;
+    }
+    const rowCondition = rowSql ? ` AND ${rowSql}` : '';
+    const placeholders = (/** @type {unknown[]} */ list) => list.map(() => '?').join(', ');
+    const { include, exclude, mode } = expanded;
+    if (include.length > 0) {
+        const flat = include.flat();
+        if (mode === 'and') {
+            const single = include.every(group => group.length === 1);
+            const keySql = single ? 'tag_id' : `CASE ${include.map((group, i) => `WHEN tag_id IN (${placeholders(group)}) THEN ${i}`).join(' ')} END`;
+            const keyArgs = single ? [] : flat;
+            if (perRow) {
+                clauses.push(`(SELECT COUNT(DISTINCT ${keySql}) FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id IN (${placeholders(flat)})${rowCondition}) = ?`);
+                args.push(...keyArgs, ...flat, include.length);
+            } else {
+                clauses.push(`id IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (${placeholders(flat)})${rowCondition} GROUP BY ${entityColumn} HAVING COUNT(DISTINCT ${keySql}) = ?)`);
+                args.push(...flat, ...keyArgs, include.length);
+            }
+        } else if (perRow) {
+            clauses.push(`EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id IN (${placeholders(flat)})${rowCondition})`);
+            args.push(...flat);
+        } else {
+            clauses.push(`id IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (${placeholders(flat)})${rowCondition})`);
+            args.push(...flat);
+        }
+    }
+    if (exclude.length > 0) {
+        clauses.push(`id NOT IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (${placeholders(exclude)})${rowCondition})`);
+        args.push(...exclude);
+    }
+}
+
 // `ids: []` is handled specially by the caller (queryCharacters()): "match zero ids" is different from "no id
 // filter requested". This function only ever sees a non-empty `ids` array, or none.
 /**
@@ -4904,9 +5197,10 @@ function idListDrivenFrom(table) {
  * @param {string} [filter.world]
  * @param {string[]} [filter.excludeIds]
  * @param {string[]} [filter.ids]
+ * @param {import('./tag-deletions.js').TagDeletions} [deletions]
  * @returns {{ from: string, where: string, args: any[] }} `args` binds `from`'s placeholders, then `where`'s.
  */
-function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
+function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}, deletions = new Map()) {
     const clauses = [];
     const args = [];
     let from = 'characters';
@@ -4928,7 +5222,10 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
         clauses.push('world = ?');
         args.push(world);
     }
-    if (tags) {
+    const expanded = expandTagFilter(tags, deletions);
+    if (expanded) {
+        pushExpandedTagClauses(clauses, args, expanded, { tagTable: 'character_tags', entityColumn: 'character_id', outer: 'characters', rowSql: '' }, hasIds);
+    } else if (tags) {
         const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
         const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
         const mode = tags.mode === 'or' ? 'or' : 'and';
@@ -5190,7 +5487,8 @@ export async function queryCharacters(directories, params = {}) {
         return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
     }
 
-    const { from, where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids });
+    const deletions = readTagDeletionsSync(entry.db);
+    const { from, where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids }, deletions);
 
     let total;
     if (wantTotal) {
@@ -5201,8 +5499,9 @@ export async function queryCharacters(directories, params = {}) {
     // digest_fav/digest_tag_ids/digest_content are plain column reads - writeShallowJson() is the only place
     // shallow_json is written outside buildRow()/writeRowSync()'s own row construction, and it always writes
     // these three columns in the same statement, so a stored value here can never be stale relative to shallow_json.
-    const HASH_COLUMNS = 'id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, digest_fav, digest_tag_ids, digest_content';
-    /** @param {HashSourceRow} r */
+    // shallow_json only for characterTagIdsDigestForReader(), and only while some tag is marked deleted.
+    const HASH_COLUMNS = `id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, digest_fav, digest_tag_ids, digest_content${deletions.size ? ', shallow_json' : ''}`;
+    /** @param {HashSourceRow & { shallow_json?: string }} r */
     const toHashRow = (r) => ({
         id: r.id,
         chat: r.active_chat,
@@ -5212,7 +5511,7 @@ export async function queryCharacters(directories, params = {}) {
         chat_size: r.chat_size,
         data_size: r.data_size,
         favHash: r.digest_fav >>> 0,
-        tagIdsHash: r.digest_tag_ids >>> 0,
+        tagIdsHash: characterTagIdsDigestForReader(r.digest_tag_ids, r.shallow_json, deletions),
         contentHash: r.digest_content >>> 0,
     });
 
@@ -5247,7 +5546,7 @@ export async function queryCharacters(directories, params = {}) {
                 const shallowById = new Map(rawRows.map(r => [r.id, r.shallow_json]));
                 rows = pageIds
                     .filter(id => shallowById.has(id))
-                    .map(id => JSON.parse(/** @type {string} */ (shallowById.get(id))));
+                    .map(id => parseShallowResolvingTags(/** @type {string} */ (shallowById.get(id)), deletions));
             }
         }
     } else if (wantRows || wantHashes) {
@@ -5282,7 +5581,7 @@ export async function queryCharacters(directories, params = {}) {
             hashRows = rawRows.map(toHashRow);
         } else {
             const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.all(`SELECT shallow_json FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
-            rows = rawRows.map(r => JSON.parse(r.shallow_json));
+            rows = rawRows.map(r => parseShallowResolvingTags(r.shallow_json, deletions));
         }
     }
 
@@ -5302,9 +5601,10 @@ const DEFAULT_QUERY_LIMIT = 500;
  * @param {boolean} [filter.fav]
  * @param {string[]} [filter.excludeIds]
  * @param {string[]} [filter.ids]
+ * @param {import('./tag-deletions.js').TagDeletions} [deletions]
  * @returns {{ from: string, where: string, args: any[] }} `args` binds `from`'s placeholders, then `where`'s.
  */
-function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
+function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = new Map()) {
     const clauses = [];
     const args = [];
     let from = 'groups';
@@ -5322,7 +5622,10 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}) {
         clauses.push('fav = ?');
         args.push(fav ? 1 : 0);
     }
-    if (tags) {
+    const expanded = expandTagFilter(tags, deletions);
+    if (expanded) {
+        pushExpandedTagClauses(clauses, args, expanded, { tagTable: 'group_tags', entityColumn: 'group_id', outer: 'groups', rowSql: GROUP_TAG_ROW_IS_GROUP_SQL }, hasIds);
+    } else if (tags) {
         const include = Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
         const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
         const mode = tags.mode === 'or' ? 'or' : 'and';
@@ -5450,8 +5753,24 @@ function mergeSortedRows(a, b, comparator) {
 /**
  * @param {{ db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }} entry
  * @param {import('./users.js').UserDirectoryList} directories
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
  */
-function makeEntityHashRowMapper(entry, directories) {
+function makeEntityHashRowMapper(entry, directories, deletions) {
+    /**
+     * A group's tag_ids digest as readers get it: the stored one, unless a marked tag is among its rows.
+     * @param {string} id
+     * @param {number} storedDigest
+     */
+    const groupTagIdsDigest = (id, storedDigest) => {
+        if (!deletions.size) return storedDigest;
+        /** @type {string[]} */
+        const tagIds = [];
+        for (const r of entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })) {
+            tagIds.push(/** @type {{ tag_id: string }} */ (r).tag_id);
+        }
+        const resolved = resolveTagIds(tagIds, deletions);
+        return resolved === tagIds ? storedDigest : groupDigestTagIdsHash({ tag_ids: resolved });
+    };
     // Character rows' digest_fav/digest_tag_ids/digest_content are plain column reads - writeShallowJson() is the
     // sole writer of shallow_json outside buildRow()/writeRowSync()'s own row construction, and always writes
     // these three columns in the same statement, so they can't be stale relative to shallow_json (see that
@@ -5467,13 +5786,13 @@ function makeEntityHashRowMapper(entry, directories) {
         let favHash, tagIdsHash, contentHash, chat = null;
         if (r.type === 'character') {
             favHash = r.digest_fav;
-            tagIdsHash = r.digest_tag_ids;
+            tagIdsHash = characterTagIdsDigestForReader(r.digest_tag_ids, r.shallow_json, deletions);
             contentHash = r.digest_content;
             chat = JSON.parse(/** @type {string} */ (r.shallow_json)).chat ?? null;
         } else if (r.digest_fav != null && r.digest_tag_ids != null && r.digest_content != null) {
             favHash = r.digest_fav;
             // A .png group row's tags are never read as a group's (tagEntityTypeOf()), so it's served with none.
-            tagIdsHash = tagEntityTypeOf(r.id) === 'group' ? r.digest_tag_ids : groupDigestTagIdsHash({ tag_ids: [] });
+            tagIdsHash = tagEntityTypeOf(r.id) === 'group' ? groupTagIdsDigest(r.id, r.digest_tag_ids) : groupDigestTagIdsHash({ tag_ids: [] });
             contentHash = r.digest_content;
         } else {
             // Can't import groups.js's getGroupsByIds() here (import-direction rule), so re-read the file directly.
@@ -5506,7 +5825,7 @@ function makeEntityHashRowMapper(entry, directories) {
                         tagIds.push(/** @type {{ tag_id: string }} */ (r).tag_id);
                     }
                 }
-                const fingerprintSource = { ...group, tag_ids: tagIds };
+                const fingerprintSource = { ...group, tag_ids: resolveTagIds(tagIds, deletions) };
                 hr.favHash = groupDigestFavHash(fingerprintSource) >>> 0;
                 hr.tagIdsHash = groupDigestTagIdsHash(fingerprintSource) >>> 0;
                 hr.contentHash = groupDigestContentHash(fingerprintSource) >>> 0;
@@ -5520,8 +5839,9 @@ function makeEntityHashRowMapper(entry, directories) {
 
 /**
  * @param {EntityRow} r
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
  */
-function toEntityWireRow(r) {
+function toEntityWireRow(r, deletions) {
     return {
         type: r.type,
         id: r.id,
@@ -5529,7 +5849,7 @@ function toEntityWireRow(r) {
         date_added: Number(r.date_added),
         date_last_chat: Number(r.date_last_chat),
         chat_size: Number(r.chat_size),
-        item: r.type === 'character' ? JSON.parse(/** @type {string} */ (r.shallow_json)) : null,
+        item: r.type === 'character' ? parseShallowResolvingTags(/** @type {string} */ (r.shallow_json), deletions) : null,
     };
 }
 
@@ -5571,13 +5891,14 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
         .map(e => (e.type === 'group' ? groupRows : characterRows).get(e.id))
         .filter(r => r !== undefined));
 
+    const deletions = readTagDeletionsSync(entry.db);
     let rows, hashRows;
     if (wantHashes) {
-        const { toHashRow, resolveFileFallbackHashes } = makeEntityHashRowMapper(entry, directories);
+        const { toHashRow, resolveFileFallbackHashes } = makeEntityHashRowMapper(entry, directories, deletions);
         hashRows = rawRows.map(toHashRow);
         resolveFileFallbackHashes(hashRows);
     } else if (wantRows) {
-        rows = rawRows.map(toEntityWireRow);
+        rows = rawRows.map(r => toEntityWireRow(r, deletions));
     }
     return { rows, hashRows, seq };
 }
@@ -5623,8 +5944,9 @@ export async function queryEntities(directories, params = {}) {
         return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, seq };
     }
 
-    const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids });
-    const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids });
+    const deletions = readTagDeletionsSync(entry.db);
+    const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids }, deletions);
+    const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids }, deletions);
 
     let total;
     if (wantTotal) {
@@ -5639,7 +5961,7 @@ export async function queryEntities(directories, params = {}) {
         total = Number(countRow?.total ?? 0);
     }
 
-    const { toHashRow, resolveFileFallbackHashes } = makeEntityHashRowMapper(entry, directories);
+    const { toHashRow, resolveFileFallbackHashes } = makeEntityHashRowMapper(entry, directories, deletions);
 
     let rows, hashRows;
     if (wantRows || wantHashes) {
@@ -5715,7 +6037,7 @@ export async function queryEntities(directories, params = {}) {
                     hashRows = rawRows.map(toHashRow);
                     resolveFileFallbackHashes(hashRows);
                 } else {
-                    rows = rawRows.map(toEntityWireRow);
+                    rows = rawRows.map(r => toEntityWireRow(r, deletions));
                 }
             }
         } else {
@@ -5753,7 +6075,7 @@ export async function queryEntities(directories, params = {}) {
                 hashRows = rawRows.map(toHashRow);
                 resolveFileFallbackHashes(hashRows);
             } else {
-                rows = rawRows.map(toEntityWireRow);
+                rows = rawRows.map(r => toEntityWireRow(r, deletions));
             }
         }
     }
