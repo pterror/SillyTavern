@@ -4574,7 +4574,13 @@ function makeEntityHashRowMapper(entry, directories) {
             try {
                 const filePath = path.join(directories.groups, sanitize(`${hr.id}.json`));
                 const group = normalizeGroupRecord(JSON.parse(fs.readFileSync(filePath, 'utf8')));
-                const tagIds = tagEntityTypeOf(hr.id) === 'group' ? (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: hr.id }))).map(r => r.tag_id) : [];
+                /** @type {string[]} */
+                const tagIds = [];
+                if (tagEntityTypeOf(hr.id) === 'group') {
+                    for (const r of entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: hr.id })) {
+                        tagIds.push(/** @type {{ tag_id: string }} */ (r).tag_id);
+                    }
+                }
                 const fingerprintSource = { ...group, tag_ids: tagIds };
                 hr.favHash = groupDigestFavHash(fingerprintSource) >>> 0;
                 hr.tagIdsHash = groupDigestTagIdsHash(fingerprintSource) >>> 0;
@@ -4763,18 +4769,22 @@ export async function queryEntities(directories, params = {}) {
                 hashRows = wantHashes ? [] : undefined;
             } else {
                 const pageIdsJson = JSON.stringify(pageIds);
-                const charPageRows = /** @type {EntityRow[]} */ (entry.db.all(
+                /** @type {Map<string, EntityRow>} */
+                const rowById = new Map();
+                for (const r of entry.db.iterate(
                     `SELECT ${ENTITY_CHARACTER_COLUMNS}
                     FROM characters WHERE id IN (SELECT value FROM json_each(?))`,
                     [pageIdsJson],
-                ));
-                const groupPageRows = /** @type {EntityRow[]} */ (entry.db.all(
+                )) {
+                    rowById.set(/** @type {EntityRow} */ (r).id, /** @type {EntityRow} */ (r));
+                }
+                for (const r of entry.db.iterate(
                     `SELECT ${ENTITY_GROUP_COLUMNS}
                     FROM groups WHERE id IN (SELECT value FROM json_each(?))`,
                     [pageIdsJson],
-                ));
-                /** @type {Map<string, EntityRow>} */
-                const rowById = new Map([...charPageRows, ...groupPageRows].map(r => [r.id, r]));
+                )) {
+                    rowById.set(/** @type {EntityRow} */ (r).id, /** @type {EntityRow} */ (r));
+                }
                 const rawRows = pageIds.map(id => rowById.get(id)).filter(r => r !== undefined);
                 if (wantHashes) {
                     hashRows = rawRows.map(toHashRow);
