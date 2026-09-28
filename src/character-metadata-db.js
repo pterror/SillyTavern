@@ -5365,15 +5365,19 @@ function resolveCardTagNamesSync(db, names, { ready, cachedIds, onlyExisting = f
 }
 
 /**
- * Creates a tag for each of resolved.toCreate, adding it to resolved.tagIds and resolved.learned.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * Creates a tag for each of resolved.toCreate, adding it to resolved.tagIds and resolved.learned. Each gets the
+ * sort_order upstream's importTags() -> createNewTag() gives it, one after another: max+1 (nextTagSortOrderSync()).
+ * @param {MetadataDbEntry} entry
  * @param {ResolvedCardTags} resolved
  * @returns {string[]} The new tags' ids.
  */
-function createCardTagsSync(db, resolved) {
+function createCardTagsSync(entry, resolved) {
+    const { db } = entry;
+    // Each tag inserted is the new max, so the next one's max+1 is one more.
+    let sortOrder = resolved.toCreate.length > 0 ? nextTagSortOrderSync(entry) : 0;
     const created = resolved.toCreate.map((name) => {
         const id = crypto.randomUUID();
-        const params = tagRowParams({ id, name, create_date: Date.now() });
+        const params = tagRowParams({ id, name, create_date: Date.now(), sort_order: sortOrder++ });
         db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
         resolved.learned.push({ key: params.nameKey, id, data: params.data });
         return id;
@@ -5399,14 +5403,15 @@ function holdCardTagNamesSync(db, avatar, names, onlyExisting) {
 /**
  * Creates resolved's new tags, assigns every resolved tag to a characters row and holds its unresolved names.
  * Leaves shallow_json.tag_ids to the caller (syncShallowTagIdsFromTable()).
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {MetadataDbEntry} entry
  * @param {string} avatar
  * @param {ResolvedCardTags} resolved
  * @param {boolean} onlyExisting
  * @returns {number} How many tags it created.
  */
-function writeResolvedCardTagsSync(db, avatar, resolved, onlyExisting) {
-    const created = createCardTagsSync(db, resolved).length;
+function writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting) {
+    const { db } = entry;
+    const created = createCardTagsSync(entry, resolved).length;
     for (const tagId of resolved.tagIds) {
         db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: avatar, tagId });
     }
@@ -5595,7 +5600,7 @@ export async function backfillCardTagsIfNeeded(directories) {
             if (missing.length === 0 && resolved.toCreate.length === 0 && resolved.held.length === 0 && inSync(currentTagIds)) return null;
 
             return () => {
-                const created = createCardTagsSync(entry.db, resolved);
+                const created = createCardTagsSync(entry, resolved);
                 batchNewDefinitions += created.length;
                 for (const tagId of [...missing, ...created]) {
                     batchNewAssignments += entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: id, tagId }).changes;
@@ -5676,7 +5681,7 @@ export async function fillTagNameKeysIfNeeded(directories) {
                     continue;
                 }
                 const resolved = resolveCardTagNamesSync(entry.db, [name], { ready: true, onlyExisting: !!onlyExisting });
-                created += writeResolvedCardTagsSync(entry.db, characterId, resolved, !!onlyExisting);
+                created += writeResolvedCardTagsSync(entry, characterId, resolved, !!onlyExisting);
                 if (resolved.tagIds.length > 0) assignedTo.add(characterId);
             }
             for (const characterId of assignedTo) {
@@ -5824,6 +5829,349 @@ function tagQueryColumnsReady(entry) {
 export async function areTagQueryColumnsReady(directories) {
     const entry = await getEntry(directories);
     return !!entry && tagQueryColumnsReady(entry);
+}
+
+export const TAG_SORT_ORDERS_FILLED_FLAG = 'tag_sort_orders_filled_v1';
+// JSON of the pass's place: { phase: 'unordered', k, r }, the (name_key, rowid) of the last tag without a
+// sort_order it passed, or { phase: 'ties', s }, the sort_order up to which (s included) it has spread every tie.
+const TAG_SORT_ORDERS_FILL_AT_KEY = `${TAG_SORT_ORDERS_FILLED_FLAG}_at`;
+const TAG_SORT_ORDERS_FILL_BATCH_SIZE = 1000;
+
+/**
+ * @param {string} data A tags row's data.
+ * @returns {Record<string, unknown> | null} The tag, or null when data isn't a JSON object, so a sort_order written
+ *   into it would be lost or would lose it.
+ */
+function parseTagObject(data) {
+    try {
+        const tag = JSON.parse(data);
+        return tag !== null && typeof tag === 'object' && !Array.isArray(tag) ? tag : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Sets a tag's sort_order in data and in the column derived from it.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {number} rowid
+ * @param {Record<string, unknown>} tag Parsed from the row's data.
+ * @param {number} sortOrder Finite.
+ */
+function writeTagSortOrderSync(db, rowid, tag, sortOrder) {
+    tag.sort_order = sortOrder;
+    db.run('UPDATE tags SET data = @data, sort_order = @sortOrder WHERE rowid = @rowid', { rowid, data: JSON.stringify(tag), sortOrder: tagDerivedColumns(tag).sortOrder });
+}
+
+/**
+ * `count` distinct finite values after `base`, rising in steps of 1, or of the smallest power of two that still
+ * moves `base` once 1 doesn't.
+ * @param {number} base
+ * @param {number} count
+ * @returns {number[]} Shorter than `count` where the values would stop being finite.
+ */
+function valuesAfter(base, count) {
+    let step = 1;
+    while (base + step === base) step *= 2;
+    /** @type {number[]} */
+    const values = [];
+    for (let i = 1; i <= count; i++) {
+        const value = base + step * i;
+        if (!Number.isFinite(value)) break;
+        values.push(value);
+    }
+    return values;
+}
+
+/**
+ * Values for ranks 1..count-1 of `count` tags tied at `value`, spread evenly up to `next` (the next sort_order
+ * above them; null when none is), rank 0 keeping `value`.
+ * @param {number} value
+ * @param {number | null} next
+ * @param {number} count
+ * @returns {number[] | null} null when there's no room for distinct values.
+ */
+function spreadTiedValues(value, next, count) {
+    /** @type {number[]} */
+    let values;
+    if (next === null) {
+        values = valuesAfter(value, count - 1);
+        if (values.length < count - 1) return null;
+    } else {
+        values = [];
+        for (let i = 1; i < count; i++) values.push(value + (next - value) * (i / count));
+    }
+    let previous = value;
+    for (const v of values) {
+        if (!Number.isFinite(v) || v <= previous) return null;
+        previous = v;
+    }
+    return next !== null && previous >= next ? null : values;
+}
+
+/**
+ * @param {string} id
+ * @param {Record<string, unknown> | null} tag
+ */
+function tagWarningLabel(id, tag) {
+    const name = tag?.name;
+    return `${id} (${typeof name === 'string' ? name : JSON.stringify(name)})`;
+}
+
+/**
+ * Logs every tag tied at `value`, which the pass leaves tied.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {number} value
+ */
+async function warnTagsLeftTied(db, value) {
+    /** @type {number | null} */
+    let after = null;
+    for (;;) {
+        const page = /** @type {{ rowid: number, id: string, data: string }[]} */ ([...(after === null
+            ? db.iterate('SELECT rowid, id, data FROM tags WHERE sort_order = @value ORDER BY rowid LIMIT @limit', { value, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE })
+            : db.iterate('SELECT rowid, id, data FROM tags WHERE sort_order = @value AND rowid > @after ORDER BY rowid LIMIT @limit', { value, after, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE }))]);
+        if (page.length === 0) return;
+        console.warn(color.yellow(`[character-metadata] Tag sort_order fill: ${page.length} tag(s) left tied at sort_order ${value}: there is no room for distinct values between it and the next one. They keep their order (insertion order):\n${page.map(row => `  ${tagWarningLabel(row.id, parseTagObject(row.data))}`).join('\n')}`));
+        after = page[page.length - 1].rowid;
+        if (page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE) return;
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+}
+
+/**
+ * Spreads the tags tied at `value` when there are more than a batch of them: counts them in bounded reads, then
+ * writes them from the highest rowid down, so at every commit the tags still tied sit below the ones already
+ * spread, in the same order. Each batch reads the next value above `value` live and spreads the rest below it,
+ * so a tag written there meanwhile keeps its place. Tags a stale count leaves tied are found again by the walk.
+ * @param {MetadataDbEntry} entry
+ * @param {number} value
+ * @param {{ batches: number, rowsChanged: number }} totals Added to.
+ * @returns {Promise<'spread' | 'no-room'>}
+ */
+async function spreadLargeTie(entry, value, totals) {
+    const { db } = entry;
+    let remaining = 0;
+    /** @type {number | null} */
+    let after = null;
+    for (;;) {
+        const page = /** @type {number[]} */ ([...(after === null
+            ? db.iterate('SELECT rowid FROM tags WHERE sort_order = @value ORDER BY rowid LIMIT @limit', { value, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE })
+            : db.iterate('SELECT rowid FROM tags WHERE sort_order = @value AND rowid > @after ORDER BY rowid LIMIT @limit', { value, after, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE }))]
+            .map(row => /** @type {{ rowid: number }} */ (row).rowid));
+        remaining += page.length;
+        if (page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE) break;
+        after = page[page.length - 1];
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+
+    /** @type {number | null} */
+    let below = null;
+    for (;;) {
+        /** @type {{ written: number, last: number | null, finished: boolean, noRoom: boolean }} */
+        const state = { written: 0, last: below, finished: false, noRoom: false };
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            state.written = 0;
+            state.last = below;
+            state.finished = false;
+            state.noRoom = false;
+            const nextRow = /** @type {{ next: number | null }} */ (db.get('SELECT MIN(sort_order) AS next FROM tags WHERE sort_order > @value', { value }));
+            const page = /** @type {{ rowid: number, id: string, data: string }[]} */ ([...(below === null
+                ? db.iterate('SELECT rowid, id, data FROM tags WHERE sort_order = @value ORDER BY rowid DESC LIMIT @limit', { value, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE })
+                : db.iterate('SELECT rowid, id, data FROM tags WHERE sort_order = @value AND rowid < @below ORDER BY rowid DESC LIMIT @limit', { value, below, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE }))]);
+            const values = spreadTiedValues(value, nextRow.next, remaining);
+            if (!values) {
+                state.noRoom = true;
+                return;
+            }
+            for (const row of page) {
+                const rank = remaining - 1 - state.written;
+                if (rank < 1) break;
+                // Stored data under a sort_order is always an object: tagDerivedColumns() gives any other NULL.
+                writeTagSortOrderSync(db, row.rowid, /** @type {Record<string, unknown>} */ (parseTagObject(row.data)), values[rank - 1]);
+                state.written++;
+                state.last = row.rowid;
+            }
+            if (state.written > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            state.finished = page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE || state.written < page.length;
+        });
+        if (state.noRoom) {
+            await warnTagsLeftTied(db, value);
+            return 'no-room';
+        }
+        totals.batches++;
+        totals.rowsChanged += state.written;
+        remaining -= state.written;
+        below = state.last;
+        if (state.finished) return 'spread';
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+}
+
+/**
+ * One-time pass giving every tag a sort_order of its own, so a move can place a tag between two neighbours. Waits
+ * until the derived columns are filled and tags.json is migrated: before that, sort_order's column isn't complete
+ * and tags.json may still bring tags without one.
+ *
+ * 1. Tags without a sort_order get one, continuing after the current max in the order they display: by
+ *    (name_key, rowid) after every ordered tag. A tag whose sort_order is present but has no order loses that raw
+ *    value, which is logged; one whose data isn't a JSON object is left without one and logged.
+ * 2. Tags sharing a sort_order are spread into distinct values in rowid order (upstream's insertion order), up to
+ *    the next value above them, the first keeping its value. A tie with no room between it and the next value is
+ *    left tied and logged.
+ *
+ * Every write changes a row's order value without changing the order, so each commit shows the order the user
+ * sees. Each page is read to the end and written in one transaction. A restart resumes from the place kept in meta.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `batches` counts the transactions that wrote or moved the
+ *   place; `rowsChanged` the tags written.
+ */
+export async function fillTagSortOrdersIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
+    if (!tagQueryColumnsReady(entry) || !db.get('SELECT 1 FROM meta WHERE key = \'tags_json_migrated\'')) {
+        console.log(color.cyan('[character-metadata] Tag sort_order fill: waiting for the tag query columns fill and the tags.json migration to finish.'));
+        return { batches: 0, rowsChanged: 0 };
+    }
+
+    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILL_AT_KEY }));
+    /** @type {{ phase: 'unordered', k: string, r: number } | { phase: 'unordered' } | { phase: 'ties', s: number | null }} */
+    let at = saved ? JSON.parse(saved.value) : { phase: 'unordered' };
+    if (saved) console.log(color.cyan(`[character-metadata] Tag sort_order fill: resuming at ${saved.value}`));
+
+    const totals = { batches: 0, rowsChanged: 0 };
+    const pause = async () => {
+        if (totals.batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    };
+    /** @param {typeof at} next */
+    const saveAt = next => db.run(UPSERT_META_VALUE_SQL, { key: TAG_SORT_ORDERS_FILL_AT_KEY, value: JSON.stringify(next) });
+
+    while (at.phase === 'unordered') {
+        const from = at;
+        /** @type {{ written: number, next: typeof at, replaced: string[], unwritable: string[], unplaced: string[] }} */
+        const state = { written: 0, next: from, replaced: [], unwritable: [], unplaced: [] };
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            Object.assign(state, { written: 0, next: from, replaced: [], unwritable: [], unplaced: [] });
+            /** @type {{ rowid: number, id: string, data: string, name_key: string }[]} */
+            const page = [];
+            const read = (/** @type {string} */ where, /** @type {Record<string, unknown>} */ params) => {
+                const limit = TAG_SORT_ORDERS_FILL_BATCH_SIZE - page.length;
+                if (limit > 0) page.push(...db.iterate(`SELECT rowid, id, data, name_key FROM tags INDEXED BY tags_unordered_name_key
+                    WHERE sort_order IS NULL${where} ORDER BY name_key, rowid LIMIT @limit`, { ...params, limit }));
+            };
+            if ('k' in from) {
+                read(' AND name_key = @k AND rowid > @r', { k: from.k, r: from.r });
+                read(' AND name_key > @k', { k: from.k });
+            } else {
+                read('', {});
+            }
+            const max = /** @type {{ max: number | null }} */ (db.get('SELECT MAX(sort_order) AS max FROM tags')).max;
+            // Upstream newTag()'s Math.max(0, ...orders) + 1.
+            const values = valuesAfter(Math.max(0, max ?? 0), page.length);
+            for (const row of page) {
+                const tag = parseTagObject(row.data);
+                if (!tag) {
+                    state.unwritable.push(`  ${row.id}`);
+                    continue;
+                }
+                if (state.written >= values.length) {
+                    state.unplaced.push(`  ${tagWarningLabel(row.id, tag)}`);
+                    continue;
+                }
+                if (tag.sort_order !== undefined) state.replaced.push(`  ${tagWarningLabel(row.id, tag)}: ${JSON.stringify(tag.sort_order)}`);
+                writeTagSortOrderSync(db, row.rowid, tag, values[state.written]);
+                state.written++;
+            }
+            if (state.written > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            const last = page[page.length - 1];
+            state.next = page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE ? { phase: 'ties', s: null } : { phase: 'unordered', k: last.name_key, r: last.rowid };
+            saveAt(state.next);
+        });
+        totals.batches++;
+        totals.rowsChanged += state.written;
+        if (state.replaced.length > 0) {
+            console.warn(color.yellow(`[character-metadata] Tag sort_order fill: ${state.replaced.length} tag(s) whose sort_order had no order (non-numeric, NaN or an object) were given one; their old values:\n${state.replaced.join('\n')}`));
+        }
+        if (state.unwritable.length > 0) {
+            console.warn(color.yellow(`[character-metadata] Tag sort_order fill: ${state.unwritable.length} tag(s) whose stored data isn't a JSON object were left without a sort_order:\n${state.unwritable.join('\n')}`));
+        }
+        if (state.unplaced.length > 0) {
+            console.warn(color.yellow(`[character-metadata] Tag sort_order fill: ${state.unplaced.length} tag(s) were left without a sort_order: no finite value is left after the current max:\n${state.unplaced.join('\n')}`));
+        }
+        at = state.next;
+        await pause();
+    }
+
+    for (;;) {
+        const { s } = /** @type {{ phase: 'ties', s: number | null }} */ (at);
+        /** @type {{ written: number, s: number | null, large: number | null, noRoom: number[], done: boolean }} */
+        const state = { written: 0, s, large: null, noRoom: [], done: false };
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            Object.assign(state, { written: 0, s, large: null, noRoom: [], done: false });
+            // One row past the batch shows whether the page's last run goes on.
+            const page = /** @type {{ rowid: number, data: string, sort_order: number }[]} */ ([...(s === null
+                ? db.iterate('SELECT rowid, data, sort_order FROM tags INDEXED BY tags_sort_order WHERE sort_order IS NOT NULL ORDER BY sort_order, rowid LIMIT @limit', { limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE + 1 })
+                : db.iterate('SELECT rowid, data, sort_order FROM tags INDEXED BY tags_sort_order WHERE sort_order > @s ORDER BY sort_order, rowid LIMIT @limit', { s, limit: TAG_SORT_ORDERS_FILL_BATCH_SIZE + 1 }))]);
+            const atEnd = page.length <= TAG_SORT_ORDERS_FILL_BATCH_SIZE;
+            /** @type {{ value: number, rows: typeof page }[]} */
+            const runs = [];
+            for (const row of page) {
+                if (runs.length > 0 && runs[runs.length - 1].value === row.sort_order) runs[runs.length - 1].rows.push(row);
+                else runs.push({ value: row.sort_order, rows: [row] });
+            }
+            const complete = atEnd ? runs.length : runs.length - 1;
+            if (!atEnd && complete === 0) {
+                state.large = runs[0].value;
+                return;
+            }
+            for (let i = 0; i < complete; i++) {
+                const { value, rows } = runs[i];
+                const values = rows.length > 1 ? spreadTiedValues(value, i + 1 < runs.length ? runs[i + 1].value : null, rows.length) : [];
+                if (!values) {
+                    state.noRoom.push(value);
+                    state.s = value;
+                    continue;
+                }
+                for (let rank = 1; rank < rows.length; rank++) {
+                    writeTagSortOrderSync(db, rows[rank].rowid, /** @type {Record<string, unknown>} */ (parseTagObject(rows[rank].data)), values[rank - 1]);
+                    state.written++;
+                }
+                state.s = rows.length > 1 ? values[values.length - 1] : value;
+            }
+            if (state.written > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            state.done = atEnd;
+            if (state.done) {
+                db.run(UPSERT_META_VALUE_SQL, { key: TAG_SORT_ORDERS_FILLED_FLAG, value: String(Date.now()) });
+                db.run('DELETE FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILL_AT_KEY });
+                updateTagsHashIfChangedSync(db);
+            } else {
+                saveAt({ phase: 'ties', s: state.s });
+            }
+        });
+        for (const value of state.noRoom) await warnTagsLeftTied(db, value);
+        if (state.large !== null) {
+            const outcome = await spreadLargeTie(entry, state.large, totals);
+            if (outcome === 'no-room') {
+                db.transaction(() => saveAt({ phase: 'ties', s: state.large }));
+                at = { phase: 'ties', s: state.large };
+            }
+            await pause();
+            continue;
+        }
+        totals.batches++;
+        totals.rowsChanged += state.written;
+        if (state.done) break;
+        at = { phase: 'ties', s: state.s };
+        await pause();
+    }
+
+    if (!isReadOnlyMode()) db.checkpoint();
+    return totals;
 }
 
 /** The sorts queryTags() takes: the client's tag_sort_mode values (public/scripts/tags.js). */
@@ -6367,12 +6715,12 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
         // Only rehash when a new tag definition was actually minted; a pure re-assignment doesn't change tags_hash.
         if (pending && !flushed && resolved.held.length === 0) {
             // Tag definitions go straight to the tags table; the row's assignments wait in the buffer (below).
-            if (createCardTagsSync(entry.db, resolved).length > 0) updateTagsHashSync(entry.db);
+            if (createCardTagsSync(entry, resolved).length > 0) updateTagsHashSync(entry.db);
             return;
         }
         // Held names are resolved against the characters table, so the row can't stay in the buffer.
         if (pending && !flushed) flushed = writeBufferedRowSync(entry, avatar);
-        if (writeResolvedCardTagsSync(entry.db, avatar, resolved, onlyExisting) > 0) updateTagsHashSync(entry.db);
+        if (writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting) > 0) updateTagsHashSync(entry.db);
         if (resolved.tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, avatar);
     });
     dropFromBuffer(entry, avatar, flushed);

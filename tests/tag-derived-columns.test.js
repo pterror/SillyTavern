@@ -260,7 +260,7 @@ describe('every tags write sets the derived columns with data', () => {
         const { tagIds } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
         expect(tagIds).toHaveLength(1);
         expect(usageCount(tagIds[0])).toBe(1);
-        expect(derived(tagIds[0])).toEqual({ sort_order: null, folder_type: 'NONE', is_folder: 0, usage_count: 1 });
+        expect(derived(tagIds[0])).toEqual({ sort_order: 1, folder_type: 'NONE', is_folder: 0, usage_count: 1 });
     });
 
     test('usage_count at write is the id\'s tag_usage.count when assignments came first', async () => {
@@ -447,6 +447,57 @@ describe('createTagDefinition', () => {
                 expect(orderOf('b')).toBe(3);
             });
         }
+    });
+});
+
+describe.each([['after the fill', true], ['before the fill', false]])('tags minted from card tags get max+1, one after another, %s', (_, ready) => {
+    /** @param {string[]} tags */
+    const cardWithTags = (name, tags) => JSON.stringify({ name, spec: 'chara_card_v2', spec_version: '2.0', data: { name, tags, creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+    /** @param {string} name @returns {Record<string, unknown>[]} */
+    const tagsNamed = name => withRawDb(db => [...db.prepare('SELECT data FROM tags').pluck().iterate()].map(d => JSON.parse(d)).filter(t => t.name === name));
+
+    /** @param {string} name @returns {unknown} */
+    function mintedOrder(name) {
+        const found = tagsNamed(name);
+        expect(found).toHaveLength(1);
+        const id = /** @type {string} */ (found[0].id);
+        expect(derived(id)?.sort_order).toBe(found[0].sort_order);
+        return found[0].sort_order;
+    }
+
+    beforeEach(async () => {
+        await openStore();
+        await metadataDb.createTagDefinition(directories, { id: 'old', name: 'Old', sort_order: 4.5 });
+    });
+
+    test('seedCardTagsForSingleCharacter', async () => {
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
+        if (ready) await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
+        expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithTags('Bob', ['Second', 'Old', 'First']));
+        await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
+        expect([mintedOrder('Second'), mintedOrder('First')]).toEqual([5.5, 6.5]);
+    });
+
+    test('backfillCardTagsIfNeeded', async () => {
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
+        if (ready) await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithTags('Bob', ['Second', 'First']));
+        await metadataDb.backfillCardTagsIfNeeded(directories);
+        expect([mintedOrder('Second'), mintedOrder('First')]).toEqual([5.5, 6.5]);
+    });
+
+    test('a held name, once fillTagNameKeysIfNeeded resolves it', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithTags('Bob', ['Held']));
+        expect((await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png')).heldTagNames).toEqual(['Held']);
+        if (ready) {
+            // The derived columns fill needs no name keys; the held name waits for them.
+            await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
+        }
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
+        expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
+        expect(mintedOrder('Held')).toBe(5.5);
     });
 });
 

@@ -23,6 +23,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'removeOrphanTagRowsIfNeeded',
     'refreshGroupDigestTagIdsIfNeeded',
     'finishDeletedTags',
+    // After every pass that writes tags rows, migrateTagsJsonIfNeeded's tags without a sort_order included.
+    'fillTagSortOrdersIfNeeded',
     // Last: until its walk passes an entity, the counter triggers skip that entity's writes, so the passes above
     // don't also write counters.
     'fillEntityCountsIfNeeded',
