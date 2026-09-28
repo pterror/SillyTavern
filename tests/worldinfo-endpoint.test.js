@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -454,5 +454,168 @@ describe('worldinfo /create', () => {
     test('rejects a non-string name', async () => {
         const res = await postJson('/api/worldinfo/create', { name: 42 });
         expect(res.status).toBe(400);
+    });
+});
+
+describe('worldinfo missing-book memory', () => {
+    const OLD_MTIME = new Date('2020-01-01T00:00:00Z');
+
+    /** Backdates the worlds directory, so a miss seen now is trusted until the directory changes. */
+    function settleWorldsDir() {
+        fs.utimesSync(worldsDir, OLD_MTIME, OLD_MTIME);
+    }
+
+    /** Counts filesystem lookups of one book's file from now on. */
+    function countLookups(name) {
+        const target = path.join(worldsDir, `${name}.json`);
+        const spy = jest.spyOn(fs, 'existsSync');
+        return () => spy.mock.calls.filter(([p]) => p === target).length;
+    }
+
+    function silenceErrors() {
+        return jest.spyOn(console, 'error').mockImplementation(() => {});
+    }
+
+    function printsFor(errorSpy, name) {
+        return errorSpy.mock.calls.filter(([message]) => String(message).includes(`${name}.json`)).length;
+    }
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('/get of a missing book answers an empty book every time and prints once', async () => {
+        settleWorldsDir();
+        const errors = silenceErrors();
+
+        for (let i = 0; i < 3; i++) {
+            const res = await postJson('/api/worldinfo/get', { name: 'Ghost Get' });
+            expect(res.status).toBe(200);
+            expect(await res.json()).toEqual({ entries: {} });
+        }
+        expect(printsFor(errors, 'Ghost Get')).toBe(1);
+    });
+
+    test('a remembered miss is answered without looking the file up again', () => {
+        settleWorldsDir();
+        const lookups = countLookups('Ghost Repeat');
+
+        for (let i = 0; i < 3; i++) {
+            expect(worldinfo.worldInfoFileExists(directories, 'Ghost Repeat')).toBe(false);
+        }
+        expect(lookups()).toBe(1);
+    });
+
+    test('worldInfoFileExists never prints; the first read that would print still does, once', () => {
+        settleWorldsDir();
+        const errors = silenceErrors();
+
+        expect(worldinfo.worldInfoFileExists(directories, 'Ghost Quiet')).toBe(false);
+        expect(printsFor(errors, 'Ghost Quiet')).toBe(0);
+
+        expect(worldinfo.readWorldInfoFile(directories, 'Ghost Quiet', false)).toBeNull();
+        expect(worldinfo.readWorldInfoFile(directories, 'Ghost Quiet', true)).toEqual({ entries: {} });
+        expect(printsFor(errors, 'Ghost Quiet')).toBe(1);
+    });
+
+    test('re-checking after the directory changes does not print again while the book stays missing', () => {
+        settleWorldsDir();
+        const errors = silenceErrors();
+        worldinfo.readWorldInfoFile(directories, 'Ghost Recheck', true);
+
+        fs.writeFileSync(path.join(worldsDir, 'Other.json'), JSON.stringify({ entries: {} }));
+        const lookups = countLookups('Ghost Recheck');
+        worldinfo.readWorldInfoFile(directories, 'Ghost Recheck', true);
+
+        expect(lookups()).toBe(1);
+        expect(printsFor(errors, 'Ghost Recheck')).toBe(1);
+    });
+
+    test('saving a book under the name (/edit, as a rename does) drops the miss, even with the directory mtime unchanged', async () => {
+        settleWorldsDir();
+        expect(worldinfo.worldInfoFileExists(directories, 'Renamed In')).toBe(false);
+
+        await postJson('/api/worldinfo/edit', { name: 'Renamed In', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        settleWorldsDir();
+
+        expect(worldinfo.worldInfoFileExists(directories, 'Renamed In')).toBe(true);
+        expect(worldinfo.readWorldInfoFile(directories, 'Renamed In', true).entries['0'].content).toBe('Alpha');
+    });
+
+    test('/create drops the miss, even with the directory mtime unchanged', async () => {
+        settleWorldsDir();
+        expect(worldinfo.worldInfoFileExists(directories, 'Made New')).toBe(false);
+
+        await postJson('/api/worldinfo/create', { name: 'Made New', unique: false });
+        settleWorldsDir();
+
+        expect(worldinfo.worldInfoFileExists(directories, 'Made New')).toBe(true);
+    });
+
+    test('/import drops the miss, even with the directory mtime unchanged', async () => {
+        settleWorldsDir();
+        expect(worldinfo.worldInfoFileExists(directories, 'Imported Late')).toBe(false);
+
+        const book = { entries: { 0: makeEntry(0, 'Imported content') } };
+        await postJson('/api/worldinfo/import', { importFilename: 'Imported Late.json', convertedData: JSON.stringify(book) });
+        settleWorldsDir();
+
+        expect(worldinfo.worldInfoFileExists(directories, 'Imported Late')).toBe(true);
+    });
+
+    test('a book copied in by hand is found on the next lookup', () => {
+        settleWorldsDir();
+        expect(worldinfo.worldInfoFileExists(directories, 'Handmade')).toBe(false);
+
+        fs.writeFileSync(path.join(worldsDir, 'Handmade.json'), JSON.stringify({ entries: {} }));
+
+        expect(worldinfo.worldInfoFileExists(directories, 'Handmade')).toBe(true);
+    });
+
+    test('a miss seen while the directory mtime is fresh is looked up again, even if a copy leaves that mtime as it was', () => {
+        const fresh = new Date(Date.now() - 1000);
+        fs.utimesSync(worldsDir, fresh, fresh);
+        expect(worldinfo.worldInfoFileExists(directories, 'Same Tick')).toBe(false);
+
+        fs.writeFileSync(path.join(worldsDir, 'Same Tick.json'), JSON.stringify({ entries: {} }));
+        fs.utimesSync(worldsDir, fresh, fresh);
+
+        expect(worldinfo.worldInfoFileExists(directories, 'Same Tick')).toBe(true);
+    });
+
+    test('misses are kept per data directory', () => {
+        const otherRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-worldinfo-test-other-'));
+        const other = { worlds: path.join(otherRoot, 'worlds'), root: otherRoot };
+        fs.mkdirSync(other.worlds);
+        fs.writeFileSync(path.join(other.worlds, 'Split.json'), JSON.stringify({ entries: {} }));
+        fs.utimesSync(other.worlds, OLD_MTIME, OLD_MTIME);
+        settleWorldsDir();
+
+        try {
+            expect(worldinfo.worldInfoFileExists(directories, 'Split')).toBe(false);
+            expect(worldinfo.worldInfoFileExists(other, 'Split')).toBe(true);
+        } finally {
+            fs.rmSync(otherRoot, { recursive: true, force: true });
+        }
+    });
+
+    test('holds 10,000 misses, dropping the least recently used one first', () => {
+        settleWorldsDir();
+        worldinfo.worldInfoFileExists(directories, 'Lru Kept');
+        worldinfo.worldInfoFileExists(directories, 'Lru Dropped');
+        for (let i = 0; i < 9_998; i++) {
+            worldinfo.worldInfoFileExists(directories, `Lru Filler ${i}`);
+        }
+        worldinfo.worldInfoFileExists(directories, 'Lru Kept');
+        worldinfo.worldInfoFileExists(directories, 'Lru Filler last');
+
+        const keptLookups = countLookups('Lru Kept');
+        expect(worldinfo.worldInfoFileExists(directories, 'Lru Kept')).toBe(false);
+        expect(keptLookups()).toBe(0);
+        jest.restoreAllMocks();
+
+        const droppedLookups = countLookups('Lru Dropped');
+        expect(worldinfo.worldInfoFileExists(directories, 'Lru Dropped')).toBe(false);
+        expect(droppedLookups()).toBe(1);
     });
 });
