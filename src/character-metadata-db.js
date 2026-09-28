@@ -1668,6 +1668,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     // Must read before the transaction below deletes oldAvatar's rows.
     const oldTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar }))).map(r => r.tag_id);
     if (oldTagIds.length > 0) {
+        flushBufferedRowOverExisting(entry, newAvatar);
         const pending = entry.batch?.pending.get(newAvatar);
         if (pending) {
             pending.tagIds = [...new Set([...pending.tagIds, ...oldTagIds])];
@@ -1709,6 +1710,34 @@ function writeBufferedRowSync(entry, avatar) {
     if (!pending) return undefined;
     writeRowSync(entry.db, pending.row, pending.tagIds);
     return pending;
+}
+
+/**
+ * writeBufferedRowSync() for an avatar that already has a characters row. A tag change can't wait in such a row's
+ * buffer entry: at flush, writeRowSync() keeps an existing row's tags from character_tags, so the buffered ones are
+ * dropped. The caller writes its tag change to the table after this, then passes the result to dropFromBuffer().
+ * @param {MetadataDbEntry} entry
+ * @param {string} avatar
+ * @returns {PendingRow | undefined} The row written.
+ */
+function writeBufferedRowOverExistingSync(entry, avatar) {
+    if (entry.batch?.pending.has(avatar) !== true) return undefined;
+    if (!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: avatar })) return undefined;
+    return writeBufferedRowSync(entry, avatar);
+}
+
+/**
+ * writeBufferedRowOverExistingSync() in its own transaction, then dropFromBuffer().
+ * @param {MetadataDbEntry} entry
+ * @param {string} avatar
+ */
+function flushBufferedRowOverExisting(entry, avatar) {
+    /** @type {PendingRow | undefined} */
+    let flushed;
+    entry.db.transaction(() => {
+        flushed = writeBufferedRowOverExistingSync(entry, avatar);
+    });
+    dropFromBuffer(entry, avatar, flushed);
 }
 
 /**
@@ -3192,6 +3221,7 @@ export async function assignEntityTag(directories, id, tagId) {
     const type = tagEntityTypeOf(id);
     if (type === null) return 'not_found';
 
+    if (type === 'character') flushBufferedRowOverExisting(entry, id);
     const pending = type === 'character' ? entry.batch?.pending.get(id) : undefined;
     if (pending) {
         if (!pending.tagIds.includes(tagId)) {
@@ -3238,6 +3268,7 @@ export async function unassignEntityTag(directories, id, tagId) {
     const type = tagEntityTypeOf(id);
     if (type === null) return 'ok';
 
+    if (type === 'character') flushBufferedRowOverExisting(entry, id);
     const pending = type === 'character' ? entry.batch?.pending.get(id) : undefined;
     if (pending) {
         pending.tagIds = pending.tagIds.filter(t => t !== tagId);
@@ -3299,12 +3330,18 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
 
     /** @type {Record<string, 'ok' | 'not_found'>} */
     const result = {};
+    /** @type {{ id: string, row: PendingRow }[]} */
+    let flushed = [];
 
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        flushed = [];
         for (const id of ids) {
             const tagIds = Array.isArray(tagIdsByEntity[id]) ? [...new Set(tagIdsByEntity[id])] : [];
 
-            const pending = tagEntityTypeOf(id) === 'character' ? entry.batch?.pending.get(id) : undefined;
+            const flushedRow = tagEntityTypeOf(id) === 'character' ? writeBufferedRowOverExistingSync(entry, id) : undefined;
+            if (flushedRow) flushed.push({ id, row: flushedRow });
+            const pending = tagEntityTypeOf(id) === 'character' && !flushedRow ? entry.batch?.pending.get(id) : undefined;
             if (pending) {
                 pending.tagIds = tagIds;
                 patchPendingRowTagIds(pending);
@@ -3336,6 +3373,7 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
             }
         }
     });
+    for (const { id, row } of flushed) dropFromBuffer(entry, id, row);
 
     return result;
 }
@@ -4686,14 +4724,15 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
     entry.db.transaction(() => {
         flushed = undefined;
         resolved = resolveCardTagNamesSync(entry.db, names, { ready: tagNameKeysReady(entry), cachedIds: cache.tagNameToId, onlyExisting });
+        flushed = writeBufferedRowOverExistingSync(entry, avatar);
         // Only rehash when a new tag definition was actually minted; a pure re-assignment doesn't change tags_hash.
-        if (pending && resolved.held.length === 0) {
+        if (pending && !flushed && resolved.held.length === 0) {
             // Tag definitions go straight to the tags table; the row's assignments wait in the buffer (below).
             if (createCardTagsSync(entry.db, resolved).length > 0) updateTagsHashSync(entry.db);
             return;
         }
         // Held names are resolved against the characters table, so the row can't stay in the buffer.
-        if (pending) flushed = writeBufferedRowSync(entry, avatar);
+        if (pending && !flushed) flushed = writeBufferedRowSync(entry, avatar);
         if (writeResolvedCardTagsSync(entry.db, avatar, resolved, onlyExisting) > 0) updateTagsHashSync(entry.db);
         if (resolved.tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, avatar);
     });
