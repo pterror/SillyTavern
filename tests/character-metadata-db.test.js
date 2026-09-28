@@ -1365,6 +1365,26 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
 
         expect(second.tagIds).toEqual([mintedId]);
     });
+
+    test('getTagDefinitionsByIds skips a tag row that will not parse with a warning naming it, and still returns the other requested tags', async () => {
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }, { id: 'tag2', name: 'Broken' }, { id: 'tag3', name: 'Serious' }]);
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        rawDb.prepare('UPDATE tags SET data = ? WHERE id = ?').run('{not json', 'tag2');
+        rawDb.close();
+
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            const result = await metadataDb.getTagDefinitionsByIds(directories, ['tag1', 'tag2', 'tag3']);
+            expect(result).toHaveLength(2);
+            expect(result).toEqual(expect.arrayContaining([{ id: 'tag1', name: 'Funny' }, { id: 'tag3', name: 'Serious' }]));
+            expect(warnSpy).toHaveBeenCalledTimes(1);
+            expect(warnSpy.mock.calls[0][0]).toContain('[character-metadata]');
+            expect(warnSpy.mock.calls[0][0]).toContain('tag2');
+        } finally {
+            warnSpy.mockRestore();
+        }
+    });
 });
 
 describe('phase 3 extension: tags.json removal (migration + settings-snapshot round trip)', () => {
