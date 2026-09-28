@@ -237,11 +237,11 @@ describe('removeOrphanTagRowsIfNeeded', () => {
         expect(warnedRows(warn)).toEqual(['ghost.png: name-x']);
     });
 
-    test('runs right before finishDeletedTags in MIGRATION_PASSES', async () => {
+    test('runs before finishDeletedTags in MIGRATION_PASSES', async () => {
         const { MIGRATION_PASSES } = await import('../src/metadata-migration-coordinator.js');
         const at = MIGRATION_PASSES.indexOf(/** @type {any} */ ('removeOrphanTagRowsIfNeeded'));
         expect(at).toBeGreaterThan(-1);
-        expect(MIGRATION_PASSES[at + 1]).toBe('finishDeletedTags');
+        expect(MIGRATION_PASSES.indexOf('finishDeletedTags')).toBeGreaterThan(at);
     });
 });
 

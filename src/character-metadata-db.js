@@ -4571,6 +4571,82 @@ export async function removeOrphanTagRowsIfNeeded(directories) {
     return { batches, rowsChanged };
 }
 
+export const GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG = 'group_digest_tag_ids_refreshed_v1';
+const GROUP_DIGEST_TAG_IDS_PROGRESS_KEY = `${GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG}_progress`;
+
+/**
+ * One-time pass setting every group's digest_tag_ids to what its group_tags rows give, where it is NULL or
+ * differs, and listing each group it set in a warning.
+ *
+ * Walks groups by id, a bounded page at a time, closing each page's read before writing. A page's groups are
+ * re-checked and set in one transaction that also saves the position, so a page with nothing to set writes
+ * nothing, and a restart re-reads from the last page that set a digest.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `batches` and `rowsChanged` count the pages that set digests
+ *   and the groups set.
+ */
+export async function refreshGroupDigestTagIdsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG })) return { batches: 0, rowsChanged: 0 };
+
+    const label = 'Group digest_tag_ids refresh';
+    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY }));
+    let progressSaved = !!saved;
+    /** @type {string | null} */
+    let after = saved ? JSON.parse(saved.value).id : null;
+    if (after !== null) {
+        console.log(color.cyan(`[character-metadata] ${label}: resuming after ${after}`));
+    }
+
+    let batches = 0;
+    let rowsChanged = 0;
+    for (;;) {
+        /** @type {{ id: string, digest_tag_ids: number | null }[]} */
+        const page = [];
+        const rows = after === null
+            ? db.iterate('SELECT id, digest_tag_ids FROM groups ORDER BY id LIMIT @limit', { limit: DELETED_TAG_BATCH_SIZE })
+            : db.iterate('SELECT id, digest_tag_ids FROM groups WHERE id > @after ORDER BY id LIMIT @limit', { after, limit: DELETED_TAG_BATCH_SIZE });
+        for (const row of /** @type {Iterable<{ id: string, digest_tag_ids: number | null }>} */ (rows)) page.push(row);
+        if (page.length === 0) break;
+        const last = page[page.length - 1].id;
+        after = last;
+
+        const candidates = page.filter(row => !groupDigestTagIdsMatch(row.digest_tag_ids, groupDigestTagIdsFromTable(db, row.id))).map(row => row.id);
+
+        if (candidates.length > 0) {
+            /** @type {{ set: string[] }} */
+            const state = { set: [] };
+            db.transaction(() => {
+                // Reset here: a transaction that hits busy is rolled back and rerun.
+                state.set = [];
+                for (const id of candidates) {
+                    if (syncGroupDigestTagIdsFromTable(db, id)) state.set.push(id);
+                }
+                if (state.set.length === 0) return;
+                db.run(UPSERT_META_VALUE_SQL, { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY, value: JSON.stringify({ id: last }) });
+            });
+            if (state.set.length > 0) {
+                progressSaved = true;
+                batches++;
+                rowsChanged += state.set.length;
+                if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+                console.warn(color.yellow(`[character-metadata] ${label}: set digest_tag_ids from group_tags on ${state.set.length} group(s) whose stored one was NULL or stale:\n${state.set.map(id => `  ${id}`).join('\n')}`));
+            }
+        }
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+        if (page.length < DELETED_TAG_BATCH_SIZE) break;
+    }
+
+    db.transaction(() => {
+        db.run(UPSERT_META_VALUE_SQL, { key: GROUP_DIGEST_TAG_IDS_REFRESHED_FLAG, value: String(Date.now()) });
+        if (progressSaved) db.run('DELETE FROM meta WHERE key = @key', { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY });
+    });
+    if (!isReadOnlyMode()) db.checkpoint();
+    return { batches, rowsChanged };
+}
+
 // One-time migration off tags.json (removed entirely, not just drained). Must run after bootstrapIfNeeded()
 // AND bootstrapGroupsIfNeeded() since it classifies tag_map keys against those tables; an unmatched key is
 // dropped with a warning. On success tags.json is renamed to `tags.json.migrated`, not deleted. Gated by a meta
@@ -5018,15 +5094,32 @@ function syncShallowTagIdsFromTable(db, avatar) {
 function syncGroupDigestTagIdsFromTable(db, groupId) {
     const row = /** @type {{ digest_tag_ids: number | null } | undefined} */ (db.get('SELECT digest_tag_ids FROM groups WHERE id = @id', { id: groupId }));
     if (!row) return false;
+    const digestTagIds = groupDigestTagIdsFromTable(db, groupId);
+    if (groupDigestTagIdsMatch(row.digest_tag_ids, digestTagIds)) return false;
+    db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id: groupId, digestTagIds });
+    return true;
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} groupId
+ * @returns {number} The digest_tag_ids the group's group_tags rows give.
+ */
+function groupDigestTagIdsFromTable(db, groupId) {
     /** @type {string[]} */
     const tagIds = [];
     for (const r of /** @type {Generator<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId }))) {
         tagIds.push(r.tag_id);
     }
-    const digestTagIds = groupDigestTagIdsHash({ tag_ids: tagIds });
-    if (row.digest_tag_ids !== null && Number(row.digest_tag_ids) === digestTagIds) return false;
-    db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id: groupId, digestTagIds });
-    return true;
+    return groupDigestTagIdsHash({ tag_ids: tagIds });
+}
+
+/**
+ * @param {number | bigint | null} stored
+ * @param {number} digestTagIds
+ */
+function groupDigestTagIdsMatch(stored, digestTagIds) {
+    return stored !== null && Number(stored) === digestTagIds;
 }
 
 // Repairs rows where shallow_json.tag_ids is stale but character_tags is correct - a safety net for any

@@ -20,6 +20,7 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'normalizeCharacterFavIfNeeded',
     'normalizeCharacterTagIdsIfNeeded',
     'removeOrphanTagRowsIfNeeded',
+    'refreshGroupDigestTagIdsIfNeeded',
     'finishDeletedTags',
 ]);
 
