@@ -106,6 +106,21 @@ describe('POST /api/tags/unused-count and /api/tags/prune', () => {
         expect(await unusedCount()).toBe(0);
     });
 
+    test('removes each pruned tag\'s zero-count tag_usage row and keeps the others', async () => {
+        await seedCharacter('Alice.png');
+        await saveTags(['onChar', 'wasUsed']);
+        await post('/api/tags/assign', { id: 'Alice.png', tagId: 'onChar' });
+        await post('/api/tags/assign', { id: 'Alice.png', tagId: 'wasUsed' });
+        await post('/api/tags/unassign', { id: 'Alice.png', tagId: 'wasUsed' });
+
+        const usage = async () => (await fetch(`${baseUrl}/api/tags/usage`)).json();
+        expect(await usage()).toEqual({ onChar: 1, wasUsed: 0 });
+
+        const body = await (await post('/api/tags/prune', { limit: 500 })).json();
+        expect(body.deleted).toEqual(['wasUsed']);
+        expect(await usage()).toEqual({ onChar: 1 });
+    });
+
     test('keeps a tag carried only by a batch-import row not yet flushed', async () => {
         await saveTags(['pendingTag']);
         await metadataDb.beginBatchImport(directories);

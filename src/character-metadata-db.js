@@ -4048,7 +4048,9 @@ export async function pruneUnusedTags(directories, limit) {
             deleted.push(row.id);
         }
         if (!deleted.length) return;
-        entry.db.run('DELETE FROM tags WHERE id IN (SELECT value FROM json_each(@ids))', { ids: JSON.stringify(deleted) });
+        const ids = JSON.stringify(deleted);
+        entry.db.run('DELETE FROM tags WHERE id IN (SELECT value FROM json_each(@ids))', { ids });
+        entry.db.run('DELETE FROM tag_usage WHERE tag_id IN (SELECT value FROM json_each(@ids))', { ids });
         updateTagsHashSync(entry.db);
     });
     if (deleted.length) entry.tagCache = null;
