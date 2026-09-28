@@ -2116,7 +2116,7 @@ export async function resyncTags(directories) {
         for (const id of known) {
             wantedByCharacter.set(id, Object.hasOwn(tag_map, id) ? new Set(tag_map[id]) : new Set());
         }
-        const toRemove = page.filter(r => !wantedByCharacter.get(r.character_id)?.has(r.tag_id));
+        const toRemove = page.filter(r => !(wantedByCharacter.get(r.character_id)?.has(r.tag_id) ?? false));
         if (toRemove.length > 0) {
             entry.db.transaction(() => {
                 /** @type {Set<string>} */
