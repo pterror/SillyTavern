@@ -3606,13 +3606,23 @@ const groupTagRowIsGroupSql = groupIdSql => `substr(${groupIdSql}, -4) <> '.png'
 const GROUP_TAG_ROW_IS_GROUP_SQL = groupTagRowIsGroupSql('group_id');
 
 /**
- * The triggers that keep entity_counts and entity_tag_counts (see SCHEMA_SQL) for one kind of entity.
- * @param {object} kind
- * @param {'character' | 'group'} kind.name
- * @param {'characters' | 'groups'} kind.table
- * @param {'character_tags' | 'group_tags'} kind.tagTable
- * @param {'character_id' | 'group_id'} kind.entityColumn
- * @param {(column: string) => string} kind.tagRowCounts Whether a tag row with this entity id counts for its tag.
+ * @typedef {object} EntityCountKind One kind of entity in entity_counts / entity_tag_counts (see SCHEMA_SQL).
+ * @property {'character' | 'group'} name
+ * @property {'characters' | 'groups'} table
+ * @property {'character_tags' | 'group_tags'} tagTable
+ * @property {'character_id' | 'group_id'} entityColumn
+ * @property {(column: string) => string} tagRowCounts Whether a tag row with this entity id counts for its tag.
+ */
+
+/** @type {EntityCountKind[]} */
+const ENTITY_COUNT_KINDS = [
+    { name: 'character', table: 'characters', tagTable: 'character_tags', entityColumn: 'character_id', tagRowCounts: () => 'true' },
+    { name: 'group', table: 'groups', tagTable: 'group_tags', entityColumn: 'group_id', tagRowCounts: groupTagRowIsGroupSql },
+];
+
+/**
+ * The triggers that keep the counters of one kind of entity.
+ * @param {EntityCountKind} kind
  * @returns {{ name: string, sql: string }[]}
  */
 function entityCountTriggers({ name, table, tagTable, entityColumn, tagRowCounts }) {
@@ -3645,10 +3655,7 @@ function entityCountTriggers({ name, table, tagTable, entityColumn, tagRowCounts
     return triggers.map(([triggerName, when, body]) => ({ name: triggerName, sql: `CREATE TRIGGER IF NOT EXISTS ${triggerName} ${when} BEGIN ${body} END;` }));
 }
 
-const ENTITY_COUNT_TRIGGERS = [
-    ...entityCountTriggers({ name: 'character', table: 'characters', tagTable: 'character_tags', entityColumn: 'character_id', tagRowCounts: () => 'true' }),
-    ...entityCountTriggers({ name: 'group', table: 'groups', tagTable: 'group_tags', entityColumn: 'group_id', tagRowCounts: groupTagRowIsGroupSql }),
-];
+const ENTITY_COUNT_TRIGGERS = ENTITY_COUNT_KINDS.flatMap(entityCountTriggers);
 const ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => trigger.sql).join('\n');
 const DROP_ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
 
@@ -4728,6 +4735,94 @@ export async function refreshGroupDigestTagIdsIfNeeded(directories) {
         if (progressSaved) db.run('DELETE FROM meta WHERE key = @key', { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY });
     });
     if (!isReadOnlyMode()) db.checkpoint();
+    return { batches, rowsChanged };
+}
+
+const ENTITY_COUNT_FILL_BATCH_SIZE = 1000;
+
+/**
+ * Fills entity_counts and entity_tag_counts (see SCHEMA_SQL) for every entity past each kind's frontier in
+ * entity_count_fill, and marks the kind done once none is left.
+ *
+ * Walks each kind's entities by id, a bounded page at a time, closing each page's read before writing. One
+ * transaction per page counts the entities in (upto, last id of the page], and their tag rows, as they are inside
+ * that transaction, adds those counts and moves upto to the page's last id, so a write landing between the read and
+ * the transaction is counted once, by the fill or by the triggers. The same transaction sets done = 1 when no entity
+ * is left past the new upto. A restart resumes from upto.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `batches` and `rowsChanged` count the transactions that
+ *   filled a range or marked a kind done, and the entities counted.
+ */
+export async function fillEntityCountsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+
+    let batches = 0;
+    let rowsChanged = 0;
+    for (const { name, table, tagTable, entityColumn, tagRowCounts } of ENTITY_COUNT_KINDS) {
+        const fill = /** @type {{ upto: string | null, done: number }} */ (db.get('SELECT upto, done FROM entity_count_fill WHERE kind = @name', { name }));
+        if (fill.done === 1) continue;
+        /** @type {string | null} */
+        let after = fill.upto;
+        if (after !== null) {
+            console.log(color.cyan(`[character-metadata] Entity count fill: resuming ${table} after ${after}`));
+        }
+
+        const rangeSql = (/** @type {string} */ column, /** @type {string | null} */ lower) => `${lower === null ? '' : `${column} > @after AND `}${column} <= @last`;
+        for (;;) {
+            /** @type {string[]} */
+            const page = [];
+            const rows = after === null
+                ? db.iterate(`SELECT id FROM ${table} ORDER BY id LIMIT @limit`, { limit: ENTITY_COUNT_FILL_BATCH_SIZE })
+                : db.iterate(`SELECT id FROM ${table} WHERE id > @after ORDER BY id LIMIT @limit`, { after, limit: ENTITY_COUNT_FILL_BATCH_SIZE });
+            for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) page.push(row.id);
+            const last = page.length > 0 ? page[page.length - 1] : after;
+
+            /** @type {{ entities: number, done: boolean }} */
+            const state = { entities: 0, done: false };
+            db.transaction(() => {
+                // Reset here: a transaction that hits busy is rolled back and rerun.
+                state.entities = 0;
+                state.done = false;
+                if (page.length > 0) {
+                    const params = after === null ? { last } : { after, last };
+                    const entityCounts = /** @type {{ fav: number, n: number }[]} */ ([...db.iterate(
+                        `SELECT fav, COUNT(*) AS n FROM ${table} WHERE ${rangeSql('id', after)} GROUP BY fav`, params)]);
+                    const tagCounts = /** @type {{ tag_id: string, fav: number, n: number }[]} */ ([...db.iterate(
+                        `SELECT t.tag_id, e.fav, COUNT(*) AS n FROM ${table} e JOIN ${tagTable} t ON t.${entityColumn} = e.id
+                            WHERE ${rangeSql('e.id', after)} AND ${tagRowCounts(`t.${entityColumn}`)} GROUP BY t.tag_id, e.fav`, params)]);
+                    for (const { fav, n } of entityCounts) {
+                        db.run(`INSERT INTO entity_counts (kind, fav, count) VALUES (@name, @fav, @n)
+                            ON CONFLICT (kind, fav) DO UPDATE SET count = count + excluded.count`, { name, fav, n });
+                        state.entities += n;
+                    }
+                    for (const { tag_id: tagId, fav, n } of tagCounts) {
+                        db.run(`INSERT INTO entity_tag_counts (tag_id, kind, fav, count) VALUES (@tagId, @name, @fav, @n)
+                            ON CONFLICT (tag_id, kind, fav) DO UPDATE SET count = count + excluded.count`, { tagId, name, fav, n });
+                    }
+                    db.run('UPDATE entity_count_fill SET upto = @last WHERE kind = @name', { name, last });
+                }
+                const more = last === null
+                    ? db.get(`SELECT 1 FROM ${table} LIMIT 1`)
+                    : db.get(`SELECT 1 FROM ${table} WHERE id > @last LIMIT 1`, { last });
+                if (!more) {
+                    db.run('UPDATE entity_count_fill SET done = 1 WHERE kind = @name', { name });
+                    state.done = true;
+                }
+            });
+            if (page.length > 0 || state.done) {
+                batches++;
+                rowsChanged += state.entities;
+                if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+            }
+            if (state.done) break;
+            after = last;
+            await delay(MIGRATION_BATCH_PAUSE_MS);
+        }
+    }
+
+    if (batches > 0 && !isReadOnlyMode()) db.checkpoint();
     return { batches, rowsChanged };
 }
 
