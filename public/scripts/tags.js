@@ -489,9 +489,7 @@ function unassignTagFromKey(key, tagId) {
     const idx = ids.indexOf(tagId);
     if (idx === -1) return null;
     ids.splice(idx, 1);
-    const count = (tagUsageCounts.get(tagId) ?? 1) - 1;
-    const wasLastUse = count <= 0;
-    if (wasLastUse) tagUsageCounts.delete(tagId); else tagUsageCounts.set(tagId, count);
+    const wasLastUse = decrementTagUsage(tagId);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     queueTagSave(key, () => unassignTagOnServer(key, tagId))();
@@ -507,10 +505,7 @@ function setKeyTagIds(key, tagIds) {
     const addedIds = tagIds.filter(id => !oldSet.has(id));
     const removedIds = ids.filter(id => !newSet.has(id));
     for (const id of addedIds) tagUsageCounts.set(id, (tagUsageCounts.get(id) ?? 0) + 1);
-    for (const id of removedIds) {
-        const count = (tagUsageCounts.get(id) ?? 1) - 1;
-        if (count <= 0) tagUsageCounts.delete(id); else tagUsageCounts.set(id, count);
-    }
+    for (const id of removedIds) decrementTagUsage(id);
     ids.length = 0;
     ids.push(...tagIds);
     invalidateCharactersFuseIndex();
@@ -528,25 +523,27 @@ function removeKeyTagIds(key) {
     if (!ids) return;
     const removedIds = [...ids];
     ids.length = 0;
-    for (const id of removedIds) {
-        const count = (tagUsageCounts.get(id) ?? 1) - 1;
-        if (count <= 0) tagUsageCounts.delete(id); else tagUsageCounts.set(id, count);
-    }
+    for (const id of removedIds) decrementTagUsage(id);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     // Usually redundant with the server's own deletion cascade, but harmless (unassign tolerates unknown ids).
     runWithConcurrency(removedIds.map(tagId => queueTagSave(key, () => unassignTagOnServer(key, tagId))), task => task());
 }
 
+/** @param {string} tagId @returns {boolean} whether that was the tag's last use */
+function decrementTagUsage(tagId) {
+    const count = (tagUsageCounts.get(tagId) ?? 1) - 1;
+    const wasLastUse = count <= 0;
+    if (wasLastUse) tagUsageCounts.delete(tagId); else tagUsageCounts.set(tagId, count);
+    return wasLastUse;
+}
+
 /**
- * Removes `tagId` from every currently-resident key, optionally substituting another tag id in its place.
- * A genuine whole-corpus operation by nature (merging/deleting a tag has to touch everything that has it) -
- * unlike the getContext()/per-render call sites this session removed, this one only runs on a rare, explicit
- * user action (tag merge/delete), so the full scan here is the real cost of the operation, not a regression.
+ * The in-memory half of removeTagIdEverywhere(): sends nothing to the server.
  * @param {string} tagId @param {{replaceWithId?: string}} [options]
  * @returns {string[]} Every key that had `tagId` removed
  */
-function removeTagIdEverywhere(tagId, { replaceWithId } = {}) {
+function removeTagIdLocally(tagId, { replaceWithId } = {}) {
     const affectedKeys = [];
     for (const [key, ids] of allTagIdsEntries()) {
         const idx = ids.indexOf(tagId);
@@ -561,6 +558,19 @@ function removeTagIdEverywhere(tagId, { replaceWithId } = {}) {
     tagUsageCounts.delete(tagId);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
+    return affectedKeys;
+}
+
+/**
+ * Removes `tagId` from every currently-resident key, optionally substituting another tag id in its place.
+ * A genuine whole-corpus operation by nature (merging/deleting a tag has to touch everything that has it) -
+ * unlike the getContext()/per-render call sites this session removed, this one only runs on a rare, explicit
+ * user action (tag merge/delete), so the full scan here is the real cost of the operation, not a regression.
+ * @param {string} tagId @param {{replaceWithId?: string}} [options]
+ * @returns {string[]} Every key that had `tagId` removed
+ */
+function removeTagIdEverywhere(tagId, { replaceWithId } = {}) {
+    const affectedKeys = removeTagIdLocally(tagId, { replaceWithId });
     const tasks = [];
     for (const key of affectedKeys) {
         tasks.push(queueTagSave(key, () => unassignTagOnServer(key, tagId)));
@@ -689,6 +699,7 @@ async function createTagOnServer(tag) {
         const { refused } = await response.json();
         await refreshTagsManifestCache();
         warnRefusedTags(refused, tag, 'Creating Tag');
+        if (refused?.length) await resyncRefusedTag(tag.id);
     } catch (error) {
         console.error(`Error creating tag ${tag?.id}:`, error);
     }
@@ -715,8 +726,236 @@ async function editTagOnServer(id, patch, tag) {
         const { refused } = await response.json();
         await refreshTagsManifestCache();
         warnRefusedTags(refused, tag, 'Editing Tag');
+        if (refused?.length) await resyncRefusedTag(id);
     } catch (error) {
         console.error(`Error editing tag ${id}:`, error);
+    }
+}
+
+/** At most this many distinct ids per /api/tags/for and /api/tags/by-ids request; more is a 400. */
+const TAG_READ_MAX_IDS = 500;
+
+/**
+ * @param {string} path
+ * @param {object} body
+ * @returns {Promise<any>} the parsed answer, or null if the request failed
+ */
+async function postTagsRead(path, body) {
+    const response = await fetch(path, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(body),
+        cache: 'no-cache',
+    });
+    if (!response.ok) {
+        console.error(`${path} failed: ${response.statusText}`);
+        return null;
+    }
+    return response.json();
+}
+
+/** Tag fields whose value is drawn on screen, each with what redraws it. */
+const TAG_FIELD_REDRAWS = {
+    /** @param {Tag} tag */
+    name: (tag) => {
+        $(`.tag[id="${tag.id}"] .tag_name`).text(tag.name);
+        $(`.tag_view_item[id="${tag.id}"] .tag_view_name`).text(tag.name);
+    },
+    /** @param {Tag} tag */
+    color: (tag) => redrawTagColorField(tag, 'color', 'background-color'),
+    /** @param {Tag} tag */
+    color2: (tag) => redrawTagColorField(tag, 'color2', 'color'),
+    /** @param {Tag} tag */
+    folder_type: (tag) => {
+        updateDrawTagFolder($(`.tag_view_item[id="${tag.id}"]`), tag);
+        printCharactersDebounced();
+    },
+    /** @param {Tag} tag */
+    is_hidden_on_character_card: (tag) => {
+        drawTagHideToggle($(`.tag_view_item[id="${tag.id}"] .eye-toggle`), tag);
+        redrawRowsAfterTagHiddenChange(tag.id);
+    },
+    sort_order: () => redrawAfterTagSortOrderChange(),
+};
+
+/**
+ * @param {Tag} tag
+ * @param {'color'|'color2'} colorField
+ * @param {string} cssProperty
+ */
+function redrawTagColorField(tag, colorField, cssProperty) {
+    const newColor = tag[colorField] ?? '';
+    const $row = $(`.tag_view_item[id="${tag.id}"]`);
+    $row.find('.tag_view_name').css(cssProperty, newColor);
+    const $picker = $row.find(`.tag_view_color_picker[data-value="${colorField}"]`);
+    if ($picker.length) {
+        const defaultColor = $picker.find('toolcool-color-picker').attr('data-default-color');
+        $picker.find('.link_icon').toggle(!!newColor && newColor !== defaultColor);
+    }
+    applyTagColoring(tag.id, cssProperty, newColor);
+}
+
+/**
+ * After the server refused a create or edit of tag `id`, makes this tab's copy match the server's again: replaces
+ * it with the stored definition, or drops it if the server no longer has one.
+ * @param {string} id
+ */
+async function resyncRefusedTag(id) {
+    const answer = await postTagsRead('/api/tags/by-ids', { ids: [id] });
+    if (!answer || !Array.isArray(answer.tags)) {
+        console.error(`Could not re-read refused tag ${id}`);
+        return;
+    }
+
+    const serverTag = answer.tags.find(t => t?.id === id);
+    if (serverTag) {
+        await replaceTagFromServer(id, serverTag);
+    } else {
+        await dropTagLocally(id);
+    }
+}
+
+/**
+ * @param {string} id
+ * @param {Tag} serverTag
+ */
+async function replaceTagFromServer(id, serverTag) {
+    const local = tagsStore.get(id);
+    if (!local) return;
+
+    const old = { ...local };
+    // filter_state belongs to this browser, not to the stored definition.
+    const hadFilterState = Object.hasOwn(local, 'filter_state');
+    for (const key of Object.keys(local)) {
+        if (!Object.hasOwn(serverTag, key)) delete local[key];
+    }
+    Object.assign(local, serverTag);
+    if (hadFilterState) local.filter_state = old.filter_state; else delete local.filter_state;
+
+    invalidateTagsFuseIndex();
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+    await refreshTagsManifestCache();
+
+    let anyDiffered = false;
+    for (const [field, redraw] of Object.entries(TAG_FIELD_REDRAWS)) {
+        if (old[field] === local[field]) continue;
+        anyDiffered = true;
+        redraw(local);
+    }
+    if (anyDiffered) applyCharacterTagsToMessageDivs();
+}
+
+/**
+ * Removes tag `id` from this tab only (the server already has no such tag), then re-reads the tags of every
+ * resident entity so a merge target the server gave them in its place shows up.
+ * @param {string} id
+ */
+async function dropTagLocally(id) {
+    const needsFullRedraw = tagChangeAffectsCurrentView([id]);
+    const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithTag(id);
+
+    removeTagIdLocally(id);
+
+    if (tagsStore.has(id)) {
+        let write = 0;
+        for (const tag of tags) {
+            if (tag.id !== id) tags[write++] = tag;
+        }
+        tags.length = write;
+        tagsStore.reindex();
+        invalidateTagsFuseIndex();
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+        await refreshTagsManifestCache();
+    }
+
+    // An unsaved rename in the removed row has no tag left to go to; left dirty, the row's focusout would reprint
+    // the list while it is being removed.
+    $(`.tag_view_item[id="${id}"] .tag_view_name`).removeAttr('dirty');
+    $(`.tag[id="${id}"]`).remove();
+    $(`.tag_view_item[id="${id}"]`).remove();
+    printTagFilters(tag_filter_type.character);
+    printTagFilters(tag_filter_type.group_members_list);
+    printTagFilters(tag_filter_type.group_candidates_list);
+    if (needsFullRedraw) {
+        printCharactersDebounced();
+    } else {
+        updateEntityRowTags(affectedRowKeys);
+    }
+    applyCharacterTagsToMessageDivs();
+
+    await rereadResidentEntityTagIds();
+}
+
+/**
+ * Replaces each resident entity's tag ids with the server's where they differ, and fetches any tag definition
+ * the new ids need that this tab doesn't have. Stops at the first failed request, keeping what it already applied.
+ */
+async function rereadResidentEntityTagIds() {
+    const keys = [];
+    for (const [key] of allTagIdsEntries()) keys.push(key);
+
+    /** @type {Set<string>} */
+    const changedTagIds = new Set();
+    /** @type {Set<string>} */
+    const changedKeys = new Set();
+    /** @type {Map<string, boolean>} */
+    const usageFlips = new Map();
+    /** @type {Set<string>} */
+    const unknownTagIds = new Set();
+
+    try {
+        for (let i = 0; i < keys.length; i += TAG_READ_MAX_IDS) {
+            const answer = await postTagsRead('/api/tags/for', { ids: keys.slice(i, i + TAG_READ_MAX_IDS) });
+            if (!answer) {
+                console.error('Could not re-read the tags of resident characters and groups');
+                return;
+            }
+            for (const [key, serverIds] of Object.entries(answer)) {
+                if (!Array.isArray(serverIds)) continue;
+                for (const tagId of serverIds) {
+                    if (!tagsStore.has(tagId)) unknownTagIds.add(tagId);
+                }
+                const ids = resolveTagIdsArray(key);
+                if (!ids) continue;
+                if (ids.length === serverIds.length && ids.every((tagId, i) => tagId === serverIds[i])) continue;
+
+                const serverSet = new Set(serverIds);
+                const localSet = new Set(ids);
+                const added = serverIds.filter(tagId => !localSet.has(tagId));
+                const removed = ids.filter(tagId => !serverSet.has(tagId));
+                ids.splice(0, ids.length, ...serverIds);
+                changedKeys.add(key);
+                for (const tagId of added) {
+                    changedTagIds.add(tagId);
+                    if (!tagUsageCounts.has(tagId)) {
+                        tagUsageCounts.set(tagId, 1);
+                        usageFlips.set(tagId, true);
+                    }
+                }
+                for (const tagId of removed) {
+                    changedTagIds.add(tagId);
+                    if (decrementTagUsage(tagId)) usageFlips.set(tagId, true);
+                }
+            }
+        }
+
+        const toFetch = [...unknownTagIds];
+        for (let i = 0; i < toFetch.length; i += TAG_READ_MAX_IDS) {
+            const answer = await postTagsRead('/api/tags/by-ids', { ids: toFetch.slice(i, i + TAG_READ_MAX_IDS) });
+            if (!answer || !Array.isArray(answer.tags)) {
+                console.error('Could not read the definitions of tags resident characters and groups now carry');
+                return;
+            }
+            mergeServerTagDefinitions(answer.tags);
+        }
+    } finally {
+        if (changedKeys.size) {
+            invalidateCharactersFuseIndex();
+            invalidateGroupsFuseIndex();
+            redrawAfterTagChange([...changedTagIds], changedKeys, usageFlips);
+        }
     }
 }
 
@@ -2714,6 +2953,15 @@ async function onViewTagsListClick() {
     await callGenericPopup(html, POPUP_TYPE.TEXT, null, { allowVerticalScrolling: true, wide: true, large: true });
 }
 
+function redrawAfterTagSortOrderChange() {
+    // Sort order only changes pill order within a row (and the filter bar), never which rows/folders are
+    // shown, so patching every currently-rendered row's own pills covers it without a full reprint.
+    printTagFilters(tag_filter_type.character);
+    printTagFilters(tag_filter_type.group_members_list);
+    printTagFilters(tag_filter_type.group_candidates_list);
+    updateEntityRowTags(getAllRenderedEntityKeys());
+}
+
 function makeTagListDraggable(tagContainer) {
     const onTagsSort = () => {
         // Direct field mutation per tag (can touch every tag in the list), followed by one tagsStore.reset()
@@ -2732,12 +2980,7 @@ function makeTagListDraggable(tagContainer) {
             toastr.info('Switched to Manual sorting mode.');
         }
 
-        // Sort order only changes pill order within a row (and the filter bar), never which rows/folders are
-        // shown, so patching every currently-rendered row's own pills covers it without a full reprint.
-        printTagFilters(tag_filter_type.character);
-        printTagFilters(tag_filter_type.group_members_list);
-        printTagFilters(tag_filter_type.group_candidates_list);
-        updateEntityRowTags(getAllRenderedEntityKeys());
+        redrawAfterTagSortOrderChange();
         saveSettingsDebounced('power_user.tag_sort_mode');
     };
 
@@ -3118,22 +3361,13 @@ function appendViewTagToList(list, tag, count) {
         colorPicker[0].color = defaultColor;
     });
 
-    const getHideTooltip = () => tag.is_hidden_on_character_card ? t`Hide on character card` : t`Show on character card`;
     const hideToggle = template.find('.eye-toggle');
-    hideToggle.toggleClass('fa-eye-slash', tag.is_hidden_on_character_card);
-    hideToggle.toggleClass('fa-eye', !tag.is_hidden_on_character_card);
-    hideToggle.attr('title', getHideTooltip());
+    drawTagHideToggle(hideToggle, tag);
 
     hideToggle.on('click', () => {
         tag.is_hidden_on_character_card = !tag.is_hidden_on_character_card;
-        hideToggle.toggleClass('fa-eye-slash', tag.is_hidden_on_character_card);
-        hideToggle.toggleClass('fa-eye', !tag.is_hidden_on_character_card);
-        hideToggle.attr('title', getHideTooltip());
-        if (tagChangeAffectsCurrentView([tag.id])) {
-            printCharactersDebounced();
-        } else {
-            updateEntityRowTags(getRenderedKeysWithTag(tag.id));
-        }
+        drawTagHideToggle(hideToggle, tag);
+        redrawRowsAfterTagHiddenChange(tag.id);
         saveSettingsDebounced('power_user');
     });
 
@@ -3154,6 +3388,22 @@ function appendViewTagToList(list, tag, count) {
     });
 
     updateDrawTagFolder(template, tag);
+}
+
+/** @param {JQuery<HTMLElement>} hideToggle @param {Tag} tag */
+function drawTagHideToggle(hideToggle, tag) {
+    hideToggle.toggleClass('fa-eye-slash', tag.is_hidden_on_character_card);
+    hideToggle.toggleClass('fa-eye', !tag.is_hidden_on_character_card);
+    hideToggle.attr('title', tag.is_hidden_on_character_card ? t`Hide on character card` : t`Show on character card`);
+}
+
+/** @param {string} tagId */
+function redrawRowsAfterTagHiddenChange(tagId) {
+    if (tagChangeAffectsCurrentView([tagId])) {
+        printCharactersDebounced();
+    } else {
+        updateEntityRowTags(getRenderedKeysWithTag(tagId));
+    }
 }
 
 function onTagAsFolderClick() {
@@ -3273,10 +3523,12 @@ function onTagColorize(evt, colorField, cssProperty) {
     debouncedTagColoring(id, cssProperty, newColor);
 }
 
-const debouncedTagColoring = debounce((tagId, cssProperty, newColor) => {
+function applyTagColoring(tagId, cssProperty, newColor) {
     $(`.tag[id="${tagId}"]`).css(cssProperty, newColor);
     $(`.bogus_folder_select[tagid="${tagId}"] .avatar`).css(cssProperty, newColor);
-}, debounce_timeout.quick);
+}
+
+const debouncedTagColoring = debounce(applyTagColoring, debounce_timeout.quick);
 
 function onTagListHintClick() {
     $(this).toggleClass('selected');
