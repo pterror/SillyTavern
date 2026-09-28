@@ -7065,6 +7065,9 @@ export async function importWorldInfo(file, { interactive = true } = {}) {
             throw new Error(`Failed to import world info: ${result.statusText}`);
         }
         if (replacesExisting) {
+            // Saves of the old book made while the import was sent would write it back over the imported one. They
+            // are dropped with a warning, where forgetting the cached copy would otherwise lose them silently.
+            await dropWorldSavesAfterOverwrite(worldName, 'Import');
             forgetReplacedWorldInfo(worldName);
         }
 
