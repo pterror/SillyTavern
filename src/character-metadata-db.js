@@ -3873,7 +3873,7 @@ function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, 
 // Patches one character row's shallow_json.tag_ids to match character_tags. Re-reads
 // character_tags rather than trusting a caller's resolved list, so other pre-existing assignments survive.
 /**
- * @returns {boolean} Whether the row was found and patched.
+ * @returns {boolean} Whether the row was found.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} avatar
  */
@@ -3882,6 +3882,8 @@ function syncShallowTagIdsFromTable(db, avatar) {
     if (!row) return false;
     const currentTagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))).map(r => r.tag_id);
     const shallow = JSON.parse(row.shallow_json);
+    // writeShallowJson() stores tag_ids normalized.
+    if (Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(currentTagIds))) return true;
     shallow.tag_ids = currentTagIds;
     const lastInsertRowid = insertChange(db, avatar, 'upsert', JSON.stringify(['tag_ids']));
     writeShallowJson(db, avatar, shallow, lastInsertRowid);
