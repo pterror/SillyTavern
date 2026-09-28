@@ -1070,11 +1070,14 @@ function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
             if (!changeFields.includes('fav')) changeFields.push('fav');
         }
     }
+    // Everything that can throw is computed before the first write, so a row is written in full or not at all.
+    const shallowJson = JSON.stringify(shallow);
+    const digests = digestColumnsForShallow(shallow);
     const changeSeq = insertChange(db, id, 'upsert', JSON.stringify(changeFields));
     const columns = {
-        shallow_json: JSON.stringify(shallow),
+        shallow_json: shallowJson,
         change_seq: Number(changeSeq),
-        ...digestColumnsForShallow(shallow),
+        ...digests,
         ...extraColumns,
     };
     const setSql = Object.keys(columns).map(key => `${key} = @${key}`).join(', ');
@@ -1960,9 +1963,11 @@ const UPSERT_META_VALUE_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @valu
 
 /**
  * A one-time pass over every characters row that resumes after the last batch it committed. The batch's rows are
- * re-read by processRow inside the batch's own transaction, so no other connection's write lands between read and
- * write. The pause between batches lets other writers take the lock. progressKey is cleared at the end even when
- * rows failed (doneKey is then left unset), so the next run retries from the first row rather than past them.
+ * re-read by prepareRow inside the batch's own transaction, so no other connection's write lands between read and
+ * write. The pause between batches lets other writers take the lock. A row whose prepareRow throws is left as it is
+ * and keeps doneKey unset; progressKey is still cleared at the end, so the next run retries from the first row
+ * rather than past it. A write that throws rolls back its whole batch and fails the pass, leaving progressKey at the
+ * last committed batch.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {object} options
  * @param {string} options.doneKey
@@ -1970,11 +1975,12 @@ const UPSERT_META_VALUE_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @valu
  * @param {string} options.progressKey
  * @param {string} options.label
  * @param {boolean} [options.logProgress]
- * @param {(id: string) => boolean} options.processRow true if it wrote the row. Must touch nothing outside the
- *   database, since a transaction that hits busy is rolled back and rerun.
+ * @param {(id: string) => (null | (() => void))} options.prepareRow Does every read, parse and computation for the
+ *   row and returns its writes, or null if it needs none. Neither may touch anything outside the database, since a
+ *   transaction that hits busy is rolled back and rerun.
  * @returns {Promise<CharacterPassResult>}
  */
-async function runResumableCharacterPass(db, { doneKey, doneValue, progressKey, label, logProgress = false, processRow }) {
+async function runResumableCharacterPass(db, { doneKey, doneValue, progressKey, label, logProgress = false, prepareRow }) {
     const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: progressKey }));
     const nextPageSql = 'SELECT id FROM characters WHERE id > @after ORDER BY id LIMIT @limit';
     const pages = saved
@@ -1999,10 +2005,16 @@ async function runResumableCharacterPass(db, { doneKey, doneValue, progressKey, 
             batchChanged = 0;
             batchFailed = [];
             for (const id of ids) {
+                let write;
                 try {
-                    if (processRow(id)) batchChanged++;
+                    write = prepareRow(id);
                 } catch (err) {
                     batchFailed.push({ id, message: String(/** @type {any} */ (err)?.message ?? err) });
+                    continue;
+                }
+                if (write) {
+                    write();
+                    batchChanged++;
                 }
             }
             db.run(UPSERT_META_VALUE_SQL, { key: progressKey, value: ids[ids.length - 1] });
@@ -2059,15 +2071,13 @@ export async function backfillTagIdsInShallowJson(directories) {
         progressKey: 'tag_ids_shallow_json_backfill_progress',
         label: 'tag_ids shallow_json backfill',
         logProgress: true,
-        processRow: (id) => {
+        prepareRow: (id) => {
             const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id AND shallow_json NOT LIKE \'%"tag_ids":%\'', { id })));
-            if (!row) return false;
-            if (row.shallow_json.includes('"tag_ids":')) return false;
-            const tagIds = Array.from(entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }), r => /** @type {{ tag_id: string }} */ (r).tag_id);
+            if (!row) return null;
+            if (row.shallow_json.includes('"tag_ids":')) return null;
             const shallow = JSON.parse(row.shallow_json);
-            shallow.tag_ids = tagIds;
-            writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-            return true;
+            shallow.tag_ids = readCharacterTagIds(entry.db, id);
+            return () => writeShallowJson(entry.db, id, shallow, ['tag_ids']);
         },
     });
 }
@@ -2093,22 +2103,18 @@ export async function normalizeCharacterFavIfNeeded(directories) {
         doneValue: String(Date.now()),
         progressKey: `${CHARACTER_FAV_NORMALIZED_FLAG}_progress`,
         label: 'Character fav normalization',
-        processRow: (id) => {
+        prepareRow: (id) => {
             const row = (/** @type {{ fav: number, shallow_json: string, digest_fav: number } | undefined} */ (entry.db.get('SELECT fav, shallow_json, digest_fav FROM characters WHERE id = @id', { id })));
-            if (!row) return false;
+            if (!row) return null;
             const fav = !!row.fav;
             const shallow = JSON.parse(row.shallow_json);
             if (shallow.fav !== fav || shallow.data?.extensions?.fav !== fav) {
                 setShallowFav(shallow, fav);
-                writeShallowJson(entry.db, id, shallow, ['fav']);
-                return true;
+                return () => writeShallowJson(entry.db, id, shallow, ['fav']);
             }
             const { digest_fav } = digestColumnsForShallow(shallow);
-            if (Number(row.digest_fav) !== digest_fav) {
-                entry.db.run('UPDATE characters SET digest_fav = @digest_fav WHERE id = @id', { id, digest_fav });
-                return true;
-            }
-            return false;
+            if (Number(row.digest_fav) === digest_fav) return null;
+            return () => entry.db.run('UPDATE characters SET digest_fav = @digest_fav WHERE id = @id', { id, digest_fav });
         },
     });
 }
@@ -2133,14 +2139,13 @@ export async function normalizeCharacterTagIdsIfNeeded(directories) {
         doneValue: String(Date.now()),
         progressKey: `${CHARACTER_TAG_IDS_NORMALIZED_FLAG}_progress`,
         label: 'Character tag_ids normalization',
-        processRow: (id) => {
+        prepareRow: (id) => {
             const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-            if (!row) return false;
+            if (!row) return null;
             const shallow = JSON.parse(row.shallow_json);
-            if (!Array.isArray(shallow.tag_ids)) return false;
-            if (JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(shallow.tag_ids))) return false;
-            writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-            return true;
+            if (!Array.isArray(shallow.tag_ids)) return null;
+            if (JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(shallow.tag_ids))) return null;
+            return () => writeShallowJson(entry.db, id, shallow, ['tag_ids']);
         },
     });
 }
