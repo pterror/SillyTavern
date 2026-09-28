@@ -33,7 +33,8 @@ let engine = undefined;
  * @property {(name: string, fn: (...args: any[]) => any) => void} defineFunction Registers a scalar SQL function.
  * @property {() => SqliteReadHandle} [openReader] Opens a read-only connection on `path`; the caller closes it.
  *   Native only: without WAL (wasm) an open reader would block this handle's writes.
- * @property {() => void} close Native: closes readers from openReader() (a suspended stream then throws on resume), TRUNCATE-checkpoints the WAL, then closes.
+ * @property {() => void} close Native: closes readers from openReader(), TRUNCATE-checkpoints the WAL, then closes;
+ *   iterate() afterwards throws, so a streamRows()/streamWrite() interrupted by close() throws instead of ending early.
  */
 
 /**
@@ -218,6 +219,9 @@ export function openNativeDatabase(DatabaseCtor, path) {
     };
 
     const { iterate, assertNoOpenIterator } = createRowStreaming((sql, params) => {
+        if (closed) {
+            throw new Error(HANDLE_CLOSED_MESSAGE);
+        }
         const rows = db.prepare(sql).iterate(params ?? {});
         return { rows, finalize: () => { rows.return(); } };
     });
@@ -402,52 +406,20 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
 }
 
 const STREAM_WRITE_BATCH_SIZE = 1000;
-/** Rows per read connection on native: an open reader pins the WAL, so it is reopened this often to let checkpoints run. */
-const STREAM_WRITE_NATIVE_CHUNK_SIZE = 100000;
 
 /**
- * Reads rows and writes per batch without an unbounded read and without writing while an iterate() is open on
- * the same connection. onBatch(rows) runs once per batch (at most 1000 rows) inside a transaction on `handle`.
+ * Reads rows and writes per batch without an unbounded read and without a read open while writing (a read held
+ * open across writes keeps the WAL from restarting, so it grows for as long as the pass runs). onBatch(rows) runs
+ * once per batch (at most 1000 rows) inside a transaction on `handle`.
  *
  * readSql must select keyColumn, keep only `(@after IS NULL OR <keyColumn> > @after)`, `ORDER BY <keyColumn>`
- * and end with `LIMIT @limit`; keyColumn must be unique. The helper binds `after` (null first, then the last
- * keyColumn value read) and `limit`:
- *   - with handle.openReader (native/WAL): one read connection per 100000-row chunk, limit = 100000;
- *   - without it (wasm): keyset pages on `handle` itself, limit = 1000.
- * The next chunk/page is read only if the previous one came back full.
+ * and end with `LIMIT @limit`; keyColumn must be unique. Each batch is one keyset page read on `handle`, its
+ * statement finished before onBatch runs: the helper binds `after` (null first, then the last keyColumn value
+ * read) and `limit` = 1000, and reads the next page only if the previous one came back full.
  * @param {SqliteEngineHandle} handle
  * @param {{ readSql: string, params?: object, keyColumn: string, onBatch: (rows: object[]) => void }} options
  */
 export function streamWrite(handle, { readSql, params, keyColumn, onBatch }) {
-    if (handle.openReader) {
-        let after = null;
-        for (;;) {
-            let chunkRows = 0;
-            const reader = handle.openReader();
-            try {
-                let batch = [];
-                for (const row of reader.iterate(readSql, { ...params, after, limit: STREAM_WRITE_NATIVE_CHUNK_SIZE })) {
-                    chunkRows++;
-                    after = row[keyColumn];
-                    batch.push(row);
-                    if (batch.length === STREAM_WRITE_BATCH_SIZE) {
-                        const rows = batch;
-                        handle.transaction(() => onBatch(rows));
-                        batch = [];
-                    }
-                }
-                if (batch.length > 0) {
-                    handle.transaction(() => onBatch(batch));
-                }
-            } finally {
-                reader.close();
-            }
-            if (chunkRows < STREAM_WRITE_NATIVE_CHUNK_SIZE) {
-                return;
-            }
-        }
-    }
-
     let after = null;
     for (;;) {
         const rows = Array.from(handle.iterate(readSql, { ...params, after, limit: STREAM_WRITE_BATCH_SIZE }));
@@ -462,45 +434,15 @@ export function streamWrite(handle, { readSql, params, keyColumn, onBatch }) {
 }
 
 /**
- * Async stream of row batches (each at most 1000 rows, in keyColumn order) that callers may `await` between,
- * without holding an iterate() open on `handle` - so `handle` stays writable while the consumer is suspended.
- * Same readSql contract and chunking as streamWrite(): on native the rows come from handle.openReader(), reopened
- * per 100000-row chunk; on wasm each 1000-row keyset page is read and its iterate closed before it is yielded.
- * Ending the for-await early (break/return/throw) closes the reader.
+ * Async stream of row batches (each at most 1000 rows, in keyColumn order) that callers may `await` and write
+ * between: each batch is one keyset page read on `handle` with its statement finished before it is yielded, so
+ * no read is open while the consumer is suspended. Same readSql contract and paging as streamWrite().
  * @param {SqliteEngineHandle} handle
  * @param {{ readSql: string, params?: object, keyColumn: string }} options
  * @returns {AsyncGenerator<object[], void, undefined>}
  */
 export async function* streamRows(handle, { readSql, params, keyColumn }) {
     let after = null;
-    if (handle.openReader) {
-        for (;;) {
-            let chunkRows = 0;
-            const reader = handle.openReader();
-            try {
-                let batch = [];
-                for (const row of reader.iterate(readSql, { ...params, after, limit: STREAM_WRITE_NATIVE_CHUNK_SIZE })) {
-                    chunkRows++;
-                    after = row[keyColumn];
-                    batch.push(row);
-                    if (batch.length === STREAM_WRITE_BATCH_SIZE) {
-                        const rows = batch;
-                        batch = [];
-                        yield rows;
-                    }
-                }
-                if (batch.length > 0) {
-                    yield batch;
-                }
-            } finally {
-                reader.close();
-            }
-            if (chunkRows < STREAM_WRITE_NATIVE_CHUNK_SIZE) {
-                return;
-            }
-        }
-    }
-
     for (;;) {
         const rows = Array.from(handle.iterate(readSql, { ...params, after, limit: STREAM_WRITE_BATCH_SIZE }));
         if (rows.length > 0) {
