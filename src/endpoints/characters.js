@@ -1474,7 +1474,8 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
 // Named, position-addressed operations on a character's greeting list; ops targeting an existing greeting carry a precondition hash and refuse rather than guess on mismatch.
 
 /**
- * Reads a character card fresh from disk, applies a single greeting-list operation, and writes it back.
+ * Reads a character card fresh from disk, applies a single greeting-list operation, and writes it back,
+ * unless the operation left the greetings and default unchanged, in which case nothing is written.
  * @param {import('express').Request} request
  * @param {string} avatar avatar filename (e.g. "char.png")
  * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel}} op
@@ -1492,6 +1493,17 @@ async function applyGreetingOperation(request, avatar, op) {
     const result = op(model);
     if (!result.ok) {
         return { ok: false, reason: result.reason, status: 409 };
+    }
+
+    const unchanged = result.model.defaultIndex === model.defaultIndex
+        && result.model.greetings.length === model.greetings.length
+        && result.model.greetings.every((text, i) => text === model.greetings[i]);
+    if (unchanged) {
+        return {
+            ok: true,
+            hashes: model.greetings.map(hashGreetingText),
+            defaultPosition: model.defaultIndex,
+        };
     }
 
     applyGreetingsModelToCard(character, result.model);
@@ -1587,20 +1599,27 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
 });
 
 /**
- * Moves the greeting at `source_position` to `target_position` (both read against the list's current, pre-removal state; `length` means "move to the end").
+ * Moves the greeting at `source_position` immediately before or after (`side`) the greeting at `target_position`.
+ * Both positions are read against the list as it currently stands, and each is checked against its own hash
+ * (`expected_hash`, `target_expected_hash`). "Move to the end" is `side: 'after'` with the last greeting as the target.
  */
 router.post('/greetings/move', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
         const sourcePosition = Number(request.body.source_position);
         const expectedHash = Number(request.body.expected_hash);
+        const side = request.body.side;
         const targetPosition = Number(request.body.target_position);
+        const targetExpectedHash = Number(request.body.target_expected_hash);
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (!Number.isInteger(sourcePosition)) return response.status(400).send({ ok: false, reason: 'source_position must be an integer' });
         if (!Number.isInteger(targetPosition)) return response.status(400).send({ ok: false, reason: 'target_position must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
+        if (!Number.isFinite(targetExpectedHash)) return response.status(400).send({ ok: false, reason: 'target_expected_hash is required' });
+        if (side !== 'before' && side !== 'after') return response.status(400).send({ ok: false, reason: 'side must be "before" or "after"' });
+        if (targetPosition === sourcePosition) return response.status(400).send({ ok: false, reason: 'target_position must differ from source_position' });
 
-        const result = await applyGreetingOperation(request, avatar, model => opMove(model, sourcePosition, expectedHash, targetPosition));
+        const result = await applyGreetingOperation(request, avatar, model => opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash));
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error moving greeting:', error);
