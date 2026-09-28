@@ -1042,19 +1042,35 @@ function digestColumnsForShallow(shallow) {
 // whole new row rather than UPDATE one - both call digestColumnsForShallow() directly for the same reason).
 // Every UPDATE that touches shallow_json goes through this function, which always recomputes and writes
 // digest_fav/digest_tag_ids/digest_content in the same statement: shallow_json cannot be written here without
-// its digests, so they cannot drift out of step the way they previously did.
+// its digests, so they cannot drift out of step the way they previously did. It also writes the row's change
+// entry, so a fav fix made here is listed in it.
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} id
  * @param {object} shallow
- * @param {number|bigint} changeSeq
+ * @param {string[]} fields The change entry's field list; 'fav' is appended when the fav fix below changed shallow.
  * @param {Record<string, unknown>} [extraColumns] Other columns to SET in the same statement (e.g. fav,
  * active_chat) so a caller's other column writes stay atomic with the shallow_json write.
  */
-function writeShallowJson(db, id, shallow, changeSeq, extraColumns = {}) {
+function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
     // Absent means never filled (backfillTagIdsInShallowJson() finds such rows by the missing key), so it is filled
     // from character_tags rather than stored as [].
     shallow.tag_ids = normalizeTagIds(Array.isArray(shallow.tag_ids) ? shallow.tag_ids : readCharacterTagIds(db, id));
+    // shallow_json read back from a row normalizeCharacterFavIfNeeded() hasn't reached yet may disagree with the fav
+    // column, which is authoritative. A fav in extraColumns is what this statement writes to that column.
+    const favColumn = 'fav' in extraColumns
+        ? extraColumns.fav
+        : (/** @type {{ fav: number } | undefined} */ (db.get('SELECT fav FROM characters WHERE id = @id', { id })))?.fav;
+    const changeFields = [...fields];
+    if (favColumn !== undefined) {
+        const fav = !!favColumn;
+        const s = /** @type {{ fav?: unknown, data?: { extensions?: { fav?: unknown } } }} */ (shallow);
+        if (s.fav !== fav || s.data?.extensions?.fav !== fav) {
+            setShallowFav(s, fav);
+            if (!changeFields.includes('fav')) changeFields.push('fav');
+        }
+    }
+    const changeSeq = insertChange(db, id, 'upsert', JSON.stringify(changeFields));
     const columns = {
         shallow_json: JSON.stringify(shallow),
         change_seq: Number(changeSeq),
@@ -1273,8 +1289,7 @@ export async function setCharacterFav(directories, avatar, fav) {
     const shallow = JSON.parse(existing.shallow_json);
     setShallowFav(shallow, normalized);
 
-    const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['fav']));
-    writeShallowJson(entry.db, avatar, shallow, lastInsertRowid, { fav: normalized ? 1 : 0 });
+    writeShallowJson(entry.db, avatar, shallow, ['fav'], { fav: normalized ? 1 : 0 });
     return true;
 }
 
@@ -1295,8 +1310,7 @@ export async function setCharacterAllowGlobalStyles(directories, avatar, allowed
     const shallow = JSON.parse(existing.shallow_json);
     shallow.allow_global_styles = !!allowed;
 
-    const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['allow_global_styles']));
-    writeShallowJson(entry.db, avatar, shallow, lastInsertRowid, { allow_global_styles: allowed ? 1 : 0 });
+    writeShallowJson(entry.db, avatar, shallow, ['allow_global_styles'], { allow_global_styles: allowed ? 1 : 0 });
     return true;
 }
 
@@ -1319,9 +1333,8 @@ export async function setCharacterActiveChat(directories, avatar, chat) {
     const shallow = JSON.parse(existing.shallow_json);
     shallow.chat = chat;
 
-    const lastInsertRowid = insertChange(entry.db, avatar, 'upsert', JSON.stringify(['active_chat']));
     // active_chat_checked = 1: this write is as authoritative a resolution as backfillActiveChatFromCards().
-    writeShallowJson(entry.db, avatar, shallow, lastInsertRowid, { active_chat: chat, active_chat_checked: 1 });
+    writeShallowJson(entry.db, avatar, shallow, ['active_chat'], { active_chat: chat, active_chat_checked: 1 });
     return true;
 }
 
@@ -1582,8 +1595,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
             const newRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar })));
             if (newRow) {
                 const shallow = JSON.parse(withPatchedDateAdded(newRow.shallow_json, dateAdded));
-                const lastInsertRowid = insertChange(entry.db, newAvatar, 'upsert', JSON.stringify(['date_added']));
-                writeShallowJson(entry.db, newAvatar, shallow, lastInsertRowid, { date_added: dateAdded });
+                writeShallowJson(entry.db, newAvatar, shallow, ['date_added'], { date_added: dateAdded });
             } else {
                 entry.db.run('UPDATE characters SET date_added = @dateAdded WHERE id = @id', { dateAdded, id: newAvatar });
             }
@@ -1647,8 +1659,7 @@ export async function setCharacterDateAdded(directories, id, dateAddedMs) {
     const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
     if (!row) return;
     const shallow = JSON.parse(withPatchedDateAdded(row.shallow_json, dateAddedMs));
-    const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['date_added']));
-    writeShallowJson(entry.db, id, shallow, lastInsertRowid, { date_added: dateAddedMs });
+    writeShallowJson(entry.db, id, shallow, ['date_added'], { date_added: dateAddedMs });
 }
 
 /**
@@ -1978,8 +1989,7 @@ export async function backfillTagIdsInShallowJson(directories) {
         if (prepared.length > 0) {
             entry.db.transaction(() => {
                 for (const { id, shallow } of prepared) {
-                    const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
-                    writeShallowJson(entry.db, id, shallow, lastInsertRowid);
+                    writeShallowJson(entry.db, id, shallow, ['tag_ids']);
                 }
             });
         }
@@ -2036,8 +2046,7 @@ export async function normalizeCharacterFavIfNeeded(directories) {
                     const shallow = JSON.parse(row.shallow_json);
                     if (shallow.fav !== fav || shallow.data?.extensions?.fav !== fav) {
                         setShallowFav(shallow, fav);
-                        const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['fav']));
-                        writeShallowJson(entry.db, id, shallow, lastInsertRowid);
+                        writeShallowJson(entry.db, id, shallow, ['fav']);
                         continue;
                     }
                     const { digest_fav } = digestColumnsForShallow(shallow);
@@ -2084,8 +2093,7 @@ export async function normalizeCharacterTagIdsIfNeeded(directories) {
                     const shallow = JSON.parse(row.shallow_json);
                     if (!Array.isArray(shallow.tag_ids)) continue;
                     if (JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(shallow.tag_ids))) continue;
-                    const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
-                    writeShallowJson(entry.db, id, shallow, lastInsertRowid);
+                    writeShallowJson(entry.db, id, shallow, ['tag_ids']);
                 } catch (err) {
                     console.error(`[character-metadata] Character tag_ids normalization failed for ${id}, leaving its row as is:`, /** @type {any} */ (err).message);
                 }
@@ -3010,8 +3018,7 @@ export async function assignEntityTag(directories, id, tagId) {
             const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
             const shallow = JSON.parse(charRow.shallow_json);
             shallow.tag_ids = currentTagIds;
-            const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
-            writeShallowJson(entry.db, id, shallow, lastInsertRowid);
+            writeShallowJson(entry.db, id, shallow, ['tag_ids']);
         }
         return 'ok';
     }
@@ -3061,8 +3068,7 @@ export async function unassignEntityTag(directories, id, tagId) {
         const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
         const shallow = JSON.parse(charRow.shallow_json);
         shallow.tag_ids = currentTagIds;
-        const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
-        writeShallowJson(entry.db, id, shallow, lastInsertRowid);
+        writeShallowJson(entry.db, id, shallow, ['tag_ids']);
     }
     return 'ok';
 }
@@ -3123,8 +3129,7 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
                 if (charRow) {
                     const shallow = JSON.parse(charRow.shallow_json);
                     shallow.tag_ids = tagIds;
-                    const lastInsertRowid = insertChange(entry.db, id, 'upsert', JSON.stringify(['tag_ids']));
-                    writeShallowJson(entry.db, id, shallow, lastInsertRowid);
+                    writeShallowJson(entry.db, id, shallow, ['tag_ids']);
                 }
                 result[id] = 'ok';
             } else if (groupIds.has(id)) {
@@ -4001,8 +4006,7 @@ function syncShallowTagIdsFromTable(db, avatar) {
     // writeShallowJson() stores tag_ids normalized.
     if (Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(currentTagIds))) return true;
     shallow.tag_ids = currentTagIds;
-    const lastInsertRowid = insertChange(db, avatar, 'upsert', JSON.stringify(['tag_ids']));
-    writeShallowJson(db, avatar, shallow, lastInsertRowid);
+    writeShallowJson(db, avatar, shallow, ['tag_ids']);
     return true;
 }
 
