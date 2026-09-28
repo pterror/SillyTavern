@@ -13,7 +13,7 @@ import { importFailure } from '../character-import-error.js';
 import { serverDirectory } from '../server-directory.js';
 import { Jimp, JimpMime } from '../jimp.js';
 import { DEFAULT_AVATAR_PATH } from '../constants.js';
-import { importWorldInfoFromRaw } from './worldinfo.js';
+import { forgetWorldInfoMiss, importWorldInfoFromRaw } from './worldinfo.js';
 import { upsertCharacterFromWrite } from '../character-metadata-db.js';
 import { copyCharacterFile } from '../local-import-copy.js';
 import { readSettingsAtPaths } from '../settings-store.js';
@@ -193,6 +193,9 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
             }
         } else {
             fs.cpSync(contentPath, targetPath, { recursive: true, force: false });
+            if (contentItem.type === CONTENT_TYPES.WORLD) {
+                forgetWorldInfoMiss(targetPath);
+            }
         }
 
         setPermissionsSync(targetPath);

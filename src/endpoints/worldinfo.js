@@ -18,6 +18,88 @@ function getWorldInfoPaths(directories, worldInfoName) {
     return { filename, pathToWorldInfo, entriesDir };
 }
 
+/**
+ * World Info files found missing, so a link to a book that isn't there doesn't cost a file lookup and
+ * a log line on every generation, /get and card save. One LRU for every user, keyed by the file's full
+ * path, so each data directory has its own entries; when full, the least recently used name is dropped
+ * and is simply looked up again next time.
+ *
+ * A miss is dropped when this server writes that file ({@link forgetWorldInfoMiss}). A file that
+ * appears any other way (copied in by hand) changes the worlds directory's mtime, so a miss is trusted
+ * only while the directory's mtime is still the one seen before the file was found missing.
+ * @type {Map<string, { dirMtimeNs: bigint|null, logged: boolean }>}
+ */
+const worldInfoMisses = new Map();
+const WORLD_INFO_MISS_LIMIT = 10_000;
+/** A directory mtime younger than this may still be shared by a later change (FAT stores mtimes in 2 s steps). */
+const DIR_MTIME_SETTLE_NS = 2_000_000_000n;
+
+/**
+ * @param {string} dir
+ * @returns {bigint|null} The directory's mtime, or null when it's unreadable or too recent to tell a later change apart
+ */
+function getSettledDirMtimeNs(dir) {
+    try {
+        const mtimeNs = fs.statSync(dir, { bigint: true }).mtimeNs;
+        return BigInt(Date.now()) * 1_000_000n - mtimeNs >= DIR_MTIME_SETTLE_NS ? mtimeNs : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Looks a World Info file up, answering from the remembered misses when the worlds directory hasn't
+ * changed since the miss was seen.
+ * @param {string} worldsDir
+ * @param {string} pathToWorldInfo
+ * @returns {{ dirMtimeNs: bigint|null, logged: boolean }|null} The miss, or null when the file exists
+ */
+function findWorldInfoMiss(worldsDir, pathToWorldInfo) {
+    // Read before the file lookup, so a file created after the lookup always shows as a newer mtime.
+    const dirMtimeNs = getSettledDirMtimeNs(worldsDir);
+    const known = worldInfoMisses.get(pathToWorldInfo);
+    if (known) {
+        worldInfoMisses.delete(pathToWorldInfo);
+        if (known.dirMtimeNs !== null && known.dirMtimeNs === dirMtimeNs) {
+            worldInfoMisses.set(pathToWorldInfo, known);
+            return known;
+        }
+    }
+
+    if (fs.existsSync(pathToWorldInfo)) {
+        return null;
+    }
+
+    const miss = { dirMtimeNs, logged: known?.logged ?? false };
+    worldInfoMisses.set(pathToWorldInfo, miss);
+    if (worldInfoMisses.size > WORLD_INFO_MISS_LIMIT) {
+        worldInfoMisses.delete(worldInfoMisses.keys().next().value);
+    }
+    return miss;
+}
+
+/**
+ * Drops a remembered miss for a World Info file this server has just written, so the next lookup finds it.
+ * @param {string} pathToWorldInfo Full path of the written file
+ */
+export function forgetWorldInfoMiss(pathToWorldInfo) {
+    worldInfoMisses.delete(pathToWorldInfo);
+}
+
+/**
+ * Whether a World Info file exists under this name. Never logs. A name found missing is remembered, so
+ * asking again doesn't look the file up until a book with that name is written or the worlds directory changes.
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {string} worldInfoName Name of the World Info file
+ * @returns {boolean}
+ */
+export function worldInfoFileExists(directories, worldInfoName) {
+    if (!worldInfoName) {
+        return false;
+    }
+    return findWorldInfoMiss(directories.worlds, getWorldInfoPaths(directories, worldInfoName).pathToWorldInfo) === null;
+}
+
 /** Guards against a crafted uid (e.g. containing path separators) escaping the sidecar directory. */
 function sanitizeEntryUid(uid) {
     const safe = sanitize(String(uid));
@@ -61,8 +143,13 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy) {
 
     const { filename, pathToWorldInfo, entriesDir } = getWorldInfoPaths(directories, worldInfoName);
 
-    if (!fs.existsSync(pathToWorldInfo)) {
-        console.error(`World info file ${filename} doesn't exist.`);
+    const miss = findWorldInfoMiss(directories.worlds, pathToWorldInfo);
+    if (miss) {
+        // Once per miss: repeated reads of a book that stays missing don't print again.
+        if (!miss.logged) {
+            miss.logged = true;
+            console.error(`World info file ${filename} doesn't exist.`);
+        }
         return dummyObject;
     }
 
@@ -124,6 +211,7 @@ function writeWorldInfoFile(directories, worldInfoName, data) {
     // Write the manifest before deleting stale entries, so it never points at an already-deleted file.
     const manifest = { ...rest, format: WORLD_INFO_SIDECAR_FORMAT, entries: keptUids };
     writeFileAtomicSync(pathToWorldInfo, JSON.stringify(manifest, null, 4));
+    forgetWorldInfoMiss(pathToWorldInfo);
 
     const keptSafeUids = new Set(keptUids.map(sanitizeEntryUid));
     for (const safeUid of existingUids) {
@@ -306,6 +394,7 @@ export function importWorldInfoFromRaw(directories, desiredName, fileContents) {
     }
 
     writeFileAtomicSync(pathToNewFile, fileContents);
+    forgetWorldInfoMiss(pathToNewFile);
     return worldName;
 }
 
