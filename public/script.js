@@ -49,6 +49,7 @@ import {
     openEmbeddedLoreEditor,
     checkEmbeddedWorld,
     setWorldInfoButtonClass,
+    updateCharacterWorldButton,
     getCharacterWorldLink,
     initWorldInfo,
     charUpdatePrimaryWorld,
@@ -8689,7 +8690,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#name_div').addClass('displayBlock');
     $('.open_alternate_greetings').data('avatar', null);
     $('#set_character_world').data('avatar', null);
-    setWorldInfoButtonClass(undefined, !!create_save.world);
+    updateCharacterWorldButton();
     updateFavButtonState(false);
     checkEmbeddedWorld();
 
