@@ -382,6 +382,16 @@ const SCHEMA_SQL = `
         value TEXT
     );
 
+    -- Cards a one-time migration still has to write, per migration: a later boot retries only these. settled = 1 marks
+    -- a row the running retry pass is done with; commitMigrationSettled() deletes those rows in the same transaction that
+    -- stores the pass's notice, so after a crash before it every row is looked at again.
+    CREATE TABLE IF NOT EXISTS migration_pending (
+        migration TEXT NOT NULL,
+        id        TEXT NOT NULL,
+        settled   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (migration, id)
+    );
+
     -- Mirrors characters' fav/date_added/date_last_chat/chat_size/name_fold so queryEntities() can UNION ALL
     -- both tables under one ORDER BY. No 'world' column (groups have no lorebook binding). Group ids are stable
     -- for their whole lifetime, so date_added needs no rename-time carry-forward like characters get.
@@ -1479,6 +1489,24 @@ export async function getShallowByIds(directories, ids) {
         }
     }
     return result;
+}
+
+/**
+ * Each given id's `name` column, for ids that have a row. Callers pass a bounded list; ids without a row are absent
+ * from the map.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, string>>}
+ */
+export async function getCharacterNamesByIds(directories, ids) {
+    /** @type {Map<string, string>} */
+    const map = new Map();
+    const entry = await getEntry(directories);
+    if (!entry || ids.length === 0) return map;
+    for (const row of /** @type {Generator<{ id: string, name: string }>} */ (entry.db.iterate('SELECT id, name FROM characters WHERE id IN (SELECT value FROM json_each(?))', [JSON.stringify(ids)]))) {
+        map.set(String(row.id), String(row.name));
+    }
+    return map;
 }
 
 // null means no row exists for this avatar yet (not yet reconciled, or never existed) - once a row exists,
@@ -2696,6 +2724,20 @@ export async function setMetaValue(directories, key, value) {
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.run(UPSERT_META_SQL, { key, value: String(value) });
+}
+
+/**
+ * Deletes `key` only while it still holds exactly `value`.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} key
+ * @param {string} value
+ * @returns {Promise<boolean>} true when a row was deleted; false when the value differed, the key was absent, or the
+ * metadata store is unavailable.
+ */
+export async function deleteMetaValueIfEquals(directories, key, value) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    return entry.db.run('DELETE FROM meta WHERE key = @key AND value = @value', { key, value }).changes > 0;
 }
 
 /** @type {Map<string, import('./endpoints/sqlite-engine.js').SqliteEngineHandle>} Keyed by directories.root. */
@@ -4399,6 +4441,100 @@ export async function markMigrationComplete(directories, key) {
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key, value: String(Date.now()) });
+}
+
+/**
+ * Records that `migration` still has to write `id`, unsettled (a row already there is reset to unsettled).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} migration
+ * @param {string} id
+ */
+export async function addMigrationPending(directories, migration, id) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run('INSERT INTO migration_pending (migration, id, settled) VALUES (@migration, @id, 0) ON CONFLICT(migration, id) DO UPDATE SET settled = 0', { migration, id });
+}
+
+/**
+ * Marks one pending row settled (the running retry pass is done with it) or unsettled.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} migration
+ * @param {string} id
+ * @param {boolean} settled
+ */
+export async function setMigrationPendingSettled(directories, migration, id, settled) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run('UPDATE migration_pending SET settled = @settled WHERE migration = @migration AND id = @id', { settled: settled ? 1 : 0, migration, id });
+}
+
+/**
+ * Deletes every pending row of `migration`.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} migration
+ */
+export async function clearMigrationPending(directories, migration) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.run('DELETE FROM migration_pending WHERE migration = @migration', { migration });
+}
+
+/**
+ * Whether `migration` has any pending row, settled or not - one indexed lookup.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} migration
+ * @returns {Promise<boolean>} false when the metadata store is unavailable.
+ */
+export async function hasMigrationPending(directories, migration) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    return !!entry.db.get('SELECT 1 FROM migration_pending WHERE migration = @migration LIMIT 1', { migration });
+}
+
+/**
+ * The pending rows of `migration`, in id order, in batches; each batch's read is finished before it is yielded, so the
+ * caller may write between batches.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} migration
+ * @returns {Promise<AsyncGenerator<{ id: string, settled: number }[], void, undefined> | null>} `null` if the metadata
+ * store is unavailable.
+ */
+export async function streamMigrationPending(directories, migration) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    return (async function* () {
+        for await (const rows of streamRows(entry.db, {
+            firstPageSql: 'SELECT id, settled FROM migration_pending WHERE migration = @migration ORDER BY id LIMIT @limit',
+            firstPageParams: { migration },
+            nextPageSql: 'SELECT id, settled FROM migration_pending WHERE migration = @migration AND id > @after ORDER BY id LIMIT @limit',
+            nextPageParams: { migration },
+            keyColumn: 'id',
+        })) {
+            yield (/** @type {{ id: string, settled: number }[]} */ (rows)).map(row => ({ id: String(row.id), settled: Number(row.settled) }));
+        }
+    })();
+}
+
+/**
+ * In one transaction: deletes the settled pending rows of `migration`, and stores `metaValue` under `metaKey` (`null`
+ * deletes the key, `undefined` leaves it as it is).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} migration
+ * @param {string} metaKey
+ * @param {unknown} metaValue
+ */
+export async function commitMigrationSettled(directories, migration, metaKey, metaValue) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    entry.db.transaction(() => {
+        entry.db.run('DELETE FROM migration_pending WHERE migration = @migration AND settled = 1', { migration });
+        if (metaValue === null) {
+            entry.db.run('DELETE FROM meta WHERE key = @key', { key: metaKey });
+        } else if (metaValue !== undefined) {
+            entry.db.run(UPSERT_META_SQL, { key: metaKey, value: String(metaValue) });
+        }
+    });
 }
 
 /**

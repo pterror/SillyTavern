@@ -18,6 +18,7 @@ import { printCharacters, printCharactersDebounced, getEntitiesList, queryEntiti
 export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
+import { showMigrationNotices } from './scripts/migration-notices.js';
 import {
     generateKoboldWithStreaming,
     kai_settings,
@@ -1357,6 +1358,7 @@ async function firstLoadInit() {
         showCharacterSyncFailedToast();
     }
     await eventSource.emit(event_types.APP_READY);
+    showMigrationNotices({ t, escapeHtml }).catch(error => console.error('Could not show migration notices', error));
 }
 
 async function fixViewport() {
