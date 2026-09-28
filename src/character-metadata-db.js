@@ -7,7 +7,7 @@ import path from 'node:path';
 import _ from 'lodash';
 import sanitize from 'sanitize-filename';
 
-import { color, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
+import { color, delay, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
 import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
@@ -3757,8 +3757,19 @@ export async function migrateTagsJsonIfNeeded(directories) {
     const tagsArray = Array.isArray(parsed.tags) ? parsed.tags : [];
     const tagMap = parsed.tag_map && typeof parsed.tag_map === 'object' ? parsed.tag_map : {};
 
-    await saveTagDefinitions(directories, tagsArray);
-    const droppedKeys = importTagMapSync(entry, tagMap);
+    // Only ids not already in `tags`: a definition saved after the server started listening is newer than
+    // tags.json's and wins. Nothing is deleted, so a rerun from the start is safe.
+    let insertedDefinitions = 0;
+    entry.db.transaction(() => {
+        for (const raw of tagsArray) {
+            const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
+            if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
+            insertedDefinitions += entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', { id: tag.id, data: JSON.stringify(tag) }).changes;
+        }
+        if (insertedDefinitions > 0) updateTagsHashSync(entry.db);
+    });
+    if (insertedDefinitions > 0) entry.tagCache = null;
+    const droppedKeys = await importTagMap(entry, tagMap);
     entry.db.run(
         'INSERT INTO meta (key, value) VALUES (\'tags_json_migrated\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         { value: String(Date.now()) },
@@ -3807,6 +3818,65 @@ function importTagMapSync(entry, tagMap) {
         }
         updateTagsHashSync(entry.db);
     });
+
+    return droppedKeys;
+}
+
+const TAG_MAP_IMPORT_BATCH_SIZE = 500;
+const TAG_MAP_IMPORT_BATCH_PAUSE_MS = 10;
+
+// importTagMapSync() in batches of keys, one transaction each, pausing between them. Leaves tags_hash alone:
+// a tag_map import never changes `tags`.
+/**
+ * @param {MetadataDbEntry} entry
+ * @param {Record<string, unknown>} tagMap Externally-supplied - each value is runtime-checked as string[] below.
+ * @returns {Promise<string[]>} Dropped keys.
+ */
+async function importTagMap(entry, tagMap) {
+    /** @type {string[]} */
+    const droppedKeys = [];
+    const entries = Object.entries(tagMap);
+
+    for (let i = 0; i < entries.length; i += TAG_MAP_IMPORT_BATCH_SIZE) {
+        if (i > 0) await delay(TAG_MAP_IMPORT_BATCH_PAUSE_MS);
+        const batch = entries.slice(i, i + TAG_MAP_IMPORT_BATCH_SIZE);
+
+        entry.db.transaction(() => {
+            const characterKeys = batch.filter(([key]) => tagEntityTypeOf(key) === 'character').map(([key]) => key);
+            const groupKeys = batch.filter(([key]) => tagEntityTypeOf(key) === 'group').map(([key]) => key);
+            /** @type {Set<string>} */
+            const knownCharacterIds = new Set();
+            /** @type {Set<string>} */
+            const knownGroupIds = new Set();
+            if (characterKeys.length > 0) {
+                for (const row of /** @type {Generator<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM characters WHERE id IN (${characterKeys.map(() => '?').join(',')})`, characterKeys))) {
+                    knownCharacterIds.add(row.id);
+                }
+            }
+            if (groupKeys.length > 0) {
+                for (const row of /** @type {Generator<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM groups WHERE id IN (${groupKeys.map(() => '?').join(',')})`, groupKeys))) {
+                    knownGroupIds.add(row.id);
+                }
+            }
+
+            for (const [key, tagIds] of batch) {
+                if (!Array.isArray(tagIds)) continue;
+                const type = tagEntityTypeOf(key);
+                if (type === 'character' && knownCharacterIds.has(key)) {
+                    for (const tagId of tagIds) {
+                        entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
+                    }
+                    if (tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, key);
+                } else if (type === 'group' && knownGroupIds.has(key)) {
+                    for (const tagId of tagIds) {
+                        entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
+                    }
+                } else {
+                    droppedKeys.push(key);
+                }
+            }
+        });
+    }
 
     return droppedKeys;
 }
@@ -3880,7 +3950,11 @@ function seedCardTagsForCharacter(db, avatar, cardTags, tagNameToId, insertTag, 
 function syncShallowTagIdsFromTable(db, avatar) {
     const row = (/** @type {{ shallow_json: string } | undefined} */ (db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!row) return false;
-    const currentTagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))).map(r => r.tag_id);
+    /** @type {string[]} */
+    const currentTagIds = [];
+    for (const r of /** @type {Generator<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))) {
+        currentTagIds.push(r.tag_id);
+    }
     const shallow = JSON.parse(row.shallow_json);
     // writeShallowJson() stores tag_ids normalized.
     if (Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(currentTagIds))) return true;

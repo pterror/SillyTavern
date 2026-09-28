@@ -1485,6 +1485,51 @@ describe('phase 3 extension: tags.json removal (migration + settings-snapshot ro
         expect(fs.existsSync(path.join(tempDir, 'tags.json'))).toBe(true);
     });
 
+    test('migrateTagsJsonIfNeeded keeps a definition already in tags with the same id and inserts tags.json\'s others', async () => {
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Saved Later' }, { id: 'tag9', name: 'Only In Db' }]);
+        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({
+            tags: [{ id: 'tag1', name: 'Funny' }, { id: 'tag2', name: 'Serious' }],
+            tag_map: {},
+        }));
+
+        await metadataDb.migrateTagsJsonIfNeeded(directories);
+
+        const defs = await metadataDb.getTagDefinitions(directories);
+        expect(defs).toHaveLength(3);
+        expect(defs).toEqual(expect.arrayContaining([
+            { id: 'tag1', name: 'Saved Later' },
+            { id: 'tag9', name: 'Only In Db' },
+            { id: 'tag2', name: 'Serious' },
+        ]));
+        expect(fs.existsSync(path.join(tempDir, 'tags.json.migrated'))).toBe(true);
+    });
+
+    test('migrateTagsJsonIfNeeded imports every tag_map key across more than one batch and drops unknown keys with a warning', async () => {
+        const avatars = Array.from({ length: 1201 }, (_, i) => `Char${i}.png`);
+        for (const avatar of avatars) {
+            await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson());
+        }
+        /** @type {Record<string, string[]>} */
+        const tagMap = {};
+        for (const avatar of avatars) tagMap[avatar] = ['tag1'];
+        tagMap['GhostCharacter.png'] = ['tag1'];
+        fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [{ id: 'tag1', name: 'Funny' }], tag_map: tagMap }));
+
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            await metadataDb.migrateTagsJsonIfNeeded(directories);
+            const result = await metadataDb.getEntityTagIdsForMany(directories, [...avatars, 'GhostCharacter.png']);
+            for (const avatar of avatars) expect(result[avatar]).toEqual(['tag1']);
+            expect(result['GhostCharacter.png']).toEqual([]);
+            const dropWarnings = warnSpy.mock.calls.filter(c => String(c[0]).includes('tags.json migration'));
+            expect(dropWarnings).toHaveLength(1);
+            expect(dropWarnings[0][0]).toContain('1 tag_map key(s)');
+            expect(dropWarnings[0][0]).toContain('GhostCharacter.png');
+        } finally {
+            warnSpy.mockRestore();
+        }
+    });
+
     test('getFullTagMapExport/restoreTagMap round-trip a settings snapshot\'s tag_map across both entity types', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.upsertGroupRow(directories, 'group1', 'G');
