@@ -345,46 +345,54 @@ const STREAM_WRITE_BATCH_SIZE = 1000;
  * open across writes keeps the WAL from restarting, so it grows for as long as the pass runs). onBatch(rows) runs
  * once per batch (at most 1000 rows) inside a transaction on `handle`.
  *
- * readSql must select keyColumn, keep only `(@after IS NULL OR <keyColumn> > @after)`, `ORDER BY <keyColumn>`
- * and end with `LIMIT @limit`; keyColumn must be unique. Each batch is one keyset page read on `handle`, its
- * statement finished before onBatch runs: the helper binds `after` (null first, then the last keyColumn value
- * read) and `limit` = 1000, and reads the next page only if the previous one came back full.
+ * Each batch is one keyset page read on `handle`, its statement finished before onBatch runs. firstPageSql reads the
+ * first page and nextPageSql every later one. Both must select keyColumn, `ORDER BY <keyColumn>` and end with
+ * `LIMIT @limit`; keyColumn must be unique. nextPageSql's key condition must be `<keyColumn> > @after` alone, with no
+ * OR around it and no sentinel standing in for @after: SQLite can't seek on the OR, so every page would re-read from
+ * the start, and a sentinel skips any key equal to or below it. firstPageSql is bound with firstPageParams plus
+ * `limit` (1000); nextPageSql with nextPageParams plus `limit` and `after` (the last keyColumn value read). Each params
+ * object must hold exactly the other parameters its SQL uses, since wasm rejects one the SQL doesn't. The next page is
+ * read only if the previous one came back full.
  * @param {SqliteEngineHandle} handle
- * @param {{ readSql: string, params?: object, keyColumn: string, onBatch: (rows: object[]) => void }} options
+ * @param {{ firstPageSql: string, firstPageParams: object, nextPageSql: string, nextPageParams: object, keyColumn: string, onBatch: (rows: object[]) => void }} options
  */
-export function streamWrite(handle, { readSql, params, keyColumn, onBatch }) {
-    let after = null;
+export function streamWrite(handle, { firstPageSql, firstPageParams, nextPageSql, nextPageParams, keyColumn, onBatch }) {
+    let sql = firstPageSql;
+    let params = { ...firstPageParams, limit: STREAM_WRITE_BATCH_SIZE };
     for (;;) {
-        const rows = Array.from(handle.iterate(readSql, { ...params, after, limit: STREAM_WRITE_BATCH_SIZE }));
+        const rows = Array.from(handle.iterate(sql, params));
         if (rows.length > 0) {
             handle.transaction(() => onBatch(rows));
         }
         if (rows.length < STREAM_WRITE_BATCH_SIZE) {
             return;
         }
-        after = rows[rows.length - 1][keyColumn];
+        sql = nextPageSql;
+        params = { ...nextPageParams, after: rows[rows.length - 1][keyColumn], limit: STREAM_WRITE_BATCH_SIZE };
     }
 }
 
 /**
  * Async stream of row batches (each at most 1000 rows, in keyColumn order) that callers may `await` and write
  * between: each batch is one keyset page read on `handle` with its statement finished before it is yielded, so
- * no read is open while the consumer is suspended. Same readSql contract and paging as streamWrite().
+ * no read is open while the consumer is suspended. Same options contract and paging as streamWrite().
  * @param {SqliteEngineHandle} handle
- * @param {{ readSql: string, params?: object, keyColumn: string }} options
+ * @param {{ firstPageSql: string, firstPageParams: object, nextPageSql: string, nextPageParams: object, keyColumn: string }} options
  * @returns {AsyncGenerator<object[], void, undefined>}
  */
-export async function* streamRows(handle, { readSql, params, keyColumn }) {
-    let after = null;
+export async function* streamRows(handle, { firstPageSql, firstPageParams, nextPageSql, nextPageParams, keyColumn }) {
+    let sql = firstPageSql;
+    let params = { ...firstPageParams, limit: STREAM_WRITE_BATCH_SIZE };
     for (;;) {
-        const rows = Array.from(handle.iterate(readSql, { ...params, after, limit: STREAM_WRITE_BATCH_SIZE }));
+        const rows = Array.from(handle.iterate(sql, params));
         if (rows.length > 0) {
             yield rows;
         }
         if (rows.length < STREAM_WRITE_BATCH_SIZE) {
             return;
         }
-        after = rows[rows.length - 1][keyColumn];
+        sql = nextPageSql;
+        params = { ...nextPageParams, after: rows[rows.length - 1][keyColumn], limit: STREAM_WRITE_BATCH_SIZE };
     }
 }
 

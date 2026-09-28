@@ -1977,7 +1977,10 @@ export async function normalizeCharacterFavIfNeeded(directories) {
     if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_FAV_NORMALIZED_FLAG })) return;
 
     for await (const rows of streamRows(entry.db, {
-        readSql: 'SELECT id FROM characters WHERE (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit',
+        firstPageSql: 'SELECT id FROM characters ORDER BY id LIMIT @limit',
+        firstPageParams: {},
+        nextPageSql: 'SELECT id FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
+        nextPageParams: {},
         keyColumn: 'id',
     })) {
         entry.db.transaction(() => {
@@ -2023,7 +2026,10 @@ export async function normalizeCharacterTagIdsIfNeeded(directories) {
     if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_TAG_IDS_NORMALIZED_FLAG })) return;
 
     for await (const rows of streamRows(entry.db, {
-        readSql: 'SELECT id FROM characters WHERE (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit',
+        firstPageSql: 'SELECT id FROM characters ORDER BY id LIMIT @limit',
+        firstPageParams: {},
+        nextPageSql: 'SELECT id FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
+        nextPageParams: {},
         keyColumn: 'id',
     })) {
         entry.db.transaction(() => {
@@ -2705,8 +2711,10 @@ export async function* streamCharacterIdsForTagIds(directories, tagIds) {
     ids.forEach((id, i) => { params[`t${i}`] = id; });
     const placeholders = ids.map((_id, i) => `@t${i}`).join(',');
     for await (const rows of streamRows(entry.db, {
-        readSql: `SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders}) AND (@after IS NULL OR character_id > @after) ORDER BY character_id LIMIT @limit`,
-        params,
+        firstPageSql: `SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders}) ORDER BY character_id LIMIT @limit`,
+        firstPageParams: params,
+        nextPageSql: `SELECT DISTINCT character_id FROM character_tags WHERE tag_id IN (${placeholders}) AND character_id > @after ORDER BY character_id LIMIT @limit`,
+        nextPageParams: params,
         keyColumn: 'character_id',
     })) {
         yield rows.map(row => row.character_id);
@@ -3326,7 +3334,10 @@ export async function normalizeGroupFavIfNeeded(directories) {
     if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: GROUP_FAV_NORMALIZED_FLAG })) return;
 
     for await (const rows of streamRows(entry.db, {
-        readSql: 'SELECT id FROM groups WHERE (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit',
+        firstPageSql: 'SELECT id FROM groups ORDER BY id LIMIT @limit',
+        firstPageParams: {},
+        nextPageSql: 'SELECT id FROM groups WHERE id > @after ORDER BY id LIMIT @limit',
+        nextPageParams: {},
         keyColumn: 'id',
     })) {
         entry.db.transaction(() => {
@@ -4140,9 +4151,6 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}) {
     return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', args };
 }
 
-// The keyset pages below bound `after` with COALESCE rather than streamRows()'s usual `(@after IS NULL OR key > @after)`:
-// SQLite can't seek on that OR, so every page would re-read the index from its start.
-
 /**
  * Every world some character links as its primary world, with how many characters link it, in world order, in
  * batches. Reads idx_characters_world only; each batch's read is finished before it is yielded, so the caller may
@@ -4155,9 +4163,12 @@ export async function streamLinkedWorlds(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
-    // world has TEXT affinity, so `> ''` keeps exactly the rows that are neither NULL nor ''.
+    // world has TEXT affinity, so `> ''` keeps exactly the rows that are neither NULL nor ''; a later page's `> @after` implies it.
     return /** @type {AsyncGenerator<{ world: string, linkers: number }[], void, undefined>} */ (streamRows(entry.db, {
-        readSql: 'SELECT world, COUNT(*) AS linkers FROM characters WHERE world > COALESCE(@after, \'\') GROUP BY world ORDER BY world LIMIT @limit',
+        firstPageSql: 'SELECT world, COUNT(*) AS linkers FROM characters WHERE world > \'\' GROUP BY world ORDER BY world LIMIT @limit',
+        firstPageParams: {},
+        nextPageSql: 'SELECT world, COUNT(*) AS linkers FROM characters WHERE world > @after GROUP BY world ORDER BY world LIMIT @limit',
+        nextPageParams: {},
         keyColumn: 'world',
     }));
 }
@@ -4176,8 +4187,10 @@ export async function streamCharactersLinkedToWorld(directories, world) {
 
     return (async function* () {
         for await (const rows of streamRows(entry.db, {
-            readSql: 'SELECT rowid AS rid, id FROM characters WHERE world = @world AND rowid > COALESCE(@after, -9223372036854775808) ORDER BY rowid LIMIT @limit',
-            params: { world },
+            firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE world = @world ORDER BY rowid LIMIT @limit',
+            firstPageParams: { world },
+            nextPageSql: 'SELECT rowid AS rid, id FROM characters WHERE world = @world AND rowid > @after ORDER BY rowid LIMIT @limit',
+            nextPageParams: { world },
             keyColumn: 'rid',
         })) {
             yield (/** @type {{ rid: number, id: string }[]} */ (rows)).map(row => row.id);
@@ -4897,8 +4910,10 @@ export async function* streamCharacterCardJsonBatches(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
     yield* /** @type {AsyncGenerator<{ id: string, card_json: string }[], void, undefined>} */ (streamRows(entry.db, {
-        readSql: 'SELECT id, card_json FROM characters WHERE (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit',
-        params: {},
+        firstPageSql: 'SELECT id, card_json FROM characters ORDER BY id LIMIT @limit',
+        firstPageParams: {},
+        nextPageSql: 'SELECT id, card_json FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
+        nextPageParams: {},
         keyColumn: 'id',
     }));
 }
@@ -4914,8 +4929,10 @@ export async function* streamDeletedIdsBetween(directories, afterSeq, uptoSeq) {
     const entry = await getEntry(directories);
     if (!entry) return;
     for await (const rows of streamRows(entry.db, {
-        readSql: 'SELECT seq, id FROM changes WHERE op = \'delete\' AND seq > @lo AND seq <= @hi AND (@after IS NULL OR seq > @after) ORDER BY seq LIMIT @limit',
-        params: { lo: afterSeq, hi: uptoSeq },
+        firstPageSql: 'SELECT seq, id FROM changes WHERE op = \'delete\' AND seq > @lo AND seq <= @hi ORDER BY seq LIMIT @limit',
+        firstPageParams: { lo: afterSeq, hi: uptoSeq },
+        nextPageSql: 'SELECT seq, id FROM changes WHERE op = \'delete\' AND seq > @after AND seq <= @hi ORDER BY seq LIMIT @limit',
+        nextPageParams: { hi: uptoSeq },
         keyColumn: 'seq',
     })) {
         yield rows.map(row => row.id);
