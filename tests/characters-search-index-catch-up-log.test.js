@@ -116,9 +116,9 @@ describe('characters-search-index.js: catch-up log line', () => {
             backlog: 4, writers: { fav: 2, tag_ids: 1, null: 1 }, tagRenames: 0, phases, lockWaitMs: 9,
         };
         expect(searchIndex.formatCatchUpLine(base)).toBe(
-            '[search] catch-up: seq=10..20 backlog=4 writers=fav:2,tag_ids:1,null:1 tagrenames=0 deletes=0 upserts=3 total_ms=40'
+            '[search] catch-up: seq=10..20 backlog=4 writers=fav:2,tag_ids:1,whole-record:1 tagrenames=0 deletes=0 upserts=3 total_ms=40'
             + ' read_ms=1 deletes_ms=2 tags_ms=3 load_ms=4 build_ms=5 add_ms=6 commit_ms=7 persist_ms=8 lockwait_ms=9');
         expect(searchIndex.formatCatchUpLine({ ...base, tagNameSeq: 7, tagRenames: 2 }))
-            .toContain('seq=10..20 tagseq=5..7 backlog=4 writers=fav:2,tag_ids:1,null:1 tagrenames=2 ');
+            .toContain('seq=10..20 tagseq=5..7 backlog=4 writers=fav:2,tag_ids:1,whole-record:1 tagrenames=2 ');
     });
 });
