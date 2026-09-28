@@ -4598,7 +4598,12 @@ async function renameWorldInfo(name, data) {
     if (!await saveWorldInfo(newName, data, true)) {
         return;
     }
-    await deleteWorldInfo(oldName);
+    // The open character keeps its link to the old name, like every other linked character, so the relink below
+    // can move it to the new name. Unlinking it here would clear the link once its delayed save lands.
+    if (await deleteWorldInfoFile(oldName)) {
+        unlinkWorldInfo(oldName, { keepOpenCharacterLink: true });
+        await warnCharactersStillLinked(oldName, '');
+    }
 
     await updateWorldInfoLinks(oldName, newName, { retargetPersonaLore });
 
@@ -4697,6 +4702,12 @@ async function updateWorldInfoLinks(oldName, newName, { retargetPersonaLore } = 
             toastr.success(t`Updated primary lorebook links for ${updated.length} character(s).`);
         }
 
+        // The character panel's link field, for a character open there that isn't the one selected below.
+        const editorAvatar = String($('#avatar_url_pole').val() ?? '');
+        if (menu_type != 'create' && updated.includes(editorAvatar) && $('#character_world').val() === oldName) {
+            $('#character_world').val(newName);
+        }
+
         let activeCharacterUpdated = false;
         for (const avatar of updated) {
             await getOneCharacter(avatar);
@@ -4774,10 +4785,12 @@ async function deleteWorldInfoFile(worldInfoName) {
  * Removes a deleted book's name from the global lorebook selection, the open character and the current persona,
  * as deleting a book does.
  * @param {string} worldInfoName - The deleted book's name
+ * @param {{ keepOpenCharacterLink?: boolean }} [options] keepOpenCharacterLink: leave the open character linked to
+ * the name (a rename, whose relink moves it to the new name).
  * @returns {{ unlinkedAvatar: string, unlinked: string[] }} unlinkedAvatar: the open character this unlinked from
  * the book, or '' if it unlinked none. unlinked: what it unlinked, escaped for HTML, for a warning to list.
  */
-function unlinkWorldInfo(worldInfoName) {
+function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) {
     /** @type {string[]} */
     const unlinked = [];
 
@@ -4791,7 +4804,7 @@ function unlinkWorldInfo(worldInfoName) {
     // Avatar of the open character unlinked below, left out of the still-linked warning: its save is debounced,
     // so the metadata store still lists it as linked when that warning's query runs.
     let unlinkedAvatar = '';
-    if ($('#character_world').val() === worldInfoName) {
+    if (!keepOpenCharacterLink && $('#character_world').val() === worldInfoName) {
         $('#character_world').val('');
         if (menu_type != 'create') {
             // The card links the book until this save lands; the globe shows it unlinked meanwhile.
