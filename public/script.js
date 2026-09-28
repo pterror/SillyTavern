@@ -9369,13 +9369,16 @@ async function openCharacterWorldPopup() {
     // A name with no World file, on a card with its own embedded lorebook, links that embedded book.
     const linksEmbeddedBook = menu_type != 'create' && getCharacterWorldLink(worldCharacter) === character_world_link.EMBEDDED;
     const embeddedBookValue = 'embedded';
+    // Any other name with no World file gets its own option too, so the link shows as set and choosing "None" clears it.
+    const linksUnlistedName = worldId !== '' && !linksEmbeddedBook && !world_names.includes(worldId);
+    const unlistedNameValue = 'unlisted';
     const template = $('#character_world_template .character_world').clone();
     template.find('.character_name').text(charName);
 
     // --- Event Handlers ---
     async function handlePrimaryWorldSelect() {
         const selectedValue = $(this).val();
-        if (linksEmbeddedBook && selectedValue === embeddedBookValue) {
+        if ((linksEmbeddedBook && selectedValue === embeddedBookValue) || (linksUnlistedName && selectedValue === unlistedNameValue)) {
             await charUpdatePrimaryWorld(worldId);
             return;
         }
@@ -9398,6 +9401,11 @@ async function openCharacterWorldPopup() {
     const primarySelect = template.find('.character_world_info_selector');
     if (linksEmbeddedBook) {
         primarySelect.append(new Option(t`${worldId} (Embedded Lore)`, embeddedBookValue, true, true));
+    }
+    if (linksUnlistedName) {
+        // A shallow card carries no character_book, so its link may still be to an embedded book: shown by name only.
+        const label = worldCharacter?.shallow === true ? worldId : t`${worldId} (not found)`;
+        primarySelect.append(new Option(label, unlistedNameValue, true, true));
     }
     world_names.forEach((item, i) => {
         primarySelect.append(new Option(item, String(i), item === worldId, item === worldId));
