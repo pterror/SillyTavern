@@ -12,8 +12,12 @@ import { setConfigFilePath } from './util.js';
 // the samples. Each file is read through the reader SillyTavern uses for it, and must give the same
 // ids. A file that isn't in the cache is not run; `node scripts/fetch-tokenizer-fixtures.js` fills it.
 //
-// A fixture whose `file` is {"sameContentAs": <sha256>, ...} was made from a file with the same
-// content as the file of fixture <sha256>, which is the file SillyTavern reads. That fixture must
+// A fixture is named by its tokenizer's identity: the file's sha256, then `.<config hash>` for a
+// registry entry with a tokenizer config (src/tokenizer-sources.js getTokenizerIdentity()). A
+// registry fixture's name must be its entry's identity, so an entry whose config changed fails.
+//
+// A fixture whose `file` is {"sameContentAs": <identity>, ...} was made from a file with the same
+// content as the file of fixture <identity>, which is the file SillyTavern reads. That fixture must
 // exist; its format may differ (a `.model` whose json SillyTavern reads). Its file is located and
 // sha-checked through that fixture's own `file`, `format` and `sha256`, so it is not run when that
 // file isn't in the cache, and it must give this fixture's ids.
@@ -36,7 +40,7 @@ globalThis.DATA_ROOT = dataRoot;
 
 const { encodeTextByLocalTokenizerType } = await import('./endpoints/tokenizers.js');
 const { loadPinnedTokenizer } = await import('./tokenizer-loader.js');
-const { TOKENIZER_SOURCES, CACHE_EXTENSIONS } = await import('./tokenizer-sources.js');
+const { TOKENIZER_SOURCES, CACHE_EXTENSIONS, getTokenizerIdentity } = await import('./tokenizer-sources.js');
 
 /**
  * Where SillyTavern keeps a fixture's file, and how it encodes with it.
@@ -72,10 +76,21 @@ function locate(file, format) {
 const summary = { run: 0, notRun: 0, failed: 0 };
 const failures = [];
 
-const fixtureFiles = fs.readdirSync(fixturesDir).filter(name => /^[0-9a-f]{64}\.json$/.test(name)).sort();
+const fixtureFiles = fs.readdirSync(fixturesDir).filter(name => /^[0-9a-f]{64}(\.[0-9a-f]{64})?\.json$/.test(name)).sort();
 for (const name of fixtureFiles) {
     const fixture = JSON.parse(fs.readFileSync(path.join(fixturesDir, name), 'utf8'));
     const descriptor = JSON.stringify(fixture.file);
+
+    if (fixture.file.registry) {
+        const entry = TOKENIZER_SOURCES.find(source => source.id === fixture.file.registry);
+        const identity = entry ? getTokenizerIdentity(entry) : undefined;
+        if (`${identity}.json` !== name) {
+            summary.failed++;
+            failures.push(descriptor);
+            console.log(`not ok - ${descriptor}: the fixture is ${name}, the entry's identity is ${identity}`);
+            continue;
+        }
+    }
 
     // The fixture that says where SillyTavern keeps the file and which sha256 it has.
     let read = fixture;

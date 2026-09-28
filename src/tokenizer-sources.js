@@ -45,6 +45,60 @@ import { getConfigValue } from './util.js';
  * @property {import('./tokenizer-loader.js').TiktokenConfig} [tiktoken] For the `tiktoken` format: how the repo's own code builds its encoding
  */
 
+// Kimi's tokenization_kimi.py and the older tokenization_moonshot.py (Kimi-VL, Moonlight) build their
+// encoding with this pattern and split the text the same way before encoding. Each repo's
+// tokenizer_config.json names its special tokens.
+const KIMI_PAT_STR = [
+    String.raw`[\p{Han}]+`,
+    String.raw`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+    String.raw`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+    String.raw`\p{N}{1,3}`,
+    String.raw` ?[^\s\p{L}\p{N}]+[\r\n]*`,
+    String.raw`\s*[\r\n]+`,
+    String.raw`\s+(?!\S)`,
+    String.raw`\s+`,
+].join('|');
+
+/**
+ * A Kimi repo's tiktoken config.
+ * @param {Record<string, number>} specialTokens The special tokens its tokenizer_config.json names
+ * @param {object} [options]
+ * @param {number} [options.reservedCount] Special ids reserved after the ranks: 256 in tokenization_kimi.py, 258 in tokenization_moonshot.py
+ * @param {'all' | 'none'} [options.allowedSpecial] `none` for Kimi-K2-Base, whose encode reads special-token text as text
+ * @returns {import('./tokenizer-loader.js').TiktokenConfig}
+ */
+function kimiTiktoken(specialTokens, { reservedCount = 256, allowedSpecial = 'all' } = {}) {
+    return {
+        patStr: KIMI_PAT_STR,
+        specialTokens,
+        reservedSpecialTokens: { start: 163584, count: reservedCount, name: '<|reserved_token_{id}|>' },
+        allowedSpecial,
+        split: { maxChars: 400000, maxRun: 25000 },
+    };
+}
+
+const KIMI_K2_SPECIAL_TOKENS = {
+    '[BOS]': 163584,
+    '[EOS]': 163585,
+    '<|im_end|>': 163586,
+    '<|im_user|>': 163587,
+    '<|im_assistant|>': 163588,
+    '<|start_header_id|>': 163590,
+    '<|end_header_id|>': 163591,
+    '[EOT]': 163593,
+    '<|im_system|>': 163594,
+    '<|tool_calls_section_begin|>': 163595,
+    '<|tool_calls_section_end|>': 163596,
+    '<|tool_call_begin|>': 163597,
+    '<|tool_call_argument_begin|>': 163598,
+    '<|tool_call_end|>': 163599,
+    '<|im_middle|>': 163601,
+    '[UNK]': 163838,
+    '[PAD]': 163839,
+};
+const KIMI_THINK_TOKENS = { '<think>': 163606, '</think>': 163607 };
+const KIMI_MEDIA_TOKENS = { '<|media_content|>': 163603, '<|media_end|>': 163604, '<|media_pad|>': 163605 };
+
 /**
  * The pinned tokenizer registry. A fixed list in code: disk and memory are bounded by it, not by user data.
  * @type {readonly TokenizerSourceEntry[]}
@@ -95,46 +149,15 @@ export const TOKENIZER_SOURCES = Object.freeze([
         format: 'tiktoken',
         sha256: 'b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103',
         bytes: 2795286,
-        license: 'Modified MIT',
-        licenseUrl: 'https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/fd1984e2b7a3350dbf7305fe73a4ede25c14de50/LICENSE',
+        license: 'MIT',
+        licenseUrl: 'https://opensource.org/license/mit',
         sources: [
-            { repo: 'moonshotai/Kimi-K2-Instruct', revision: 'fd1984e2b7a3350dbf7305fe73a4ede25c14de50', path: 'tiktoken.model', gated: false },
+            { repo: 'moonshotai/Kimi-Linear-48B-A3B-Base', revision: '3b171c17bfc4ee348599b6781a2ca8715c21c8dc', path: 'tiktoken.model', gated: false },
+            { repo: 'moonshotai/Kimi-Linear-48B-A3B-Instruct', revision: 'e1df551a447157d4658b573f9a695d57658590e9', path: 'tiktoken.model', gated: false },
+            { repo: 'moonshotai/Kimi-K2-Instruct', revision: 'fd1984e2b7a3350dbf7305fe73a4ede25c14de50', path: 'tiktoken.model', gated: false, license: 'Modified MIT License (model card: other)', licenseUrl: 'https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/fd1984e2b7a3350dbf7305fe73a4ede25c14de50/LICENSE' },
+            { repo: 'moonshotai/Kimi-K2-Instruct-0905', revision: 'ac6c49f04883bd0a0598b790693a72061c676629', path: 'tiktoken.model', gated: false, license: 'Modified MIT License (model card: other)', licenseUrl: 'https://huggingface.co/moonshotai/Kimi-K2-Instruct-0905/blob/ac6c49f04883bd0a0598b790693a72061c676629/LICENSE' },
         ],
-        // tokenization_kimi.py and tokenizer_config.json at the same revision.
-        tiktoken: {
-            patStr: [
-                String.raw`[\p{Han}]+`,
-                String.raw`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
-                String.raw`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
-                String.raw`\p{N}{1,3}`,
-                String.raw` ?[^\s\p{L}\p{N}]+[\r\n]*`,
-                String.raw`\s*[\r\n]+`,
-                String.raw`\s+(?!\S)`,
-                String.raw`\s+`,
-            ].join('|'),
-            specialTokens: {
-                '[BOS]': 163584,
-                '[EOS]': 163585,
-                '<|im_end|>': 163586,
-                '<|im_user|>': 163587,
-                '<|im_assistant|>': 163588,
-                '<|start_header_id|>': 163590,
-                '<|end_header_id|>': 163591,
-                '[EOT]': 163593,
-                '<|im_system|>': 163594,
-                '<|tool_calls_section_begin|>': 163595,
-                '<|tool_calls_section_end|>': 163596,
-                '<|tool_call_begin|>': 163597,
-                '<|tool_call_argument_begin|>': 163598,
-                '<|tool_call_end|>': 163599,
-                '<|im_middle|>': 163601,
-                '[UNK]': 163838,
-                '[PAD]': 163839,
-            },
-            reservedSpecialTokens: { start: 163584, count: 256, name: '<|reserved_token_{id}|>' },
-            allowedSpecial: 'all',
-            split: { maxChars: 400000, maxRun: 25000 },
-        },
+        tiktoken: kimiTiktoken(KIMI_K2_SPECIAL_TOKENS),
     },
     {
         id: 'qwen2-vl',
@@ -831,6 +854,299 @@ export const TOKENIZER_SOURCES = Object.freeze([
             { repo: 'unsloth/aya-vision-32b', revision: '5b4c653757c1876eb98709ab0f2c05df446826a7', path: 'tokenizer.json', gated: false },
         ],
     },
+    // Z.ai's GLM. The GLM-4-9B repos (2024) ship GLM-4-0414's content: their tokenizer.json differs
+    // only in its post-processor, and their tokenizer.model, read by their tokenization_chatglm.py,
+    // gives the same ids.
+    {
+        id: 'glm-4-0414',
+        family: 'GLM-4-0414',
+        format: 'hf-json',
+        sha256: '76ebeac0d8bd7879ead7b43c16b44981f277e47225de2bd7de9ae1a6cc664a8c',
+        bytes: 19966496,
+        license: 'MIT License',
+        licenseUrl: 'https://huggingface.co/zai-org/GLM-4-32B-0414/blob/077b5c2f5c43bd3239fd605a0600229e8facbd4a/LICENSE',
+        sources: [
+            { repo: 'zai-org/GLM-4-32B-0414', revision: '077b5c2f5c43bd3239fd605a0600229e8facbd4a', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4-32B-Base-0414', revision: '7675abea82951aaaedeb19014bab4e8f88c2d7a5', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4-9B-0414', revision: '645b8482494e31b6b752272bf7f7f273ef0f3caf', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.1V-9B-Base', revision: '5e8d1942554a9277eabcf9e83211bbf9c86136ee', path: 'tokenizer.json', gated: false, license: 'MIT', licenseUrl: 'https://opensource.org/license/mit' },
+            { repo: 'zai-org/GLM-4.1V-9B-Thinking', revision: '3c1471e51dc811b589d4d12b1c1c7c1c941267c2', path: 'tokenizer.json', gated: false, license: 'MIT', licenseUrl: 'https://opensource.org/license/mit' },
+            { repo: 'zai-org/GLM-Z1-32B-0414', revision: '8eb2858992c1f749e2a6d4075455decc2484722d', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-Z1-9B-0414', revision: 'b221b06fefb23ca320922cf6e68ab5f2fb82de81', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-Z1-Rumination-32B-0414', revision: '6ae9ac6152a7d85761409d6d6ef201d9e8e8aeb1', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'glm-4.5',
+        family: 'GLM-4.5',
+        format: 'hf-json',
+        sha256: '9340665016419c825c4bdabbcc9acc43b7ca2c68ce142724afa829abb1be5efd',
+        bytes: 19970699,
+        license: 'MIT',
+        licenseUrl: 'https://opensource.org/license/mit',
+        sources: [
+            { repo: 'zai-org/GLM-4.5', revision: 'cbb2c7cfb52fa128a9660cb1a7a78e017899e115', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.5-Air', revision: 'a24ceef6ce4f3536971efe9b778bdaa1bab18daa', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.5-Air-Base', revision: '888c873d4eca81f28d0ef420aa2d96457c28b959', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.5-Air-FP8', revision: 'f9a9c5acf5e543cd24d659a056c5dbcda78ffcfc', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.5-Base', revision: '922a0cee7f137cf3b64c186f0bee77882e4a4e80', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.5-FP8', revision: '8cc290ee4c7cbfa38d3a2db9bd0b7371773ece81', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.5V', revision: 'ed47433b37111465ec527affaaddceff371bca04', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.5V-FP8', revision: '3ca028eac7af91c53109dcfa865e5c8da7b1faf3', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.6', revision: 'be72194883d968d7923a07e2f61681ea9a2826d1', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.6-FP8', revision: 'c064d336a8d0b0f59071f77eafdcdfca40f4b54c', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.6V', revision: '4e2d47eb0b41c5280d8294b17cef9e94fdcfff46', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.6V-FP8', revision: '33172e26eb88482cf3d0a36fced01d05454734ec', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.6V-Flash', revision: '411bb4d77144a3f03accbf4b780f5acb8b7cde4e', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.7', revision: '602d01efcdd332c5238ca4bcede555defbe83eb7', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-4.7-FP8', revision: '7b3b5f81eee81be12a6f8da2710eac4bafb0166a', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'glm-5',
+        family: 'GLM-5',
+        format: 'hf-json',
+        sha256: '19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d',
+        bytes: 20217442,
+        license: 'MIT',
+        licenseUrl: 'https://opensource.org/license/mit',
+        sources: [
+            { repo: 'zai-org/GLM-4.7-Flash', revision: '7dd20894a642a0aa287e9827cb1a1f7f91386b67', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-5', revision: 'c183ef8c61faee82855eca1ed9bb3a9a7ce3b0b2', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-5-FP8', revision: '4f96cc5eec29dcee5d6ded54f7ffe889438f9516', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/GLM-5.1', revision: '26e1bd6e011feb778d25ae34b09b07074139d92d', path: 'tokenizer.json', gated: false, license: 'MIT License', licenseUrl: 'https://huggingface.co/zai-org/GLM-5.1/blob/26e1bd6e011feb778d25ae34b09b07074139d92d/LICENSE' },
+            { repo: 'zai-org/GLM-5.1-FP8', revision: 'f396cf805182f4ca10fa675e1a99815b3ca384db', path: 'tokenizer.json', gated: false, license: 'MIT License', licenseUrl: 'https://huggingface.co/zai-org/GLM-5.1-FP8/blob/f396cf805182f4ca10fa675e1a99815b3ca384db/LICENSE' },
+            { repo: 'zai-org/GLM-5.2', revision: 'cf457fa734ab149ffef225f80893eb38c6ff5cdc', path: 'tokenizer.json', gated: false, license: 'MIT License', licenseUrl: 'https://huggingface.co/zai-org/GLM-5.2/blob/cf457fa734ab149ffef225f80893eb38c6ff5cdc/LICENSE' },
+            { repo: 'zai-org/GLM-5.2-FP8', revision: 'f33c6dc501ee5a2c7e35155653b1b1abbc320951', path: 'tokenizer.json', gated: false, license: 'MIT License', licenseUrl: 'https://huggingface.co/zai-org/GLM-5.2-FP8/blob/f33c6dc501ee5a2c7e35155653b1b1abbc320951/LICENSE' },
+            { repo: 'zai-org/GLM-5.3-Flash', revision: 'eb9eb208eb0d988989d07a6a12d0fdeb5f52574a', path: 'tokenizer.json', gated: false, license: 'MIT License', licenseUrl: 'https://huggingface.co/zai-org/GLM-5.3-Flash/blob/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a/LICENSE' },
+            { repo: 'zai-org/GLM-5.3-Flash-BF16', revision: 'a5b45eb41df6402735dedc900be14a42e8d5e538', path: 'tokenizer.json', gated: false, license: 'MIT License', licenseUrl: 'https://huggingface.co/zai-org/GLM-5.3-Flash-BF16/blob/a5b45eb41df6402735dedc900be14a42e8d5e538/LICENSE' },
+            { repo: 'zai-org/GLM-5.3', revision: 'aca966e4e02791568aa6a4ced368624b3d897f42', path: 'tokenizer.json', gated: false, license: 'GLM-5.3 License (model card: other)', licenseUrl: 'https://huggingface.co/zai-org/GLM-5.3/blob/aca966e4e02791568aa6a4ced368624b3d897f42/LICENSE' },
+            { repo: 'zai-org/GLM-5.3-BF16', revision: '9d2398f478cab2de883137db3a36ad2c96205e24', path: 'tokenizer.json', gated: false, license: 'GLM-5.3 License (model card: other)', licenseUrl: 'https://huggingface.co/zai-org/GLM-5.3-BF16/blob/9d2398f478cab2de883137db3a36ad2c96205e24/LICENSE' },
+        ],
+    },
+    {
+        id: 'glm-edge',
+        family: 'GLM-Edge',
+        format: 'hf-json',
+        sha256: 'f78a0fcf4b6ef0e462557283a53ebf71cd91a41f41dc581fb870b724e6edb9bf',
+        bytes: 6834426,
+        license: 'The GLM-Edge License (model card: other)',
+        licenseUrl: 'https://huggingface.co/zai-org/glm-edge-1.5b-chat/blob/7b201d3c160c25beda4cf0d107617ad975cd1ca8/LICENSE',
+        sources: [
+            { repo: 'zai-org/glm-edge-1.5b-chat', revision: '7b201d3c160c25beda4cf0d107617ad975cd1ca8', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/glm-edge-4b-chat', revision: 'a1817f2ab339ecdd8497c4d752ea71a65299f29a', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/glm-edge-v-2b', revision: '2053707733f99ab52e943904f43c2359a94301ef', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/glm-edge-v-5b', revision: '595da783cdf468bf0616b9c05757e911676b2f39', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'autoglm-phone',
+        family: 'AutoGLM-Phone',
+        format: 'hf-json',
+        sha256: 'c2f7919ffc6c6628cbde5f0b1a204a78bc23319be4e85b7331c71a9a48a8d06d',
+        bytes: 19968176,
+        license: 'MIT',
+        licenseUrl: 'https://opensource.org/license/mit',
+        sources: [
+            { repo: 'zai-org/AutoGLM-Phone-9B', revision: '66a46ea238158e5f71efc91928668e9c35b42247', path: 'tokenizer.json', gated: false },
+            { repo: 'zai-org/AutoGLM-Phone-9B-Multilingual', revision: '832ab5e014b965268dafd944e64cbc8e4bade892', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    // Kimi: every repo ships the same tiktoken.model; its code and tokenizer_config.json decide the tokenizer.
+    {
+        id: 'kimi-k2-base',
+        family: 'Kimi K2 Base',
+        format: 'tiktoken',
+        sha256: 'b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103',
+        bytes: 2795286,
+        license: 'Modified MIT License (model card: other)',
+        licenseUrl: 'https://huggingface.co/moonshotai/Kimi-K2-Base/blob/ce72df012259dcc55d945e890f815fe7ef69159c/LICENSE',
+        sources: [
+            { repo: 'moonshotai/Kimi-K2-Base', revision: 'ce72df012259dcc55d945e890f815fe7ef69159c', path: 'tiktoken.model', gated: false },
+        ],
+        tiktoken: kimiTiktoken(KIMI_K2_SPECIAL_TOKENS, { allowedSpecial: 'none' }),
+    },
+    {
+        id: 'kimi-k2-thinking',
+        family: 'Kimi K2 Thinking',
+        format: 'tiktoken',
+        sha256: 'b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103',
+        bytes: 2795286,
+        license: 'Modified MIT License (model card: other)',
+        licenseUrl: 'https://huggingface.co/moonshotai/Kimi-K2-Thinking/blob/a51ccc050d73dab088bf7b0e2dd9b30ae85a4e55/LICENSE',
+        sources: [
+            { repo: 'moonshotai/Kimi-K2-Thinking', revision: 'a51ccc050d73dab088bf7b0e2dd9b30ae85a4e55', path: 'tiktoken.model', gated: false },
+        ],
+        tiktoken: kimiTiktoken({ ...KIMI_K2_SPECIAL_TOKENS, ...KIMI_THINK_TOKENS }),
+    },
+    {
+        id: 'kimi-k2.5',
+        family: 'Kimi K2.5',
+        format: 'tiktoken',
+        sha256: 'b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103',
+        bytes: 2795286,
+        license: 'Modified MIT License (model card: other)',
+        licenseUrl: 'https://huggingface.co/moonshotai/Kimi-K2.5/blob/4d01dfe0332d63057c186e0b262165819efb6611/LICENSE',
+        sources: [
+            { repo: 'moonshotai/Kimi-K2.5', revision: '4d01dfe0332d63057c186e0b262165819efb6611', path: 'tiktoken.model', gated: false },
+            { repo: 'moonshotai/Kimi-K2.6', revision: '7eb5002f6aadc958aed6a9177b7ed26bb94011bb', path: 'tiktoken.model', gated: false },
+            { repo: 'moonshotai/Kimi-K2.7-Code', revision: '74797c9c62378b951a1f6fcf5c4631024e9b8bef', path: 'tiktoken.model', gated: false },
+        ],
+        tiktoken: kimiTiktoken({ ...KIMI_K2_SPECIAL_TOKENS, '<|media_begin|>': 163602, ...KIMI_MEDIA_TOKENS, ...KIMI_THINK_TOKENS }),
+    },
+    {
+        id: 'kimi-k3',
+        family: 'Kimi K3',
+        format: 'tiktoken',
+        sha256: 'b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103',
+        bytes: 2795286,
+        license: 'Kimi K3 License (model card: other)',
+        licenseUrl: 'https://huggingface.co/moonshotai/Kimi-K3/blob/f831ab66814297da540d832a5235f8e904f29d06/LICENSE',
+        sources: [
+            { repo: 'moonshotai/Kimi-K3', revision: 'f831ab66814297da540d832a5235f8e904f29d06', path: 'tiktoken.model', gated: false },
+        ],
+        tiktoken: kimiTiktoken({
+            '[BOS]': 163584,
+            '[EOS]': 163585,
+            '<|end_of_msg|>': 163586,
+            '<|open|>': 163587,
+            '<|close|>': 163588,
+            '<|sep|>': 163589,
+            '[start_header_id]': 163590,
+            '[end_header_id]': 163591,
+            '[EOT]': 163593,
+            '<|media_begin|>': 163602,
+            ...KIMI_MEDIA_TOKENS,
+            '<osagent_mode>': 163649,
+            '[UNK]': 163838,
+            '[PAD]': 163839,
+        }),
+    },
+    {
+        id: 'kimi-vl',
+        family: 'Kimi-VL',
+        format: 'tiktoken',
+        sha256: 'b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103',
+        bytes: 2795286,
+        license: 'MIT',
+        licenseUrl: 'https://opensource.org/license/mit',
+        sources: [
+            { repo: 'moonshotai/Kimi-VL-A3B-Instruct', revision: '398eede0903cd983a2bfa0cc634e9ac1d843f375', path: 'tiktoken.model', gated: false },
+            { repo: 'moonshotai/Kimi-VL-A3B-Thinking', revision: '7d99e220af610d8624fcba22b2c076c7ed528f14', path: 'tiktoken.model', gated: false },
+            { repo: 'moonshotai/Kimi-VL-A3B-Thinking-2506', revision: 'aa1730989e7558695b44ee493623e03bd325a994', path: 'tiktoken.model', gated: false },
+        ],
+        tiktoken: kimiTiktoken({
+            '[BOS]': 163584,
+            '[EOS]': 163585,
+            '<|im_end|>': 163586,
+            '<|im_user|>': 163587,
+            '<|im_assistant|>': 163588,
+            '<|im_system|>': 163594,
+            '<|im_middle|>': 163601,
+            '<|media_start|>': 163602,
+            ...KIMI_MEDIA_TOKENS,
+            '[PAD]': 163838,
+            '[UNK]': 163839,
+        }, { reservedCount: 258 }),
+    },
+    {
+        id: 'moonlight',
+        family: 'Moonlight',
+        format: 'tiktoken',
+        sha256: 'b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103',
+        bytes: 2795286,
+        license: 'MIT',
+        licenseUrl: 'https://opensource.org/license/mit',
+        sources: [
+            { repo: 'moonshotai/Moonlight-16B-A3B', revision: '476b36a473d4467f94469414bef6cee75c9c8172', path: 'tiktoken.model', gated: false },
+            { repo: 'moonshotai/Moonlight-16B-A3B-Instruct', revision: '4e735b07a89f73647dfab71ab91b840f362ede5b', path: 'tiktoken.model', gated: false },
+        ],
+        tiktoken: kimiTiktoken({
+            '[BOS]': 163584,
+            '[EOS]': 163585,
+            '<|im_end|>': 163586,
+            '<|im_user|>': 163587,
+            '<|im_assistant|>': 163588,
+            '<|im_system|>': 163594,
+            '<|im_middle|>': 163601,
+            '[PAD]': 163838,
+            '[UNK]': 163839,
+        }, { reservedCount: 258 }),
+    },
+    // MiniMax.
+    {
+        id: 'minimax-text-01',
+        family: 'MiniMax-Text-01',
+        format: 'hf-json',
+        sha256: 'ece04384257543dd1c1312991b6042efdc5be09103729a62cc84d718bcc3b1a6',
+        bytes: 9724836,
+        license: 'Not stated (Hugging Face model card)',
+        licenseUrl: 'https://huggingface.co/MiniMaxAI/MiniMax-Text-01/blob/a7351bf2bee0e1253919d349f1ad304e6dac13e9/tokenizer.json',
+        sources: [
+            { repo: 'MiniMaxAI/MiniMax-Text-01', revision: 'a7351bf2bee0e1253919d349f1ad304e6dac13e9', path: 'tokenizer.json', gated: false },
+            { repo: 'MiniMaxAI/MiniMax-Text-01-hf', revision: 'f7ce01366e8585a8948f19aedc8e20628c6965e5', path: 'tokenizer.json', gated: false, license: 'minimax (model card: other)', licenseUrl: 'https://huggingface.co/MiniMaxAI/MiniMax-Text-01-hf/blob/f7ce01366e8585a8948f19aedc8e20628c6965e5/README.md' },
+            { repo: 'MiniMaxAI/MiniMax-VL-01', revision: '308b79934be140a43a0fb80f82b4e20d0ebe3cb8', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'minimax-m1',
+        family: 'MiniMax-M1',
+        format: 'hf-json',
+        sha256: '369f547b736fad84af7c5bd8523ab1414b7116b5d167d84a10cf37c45dc79348',
+        bytes: 9726751,
+        license: 'Apache License, Version 2.0',
+        licenseUrl: 'https://huggingface.co/MiniMaxAI/MiniMax-M1-40k/blob/2d1d1c2f00c97fc1245bfce7648649b76e0a8e6e/LICENSE',
+        sources: [
+            { repo: 'MiniMaxAI/MiniMax-M1-40k', revision: '2d1d1c2f00c97fc1245bfce7648649b76e0a8e6e', path: 'tokenizer.json', gated: false },
+            { repo: 'MiniMaxAI/MiniMax-M1-40k-hf', revision: '5a6c3d0d6dfaf1c5312583b395637cd27498d801', path: 'tokenizer.json', gated: false },
+            { repo: 'MiniMaxAI/MiniMax-M1-80k', revision: '8d1494b1a260e22040d5b9b2eb332eb44500b34d', path: 'tokenizer.json', gated: false },
+            { repo: 'MiniMaxAI/MiniMax-M1-80k-hf', revision: '3dbbd8d1e47e262a91086451a1dba347722fa8db', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    {
+        id: 'minimax-m2',
+        family: 'MiniMax-M2',
+        format: 'hf-json',
+        sha256: '757622126525aeeb131756849d93298070ff3f0319c455ec8c5bb0f6b1cebbe8',
+        bytes: 9730160,
+        license: 'modified-mit (model card: other)',
+        licenseUrl: 'https://github.com/MiniMax-AI/MiniMax-M2/blob/main/LICENSE',
+        sources: [
+            { repo: 'MiniMaxAI/MiniMax-M2', revision: '757303d492a50514c312788b5247a4f696a4c6a3', path: 'tokenizer.json', gated: false },
+            { repo: 'MiniMaxAI/MiniMax-M2.1', revision: 'cd97f59135f37b2a6bf09356e485d5e4aeb7dc9c', path: 'tokenizer.json', gated: false },
+            { repo: 'MiniMaxAI/MiniMax-M2.5', revision: 'f710177d938eff80b684d42c5aa84b382612f21f', path: 'tokenizer.json', gated: false },
+            { repo: 'MiniMaxAI/MiniMax-M2.7', revision: 'd494266a4affc0d2995ba1fa35c8481cbd84294b', path: 'tokenizer.json', gated: false, license: 'NON-COMMERCIAL LICENSE (model card: other)', licenseUrl: 'https://huggingface.co/MiniMaxAI/MiniMax-M2.7/blob/d494266a4affc0d2995ba1fa35c8481cbd84294b/LICENSE' },
+        ],
+    },
+    {
+        id: 'minimax-m3',
+        family: 'MiniMax-M3',
+        format: 'hf-json',
+        sha256: 'bb1f1626cf01448f1e3b6036d0a061ffc66c91d9046aada14ea23a5441b5ad6e',
+        bytes: 9731500,
+        license: 'MINIMAX COMMUNITY LICENSE (model card: other)',
+        licenseUrl: 'https://huggingface.co/MiniMaxAI/MiniMax-M3/blob/f0e1c1e04d40177e4673a22097036854f536e9c0/LICENSE',
+        sources: [
+            { repo: 'MiniMaxAI/MiniMax-M3', revision: 'f0e1c1e04d40177e4673a22097036854f536e9c0', path: 'tokenizer.json', gated: false },
+            { repo: 'MiniMaxAI/MiniMax-M3-MXFP8', revision: 'c5454eb03678d8710e54a4e0fc681b9f3b4a3dba', path: 'tokenizer.json', gated: false },
+        ],
+    },
+    // OpenAI.
+    {
+        id: 'gpt-oss',
+        family: 'gpt-oss',
+        format: 'hf-json',
+        sha256: '0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3',
+        bytes: 27868174,
+        license: 'Apache License, Version 2.0',
+        licenseUrl: 'https://huggingface.co/openai/gpt-oss-120b/blob/b5c939de8f754692c1647ca79fbf85e8c1e70f8a/LICENSE',
+        sources: [
+            { repo: 'openai/gpt-oss-120b', revision: 'b5c939de8f754692c1647ca79fbf85e8c1e70f8a', path: 'tokenizer.json', gated: false },
+            { repo: 'openai/gpt-oss-20b', revision: '6cee5e81ee83917806bbde320786a8fb61efebee', path: 'tokenizer.json', gated: false },
+            { repo: 'openai/gpt-oss-safeguard-120b', revision: '3c7391182603991a904031244e7822488c67796d', path: 'tokenizer.json', gated: false },
+            { repo: 'openai/gpt-oss-safeguard-20b', revision: '8a11e17b25c973a24099d4016bf2e17dd7ec1574', path: 'tokenizer.json', gated: false },
+        ],
+    },
 ]);
 
 /**
@@ -840,6 +1156,42 @@ export const TOKENIZER_SOURCES = Object.freeze([
  */
 export function findTokenizerSource(id, registry = TOKENIZER_SOURCES) {
     return registry.find(entry => entry.id === id);
+}
+
+/**
+ * JSON with every object's keys sorted, so equal values give equal text.
+ * @param {any} value
+ * @returns {string}
+ */
+function canonicalJson(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(canonicalJson).join(',')}]`;
+    }
+    if (value !== null && typeof value === 'object') {
+        return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+}
+
+/**
+ * The sha256 of an entry's tokenizer config (its `tiktoken` field) as canonical JSON; null for an
+ * entry whose file alone is its tokenizer.
+ * @param {TokenizerSourceEntry} entry
+ * @returns {string|null}
+ */
+export function getTokenizerConfigHash(entry) {
+    return entry.tiktoken ? crypto.createHash('sha256').update(canonicalJson(entry.tiktoken)).digest('hex') : null;
+}
+
+/**
+ * What identifies an entry's tokenizer, and names its reference fixture: its file's sha256, then
+ * `.<config hash>` when it has a config, because entries can share one file and read it differently.
+ * @param {TokenizerSourceEntry} entry
+ * @returns {string}
+ */
+export function getTokenizerIdentity(entry) {
+    const configHash = getTokenizerConfigHash(entry);
+    return configHash ? `${entry.sha256}.${configHash}` : entry.sha256;
 }
 
 /**

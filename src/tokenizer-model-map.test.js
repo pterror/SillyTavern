@@ -339,7 +339,7 @@ for (const name of [
 
 // --- OpenAI (tiktoken on the lowercased raw name) ---
 check(GENERAL_API, 'GPT-4o', 'gpt-4o');
-check(GENERAL_API, 'gpt-oss-120b', null);
+// gpt-oss is not in tiktoken's list; its registry entry is below.
 check(GENERAL_API, 'gpt_4o', null);
 check(GENERAL_API, 'gpt 4o', null);
 check(GENERAL_API, 'gpt.4o', null);
@@ -809,6 +809,102 @@ for (const [name, expected] of cohereCases) {
         const unmapped = state.api === 'novel' || (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
         const severalFiles = typeof expected === 'object' && 'byBackend' in expected;
         const wanted = unmapped ? null : severalFiles ? (isCohereApi ? expected.byBackend.vendorApis.cohere : null) : expected;
+        assert.deepEqual(selected, wanted, `${name} on ${JSON.stringify(state)}`);
+    }
+}
+
+// --- GLM, Kimi, MiniMax and gpt-oss: one entry per tokenizer. A model its vendor's own API also serves
+// under its name (Z.ai, Moonshot, MiniMax, OpenAI) maps on self-hosted backends only ---
+/** @param {string} source */
+const selfHostedOnly = source => ({ byBackend: { other: { source } } });
+/** @type {Array<[string, import('./tokenizer-model-map.js').MapResult]>} */
+const vendorFamilyCases = [
+    // GLM-4-0414's file: GLM-4-0414, Z1, 4.1V; the GLM-4-9B repos, GLM-4V-9B and GLM-4-Voice-9B ship its content.
+    ['zai-org/GLM-4-9B-0414', { source: 'glm-4-0414' }],
+    ['GLM-4-32B-Base-0414', { source: 'glm-4-0414' }],
+    ['GLM-4-32B-0414', selfHostedOnly('glm-4-0414')],
+    ['glm-4-32b-0414-128k', selfHostedOnly('glm-4-0414')],
+    ['GLM-Z1-9B-0414', { source: 'glm-4-0414' }],
+    ['GLM-Z1-Rumination-32B-0414', { source: 'glm-4-0414' }],
+    ['GLM-4.1V-9B-Thinking', { source: 'glm-4-0414' }],
+    ['glm-4-9b-chat', { source: 'glm-4-0414' }],
+    ['THUDM/glm-4-9b-chat-1m-hf', { source: 'glm-4-0414' }],
+    ['glm4:9b', { source: 'glm-4-0414' }],
+    ['glm4:9b-text-q4_K_M', { source: 'glm-4-0414' }],
+    ['glm-4v-9b', { source: 'glm-4-0414' }],
+    ['glm-4-voice-9b', { source: 'glm-4-0414' }],
+    // GLM-4.5's file: GLM-4.5 (Air, V, Base), 4.6 (V, V-Flash), 4.7. Z.ai's API serves all but the base models.
+    ['zai-org/GLM-4.5', selfHostedOnly('glm-4.5')],
+    ['GLM-4.5-Air-UD-Q4_K_XL-00001-of-00002.gguf', selfHostedOnly('glm-4.5')],
+    ['GLM-4.5-Air-Base', { source: 'glm-4.5' }],
+    ['GLM-4.5V-FP8', selfHostedOnly('glm-4.5')],
+    ['z-ai/glm-4.6', selfHostedOnly('glm-4.5')],
+    ['glm-4.6v-flash', selfHostedOnly('glm-4.5')],
+    ['GLM-4.7-FP8', selfHostedOnly('glm-4.5')],
+    // GLM-5's file: GLM-4.7-Flash, GLM-5, 5.1, 5.2, 5.3 and 5.3-Flash.
+    ['glm-4.7-flash:q8_0', selfHostedOnly('glm-5')],
+    ['GLM-5', selfHostedOnly('glm-5')],
+    ['GLM-5.1-FP8', selfHostedOnly('glm-5')],
+    ['glm-5.3-flash', selfHostedOnly('glm-5')],
+    ['glm-edge-1.5b-chat', { source: 'glm-edge' }],
+    ['zai-org/glm-edge-v-5b', { source: 'glm-edge' }],
+    ['AutoGLM-Phone-9B-Multilingual', { source: 'autoglm-phone' }],
+    // Kimi: one tiktoken.model, read per model.
+    ['moonshotai/Kimi-K2-Instruct', { source: 'kimi' }],
+    ['Kimi-K2-Instruct-0905-UD-Q2_K_XL-00001-of-00008.gguf', { source: 'kimi' }],
+    ['moonshotai/kimi-k2-0905', { source: 'kimi' }],
+    ['Kimi-Linear-48B-A3B-Instruct', { source: 'kimi' }],
+    ['Kimi-K2-Base', { source: 'kimi-k2-base' }],
+    ['moonshotai/kimi-k2-thinking', { source: 'kimi-k2-thinking' }],
+    ['kimi-k2.5', { source: 'kimi-k2.5' }],
+    ['kimi-k2.6', selfHostedOnly('kimi-k2.5')],
+    ['Kimi-K2.7-Code', selfHostedOnly('kimi-k2.5')],
+    ['kimi-k3', selfHostedOnly('kimi-k3')],
+    ['Kimi-VL-A3B-Thinking-2506', { source: 'kimi-vl' }],
+    ['moonshotai/Moonlight-16B-A3B-Instruct', { source: 'moonlight' }],
+    ['Kimi-Dev-72B', { source: 'qwen2.5' }],
+    // MiniMax: Text-01 and VL-01, M1, M2 to M2.7 and M3 ship four files. MiniMax's API serves M2 to M3.
+    ['MiniMax-Text-01', { source: 'minimax-text-01' }],
+    ['MiniMaxAI/MiniMax-VL-01', { source: 'minimax-text-01' }],
+    ['minimax/minimax-m1', { source: 'minimax-m1' }],
+    ['MiniMax-M1-80k-hf', { source: 'minimax-m1' }],
+    ['MiniMax-M2', selfHostedOnly('minimax-m2')],
+    ['MiniMax-M2.7', selfHostedOnly('minimax-m2')],
+    ['MiniMax-M3-MXFP8', selfHostedOnly('minimax-m3')],
+    // gpt-oss: OpenAI's API documents gpt-oss-20b and gpt-oss-120b; gpt-oss-safeguard only ships weights.
+    ['gpt-oss-20b', selfHostedOnly('gpt-oss')],
+    ['openai/gpt-oss-120b', selfHostedOnly('gpt-oss')],
+    ['gpt-oss:20b', selfHostedOnly('gpt-oss')],
+    ['gpt-oss-safeguard-20b', { source: 'gpt-oss' }],
+];
+for (const [name, expected] of vendorFamilyCases) {
+    assert.deepEqual(lookupModelTokenizer(GENERAL_API, name), expected, name);
+    assert.deepEqual(lookupModelTokenizer('openai', name), expected, name);
+}
+// Unmapped: Z.ai's and Moonshot's API-only ids, names that pick no one model, unknown versions, models
+// whose tokenizer differs from their family's (LongWriter, LongCite and LongReward GLM-4-9B encode
+// GLM-4's special-token text, such as <|user|>, as ordinary text), and models no reader here was checked against: WebRL GLM-4-9B, CodeGeeX4,
+// chatglm2-6b and Kimi-Audio, whose tokenization code fails with the reference transformers, and
+// chatglm3-6b, whose code gives other ids than its tokenizer.model.
+for (const name of [
+    'glm-4.5-flash', 'glm-4.5-x', 'glm-4.5-airx', 'glm-4.7-flashx', 'glm-5-turbo', 'glm-5v-turbo', 'glm-4-plus', 'glm-4-flash-250414',
+    'glm-4.1v-thinking-flash', 'autoglm-phone-multilingual', 'glm4', 'glm4:latest', 'thudm/glm-4-32b', 'glm-4.8', 'glm-5.4',
+    'LongWriter-glm4-9b', 'LongCite-glm4-9b', 'LongReward-glm4-9b-DPO', 'webrl-glm-4-9b', 'codegeex4-all-9b', 'chatglm3-6b', 'chatglm2-6b',
+    'kimi-k2', 'kimi-k2-0711-preview', 'kimi-k2-turbo-preview', 'kimi-k2-thinking-turbo', 'kimi-k2.7', 'kimi-k2.8', 'kimi-k3.1',
+    'kimi-latest', 'moonshot-v1-8k', 'Kimi-Audio-7B-Instruct',
+    'MiniMax-M2-her', 'MiniMax-M3.1-Flash-Preview', 'minimax-m2.9', 'abab6.5s-chat', 'MiniMax-H3',
+    'gpt-oss', 'gpt-oss:latest', 'gpt-oss-2-20b',
+]) {
+    check(GENERAL_API, name, null);
+    check('openai', name, null);
+}
+for (const [name, expected] of vendorFamilyCases) {
+    for (const state of backendStates) {
+        const selected = selectBackendResult(lookupModelTokenizer(state.api, name), state);
+        const unmapped = state.api === 'novel' || (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.DEEPSEEK);
+        const wanted = unmapped ? null : typeof expected === 'object' && 'byBackend' in expected
+            ? (isSelfHosted(state) ? expected.byBackend.other : null)
+            : expected;
         assert.deepEqual(selected, wanted, `${name} on ${JSON.stringify(state)}`);
     }
 }

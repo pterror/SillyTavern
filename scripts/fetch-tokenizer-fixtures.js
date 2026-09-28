@@ -45,7 +45,7 @@ const { TOKENIZER_SOURCES, getPinnedTokenizerFile } = await import('../src/token
 const { getPathToTokenizer } = await import('../src/endpoints/tokenizers.js');
 
 let failed = 0;
-for (const name of fs.readdirSync(fixturesDir).filter(file => /^[0-9a-f]{64}\.json$/.test(file)).sort()) {
+for (const name of fs.readdirSync(fixturesDir).filter(file => /^[0-9a-f]{64}(\.[0-9a-f]{64})?\.json$/.test(file)).sort()) {
     const { file } = JSON.parse(fs.readFileSync(path.join(fixturesDir, name), 'utf8'));
     const descriptor = JSON.stringify(file);
     try {
