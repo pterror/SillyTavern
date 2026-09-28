@@ -427,6 +427,36 @@ const SCHEMA_SQL = `
         UPDATE tag_usage SET count = count - 1 WHERE tag_id = OLD.tag_id;
     END;
 
+    -- Exact counts of what queryEntities() counts, kept by the triggers ENTITY_COUNT_TRIGGERS_SQL creates. kind is
+    -- 'character' or 'group'. entity_counts holds the rows of characters / groups by fav. entity_tag_counts holds the
+    -- tag rows whose entity row exists, by that entity's fav; a group_tags row whose group_id ends in .png counts for
+    -- no tag, as GROUP_TAG_ROW_IS_GROUP_SQL keeps it out of the tag filter. Tag rows are counted as they are stored:
+    -- a tag marked in tag_deletions keeps its own counts until finishDeletedTags() moves its rows. A missing row
+    -- reads as 0; a counter that reaches 0 is removed.
+    CREATE TABLE IF NOT EXISTS entity_counts (
+        kind  TEXT NOT NULL,
+        fav   INTEGER NOT NULL,
+        count INTEGER NOT NULL,
+        PRIMARY KEY (kind, fav)
+    );
+    CREATE TABLE IF NOT EXISTS entity_tag_counts (
+        tag_id TEXT NOT NULL,
+        kind   TEXT NOT NULL,
+        fav    INTEGER NOT NULL,
+        count  INTEGER NOT NULL,
+        PRIMARY KEY (tag_id, kind, fav)
+    );
+    -- How far the counters of each kind are filled: every entity whose id is <= upto (BINARY order, the primary
+    -- key's), or every entity once done = 1. The triggers change counters only for those entities, so the counters
+    -- are exact for that range at every moment; a pass that fills the next range adds its counts and moves upto in
+    -- the same transaction. upto NULL with done = 0 is nothing filled.
+    CREATE TABLE IF NOT EXISTS entity_count_fill (
+        kind TEXT PRIMARY KEY,
+        upto TEXT,
+        done INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO entity_count_fill (kind) VALUES ('character'), ('group');
+
     -- Tag *definitions* (name/color/folder_type/sort_order/... - everything tags.json's 'tags' array used to
     -- hold). 'data' is the whole Tag object as JSON, mirroring the shallow_json pattern characters already use
     -- above, rather than enumerating every field as its own column - this table is small (thousands of rows at
@@ -943,6 +973,9 @@ function migrateCardJsonColumn(db, directories) {
         }
     }
 
+    // A trigger that names `characters` makes the RENAME below fail while the table is gone. The rows are copied
+    // unchanged, so the counters stay right; getEntry() creates the triggers again after this.
+    db.exec(DROP_ENTITY_COUNT_TRIGGERS_SQL);
     db.exec('CREATE TABLE characters_new (' + columns.map(c => {
         let def = `${/** @type {string} */ (c.name)} ${/** @type {string} */ (c.type)}`;
         if (c.name === 'card_json' || c.notnull) def += ' NOT NULL';
@@ -1031,6 +1064,8 @@ async function getEntry(directories) {
     migrateGroupDigestColumns(db, directories);
     migrateFavSortIndex(db);
     migrateTagNameKeyColumn(db);
+    // Last: the group triggers read groups.fav, which migrateGroupsColumns() adds to an old table.
+    db.exec(ENTITY_COUNT_TRIGGERS_SQL);
     defineRandHash(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
@@ -3566,7 +3601,56 @@ export async function getAllTagUsage(directories) {
 }
 
 // SQL counterpart to tagEntityTypeOf(id) === 'group' for a group_tags row (case-sensitive, like endsWith()).
-const GROUP_TAG_ROW_IS_GROUP_SQL = 'substr(group_id, -4) <> \'.png\'';
+/** @param {string} groupIdSql */
+const groupTagRowIsGroupSql = groupIdSql => `substr(${groupIdSql}, -4) <> '.png'`;
+const GROUP_TAG_ROW_IS_GROUP_SQL = groupTagRowIsGroupSql('group_id');
+
+/**
+ * The triggers that keep entity_counts and entity_tag_counts (see SCHEMA_SQL) for one kind of entity.
+ * @param {object} kind
+ * @param {'character' | 'group'} kind.name
+ * @param {'characters' | 'groups'} kind.table
+ * @param {'character_tags' | 'group_tags'} kind.tagTable
+ * @param {'character_id' | 'group_id'} kind.entityColumn
+ * @param {(column: string) => string} kind.tagRowCounts Whether a tag row with this entity id counts for its tag.
+ * @returns {{ name: string, sql: string }[]}
+ */
+function entityCountTriggers({ name, table, tagTable, entityColumn, tagRowCounts }) {
+    const filled = (/** @type {string} */ idSql) => `EXISTS (SELECT 1 FROM entity_count_fill WHERE kind = '${name}' AND (done = 1 OR ${idSql} <= upto))`;
+    const tagRowsOf = (/** @type {string} */ idSql) => `SELECT tag_id FROM ${tagTable} WHERE ${entityColumn} = ${idSql} AND ${tagRowCounts(entityColumn)}`;
+    const add = (/** @type {string} */ ref) => `
+        INSERT INTO entity_counts (kind, fav, count) VALUES ('${name}', ${ref}.fav, 1)
+            ON CONFLICT (kind, fav) DO UPDATE SET count = count + 1;
+        INSERT INTO entity_tag_counts (tag_id, kind, fav, count) SELECT tag_id, '${name}', ${ref}.fav, 1 FROM (${tagRowsOf(`${ref}.id`)}) WHERE true
+            ON CONFLICT (tag_id, kind, fav) DO UPDATE SET count = count + 1;`;
+    const remove = (/** @type {string} */ ref) => `
+        UPDATE entity_counts SET count = count - 1 WHERE kind = '${name}' AND fav = ${ref}.fav;
+        DELETE FROM entity_counts WHERE kind = '${name}' AND fav = ${ref}.fav AND count = 0;
+        UPDATE entity_tag_counts SET count = count - 1 WHERE kind = '${name}' AND fav = ${ref}.fav AND tag_id IN (${tagRowsOf(`${ref}.id`)});
+        DELETE FROM entity_tag_counts WHERE kind = '${name}' AND fav = ${ref}.fav AND count = 0 AND tag_id IN (${tagRowsOf(`${ref}.id`)});`;
+    const entityFav = (/** @type {string} */ idSql) => `(SELECT fav FROM ${table} WHERE id = ${idSql})`;
+    const triggers = [
+        [`trg_${table}_count_ai`, `AFTER INSERT ON ${table} WHEN ${filled('NEW.id')}`, add('NEW')],
+        [`trg_${table}_count_ad`, `AFTER DELETE ON ${table} WHEN ${filled('OLD.id')}`, remove('OLD')],
+        // Entity ids never change by UPDATE (a rename inserts the new row and deletes the old), so OLD.id = NEW.id.
+        [`trg_${table}_count_au_fav`, `AFTER UPDATE OF fav ON ${table} WHEN OLD.fav IS NOT NEW.fav AND ${filled('NEW.id')}`, remove('OLD') + add('NEW')],
+        // A tag row counts only while its entity row exists: the entity's insert and delete count its tag rows.
+        [`trg_${tagTable}_count_ai`, `AFTER INSERT ON ${tagTable} WHEN ${tagRowCounts(`NEW.${entityColumn}`)} AND ${filled(`NEW.${entityColumn}`)}`, `
+            INSERT INTO entity_tag_counts (tag_id, kind, fav, count) SELECT NEW.tag_id, '${name}', fav, 1 FROM ${table} WHERE id = NEW.${entityColumn}
+                ON CONFLICT (tag_id, kind, fav) DO UPDATE SET count = count + 1;`],
+        [`trg_${tagTable}_count_ad`, `AFTER DELETE ON ${tagTable} WHEN ${tagRowCounts(`OLD.${entityColumn}`)} AND ${filled(`OLD.${entityColumn}`)}`, `
+            UPDATE entity_tag_counts SET count = count - 1 WHERE tag_id = OLD.tag_id AND kind = '${name}' AND fav = ${entityFav(`OLD.${entityColumn}`)};
+            DELETE FROM entity_tag_counts WHERE tag_id = OLD.tag_id AND kind = '${name}' AND fav = ${entityFav(`OLD.${entityColumn}`)} AND count = 0;`],
+    ];
+    return triggers.map(([triggerName, when, body]) => ({ name: triggerName, sql: `CREATE TRIGGER IF NOT EXISTS ${triggerName} ${when} BEGIN ${body} END;` }));
+}
+
+const ENTITY_COUNT_TRIGGERS = [
+    ...entityCountTriggers({ name: 'character', table: 'characters', tagTable: 'character_tags', entityColumn: 'character_id', tagRowCounts: () => 'true' }),
+    ...entityCountTriggers({ name: 'group', table: 'groups', tagTable: 'group_tags', entityColumn: 'group_id', tagRowCounts: groupTagRowIsGroupSql }),
+];
+const ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => trigger.sql).join('\n');
+const DROP_ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
 
 const GROUP_UPSERT_SQL = `
     INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
