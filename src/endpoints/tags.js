@@ -12,6 +12,7 @@ import {
     createTagDefinition,
     editTagDefinition,
     moveTagDefinition,
+    reorderTagDefinitions,
     deleteTagDefinition,
     countUnusedTags,
     pruneUnusedTags,
@@ -22,6 +23,7 @@ import {
     queryTags,
     decodeTagQueryCursor,
     TAG_QUERY_SORTS,
+    TAG_REORDER_MODES,
 } from '../character-metadata-db.js';
 import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.js';
 
@@ -100,8 +102,8 @@ router.post('/edit', async (request, response) => {
 /**
  * `{ id, before }` or `{ id, after }` → `{ result, refused: [{ id, reason: 'same' | 'deleted' | 'missing' |
  * 'unreadable' | 'unordered' | 'no-room' }], queued }`. Puts tag `id` right before or after the anchor tag (by id)
- * in the manual order. queued: the move arrived before the tag sort_order fill finished, and is applied when it
- * does (moveTagDefinition()).
+ * in the manual order. queued: the move arrived before the tag sort_order fill finished or while a reorder pass is
+ * recorded, and is applied when that pass ends (moveTagDefinition()).
  */
 router.post('/move', async (request, response) => {
     try {
@@ -128,6 +130,44 @@ router.post('/move', async (request, response) => {
     } catch (err) {
         console.error('Could not move tag definition', err);
         response.status(500).send({ error: 'Could not move tag definition' });
+    }
+});
+
+/**
+ * `{ id, before | after, mode }` → `{ result, refused: [{ id, reason: 'same' | 'deleted' | 'missing' | 'unreadable' }],
+ * queued }`. A reorder made while viewing `mode` ('alphabetical' or 'by_entries'): the tags get a manual order
+ * matching `mode`, with tag `id` right before or after the anchor tag (by id). queued: it was accepted, and is
+ * applied later (reorderTagDefinitions()); false when refused.
+ */
+router.post('/reorder', async (request, response) => {
+    try {
+        const id = request.body?.id;
+        const before = request.body?.before;
+        const after = request.body?.after;
+        const mode = request.body?.mode;
+        if (typeof id !== 'string' || !id) {
+            return response.status(400).send({ error: 'id is required' });
+        }
+        if ((before === undefined) === (after === undefined)) {
+            return response.status(400).send({ error: 'exactly one of before or after is required' });
+        }
+        const anchorId = before !== undefined ? before : after;
+        if (typeof anchorId !== 'string' || !anchorId) {
+            return response.status(400).send({ error: 'before or after must be a non-empty tag id' });
+        }
+        if (!TAG_REORDER_MODES.includes(mode)) {
+            return response.status(400).send({ error: `mode must be one of ${TAG_REORDER_MODES.join(', ')}` });
+        }
+
+        const result = await reorderTagDefinitions(request.user.directories, id, before !== undefined ? { before } : { after }, mode);
+        if (result === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+
+        response.send({ result: 'ok', refused: result.refused, queued: result.queued });
+    } catch (err) {
+        console.error('Could not reorder tag definitions', err);
+        response.status(500).send({ error: 'Could not reorder tag definitions' });
     }
 });
 

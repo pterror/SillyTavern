@@ -504,9 +504,9 @@ describe('POST /api/tags/move', () => {
     });
 });
 
-/** @returns {{ tag_id: string, side: string | null, anchor_id: string | null, sort_order: number | null }[]} */
+/** @returns {{ tag_id: string, side: string | null, anchor_id: string | null, value: string | null }[]} */
 function pending() {
-    return [...live().prepare('SELECT tag_id, side, anchor_id, sort_order FROM tag_pending_moves ORDER BY seq').iterate()];
+    return [...live().prepare('SELECT tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq').iterate()];
 }
 
 /** @param {string} tagId @param {'before' | 'after'} side @param {string} anchorId */
@@ -514,9 +514,9 @@ function insertPending(tagId, side, anchorId) {
     live().prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id) VALUES (?, ?, ?)').run(tagId, side, anchorId);
 }
 
-/** @param {string} tagId @param {number} sortOrder */
+/** @param {string} tagId @param {unknown} sortOrder */
 function insertPendingValue(tagId, sortOrder) {
-    live().prepare('INSERT INTO tag_pending_moves (tag_id, sort_order) VALUES (?, ?)').run(tagId, sortOrder);
+    live().prepare('INSERT INTO tag_pending_moves (tag_id, value) VALUES (?, ?)').run(tagId, JSON.stringify(sortOrder));
 }
 
 /** @param {string} id @param {{ before?: string, after?: string }} placement */
@@ -549,7 +549,7 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
         await queue('x', { before: 'a' });
         expect(runSql).toHaveLength(1);
         expect(runSql[0]).toMatch(/^INSERT INTO tag_pending_moves\b/);
-        expect(pending()).toEqual([{ tag_id: 'x', side: 'before', anchor_id: 'a', sort_order: null }]);
+        expect(pending()).toEqual([{ tag_id: 'x', side: 'before', anchor_id: 'a', value: null }]);
         expect(rows()).toEqual(before);
         expect(await metadataDb.getTagsHash(directories)).toBe(hash);
     });
@@ -563,8 +563,8 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
         const before = rows();
         await queue('x', { before: 'a' });
         expect(pending()).toEqual([
-            { tag_id: 'x', side: 'after', anchor_id: 'b', sort_order: null },
-            { tag_id: 'x', side: 'before', anchor_id: 'a', sort_order: null },
+            { tag_id: 'x', side: 'after', anchor_id: 'b', value: null },
+            { tag_id: 'x', side: 'before', anchor_id: 'a', value: null },
         ]);
         expect(rows()).toEqual(before);
     });
@@ -585,7 +585,7 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
         expect(await moveWritingNothing('bad', { after: 'a' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }] });
         expect(pending()).toEqual([]);
         await queue('a', { after: 'arr' });
-        expect(pending()).toEqual([{ tag_id: 'a', side: 'after', anchor_id: 'arr', sort_order: null }]);
+        expect(pending()).toEqual([{ tag_id: 'a', side: 'after', anchor_id: 'arr', value: null }]);
     });
 
     test('POST /api/tags/move answers queued true until the fill ends, then applies the move and answers queued false', async () => {
@@ -800,13 +800,13 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
 
 test('tag_pending_moves refuses an entry that isn\'t exactly anchored or exactly a value', async () => {
     await openStore();
-    const insert = (side, anchorId, sortOrder) => live().prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id, sort_order) VALUES (?, ?, ?, ?)').run('x', side, anchorId, sortOrder);
-    for (const [side, anchorId, sortOrder] of [
-        ['before', 'a', 1], [null, null, null], ['before', null, null], [null, 'a', null], ['middle', 'a', null], [null, 'a', 1], ['after', null, 1],
+    const insert = (side, anchorId, value) => live().prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id, value) VALUES (?, ?, ?, ?)').run('x', side, anchorId, value);
+    for (const [side, anchorId, value] of [
+        ['before', 'a', '1'], [null, null, null], ['before', null, null], [null, 'a', null], ['middle', 'a', null], [null, 'a', '1'], ['after', null, '1'],
     ]) {
-        expect(() => insert(side, anchorId, sortOrder)).toThrow(/CHECK constraint failed/);
+        expect(() => insert(side, anchorId, value)).toThrow(/CHECK constraint failed/);
     }
     insert('before', 'a', null);
-    insert(null, null, 1);
+    insert(null, null, '1');
     expect(pending()).toHaveLength(2);
 });

@@ -135,14 +135,14 @@ async function makeReady() {
 
 /**
  * Pending entries, inserted as moveTagDefinition() queues them: [id, side, anchorId] or [id, value].
- * @param {([string, 'before' | 'after', string] | [string, number])[]} entries
+ * @param {([string, 'before' | 'after', string] | [string, unknown])[]} entries
  */
 function pend(entries) {
     const anchored = live().prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id) VALUES (?, ?, ?)');
-    const valued = live().prepare('INSERT INTO tag_pending_moves (tag_id, sort_order) VALUES (?, ?)');
+    const valued = live().prepare('INSERT INTO tag_pending_moves (tag_id, value) VALUES (?, ?)');
     for (const entry of entries) {
         if (entry.length === 3) anchored.run(...entry);
-        else valued.run(...entry);
+        else valued.run(entry[0], JSON.stringify(entry[1]));
     }
 }
 
@@ -230,6 +230,11 @@ describe('POST /api/tags/query manual, with moves pending', () => {
         test('a value entry places the tag at that value, and a tag next to it follows it there', async () => {
             pend([['g', 35], ['h', 'before', 'g'], ['a', 45]]);
             expect(await pagedIds()).toEqual(everyPageSize(['b', 'c', 'h', 'g', 'd', 'a', 'e', 'f', 'i']));
+        });
+
+        test('a value entry places the tag by its coerced value: a numeric string at its number, one with no order among the unordered by name', async () => {
+            pend([['b', '15'], ['a', 'zzz'], ['f', 'before', 'a'], ['c', { x: 1 }], ['d', null]]);
+            expect(await pagedIds()).toEqual(everyPageSize(['d', 'b', 'e', 'i', 'f', 'a', 'c', 'g', 'h']));
         });
 
         test('a value that puts the anchor back at its place again shares the gap: the later tag is nearest', async () => {
@@ -339,5 +344,17 @@ describe('POST /api/tags/query manual, with moves pending', () => {
         expect(live().prepare('SELECT COUNT(*) FROM tag_pending_moves').pluck().get()).toBe(0);
         expect((await queryAll({ pageSize: 2 })).ids).toEqual(shown);
         expect((await queryAll({ pageSize: 1, filter: { folders: true } })).ids).toEqual(shownFolders);
+    });
+
+    test('once the finished sort_order fill applies queued values, the order is the one they showed', async () => {
+        await seed();
+        await makeReady();
+        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        pend([['b', '15'], ['a', 'zzz'], ['f', 'before', 'a'], ['c', { x: 1 }], ['d', null], ['h', 'after', 'd']]);
+        const shown = (await queryAll({ pageSize: 2 })).ids;
+        expect(shown).toEqual(['d', 'h', 'b', 'e', 'i', 'g', 'f', 'a', 'c']);
+        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        expect(live().prepare('SELECT COUNT(*) FROM tag_pending_moves').pluck().get()).toBe(0);
+        expect((await queryAll({ pageSize: 2 })).ids).toEqual(shown);
     });
 });
