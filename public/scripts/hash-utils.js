@@ -184,6 +184,16 @@ export function normalizeTagIds(tagIds) {
     return Array.isArray(tagIds) ? [...tagIds].sort() : [];
 }
 
+/**
+ * The form two tag names are compared in: equal keys are the same tag. Matches upstream's
+ * equalsIgnoreCaseAndAccents() (utils.js), which getTag() uses: accents stripped, then lower-cased.
+ * @param {string} name
+ * @returns {string}
+ */
+export function tagNameKey(name) {
+    return name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
+
 /** `/api/characters/batch` response header carrying `shallowCharacterData()`'s `includeCreatorNotes` ('true'/'false'). */
 export const SHALLOW_CREATOR_NOTES_HEADER = 'X-Shallow-Characters-Include-Creator-Notes';
 

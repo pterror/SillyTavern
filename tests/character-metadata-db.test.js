@@ -1368,6 +1368,7 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', storedCardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
         await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', storedCardJson({ name: 'Alice', data: { name: 'Alice', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
 
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
         const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
         const second = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');
 
@@ -1378,6 +1379,7 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
 
     test('saveTagDefinitions invalidates the tag cache so a later seed sees the rename, not a stale name->id mapping', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson({ data: { name: 'Bob', tags: ['Shared'], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } }));
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
         const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
         const mintedId = first.tagIds[0];
 
@@ -1393,6 +1395,7 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
 
     test('seedCardTagsForSingleCharacter writes shallow_json and a change entry only when tag_ids change', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
         const { default: Database } = await import('better-sqlite3');
         const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
         try {

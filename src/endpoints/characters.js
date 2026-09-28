@@ -2948,9 +2948,11 @@ router.post('/import', async function (request, response) {
         const tagImportMode = request.body.tagImportMode;
         /** @type {object[]} Tag definitions resolved by the ALL/ONLY_EXISTING seed below, shipped back so the client can merge them without a second /api/tags/get round trip. Empty for ASK/NONE. */
         let tagDefinitions = [];
+        /** @type {string[]} Card tag names that can't be resolved until the tag upgrade finishes; assigned then. */
+        let pendingTags = [];
         if (tagImportMode === 'all' || tagImportMode === 'existing') {
             try {
-                ({ tagDefinitions } = await seedCardTagsForSingleCharacter(request.user.directories, `${fileName}.png`, { onlyExisting: tagImportMode === 'existing' }));
+                ({ tagDefinitions, heldTagNames: pendingTags } = await seedCardTagsForSingleCharacter(request.user.directories, `${fileName}.png`, { onlyExisting: tagImportMode === 'existing' }));
             } catch (err) {
                 // Card-tag seeding failing must not fail the import itself - the character row already exists.
                 console.error(`Failed to seed card tags for ${fileName}.png:`, err);
@@ -2963,7 +2965,7 @@ router.post('/import', async function (request, response) {
         await stampDbFav(request.user.directories, [character]);
         await stampDbTagIds(request.user.directories, [character]);
 
-        response.send({ file_name: fileName, character, tagDefinitions });
+        response.send({ file_name: fileName, character, tagDefinitions, pendingTags });
     } catch (err) {
         const error = importFailure(importName, err);
         console.error(error);

@@ -17,7 +17,7 @@ import { getSqliteEngine, isBusyError, streamRows } from './endpoints/sqlite-eng
 import { TAGS_FILE } from './constants.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
-import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds } from '../public/scripts/hash-utils.js';
+import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
 export const characterChangeEmitter = new EventEmitter();
 
@@ -92,6 +92,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {{ pending: Map<string, PendingRow> } | null} batch Non-null while batch-import mode is active
  * @property {Promise<void> | null} bootstrapPromise
  * @property {{ tagNameToId: Map<string, string>, tagIdToDefinition: Map<string, object> } | null} [tagCache]
+ * @property {boolean} [tagNameKeysReady] Set once tagNameKeysReady() is true, which stays true.
  */
 
 /**
@@ -440,6 +441,16 @@ const SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS tag_name_changes (
         seq    INTEGER PRIMARY KEY AUTOINCREMENT,
         tag_id TEXT NOT NULL
+    );
+
+    -- A card tag name that couldn't be resolved yet because some tags rows have no name_key (see
+    -- tagNameKeysReady()). fillTagNameKeysIfNeeded() resolves and assigns each one once they all do.
+    -- only_existing = 1: assigned only if a tag with that name exists, never created.
+    CREATE TABLE IF NOT EXISTS tag_names_held (
+        character_id  TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        only_existing INTEGER NOT NULL,
+        PRIMARY KEY (character_id, name)
     );
 
     -- Bookkeeping for the one-time filename-migration script (name-derived filenames -> minted UUIDv7 ids).
@@ -945,6 +956,15 @@ function migrateCardJsonColumn(db, directories) {
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
+// name_key is tagNameKey() of the row's name. Rows written before this column existed have it NULL until
+// fillTagNameKeysIfNeeded() fills them; its index is built there too, since both take a pass over every tag.
+function migrateTagNameKeyColumn(db) {
+    const columns = (/** @type {{ name: string }[]} */ (db.all('PRAGMA table_info(tags)')));
+    if (!columns.some(c => c.name === 'name_key')) {
+        db.exec('ALTER TABLE tags ADD COLUMN name_key TEXT');
+    }
+}
+
 function migrateFavSortIndex(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_fav_desc_name_fold_asc ON characters(fav DESC, name_fold ASC)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_desc_name_fold_asc ON groups(fav DESC, name_fold ASC)');
@@ -991,6 +1011,7 @@ async function getEntry(directories) {
     migrateGroupsColumns(db, directories);
     migrateGroupDigestColumns(db, directories);
     migrateFavSortIndex(db);
+    migrateTagNameKeyColumn(db);
     // Registers cyrb53 as a SQL function so random-sort order can be a per-query ORDER BY RANDHASH(id, seed),
     // composing with LIMIT/OFFSET pagination instead of a JS-side sort over every row.
     db.defineFunction('RANDHASH', (id, seed) => getStringHash(String(id ?? ''), Number(seed ?? 0)));
@@ -1222,6 +1243,7 @@ function writeRowSync(db, row, tagIds) {
 function deleteRowSync(db, id) {
     db.run('DELETE FROM characters WHERE id = @id', { id });
     db.run('DELETE FROM character_tags WHERE character_id = @id', { id });
+    db.run('DELETE FROM tag_names_held WHERE character_id = @id', { id });
     // Cascades: a local_import_mtimes row recorded as duplicate_of this character must not outlive it.
     db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id });
     insertChange(db, id, 'delete', null);
@@ -1622,7 +1644,43 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
         }
     }
 
-    entry.db.transaction(() => deleteRowSync(entry.db, oldAvatar));
+    /** @type {PendingRow | undefined} */
+    let flushed;
+    entry.db.transaction(() => {
+        flushed = undefined;
+        if (entry.db.get('SELECT 1 FROM tag_names_held WHERE character_id = @id LIMIT 1', { id: oldAvatar })) {
+            // Held names are resolved against the characters table, so newAvatar can't stay in the buffer.
+            flushed = writeBufferedRowSync(entry, newAvatar);
+            entry.db.run('UPDATE OR IGNORE tag_names_held SET character_id = @newAvatar WHERE character_id = @oldAvatar', { newAvatar, oldAvatar });
+        }
+        deleteRowSync(entry.db, oldAvatar);
+    });
+    dropFromBuffer(entry, newAvatar, flushed);
+}
+
+/**
+ * Writes avatar's buffered batch-import row, if it has one, to the characters table. Leaves it in the buffer, since
+ * the caller's transaction can still roll back: once that commits, the caller passes the result to dropFromBuffer().
+ * @param {MetadataDbEntry} entry
+ * @param {string} avatar
+ * @returns {PendingRow | undefined} The row written.
+ */
+function writeBufferedRowSync(entry, avatar) {
+    const pending = entry.batch?.pending.get(avatar);
+    if (!pending) return undefined;
+    writeRowSync(entry.db, pending.row, pending.tagIds);
+    return pending;
+}
+
+/**
+ * @param {MetadataDbEntry} entry
+ * @param {string} avatar
+ * @param {PendingRow | undefined} written writeBufferedRowSync()'s result, from a committed transaction.
+ */
+function dropFromBuffer(entry, avatar, written) {
+    if (written && entry.batch?.pending.get(avatar) === written) {
+        entry.batch.pending.delete(avatar);
+    }
 }
 
 /** Returns `shallowJson` with its `date_added` field overwritten; unmodified if it doesn't parse. */
@@ -3777,7 +3835,7 @@ export async function saveTagDefinitions(directories, tagsArray) {
         for (const raw of tagsArray) {
             const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
-            entry.db.run('INSERT INTO tags (id, data) VALUES (@id, @data)', { id: tag.id, data: JSON.stringify(tag) });
+            entry.db.run('INSERT INTO tags (id, data, name_key) VALUES (@id, @data, @nameKey)', { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag) });
             if (oldNames.has(tag.id) && oldNames.get(tag.id) !== (tag.name ?? '')) {
                 entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
             }
@@ -3810,8 +3868,8 @@ export async function upsertTagDefinition(directories, rawTag) {
         }
 
         entry.db.run(
-            'INSERT INTO tags (id, data) VALUES (@id, @data) ON CONFLICT(id) DO UPDATE SET data = @data',
-            { id: tag.id, data: JSON.stringify(tag) },
+            'INSERT INTO tags (id, data, name_key) VALUES (@id, @data, @nameKey) ON CONFLICT(id) DO UPDATE SET data = @data, name_key = @nameKey',
+            { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag) },
         );
         if (oldRow && oldName !== (tag.name ?? '')) {
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
@@ -3942,7 +4000,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
         for (const raw of tagsArray) {
             const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
             if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
-            insertedDefinitions += entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', { id: tag.id, data: JSON.stringify(tag) }).changes;
+            insertedDefinitions += entry.db.run('INSERT OR IGNORE INTO tags (id, data, name_key) VALUES (@id, @data, @nameKey)', { id: tag.id, data: JSON.stringify(tag), nameKey: tagDefinitionNameKey(tag) }).changes;
         }
         if (insertedDefinitions > 0) {
             updateTagsHashSync(entry.db);
@@ -4144,36 +4202,141 @@ async function importTagMap(entry, tagMap) {
 const CARD_TAGS_EXCLUDED = new Set(['ROOT', 'TAVERN']);
 const CARD_TAGS_MAX_PER_CARD = 50;
 
-// Resolves a card's data.tags array to tag ids, minting new tag definitions as needed (case-insensitive).
-// `tagNameToId` is mutated in place so a name introduced earlier in a batch is reused, not re-created.
 /**
- * @param {(params: { id: string, data: string }) => void} insertTag Never called when `onlyExisting` is true.
+ * @param {unknown} tag A tag definition as stored in tags.data.
+ * @returns {string} tagNameKey() of its name; '' when it has none, which no card tag name has.
+ */
+function tagDefinitionNameKey(tag) {
+    const name = /** @type {{ name?: unknown } | null | undefined} */ (tag)?.name;
+    return typeof name === 'string' ? tagNameKey(name) : '';
+}
+
+/**
+ * Whether every tags row has its name_key and its index exists, so a name_key lookup finds every tag that has the
+ * name. Once true it stays true: every write to tags sets name_key.
+ * @param {MetadataDbEntry} entry
+ * @returns {boolean}
+ */
+function tagNameKeysReady(entry) {
+    if (entry.tagNameKeysReady === true) return true;
+    if (!entry.db.get('SELECT 1 FROM sqlite_master WHERE type = \'index\' AND name = \'tags_name_key\'')) return false;
+    if (entry.db.get('SELECT 1 FROM tags WHERE name_key IS NULL LIMIT 1')) return false;
+    entry.tagNameKeysReady = true;
+    return true;
+}
+
+/**
  * @param {unknown[]} cardTags
- * @param {Map<string, string>} tagNameToId
- * @param {object} [options]
- * @param {boolean} [options.onlyExisting]
  * @returns {string[]}
  */
-function resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting = false } = {}) {
-    const filtered = cardTags
+function cardTagNames(cardTags) {
+    return cardTags
         .filter(t => typeof t === 'string')
         .map(t => t.trim())
         .filter(t => t.length > 0 && !CARD_TAGS_EXCLUDED.has(t))
         .slice(0, CARD_TAGS_MAX_PER_CARD);
+}
 
-    const tagIds = [];
-    for (const tagName of filtered) {
-        const key = tagName.toLowerCase();
-        let tagId = tagNameToId.get(key);
-        if (tagId === undefined) {
-            if (onlyExisting) continue;
-            tagId = crypto.randomUUID();
-            insertTag({ id: tagId, data: JSON.stringify({ id: tagId, name: tagName, create_date: Date.now() }) });
-            tagNameToId.set(key, tagId);
+/**
+ * @typedef {object} ResolvedCardTags
+ * @property {string[]} tagIds
+ * @property {string[]} toCreate Names no tag matches, for createCardTagsSync().
+ * @property {string[]} held Names neither the cache nor, while name keys are unfilled, the table could resolve.
+ * @property {{ key: string, id: string, data: string }[]} learned Tags read or created, for the caller's cache once
+ *   its transaction commits.
+ */
+
+/**
+ * Resolves card tag names to tag ids inside the caller's write transaction, writing nothing. A name matches a tag
+ * whose name_key is its tagNameKey(), the first by rowid when several do (upstream's getTag() takes the first in
+ * its tags array, the order saveTagDefinitions() stores). A name only a table lookup could resolve is held while
+ * name keys are unfilled, and is to be created only when no tag matches.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string[]} names From cardTagNames().
+ * @param {object} options
+ * @param {boolean} options.ready tagNameKeysReady(), read inside the same transaction.
+ * @param {Map<string, string>} [options.cachedIds] name key -> tag id.
+ * @param {boolean} [options.onlyExisting] Never marks a name to be created.
+ * @returns {ResolvedCardTags}
+ */
+function resolveCardTagNamesSync(db, names, { ready, cachedIds, onlyExisting = false }) {
+    /** @type {ResolvedCardTags} */
+    const resolved = { tagIds: [], toCreate: [], held: [], learned: [] };
+    /** @type {Set<string>} */
+    const seen = new Set();
+    for (const name of names) {
+        const key = tagNameKey(name);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const cachedId = cachedIds?.get(key);
+        if (cachedId !== undefined) {
+            resolved.tagIds.push(cachedId);
+            continue;
         }
-        tagIds.push(tagId);
+        if (!ready) {
+            resolved.held.push(name);
+            continue;
+        }
+        const row = /** @type {{ id: string, data: string } | undefined} */ (db.get('SELECT id, data FROM tags WHERE name_key = @key ORDER BY rowid LIMIT 1', { key }));
+        if (row) {
+            resolved.tagIds.push(row.id);
+            resolved.learned.push({ key, id: row.id, data: row.data });
+        } else if (!onlyExisting) {
+            resolved.toCreate.push(name);
+        }
     }
-    return tagIds;
+    return resolved;
+}
+
+/**
+ * Creates a tag for each of resolved.toCreate, adding it to resolved.tagIds and resolved.learned.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {ResolvedCardTags} resolved
+ * @returns {string[]} The new tags' ids.
+ */
+function createCardTagsSync(db, resolved) {
+    const created = resolved.toCreate.map((name) => {
+        const id = crypto.randomUUID();
+        const data = JSON.stringify({ id, name, create_date: Date.now() });
+        const key = tagNameKey(name);
+        db.run('INSERT INTO tags (id, data, name_key) VALUES (@id, @data, @key)', { id, data, key });
+        resolved.learned.push({ key, id, data });
+        return id;
+    });
+    if (created.length > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+    resolved.tagIds.push(...created);
+    resolved.toCreate = [];
+    return created;
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} avatar
+ * @param {string[]} names
+ * @param {boolean} onlyExisting
+ */
+function holdCardTagNamesSync(db, avatar, names, onlyExisting) {
+    for (const name of names) {
+        db.run('INSERT OR IGNORE INTO tag_names_held (character_id, name, only_existing) VALUES (@characterId, @name, @onlyExisting)', { characterId: avatar, name, onlyExisting: onlyExisting ? 1 : 0 });
+    }
+}
+
+/**
+ * Creates resolved's new tags, assigns every resolved tag to a characters row and holds its unresolved names.
+ * Leaves shallow_json.tag_ids to the caller (syncShallowTagIdsFromTable()).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} avatar
+ * @param {ResolvedCardTags} resolved
+ * @param {boolean} onlyExisting
+ * @returns {number} How many tags it created.
+ */
+function writeResolvedCardTagsSync(db, avatar, resolved, onlyExisting) {
+    const created = createCardTagsSync(db, resolved).length;
+    for (const tagId of resolved.tagIds) {
+        db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: avatar, tagId });
+    }
+    holdCardTagNamesSync(db, avatar, resolved.held, onlyExisting);
+    return created;
 }
 
 // Patches one character row's shallow_json.tag_ids to match character_tags. Re-reads
@@ -4283,23 +4446,7 @@ export async function backfillCardTagsIfNeeded(directories) {
 
     console.log(color.cyan('[character-metadata] Backfilling tag assignments from card-embedded tags...'));
 
-    /** @type {Map<string, string>} */
-    const tagNameToId = new Map();
-    for (const row of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags')))) {
-        try {
-            const tag = JSON.parse(row.data);
-            if (tag && typeof tag.name === 'string' && tag.name) {
-                tagNameToId.set(tag.name.toLowerCase(), row.id);
-            }
-        } catch {
-            // Malformed tag definition row - skip it, it can't be matched against by name anyway.
-        }
-    }
-
-    // Names minted by the rows the current batch has written so far; merged into tagNameToId only once the batch
-    // commits, so a rolled-back batch leaves no name pointing at a tag that was never written.
-    /** @type {Map<string, string>} */
-    let batchNameToId = new Map();
+    let ready = false;
     let batchNewDefinitions = 0;
     let batchNewAssignments = 0;
     let newDefinitions = 0;
@@ -4312,55 +4459,40 @@ export async function backfillCardTagsIfNeeded(directories) {
         label: 'Card-tags backfill',
         logProgress: true,
         onBatchStart: () => {
-            batchNameToId = new Map();
+            ready = tagNameKeysReady(entry);
             batchNewDefinitions = 0;
             batchNewAssignments = 0;
         },
         onBatchCommitted: () => {
-            for (const [name, id] of batchNameToId) tagNameToId.set(name, id);
             newDefinitions += batchNewDefinitions;
             newAssignments += batchNewAssignments;
         },
         prepareRow: (id) => {
             const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
             if (!row) return null;
-            const cardTags = extractCardTags(row.shallow_json);
-            if (cardTags.length === 0) return null;
+            const names = cardTagNames(extractCardTags(row.shallow_json));
+            if (names.length === 0) return null;
 
-            /** @type {Map<string, string>} */
-            const rowNameToId = new Map();
-            /** @type {{ id: string, data: string }[]} */
-            const minted = [];
-            const names = /** @type {Map<string, string>} */ (/** @type {unknown} */ ({
-                get: (/** @type {string} */ name) => rowNameToId.get(name) ?? batchNameToId.get(name) ?? tagNameToId.get(name),
-                set: (/** @type {string} */ name, /** @type {string} */ tagId) => rowNameToId.set(name, tagId),
-            }));
-            const tagIds = resolveCardTagIds(cardTags, names, params => minted.push(params));
-            if (tagIds.length === 0) return null;
-
+            const resolved = resolveCardTagNamesSync(entry.db, names, { ready });
             const shallow = JSON.parse(row.shallow_json);
             const currentTagIds = readCharacterTagIds(entry.db, id);
             const current = new Set(currentTagIds);
-            const missing = [...new Set(tagIds)].filter(tagId => !current.has(tagId));
-            const finalTagIds = [...currentTagIds, ...missing];
+            const missing = resolved.tagIds.filter(tagId => !current.has(tagId));
             // writeShallowJson() stores tag_ids normalized.
-            const shallowInSync = Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(finalTagIds));
-            if (missing.length === 0 && shallowInSync) return null;
+            const inSync = (/** @type {string[]} */ tagIds) => Array.isArray(shallow.tag_ids) && JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(tagIds));
+            if (missing.length === 0 && resolved.toCreate.length === 0 && resolved.held.length === 0 && inSync(currentTagIds)) return null;
 
             return () => {
-                for (const params of minted) {
-                    if (entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params).changes > 0) {
-                        batchNewDefinitions++;
-                        characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
-                    }
-                }
-                for (const [name, tagId] of rowNameToId) batchNameToId.set(name, tagId);
-                for (const tagId of missing) {
+                const created = createCardTagsSync(entry.db, resolved);
+                batchNewDefinitions += created.length;
+                for (const tagId of [...missing, ...created]) {
                     batchNewAssignments += entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: id, tagId }).changes;
                 }
+                holdCardTagNamesSync(entry.db, id, resolved.held, false);
                 // Synced here rather than left to backfillTagIdsInShallowJson(), which only targets rows missing a
                 // tag_ids key and would skip a row that already had one.
-                if (!shallowInSync) {
+                const finalTagIds = [...currentTagIds, ...missing, ...created];
+                if (!inSync(finalTagIds)) {
                     shallow.tag_ids = finalTagIds;
                     writeShallowJson(entry.db, id, shallow, ['tag_ids']);
                 }
@@ -4373,8 +4505,88 @@ export async function backfillCardTagsIfNeeded(directories) {
     return result;
 }
 
+const TAG_NAME_KEY_FILL_BATCH_SIZE = 1000;
+const HELD_TAG_NAMES_BATCH_SIZE = 500;
+
+/**
+ * One-time pass: builds name_key's index, fills name_key on every tags row that lacks it, then resolves and assigns
+ * every held card tag name (tag_names_held). A name is held only while some row lacks its key, and the fill's last
+ * batch commits before the first held name is read here, so no name is held after this pass has drained them.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
+ */
+export async function fillTagNameKeysIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    entry.db.run('CREATE INDEX IF NOT EXISTS tags_name_key ON tags(name_key)');
+
+    let batches = 0;
+    let rowsChanged = 0;
+    for (;;) {
+        let filled = 0;
+        entry.db.transaction(() => {
+            filled = 0;
+            const rows = /** @type {{ id: string, data: string }[]} */ ([...entry.db.iterate('SELECT id, data FROM tags WHERE name_key IS NULL LIMIT @limit', { limit: TAG_NAME_KEY_FILL_BATCH_SIZE })]);
+            for (const { id, data } of rows) {
+                let tag = null;
+                try {
+                    tag = JSON.parse(data);
+                } catch {
+                    // Unparseable: it has no name to match, so it gets the key no card tag name has.
+                }
+                entry.db.run('UPDATE tags SET name_key = @key WHERE id = @id', { id, key: tagDefinitionNameKey(tag) });
+                filled++;
+            }
+        });
+        if (filled === 0) break;
+        batches++;
+        rowsChanged += filled;
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+
+    for (;;) {
+        /** @type {{ character_id: string, name: string }[]} */
+        let dropped = [];
+        let drained = 0;
+        entry.db.transaction(() => {
+            dropped = [];
+            drained = 0;
+            const held = /** @type {{ character_id: string, name: string, only_existing: number }[]} */ ([...entry.db.iterate('SELECT character_id, name, only_existing FROM tag_names_held ORDER BY character_id, name LIMIT @limit', { limit: HELD_TAG_NAMES_BATCH_SIZE })]);
+            /** @type {Set<string>} */
+            const assignedTo = new Set();
+            let created = 0;
+            for (const { character_id: characterId, name, only_existing: onlyExisting } of held) {
+                entry.db.run('DELETE FROM tag_names_held WHERE character_id = @characterId AND name = @name', { characterId, name });
+                drained++;
+                if (!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: characterId })) {
+                    dropped.push({ character_id: characterId, name });
+                    continue;
+                }
+                const resolved = resolveCardTagNamesSync(entry.db, [name], { ready: true, onlyExisting: !!onlyExisting });
+                created += writeResolvedCardTagsSync(entry.db, characterId, resolved, !!onlyExisting);
+                if (resolved.tagIds.length > 0) assignedTo.add(characterId);
+            }
+            for (const characterId of assignedTo) {
+                syncShallowTagIdsFromTable(entry.db, characterId);
+            }
+            if (created > 0) updateTagsHashSync(entry.db);
+        });
+        if (dropped.length > 0) {
+            console.warn(color.yellow(`[character-metadata] Held card tag names whose character no longer exists, not assigned:\n${dropped.map(d => `  ${d.character_id}: ${d.name}`).join('\n')}`));
+        }
+        if (drained === 0) break;
+        batches++;
+        rowsChanged += drained;
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+
+    return { batches, rowsChanged };
+}
+
 // Builds entry's tag cache from a full table scan once, then reuses/mutates the same Maps for the process's life
-// (previously re-scanned+re-parsed the whole tags table per character, causing OOM on large libraries).
+// (previously re-scanned+re-parsed the whole tags table per character, causing OOM on large libraries). Keyed like
+// resolveCardTagNamesSync()'s lookup: tagNameKey(), the first row by rowid winning.
 /**
  * @param {MetadataDbEntry} entry
  * @returns {{ tagNameToId: Map<string, string>, tagIdToDefinition: Map<string, object> }}
@@ -4386,11 +4598,12 @@ function getTagCache(entry) {
     const tagNameToId = new Map();
     /** @type {Map<string, object>} */
     const tagIdToDefinition = new Map();
-    for (const tagRow of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags')))) {
+    for (const tagRow of (/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags ORDER BY rowid')))) {
         try {
             const tag = JSON.parse(tagRow.data);
             if (tag && typeof tag.name === 'string' && tag.name) {
-                tagNameToId.set(tag.name.toLowerCase(), tagRow.id);
+                const key = tagNameKey(tag.name);
+                if (!tagNameToId.has(key)) tagNameToId.set(key, tagRow.id);
                 tagIdToDefinition.set(tagRow.id, tag);
             }
         } catch {
@@ -4408,57 +4621,57 @@ function getTagCache(entry) {
  * @param {string} avatar
  * @param {object} [options]
  * @param {boolean} [options.onlyExisting] Resolves only tags matching an existing definition, never minting a new one.
- * @returns {Promise<{ tagIds: string[], tagDefinitions: object[] }>} tagDefinitions is returned alongside tagIds
- * because the client can't resolve an id to a tag it has never seen a definition for.
+ * @returns {Promise<{ tagIds: string[], tagDefinitions: object[], heldTagNames: string[] }>} tagDefinitions is
+ * returned alongside tagIds because the client can't resolve an id to a tag it has never seen a definition for.
+ * heldTagNames are names that can't be resolved until fillTagNameKeysIfNeeded() has run; it assigns them then.
  */
 export async function seedCardTagsForSingleCharacter(directories, avatar, { onlyExisting = false } = {}) {
+    const none = { tagIds: [], tagDefinitions: [], heldTagNames: [] };
     const entry = await getEntry(directories);
-    if (!entry) return { tagIds: [], tagDefinitions: [] };
+    if (!entry) return none;
 
     const pending = entry.batch?.pending.get(avatar);
     const shallowJson = pending ? pending.row.shallow_json : (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })))?.shallow_json;
-    if (shallowJson === undefined) return { tagIds: [], tagDefinitions: [] };
+    if (shallowJson === undefined) return none;
 
-    const cardTags = extractCardTags(shallowJson);
-    if (cardTags.length === 0) return { tagIds: [], tagDefinitions: [] };
+    const names = cardTagNames(extractCardTags(shallowJson));
+    if (names.length === 0) return none;
 
-    const { tagNameToId, tagIdToDefinition } = getTagCache(entry);
-
-    // Tag *definitions* always go straight to the `tags` table, batch mode or not - only `characters`/
-    // `character_tags` rows for a not-yet-flushed import are what batch mode buffers (see pending branch below).
-    const tagDefinitionsBefore = tagNameToId.size;
-    /** @param {{ id: string, data: string }} params */
-    const insertTag = (params) => {
-        entry.db.run('INSERT OR IGNORE INTO tags (id, data) VALUES (@id, @data)', params);
-        tagIdToDefinition.set(params.id, JSON.parse(params.data));
-    };
-    const tagIds = resolveCardTagIds(cardTags, tagNameToId, insertTag, { onlyExisting });
-    if (tagIds.length === 0) return { tagIds: [], tagDefinitions: [] };
-
-    const tagDefinitions = tagIds.map(id => tagIdToDefinition.get(id)).filter((t) => t !== undefined);
-
-    // Only rehash when a new tag definition was actually minted; a pure re-assignment doesn't change tags_hash.
-    if (tagNameToId.size > tagDefinitionsBefore) {
-        updateTagsHashSync(entry.db);
+    const cache = getTagCache(entry);
+    /** @type {ResolvedCardTags} */
+    let resolved = { tagIds: [], toCreate: [], held: [], learned: [] };
+    /** @type {PendingRow | undefined} */
+    let flushed;
+    entry.db.transaction(() => {
+        flushed = undefined;
+        resolved = resolveCardTagNamesSync(entry.db, names, { ready: tagNameKeysReady(entry), cachedIds: cache.tagNameToId, onlyExisting });
+        // Only rehash when a new tag definition was actually minted; a pure re-assignment doesn't change tags_hash.
+        if (pending && resolved.held.length === 0) {
+            // Tag definitions go straight to the tags table; the row's assignments wait in the buffer (below).
+            if (createCardTagsSync(entry.db, resolved).length > 0) updateTagsHashSync(entry.db);
+            return;
+        }
+        // Held names are resolved against the characters table, so the row can't stay in the buffer.
+        if (pending) flushed = writeBufferedRowSync(entry, avatar);
+        if (writeResolvedCardTagsSync(entry.db, avatar, resolved, onlyExisting) > 0) updateTagsHashSync(entry.db);
+        if (resolved.tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, avatar);
+    });
+    dropFromBuffer(entry, avatar, flushed);
+    for (const { key, id, data } of resolved.learned) {
+        if (!cache.tagNameToId.has(key)) cache.tagNameToId.set(key, id);
+        cache.tagIdToDefinition.set(id, JSON.parse(data));
     }
 
-    if (pending) {
+    if (pending && !flushed && resolved.tagIds.length > 0) {
         // Row doesn't exist in `characters` yet for a not-yet-flushed pending write, so patch the buffer instead.
-        for (const tagId of tagIds) {
+        for (const tagId of resolved.tagIds) {
             if (!pending.tagIds.includes(tagId)) pending.tagIds.push(tagId);
         }
         patchPendingRowTagIds(pending);
-        return { tagIds, tagDefinitions };
     }
 
-    entry.db.transaction(() => {
-        for (const tagId of tagIds) {
-            entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: avatar, tagId });
-        }
-        syncShallowTagIdsFromTable(entry.db, avatar);
-    });
-
-    return { tagIds, tagDefinitions };
+    const tagDefinitions = resolved.tagIds.map(id => cache.tagIdToDefinition.get(id)).filter((t) => t !== undefined);
+    return { tagIds: resolved.tagIds, tagDefinitions, heldTagNames: resolved.held };
 }
 
 // Full {[id]: tagId[]} export of every character's/group's tag assignments. Not called anywhere in the live
