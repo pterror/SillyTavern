@@ -301,7 +301,8 @@ const QUERY_MAX_IDS = 500;
 /**
  * One page of tag definitions: `{ filter: { search, name, ids, used, folders }, sort: { field }, pageSize, cursor }`
  * → `{ rows, cursor, more }`. `sort.field` is a tag_sort_mode value, manual by default. `cursor` is the one a
- * previous page returned, for the same sort. `more` means the server's work cap cut the page short and `cursor`
+ * previous page returned, for the same sort; a manual one is refused (400 invalid-cursor) once the manual order it
+ * was made in is no longer the one read, i.e. when a tag reorder pass starts or starts draining. `more` means the server's work cap cut the page short and `cursor`
  * carries on; otherwise a null `cursor` is the end.
  */
 router.post('/query', async (request, response) => {
@@ -356,6 +357,9 @@ router.post('/query', async (request, response) => {
         });
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        if (result === 'invalid-cursor') {
+            return response.status(400).send({ error: true, reason: 'invalid-cursor' });
         }
         response.send(result);
     } catch (err) {
