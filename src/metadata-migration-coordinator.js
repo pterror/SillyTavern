@@ -12,6 +12,7 @@ const DISPOSE_TIMEOUT_MS = 10000;
 export const MIGRATION_PASSES = /** @type {const} */ ([
     // First: until it has run, card tag names that only a table lookup could resolve are held, not assigned.
     'fillTagNameKeysIfNeeded',
+    'fillTagDerivedColumnsIfNeeded',
     'recoverNumericIdGroupsIfNeeded',
     'normalizeGroupFavIfNeeded',
     'migrateTagsJsonIfNeeded',

@@ -96,6 +96,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {Promise<void> | null} bootstrapPromise
  * @property {{ tagNameToId: Map<string, string>, tagIdToDefinition: Map<string, object> } | null} [tagCache]
  * @property {boolean} [tagNameKeysReady] Set once tagNameKeysReady() is true, which stays true.
+ * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
  */
 
 /**
@@ -5600,6 +5601,136 @@ export async function fillTagNameKeysIfNeeded(directories) {
     }
 
     return { batches, rowsChanged };
+}
+
+export const TAG_DERIVED_COLUMNS_FILLED_FLAG = 'tag_derived_columns_filled_v1';
+// The rowid of the last tags row the fill has passed. Every row with rowid <= it has its derived columns: a row
+// keeps its rowid, and every tags write sets the columns (TAG_ROW_VALUES_SQL), whatever rowid it lands on.
+const TAG_DERIVED_COLUMNS_FILL_UPTO_KEY = `${TAG_DERIVED_COLUMNS_FILLED_FLAG}_upto`;
+const TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE = 1000;
+
+// The indexes tag pages are read through by keyset, besides tags_name_key. tags is a rowid table, so each one ends
+// in rowid without naming it (SQLite rejects naming it): ON tags(sort_order) is (sort_order, rowid).
+const TAG_QUERY_INDEXES_SQL = `
+    CREATE INDEX IF NOT EXISTS tags_sort_order ON tags(sort_order);
+    CREATE INDEX IF NOT EXISTS tags_unordered_name_key ON tags(name_key) WHERE sort_order IS NULL;
+    CREATE INDEX IF NOT EXISTS tags_usage_count ON tags(usage_count DESC, name_key);
+    CREATE INDEX IF NOT EXISTS tags_folder_sort_order ON tags(is_folder, sort_order);
+    CREATE INDEX IF NOT EXISTS tags_folder_unordered_name_key ON tags(is_folder, name_key) WHERE sort_order IS NULL;
+    CREATE INDEX IF NOT EXISTS tags_folder_name_key ON tags(is_folder, name_key);
+    CREATE INDEX IF NOT EXISTS tags_used_sort_order ON tags(sort_order) WHERE usage_count > 0;
+    CREATE INDEX IF NOT EXISTS tags_used_unordered_name_key ON tags(name_key) WHERE sort_order IS NULL AND usage_count > 0;
+    CREATE INDEX IF NOT EXISTS tags_used_name_key ON tags(name_key) WHERE usage_count > 0;
+`;
+
+/**
+ * One-time pass: builds TAG_QUERY_INDEXES_SQL, then sets sort_order, folder_type and is_folder (tagDerivedColumns()
+ * of data) and usage_count (the id's tag_usage.count, 0 without a row) on every tags row past the frontier, and
+ * marks the fill done once no row is left past it.
+ *
+ * Each page is read to the end and written in one transaction, so a live write to a row can't be overwritten with
+ * columns derived from its old data. A restart resumes from the frontier. Each tag whose sort_order is present but
+ * has no order (a non-numeric string, NaN or an object) is logged once, with its raw value.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `batches` counts the transactions that moved the frontier or
+ *   marked the fill done; `rowsChanged` the rows whose columns were written.
+ */
+export async function fillTagDerivedColumnsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
+
+    db.exec(TAG_QUERY_INDEXES_SQL);
+
+    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY }));
+    /** @type {number | null} */
+    let after = saved ? Number(saved.value) : null;
+    if (after !== null) {
+        console.log(color.cyan(`[character-metadata] Tag derived columns fill: resuming after rowid ${after}`));
+    }
+
+    let batches = 0;
+    let rowsChanged = 0;
+    for (;;) {
+        /** @type {{ changed: number, unordered: string[], last: number | null, done: boolean }} */
+        const state = { changed: 0, unordered: [], last: after, done: false };
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            state.changed = 0;
+            state.unordered = [];
+            state.last = after;
+            state.done = false;
+            const page = /** @type {{ rowid: number, id: string, data: string }[]} */ ([...(after === null
+                ? db.iterate('SELECT rowid, id, data FROM tags ORDER BY rowid LIMIT @limit', { limit: TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE })
+                : db.iterate('SELECT rowid, id, data FROM tags WHERE rowid > @after ORDER BY rowid LIMIT @limit', { after, limit: TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE }))]);
+            for (const { rowid, id, data } of page) {
+                /** @type {unknown} */
+                let tag = null;
+                try {
+                    tag = JSON.parse(data);
+                } catch {
+                    // Unparseable: derived as data with no fields, as name_key's fill does.
+                }
+                const { sortOrder, folderType, isFolder } = tagDerivedColumns(tag);
+                const rawOrder = tag !== null && typeof tag === 'object' ? /** @type {Record<string, unknown>} */ (tag).sort_order : undefined;
+                if (rawOrder !== undefined && sortOrder === null) {
+                    const name = /** @type {Record<string, unknown>} */ (tag).name;
+                    state.unordered.push(`  ${id} (${typeof name === 'string' ? name : JSON.stringify(name)}): ${JSON.stringify(rawOrder)}`);
+                }
+                state.changed += db.run(`UPDATE tags SET sort_order = @sortOrder, folder_type = @folderType, is_folder = @isFolder,
+                        usage_count = COALESCE((SELECT count FROM tag_usage WHERE tag_id = tags.id), 0)
+                    WHERE rowid = @rowid AND (sort_order IS NOT @sortOrder OR folder_type IS NOT @folderType OR is_folder IS NOT @isFolder
+                        OR usage_count IS NOT COALESCE((SELECT count FROM tag_usage WHERE tag_id = tags.id), 0))`,
+                { rowid, sortOrder, folderType, isFolder }).changes;
+            }
+            if (page.length > 0) {
+                state.last = page[page.length - 1].rowid;
+                db.run(UPSERT_META_VALUE_SQL, { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY, value: String(state.last) });
+            }
+            if (page.length < TAG_DERIVED_COLUMNS_FILL_BATCH_SIZE) {
+                db.run(UPSERT_META_VALUE_SQL, { key: TAG_DERIVED_COLUMNS_FILLED_FLAG, value: String(Date.now()) });
+                db.run('DELETE FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY });
+                state.done = true;
+            }
+        });
+        batches++;
+        rowsChanged += state.changed;
+        if (state.unordered.length > 0) {
+            console.warn(color.yellow(`[character-metadata] Tag derived columns fill: ${state.unordered.length} tag(s) whose sort_order is non-numeric, NaN or an object, so it has no sort_order and sorts alphabetically with the tags that have none:\n${state.unordered.join('\n')}`));
+        }
+        if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+        if (state.done) break;
+        after = state.last;
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+
+    if (!isReadOnlyMode()) db.checkpoint();
+    return { batches, rowsChanged };
+}
+
+/**
+ * Whether every tags row has name_key and the derived columns, and their indexes exist, so tags can be paged
+ * through them. Once true it stays true: every tags write sets all of those columns.
+ * @param {MetadataDbEntry} entry
+ * @returns {boolean}
+ */
+function tagQueryColumnsReady(entry) {
+    if (entry.tagQueryColumnsReady === true) return true;
+    if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return false;
+    if (!tagNameKeysReady(entry)) return false;
+    entry.tagQueryColumnsReady = true;
+    return true;
+}
+
+/**
+ * tagQueryColumnsReady() for the store.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<boolean>}
+ */
+export async function areTagQueryColumnsReady(directories) {
+    const entry = await getEntry(directories);
+    return !!entry && tagQueryColumnsReady(entry);
 }
 
 // Builds entry's tag cache from a full table scan once, then reuses/mutates the same Maps for the process's life
