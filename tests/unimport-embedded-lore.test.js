@@ -91,7 +91,7 @@ function autoImportedWorldFile(characterBook) {
 /**
  * Populates the metadata store's indexed `world` column from whatever character PNGs are currently on
  * disk (mirrors what bootstrapIfNeeded() does for real at boot) - findCandidates()/run() read candidates
- * exclusively through that index now (getCharactersWithLinkedWorld()), never by walking the characters
+ * exclusively through that index now (streamLinkedWorlds()), never by walking the characters
  * directory themselves, so every test has to seed the index the same way a real install's boot would
  * before the migration can see anything.
  */
@@ -101,6 +101,17 @@ async function indexCharacters() {
 
 const noLog = { log: () => {} };
 
+/** Everything findCandidates() yields, gathered - only ever over a test's handful of characters. */
+async function findAllCandidates() {
+    const safe = [];
+    const ambiguous = [];
+    for await (const findings of migration.findCandidates(directories, noLog.log)) {
+        safe.push(...findings.safe);
+        ambiguous.push(...findings.ambiguous);
+    }
+    return { safe, ambiguous };
+}
+
 describe('unimport-embedded-lore - detection', () => {
     test('a world with no originalData marker (manually created/linked) is never touched', async () => {
         const book = makeBook();
@@ -108,7 +119,7 @@ describe('unimport-embedded-lore - detection', () => {
         await writeCardFile('Alice.png', { data: { extensions: { world: 'SharedWorld' }, character_book: book } });
         await indexCharacters();
 
-        const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
+        const { safe, ambiguous } = await findAllCandidates();
         expect(safe).toEqual([]);
         expect(ambiguous).toEqual([]);
     });
@@ -119,7 +130,7 @@ describe('unimport-embedded-lore - detection', () => {
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
         await indexCharacters();
 
-        const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
+        const { safe, ambiguous } = await findAllCandidates();
         expect(ambiguous).toEqual([]);
         expect(safe).toEqual([{ avatar: 'Alice.png', worldName: "Alice's Lorebook", action: 'unlink-only' }]);
     });
@@ -130,7 +141,7 @@ describe('unimport-embedded-lore - detection', () => {
         await writeCardFile('Bob.png', { data: { extensions: { world: "Bob's Lorebook" } } }); // no character_book at all
         await indexCharacters();
 
-        const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
+        const { safe, ambiguous } = await findAllCandidates();
         expect(ambiguous).toEqual([]);
         expect(safe).toEqual([{ avatar: 'Bob.png', worldName: "Bob's Lorebook", action: 'restore-and-unlink' }]);
     });
@@ -142,7 +153,7 @@ describe('unimport-embedded-lore - detection', () => {
         await writeCardFile('Carol.png', { data: { extensions: { world: "Carol's Lorebook" }, character_book: editedBook } });
         await indexCharacters();
 
-        const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
+        const { safe, ambiguous } = await findAllCandidates();
         expect(safe).toEqual([]);
         expect(ambiguous).toHaveLength(1);
         expect(ambiguous[0].avatar).toBe('Carol.png');
@@ -155,7 +166,7 @@ describe('unimport-embedded-lore - detection', () => {
         await writeCardFile('Eve.png', { data: { extensions: { world: 'SharedLore' }, character_book: book } });
         await indexCharacters();
 
-        const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
+        const { safe, ambiguous } = await findAllCandidates();
         expect(safe).toEqual([]);
         expect(ambiguous.map(a => a.avatar).sort()).toEqual(['Dave.png', 'Eve.png']);
     });
@@ -164,14 +175,14 @@ describe('unimport-embedded-lore - detection', () => {
         await writeCardFile('Frank.png');
         await indexCharacters();
 
-        const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
+        const { safe, ambiguous } = await findAllCandidates();
         expect(safe).toEqual([]);
         expect(ambiguous).toEqual([]);
     });
 
     test('a huge number of un-linked characters never gets read off disk - only the indexed candidate does', async () => {
         // Stand-in for "999,999,950+ characters that don't have a linked world at all": these are indexed
-        // (so getCharactersWithLinkedWorld()'s WHERE excludes them) but their PNGs are deleted right after -
+        // (so streamLinkedWorlds()'s WHERE excludes them) but their PNGs are deleted right after -
         // if findCandidates() ever tried to open one of them, this test would fail on a missing file, not
         // just on a wrong count.
         for (let i = 0; i < 25; i++) {
@@ -186,7 +197,7 @@ describe('unimport-embedded-lore - detection', () => {
             fs.unlinkSync(path.join(charactersDir, `NoWorld${i}.png`));
         }
 
-        const { safe, ambiguous } = await migration.findCandidates(directories, noLog.log);
+        const { safe, ambiguous } = await findAllCandidates();
         expect(ambiguous).toEqual([]);
         expect(safe).toEqual([{ avatar: 'Alice.png', worldName: "Alice's Lorebook", action: 'unlink-only' }]);
     });
@@ -270,7 +281,7 @@ describe('unimport-embedded-lore - apply', () => {
 
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result.migrated).toBe(0);
-        expect(result.ambiguous).toHaveLength(1);
+        expect(result.ambiguous).toBe(1);
 
         expect(fs.readFileSync(path.join(charactersDir, 'Carol.png')).equals(pngBefore)).toBe(true);
         const card = await readDbCard('Carol.png');
@@ -284,8 +295,10 @@ describe('unimport-embedded-lore - apply', () => {
         await writeCardFile('Alice.png', { data: { extensions: { world: "Alice's Lorebook" }, character_book: book } });
         await indexCharacters();
 
-        const result = await migration.run(directories, { apply: true, log: () => {} });
-        expect(result.orphanedWorlds).toEqual(["Alice's Lorebook"]);
+        const lines = [];
+        const result = await migration.run(directories, { apply: true, log: line => lines.push(line) });
+        expect(result.orphanedWorlds).toBe(1);
+        expect(lines).toContainEqual(expect.stringMatching(/1 World file\(s\) came from an embedded-lore import and now have no character linking to them - .*: Alice's Lorebook/));
         expect(fs.existsSync(path.join(worldsDir, "Alice's Lorebook.json"))).toBe(true);
     });
 });
