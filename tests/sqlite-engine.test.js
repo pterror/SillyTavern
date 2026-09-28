@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach } from '@jest/globals';
+import { describe, test, expect, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -108,5 +108,32 @@ describe('openWasmDatabase()', () => {
 
         expect(db.get('SELECT value FROM meta WHERE key = @key', { key: 'absent' })).toBeUndefined();
         db.close();
+    });
+
+    test('opened with { busyTimeoutMs: 0, retryOnBusy: false }, a transaction fails at once on another connection\'s lock', () => {
+        const dbPath = tmpDbPath();
+        const setup = openWasmDatabase(WasmDatabase, dbPath);
+        setup.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)');
+        setup.close();
+
+        const blocker = new WasmDatabase(dbPath);
+        const db = openWasmDatabase(WasmDatabase, dbPath, { busyTimeoutMs: 0, retryOnBusy: false });
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            expect(db.get('PRAGMA busy_timeout')).toEqual({ timeout: 0 });
+            blocker.exec('BEGIN IMMEDIATE');
+            let ran = 0;
+            expect(() => db.transaction(() => { ran++; })).toThrow(/database is locked/);
+            expect(ran).toBe(0);
+            expect(errorSpy).not.toHaveBeenCalled();
+            blocker.exec('ROLLBACK');
+
+            db.transaction(() => { db.run('INSERT INTO meta (key, value) VALUES (@key, @value)', { key: 'k', value: 'v' }); });
+            expect(db.get('SELECT value FROM meta WHERE key = @key', { key: 'k' })).toEqual({ value: 'v' });
+        } finally {
+            errorSpy.mockRestore();
+            db.close();
+            blocker.close();
+        }
     });
 });

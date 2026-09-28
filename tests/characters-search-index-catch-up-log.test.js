@@ -1,7 +1,9 @@
-import { describe, test, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
+import Database from 'better-sqlite3';
 
 /** @type {typeof import('../src/endpoints/characters-search-index.js')} */
 let searchIndex;
@@ -121,4 +123,103 @@ describe('characters-search-index.js: catch-up log line', () => {
         expect(searchIndex.formatCatchUpLine({ ...base, tagNameSeq: 7, tagRenames: 2 }))
             .toContain('seq=10..20 tagseq=5..7 backlog=4 writers=fav:2,tag_ids:1,whole-record:1 tagrenames=2 ');
     });
+
+    test('a tick whose persist was skipped says so right after persist_ms; one that persisted is unchanged', () => {
+        const phases = { read: 1, deletes: 2, tags: 3, load: 4, build: 5, add: 6, commit: 7, persist: 8 };
+        const base = {
+            changed: true, deletes: 0, upserts: 3, ms: 40, seq: 10, seqFrom: 10, tagNameSeqFrom: 5, tagNameSeq: 5,
+            backlog: 14, writers: { fav: 3 }, tagRenames: 0, phases, lockWaitMs: 0,
+        };
+        expect(searchIndex.formatCatchUpLine({ ...base, persistSkipped: true })).toBe(
+            '[search] catch-up: seq=10..10 backlog=14 writers=fav:3 tagrenames=0 deletes=0 upserts=3 total_ms=40'
+            + ' read_ms=1 deletes_ms=2 tags_ms=3 load_ms=4 build_ms=5 add_ms=6 commit_ms=7 persist_ms=8 persist=skipped lockwait_ms=0');
+        expect(searchIndex.formatCatchUpLine({ ...base, persistSkipped: false })).toBe(searchIndex.formatCatchUpLine(base));
+        expect(searchIndex.formatCatchUpLine(base)).not.toContain('persist=skipped');
+    });
+});
+
+describe('characters-search-index.js: persisting the cursors while the database is locked', () => {
+    const metadataDbPath = () => path.join(tempDir, 'character-metadata.sqlite');
+    const SEQ_META_KEY = 'tantivy_char_index_seq';
+
+    test('a tick skips the persist without waiting, keeps its cursors, and the next tick redoes its work', async () => {
+        const tantivy = await tantivyEngine.getTantivyModule();
+        if (!tantivy) {
+            return;
+        }
+
+        await writeCard('FavChar');
+        await metadataDb.bootstrapIfNeeded(directories);
+        maintainer = searchIndex.createCharacterIndexMaintainer(directories, tantivy);
+        expect(await maintainer.rebuild()).not.toBeNull();
+        const seqBefore = maintainer.seq();
+        const persistedBefore = await metadataDb.getMetaValue(directories, SEQ_META_KEY);
+
+        await metadataDb.setCharacterFav(directories, 'FavChar.png', true);
+
+        const blocker = new Database(metadataDbPath());
+        let result;
+        try {
+            blocker.exec('BEGIN IMMEDIATE');
+            result = await maintainer.tick();
+        } finally {
+            blocker.exec('ROLLBACK');
+            blocker.close();
+        }
+        const skipped = /** @type {import('../src/endpoints/characters-search-index.js').TickResult} */ (result);
+        expect(skipped.persistSkipped).toBe(true);
+        expect(skipped.upserts).toBe(1);
+        expect(skipped.seq).toBe(seqBefore);
+        expect(maintainer.seq()).toBe(seqBefore);
+        expect(skipped.lockWaitMs).toBe(0);
+        expect(await metadataDb.getMetaValue(directories, SEQ_META_KEY)).toBe(persistedBefore);
+        expect(searchIndex.formatCatchUpLine(skipped)).toMatch(/ persist_ms=\d+ persist=skipped lockwait_ms=0$/);
+
+        const redone = /** @type {import('../src/endpoints/characters-search-index.js').TickResult} */ (await maintainer.tick());
+        expect(redone.persistSkipped).toBe(false);
+        expect(redone.seqFrom).toBe(seqBefore);
+        expect(redone.upserts).toBe(1);
+        expect(redone.seq).toBeGreaterThan(seqBefore);
+        expect(Number(await metadataDb.getMetaValue(directories, SEQ_META_KEY))).toBe(redone.seq);
+        expect(searchIndex.formatCatchUpLine(redone)).not.toContain('persist=skipped');
+    }, 20000);
+
+    test('a rebuild retries its persist until it lands', async () => {
+        const tantivy = await tantivyEngine.getTantivyModule();
+        if (!tantivy) {
+            return;
+        }
+
+        await writeCard('PlainChar');
+        await metadataDb.bootstrapIfNeeded(directories);
+        maintainer = searchIndex.createCharacterIndexMaintainer(directories, tantivy);
+
+        const blocker = new Database(metadataDbPath());
+        blocker.exec('BEGIN IMMEDIATE');
+        let blocked = true;
+        const release = () => {
+            if (!blocked) return;
+            blocked = false;
+            blocker.exec('ROLLBACK');
+            blocker.close();
+        };
+        // The lock is released when the rebuild schedules its first retry, so that retry is what lands.
+        const realSetTimeout = globalThis.setTimeout;
+        let retries = 0;
+        const setTimeoutSpy = jest.spyOn(globalThis, 'setTimeout').mockImplementation(/** @type {any} */ ((fn, ms, ...args) => {
+            if (ms === 100) {
+                retries++;
+                release();
+            }
+            return realSetTimeout(fn, ms, ...args);
+        }));
+        try {
+            expect(await maintainer.rebuild()).not.toBeNull();
+        } finally {
+            setTimeoutSpy.mockRestore();
+            release();
+        }
+        expect(retries).toBe(1);
+        expect(Number(await metadataDb.getMetaValue(directories, SEQ_META_KEY))).toBe(maintainer.seq());
+    }, 20000);
 });

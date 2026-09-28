@@ -11,7 +11,7 @@ import { getBetterSqlite3 } from './native-sqlite.js';
  *     requires the prefix in the key itself (`{'@avatar': ...}`).
  *   - WAL mode: better-sqlite3 supports it; node-sqlite3-wasm's WASM build silently no-ops on
  *     `PRAGMA journal_mode = WAL` and stays in rollback-journal mode.
- * @type {{ kind: 'native' | 'wasm', openDatabase: (path: string) => SqliteEngineHandle } | null | undefined}
+ * @type {{ kind: 'native' | 'wasm', openDatabase: (path: string, options?: SqliteOpenOptions) => SqliteEngineHandle } | null | undefined}
  * undefined = not yet resolved, null = neither engine is usable
  */
 let engine = undefined;
@@ -35,6 +35,14 @@ let engine = undefined;
  *   Native only: without WAL (wasm) an open reader would block this handle's writes.
  * @property {() => void} close Native: closes readers from openReader(), TRUNCATE-checkpoints the WAL, then closes.
  *   On both engines, iterate() afterwards throws, so a streamRows()/streamWrite() interrupted by close() throws instead of ending early.
+ */
+
+/**
+ * @typedef {object} SqliteOpenOptions
+ * @property {number} [busyTimeoutMs] How long a statement waits on another connection's lock before failing busy.
+ *   Default 15000.
+ * @property {boolean} [retryOnBusy] false: run/insertMany/transaction throw the first busy error instead of
+ *   retrying it. Default true.
  */
 
 /**
@@ -125,7 +133,7 @@ const BUSY_RETRY_BASE_DELAY_MS = 20;
 const BUSY_RETRY_TOTAL_BUDGET_MS = 20000;
 
 /** Matched on both code and message: better-sqlite3 exposes a `code` string, node-sqlite3-wasm only the message text. */
-function isBusyError(err) {
+export function isBusyError(err) {
     const code = String(err?.code ?? '');
     const message = String(err?.message ?? '');
     return code.startsWith('SQLITE_BUSY')
@@ -193,14 +201,24 @@ function retryWhileBusy(fn, label, startedAt, onBusy) {
 }
 
 /**
+ * @param {boolean} retryOnBusy
+ * @returns {<T>(fn: () => T, label: string) => T}
+ */
+function busyRetryFor(retryOnBusy) {
+    return retryOnBusy ? runWithBusyRetry : (fn) => fn();
+}
+
+/**
  * @param {typeof import('better-sqlite3')} DatabaseCtor
  * @param {string} path
+ * @param {SqliteOpenOptions} [options]
  * @returns {SqliteEngineHandle}
  */
-export function openNativeDatabase(DatabaseCtor, path) {
+export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TIMEOUT_MS, retryOnBusy = true } = {}) {
+    const withBusyRetry = busyRetryFor(retryOnBusy);
     const db = new DatabaseCtor(path);
     db.pragma('journal_mode = WAL');
-    db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    db.pragma(`busy_timeout = ${busyTimeoutMs}`);
     db.pragma(`journal_size_limit = ${JOURNAL_SIZE_LIMIT_BYTES}`);
 
     let closed = false;
@@ -238,18 +256,18 @@ export function openNativeDatabase(DatabaseCtor, path) {
                     stmt.run(item);
                 }
             }).immediate;
-            runWithBusyRetry(() => tx(rows), 'insertMany');
+            withBusyRetry(() => tx(rows), 'insertMany');
         },
         query: (sql, param) => prepare(sql).all(param),
         // Reads (query/get/all) are deliberately NOT retried: in WAL mode a reader never blocks on a writer,
         // so a read that fails this way has a different cause and should surface rather than be slept over.
-        run: (sql, params) => { assertNoOpenIterator(); return runWithBusyRetry(() => prepare(sql).run(params ?? {}), 'run'); },
+        run: (sql, params) => { assertNoOpenIterator(); return withBusyRetry(() => prepare(sql).run(params ?? {}), 'run'); },
         get: (sql, params) => prepare(sql).get(params ?? {}),
         all: (sql, params) => prepare(sql).all(params ?? {}),
         iterate,
         // .immediate, not deferred: takes the write lock up front so a read-then-write transaction never needs
         // to upgrade mid-transaction and hit SQLITE_BUSY_SNAPSHOT (which the busy handler doesn't cover).
-        transaction: (fn) => { assertNoOpenIterator(); return runWithBusyRetry(() => db.transaction(fn).immediate(), 'transaction'); },
+        transaction: (fn) => { assertNoOpenIterator(); return withBusyRetry(() => db.transaction(fn).immediate(), 'transaction'); },
         checkpoint: () => { assertNoOpenIterator(); db.pragma('wal_checkpoint(TRUNCATE)'); },
         // deterministic: true is safe - every registered function in this codebase is a pure hash.
         defineFunction: (name, fn) => { db.function(name, { deterministic: true }, fn); },
@@ -321,12 +339,14 @@ export function openNativeReadDatabase(DatabaseCtor, path) {
 /**
  * @param {import('node-sqlite3-wasm').Database} WasmDatabaseCtor
  * @param {string} path
+ * @param {SqliteOpenOptions} [options]
  * @returns {SqliteEngineHandle}
  */
-export function openWasmDatabase(WasmDatabaseCtor, path) {
+export function openWasmDatabase(WasmDatabaseCtor, path, { busyTimeoutMs = BUSY_TIMEOUT_MS, retryOnBusy = true } = {}) {
+    const withBusyRetry = busyRetryFor(retryOnBusy);
     const db = new WasmDatabaseCtor(path);
     // No WAL on this engine, so it serializes on the whole database file - more prone to lock contention.
-    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
 
     let closed = false;
 
@@ -361,7 +381,7 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
         insertMany: (sql, rows) => {
             assertNoOpenIterator();
             const stmt = prepare(sql);
-            runWithBusyRetry(() => {
+            withBusyRetry(() => {
                 // BEGIN IMMEDIATE, matching the native adapter.
                 db.exec('BEGIN IMMEDIATE');
                 try {
@@ -378,7 +398,7 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
         },
         query: (sql, param) => prepare(sql).all(param),
         // Reads are not retried here either - same reasoning as the native adapter above.
-        run: (sql, params) => { assertNoOpenIterator(); return runWithBusyRetry(() => prepare(sql).run(prefixNamedParamsForWasm(params) ?? {}), 'run'); },
+        run: (sql, params) => { assertNoOpenIterator(); return withBusyRetry(() => prepare(sql).run(prefixNamedParamsForWasm(params) ?? {}), 'run'); },
         // node-sqlite3-wasm returns null for no row; the handle contract is undefined.
         get: (sql, params) => prepare(sql).get(prefixNamedParamsForWasm(params) ?? {}) ?? undefined,
         all: (sql, params) => prepare(sql).all(prefixNamedParamsForWasm(params) ?? {}),
@@ -386,7 +406,7 @@ export function openWasmDatabase(WasmDatabaseCtor, path) {
         // No native transaction() API on this engine - BEGIN IMMEDIATE/COMMIT/ROLLBACK is equivalent.
         transaction: (fn) => {
             assertNoOpenIterator();
-            runWithBusyRetry(() => {
+            withBusyRetry(() => {
                 db.exec('BEGIN IMMEDIATE');
                 try {
                     fn();
@@ -484,14 +504,14 @@ export async function getSqliteEngine() {
 
     const NativeCtor = await getBetterSqlite3();
     if (NativeCtor) {
-        engine = { kind: 'native', openDatabase: (path) => openNativeDatabase(NativeCtor, path) };
+        engine = { kind: 'native', openDatabase: (path, options) => openNativeDatabase(NativeCtor, path, options) };
         return engine;
     }
 
     console.error(color.yellow('[search] Trying the WebAssembly SQLite search backend (node-sqlite3-wasm) instead - same ranking and label:query support as native, just slower.'));
     const WasmCtor = await tryLoadWasmEngine();
     if (WasmCtor) {
-        engine = { kind: 'wasm', openDatabase: (path) => openWasmDatabase(WasmCtor, path) };
+        engine = { kind: 'wasm', openDatabase: (path, options) => openWasmDatabase(WasmCtor, path, options) };
         return engine;
     }
 
