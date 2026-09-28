@@ -60,14 +60,17 @@ async function runPasses() {
         if (closing) return;
         const start = process.hrtime.bigint();
         console.log(`[boot-timing] [metadata-migrations] (${directories.root}) ${name}: start`);
+        /** @type {any} */
+        let result;
         try {
-            await metadataDb[name](directories);
+            result = await metadataDb[name](directories);
         } catch (err) {
             post({ type: 'error', message: `${name} failed for ${directories.root}, skipping the passes after it until next boot: ${err?.stack ?? err}` });
             return;
         }
         const now = process.hrtime.bigint();
-        console.log(`[boot-timing] [metadata-migrations] (${directories.root}) ${name}: ${Number(now - start) / 1e6}ms (migrations total so far: ${Number(now - chainStart) / 1e6}ms)`);
+        const counts = typeof result?.batches === 'number' ? `, ${result.batches} batch(es), ${result.rowsChanged} row(s) changed` : '';
+        console.log(`[boot-timing] [metadata-migrations] (${directories.root}) ${name}: ${Number(now - start) / 1e6}ms${counts} (migrations total so far: ${Number(now - chainStart) / 1e6}ms)`);
     }
 }
 
