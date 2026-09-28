@@ -4,8 +4,9 @@ import { setConfigFilePath } from './util.js';
 
 /**
  * One user store's metadata migration worker (spawned by metadata-migration-coordinator.js). Runs the store's
- * one-time migration passes on its own database connection, in MIGRATION_PASSES order, then exits. A pass that
- * throws stops the passes after it; each is retried next boot, since its done-marker is written last.
+ * migration passes named in workerData.passes (all of MIGRATION_PASSES when absent) on its own database connection,
+ * in that order, then exits. A pass that throws stops the passes after it; each is retried next boot, since its
+ * done-marker is written last. workerData.boot is set for the once-per-boot run, whose lines are [boot-timing] ones.
  *
  * Messages to the coordinator:
  *   { type: 'batch', changed, tagDefinitionsChanged }   a batch committed that wrote change rows (changed) and/or
@@ -14,7 +15,7 @@ import { setConfigFilePath } from './util.js';
  * Requests from the coordinator: { type: 'close' }: stop before the next pass, then exit.
  */
 
-const { directories, configPath } = workerData;
+const { directories, configPath, boot = true } = workerData;
 
 // Must precede importing anything that reads config.
 if (configPath) {
@@ -22,6 +23,9 @@ if (configPath) {
 }
 const metadataDb = await import('./character-metadata-db.js');
 const { MIGRATION_PASSES } = await import('./metadata-migration-coordinator.js');
+/** @type {readonly string[]} */
+const passes = workerData.passes ?? MIGRATION_PASSES;
+const logPrefix = boot ? '[boot-timing] [metadata-migrations]' : '[metadata-migrations]';
 
 /** @param {object} msg */
 const post = (msg) => parentPort?.postMessage(msg);
@@ -56,10 +60,10 @@ parentPort?.on('message', (msg) => {
 
 async function runPasses() {
     const chainStart = process.hrtime.bigint();
-    for (const name of MIGRATION_PASSES) {
+    for (const name of passes) {
         if (closing) return;
         const start = process.hrtime.bigint();
-        console.log(`[boot-timing] [metadata-migrations] (${directories.root}) ${name}: start`);
+        console.log(`${logPrefix} (${directories.root}) ${name}: start`);
         /** @type {any} */
         let result;
         try {
@@ -70,7 +74,7 @@ async function runPasses() {
         }
         const now = process.hrtime.bigint();
         const counts = typeof result?.batches === 'number' ? `, ${result.batches} batch(es), ${result.rowsChanged} row(s) changed` : '';
-        console.log(`[boot-timing] [metadata-migrations] (${directories.root}) ${name}: ${Number(now - start) / 1e6}ms${counts} (migrations total so far: ${Number(now - chainStart) / 1e6}ms)`);
+        console.log(`${logPrefix} (${directories.root}) ${name}: ${Number(now - start) / 1e6}ms${counts} (migrations total so far: ${Number(now - chainStart) / 1e6}ms)`);
     }
 }
 

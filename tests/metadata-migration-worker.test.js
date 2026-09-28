@@ -316,3 +316,160 @@ describe('metadata-migration-worker.js', () => {
         }
     });
 });
+
+describe('createMetadataMigrationCoordinator().request(): a pass on demand', () => {
+    test('spawns a worker that runs only the requested pass, once the store\'s boot chain has finished', async () => {
+        /** @type {(ok: boolean) => void} */
+        let finishChain = () => {};
+        const { coordinator, workers } = fakeSetup({
+            waitForBootChain: () => new Promise(resolve => { finishChain = resolve; }),
+        });
+
+        const done = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        expect(workers).toHaveLength(0);
+
+        finishChain(true);
+        await flush();
+        expect(workers).toHaveLength(1);
+        expect(workers[0].workerData.directories).toBe(directories);
+        expect(workers[0].workerData.passes).toEqual(['finishDeletedTags']);
+        expect(workers[0].workerData.boot).toBe(false);
+        expect(await isSettled(done)).toBe(false);
+
+        workers[0].emit('exit', 0);
+        await done;
+        expect(await isSettled(coordinator.idle(directories))).toBe(true);
+    });
+
+    test('requests while a run is going make exactly one more run, after it exits', async () => {
+        const { coordinator, workers } = fakeSetup();
+        const first = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        expect(workers).toHaveLength(1);
+
+        const second = coordinator.request(directories, 'finishDeletedTags');
+        const third = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        expect(workers).toHaveLength(1);
+        expect(second).toBe(third);
+
+        workers[0].emit('exit', 0);
+        await first;
+        await flush();
+        expect(workers).toHaveLength(2);
+        expect(workers[1].workerData.passes).toEqual(['finishDeletedTags']);
+        expect(await isSettled(second)).toBe(false);
+
+        workers[1].emit('exit', 0);
+        await second;
+        await flush();
+        expect(workers).toHaveLength(2);
+        expect(await isSettled(coordinator.idle(directories))).toBe(true);
+    });
+
+    test('a request after a run has finished starts a new run', async () => {
+        const { coordinator, workers } = fakeSetup();
+        const first = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        workers[0].emit('exit', 0);
+        await first;
+
+        const second = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        expect(workers).toHaveLength(2);
+        workers[1].emit('exit', 0);
+        await second;
+    });
+
+    test('a request while the boot run is going waits for it, then runs once', async () => {
+        const { coordinator, workers } = fakeSetup();
+        const boot = coordinator.start(directories);
+        await flush();
+        expect(workers).toHaveLength(1);
+        expect(workers[0].workerData.passes).toEqual([...coordinatorModule.MIGRATION_PASSES]);
+        expect(workers[0].workerData.boot).toBe(true);
+
+        const requested = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        expect(workers).toHaveLength(1);
+
+        workers[0].emit('exit', 0);
+        await boot;
+        await flush();
+        expect(workers).toHaveLength(2);
+        expect(workers[1].workerData.passes).toEqual(['finishDeletedTags']);
+        expect(workers[1].workerData.boot).toBe(false);
+        workers[1].emit('exit', 0);
+        await requested;
+    });
+
+    test('start() while a requested run is going runs the boot passes after it', async () => {
+        const { coordinator, workers } = fakeSetup();
+        const requested = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        const boot = coordinator.start(directories);
+        await flush();
+        expect(workers).toHaveLength(1);
+
+        workers[0].emit('exit', 0);
+        await requested;
+        await flush();
+        expect(workers).toHaveLength(2);
+        expect(workers[1].workerData.passes).toEqual([...coordinatorModule.MIGRATION_PASSES]);
+        expect(workers[1].workerData.boot).toBe(true);
+        workers[1].emit('exit', 0);
+        await boot;
+    });
+
+    test('the requested run\'s batches clear the tag cache and emit \'change\' like the boot run\'s', async () => {
+        const { coordinator, workers, onChanged, onTagDefinitionsChanged } = fakeSetup();
+        const done = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        workers[0].emit('message', { type: 'batch', changed: true, tagDefinitionsChanged: true });
+        workers[0].emit('exit', 0);
+        await done;
+        expect(onTagDefinitionsChanged).toHaveBeenCalledWith(directories);
+        expect(onChanged).toHaveBeenCalledTimes(1);
+    });
+
+    test('dispose() closes a requested run\'s worker, and nothing queued behind it starts', async () => {
+        const { coordinator, workers } = fakeSetup();
+        const first = coordinator.request(directories, 'finishDeletedTags');
+        await flush();
+        const second = coordinator.request(directories, 'finishDeletedTags');
+
+        const disposed = coordinator.dispose();
+        expect(workers[0].posted).toEqual([{ type: 'close' }]);
+        workers[0].emit('exit', 0);
+        await disposed;
+        await Promise.all([first, second]);
+        expect(workers).toHaveLength(1);
+
+        await coordinator.request(directories, 'finishDeletedTags');
+        expect(workers).toHaveLength(1);
+    });
+
+    test('a pass that isn\'t a migration pass is refused', async () => {
+        const { coordinator, workers } = fakeSetup();
+        await expect(coordinator.request(directories, 'disposeMetadataStores')).rejects.toThrow('disposeMetadataStores');
+        await flush();
+        expect(workers).toHaveLength(0);
+    });
+
+    test('the real worker runs only the requested pass', async () => {
+        await writeCardFile('Alice.png', ['Beta']);
+        await Promise.all(await metadataDb.initializeMetadataStores([directories]));
+        const { spawnWorker, output } = realWorkerWithOutput();
+
+        await coordinatorModule.createMetadataMigrationCoordinator({ spawnWorker }).request(directories, 'finishDeletedTags');
+
+        const started = output().split('\n')
+            .map(line => line.match(/\[metadata-migrations\] \((.*)\) (\w+): start$/))
+            .filter(match => match && match[1] === directories.root)
+            .map(match => match?.[2]);
+        expect(started).toEqual(['finishDeletedTags']);
+        expect(output()).not.toContain('[boot-timing]');
+        expect(await metadataDb.getMetaValue(directories, 'character_tag_ids_normalized_v1')).toBeNull();
+    });
+});

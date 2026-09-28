@@ -25,6 +25,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
 /**
  * @typedef {{ postMessage(msg: object): void, on(event: string, listener: (...args: any[]) => void): any, terminate(): Promise<number> | void, unref?(): void }} MigrationWorker
  * @typedef {{ worker: MigrationWorker, exited: Promise<void>, disposing: boolean }} WorkerEntry
+ * @typedef {{ passes: Set<string>, boot: boolean, done: Promise<void>, settle: () => void }} QueuedRun
+ * @typedef {{ current: QueuedRun | null, next: QueuedRun | null }} StoreRuns
  */
 
 /** @param {object} workerData */
@@ -33,10 +35,12 @@ function spawnMigrationWorker(workerData) {
 }
 
 /**
- * Runs each user store's one-time metadata migration passes in a worker thread of its own (one per store, with its
- * own database connection), so they never hold up the server or its requests. A store's worker starts only once
- * that store's boot chain (initializeMetadataStores()) has finished, and not at all if the chain failed, since the
- * passes rely on what it populates. Keeps this process in step with what the worker writes: after each batch that
+ * Runs each user store's metadata migration passes in a worker thread (with its own database connection), so they
+ * never hold up the server or its requests: all of them once per boot (start()), and any one of them on demand
+ * (request()). A store has at most one worker at a time; a run asked for while one is going runs once it has
+ * exited, and every request made meanwhile joins that one run. A store's worker starts only once that store's boot
+ * chain (initializeMetadataStores()) has finished, and not at all if the chain failed, since the passes rely on what
+ * it populates. Keeps this process in step with what the worker writes: after each batch that
  * wrote tag definitions the store's tag cache is cleared, and after each batch that wrote change rows 'change' is
  * emitted once.
  * @param {object} [options]
@@ -55,6 +59,8 @@ export function createMetadataMigrationCoordinator({
     const entries = new Map();
     /** @type {Map<string, Promise<void>>} */
     const starts = new Map();
+    /** @type {Map<string, StoreRuns>} */
+    const storeRuns = new Map();
     let disposed = false;
 
     /**
@@ -78,16 +84,18 @@ export function createMetadataMigrationCoordinator({
 
     /**
      * @param {import('./users.js').UserDirectoryList} directories
+     * @param {string[]} passes In MIGRATION_PASSES order.
+     * @param {boolean} boot
      * @returns {Promise<void>} Settles once the store's worker has exited (at once when none was started).
      */
-    async function run(directories) {
+    async function run(directories, passes, boot) {
         if (!(await waitForBootChain(directories))) {
-            console.error(color.red(`[metadata-migrations] Not running the migration passes for ${directories.root} this boot: its metadata boot chain did not complete.`));
+            console.error(color.red(`[metadata-migrations] Not running ${passes.join(', ')} for ${directories.root}: its metadata boot chain did not complete.`));
             return;
         }
         if (disposed) return;
 
-        const worker = spawnWorker({ directories, configPath: getConfigFilePath() });
+        const worker = spawnWorker({ directories, configPath: getConfigFilePath(), passes, boot });
         worker.unref?.();
         /** @type {() => void} */
         let markExited = () => {};
@@ -116,6 +124,56 @@ export function createMetadataMigrationCoordinator({
         await entry.exited;
     }
 
+    /** @returns {QueuedRun} */
+    function newQueuedRun() {
+        /** @type {() => void} */
+        let settle = () => {};
+        const done = new Promise(resolve => { settle = resolve; });
+        return { passes: new Set(), boot: false, done: /** @type {Promise<void>} */ (done), settle };
+    }
+
+    /**
+     * @param {import('./users.js').UserDirectoryList} directories
+     * @param {StoreRuns} runs
+     */
+    async function drain(directories, runs) {
+        while (runs.next) {
+            const queued = runs.next;
+            runs.next = null;
+            runs.current = queued;
+            try {
+                await run(directories, MIGRATION_PASSES.filter(name => queued.passes.has(name)), queued.boot);
+            } catch (err) {
+                console.error(color.red(`[metadata-migrations] migration run for ${directories.root} failed: ${err?.message ?? err}`));
+            } finally {
+                runs.current = null;
+                queued.settle();
+            }
+        }
+    }
+
+    /**
+     * Queues `passes` for the store's next run, starting it now when no run is going.
+     * @param {import('./users.js').UserDirectoryList} directories
+     * @param {Iterable<string>} passes
+     * @param {boolean} boot
+     * @returns {Promise<void>} Settles once the run the passes joined has finished.
+     */
+    function schedule(directories, passes, boot) {
+        let runs = storeRuns.get(directories.root);
+        if (!runs) {
+            runs = { current: null, next: null };
+            storeRuns.set(directories.root, runs);
+        }
+        const idle = !runs.current && !runs.next;
+        runs.next ??= newQueuedRun();
+        for (const name of passes) runs.next.passes.add(name);
+        if (boot) runs.next.boot = true;
+        const done = runs.next.done;
+        if (idle) void drain(directories, runs);
+        return done;
+    }
+
     return {
         /**
          * Starts the store's migration worker once its boot chain has finished. One per store: a second call
@@ -127,10 +185,33 @@ export function createMetadataMigrationCoordinator({
             if (isReadOnlyMode()) return Promise.resolve();
             let started = starts.get(directories.root);
             if (!started) {
-                started = run(directories);
+                started = schedule(directories, MIGRATION_PASSES, true);
                 starts.set(directories.root, started);
             }
             return started;
+        },
+
+        /**
+         * Runs one migration pass for the store on demand: now when no run is going for the store, otherwise once
+         * more after that run, with every request made meanwhile joining that one run. Runs nothing in read-only
+         * mode or after dispose().
+         * @param {import('./users.js').UserDirectoryList} directories
+         * @param {typeof MIGRATION_PASSES[number]} name
+         * @returns {Promise<void>} Settles once the run that includes this request has finished.
+         */
+        request(directories, name) {
+            if (!MIGRATION_PASSES.includes(name)) return Promise.reject(new Error(`Not a metadata migration pass: ${name}`));
+            if (isReadOnlyMode() || disposed) return Promise.resolve();
+            return schedule(directories, [name], false);
+        },
+
+        /**
+         * @param {import('./users.js').UserDirectoryList} directories
+         * @returns {Promise<void>} Settles once the store has no run going or queued (at once when it has none now).
+         */
+        idle(directories) {
+            const runs = storeRuns.get(directories.root);
+            return (runs?.next ?? runs?.current)?.done ?? Promise.resolve();
         },
 
         /**
@@ -164,6 +245,23 @@ const metadataMigrationCoordinator = createMetadataMigrationCoordinator();
  */
 export async function startMetadataMigrations(directoriesList) {
     await Promise.all(directoriesList.map(directories => metadataMigrationCoordinator.start(directories)));
+}
+
+/**
+ * Runs one migration pass for the store while the server is up (see the coordinator's request()).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {typeof MIGRATION_PASSES[number]} name
+ */
+export function requestMetadataMigrationPass(directories, name) {
+    return metadataMigrationCoordinator.request(directories, name);
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<void>} Settles once the store has no migration run going or queued.
+ */
+export function whenMetadataMigrationsIdle(directories) {
+    return metadataMigrationCoordinator.idle(directories);
 }
 
 export function disposeMetadataMigrationWorkers() {
