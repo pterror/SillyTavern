@@ -233,6 +233,10 @@ describe('every tags write sets the derived columns with data', () => {
 
     test('createTagDefinition, and editTagDefinition on update', async () => {
         await openStore();
+        // Until the sort_order fill has finished, a given sort_order is queued rather than written.
+        await makeReady();
+        await metadataDb.migrateTagsJsonIfNeeded(directories);
+        await metadataDb.fillTagSortOrdersIfNeeded(directories);
         await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', sort_order: null, folder_type: null });
         expect(derived('a')).toEqual({ sort_order: 0, folder_type: 'null', is_folder: 1, usage_count: 0 });
         await metadataDb.editTagDefinition(directories, 'a', { sort_order: 2.5, folder_type: 'NONE' });
