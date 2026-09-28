@@ -6469,11 +6469,18 @@ const TAG_REORDER_PASS_KEY = 'tag_reorder_pass';
 const TAG_REORDER_PASS_LAST_ID_KEY = 'tag_reorder_pass_last_id';
 
 /**
+ * Where a reorder pass (runTagReorderPassIfNeeded()) is: walking `mode`'s order, with `n` the value the next tag
+ * gets and (c, k, r) the (usage_count, name_key, rowid) of the last tag walked (absent before the first); clearing
+ * older passes' stamps; sweeping the unstamped tags; or applying tag_pending_moves.
+ * @typedef {{ phase: 'walk', n: number, c?: number, k?: string, r?: number } | { phase: 'clear' } | { phase: 'sweep' } | { phase: 'drain' }} TagReorderPassPlace
+ */
+
+/**
  * A reorder pass: writing sort_order for every tag in `mode`'s order, then applying tag_pending_moves.
  * @typedef {object} TagReorderPass
  * @property {number} id Greater than every id given before.
  * @property {TagReorderMode} mode
- * @property {unknown} at The walk's place; null before it starts.
+ * @property {TagReorderPassPlace | null} at The pass's place; null before the walk starts.
  */
 
 /**
@@ -6740,21 +6747,30 @@ function tagNameSync(db, id) {
 }
 
 /**
- * Applies tag_pending_moves in arrival order, one entry per transaction, deleting each (tag-actions D16, D18, D19),
- * and stops while a reorder pass is recorded. An anchored entry is moved as moveTagDefinition() moves; a value
- * entry's raw value is written as the tag's sort_order in data, and coerced in the column.
+ * Applies tag_pending_moves in arrival order, one entry per transaction, deleting each (tag-actions D16, D18, D19).
+ * An anchored entry is moved as moveTagDefinition() moves; a value entry's raw value is written as the tag's
+ * sort_order in data, and coerced in the column.
  * An entry whose tag was deleted or is gone is dropped, and one whose tag is its own anchor does nothing, both
  * without a warning. Any other refusal leaves the tags as they are and is reported by reportTagMoveFailed(), once
  * per refusal.
+ *
+ * With no `passId`, it stops while a reorder pass is recorded. With one, it applies them for that pass
+ * (runTagReorderPassIfNeeded()): it stops once another pass (or none) is recorded, and the transaction that finds the
+ * table empty clears the pass record, so no entry is left queued with no pass to apply it (tag-actions D25.7).
  * @param {MetadataDbEntry} entry
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {{ batches: number, rowsChanged: number }} totals Gets a batch per entry and the rows it wrote.
+ * @param {number | null} [passId]
+ * @returns {Promise<'done' | 'held'>} done: the table was found empty (and, with `passId`, the pass cleared); held:
+ *   stopped by the pass record.
  */
-async function drainTagPendingMoves(entry, directories, totals) {
+async function drainTagPendingMoves(entry, directories, totals, passId = null) {
     const { db } = entry;
     // So a store with nothing queued runs no transaction; each transaction below still reads its own entry.
-    if (!db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return;
+    if (passId === null && !db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return 'done';
     for (;;) {
+        /** @type {'done' | 'held'} */
+        let stop = 'done';
         /** @type {{ seq: number, tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, value: string | null } | undefined} */
         let pending;
         /** @type {TagMoveOutcome | null} */
@@ -6768,9 +6784,18 @@ async function drainTagPendingMoves(entry, directories, totals) {
                 moved = null;
                 rows = 0;
                 failures = [];
-                pending = tagReorderPassSync(db) !== null ? undefined
-                    : /** @type {typeof pending} */ (db.get('SELECT seq, tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq LIMIT 1'));
-                if (!pending) return;
+                const pass = tagReorderPassSync(db);
+                if (passId === null ? pass !== null : pass?.id !== passId) {
+                    pending = undefined;
+                    stop = 'held';
+                    return;
+                }
+                pending = /** @type {typeof pending} */ (db.get('SELECT seq, tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq LIMIT 1'));
+                if (!pending) {
+                    stop = 'done';
+                    if (passId !== null) db.run('DELETE FROM meta WHERE key = @key', { key: TAG_REORDER_PASS_KEY });
+                    return;
+                }
                 const { tag_id: tagId, side, anchor_id: anchorId } = pending;
                 if (side !== null && anchorId !== null) {
                     moved = moveTagSync(db, tagId, anchorId, side);
@@ -6812,7 +6837,7 @@ async function drainTagPendingMoves(entry, directories, totals) {
             const { seq } = /** @type {NonNullable<typeof pending>} */ (pending);
             db.transaction(() => db.run('DELETE FROM tag_pending_moves WHERE seq = @seq', { seq }));
         }
-        if (!pending) return;
+        if (!pending) return stop;
         if (rows > 0) warnTagTailNumbering(/** @type {TagMoveOutcome | null} */ (moved)?.logs ?? null);
         for (const payload of failures) reportTagMoveFailed(directories.root, payload);
         if (rows > 0) entry.tagCache = null;
@@ -6820,6 +6845,192 @@ async function drainTagPendingMoves(entry, directories, totals) {
         totals.rowsChanged += rows;
         await delay(MIGRATION_BATCH_PAUSE_MS);
     }
+}
+
+// The reorder pass's stamp indexes: clearing reads older stamps, and the sweep reads the unstamped tags in each
+// mode's order. tags is a rowid table, so each ends in rowid.
+const TAG_REORDER_PASS_INDEXES_SQL = `
+    CREATE INDEX IF NOT EXISTS tags_reorder_pass_name_key ON tags(reorder_pass, name_key);
+    CREATE INDEX IF NOT EXISTS tags_reorder_pass_usage_count ON tags(reorder_pass, usage_count DESC, name_key);
+`;
+const TAG_REORDER_PASS_BATCH_SIZE = 1000;
+
+/**
+ * @typedef {object} TagReorderBatchLogs
+ * @property {string[]} replaced A line per tag whose present sort_order, which had no order, was replaced.
+ * @property {string[]} unwritable A line per tag stamped without a sort_order because its data isn't a JSON object.
+ * @property {string[]} unplaced A line per tag stamped without a new sort_order: no finite value is left after the max.
+ */
+
+/**
+ * Stamps a tag with the pass and, when its data is a JSON object, writes `value` as its sort_order unless it already
+ * holds exactly that.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {{ r: number, id: string, data: string }} row
+ * @param {number} passId
+ * @param {number | null} value null: stamp only.
+ * @param {TagReorderBatchLogs} logs
+ * @returns {{ changed: boolean, written: boolean }} changed: the row changed at all; written: its data did.
+ */
+function writeTagReorderRowSync(db, row, passId, value, logs) {
+    const tag = parseTagObject(row.data);
+    let written = false;
+    if (!tag) {
+        logs.unwritable.push(`  ${row.id}`);
+    } else if (value === null) {
+        logs.unplaced.push(`  ${tagWarningLabel(row.id, tag)}`);
+    } else if (!(Object.hasOwn(tag, 'sort_order') && tag.sort_order === value)) {
+        if (tag.sort_order !== undefined && tagDerivedColumns(tag).sortOrder === null) logs.replaced.push(`  ${tagWarningLabel(row.id, tag)}: ${JSON.stringify(tag.sort_order)}`);
+        writeTagSortOrderSync(db, row.r, tag, value);
+        written = true;
+    }
+    const stamped = db.run('UPDATE tags SET reorder_pass = @passId WHERE rowid = @r AND reorder_pass IS NOT @passId', { passId, r: row.r }).changes > 0;
+    return { changed: written || stamped, written };
+}
+
+/**
+ * @param {number} passId
+ * @param {TagReorderBatchLogs} logs
+ */
+function warnTagReorderBatch(passId, { replaced, unwritable, unplaced }) {
+    const label = `[character-metadata] Tag reorder pass ${passId}:`;
+    if (replaced.length > 0) {
+        console.warn(color.yellow(`${label} ${replaced.length} tag(s) whose sort_order had no order (non-numeric, NaN or an object) were given one; their old values:\n${replaced.join('\n')}`));
+    }
+    if (unwritable.length > 0) {
+        console.warn(color.yellow(`${label} ${unwritable.length} tag(s) whose stored data isn't a JSON object were left without a sort_order:\n${unwritable.join('\n')}`));
+    }
+    if (unplaced.length > 0) {
+        console.warn(color.yellow(`${label} ${unplaced.length} tag(s) were left where they are: no finite value is left after the current max sort_order:\n${unplaced.join('\n')}`));
+    }
+}
+
+/**
+ * The recorded reorder pass (tag-actions step 6, D3, D15, D16, D18, D19, D25), run in the migration worker after
+ * reorderTagDefinitions() records it, and resumed from its place on a restart. Waits for fillTagSortOrdersIfNeeded()
+ * to finish. Each batch re-reads the record, so a pass recorded meanwhile restarts the walk under its id, whatever
+ * phase this one was in. Each batch reads its rows to the end, then writes them and the pass's place in one
+ * transaction.
+ *
+ * 1. Walk: every tag, in `mode`'s live order (alphabetical: name_key, rowid; by_entries: usage_count DESC, name_key,
+ *    rowid), gets sort_order 0, 1, 2, ... and the pass's stamp. A tag written twice (its count moved it past the walk)
+ *    keeps its later value.
+ * 2. Clear: stamps older than the pass are cleared, so every tag the walk missed is unstamped.
+ * 3. Sweep: the first unstamped tags in `mode`'s live order, again and again, get values after the max
+ *    (upstream newTag()'s Math.max(0, max) + 1 upward) and the stamp: tags whose count moved behind the walk and
+ *    tags created meanwhile.
+ * 4. Drain: tag_pending_moves applies in arrival order (drainTagPendingMoves()), and the pass record is cleared with
+ *    the transaction that finds it empty.
+ *
+ * A tag whose data isn't a JSON object is stamped without a sort_order and logged; in the walk it still takes its
+ * number, so a value is a tag's rank in the order. A replaced sort_order that had no order is logged with its old
+ * value, and so is a tag the sweep finds no finite value for, which is left as it is.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `batches` counts the transactions that wrote or moved the
+ *   place, and the drain's entries; `rowsChanged` the tags rows written.
+ */
+export async function runTagReorderPassIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+    const totals = { batches: 0, rowsChanged: 0 };
+    const recorded = tagReorderPassSync(db);
+    if (recorded === null) return totals;
+    if (!db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILLED_FLAG })) {
+        console.log(color.cyan(`[character-metadata] Tag reorder pass ${recorded.id}: waiting for the tag sort_order fill to finish.`));
+        return totals;
+    }
+    if (recorded.at !== null) console.log(color.cyan(`[character-metadata] Tag reorder pass ${recorded.id}: resuming at ${JSON.stringify(recorded.at)}`));
+    db.exec(TAG_REORDER_PASS_INDEXES_SQL);
+
+    const pause = async () => {
+        if (totals.batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    };
+
+    for (;;) {
+        /** @type {{ pass: TagReorderPass | null, phase: TagReorderPassPlace['phase'] | null, changed: number, written: number, logs: TagReorderBatchLogs }} */
+        const state = { pass: null, phase: null, changed: 0, written: 0, logs: { replaced: [], unwritable: [], unplaced: [] } };
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            Object.assign(state, { pass: null, phase: null, changed: 0, written: 0, logs: { replaced: [], unwritable: [], unplaced: [] } });
+            const pass = tagReorderPassSync(db);
+            state.pass = pass;
+            if (!pass) return;
+            /** @type {TagReorderPassPlace} */
+            const at = pass.at ?? { phase: 'walk', n: 0 };
+            state.phase = at.phase;
+            /** @param {{ changed: boolean, written: boolean }} outcome */
+            const count = ({ changed, written }) => {
+                if (changed) state.changed++;
+                if (written) state.written++;
+            };
+            /** @type {TagReorderPassPlace | null} */
+            let next = null;
+
+            if (at.phase === 'walk') {
+                const phase = tagWalkPhases(pass.mode, { used: false, folders: false })[0];
+                /** @type {TagQueryPosition | null} */
+                const after = at.r === undefined ? null : { phase: 1, s: null, k: /** @type {string} */ (at.k), c: /** @type {number} */ (at.c), r: at.r };
+                /** @type {TagQueryRow[]} */
+                const page = [];
+                for (const { sql, params } of tagWalkQueries(phase, after, null)) {
+                    const limit = TAG_REORDER_PASS_BATCH_SIZE - page.length;
+                    if (limit <= 0) break;
+                    page.push(...db.iterate(sql, { ...params, limit }));
+                }
+                let n = at.n;
+                for (const row of page) count(writeTagReorderRowSync(db, row, pass.id, n++, state.logs));
+                const last = page.at(-1);
+                next = page.length < TAG_REORDER_PASS_BATCH_SIZE || !last
+                    ? { phase: 'clear' }
+                    : { phase: 'walk', n, c: last.usage_count, k: last.name_key, r: last.r };
+            } else if (at.phase === 'clear') {
+                const rowids = /** @type {number[]} */ ([...db.iterate(`SELECT rowid FROM tags INDEXED BY tags_reorder_pass_name_key
+                    WHERE reorder_pass < @passId LIMIT @limit`, { passId: pass.id, limit: TAG_REORDER_PASS_BATCH_SIZE })]
+                    .map(row => /** @type {{ rowid: number }} */ (row).rowid));
+                for (const rowid of rowids) state.changed += db.run('UPDATE tags SET reorder_pass = NULL WHERE rowid = @rowid', { rowid }).changes;
+                if (rowids.length < TAG_REORDER_PASS_BATCH_SIZE) next = { phase: 'sweep' };
+            } else if (at.phase === 'sweep') {
+                const order = pass.mode === 'by_entries'
+                    ? 'tags_reorder_pass_usage_count WHERE reorder_pass IS NULL ORDER BY usage_count DESC, name_key, rowid'
+                    : 'tags_reorder_pass_name_key WHERE reorder_pass IS NULL ORDER BY name_key, rowid';
+                const page = /** @type {{ r: number, id: string, data: string }[]} */ ([...db.iterate(`SELECT rowid AS r, id, data FROM tags INDEXED BY ${order} LIMIT @limit`, { limit: TAG_REORDER_PASS_BATCH_SIZE })]);
+                const max = /** @type {{ max: number | null }} */ (db.get('SELECT MAX(sort_order) AS max FROM tags')).max;
+                // Upstream newTag()'s Math.max(0, ...orders) + 1.
+                const values = valuesAfter(Math.max(0, max ?? 0), page.filter(row => parseTagObject(row.data)).length);
+                let i = 0;
+                for (const row of page) {
+                    const value = parseTagObject(row.data) ? values[i++] ?? null : null;
+                    count(writeTagReorderRowSync(db, row, pass.id, value, state.logs));
+                }
+                if (page.length < TAG_REORDER_PASS_BATCH_SIZE) {
+                    next = { phase: 'drain' };
+                    updateTagsHashIfChangedSync(db);
+                }
+            }
+
+            if (state.written > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            if (next !== null) db.run(UPSERT_META_VALUE_SQL, { key: TAG_REORDER_PASS_KEY, value: JSON.stringify({ ...pass, at: next }) });
+        });
+        const { pass } = state;
+        if (!pass) break;
+        warnTagReorderBatch(pass.id, state.logs);
+        if (state.phase === 'drain') {
+            if (await drainTagPendingMoves(entry, directories, totals, pass.id) === 'done') {
+                console.log(color.cyan(`[character-metadata] Tag reorder pass ${pass.id}: done.`));
+                break;
+            }
+            continue;
+        }
+        if (state.written > 0) entry.tagCache = null;
+        totals.batches++;
+        totals.rowsChanged += state.changed;
+        await pause();
+    }
+
+    if (!isReadOnlyMode()) db.checkpoint();
+    return totals;
 }
 
 /** The sorts queryTags() takes: the client's tag_sort_mode values (public/scripts/tags.js). */

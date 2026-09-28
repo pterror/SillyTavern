@@ -430,6 +430,6 @@ describe('fillTagSortOrdersIfNeeded', () => {
         for (const pass of ['fillTagNameKeysIfNeeded', 'fillTagDerivedColumnsIfNeeded', 'migrateTagsJsonIfNeeded', 'backfillCardTagsIfNeeded', 'finishDeletedTags']) {
             expect(MIGRATION_PASSES.indexOf(pass)).toBeLessThan(at);
         }
-        expect(MIGRATION_PASSES[at + 1]).toBe('fillEntityCountsIfNeeded');
+        expect(MIGRATION_PASSES.indexOf('fillEntityCountsIfNeeded')).toBeGreaterThan(at);
     });
 });

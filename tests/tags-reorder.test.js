@@ -12,10 +12,13 @@ let directories;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl = '';
+/** Stands in for the coordinator's requestMetadataMigrationPass(), so no worker starts. */
+const requestPass = jest.fn(() => Promise.resolve());
 
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+    jest.unstable_mockModule('../src/metadata-migration-coordinator.js', () => ({ requestMetadataMigrationPass: requestPass }));
     metadataDb = await import('../src/character-metadata-db.js');
     Database = (await import('better-sqlite3')).default;
 
@@ -47,6 +50,7 @@ beforeEach(() => {
     for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
         fs.mkdirSync(dir, { recursive: true });
     }
+    requestPass.mockClear();
 });
 
 /** @type {import('better-sqlite3').Database | null} A second connection for setting up and reading rows. */
@@ -212,6 +216,7 @@ describe('POST /api/tags/reorder', () => {
         expect(pending()).toEqual([{ tag_id: 'x', side: 'before', anchor_id: 'a', value: null }]);
         expect(rows()).toEqual(before);
         expect(await metadataDb.getTagsHash(directories)).toBe(hash);
+        expect(requestPass.mock.calls).toEqual([[directories, 'runTagReorderPassIfNeeded']]);
     });
 
     test('is recorded before the sort_order fill has finished too, after the moves already queued', async () => {
@@ -272,6 +277,7 @@ describe('POST /api/tags/reorder', () => {
         expect(pass()).toBeUndefined();
         expect(meta('tag_reorder_pass_last_id')).toBeUndefined();
         expect(pending()).toEqual([]);
+        expect(requestPass).not.toHaveBeenCalled();
 
         expect((await post('reorder', { id: 'a', after: 'arr', mode: 'by_entries' })).body.queued).toBe(true);
         expect(await post('reorder', { id: 'nope', after: 'a', mode: 'alphabetical' })).toEqual({ status: 200, body: { result: 'ok', refused: [{ id: 'nope', reason: 'missing' }], queued: false } });
