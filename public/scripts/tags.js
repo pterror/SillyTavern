@@ -655,10 +655,27 @@ async function saveTagsNow() {
 
 const saveTagsDebounced = debounce(saveTagsNow, debounce_timeout.relaxed);
 
-/** Creates or edits one tag definition on the server, for a single create/rename/recolor edit. */
-async function upsertTagOnServer(tag) {
+const TAG_REFUSAL_REASONS = {
+    exists: 'already exists',
+    deleted: 'was deleted',
+    missing: 'no longer exists',
+    unreadable: 'stored copy is unreadable',
+};
+
+/**
+ * @param {{ id: string, reason: string }[]} refused - from /api/tags/create or /api/tags/edit
+ * @param {Tag} tag - the tag the request was about; refused entries carry only its id
+ * @param {string} title
+ */
+function warnRefusedTags(refused, tag, title) {
+    if (!refused?.length) return;
+    const lines = refused.map(r => `${escapeHtml(tag.name)}: ${TAG_REFUSAL_REASONS[r.reason]}`);
+    toastr.warning(`Tag not saved:<br />${lines.join('<br />')}`, title, { escapeHtml: false });
+}
+
+async function createTagOnServer(tag) {
     try {
-        const response = await fetch('/api/tags/upsert', {
+        const response = await fetch('/api/tags/create', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({ tag }),
@@ -666,12 +683,40 @@ async function upsertTagOnServer(tag) {
         });
 
         if (!response.ok) {
-            throw new Error(`Failed to save tag: ${response.statusText}`);
+            throw new Error(`Failed to create tag: ${response.statusText}`);
         }
 
+        const { refused } = await response.json();
         await refreshTagsManifestCache();
+        warnRefusedTags(refused, tag, 'Creating Tag');
     } catch (error) {
-        console.error(`Error saving tag ${tag?.id}:`, error);
+        console.error(`Error creating tag ${tag?.id}:`, error);
+    }
+}
+
+/**
+ * @param {string} id
+ * @param {Partial<Tag>} patch - only the changed fields
+ * @param {Tag} tag - for its name in a refusal warning
+ */
+async function editTagOnServer(id, patch, tag) {
+    try {
+        const response = await fetch('/api/tags/edit', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ id, patch }),
+            cache: 'no-cache',
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to edit tag: ${response.statusText}`);
+        }
+
+        const { refused } = await response.json();
+        await refreshTagsManifestCache();
+        warnRefusedTags(refused, tag, 'Editing Tag');
+    } catch (error) {
+        console.error(`Error editing tag ${id}:`, error);
     }
 }
 
@@ -706,7 +751,7 @@ async function deleteTagOnServer(id, mergeInto) {
 }
 
 /**
- * Translates one tagsStore EntityChange into the matching /api/tags/upsert|delete|save network call - the
+ * Translates one tagsStore EntityChange into the matching /api/tags/create|edit|delete|save network call - the
  * tagsStore.onChange subscriber registered in rebuildTagStores(). `reset` covers real bulk edits (e.g. a
  * manual drag reorder that touches every tag's sort_order), where a whole-array save is the actual operation.
  * @param {import('./entity-store.js').EntityChange} change
@@ -714,8 +759,10 @@ async function deleteTagOnServer(id, mergeInto) {
 function persistTagChange(change) {
     switch (change.op) {
         case 'created':
+            createTagOnServer(change.entity);
+            break;
         case 'updated':
-            upsertTagOnServer(change.entity);
+            editTagOnServer(change.id, change.patch, change.entity);
             break;
         case 'removed': {
             const mergeInto = tagDeleteMergeTargets.get(change.id) ?? null;

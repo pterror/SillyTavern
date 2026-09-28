@@ -2615,8 +2615,8 @@ describe('getChangesSince / getTagNameChangesSince with { limit }', () => {
 
     test('pages tag name changes by seq', async () => {
         for (const id of ['t1', 't2', 't3']) {
-            await metadataDb.upsertTagDefinition(directories, { id, name: `${id}-old` });
-            await metadataDb.upsertTagDefinition(directories, { id, name: `${id}-new` });
+            await metadataDb.createTagDefinition(directories, { id, name: `${id}-old` });
+            await metadataDb.editTagDefinition(directories, id, { name: `${id}-new` });
         }
 
         const first = await metadataDb.getTagNameChangesSince(directories, 0, { limit: 2 });

@@ -4296,46 +4296,139 @@ export async function saveTagDefinitions(directories, tagsArray) {
     return 'ok';
 }
 
-/** Creates or replaces a single tag definition by id, for a single create/rename/recolor edit. */
 /**
+ * @typedef {'deleted' | 'exists' | 'missing' | 'unreadable'} TagWriteRefusalReason
+ * @typedef {{ refused: { id: string, reason: TagWriteRefusalReason }[] }} TagWriteResult
+ */
+
+// A min/max search of tags_sort_order; MAX() skips the NULLs of tags with no order.
+const NEXT_TAG_SORT_ORDER_SQL = 'SELECT MAX(0, COALESCE(MAX(sort_order), 0)) + 1 AS next FROM tags';
+
+/**
+ * The sort_order upstream's newTag() gives a new tag: `Math.max(0, ...orders) + 1` over the tags that have one.
+ * Marked tags count too, which still puts it after every live tag.
+ * @param {MetadataDbEntry} entry
+ * @returns {number}
+ */
+function nextTagSortOrderSync(entry) {
+    if (tagQueryColumnsReady(entry)) {
+        const row = /** @type {{ next: number }} */ (entry.db.get(NEXT_TAG_SORT_ORDER_SQL));
+        return Number(row.next);
+    }
+    let max = 0;
+    for (const row of /** @type {Generator<{ data: string }>} */ (entry.db.iterate('SELECT data FROM tags'))) {
+        let parsed;
+        try {
+            parsed = JSON.parse(row.data);
+        } catch {
+            continue;
+        }
+        const { sortOrder } = tagDerivedColumns(parsed);
+        if (sortOrder !== null && sortOrder > max) max = sortOrder;
+    }
+    return max + 1;
+}
+
+/**
+ * A tag with no own sort_order gets nextTagSortOrderSync(); a given one, null included, is kept as is.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {unknown} rawTag Raw request-body value - client-controlled and not guaranteed to actually
  *   match {@link TagDefinitionInput}'s shape, so it's validated below before use.
- * @returns {Promise<'ok' | null>}
+ * @returns {Promise<TagWriteResult | null>}
  */
-export async function upsertTagDefinition(directories, rawTag) {
+export async function createTagDefinition(directories, rawTag) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     const tag = /** @type {TagDefinitionInput | null | undefined} */ (rawTag);
-    if (!tag || typeof tag.id !== 'string' || !tag.id) return null;
+    if (!tag || typeof tag !== 'object' || typeof tag.id !== 'string' || !tag.id) return null;
+    const id = tag.id;
+    const assignOrder = !Object.hasOwn(tag, 'sort_order');
 
-    // An object, not a let: TypeScript doesn't see the callback's assignment and narrows a let to false.
-    const result = { skipped: false };
+    /** @type {TagWriteResult} */
+    const result = { refused: [] };
     entry.db.transaction(() => {
-        result.skipped = !!entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tag.id });
-        if (result.skipped) return;
-        const oldRow = (/** @type {{ data: string } | undefined} */ (entry.db.get('SELECT data FROM tags WHERE id = @id', { id: tag.id })));
-        let oldName = null;
-        if (oldRow) {
-            try { oldName = JSON.parse(oldRow.data)?.name ?? ''; } catch { /* an unparseable old row has no name to compare against */ }
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        result.refused = [];
+        if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id })) {
+            result.refused.push({ id, reason: 'deleted' });
+            return;
         }
-
-        entry.db.run(
-            `INSERT INTO tags ${TAG_ROW_VALUES_SQL} ON CONFLICT(id) DO UPDATE SET data = excluded.data, name_key = excluded.name_key,
-                sort_order = excluded.sort_order, folder_type = excluded.folder_type, is_folder = excluded.is_folder, usage_count = excluded.usage_count`,
-            tagRowParams(tag),
-        );
-        if (oldRow && oldName !== (tag.name ?? '')) {
-            entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
+        if (entry.db.get('SELECT 1 FROM tags WHERE id = @id', { id })) {
+            result.refused.push({ id, reason: 'exists' });
+            return;
         }
+        if (assignOrder) tag.sort_order = nextTagSortOrderSync(entry);
+        entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
         updateTagsHashSync(entry.db);
     });
-    if (result.skipped) {
-        warnStaleDeletedTagSave([tag.id]);
-        return 'ok';
+    if (result.refused.length > 0) {
+        if (result.refused[0].reason === 'deleted') warnStaleDeletedTagSave([id]);
+        return result;
     }
     entry.tagCache = null;
-    return 'ok';
+    return result;
+}
+
+/**
+ * Fields the patch doesn't name keep their stored values, so a stale tab can't revert another tab's edit. Stored
+ * data that isn't a JSON object is refused as 'unreadable', since merging into it would lose it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {unknown} id
+ * @param {unknown} rawPatch Raw request-body value - client-controlled, so it's validated below before use.
+ * @returns {Promise<TagWriteResult | null>}
+ */
+export async function editTagDefinition(directories, id, rawPatch) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    if (typeof id !== 'string' || !id) return null;
+    if (rawPatch === null || typeof rawPatch !== 'object' || Array.isArray(rawPatch)) return null;
+    const patch = /** @type {Record<string, unknown>} */ (rawPatch);
+    if (Object.hasOwn(patch, 'id') && patch.id !== id) return null;
+
+    /** @type {TagWriteResult & { written: boolean }} */
+    const result = { refused: [], written: false };
+    entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        result.refused = [];
+        result.written = false;
+        if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id })) {
+            result.refused.push({ id, reason: 'deleted' });
+            return;
+        }
+        const oldRow = /** @type {{ data: string } | undefined} */ (entry.db.get('SELECT data FROM tags WHERE id = @id', { id }));
+        if (!oldRow) {
+            result.refused.push({ id, reason: 'missing' });
+            return;
+        }
+        /** @type {unknown} */
+        let oldParsed;
+        try {
+            oldParsed = JSON.parse(oldRow.data);
+        } catch {
+            oldParsed = undefined;
+        }
+        if (oldParsed === null || typeof oldParsed !== 'object' || Array.isArray(oldParsed)) {
+            result.refused.push({ id, reason: 'unreadable' });
+            return;
+        }
+        const old = /** @type {Record<string, unknown>} */ (oldParsed);
+        const merged = /** @type {TagDefinitionInput} */ ({ ...old, ...patch, id });
+        if (JSON.stringify(merged) === JSON.stringify(old)) return;
+
+        entry.db.run(
+            `UPDATE tags SET data = @data, name_key = @nameKey, sort_order = @sortOrder, folder_type = @folderType, is_folder = @isFolder
+                WHERE id = @id`,
+            tagRowParams(merged),
+        );
+        if ((old.name ?? '') !== (merged.name ?? '')) {
+            entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
+        }
+        updateTagsHashSync(entry.db);
+        result.written = true;
+    });
+    if (result.refused.length > 0 && result.refused[0].reason === 'deleted') warnStaleDeletedTagSave([id]);
+    if (result.written) entry.tagCache = null;
+    return { refused: result.refused };
 }
 
 // A deleted tag's id is never reused (a new tag always gets a new id), so a save naming one is a stale copy.

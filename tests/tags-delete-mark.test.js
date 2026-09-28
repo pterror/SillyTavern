@@ -428,12 +428,13 @@ describe('usage counts', () => {
 });
 
 describe('writes that name a marked tag', () => {
-    test('/save and /upsert skip a marked id and warn naming it', async () => {
+    test('/save and /edit skip a marked id and warn naming it', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
         await post('/api/tags/save', { tags: ['x', 'y', 'z', 'd'].map(id => ({ id, name: `name-${id}` })) });
-        await post('/api/tags/upsert', { tag: { id: 'x', name: 'renamed' } });
+        const edited = await post('/api/tags/edit', { id: 'x', patch: { name: 'renamed' } });
+        expect(await edited.json()).toEqual({ result: 'ok', refused: [{ id: 'x', reason: 'deleted' }] });
         expect(await listedTagIds()).toEqual(['d', 'y', 'z']);
         await withDb((db) => {
             expect(db.prepare('SELECT id FROM tags WHERE id = ?').get('x')).toBeUndefined();
@@ -509,5 +510,65 @@ describe('writes that name a marked tag', () => {
         expect(seeded.tagIds).toHaveLength(1);
         expect(seeded.tagIds[0]).not.toBe('d');
         expect(seeded.tagDefinitions[0].name).toBe('name-d');
+    });
+});
+
+describe('POST /api/tags/create and /api/tags/edit', () => {
+    test('bad input is a 400 and writes nothing', async () => {
+        await saveTags(['a']);
+        const cases = [
+            ['/api/tags/create', {}],
+            ['/api/tags/create', { tag: null }],
+            ['/api/tags/create', { tag: 'a' }],
+            ['/api/tags/create', { tag: { name: 'no id' } }],
+            ['/api/tags/create', { tag: { id: '' } }],
+            ['/api/tags/create', { tag: { id: 5 } }],
+            ['/api/tags/edit', { patch: { name: 'n' } }],
+            ['/api/tags/edit', { id: '', patch: { name: 'n' } }],
+            ['/api/tags/edit', { id: 5, patch: { name: 'n' } }],
+            ['/api/tags/edit', { id: 'a' }],
+            ['/api/tags/edit', { id: 'a', patch: null }],
+            ['/api/tags/edit', { id: 'a', patch: ['n'] }],
+            ['/api/tags/edit', { id: 'a', patch: 'n' }],
+            ['/api/tags/edit', { id: 'a', patch: { id: 'b', name: 'n' } }],
+        ];
+        for (const [url, body] of cases) {
+            const response = await post(url, body);
+            expect({ url, body, status: response.status }).toEqual({ url, body, status: 400 });
+        }
+        await withDb((db) => {
+            expect(db.prepare('SELECT id, data FROM tags').all()).toEqual([{ id: 'a', data: JSON.stringify({ id: 'a', name: 'name-a' }) }]);
+        });
+    });
+
+    test('create answers { result, refused }: empty when created, exists, deleted', async () => {
+        await saveTags(['m']);
+        await deleteTag('m');
+        jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const created = await post('/api/tags/create', { tag: { id: 'n', name: 'New' } });
+        expect(created.status).toBe(200);
+        expect(await created.json()).toEqual({ result: 'ok', refused: [] });
+        expect(await (await post('/api/tags/create', { tag: { id: 'n', name: 'Again' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'n', reason: 'exists' }] });
+        expect(await (await post('/api/tags/create', { tag: { id: 'm', name: 'Back' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'm', reason: 'deleted' }] });
+        await withDb((db) => {
+            expect(JSON.parse(db.prepare('SELECT data FROM tags WHERE id = ?').get('n').data)).toEqual({ id: 'n', name: 'New', sort_order: 1 });
+        });
+    });
+
+    test('edit answers { result, refused }: empty when merged, missing, deleted, unreadable', async () => {
+        await saveTags(['a', 'm', 'u']);
+        await deleteTag('m');
+        await withDb(db => db.prepare('UPDATE tags SET data = ? WHERE id = ?').run('{not json', 'u'));
+        jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const edited = await post('/api/tags/edit', { id: 'a', patch: { id: 'a', color: 'red' } });
+        expect(edited.status).toBe(200);
+        expect(await edited.json()).toEqual({ result: 'ok', refused: [] });
+        expect(await (await post('/api/tags/edit', { id: 'ghost', patch: { name: 'G' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'ghost', reason: 'missing' }] });
+        expect(await (await post('/api/tags/edit', { id: 'm', patch: { name: 'M' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'm', reason: 'deleted' }] });
+        expect(await (await post('/api/tags/edit', { id: 'u', patch: { name: 'U' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'u', reason: 'unreadable' }] });
+        await withDb((db) => {
+            expect(JSON.parse(db.prepare('SELECT data FROM tags WHERE id = ?').get('a').data)).toEqual({ id: 'a', name: 'name-a', color: 'red' });
+            expect(db.prepare('SELECT id FROM tags WHERE id = ?').get('ghost')).toBeUndefined();
+        });
     });
 });

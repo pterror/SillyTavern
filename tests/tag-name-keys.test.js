@@ -102,11 +102,11 @@ describe('tagNameKey()', () => {
 });
 
 describe('name_key on every tags write', () => {
-    test('saveTagDefinitions, upsertTagDefinition (a rename included) and card tag creation set it', async () => {
+    test('saveTagDefinitions, createTagDefinition, editTagDefinition (a rename) and card tag creation set it', async () => {
         await metadataDb.fillTagNameKeysIfNeeded(directories);
         await metadataDb.saveTagDefinitions(directories, [{ id: 'a', name: 'Élan' }, { id: 'b' }]);
-        await metadataDb.upsertTagDefinition(directories, { id: 'c', name: 'Noir' });
-        await metadataDb.upsertTagDefinition(directories, { id: 'a', name: 'Renamed' });
+        await metadataDb.createTagDefinition(directories, { id: 'c', name: 'Noir' });
+        await metadataDb.editTagDefinition(directories, 'a', { name: 'Renamed' });
         await writeCharacter('Bob.png', ['Brand New']);
         await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
 
