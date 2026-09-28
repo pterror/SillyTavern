@@ -163,6 +163,11 @@ router.post('/reorder', async (request, response) => {
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
+        if (result.queued) {
+            // Not awaited: the pass writes every tag's sort_order in a worker, after this responds.
+            requestMetadataMigrationPass(request.user.directories, 'runTagReorderPassIfNeeded')
+                .catch(err => console.error('Could not run the tag reorder pass', err));
+        }
 
         response.send({ result: 'ok', refused: result.refused, queued: result.queued });
     } catch (err) {
