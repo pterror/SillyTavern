@@ -2434,17 +2434,18 @@ async function handleQuery(request, response) {
                     if (wantHashes) hashRows = timePhase('js_sort', () => hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
                 }
 
+                const totalApprox = approxTotal || result.approxTotal;
                 if (wantHashes) {
                     return sendHashQueryResponse(response, {
                         seq: result.seq,
                         total: wantTotal ? result.total : undefined,
-                        approxTotal,
+                        approxTotal: totalApprox,
                         hashRows,
                         searchBackend,
                     });
                 }
                 const payload = { seq: result.seq };
-                if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
+                if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
                 if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, rows));
                 if (searchBackend !== undefined) payload.searchBackend = searchBackend;
                 return response.send(payload);
@@ -2469,13 +2470,13 @@ async function handleQuery(request, response) {
                 return sendHashQueryResponse(response, {
                     seq: result.seq,
                     total: wantTotal ? result.total : undefined,
-                    approxTotal: false,
+                    approxTotal: result.approxTotal,
                     hashRows: result.hashRows,
                     searchBackend: undefined,
                 });
             }
             const payload = { seq: result.seq };
-            if (wantTotal) payload.total = result.total;
+            if (wantTotal) payload.total = result.approxTotal ? `~${result.total}` : result.total;
             if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows));
             return response.send(payload);
         }
@@ -2492,18 +2493,19 @@ async function handleQuery(request, response) {
         }
 
         // includeGroups is always false here - both includeGroups branches already returned above.
+        const totalApprox = approxTotal || result.approxTotal;
         if (wantHashes) {
             return sendHashQueryResponse(response, {
                 seq: result.seq,
                 total: wantTotal ? result.total : undefined,
-                approxTotal,
+                approxTotal: totalApprox,
                 hashRows: result.hashRows,
                 searchBackend,
             });
         }
         const payload = { seq: result.seq };
         if (wantRows) payload.rows = result.rows;
-        if (wantTotal) payload.total = approxTotal ? `~${result.total}` : result.total;
+        if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
         if (searchBackend !== undefined) payload.searchBackend = searchBackend;
         return response.send(payload);
     } catch (err) {
