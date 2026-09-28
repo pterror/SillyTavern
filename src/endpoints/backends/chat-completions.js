@@ -61,6 +61,8 @@ import { readSecret, SECRET_KEYS } from '../secrets.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeChatCompletionPreset } from '../../chat-completion-preset-merge.js';
 import { createGenerationParameters } from '../../chat-completion-generation-data.js';
+import { substituteParams } from '../../macro-substitution.js';
+import { refreshLlamaCppDetection } from '../../custom-llamacpp.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
@@ -2191,6 +2193,8 @@ router.post('/status', async function (request, statusResponse) {
             apiKey = readSecret(request.user.directories, SECRET_KEYS.CUSTOM, request.body.secret_id);
             headers = {};
             mergeObjectWithYaml(headers, request.body.custom_include_headers);
+            // Connecting asks again whether the URL is llama.cpp, without holding up the status reply.
+            void refreshLlamaCppDetection(apiUrl, { 'Authorization': 'Bearer ' + apiKey, ...headers });
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.COHERE) {
             apiUrl = API_COHERE_V1;
             apiKey = readSecret(request.user.directories, SECRET_KEYS.COHERE, request.body.secret_id);
@@ -2553,14 +2557,31 @@ router.post('/status', async function (request, statusResponse) {
  * @param {string[]} droppedEntries
  * @param {import('../../tokenizer-resolve.js').TokenizerOutcome} [outcome] The prompt count's outcome;
  * none for a send that counts nothing.
+ * @param {import('../../tokenizer-map-resolution.js').ChatCompletionConnection} [connection] The send's custom URL,
+ * directories and custom headers with its macros substituted.
  * @returns {Promise<Array<{kind: string, key: string, message: string, entries?: string[]}>>} Empty when there is nothing to report.
  */
-async function chatCompletionSendWarnings(source, model, droppedEntries, outcome = createTokenizerOutcome()) {
+async function chatCompletionSendWarnings(source, model, droppedEntries, outcome = createTokenizerOutcome(), connection = {}) {
     if (droppedEntries.length === 0 && !outcome.countEstimated && !outcome.usedCopy && !outcome.downloads?.length) {
         return [];
     }
-    const state = { api: 'openai', source, model: model ?? '' };
-    return sendTokenizerWarnings(state, await resolveTokenizer(state), outcome, droppedEntries);
+    const state = { api: 'openai', source, model: model ?? '', ...(source === CHAT_COMPLETION_SOURCES.CUSTOM ? { url: connection.url } : {}) };
+    return sendTokenizerWarnings(state, await resolveTokenizer(state, connection), outcome, droppedEntries);
+}
+
+/**
+ * A server-built send's custom URL and custom headers, substituted with its own macros as the send
+ * substitutes them.
+ * @param {any} settings The send's chat-completion settings
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {object} macroContext
+ * @returns {import('../../tokenizer-map-resolution.js').ChatCompletionConnection}
+ */
+function chatCompletionConnection(settings, directories, macroContext) {
+    if (settings.chat_completion_source !== CHAT_COMPLETION_SOURCES.CUSTOM) {
+        return { directories };
+    }
+    return { url: settings.custom_url, directories, customIncludeHeaders: substituteParams(settings.custom_include_headers, macroContext) };
 }
 
 /**
@@ -2584,7 +2605,7 @@ router.post('/bias', async function (request, response) {
     try {
         if (state) {
             const dropped = [];
-            const result = await computeLogitBias(request.body, state.model ?? '', dropped, state.source);
+            const result = await computeLogitBias(request.body, state.model ?? '', dropped, state.source, { url: state.url, directories: request.user.directories });
             response.set('X-ST-Tokenizer-Dropped', toAsciiJson(dropped));
             return response.send(result);
         }
@@ -2912,6 +2933,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     /** @type {string[]} */
     const droppedBiasEntries = [];
     const { generate_data } = await createGenerationParameters(settings, orchestratorInput.model, type, messages, {
+        directories,
         macroContext: orchestratorInput.macroContext,
         biasPresetEntries,
         droppedBiasEntries,
@@ -2938,7 +2960,8 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const anchorChat = orchestratorInput.macroContext.chat;
     const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
 
-    const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries, orchestratorInput.tokenizerOutcome);
+    const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries, orchestratorInput.tokenizerOutcome,
+        chatCompletionConnection(settings, directories, orchestratorInput.macroContext));
 
     return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings };
 }
@@ -3977,8 +4000,9 @@ router.post('/generate', async function (request, response) {
             const biasPresetEntries = settings.bias_preset_selected ? settings.bias_presets?.[settings.bias_preset_selected] : undefined;
             /** @type {string[]} */
             const droppedBiasEntries = [];
-            const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { macroContext: { name1, name2 }, biasPresetEntries, droppedBiasEntries });
-            warnings.push(...await chatCompletionSendWarnings(settings.chat_completion_source, profile.model, droppedBiasEntries));
+            const { generate_data } = await createGenerationParameters(settings, profile.model, type, messages, { directories: request.user.directories, macroContext: { name1, name2 }, biasPresetEntries, droppedBiasEntries });
+            warnings.push(...await chatCompletionSendWarnings(settings.chat_completion_source, profile.model, droppedBiasEntries, undefined,
+                chatCompletionConnection(settings, request.user.directories, { name1, name2 })));
 
             if (request.body.overrides && typeof request.body.overrides === 'object' && !Array.isArray(request.body.overrides)) {
                 Object.assign(generate_data, _.omit(request.body.overrides, ['chat_completion_source', 'model', 'messages', 'custom_url', 'reverse_proxy', 'proxy_password', 'secret_id']));

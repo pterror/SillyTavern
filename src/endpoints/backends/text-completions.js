@@ -601,6 +601,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     };
     const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
     const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
+    const countPromptTokens = (text) => countWithTokenizer(resolvedTokenizer, text, { ...encodeOptions, promptStart: true });
 
     // Step 4
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
@@ -608,7 +609,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
         // already falls through to its anchor-resolution branch exactly like `undefined` would.
         avatar: characterAvatar, groupId, ownerId, nodeId,
         type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
-        countTokens, encodeTokens,
+        countTokens, encodeTokens, countPromptTokens,
     });
 
     // `nodeId === null` ("genuinely new, empty conversation") is only valid when this owner's

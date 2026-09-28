@@ -3,6 +3,7 @@ import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 import { lookupModelTokenizer } from './tokenizer-model-map.js';
 import { findEntriesByRepo, findTokenizerSource, getTokenizerDisplayName } from './tokenizer-sources.js';
 import { lookupOpenRouterHuggingFaceId } from './openrouter-models.js';
+import { lookupCustomLlamaCppModel, resolveCustomLlamaCppEndpoint } from './custom-llamacpp.js';
 
 // The parts of resolveTokenizer() (src/tokenizer-resolve.js) that need only the model map, kept
 // apart so src/endpoints/tokenizers.js can resolve chat-completion models without importing the
@@ -216,15 +217,52 @@ export function estimateResolution(basis) {
 }
 
 /**
+ * @typedef {object} ChatCompletionConnection
+ * @property {string} [url] The custom source's URL
+ * @property {import('./users.js').UserDirectoryList} [directories] For the custom key and saved custom headers
+ * @property {string} [customIncludeHeaders] The custom headers with the send's own macros substituted;
+ * without them the saved ones are used (see resolveCustomLlamaCppEndpoint())
+ */
+
+/**
  * Chat completion's resolution (resolveTokenizer() rule 5): the map on the model, for every
- * source; the tokenizer setting never applies. Unmapped gives the estimate.
+ * source; the tokenizer setting never applies. Unmapped gives the estimate. A custom URL that is
+ * llama.cpp resolves as textgen llama.cpp does: its `/tokenize`, with the map's copy for its model.
  * @param {string|null|undefined} model
  * @param {string} [source] The chat-completion source
- * @param {MapDeps} [deps]
+ * @param {MapDeps & ChatCompletionConnection} [deps]
  * @returns {Promise<import('./tokenizer-resolve.js').ResolvedTokenizer>}
  */
 export async function resolveChatCompletionTokenizer(model, source = undefined, deps = {}) {
+    if (source === CHAT_COMPLETION_SOURCES.CUSTOM) {
+        const endpoint = await resolveCustomLlamaCppEndpoint(deps.url, deps.directories, deps.customIncludeHeaders);
+        if (endpoint) {
+            return customLlamaCppResolution(endpoint, String(model ?? ''), deps);
+        }
+    }
     const result = await selectModelResult('openai', String(model ?? ''), { api: 'openai', source }, deps);
     const local = describeMapEntry(result, 'openai', deps.registry);
     return local ? localResolution(local, local) : estimateResolution('unknown');
+}
+
+/**
+ * @param {import('./custom-llamacpp.js').CustomLlamaCppEndpoint} endpoint
+ * @param {string} model The custom model setting; empty asks the URL
+ * @param {MapDeps} deps
+ * @returns {Promise<import('./tokenizer-resolve.js').ResolvedTokenizer>}
+ */
+async function customLlamaCppResolution(endpoint, model, deps) {
+    const state = { api: 'textgenerationwebui', type: TEXTGEN_TYPES.LLAMACPP };
+    const name = model || await lookupCustomLlamaCppModel(endpoint);
+    const local = describeMapEntry(await selectModelResult(state.api, name, state, deps), state.api, deps.registry);
+    const resolved = {
+        kind: /** @type {const} */ ('remote'),
+        id: tokenizers.API_TEXTGENERATIONWEBUI,
+        name: TOKENIZER_NAMES[tokenizers.API_TEXTGENERATIONWEBUI],
+        basis: /** @type {const} */ ('remote'),
+        localCopy: local,
+    };
+    // Not enumerable: it holds the custom key, and a resolution is logged and spread.
+    Object.defineProperty(resolved, 'llamaCpp', { value: { ...endpoint, model }, enumerable: false });
+    return resolved;
 }

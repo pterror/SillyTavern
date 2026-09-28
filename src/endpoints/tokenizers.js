@@ -503,6 +503,32 @@ async function getWebTokenizersChunks(tokenizer, ids) {
 }
 
 /**
+ * The token chunks for llama.cpp's `/tokenize` pieces (a string, or the piece's bytes when they aren't
+ * valid UTF-8), merged as getWebTokenizersChunks() merges ids: until they decode to more than `�`.
+ * @param {Array<string|number[]>} pieces
+ * @returns {string[]}
+ */
+export function getBytePieceChunks(pieces) {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const chunks = [];
+    /** @type {number[]} */
+    let pending = [];
+
+    for (const piece of pieces) {
+        pending = pending.concat(Array.from(typeof piece === 'string' ? encoder.encode(piece) : piece));
+        const chunkText = decoder.decode(new Uint8Array(pending));
+        if (chunkText === '�') {
+            continue;
+        }
+        chunks.push(chunkText);
+        pending = [];
+    }
+
+    return chunks;
+}
+
+/**
  * Gets the tokenizer model by the model name.
  * @param {string} requestModel Models to use for tokenization
  * @returns {string} Tokenizer model to use
@@ -667,9 +693,11 @@ async function getLocalEncoder(resolved) {
  * @param {string} requestModel The chat-completion model name.
  * @param {string[]} [dropped] Receives the text of each entry left out because there are no token ids for it.
  * @param {string} [source] The chat-completion source, which decides the file for a model with several official files.
+ * @param {import('../tokenizer-map-resolution.js').ChatCompletionConnection} [connection] The custom source's
+ * URL and what its requests carry, for a custom URL that is llama.cpp.
  * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
  */
-export async function computeLogitBias(biasPresetEntries, requestModel, dropped = undefined, source = undefined) {
+export async function computeLogitBias(biasPresetEntries, requestModel, dropped = undefined, source = undefined, connection = {}) {
     const result = {};
 
     if (!Array.isArray(biasPresetEntries)) {
@@ -683,9 +711,17 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
         return result;
     }
 
-    const resolved = await resolveChatCompletionTokenizer(modelName, source);
+    const resolved = await resolveChatCompletionTokenizer(modelName, source, connection);
     let encodeFunction = null;
-    if (resolved.kind !== 'estimate') {
+    if (resolved.llamaCpp) {
+        const { llamaCpp, localCopy } = resolved;
+        encodeFunction = async (text) => {
+            const result = await encodeViaCustomLlamaCpp(llamaCpp, text);
+            if (result) return new Uint32Array(result.ids);
+            const localEncoder = localCopy ? await getLocalEncoder(localResolution(localCopy, null)) : null;
+            return localEncoder ? await localEncoder(text) : null;
+        };
+    } else if (resolved.kind !== 'estimate') {
         encodeFunction = await getLocalEncoder(resolved);
         if (!encodeFunction) {
             console.error('Tokenizer not initialized:', resolved.name);
@@ -1269,29 +1305,71 @@ function countTiktokenMessages(model, messages) {
  * @returns {Promise<number>}
  */
 export async function countChatCompletionMessages(resolved, messages, outcome = undefined, directories = undefined) {
-    try {
-        if (resolved.kind === 'estimate') {
-            return guesstimate(JSON.stringify(messages));
-        }
-        if (resolved.id === tokenizers.OPENAI) {
-            return countTiktokenMessages(resolved.model, messages);
-        }
-        const key = TOKENIZER_TYPE_KEYS[resolved.id];
-        if (!resolved.source && sentencepieceTokenizers.includes(key)) {
-            return await countSentencepieceArrayTokens(LOCAL_TOKENIZER_INSTANCES[key], messages);
-        }
-        const instance = await getLocalTokenizer(resolved, { directories, outcome })?.get();
-        if (!instance) throw new Error(`Failed to load the ${resolved.name} tokenizer`);
-        const jsonBody = messages.flatMap(x => Object.values(x)).join('\n\n');
-        return (await instance.encode(jsonBody)).length;
-    } catch (error) {
-        console.error('An error counting tokens, using fallback estimation method', error);
-        if (outcome) {
-            outcome.failed = true;
-            outcome.countEstimated = true;
-        }
+    if (resolved.kind === 'estimate') {
         return guesstimate(JSON.stringify(messages));
     }
+    try {
+        return await countMessagesWith(resolved, messages, outcome, directories);
+    } catch (error) {
+        console.error('An error counting tokens', error);
+    }
+    if (resolved.kind === 'remote' && resolved.localCopy) {
+        try {
+            const count = await countMessagesWith(resolved.localCopy, messages, outcome, directories);
+            if (outcome) outcome.usedCopy = resolved.localCopy;
+            return count;
+        } catch (error) {
+            console.error('An error counting tokens with the local copy', error);
+        }
+    }
+    console.warn('Using fallback estimation method');
+    if (outcome) {
+        outcome.failed = true;
+        outcome.countEstimated = true;
+    }
+    return guesstimate(JSON.stringify(messages));
+}
+
+/**
+ * Counts chat-completion messages with one tokenizer. Throws when it fails.
+ * @param {{id: number, source?: string, name: string, model?: string, kind?: string, llamaCpp?: import('../tokenizer-resolve.js').ResolvedTokenizer['llamaCpp']}} tokenizer
+ * @param {object[]} messages
+ * @param {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome]
+ * @param {import('../users.js').UserDirectoryList} [directories]
+ * @returns {Promise<number>}
+ */
+async function countMessagesWith(tokenizer, messages, outcome, directories) {
+    const jsonBody = () => messages.flatMap(x => Object.values(x)).join('\n\n');
+    if (tokenizer.llamaCpp) {
+        const result = await encodeViaCustomLlamaCpp(tokenizer.llamaCpp, jsonBody());
+        if (!result) throw new Error('The llama.cpp tokenizer failed');
+        return result.ids.length;
+    }
+    if (tokenizer.id === tokenizers.OPENAI) {
+        return countTiktokenMessages(tokenizer.model, messages);
+    }
+    const key = TOKENIZER_TYPE_KEYS[tokenizer.id];
+    if (!tokenizer.source && sentencepieceTokenizers.includes(key)) {
+        return await countSentencepieceArrayTokens(LOCAL_TOKENIZER_INSTANCES[key], messages);
+    }
+    const instance = await getLocalTokenizer(tokenizer, { directories, outcome })?.get();
+    if (!instance) throw new Error(`Failed to load the ${tokenizer.name} tokenizer`);
+    return (await instance.encode(jsonBody())).length;
+}
+
+/**
+ * Encodes with a chat-completion custom URL's llama.cpp `/tokenize`, as a single field: no BOS.
+ * @param {NonNullable<import('../tokenizer-resolve.js').ResolvedTokenizer['llamaCpp']>} llamaCpp
+ * @param {string} text
+ * @param {boolean} [withPieces]
+ * @returns {Promise<{ ids: number[], pieces?: Array<string|number[]> }|null>} null when it fails
+ */
+async function encodeViaCustomLlamaCpp(llamaCpp, text, withPieces = false) {
+    const result = await encodeViaTextgenAPI(null, text, llamaCpp.url, llamaCpp.model, TEXTGEN_TYPES.LLAMACPP, { headers: llamaCpp.headers, withPieces });
+    if ('error' in result || !Array.isArray(result.ids) || typeof result.count !== 'number') {
+        return null;
+    }
+    return result;
 }
 
 /**
@@ -1336,7 +1414,7 @@ async function resolveOpenAIRouteRequest(req) {
         return null;
     }
     if (state) {
-        return resolveChatCompletionTokenizer(state.model, state.source);
+        return resolveChatCompletionTokenizer(state.model, state.source, { url: state.url, directories: req.user?.directories });
     }
     const queryModel = String(req.query.model || '');
     const named = OPENAI_ROUTE_NAMED_TOKENIZERS.find(id => TOKENIZER_TYPE_KEYS[id] === queryModel);
@@ -1351,10 +1429,21 @@ router.post('/openai/encode', async function (req, res) {
 
         const resolved = await resolveOpenAIRouteRequest(req);
         if (!resolved) return res.sendStatus(400);
-        if (resolved.kind === 'estimate') {
+        const local = resolved.llamaCpp ? null : resolved;
+        if (resolved.llamaCpp) {
+            const text = String(req.body.text || '');
+            const result = await encodeViaCustomLlamaCpp(resolved.llamaCpp, text, true);
+            if (result) {
+                return res.send({ ids: result.ids, count: result.ids.length, chunks: getBytePieceChunks(result.pieces ?? []) });
+            }
+            if (resolved.localCopy) {
+                return chatCompletionTokenizerHandler(localResolution(resolved.localCopy, null), 'encode', req.user?.directories)(req, res);
+            }
+        }
+        if (!local || local.kind === 'estimate') {
             return res.send({ ids: [], count: guesstimate(String(req.body.text || '')), chunks: [] });
         }
-        return chatCompletionTokenizerHandler(resolved, 'encode', req.user?.directories)(req, res);
+        return chatCompletionTokenizerHandler(local, 'encode', req.user?.directories)(req, res);
     } catch (error) {
         console.error(error);
         return res.send({ ids: [], count: 0, chunks: [] });
@@ -1367,10 +1456,12 @@ router.post('/openai/decode', async function (req, res) {
 
         const resolved = await resolveOpenAIRouteRequest(req);
         if (!resolved) return res.sendStatus(400);
-        if (resolved.kind === 'estimate') {
+        // llama.cpp's ids decode with its exact local copy, as `/current/decode` does.
+        const decoding = resolved.llamaCpp ? (resolved.localCopy && localResolution(resolved.localCopy, null)) : resolved;
+        if (!decoding || decoding.kind === 'estimate') {
             return res.send({ text: '' });
         }
-        return chatCompletionTokenizerHandler(resolved, 'decode', req.user?.directories)(req, res);
+        return chatCompletionTokenizerHandler(decoding, 'decode', req.user?.directories)(req, res);
     } catch (error) {
         console.error(error);
         return res.send({ text: '' });
@@ -1404,16 +1495,24 @@ router.post('/remote/kobold/count', async function (request, response) {
  * @param {string} baseUrl Backend base URL
  * @param {string} model Model name (only some backends need this)
  * @param {string} apiType One of TEXTGEN_TYPES
- * @returns {Promise<{count: number, ids: number[]}|{error: true}>}
+ * @param {object} [llamaCpp] llama.cpp `/tokenize` only (llama.cpp server README, "POST `/tokenize`").
+ * @param {boolean} [llamaCpp.addSpecial] Sends `add_special: true`: BOS goes in as it does for a generation's prompt.
+ * @param {boolean} [llamaCpp.withPieces] Sends `with_pieces: true` and answers each token's `piece` in `pieces`.
+ * @param {Record<string, string>} [llamaCpp.headers] Sent in place of the textgen type's own headers.
+ * @returns {Promise<{count: number, ids: number[], pieces?: Array<string|number[]>}|{error: true}>}
  */
-export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType) {
+export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType, llamaCpp = {}) {
     try {
         const args = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
         };
 
-        setAdditionalHeaders(request, args, baseUrl);
+        if (apiType === TEXTGEN_TYPES.LLAMACPP && llamaCpp.headers) {
+            args.headers = { ...args.headers, ...llamaCpp.headers };
+        } else {
+            setAdditionalHeaders(request, args, baseUrl);
+        }
 
         // Convert to string + remove trailing slash + /v1 suffix
         let url = trimV1(baseUrl);
@@ -1429,7 +1528,12 @@ export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType
                 break;
             case TEXTGEN_TYPES.LLAMACPP:
                 url += '/tokenize';
-                args.body = JSON.stringify({ 'model': model, 'content': text });
+                args.body = JSON.stringify({
+                    'model': model,
+                    'content': text,
+                    ...(llamaCpp.addSpecial ? { 'add_special': true } : {}),
+                    ...(llamaCpp.withPieces ? { 'with_pieces': true } : {}),
+                });
                 break;
             case TEXTGEN_TYPES.VLLM:
                 url += '/tokenize';
@@ -1456,6 +1560,14 @@ export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType
 
         /** @type {any} */
         const data = await result.json();
+        if (apiType === TEXTGEN_TYPES.LLAMACPP && llamaCpp.withPieces) {
+            const tokens = data?.tokens;
+            if (!Array.isArray(tokens) || !tokens.every(token => Number.isInteger(token?.id) && (typeof token.piece === 'string' || Array.isArray(token.piece)))) {
+                console.warn('llama.cpp /tokenize gave no token pieces');
+                return { error: true };
+            }
+            return { count: tokens.length, ids: tokens.map(token => token.id), pieces: tokens.map(token => token.piece) };
+        }
         const count = (data?.length ?? data?.count ?? data?.value ?? data?.tokens?.length);
         const ids = (data?.tokens ?? data?.ids ?? []);
 

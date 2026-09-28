@@ -129,6 +129,7 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 }));
 jest.unstable_mockModule('../public/scripts/tokenizer-notices.js', () => ({ showTokenizerWarnings }));
 jest.unstable_mockModule('../public/scripts/chat-completion-settings.js', () => ({
+    chat_completion_sources: { CUSTOM: 'custom' },
     getChatCompletionModel: () => '',
     oai_settings: { chat_completion_source: 'openai' },
 }));

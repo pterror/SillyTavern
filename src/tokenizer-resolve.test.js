@@ -1336,6 +1336,276 @@ await check('the old resolvers and their llama defaults are no longer exported',
     }
 });
 
+// --- llama.cpp's own /tokenize (step 22) ---
+
+const customLlamaCpp = await import('./custom-llamacpp.js').catch(error => {
+    console.log(`custom-llamacpp.js not importable: ${error.message}`);
+    return {};
+});
+const { writeSecret } = await import('./endpoints/secrets.js');
+const { writeSettingsKeys } = await import('./settings-store.js');
+const { countChatCompletionMessages } = await import('./endpoints/tokenizers.js');
+
+/** llama.cpp's `GET /props` reply shape (llama.cpp server README, "GET `/props`"). */
+const llamaCppProps = { default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc' };
+
+/**
+ * A fake backend recording each request's method, path, headers and JSON body. `/tokenize` answers
+ * one token per UTF-8 byte (with `with_pieces`, each piece that byte as a list), or 500 when `failTokenize`.
+ * @param {{ props?: any, propsStatus?: number, models?: string[] }} options
+ */
+async function startFakeLlamaCpp({ props = llamaCppProps, propsStatus = 200, models = [] } = {}) {
+    const requests = [];
+    const fake = { requests, failTokenize: false };
+    const server = http.createServer((req, res) => {
+        let raw = '';
+        req.on('data', chunk => { raw += chunk; });
+        req.on('end', () => {
+            const body = raw ? JSON.parse(raw) : undefined;
+            requests.push({ method: req.method, path: req.url, headers: req.headers, body });
+            res.setHeader('Content-Type', 'application/json');
+            if (req.url === '/props') {
+                res.statusCode = propsStatus;
+                return res.end(JSON.stringify(props));
+            }
+            if (req.url === '/v1/models') {
+                return res.end(JSON.stringify({ data: models.map(id => ({ id })) }));
+            }
+            if (req.url === '/tokenize') {
+                if (fake.failTokenize) {
+                    res.statusCode = 500;
+                    return res.end('{}');
+                }
+                const bytes = Array.from(Buffer.from(String(body.content)));
+                const tokens = body.with_pieces ? bytes.map((byte, id) => ({ id, piece: [byte] })) : bytes.map((_, id) => id);
+                return res.end(JSON.stringify({ tokens }));
+            }
+            res.statusCode = 404;
+            res.end('{}');
+        });
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    return Object.assign(fake, { server, url: `http://127.0.0.1:${server.address().port}` });
+}
+
+writeSecret(directories, 'api_key_custom', 'custom-key');
+writeSecret(directories, 'api_key_llamacpp', 'textgen-llamacpp-key');
+const saveCustomHeaders = (text) => writeSettingsKeys(directories, { 'oai_settings.custom_include_headers': text });
+const customState = (url, model = 'gemma-2-9b-it.gguf') => ({ api: 'openai', source: 'custom', url, model });
+
+await check('llamacpp with API_CURRENT and a registry model -> remote, not the entry (a guard: passes before)', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'test-qwen-model.gguf', tokenizerSetting: tokenizers.API_CURRENT };
+    const resolved = await resolveTokenizer(state, registryDeps);
+    assert.deepEqual({ kind: resolved.kind, id: resolved.id, copy: resolved.localCopy?.source }, { kind: 'remote', id: tokenizers.API_TEXTGENERATIONWEBUI, copy: 'qwen3' });
+});
+
+await check('llamacpp with an explicit #tokenizer pick -> that pick, not /tokenize (a guard: passes before)', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'test-qwen-model.gguf', tokenizerSetting: tokenizers.GEMMA };
+    const resolved = await resolveTokenizer(state, registryDeps);
+    assert.deepEqual({ kind: resolved.kind, id: resolved.id }, { kind: 'local', id: tokenizers.GEMMA });
+});
+
+await check('chat completion, custom URL detected as llama.cpp -> remote, gemma as its local copy', async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory?.();
+    saveCustomHeaders('X-Custom: yes');
+    const fake = await startFakeLlamaCpp();
+    try {
+        const resolved = await resolveTokenizer(customState(`${fake.url}/v1`), { directories });
+        assert.deepEqual({ kind: resolved.kind, id: resolved.id, copy: resolved.localCopy?.id }, { kind: 'remote', id: tokenizers.API_TEXTGENERATIONWEBUI, copy: tokenizers.GEMMA });
+        assert.deepEqual(fake.requests.map(r => `${r.method} ${r.path}`), ['GET /props'], 'the /v1 suffix is removed, as the /props route does');
+        assert.equal(JSON.stringify(resolved).includes('custom-key'), false, 'the key is not in what a resolution serializes to');
+    } finally {
+        fake.server.close();
+    }
+});
+
+await check('chat completion, custom URL: the probe and /tokenize carry the custom key and headers, never the textgen llama.cpp key', async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory?.();
+    saveCustomHeaders('X-Custom: yes');
+    const fake = await startFakeLlamaCpp();
+    try {
+        const resolved = await resolveTokenizer(customState(fake.url), { directories });
+        const count = await countChatCompletionMessages(resolved, [{ role: 'user', content: 'héllo' }]);
+        assert.equal(count, Buffer.byteLength('user\n\nhéllo'), 'counted by /tokenize over the joined message values');
+        assert.deepEqual(fake.requests.map(r => `${r.method} ${r.path}`), ['GET /props', 'POST /tokenize']);
+        for (const request of fake.requests) {
+            assert.equal(request.headers.authorization, 'Bearer custom-key', request.path);
+            assert.equal(request.headers['x-custom'], 'yes', request.path);
+            assert.equal(JSON.stringify(request.headers).includes('textgen-llamacpp-key'), false, request.path);
+        }
+        assert.deepEqual(fake.requests[1].body, { model: 'gemma-2-9b-it.gguf', content: 'user\n\nhéllo' }, 'a single field: no add_special, as upstream');
+    } finally {
+        fake.server.close();
+    }
+});
+
+await check('chat completion, custom URL that is not llama.cpp -> the map (a 404, another shape, a refused connection) (a guard: passes before)', async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory?.();
+    saveCustomHeaders('');
+    const notFound = await startFakeLlamaCpp({ propsStatus: 404 });
+    const noBuildInfo = await startFakeLlamaCpp({ props: { default_generation_settings: {}, total_slots: 1 } });
+    const slotsNotANumber = await startFakeLlamaCpp({ props: { ...llamaCppProps, total_slots: '1' } });
+    const settingsNotAnObject = await startFakeLlamaCpp({ props: { ...llamaCppProps, default_generation_settings: [] } });
+    try {
+        for (const url of [notFound.url, noBuildInfo.url, slotsNotANumber.url, settingsNotAnObject.url, 'http://127.0.0.1:1']) {
+            const resolved = await resolveTokenizer(customState(url), { directories });
+            assert.deepEqual({ kind: resolved.kind, id: resolved.id }, { kind: 'local', id: tokenizers.GEMMA }, url);
+        }
+    } finally {
+        for (const fake of [notFound, noBuildInfo, slotsNotANumber, settingsNotAnObject]) fake.server.close();
+    }
+});
+
+await check('chat completion, custom URL: the answer is remembered per URL; /status probes it again', async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory?.();
+    saveCustomHeaders('');
+    const fake = await startFakeLlamaCpp({ propsStatus: 503 });
+    const { router } = await import('./endpoints/backends/chat-completions.js');
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { directories }; next(); });
+    app.use('/', router);
+    const st = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => st.once('listening', resolve));
+    try {
+        const first = await resolveTokenizer(customState(fake.url), { directories });
+        const second = await resolveTokenizer(customState(fake.url), { directories });
+        assert.deepEqual([first.kind, second.kind], ['local', 'local']);
+        assert.equal(fake.requests.filter(r => r.path === '/props').length, 1, 'probed once');
+
+        // The server came up as llama.cpp; connecting asks again.
+        const llamaCpp = await startFakeLlamaCpp();
+        const statusUrl = `http://127.0.0.1:${st.address().port}/status`;
+        await fetch(statusUrl, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_completion_source: 'custom', custom_url: llamaCpp.url, custom_include_headers: 'X-Status: substituted' }),
+        });
+        for (let i = 0; i < 50 && customLlamaCpp.recallLlamaCppDetection(llamaCpp.url) === undefined; i++) {
+            await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        assert.equal(customLlamaCpp.recallLlamaCppDetection(llamaCpp.url), true, '/status remembered it');
+        const probe = llamaCpp.requests.find(r => r.path === '/props');
+        assert.equal(probe.headers['x-status'], 'substituted', 'the probe carries the headers /status sends');
+        assert.equal(probe.headers.authorization, 'Bearer custom-key');
+        const resolved = await resolveTokenizer(customState(llamaCpp.url), { directories });
+        assert.equal(resolved.kind, 'remote');
+        assert.equal(llamaCpp.requests.filter(r => r.path === '/props').length, 1, 'resolving used the remembered answer');
+        llamaCpp.server.close();
+    } finally {
+        st.close();
+        fake.server.close();
+    }
+});
+
+await check(`chat completion, custom URL: at most ${customLlamaCpp.MAX_REMEMBERED_LLAMACPP_URLS} URLs are remembered, the oldest forgotten first`, async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory();
+    const max = customLlamaCpp.MAX_REMEMBERED_LLAMACPP_URLS;
+    assert.equal(max, 100);
+    for (let i = 0; i <= max; i++) {
+        customLlamaCpp.rememberLlamaCppDetection(`http://host-${i}`, true);
+    }
+    assert.equal(customLlamaCpp.recallLlamaCppDetection('http://host-0'), undefined);
+    assert.equal(customLlamaCpp.recallLlamaCppDetection('http://host-1'), true);
+    assert.equal(customLlamaCpp.recallLlamaCppDetection(`http://host-${max}`), true);
+    customLlamaCpp.clearLlamaCppDetectionMemory();
+});
+
+await check('chat completion, saved custom headers with a macro: no probe, no /tokenize, the map (a guard: passes before)', async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory?.();
+    saveCustomHeaders('X-User: {{user}}');
+    const fake = await startFakeLlamaCpp();
+    try {
+        const resolved = await resolveTokenizer(customState(fake.url), { directories });
+        assert.deepEqual({ kind: resolved.kind, id: resolved.id }, { kind: 'local', id: tokenizers.GEMMA });
+        customLlamaCpp.rememberLlamaCppDetection?.(fake.url, true);
+        const remembered = await resolveTokenizer(customState(fake.url), { directories });
+        assert.deepEqual({ kind: remembered.kind, id: remembered.id }, { kind: 'local', id: tokenizers.GEMMA }, 'a URL remembered as llama.cpp too');
+        assert.deepEqual(fake.requests, [], 'nothing was asked');
+    } finally {
+        fake.server.close();
+        saveCustomHeaders('');
+    }
+});
+
+await check('chat completion, a server-built send\'s own substituted headers are what the probe and /tokenize carry', async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory?.();
+    saveCustomHeaders('X-User: {{user}}');
+    const fake = await startFakeLlamaCpp();
+    try {
+        const resolved = await resolveTokenizer(customState(fake.url), { directories, customIncludeHeaders: 'X-User: Tester' });
+        assert.equal(resolved.kind, 'remote');
+        await countChatCompletionMessages(resolved, [{ content: 'hi' }]);
+        assert.deepEqual(fake.requests.map(r => [r.path, r.headers['x-user']]), [['/props', 'Tester'], ['/tokenize', 'Tester']]);
+    } finally {
+        fake.server.close();
+        saveCustomHeaders('');
+    }
+});
+
+await check('chat completion, custom llama.cpp with an empty model setting: the model its /v1/models lists first picks the local copy', async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory?.();
+    const fake = await startFakeLlamaCpp({ models: ['gemma-2-9b-it.gguf'] });
+    try {
+        const resolved = await resolveTokenizer(customState(fake.url, ''), { directories });
+        assert.deepEqual({ kind: resolved.kind, copy: resolved.localCopy?.id }, { kind: 'remote', copy: tokenizers.GEMMA });
+        assert.equal(fake.requests.find(r => r.path === '/v1/models').headers.authorization, 'Bearer custom-key');
+    } finally {
+        fake.server.close();
+    }
+});
+
+await check('chat completion, custom llama.cpp /tokenize failing: messages count with the local copy, basis fallback', async () => {
+    customLlamaCpp.clearLlamaCppDetectionMemory?.();
+    const fake = await startFakeLlamaCpp();
+    fake.failTokenize = true;
+    try {
+        const resolved = await resolveTokenizer(customState(fake.url), { directories });
+        const outcome = createTokenizerOutcome();
+        const messages = [{ content: 'Hello world' }];
+        const count = await countChatCompletionMessages(resolved, messages, outcome);
+        assert.equal(count, (await encodeTextByLocalTokenizerType('gemma', 'Hello world')).length);
+        assert.equal(tokenizerOutcomeBasis(resolved, outcome), 'fallback');
+        assert.equal(outcome.usedCopy?.id, tokenizers.GEMMA);
+    } finally {
+        fake.server.close();
+    }
+});
+
+await check('textgen llamacpp: a count that begins the prompt sends add_special: true; a single field sends upstream\'s { model, content }', async () => {
+    const fake = await startFakeLlamaCpp();
+    try {
+        const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: fake.url, model: 'gemma-2-9b-it.gguf', tokenizerSetting: tokenizers.BEST_MATCH };
+        const resolved = await resolveTokenizer(state, { directories });
+        const options = { request: { body: { api_type: TEXTGEN_TYPES.LLAMACPP }, user: { directories } }, textgenBaseUrl: fake.url, textgenModel: state.model, textgenApiType: TEXTGEN_TYPES.LLAMACPP };
+        await countWithTokenizer(resolved, 'field', options);
+        await countWithTokenizer(resolved, 'prompt', { ...options, promptStart: true });
+        assert.deepEqual(fake.requests.map(r => r.body), [
+            { model: 'gemma-2-9b-it.gguf', content: 'field' },
+            { model: 'gemma-2-9b-it.gguf', content: 'prompt', add_special: true },
+        ]);
+    } finally {
+        fake.server.close();
+    }
+});
+
+await check('textgen llamacpp /tokenize failing: a count that begins the prompt gets the estimate, not the local copy', async () => {
+    const state = { api: TEXTGEN, type: TEXTGEN_TYPES.LLAMACPP, url: 'http://127.0.0.1:1', model: 'gemma-2-9b-it', tokenizerSetting: tokenizers.BEST_MATCH };
+    const resolved = await resolveTokenizer(state, { directories });
+    const localCalls = [];
+    const encodeLocal = async (key, text) => { localCalls.push(key); return [1, 2]; };
+    const options = { encodeTextgenRemote: failingRemote, encodeLocal, textgenApiType: TEXTGEN_TYPES.LLAMACPP };
+
+    const promptOutcome = createTokenizerOutcome();
+    assert.equal(await countWithTokenizer(resolved, 'Hello world', { ...options, promptStart: true, outcome: promptOutcome }), estimateTokenCount('Hello world'));
+    assert.deepEqual(localCalls, [], 'no local copy answered');
+    assert.equal(tokenizerOutcomeBasis(resolved, promptOutcome), 'failed');
+    assert.deepEqual(sendTokenizerWarnings(state, resolved, promptOutcome, []).map(w => w.kind), ['trim-estimate']);
+
+    const fieldOutcome = createTokenizerOutcome();
+    assert.equal(await countWithTokenizer(resolved, 'Hello world', { ...options, outcome: fieldOutcome }), 2, 'a single field still uses the copy');
+    assert.equal(tokenizerOutcomeBasis(resolved, fieldOutcome), 'fallback');
+});
+
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 
 if (failures.length > 0) {

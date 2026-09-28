@@ -2,8 +2,8 @@ import express from 'express';
 
 import { countChatCompletionMessages, decodeWithLocalTokenizer, getLocalEncodeChunks } from './tokenizers.js';
 import {
-    resolveTokenizer, createTokenizerOutcome, countWithTokenizer, encodeWithTokenizer, estimateTokenCount,
-    tokenizerAnswer, tokenizerResponseWarnings, isExplicitTokenizer,
+    resolveTokenizer, createTokenizerOutcome, countWithTokenizer, encodeWithTokenizer, encodeWithTokenizerAndChunks,
+    estimateTokenCount, tokenizerAnswer, tokenizerResponseWarnings, isExplicitTokenizer,
 } from '../tokenizer-resolve.js';
 import { localResolution } from '../tokenizer-map-resolution.js';
 import { readTokenizerState } from '../connection-state-header.js';
@@ -126,14 +126,16 @@ router.post('/current/count', currentTokenizerRoute(
         }
         const texts = readTexts(body);
         const padding = Number(body.padding ?? 0);
-        return texts && { texts, padding: Number.isFinite(padding) ? padding : 0 };
+        // `promptStart`: every text begins the prompt a generation sends, so it is counted as that prompt is.
+        return texts && { texts, padding: Number.isFinite(padding) ? padding : 0, promptStart: body.promptStart === true };
     },
     async (input, resolved, options) => {
         if ('messages' in input) {
             return { count: await countChatCompletionMessages(resolved, input.messages, options.outcome, options.directories) };
         }
+        const countOptions = input.promptStart ? { ...options, promptStart: true } : options;
         const counts = await Promise.all(input.texts.map(async text => text.length > 0
-            ? await countWithTokenizer(resolved, text, options) + input.padding
+            ? await countWithTokenizer(resolved, text, countOptions) + input.padding
             : 0));
         return { counts };
     },
@@ -145,6 +147,11 @@ router.post('/current/encode', currentTokenizerRoute(
         return texts && { texts };
     },
     async ({ texts }, resolved, options) => {
+        if (resolved.kind === 'remote') {
+            const encoded = await Promise.all(texts.map(text => encodeWithTokenizerAndChunks(resolved, text, options)));
+            const ids = encoded.map(result => result.ids);
+            return encoded.some(result => result.chunks !== undefined) ? { ids, chunks: encoded.map(result => result.chunks ?? null) } : { ids };
+        }
         const ids = await Promise.all(texts.map(text => encodeWithTokenizer(resolved, text, options)));
         if (resolved.kind !== 'local') {
             return { ids };

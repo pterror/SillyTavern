@@ -364,8 +364,15 @@ async function run() {
     );
 
     // --- route-level: non-streaming raw-action /generate persists the assistant reply for real ---
-    async function startFakeBackend(handler) {
+    // A fake is an OpenAI-compatible server that is not llama.cpp: its `/props` answers 404, so a
+    // custom URL pointed at it keeps the model map. With `answersProps`, its handler answers `/props`.
+    async function startFakeBackend(handler, { answersProps = false } = {}) {
         const server = http.createServer((req, res) => {
+            if (req.method === 'GET' && req.url === '/props' && !answersProps) {
+                res.writeHead(404);
+                res.end();
+                return;
+            }
             let body = '';
             req.on('data', chunk => { body += chunk; });
             req.on('end', () => handler(req, res, body));
@@ -768,7 +775,7 @@ async function run() {
             assert.equal(status, 200, name);
             assert.deepEqual(data.warnings, [{
                 kind: 'dropped',
-                key: `openai|custom||${model}|none`,
+                key: `openai|custom|${fakeBackend.url}|${model}|none`,
                 message: 'Left out 1 entry that need token ids, because no tokenizer is known for this model: hello',
                 entries: ['hello'],
             }], `${name}: the dropped entry is listed`);
@@ -812,14 +819,14 @@ async function run() {
 
         const dropped = model => ({
             kind: 'dropped',
-            key: `openai|custom||${model}|nemo`,
+            key: `openai|custom|${fakeBackend.url}|${model}|nemo`,
             message: 'Left out 1 entry that need token ids, because the Mistral Nemo tokenizer failed: hello',
             entries: ['hello'],
         });
         assert.equal(rawAction.status, 200, 'raw-action');
         assert.deepEqual(rawAction.data.warnings, [{
             kind: 'trim-estimate',
-            key: 'openai|custom||Mistral-Nemo-Instruct-2407|nemo',
+            key: `openai|custom|${fakeBackend.url}|Mistral-Nemo-Instruct-2407|nemo`,
             message: 'The Mistral Nemo tokenizer failed, so the prompt was fitted to the context by an estimated token count.',
         }, dropped('Mistral-Nemo-Instruct-2407')], 'raw-action: the estimate trim and the dropped entry are reported');
         assert.equal(profile.status, 200, 'profile');
@@ -900,6 +907,84 @@ async function run() {
             server.closeAllConnections?.();
             await new Promise(resolve => server.close(resolve));
         }
+    }
+
+    // (a-5) a custom URL that is llama.cpp (its `/props` has llama.cpp's shape): a server-built send
+    // counts and encodes its bias through that URL's `/tokenize`, with the custom key and the custom
+    // headers substituted with the send's own macros; `/bias` with a state header does the same.
+    {
+        const requests = [];
+        const fakeLlamaCpp = await startFakeBackend((req, res, body) => {
+            requests.push({ method: req.method, path: req.url, headers: req.headers, body: body ? JSON.parse(body) : undefined });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (req.url === '/props') {
+                // llama.cpp's own `/props` shape (llama.cpp server README, "GET `/props`").
+                return res.end(JSON.stringify({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc' }));
+            }
+            if (req.url === '/tokenize') {
+                const bytes = Array.from(Buffer.from(String(JSON.parse(body).content)));
+                return res.end(JSON.stringify({ tokens: bytes.map(byte => 1000 + byte) }));
+            }
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }));
+        }, { answersProps: true });
+        writeSecret(directories, SECRET_KEYS.CUSTOM, 'custom-key');
+        writeSecret(directories, SECRET_KEYS.LLAMACPP, 'textgen-llamacpp-key');
+        const settings = buildSettingsFixture();
+        settings.oai_settings.custom_url = fakeLlamaCpp.url;
+        settings.oai_settings.custom_model = 'some-unheard-of-model';
+        settings.oai_settings.custom_include_headers = 'X-User: "{{user}}"';
+        settings.oai_settings.bias_preset_selected = 'Bias';
+        settings.oai_settings.bias_presets = { Bias: [{ id: 'a', text: 'hi', value: -5 }] };
+        writeAllSettings(directories, settings);
+
+        const app = buildTestApp();
+        const branchBefore = await loadBranch(directories, ownerId, branchName);
+        const sent = await postGenerate(app, {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: 'Count me, Rex.', stream: false,
+        });
+        const sendRequests = requests.slice();
+
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        let biasWithMacroHeaders;
+        let biasWithPlainHeaders;
+        try {
+            const postBias = () => fetch(`http://127.0.0.1:${server.address().port}/bias`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-ST-Connection-State': JSON.stringify({ api: 'openai', source: 'custom', url: fakeLlamaCpp.url, model: 'some-unheard-of-model' }) },
+                body: JSON.stringify([{ text: 'hi', value: 3 }]),
+            });
+            const requestsBefore = requests.length;
+            const macroReply = await postBias();
+            biasWithMacroHeaders = { body: await macroReply.json(), dropped: JSON.parse(macroReply.headers.get('x-st-tokenizer-dropped') ?? 'null'), asked: requests.length - requestsBefore };
+            settings.oai_settings.custom_include_headers = 'X-User: plain';
+            writeAllSettings(directories, settings);
+            const plainReply = await postBias();
+            biasWithPlainHeaders = { body: await plainReply.json(), dropped: JSON.parse(plainReply.headers.get('x-st-tokenizer-dropped') ?? 'null') };
+        } finally {
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+            fakeLlamaCpp.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+
+        assert.equal(sent.status, 200);
+        const tokenizes = sendRequests.filter(r => r.path === '/tokenize');
+        assert.ok(sendRequests.some(r => r.method === 'GET' && r.path === '/props'), 'the send asked whether the URL is llama.cpp');
+        assert.ok(tokenizes.length > 0, 'the send counted with llama.cpp\'s /tokenize');
+        for (const request of sendRequests.filter(r => r.path === '/props' || r.path === '/tokenize')) {
+            assert.equal(request.headers['x-user'], 'Tester', `${request.path}: the custom headers, substituted with the send's macros`);
+            assert.equal(request.headers.authorization, 'Bearer custom-key', request.path);
+            assert.equal(JSON.stringify(request.headers).includes('textgen-llamacpp-key'), false, request.path);
+        }
+        assert.equal(tokenizes.some(r => 'add_special' in r.body), false, 'chat-completion counts ask for no BOS');
+        const generation = sendRequests.find(r => r.path === '/chat/completions');
+        assert.deepEqual(generation.body.logit_bias, { 1104: -5, 1105: -5 }, 'the bias ids came from /tokenize');
+        assert.equal(sent.data.warnings, undefined, 'nothing was dropped or estimated');
+
+        assert.deepEqual(biasWithMacroHeaders, { body: {}, dropped: ['hi'], asked: 0 }, '/bias, saved headers with a macro: nothing asked, the map (unmapped model)');
+        assert.deepEqual(biasWithPlainHeaders, { body: { 1104: 3, 1105: 3 }, dropped: [] }, '/bias, plain saved headers: /tokenize ids');
     }
 
     // (b) a failed backend response (non-2xx) does NOT append an assistant reply (the user message,

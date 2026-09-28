@@ -1,6 +1,6 @@
 import { TEXTGEN_TYPES } from './constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
-import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
+import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getBytePieceChunks, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
 import { lookupModelTokenizer, mapResultKey } from './tokenizer-model-map.js';
 import { hasRemoteTokenizer, lookupBackendModel } from './backend-status.js';
 import { TOKENIZER_NAMES, describeMapEntry, describeTokenizerId, localResolution, estimateResolution, resolveChatCompletionTokenizer, selectBackendResult, selectModelResult } from './tokenizer-map-resolution.js';
@@ -160,6 +160,11 @@ export { TOKENIZER_TYPE_KEYS };
  * Replaces the tokenizer registry, for tests.
  * @property {import('./tokenizer-loader.js').RegistryTokenizerOptions['loadPinned']} [loadPinned]
  * Replaces the registry file loader, for tests.
+ * @property {boolean} [promptStart] The text begins the prompt a generation sends. llama.cpp's
+ * `/tokenize` then puts BOS in as the generation does (`add_special`); whether that backend adds BOS
+ * depends on the loaded gguf, so when it fails no local copy answers for it.
+ * @property {{ pieces?: Array<string|number[]> }} [piecesOut] Asks llama.cpp's `/tokenize` for each
+ * token's piece, and receives them when it answers.
  */
 
 /** A remote tokenizer answered with an HTTP error, a network error or a reply without token ids. */
@@ -196,12 +201,8 @@ export async function encodeWithTokenizerType(tokenizerType, text, options = {})
     }
 
     if (tokenizerType === tokenizers.API_TEXTGENERATIONWEBUI || tokenizerType === tokenizers.API_CURRENT) {
-        const result = await encodeTextgenRemote(request, text, textgenBaseUrl, textgenModel, textgenApiType);
-        // encodeViaTextgenAPI() shapes a reply with no token list as `ids: []` with no count.
-        if (result && !('error' in result) && Array.isArray(result.ids) && typeof result.count === 'number') {
-            return result.ids;
-        }
-        throw new TokenizerFailure(`The ${textgenApiType ?? 'text completion'} backend's tokenizer failed`);
+        const llamaCpp = textgenApiType === TEXTGEN_TYPES.LLAMACPP ? llamaCppTokenizeOptions(options) : undefined;
+        return remoteIds(await encodeTextgenRemote(request, text, textgenBaseUrl, textgenModel, textgenApiType, llamaCpp), textgenApiType, options);
     }
 
     if (tokenizerType === tokenizers.API_KOBOLD) {
@@ -240,6 +241,47 @@ export async function encodeWithTokenizerType(tokenizerType, text, options = {})
     }
 
     throw new Error(`Unsupported tokenizer type for encoding: ${tokenizerType}`);
+}
+
+/**
+ * The `/tokenize` fields llama.cpp gets for these options, or undefined for upstream's request.
+ * @param {EncodeWithTokenizerTypeOptions} options
+ * @returns {{ addSpecial?: boolean, withPieces?: boolean }|undefined}
+ */
+function llamaCppTokenizeOptions(options) {
+    const fields = {
+        ...(options.promptStart ? { addSpecial: true } : {}),
+        ...(options.piecesOut ? { withPieces: true } : {}),
+    };
+    return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
+/**
+ * @param {any} result An encodeViaTextgenAPI() answer
+ * @param {string|undefined} apiType
+ * @param {EncodeWithTokenizerTypeOptions} options
+ * @returns {number[]}
+ */
+function remoteIds(result, apiType, options) {
+    // encodeViaTextgenAPI() shapes a reply with no token list as `ids: []` with no count.
+    if (result && !('error' in result) && Array.isArray(result.ids) && typeof result.count === 'number') {
+        if (options.piecesOut && Array.isArray(result.pieces)) {
+            options.piecesOut.pieces = result.pieces;
+        }
+        return result.ids;
+    }
+    throw new TokenizerFailure(`The ${apiType ?? 'text completion'} backend's tokenizer failed`);
+}
+
+/**
+ * Whether the resolution's tokenizer is llama.cpp's `/tokenize`.
+ * @param {ResolvedTokenizer} resolved
+ * @param {EncodeWithTokenizerTypeOptions} options
+ * @returns {boolean}
+ */
+function isLlamaCppTokenizer(resolved, options) {
+    return resolved.kind === 'remote'
+        && (!!resolved.llamaCpp || (resolved.id === tokenizers.API_TEXTGENERATIONWEBUI && options.textgenApiType === TEXTGEN_TYPES.LLAMACPP));
 }
 
 /** Explicit settings that name a local tokenizer. */
@@ -298,6 +340,8 @@ const EXPLICIT_OPENAI_MODEL = 'gpt-3.5-turbo';
  * answered, so the estimate and no ids) describe one request's outcome, from tokenizerOutcomeBasis().
  * @property {LocalTokenizer|null} localCopy The map's exact local tokenizer for the model, or null.
  * The only fallback when the tokenizer fails.
+ * @property {import('./custom-llamacpp.js').CustomLlamaCppEndpoint & { model: string }} [llamaCpp] A
+ * chat-completion custom URL that is llama.cpp: where its `/tokenize` is and the model setting it gets.
  */
 
 /**
@@ -329,8 +373,9 @@ function resolveExplicitSetting(id, registry) {
  * The one tokenizer resolution, used for counts and token ids alike. Never falls back to LLAMA:
  * only the map, an explicit setting or the NovelAI list give llama.
  * @param {TokenizerState} state
- * @param {{ directories?: import('./users.js').UserDirectoryList } & import('./tokenizer-map-resolution.js').MapDeps} [deps]
- * directories give the backend's API key headers for the model lookup and capability probe.
+ * @param {{ directories?: import('./users.js').UserDirectoryList, customIncludeHeaders?: string } & import('./tokenizer-map-resolution.js').MapDeps} [deps]
+ * directories give the backend's API key headers for the model lookup and capability probe;
+ * customIncludeHeaders are a server-built chat-completion send's custom headers, its macros substituted.
  * @returns {Promise<ResolvedTokenizer>}
  */
 export async function resolveTokenizer(state, deps = {}) {
@@ -345,7 +390,7 @@ export async function resolveTokenizer(state, deps = {}) {
 
     // Upstream never applies the tokenizer setting to chat completion.
     if (api === 'openai') {
-        return resolveChatCompletionTokenizer(state.model, state.source, deps);
+        return resolveChatCompletionTokenizer(state.model, state.source, { ...deps, url: state.url });
     }
 
     if (isExplicitTokenizer(tokenizerSetting)) {
@@ -451,7 +496,8 @@ export async function encodeWithTokenizer(resolved, text, options = {}) {
     } catch (error) {
         console.warn(`Tokenizer ${resolved.name} failed:`, error.message);
     }
-    if (resolved.kind === 'remote' && resolved.localCopy) {
+    const copyCanAnswer = !(options.promptStart && isLlamaCppTokenizer(resolved, options));
+    if (resolved.kind === 'remote' && resolved.localCopy && copyCanAnswer) {
         try {
             const ids = await encodeWithLocalOrType(resolved.localCopy, str, options);
             if (outcome) outcome.usedCopy = resolved.localCopy;
@@ -465,12 +511,37 @@ export async function encodeWithTokenizer(resolved, text, options = {}) {
 }
 
 /**
- * @param {{id: number, source?: string, model?: string}} tokenizer A resolution or a LocalTokenizer.
+ * Token ids as encodeWithTokenizer() gives them, and the chunks llama.cpp's `/tokenize` names for them
+ * when it is the tokenizer and answered: `chunks` is undefined for any other tokenizer, and null when
+ * llama.cpp didn't answer.
+ * @param {ResolvedTokenizer} resolved
+ * @param {string} text
+ * @param {EncodeWithTokenizerTypeOptions} [options]
+ * @returns {Promise<{ ids: number[]|null, chunks?: string[]|null }>}
+ */
+export async function encodeWithTokenizerAndChunks(resolved, text, options = {}) {
+    if (!isLlamaCppTokenizer(resolved, options)) {
+        return { ids: await encodeWithTokenizer(resolved, text, options) };
+    }
+    /** @type {{ pieces?: Array<string|number[]> }} */
+    const piecesOut = {};
+    const ids = await encodeWithTokenizer(resolved, text, { ...options, piecesOut });
+    return { ids, chunks: piecesOut.pieces ? getBytePieceChunks(piecesOut.pieces) : null };
+}
+
+/**
+ * @param {{id: number, source?: string, model?: string, llamaCpp?: ResolvedTokenizer['llamaCpp']}} tokenizer A resolution or a LocalTokenizer.
  * @param {string} text
  * @param {EncodeWithTokenizerTypeOptions} options
  * @returns {Promise<number[]>}
  */
 async function encodeWithLocalOrType(tokenizer, text, options) {
+    if (tokenizer.llamaCpp) {
+        const { url, model, headers } = tokenizer.llamaCpp;
+        const { encodeTextgenRemote = encodeViaTextgenAPI } = options;
+        const result = await encodeTextgenRemote(null, text, url, model, TEXTGEN_TYPES.LLAMACPP, { ...llamaCppTokenizeOptions(options), headers });
+        return remoteIds(result, TEXTGEN_TYPES.LLAMACPP, options);
+    }
     if (tokenizer.source) {
         return encodeWithRegistryEntry(tokenizer.source, text, options);
     }

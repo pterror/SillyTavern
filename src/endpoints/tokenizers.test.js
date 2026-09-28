@@ -720,8 +720,116 @@ await testCase('/current/*: a request without state answers 400', async () => {
     }
 });
 
+// --- llama.cpp's own /tokenize (step 22) ---
+
+// A fake llama.cpp recording each request: `/props` answers llama.cpp's shape (llama.cpp server README,
+// "GET `/props`"), `/tokenize` one token per UTF-8 byte (with `with_pieces`, each piece that byte as a
+// list, as llama.cpp gives a piece that isn't valid UTF-8), or 500 when `stepFake.fail`.
+const stepFake = { fail: false, requests: [] };
+const stepLlamaCpp = express();
+stepLlamaCpp.use(express.json());
+stepLlamaCpp.use((req, _res, next) => { stepFake.requests.push({ path: req.path, headers: req.headers, body: req.body }); next(); });
+stepLlamaCpp.get('/props', (_req, res) => res.send({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc' }));
+stepLlamaCpp.post('/tokenize', (req, res) => {
+    if (stepFake.fail) return res.sendStatus(500);
+    const bytes = Array.from(Buffer.from(String(req.body.content)));
+    return res.send({ tokens: req.body.with_pieces ? bytes.map((byte, id) => ({ id, piece: [byte] })) : bytes.map((_, id) => id) });
+});
+const stepServer = stepLlamaCpp.listen(0, '127.0.0.1');
+await new Promise(resolve => stepServer.once('listening', resolve));
+const stepUrl = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (stepServer.address()).port}`;
+const stepTextgenState = { api: 'textgenerationwebui', type: 'llamacpp', url: stepUrl, model: 'gemma-2-9b-it', tokenizerSetting: tokenizers.BEST_MATCH };
+const stepCustomState = { api: 'openai', source: 'custom', url: stepUrl, model: 'gemma-2-9b-it' };
+const { writeSecret } = await import('./secrets.js');
+writeSecret({ root: dataRoot }, 'api_key_custom', 'custom-key');
+writeSecret({ root: dataRoot }, 'api_key_llamacpp', 'textgen-llamacpp-key');
+const tokenizeBodies = () => stepFake.requests.filter(r => r.path === '/tokenize').map(r => r.body);
+const resetStepFake = () => { stepFake.fail = false; stepFake.requests.length = 0; };
+
+await testCase('/current/count: a single field sent to llama.cpp carries no add_special, as upstream (a guard: passes before)', async () => {
+    resetStepFake();
+    const counted = await postCurrent('count', { state: stepTextgenState, texts: [text] });
+    assert.deepEqual(counted.counts, [Buffer.byteLength(text)]);
+    assert.deepEqual(tokenizeBodies(), [{ model: 'gemma-2-9b-it', content: text }]);
+});
+
+await testCase('/current/count with promptStart: llama.cpp /tokenize gets add_special: true, as a generation tokenizes its prompt', async () => {
+    resetStepFake();
+    const counted = await postCurrent('count', { state: stepTextgenState, texts: [text], promptStart: true });
+    assert.deepEqual(counted.counts, [Buffer.byteLength(text)]);
+    assert.deepEqual(tokenizeBodies(), [{ model: 'gemma-2-9b-it', content: text, add_special: true }]);
+    assert.equal(counted.tokenizer.basis, 'remote');
+});
+
+await testCase('/current/count with promptStart and /tokenize failing: the estimate, basis failed, no local copy', async () => {
+    resetStepFake();
+    stepFake.fail = true;
+    const counted = await postCurrent('count', { state: stepTextgenState, texts: [text], promptStart: true });
+    assert.deepEqual(counted.counts, [guesstimate(text)]);
+    assert.equal(counted.tokenizer.basis, 'failed');
+    assert.deepEqual(counted.warnings.map(w => w.kind), ['estimate']);
+});
+
+await testCase('/current/*: with /tokenize failing, a single field\'s local-copy ids have no BOS (a guard: passes before)', async () => {
+    resetStepFake();
+    stepFake.fail = true;
+    const gemmaIds = await encodeTextByLocalTokenizerType('gemma', text);
+    const encoded = await postCurrent('encode', { state: stepTextgenState, texts: [text] });
+    assert.deepEqual(encoded.ids, [gemmaIds]);
+    assert.equal(encoded.tokenizer.basis, 'fallback');
+    // gemma.model's BOS is id 2 (`<bos>`).
+    assert.notEqual(encoded.ids[0][0], 2, 'no BOS first');
+    assert.equal(tokenizeBodies().length, 1, 'llama.cpp was tried first');
+    assert.equal('add_special' in tokenizeBodies()[0], false, 'and asked for no BOS');
+});
+
+await testCase('/current/encode on llama.cpp: chunks from its with_pieces answer, byte pieces merged until they decode', async () => {
+    resetStepFake();
+    const sample = 'aé東';
+    const encoded = await postCurrent('encode', { state: stepTextgenState, texts: [sample, ''] });
+    assert.deepEqual(encoded.ids[0], [0, 1, 2, 3, 4, 5]);
+    assert.deepEqual(encoded.chunks, [['a', 'é', '東'], []]);
+    assert.equal(tokenizeBodies()[0].with_pieces, true);
+    stepFake.fail = true;
+    const failed = await postCurrent('encode', { state: stepTextgenState, texts: [sample] });
+    assert.deepEqual(failed.chunks, [null], 'no chunks from the local copy: they come only from the backend');
+});
+
+await testCase('/openai/* with a state header naming a custom URL that is llama.cpp: its /tokenize, with the custom key only', async () => {
+    resetStepFake();
+    const header = { 'Content-Type': 'application/json', 'X-ST-Connection-State': JSON.stringify(stepCustomState) };
+    const post = async (route, body) => (await fetch(`${baseUrl}/openai/${route}`, { method: 'POST', headers: header, body: JSON.stringify(body) })).json();
+
+    const counted = await post('count', messages);
+    assert.equal(counted.token_count, Buffer.byteLength(`user\n\n${text}`));
+    const encoded = await post('encode', { text: 'aé' });
+    assert.deepEqual(encoded, { ids: [0, 1, 2], count: 3, chunks: ['a', 'é'] });
+    const gemmaIds = await encodeTextByLocalTokenizerType('gemma', text);
+    assert.equal((await post('decode', { ids: gemmaIds })).text, text, 'decoded with the exact local copy');
+
+    assert.ok(stepFake.requests.some(r => r.path === '/props'), 'detected');
+    for (const request of stepFake.requests) {
+        assert.equal(request.headers.authorization, 'Bearer custom-key', request.path);
+        assert.equal(JSON.stringify(request.headers).includes('textgen-llamacpp-key'), false, request.path);
+    }
+    assert.deepEqual(tokenizeBodies().map(body => Object.keys(body).sort()), [['content', 'model'], ['content', 'model', 'with_pieces']]);
+
+    stepFake.fail = true;
+    const fallback = await post('encode', { text });
+    assert.deepEqual(fallback.ids, gemmaIds, '/tokenize failing: the local copy');
+});
+
+await testCase('/current/count, chat completion at a custom URL that is llama.cpp: messages counted by its /tokenize', async () => {
+    resetStepFake();
+    const counted = await postCurrent('count', { state: stepCustomState, messages });
+    assert.equal(counted.count, Buffer.byteLength(`user\n\n${text}`));
+    assert.deepEqual({ id: counted.tokenizer.id, basis: counted.tokenizer.basis }, { id: tokenizers.API_TEXTGENERATIONWEBUI, basis: 'remote' });
+    assert.equal(counted.tokenizer.key, `openai|custom|${stepUrl}|gemma-2-9b-it|api_textgenerationwebui`, 'keyed like textgen llama.cpp');
+});
+
 fakeServer.close();
 server.close();
+stepServer.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });
 
 assert.deepEqual(caseFailures, [], 'tokenizer cases');

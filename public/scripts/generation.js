@@ -46,7 +46,7 @@ import { getPresetManager } from './preset-manager.js';
 import { extractReasoningFromData, extractReasoningSignatureFromData, PromptReasoning } from './reasoning.js';
 import { sendSystemMessage, system_message_types } from './system-messages.js';
 import { getTextGenGenerationData, textgenerationwebui_settings as textgen_settings } from './textgen-settings.js';
-import { getFriendlyTokenizerName, getTokenCountAsync, saveTokenCache, showTrimEstimateWarning } from './tokenizers.js';
+import { getFriendlyTokenizerName, getPromptTokenCountAsync, getTokenCountAsync, saveTokenCache, showTrimEstimateWarning } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { shiftDownByOne, shiftUpByOne, waitUntilCondition } from './utils.js';
@@ -1764,7 +1764,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // Cross-file note: getTokenCountAsync() (tokenizers.js) declares no JSDoc @param for its
             // `padding` argument, so TS infers the parameter's type from its `= undefined` default
             // alone (plain `undefined`) rather than the `number` it actually accepts and uses at runtime.
-            return getTokenCountAsync(encodeString, /** @type {undefined} */ (/** @type {unknown} */ (power_user.token_padding)));
+            return getPromptTokenCountAsync(encodeString, /** @type {undefined} */ (/** @type {unknown} */ (power_user.token_padding)));
         }
 
         // Force pinned examples into the context
@@ -2023,7 +2023,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             ].join('').replace(/\r/gm, '');
             // Cross-file note: see getMessagesTokenCount()'s own identical cast above - getTokenCountAsync()
             // (tokenizers.js) infers its `padding` param as bare `undefined` from its default value alone.
-            let thisPromptContextSize = await getTokenCountAsync(prompt, /** @type {undefined} */ (/** @type {unknown} */ (power_user.token_padding)));
+            let thisPromptContextSize = await getPromptTokenCountAsync(prompt, /** @type {undefined} */ (/** @type {unknown} */ (power_user.token_padding)));
 
             if (thisPromptContextSize > this_max_context) {        //if the prepared prompt is larger than the max context size...
                 if (count_exm_add > 0) {                            // ..and we have example messages..
