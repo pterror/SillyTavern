@@ -1952,79 +1952,124 @@ export async function backfillActiveChatFromCards(directories) {
     console.log(color.cyan(`[character-metadata] Active-chat backfill complete: processed ${processedRows} row(s) in ${totalSec.toFixed(1)}s (${(processedRows / totalSec).toFixed(1)} cards/sec).`));
 }
 
-// Gated by a meta flag, set only once the NOT LIKE discovery scan (unindexable) finds nothing left to backfill.
+const MIGRATION_BATCH_PAUSE_MS = 10;
+const MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES = 10;
+const UPSERT_META_VALUE_SQL = 'INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value';
+
+/** @typedef {{ batches: number, rowsChanged: number }} CharacterPassResult */
+
+/**
+ * A one-time pass over every characters row that resumes after the last batch it committed. The batch's rows are
+ * re-read by processRow inside the batch's own transaction, so no other connection's write lands between read and
+ * write. The pause between batches lets other writers take the lock. progressKey is cleared at the end even when
+ * rows failed (doneKey is then left unset), so the next run retries from the first row rather than past them.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {object} options
+ * @param {string} options.doneKey
+ * @param {string} options.doneValue
+ * @param {string} options.progressKey
+ * @param {string} options.label
+ * @param {boolean} [options.logProgress]
+ * @param {(id: string) => boolean} options.processRow true if it wrote the row. Must touch nothing outside the
+ *   database, since a transaction that hits busy is rolled back and rerun.
+ * @returns {Promise<CharacterPassResult>}
+ */
+async function runResumableCharacterPass(db, { doneKey, doneValue, progressKey, label, logProgress = false, processRow }) {
+    const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: progressKey }));
+    const nextPageSql = 'SELECT id FROM characters WHERE id > @after ORDER BY id LIMIT @limit';
+    const pages = saved
+        ? streamRows(db, { firstPageSql: nextPageSql, firstPageParams: { after: saved.value }, nextPageSql, nextPageParams: {}, keyColumn: 'id' })
+        : streamRows(db, { firstPageSql: 'SELECT id FROM characters ORDER BY id LIMIT @limit', firstPageParams: {}, nextPageSql, nextPageParams: {}, keyColumn: 'id' });
+    if (saved) {
+        console.log(color.cyan(`[character-metadata] ${label}: resuming after ${saved.value}`));
+    }
+
+    let batches = 0;
+    let rowsChanged = 0;
+    let rowsFailed = 0;
+    const start = Date.now();
+    let lastProgressLog = start;
+    for await (const rows of pages) {
+        const ids = /** @type {{ id: string }[]} */ (rows).map(r => r.id);
+        let batchChanged = 0;
+        /** @type {{ id: string, message: string }[]} */
+        let batchFailed = [];
+        db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            batchChanged = 0;
+            batchFailed = [];
+            for (const id of ids) {
+                try {
+                    if (processRow(id)) batchChanged++;
+                } catch (err) {
+                    batchFailed.push({ id, message: String(/** @type {any} */ (err)?.message ?? err) });
+                }
+            }
+            db.run(UPSERT_META_VALUE_SQL, { key: progressKey, value: ids[ids.length - 1] });
+        });
+        batches++;
+        rowsChanged += batchChanged;
+        rowsFailed += batchFailed.length;
+        if (batchFailed.length > 0) {
+            console.warn(color.yellow(`[character-metadata] ${label}: ${batchFailed.length} row(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.id}: ${f.message}`).join('\n')}`));
+        }
+        if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
+            db.get('PRAGMA wal_checkpoint(PASSIVE)');
+        }
+        const now = Date.now();
+        if (logProgress && now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
+            console.log(color.cyan(`[character-metadata] ${label} progress: ${batches} batch(es), ${rowsChanged} row(s) changed`));
+            lastProgressLog = now;
+        }
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+
+    db.transaction(() => {
+        if (rowsFailed === 0) {
+            db.run(UPSERT_META_VALUE_SQL, { key: doneKey, value: doneValue });
+        }
+        db.run('DELETE FROM meta WHERE key = @key', { key: progressKey });
+    });
+    db.checkpoint();
+    if (rowsFailed > 0) {
+        console.warn(color.yellow(`[character-metadata] ${label}: ${rowsFailed} row(s) failed (listed above); not marked done, so it runs again from the first row next boot.`));
+    }
+    if (logProgress) {
+        console.log(color.cyan(`[character-metadata] ${label} complete: ${batches} batch(es), ${rowsChanged} row(s) changed in ${((Date.now() - start) / 1000).toFixed(1)}s.`));
+    }
+    return { batches, rowsChanged };
+}
+
+// The NOT LIKE test can't use an index, so it is applied per row within each bounded batch rather than as a
+// discovery query over the whole table.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
  */
 export async function backfillTagIdsInShallowJson(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     const already = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'tag_ids_shallow_json_backfill_completed\'')));
-    if (already) return;
+    if (already) return { batches: 0, rowsChanged: 0 };
 
-    const idsToBackfill = (/** @type {{ id: string }[]} */ (entry.db.all(
-        'SELECT id FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\'',
-    ))).map(r => r.id);
-
-    if (idsToBackfill.length === 0) {
-        entry.db.run('INSERT INTO meta (key, value) VALUES (\'tag_ids_shallow_json_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
-        return;
-    }
-
-    console.log(color.cyan(`[character-metadata] Backfilling tag_ids into shallow_json for ${idsToBackfill.length} character(s)...`));
-    let processed = 0;
-    const BACKFILL_BATCH = 100;
-    const progressStart = Date.now();
-    let lastProgressLog = progressStart;
-
-    for (let i = 0; i < idsToBackfill.length; i += BACKFILL_BATCH) {
-        const batchIds = idsToBackfill.slice(i, i + BACKFILL_BATCH);
-
-        /** @type {{ id: string, shallow: object }[]} */
-        const prepared = [];
-        for (const id of batchIds) {
-            try {
-                const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-                if (!row) continue;
-                if (row.shallow_json.includes('"tag_ids":')) continue;
-                const tagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
-                const shallow = JSON.parse(row.shallow_json);
-                shallow.tag_ids = tagIds;
-                prepared.push({ id, shallow });
-            } catch (err) {
-                console.error(`[character-metadata] Failed to prepare tag_ids backfill for ${id}:`, /** @type {any} */ (err).message);
-            }
-        }
-
-        // Write phase (in transaction): only writes, short lock duration (~100 writes * 2 ops).
-        if (prepared.length > 0) {
-            entry.db.transaction(() => {
-                for (const { id, shallow } of prepared) {
-                    writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-                }
-            });
-        }
-
-        processed += prepared.length;
-
-        const now = Date.now();
-        if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
-            console.log(color.cyan(`[character-metadata] tag_ids backfill progress: ${i + batchIds.length}/${idsToBackfill.length} scanned, ${processed} patched`));
-            lastProgressLog = now;
-        }
-
-        await new Promise(resolve => setImmediate(resolve));
-    }
-
-    console.log(color.cyan(`[character-metadata] tag_ids shallow_json backfill complete (${processed} character(s) in ${((Date.now() - progressStart) / 1000).toFixed(1)}s).`));
-
-    // Not `processed === idsToBackfill.length`: a row a concurrent writer already patched needs no work here
-    // but never increments processed, so re-check the discovery query directly to decide the flag.
-    const remaining = (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE shallow_json NOT LIKE \'%"tag_ids":%\' LIMIT 1')));
-    if (!remaining) {
-        entry.db.run('INSERT INTO meta (key, value) VALUES (\'tag_ids_shallow_json_backfill_completed\', \'1\') ON CONFLICT(key) DO UPDATE SET value = excluded.value');
-    }
+    return runResumableCharacterPass(entry.db, {
+        doneKey: 'tag_ids_shallow_json_backfill_completed',
+        doneValue: '1',
+        progressKey: 'tag_ids_shallow_json_backfill_progress',
+        label: 'tag_ids shallow_json backfill',
+        logProgress: true,
+        processRow: (id) => {
+            const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id AND shallow_json NOT LIKE \'%"tag_ids":%\'', { id })));
+            if (!row) return false;
+            if (row.shallow_json.includes('"tag_ids":')) return false;
+            const tagIds = Array.from(entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }), r => /** @type {{ tag_id: string }} */ (r).tag_id);
+            const shallow = JSON.parse(row.shallow_json);
+            shallow.tag_ids = tagIds;
+            writeShallowJson(entry.db, id, shallow, ['tag_ids']);
+            return true;
+        },
+    });
 }
 
 const CHARACTER_FAV_NORMALIZED_FLAG = 'character_fav_normalized_v1';
@@ -2036,44 +2081,36 @@ const CHARACTER_FAV_NORMALIZED_FLAG = 'character_fav_normalized_v1';
 // stale value.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
  */
 export async function normalizeCharacterFavIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_FAV_NORMALIZED_FLAG })) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_FAV_NORMALIZED_FLAG })) return { batches: 0, rowsChanged: 0 };
 
-    for await (const rows of streamRows(entry.db, {
-        firstPageSql: 'SELECT id FROM characters ORDER BY id LIMIT @limit',
-        firstPageParams: {},
-        nextPageSql: 'SELECT id FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
-        nextPageParams: {},
-        keyColumn: 'id',
-    })) {
-        entry.db.transaction(() => {
-            for (const { id } of /** @type {{ id: string }[]} */ (rows)) {
-                try {
-                    const row = (/** @type {{ fav: number, shallow_json: string, digest_fav: number } | undefined} */ (entry.db.get('SELECT fav, shallow_json, digest_fav FROM characters WHERE id = @id', { id })));
-                    if (!row) continue;
-                    const fav = !!row.fav;
-                    const shallow = JSON.parse(row.shallow_json);
-                    if (shallow.fav !== fav || shallow.data?.extensions?.fav !== fav) {
-                        setShallowFav(shallow, fav);
-                        writeShallowJson(entry.db, id, shallow, ['fav']);
-                        continue;
-                    }
-                    const { digest_fav } = digestColumnsForShallow(shallow);
-                    if (Number(row.digest_fav) !== digest_fav) {
-                        entry.db.run('UPDATE characters SET digest_fav = @digest_fav WHERE id = @id', { id, digest_fav });
-                    }
-                } catch (err) {
-                    console.error(`[character-metadata] Character fav normalization failed for ${id}, leaving its row as is:`, /** @type {any} */ (err).message);
-                }
+    return runResumableCharacterPass(entry.db, {
+        doneKey: CHARACTER_FAV_NORMALIZED_FLAG,
+        doneValue: String(Date.now()),
+        progressKey: `${CHARACTER_FAV_NORMALIZED_FLAG}_progress`,
+        label: 'Character fav normalization',
+        processRow: (id) => {
+            const row = (/** @type {{ fav: number, shallow_json: string, digest_fav: number } | undefined} */ (entry.db.get('SELECT fav, shallow_json, digest_fav FROM characters WHERE id = @id', { id })));
+            if (!row) return false;
+            const fav = !!row.fav;
+            const shallow = JSON.parse(row.shallow_json);
+            if (shallow.fav !== fav || shallow.data?.extensions?.fav !== fav) {
+                setShallowFav(shallow, fav);
+                writeShallowJson(entry.db, id, shallow, ['fav']);
+                return true;
             }
-        });
-        await new Promise(resolve => setImmediate(resolve));
-    }
-
-    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: CHARACTER_FAV_NORMALIZED_FLAG, value: String(Date.now()) });
+            const { digest_fav } = digestColumnsForShallow(shallow);
+            if (Number(row.digest_fav) !== digest_fav) {
+                entry.db.run('UPDATE characters SET digest_fav = @digest_fav WHERE id = @id', { id, digest_fav });
+                return true;
+            }
+            return false;
+        },
+    });
 }
 
 const CHARACTER_TAG_IDS_NORMALIZED_FLAG = 'character_tag_ids_normalized_v1';
@@ -2084,37 +2121,28 @@ const CHARACTER_TAG_IDS_NORMALIZED_FLAG = 'character_tag_ids_normalized_v1';
 // tag write can't be overwritten with a stale value.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
  */
 export async function normalizeCharacterTagIdsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_TAG_IDS_NORMALIZED_FLAG })) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CHARACTER_TAG_IDS_NORMALIZED_FLAG })) return { batches: 0, rowsChanged: 0 };
 
-    for await (const rows of streamRows(entry.db, {
-        firstPageSql: 'SELECT id FROM characters ORDER BY id LIMIT @limit',
-        firstPageParams: {},
-        nextPageSql: 'SELECT id FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
-        nextPageParams: {},
-        keyColumn: 'id',
-    })) {
-        entry.db.transaction(() => {
-            for (const { id } of /** @type {{ id: string }[]} */ (rows)) {
-                try {
-                    const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
-                    if (!row) continue;
-                    const shallow = JSON.parse(row.shallow_json);
-                    if (!Array.isArray(shallow.tag_ids)) continue;
-                    if (JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(shallow.tag_ids))) continue;
-                    writeShallowJson(entry.db, id, shallow, ['tag_ids']);
-                } catch (err) {
-                    console.error(`[character-metadata] Character tag_ids normalization failed for ${id}, leaving its row as is:`, /** @type {any} */ (err).message);
-                }
-            }
-        });
-        await new Promise(resolve => setImmediate(resolve));
-    }
-
-    entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: CHARACTER_TAG_IDS_NORMALIZED_FLAG, value: String(Date.now()) });
+    return runResumableCharacterPass(entry.db, {
+        doneKey: CHARACTER_TAG_IDS_NORMALIZED_FLAG,
+        doneValue: String(Date.now()),
+        progressKey: `${CHARACTER_TAG_IDS_NORMALIZED_FLAG}_progress`,
+        label: 'Character tag_ids normalization',
+        processRow: (id) => {
+            const row = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
+            if (!row) return false;
+            const shallow = JSON.parse(row.shallow_json);
+            if (!Array.isArray(shallow.tag_ids)) return false;
+            if (JSON.stringify(shallow.tag_ids) === JSON.stringify(normalizeTagIds(shallow.tag_ids))) return false;
+            writeShallowJson(entry.db, id, shallow, ['tag_ids']);
+            return true;
+        },
+    });
 }
 
 /**
