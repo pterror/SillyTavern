@@ -4458,6 +4458,53 @@ const flushEntrySavesDebounced = debounce(async () => {
 }, debounce_timeout.relaxed);
 
 /**
+ * A book's saves taken out of the queue by holdWorldSaves(), unsent.
+ * @typedef {object} HeldWorldSaves
+ * @property {any} [data] - The data of the book's pending whole-book save, if it had one.
+ * @property {Set<string|number>} [entries] - uids of the book's pending single-entry saves, if it had any.
+ */
+
+/**
+ * Takes a book's pending debounced saves (whole-book and single-entry) out of the queue, so none of them is sent
+ * while its file is being deleted or renamed. The caller either sends them again with resumeWorldSaves() or has
+ * written the book's latest data some other way.
+ * @param {string} name - The book's name
+ * @returns {HeldWorldSaves|null} What was pending, or null if nothing was.
+ */
+function holdWorldSaves(name) {
+    const book = pendingWorldSaves.get(name);
+    const entries = pendingEntrySaves.get(name);
+    if (!book && !entries?.size) {
+        return null;
+    }
+    cancelWorldSaveDebounced(name);
+    pendingEntrySaves.delete(name);
+    return { data: book?.data, entries: entries?.size ? entries : undefined };
+}
+
+/**
+ * Puts saves taken out by holdWorldSaves() back in the queue, for when the book still has its file after all.
+ * The whole-book save goes out with the cached copy of the book, which holds any edit saved since the hold as
+ * well as the held one, so a later save of the book is never overwritten with the older held data.
+ * @param {string} name - The book's name
+ * @param {HeldWorldSaves|null} held - From holdWorldSaves()
+ */
+function resumeWorldSaves(name, held) {
+    if (!held) {
+        return;
+    }
+    if (held.data !== undefined && !pendingWorldSaves.has(name)) {
+        saveWorldDebounced(name, worldInfoCache.has(name) ? worldInfoCache.get(name) : held.data);
+    }
+    if (held.entries) {
+        const uids = pendingEntrySaves.get(name) ?? new Set();
+        held.entries.forEach(uid => uids.add(uid));
+        pendingEntrySaves.set(name, uids);
+        flushEntrySavesDebounced();
+    }
+}
+
+/**
  * Writes one World Info entry to its book's file.
  * @param {string} name - The name of the world info
  * @param {string|number} uid - uid of the entry
@@ -4594,9 +4641,26 @@ async function renameWorldInfo(name, data) {
     const entryPreviouslySelected = selected_world_info.findIndex((e) => e === oldName);
     const retargetPersonaLore = getPersonaDescriptionLorebook() === oldName;
 
-    // The old file is deleted only once the new one is written.
-    if (!await saveWorldInfo(newName, data, true)) {
+    // The old book's saves still waiting would write it back after its file is deleted, so they are held, and the
+    // new book is written from the cached copy, which holds the edits they carry. If the new book isn't written,
+    // the old one keeps its file and its saves go out as scheduled.
+    const held = holdWorldSaves(oldName);
+    const latest = worldInfoCache.has(oldName) ? worldInfoCache.get(oldName) : data;
+    let written = false;
+    try {
+        // The old file is deleted only once the new one is written.
+        written = !!await saveWorldInfo(newName, latest, true);
+    } finally {
+        if (!written) {
+            resumeWorldSaves(oldName, held);
+        }
+    }
+    if (!written) {
         return;
+    }
+    // Edits saved to the old book while the new one was being written go to the new book.
+    if (holdWorldSaves(oldName) && worldInfoCache.has(oldName)) {
+        await saveWorldInfo(newName, worldInfoCache.get(oldName));
     }
     // The open character keeps its link to the old name, like every other linked character, so the relink below
     // can move it to the new name. Unlinking it here would clear the link once its delayed save lands.
@@ -4747,7 +4811,18 @@ export async function deleteWorldInfo(worldInfoName) {
  * from the book, or '' if it unlinked none.
  */
 async function removeWorldInfo(worldInfoName) {
-    if (!await deleteWorldInfoFile(worldInfoName)) {
+    // A save still waiting would write the book back after the delete. If the delete doesn't go through, or it is
+    // unknown whether it did, the book may still have its file, so its edits are sent after all.
+    const held = holdWorldSaves(worldInfoName);
+    let deleted = false;
+    try {
+        deleted = await deleteWorldInfoFile(worldInfoName);
+    } finally {
+        if (!deleted) {
+            resumeWorldSaves(worldInfoName, held);
+        }
+    }
+    if (!deleted) {
         return { deleted: false, unlinkedAvatar: '' };
     }
     const { unlinkedAvatar } = unlinkWorldInfo(worldInfoName);
