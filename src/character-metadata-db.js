@@ -2069,7 +2069,24 @@ export async function normalizeCharacterTagIdsIfNeeded(directories) {
     entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: CHARACTER_TAG_IDS_NORMALIZED_FLAG, value: String(Date.now()) });
 }
 
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string[]} ids at most FAV_LOOKUP_BATCH_SIZE
+ * @returns {Set<string>} the ones with a characters row
+ */
+function knownCharacterIdsOf(db, ids) {
+    /** @type {Set<string>} */
+    const known = new Set();
+    if (ids.length === 0) return known;
+    const placeholders = ids.map(() => '?').join(',');
+    for (const row of db.iterate(`SELECT id FROM characters WHERE id IN (${placeholders})`, ids)) {
+        known.add(/** @type {{ id: string }} */ (row).id);
+    }
+    return known;
+}
+
 // Diffs tags.json's tag_map against character_tags and applies only the delta, since most rows already agree.
+// A tag write from a request between batches may be undone from the tags.json copy read at the start.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */
@@ -2078,39 +2095,86 @@ export async function resyncTags(directories) {
     if (!entry) return;
 
     const { tag_map } = readTagsData(directories);
-    const knownIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id));
 
-    /** @type {Set<string>} */
-    const desired = new Set();
-    for (const [characterId, tagIds] of Object.entries(tag_map)) {
-        if (!knownIds.has(characterId)) continue; // no dangling rows for characters this store doesn't have
-        for (const tagId of tagIds) desired.add(`${characterId} ${tagId}`);
+    // No dangling rows for characters this store doesn't have.
+    for await (const rows of streamRows(entry.db, {
+        firstPageSql: 'SELECT rowid AS rid, character_id, tag_id FROM character_tags ORDER BY rowid LIMIT @limit',
+        firstPageParams: {},
+        nextPageSql: 'SELECT rowid AS rid, character_id, tag_id FROM character_tags WHERE rowid > @after ORDER BY rowid LIMIT @limit',
+        nextPageParams: {},
+        keyColumn: 'rid',
+    })) {
+        const page = /** @type {{ rid: number, character_id: string, tag_id: string }[]} */ (rows);
+        const pageIds = [...new Set(page.map(r => r.character_id))];
+        /** @type {Set<string>} */
+        const known = new Set();
+        for (let i = 0; i < pageIds.length; i += FAV_LOOKUP_BATCH_SIZE) {
+            for (const id of knownCharacterIdsOf(entry.db, pageIds.slice(i, i + FAV_LOOKUP_BATCH_SIZE))) known.add(id);
+        }
+        /** @type {Map<string, Set<string>>} */
+        const wantedByCharacter = new Map();
+        for (const id of known) {
+            wantedByCharacter.set(id, Object.hasOwn(tag_map, id) ? new Set(tag_map[id]) : new Set());
+        }
+        const toRemove = page.filter(r => !wantedByCharacter.get(r.character_id)?.has(r.tag_id));
+        if (toRemove.length > 0) {
+            entry.db.transaction(() => {
+                /** @type {Set<string>} */
+                const touchedCharacterIds = new Set();
+                for (const row of toRemove) {
+                    entry.db.run('DELETE FROM character_tags WHERE character_id = @characterId AND tag_id = @tagId', { characterId: row.character_id, tagId: row.tag_id });
+                    touchedCharacterIds.add(row.character_id);
+                }
+                for (const characterId of touchedCharacterIds) {
+                    syncShallowTagIdsFromTable(entry.db, characterId);
+                }
+            });
+        }
+        await new Promise(resolve => setImmediate(resolve));
     }
 
-    const current = (/** @type {{ character_id: string, tag_id: string }[]} */ (entry.db.all('SELECT character_id, tag_id FROM character_tags')));
-    const currentSet = new Set(current.map(r => `${r.character_id} ${r.tag_id}`));
-
-    const toAdd = [...desired].filter(k => !currentSet.has(k));
-    const toRemove = current.filter(r => !desired.has(`${r.character_id} ${r.tag_id}`));
-
-    if (toAdd.length === 0 && toRemove.length === 0) return;
-
-    /** @type {Set<string>} */
-    const touchedCharacterIds = new Set();
-    entry.db.transaction(() => {
-        for (const key of toAdd) {
-            const [characterId, tagId] = key.split(' ');
-            entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId, tagId });
-            touchedCharacterIds.add(characterId);
+    /** @type {string[]} */
+    let batch = [];
+    const applyAdditions = async () => {
+        const known = [...knownCharacterIdsOf(entry.db, batch)];
+        batch = [];
+        if (known.length === 0) return;
+        /** @type {Map<string, Set<string>>} */
+        const currentByCharacter = new Map(known.map(id => [id, new Set()]));
+        const placeholders = known.map(() => '?').join(',');
+        for (const row of entry.db.iterate(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, known)) {
+            const { character_id, tag_id } = /** @type {{ character_id: string, tag_id: string }} */ (row);
+            currentByCharacter.get(character_id)?.add(tag_id);
         }
-        for (const row of toRemove) {
-            entry.db.run('DELETE FROM character_tags WHERE character_id = @characterId AND tag_id = @tagId', { characterId: row.character_id, tagId: row.tag_id });
-            touchedCharacterIds.add(row.character_id);
+        /** @type {{ characterId: string, tagId: string }[]} */
+        const toAdd = [];
+        for (const characterId of known) {
+            const current = /** @type {Set<string>} */ (currentByCharacter.get(characterId));
+            for (const tagId of new Set(tag_map[characterId])) {
+                if (!current.has(tagId)) toAdd.push({ characterId, tagId });
+            }
         }
-        for (const characterId of touchedCharacterIds) {
-            syncShallowTagIdsFromTable(entry.db, characterId);
+        if (toAdd.length > 0) {
+            entry.db.transaction(() => {
+                /** @type {Set<string>} */
+                const touchedCharacterIds = new Set();
+                for (const params of toAdd) {
+                    entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', params);
+                    touchedCharacterIds.add(params.characterId);
+                }
+                for (const characterId of touchedCharacterIds) {
+                    syncShallowTagIdsFromTable(entry.db, characterId);
+                }
+            });
         }
-    });
+        await new Promise(resolve => setImmediate(resolve));
+    };
+    for (const characterId in tag_map) {
+        if (!Object.hasOwn(tag_map, characterId)) continue;
+        batch.push(characterId);
+        if (batch.length >= FAV_LOOKUP_BATCH_SIZE) await applyAdditions();
+    }
+    if (batch.length > 0) await applyAdditions();
 }
 
 // Existing files are never re-read: card_json is authoritative, so only files with no row are parsed.
