@@ -364,6 +364,56 @@ describe('while a reorder pass is recorded', () => {
     });
 });
 
+describe('with no reorder pass recorded, while moves queue', () => {
+    test('before the sort_order fill has finished, an edit queues its sort_order after a queued move, and the edit wins', async () => {
+        await openStore({ filled: false });
+        insertTag('a', { sort_order: 1 });
+        insertTag('b', { sort_order: 3 });
+        insertTag('x', { sort_order: 5 });
+        expect(await post('move', { id: 'x', after: 'a' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: true } });
+        expect(await post('edit', { id: 'x', patch: { name: 'X', sort_order: 10 } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
+        expect(data('x')).toEqual({ id: 'x', name: 'X', sort_order: 5 });
+        expect(column('x')).toBe(5);
+        expect(pending()).toEqual([
+            { tag_id: 'x', side: 'after', anchor_id: 'a', value: null },
+            { tag_id: 'x', side: null, anchor_id: null, value: '10' },
+        ]);
+
+        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        expect(pending()).toEqual([]);
+        expect([data('x').sort_order, column('x')]).toEqual([10, 10]);
+    });
+
+    test('before the sort_order fill has finished, a create with its own sort_order writes it and queues it; the fill keeps it', async () => {
+        await openStore({ filled: false });
+        insertTag('a', { sort_order: 3 });
+        expect(await post('create', { tag: { id: 'n', name: 'N', sort_order: 3 } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
+        expect(await post('create', { tag: { id: 'o', name: 'O' } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
+        expect([data('n').sort_order, column('n')]).toEqual([3, 3]);
+        expect(data('o').sort_order).toBe(4);
+        expect(pending()).toEqual([{ tag_id: 'n', side: null, anchor_id: null, value: '3' }]);
+
+        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        expect(pending()).toEqual([]);
+        expect([data('n').sort_order, column('n')]).toEqual([3, 3]);
+    });
+
+    test('with the fill finished but an entry still queued, an edit and a create queue their sort_order after it', async () => {
+        await openStore();
+        insertTag('a', { sort_order: 1 });
+        insertTag('x', { sort_order: 5 });
+        live().prepare('INSERT INTO tag_pending_moves (tag_id, side, anchor_id) VALUES (?, ?, ?)').run('x', 'before', 'a');
+        expect((await post('edit', { id: 'x', patch: { sort_order: 7 } })).body.refused).toEqual([]);
+        expect((await post('create', { tag: { id: 'n', name: 'N', sort_order: 2 } })).body.refused).toEqual([]);
+        expect(column('x')).toBe(5);
+        expect(pending()).toEqual([
+            { tag_id: 'x', side: 'before', anchor_id: 'a', value: null },
+            { tag_id: 'x', side: null, anchor_id: null, value: '7' },
+            { tag_id: 'n', side: null, anchor_id: null, value: '2' },
+        ]);
+    });
+});
+
 describe('with no reorder pass recorded', () => {
     test('an edit and a create write their sort_order and queue nothing', async () => {
         await openStore();

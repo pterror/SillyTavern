@@ -462,10 +462,11 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_tag_deletions_merge_into ON tag_deletions(merge_into);
 
     -- A tag move (moveTagDefinition(), reorderTagDefinitions()) or sort_order value (createTagDefinition(),
-    -- editTagDefinition()) that arrived before fillTagSortOrdersIfNeeded() finished or while a reorder pass is
-    -- recorded, waiting to be applied (tag-actions D16, D18, D19, D25.3, D25.9-10). seq is the arrival order, the
-    -- order they apply in. An entry is either anchored (side and anchor_id: put tag_id right before/after anchor_id)
-    -- or a value (value: the raw sort_order as JSON, written into tag_id's data as is), never both.
+    -- editTagDefinition()) that arrived before fillTagSortOrdersIfNeeded() finished, while a reorder pass is
+    -- recorded, or while anything was still queued, waiting to be applied (tag-actions D16, D18, D19, D25.3,
+    -- D25.9-10, D28). seq is the arrival order, the order they apply in. An entry is either anchored (side and
+    -- anchor_id: put tag_id right before/after anchor_id) or a value (value: the raw sort_order as JSON, written into
+    -- tag_id's data as is), never both.
     ${tagPendingMovesTableSql('tag_pending_moves')};
 
     -- One row per change to the name a tag's rows read as: a tag *name* edit (saveTagDefinitions() below), or a tag
@@ -4423,9 +4424,10 @@ function nextTagSortOrderSync(entry) {
 }
 
 /**
- * A tag with no own sort_order gets nextTagSortOrderSync(); a given one, null included, is kept as is. While a
- * reorder pass is recorded, a given one is also queued as a value entry, so the pass, which writes every tag's
- * sort_order, doesn't lose it (tag-actions D25.9).
+ * A tag with no own sort_order gets nextTagSortOrderSync(); a given one, null included, is kept as is. Whenever moves
+ * queue (tagSortOrdersSettledSync()), a given one is also queued as a value entry, so neither a pass that writes
+ * sort_orders nor an earlier queued move for the tag overrides it: the last entry for a tag wins (tag-actions D18,
+ * D28).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {unknown} rawTag Raw request-body value - client-controlled and not guaranteed to actually
  *   match {@link TagDefinitionInput}'s shape, so it's validated below before use.
@@ -4454,7 +4456,7 @@ export async function createTagDefinition(directories, rawTag) {
         }
         if (assignOrder) tag.sort_order = nextTagSortOrderSync(entry);
         entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
-        if (!assignOrder && tagReorderPassSync(entry.db) !== null) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
+        if (!assignOrder && !tagSortOrdersSettledSync(entry.db)) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
         updateTagsHashSync(entry.db);
     });
     if (result.refused.length > 0) {
@@ -4467,9 +4469,10 @@ export async function createTagDefinition(directories, rawTag) {
 
 /**
  * Fields the patch doesn't name keep their stored values, so a stale tab can't revert another tab's edit. Stored
- * data that isn't a JSON object is refused as 'unreadable', since merging into it would lose it. While a reorder
- * pass is recorded, a patched sort_order isn't written but queued as a value entry, applied after the pass
- * (tag-actions D18, D25.9); the other fields are written at once.
+ * data that isn't a JSON object is refused as 'unreadable', since merging into it would lose it. Whenever moves
+ * queue (tagSortOrdersSettledSync()), a patched sort_order isn't written but queued as a value entry, applied in
+ * arrival order with the queued moves, so the last entry for a tag wins (tag-actions D18, D25.9, D28); the other
+ * fields are written at once.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {unknown} id
  * @param {unknown} rawPatch Raw request-body value - client-controlled, so it's validated below before use.
@@ -4511,7 +4514,7 @@ export async function editTagDefinition(directories, id, rawPatch) {
         }
         const old = /** @type {Record<string, unknown>} */ (oldParsed);
         const { sort_order: patchedOrder, ...rest } = patch;
-        const queueOrder = Object.hasOwn(patch, 'sort_order') && tagReorderPassSync(entry.db) !== null;
+        const queueOrder = Object.hasOwn(patch, 'sort_order') && !tagSortOrdersSettledSync(entry.db);
         if (queueOrder) queueTagSortOrderValueSync(entry.db, id, patchedOrder);
         const merged = /** @type {TagDefinitionInput} */ ({ ...old, ...(queueOrder ? rest : patch), id });
         if (JSON.stringify(merged) === JSON.stringify(old)) return;
