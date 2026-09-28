@@ -148,6 +148,49 @@ function cancelWorldSaveDebounced(name) {
     cancelDebounce(pending.save);
     pendingWorldSaves.delete(name);
 }
+
+/**
+ * Write requests (whole-book and single-entry) still waiting on the server, by book name. A name is removed once all
+ * of its writes have settled, so only books with a write in flight are kept.
+ * @type {Map<string, Set<Promise<unknown>>>}
+ */
+const worldWritesInFlight = new Map();
+
+/**
+ * Records a write request to a book until it settles.
+ * @template T
+ * @param {string} name - The book's name
+ * @param {Promise<T>} request - The write request
+ * @returns {Promise<T>} The same request.
+ */
+function trackWorldWrite(name, request) {
+    let writes = worldWritesInFlight.get(name);
+    if (!writes) {
+        writes = new Set();
+        worldWritesInFlight.set(name, writes);
+    }
+    writes.add(request);
+    const settled = () => {
+        writes.delete(request);
+        if (writes.size === 0 && worldWritesInFlight.get(name) === writes) {
+            worldWritesInFlight.delete(name);
+        }
+    };
+    request.then(settled, settled);
+    return request;
+}
+
+/**
+ * Waits until no write request to a book is in flight.
+ * @param {string} name - The book's name
+ * @returns {Promise<void>}
+ */
+async function worldWritesSettled(name) {
+    let writes;
+    while ((writes = worldWritesInFlight.get(name))) {
+        await Promise.allSettled([...writes]);
+    }
+}
 const sortFn = (a, b) => b.order - a.order;
 let updateEditor = (navigation, flashOnNav = true) => { console.debug('Triggered WI navigation', navigation, flashOnNav); };
 let worldInfoOneTimeInitDone = false;
@@ -4397,11 +4440,11 @@ async function _save(name, data) {
 
     let response;
     try {
-        response = await fetch('/api/worldinfo/edit', {
+        response = await trackWorldWrite(name, fetch('/api/worldinfo/edit', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({ name: name, data: data }),
-        });
+        }));
     } catch (error) {
         dropUnwrittenBookFromCache(name);
         showWorldInfoSaveFailed(name, null, null, error);
@@ -4516,11 +4559,11 @@ function resumeWorldSaves(name, held) {
 async function _saveEntry(name, uid, entryData, data) {
     let response;
     try {
-        response = await fetch('/api/worldinfo/entry/edit', {
+        response = await trackWorldWrite(name, fetch('/api/worldinfo/entry/edit', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({ name: name, uid: uid, data: entryData }),
-        });
+        }));
     } catch (error) {
         showWorldInfoSaveFailed(name, uid, entryData, error);
         throw error;
@@ -4917,11 +4960,61 @@ function unlinkWorldInfo(worldInfoName, { keepOpenCharacterLink = false } = {}) 
  * waits for overwrittenWorldInfoRemoved() before it writes, so the deletion can never land after the new book and
  * remove it, then calls warnIfOverwrittenWorldInfoGone() after the write: the links to the name only go if no book
  * has that name once the write is done.
+ * Before the deletion, the book's pending saves are written and its writes in flight are waited for, so none of them
+ * can land after the deletion (or after the new book) and bring old content back.
  * @param {string} worldInfoName - The name of the book being overwritten
  * @returns {OverwrittenWorldInfo}
  */
 function deleteOverwrittenWorldInfo(worldInfoName) {
-    return { name: worldInfoName, removal: deleteWorldInfoFile(worldInfoName) };
+    const removal = flushWorldSaves(worldInfoName).then(() => deleteWorldInfoFile(worldInfoName));
+    return { name: worldInfoName, removal };
+}
+
+/**
+ * Writes a book's pending debounced saves (whole-book and single-entry) now, then waits until none of its writes is
+ * in flight. A failed write has already shown its error toast.
+ * @param {string} name - The book's name
+ * @returns {Promise<void>} Never rejects.
+ */
+async function flushWorldSaves(name) {
+    const held = holdWorldSaves(name);
+    if (held?.data !== undefined) {
+        try {
+            await _save(name, held.data);
+        } catch {
+            // _save has already shown and logged the failure.
+        }
+    }
+    if (held?.entries) {
+        const data = worldInfoCache.get(name);
+        for (const uid of held.entries) {
+            const entryData = data?.entries?.[uid];
+            if (!entryData) continue;
+            try {
+                await _saveEntry(name, uid, entryData, data);
+            } catch {
+                // _saveEntry has already shown and logged the failure.
+            }
+        }
+    }
+    await worldWritesSettled(name);
+}
+
+/**
+ * After an overwritten book's deletion, drops the saves of that book made while the deletion was under way, so none
+ * of them lands after the new book is written. Warns if there were any, as their changes are not saved.
+ * @param {string} name - The deleted book's name
+ * @param {string} actionName - 'Create' or 'Import', as passed to checkOverwriteExistingData().
+ * @returns {Promise<void>} Resolves once none of the book's writes is in flight.
+ */
+async function dropWorldSavesAfterOverwrite(name, actionName) {
+    if (holdWorldSaves(name)) {
+        // A save made after the deletion put the old book's data back in the cache.
+        worldInfoCache.delete(name);
+        const escapedName = escapeHtml(name);
+        toastr.warning(t`Changes to lorebook ${escapedName} made while it was being overwritten were not saved.`, `World Info ${actionName}`, { escapeHtml: false });
+    }
+    await worldWritesSettled(name);
 }
 
 /**
@@ -4931,14 +5024,15 @@ function deleteOverwrittenWorldInfo(worldInfoName) {
  * @param {string} actionName - 'Create' or 'Import', as passed to checkOverwriteExistingData().
  * @returns {Promise<boolean>} False if the deletion request failed outright: the server may still delete the name
  * after a write, so nothing is written. The deletion itself having been refused doesn't stop the write.
+ * Either way, once it resolves true no earlier save of the overwritten book is pending or in flight.
  */
 async function overwrittenWorldInfoRemoved(overwritten, actionName) {
     if (!overwritten) {
         return true;
     }
+    let removed;
     try {
-        await overwritten.removal;
-        return true;
+        removed = await overwritten.removal;
     } catch (error) {
         console.error(`Could not delete the overwritten lorebook ${overwritten.name}`, error);
         const escapedName = escapeHtml(overwritten.name);
@@ -4946,6 +5040,13 @@ async function overwrittenWorldInfoRemoved(overwritten, actionName) {
         await warnIfOverwrittenWorldInfoGone(overwritten);
         return false;
     }
+    if (removed) {
+        await dropWorldSavesAfterOverwrite(overwritten.name, actionName);
+    } else {
+        // The server refused the deletion, so the old book may still be there: its saves are written, not dropped.
+        await flushWorldSaves(overwritten.name);
+    }
+    return true;
 }
 
 /**
