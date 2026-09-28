@@ -169,6 +169,7 @@ jest.unstable_mockModule('../public/scripts/generation-params.js', () => ({ main
 jest.unstable_mockModule('../public/scripts/events.js', () => ({ event_types: {}, eventSource: { on: jest.fn() } }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({ power_user: settings.power_user }));
 jest.unstable_mockModule('../public/scripts/chat-completion-settings.js', () => ({
+    chat_completion_sources: { CUSTOM: 'custom' },
     getChatCompletionModel: () => settings.oai.nanogpt_model,
     oai_settings: settings.oai,
 }));

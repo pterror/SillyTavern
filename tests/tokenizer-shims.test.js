@@ -106,7 +106,7 @@ jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     registerDebugFunction: jest.fn(),
 }));
 jest.unstable_mockModule('../public/scripts/chat-completion-settings.js', () => ({
-    chat_completion_sources: { OPENAI: 'openai', NANOGPT: 'nanogpt' },
+    chat_completion_sources: { OPENAI: 'openai', NANOGPT: 'nanogpt', CUSTOM: 'custom' },
     getChatCompletionModel: () => settings.oai.nanogpt_model,
     model_list: [],
     oai_settings: settings.oai,
@@ -541,5 +541,37 @@ describe('counts give the answer they came from', () => {
         expect((await tokenizersModule.getTokenCountWithAnswer('abcdefg', 64)).count).toBe(await tokenizersModule.getTokenCountAsync('abcdefg', 64));
         respond = () => { throw new Error('500'); };
         await expect(tokenizersModule.getTokenCountWithAnswer('other')).rejects.toThrow('500');
+    });
+});
+
+describe('llama.cpp counts the prompt as a generation sends it', () => {
+    test('getPromptTokenCountAsync posts promptStart: true, cached apart from the same text\'s single-field count', async () => {
+        expect(await tokenizersModule.getPromptTokenCountAsync('abcd', 2)).toBe(6);
+        expect(requests).toEqual([{ url: '/api/tokenizers/current/count', async: true, body: { state: textgenState, texts: ['abcd'], padding: 2, promptStart: true } }]);
+        await tokenizersModule.getPromptTokenCountAsync('abcd', 2);
+        expect(requests.length).toBe(1);
+        await tokenizersModule.getTokenCountAsync('abcd', 2);
+        expect(requests.length).toBe(2);
+        expect(requests[1].body).toEqual({ state: textgenState, texts: ['abcd'], padding: 2 });
+    });
+
+    test('getPromptTokenCountAsync on chat completion is getTokenCountAsync', async () => {
+        await useApi('openai');
+        expect(await tokenizersModule.getPromptTokenCountAsync('abcdefg', 64)).toBe(Math.ceil(7 / 3.35) + 64);
+        expect(requests).toEqual([]);
+    });
+
+    test('a chat-completion custom source\'s state carries its URL, which the server may find is llama.cpp', async () => {
+        const saved = { ...settings.oai };
+        Object.assign(settings.oai, { chat_completion_source: 'custom', custom_url: 'http://127.0.0.1:8081/v1' });
+        try {
+            await useApi('openai');
+            await tokenizersModule.getTokenCountAsync('hello');
+            expect(requests[0].body.state).toEqual({ api: 'openai', source: 'custom', url: 'http://127.0.0.1:8081/v1', model: 'claude-sonnet-4', tokenizerSetting: tokenizerIds.BEST_MATCH });
+            expect(JSON.parse(tokenizersModule.getTokenizerStateHeader()).url).toBe('http://127.0.0.1:8081/v1');
+        } finally {
+            for (const key of Object.keys(settings.oai)) delete settings.oai[key];
+            Object.assign(settings.oai, saved);
+        }
     });
 });

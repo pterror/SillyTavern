@@ -541,6 +541,8 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
  * thrown on below) - typed optional here only so a caller omitting the whole `params` object
  * (`= {}`) still type-checks; the runtime check is the actual enforcement.
  * @param {(text: string) => number[]} [params.encodeTokens] REQUIRED at runtime - see `countTokens` above.
+ * @param {(text: string) => Promise<number>} [params.countPromptTokens] Counts a text that begins the
+ * prompt, as the backend counts that prompt. Defaults to `countTokens`.
  * @param {number} [params.amountGen] Overrides settings.amount_gen when given.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
  * @returns {Promise<import('./text-completion-prompt-orchestrator.js').AssembleTextCompletionPromptInput>}
@@ -549,7 +551,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     avatar, groupId, mainApi = 'textgenerationwebui', ownerId, branchName, nodeId,
     type, isImpersonate = false, isContinue = false, isSwipe = false,
     textareaText = '', chatMetadata: chatMetadataOverride, userMessageText, userMessageExtra,
-    worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, amountGen, macroExtras = {},
+    worldInfoCandidates: worldInfoCandidatesOverride, countTokens, encodeTokens, countPromptTokens, amountGen, macroExtras = {},
 } = {}) {
     if (typeof countTokens !== 'function') {
         throw new Error('resolveTextCompletionGenerationInput: countTokens is required (real tokenizer resolution is caller-owned - see module doc comment)');
@@ -690,7 +692,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
         // --- Context/token budget ---
         thisMaxContext: settingsMaxContext ?? 8192,
         tokenPadding: powerUser.token_padding ?? 0,
-        countTokens, encodeTokens,
+        countTokens, encodeTokens, countPromptTokens,
         amountGen: amountGen ?? settingsAmountGen ?? 0,
         requestTokenProbabilities: Boolean(powerUser.request_token_probabilities ?? false),
 

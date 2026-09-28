@@ -196,6 +196,7 @@ function getVerbosity(settings) {
  * @property {object} [toolsPayload] Already-resolved tool-calling fields to merge in when !canMultiSwipe, or undefined for none
  * @property {{name1?: string, name2?: string}} [macroContext]
  * @property {string} [chatId] getCurrentChatId() - only used for FIREWORKS's chat_id field
+ * @property {import('./users.js').UserDirectoryList} [directories] For a custom URL that is llama.cpp: the custom key
  */
 
 /**
@@ -219,6 +220,7 @@ export async function createGenerationParameters(settings, model, type, messages
         toolsPayload = undefined,
         macroContext = {},
         chatId = undefined,
+        directories = undefined,
     } = context;
 
     if (!Array.isArray(messages)) {
@@ -252,7 +254,10 @@ export async function createGenerationParameters(settings, model, type, messages
     if (logitBiasOverride !== undefined) {
         logit_bias = logitBiasOverride;
     } else if (Array.isArray(biasPresetEntries) && biasPresetEntries.length && logitBiasSources.includes(settings.chat_completion_source)) {
-        logit_bias = await computeLogitBias(biasPresetEntries, model, droppedBiasEntries, settings.chat_completion_source);
+        const connection = settings.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM
+            ? { url: settings.custom_url, directories, customIncludeHeaders: substituteParams(settings.custom_include_headers, macroContext) }
+            : { directories };
+        logit_bias = await computeLogitBias(biasPresetEntries, model, droppedBiasEntries, settings.chat_completion_source, connection);
     }
     if (Object.keys(logit_bias).length === 0) {
         logit_bias = undefined;

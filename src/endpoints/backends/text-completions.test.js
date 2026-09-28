@@ -1714,7 +1714,7 @@ async function run() {
         return { ...backend, paths };
     }
 
-    await tokenizerCase('raw-action stream, /tokenize failing, gemma-2 model: gemma copy, no llama, fallback-copy in the control frame', async () => {
+    await tokenizerCase('raw-action stream, /tokenize failing, gemma-2 model: gemma copy for single fields, the estimate for counts that begin the prompt, no llama', async () => {
         const failAvatar = await writeCharacter('TokenizeFail.png', { name: 'TokenizeFail', data: { name: 'TokenizeFail', first_mes: 'Hi.' } });
         await saveChatToTree(directories, failAvatar, 'tokenize-fail-chat', [
             { chat_metadata: {} },
@@ -1748,7 +1748,8 @@ async function run() {
         assert.ok(sentencepieceEncodes.filter(file => /[\\/]gemma\.model$/.test(file ?? '')).length > gemmaBefore, 'encoded with the gemma copy');
         const decoded = decodeCompactStream(bytes);
         assert.equal(decoded.text, 'ok');
-        assert.deepEqual(decoded.warnings.map(w => w.kind), ['fallback-copy']);
+        // Whether llama.cpp adds BOS to the prompt depends on the loaded gguf, so no copy counts the prompt start.
+        assert.deepEqual(decoded.warnings.map(w => w.kind), ['fallback-copy', 'trim-estimate']);
         assert.ok(decoded.warnings[0].message.includes('Gemma'), decoded.warnings[0].message);
     });
 
@@ -1784,6 +1785,53 @@ async function run() {
         const decoded = decodeCompactStream(bytes);
         assert.deepEqual(decoded.warnings.map(w => w.kind), ['trim-estimate', 'dropped']);
         assert.deepEqual(decoded.warnings[1].entries, ['hello']);
+    });
+
+    await tokenizerCase('raw-action on llama.cpp: the counts that begin the prompt send add_special: true, message counts upstream\'s request', async () => {
+        const bosAvatar = await writeCharacter('BosCount.png', { name: 'BosCount', data: { name: 'BosCount', description: 'BosCount tells stories.', first_mes: 'Hi.' } });
+        await saveChatToTree(directories, bosAvatar, 'bos-chat', [
+            { chat_metadata: {} },
+            { name: 'BosCount', is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
+            { name: 'Tester', is_user: true, mes: 'Tell me one.', send_date: 2, extra: {} },
+        ]);
+        const bosBranch = await loadBranch(directories, bosAvatar, 'bos-chat');
+
+        const tokenizeBodies = [];
+        const backend = await startFakeBackend((req, res, body) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (req.url === '/tokenize') {
+                const parsed = JSON.parse(body);
+                tokenizeBodies.push(parsed);
+                return res.end(JSON.stringify({ tokens: Array.from(Buffer.from(parsed.content), (_, i) => i) }));
+            }
+            res.end('{}');
+        });
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        Object.assign(settings.textgenerationwebui_settings, {
+            type: 'llamacpp',
+            llamacpp_model: 'gemma-2-9b-it',
+            server_urls: { llamacpp: backend.url },
+        });
+        writeAllSettings(directories, settings);
+
+        const built = await buildRawActionTextCompletionRequest(directories, {
+            request: /** @type {any} */ ({ body: { api_type: 'llamacpp' }, user: { directories } }),
+            characterAvatar: bosAvatar, ownerId: bosAvatar, nodeId: bosBranch.branch.leaf_id,
+            type: 'continue', isContinue: true,
+        });
+        backend.server.close();
+        writeAllSettings(directories, buildSettingsFixture());
+
+        const promptStart = tokenizeBodies.filter(body => body.add_special === true);
+        const fields = tokenizeBodies.filter(body => !('add_special' in body));
+        assert.equal(promptStart.length + fields.length, tokenizeBodies.length, 'add_special is only ever true');
+        // The two baselines (the story string is empty here; on continue the second holds the continued
+        // message) and the whole-prompt size check.
+        assert.deepEqual(promptStart.map(body => body.content), ['', 'Tester: Tell me one.', 'BosCount: Hi.\n\nTester: Tell me one.']);
+        assert.deepEqual(fields, [{ model: 'gemma-2-9b-it', content: 'BosCount: Hi.\n' }], 'a message is counted with upstream\'s { model, content }');
+        assert.ok(built.params.prompt.endsWith('Tell me one.'));
+        assert.deepEqual(built.warnings ?? [], []);
     });
 
     assert.deepEqual(tokenizerCaseFailures, [], 'tokenizer resolution cases');

@@ -3,7 +3,7 @@ import { nai_settings } from '../script.js';
 import { main_api } from './generation-params.js';
 import { event_types, eventSource } from './events.js';
 import { power_user } from './power-user.js';
-import { getChatCompletionModel, oai_settings } from './chat-completion-settings.js';
+import { chat_completion_sources, getChatCompletionModel, oai_settings } from './chat-completion-settings.js';
 import { debounce, getStringHash } from './utils.js';
 import { kai_settings } from './kai-settings.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer, getTextGenModel } from './textgen-settings.js';
@@ -478,8 +478,12 @@ function getTokenizerState(api = main_api) {
             return { api, model: nai_settings.model_novel ?? '', tokenizerSetting: power_user.tokenizer };
         case 'koboldhorde':
             return { api, hordeModels: Array.isArray(horde_settings.models) ? horde_settings.models : [], tokenizerSetting: power_user.tokenizer };
-        case 'openai':
-            return { api, source: oai_settings.chat_completion_source, model: getChatCompletionModel() ?? '', tokenizerSetting: power_user.tokenizer };
+        case 'openai': {
+            const source = oai_settings.chat_completion_source;
+            // The server counts with a custom URL's own `/tokenize` when the URL is llama.cpp.
+            const url = source === chat_completion_sources.CUSTOM ? { url: oai_settings.custom_url ?? '' } : {};
+            return { api, source, ...url, model: getChatCompletionModel() ?? '', tokenizerSetting: power_user.tokenizer };
+        }
         default:
             return null;
     }
@@ -861,9 +865,11 @@ export function getTextgenTypeTokenizer(type) {
  * @param {string[]} strings
  * @param {number} padding Added to each non-empty count.
  * @param {boolean} async
+ * @param {boolean} [promptStart] Every text begins the prompt a generation sends, and is counted as that prompt is.
  * @returns {{ counts: number[], tokenizer: CurrentTokenizer|null }|Promise<{ counts: number[], tokenizer: CurrentTokenizer|null }>}
  */
-function countTexts(strings, padding, async) {
+function countTexts(strings, padding, async, promptStart = false) {
+    const cacheSuffix = promptStart ? '^' : '';
     const results = new Array(strings.length).fill(0);
     const tokenizer = getRememberedTokenizer();
     /** @type {number[]} */
@@ -874,7 +880,7 @@ function countTexts(strings, padding, async) {
         if (typeof str !== 'string' || !str.length) {
             continue;
         }
-        const cached = tokenizer ? countCache.get(`${tokenizer.key}-${getStringHash(str)}+${padding}`) : undefined;
+        const cached = tokenizer ? countCache.get(`${tokenizer.key}-${getStringHash(str)}+${padding}${cacheSuffix}`) : undefined;
         if (typeof cached === 'number') {
             results[i] = cached;
         } else {
@@ -901,12 +907,12 @@ function countTexts(strings, padding, async) {
             }
             results[i] = count;
             if (store) {
-                countCache.set(`${answered.key}-${getStringHash(strings[i])}+${padding}`, count);
+                countCache.set(`${answered.key}-${getStringHash(strings[i])}+${padding}${cacheSuffix}`, count);
             }
         });
         return { counts: results, tokenizer: answered };
     };
-    const body = { state, texts: pending.map(i => strings[i]), padding };
+    const body = { state, texts: pending.map(i => strings[i]), padding, ...(promptStart ? { promptStart } : {}) };
     return async ? postCurrent('count', body, true).then(apply) : apply(postCurrent('count', body, false));
 }
 
@@ -988,6 +994,21 @@ export async function getTokenCountAsync(str, padding = undefined) {
     }
 
     const { counts: [count] } = await countTexts([str], padding ?? 0, true);
+    return count;
+}
+
+/**
+ * getTokenCountAsync() for a text that begins the prompt a generation sends: counted as the backend
+ * counts that prompt, so with BOS where the backend adds one.
+ * @param {string} str String to tokenize
+ * @param {number | undefined} padding Optional padding tokens. Defaults to 0.
+ * @returns {Promise<number>} Token count.
+ */
+export async function getPromptTokenCountAsync(str, padding = undefined) {
+    if (typeof str !== 'string' || !str?.length || isOpenAiApi()) {
+        return getTokenCountAsync(str, padding);
+    }
+    const { counts: [count] } = await countTexts([str], padding ?? 0, true, true);
     return count;
 }
 
@@ -1404,7 +1425,7 @@ export async function initTokenizers() {
         eventSource.on(event, refreshCurrentTokenizer);
     }
     $(document).on('change', '#main_api, #textgen_type, #model_novel_select, #horde_model, #tokenizer', refreshCurrentTokenizer);
-    $(document).on('input', Object.values(SERVER_INPUTS).join(', '), refreshCurrentTokenizerDebounced);
+    $(document).on('input', [...Object.values(SERVER_INPUTS), '#custom_api_url_text'].join(', '), refreshCurrentTokenizerDebounced);
     $(document).on('input change', '#banned_tokens_textgenerationwebui, #global_banned_tokens_textgenerationwebui, #send_banned_tokens_textgenerationwebui, #nai_banned_tokens', prefetchEntryTokenIdsDebounced);
 
     void removeStoredTokenCache();

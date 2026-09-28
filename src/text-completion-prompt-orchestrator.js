@@ -311,6 +311,9 @@ function parseMesExamplesBlocks(examplesStr, isInstruct, exampleSeparator = '') 
  *   src/tokenizer-resolve.js's encodeWithTokenizerType() plus a resolved backend/model context -
  *   a separate resolution concern from this orchestrator. Callers must resolve a real tokenizer
  *   and inject it here (or, for tests, a simple deterministic fake).
+ * @property {(text: string) => Promise<number>} [countPromptTokens] Counts a text that begins the prompt
+ *   (the baseline and the whole-prompt size check) as the backend counts that prompt, BOS included where
+ *   the backend adds one. Default `countTokens`.
  * @property {(text: string) => number[] | null | Promise<number[] | null>} encodeTokens REQUIRED. Distinct from
  *   `countTokens` - returns token IDS (for getCustomTokenBans()/calculateLogitBias()), not a count;
  *   null when there is no tokenizer, which leaves the entry out and lists it in `droppedEntries`.
@@ -462,7 +465,7 @@ export async function assembleTextCompletionPrompt(input) {
         alwaysForceName2 = false, forceName2Override,
         reasoningAddToPrompts = false, reasoningMaxAdditions = 999999, reasoningPrefix = '', reasoningSeparator = '', reasoningSuffix = '',
         regexScripts = [], regexExtensionEnabled = true,
-        tokenPadding = 0, countTokens, encodeTokens, encodeTokensByType, novelTokenizerType, amountGen = 0, requestTokenProbabilities = false,
+        tokenPadding = 0, countTokens, countPromptTokens = countTokens, encodeTokens, encodeTokensByType, novelTokenizerType, amountGen = 0, requestTokenProbabilities = false,
         chatGuidanceScale, groupchatIndividualChars = false, charaCfg, globalCfg, promptCombine = [], promptSeparator, promptInsertionDepth = 1, chatMetadataPrompts = {},
         worldInfoCandidates = [], worldInfoIncludeNames = false, worldInfoBudgetPercent = 25, worldInfoBudgetCap = 0,
         worldInfoDepth = 2, worldInfoRecursive = true, worldInfoMaxRecursionSteps = 0,
@@ -904,7 +907,7 @@ export async function assembleTextCompletionPrompt(input) {
             combinedStoryString, examplesString, userAlignmentMessage, chatString,
             modifyLastPromptLine('', modifyLastPromptLineParams), cyclePromptValue,
         ].join('').replace(/\r/gm, '');
-        return (await countTokens(encodeString)) + tokenPadding;
+        return (await countPromptTokens(encodeString)) + tokenPadding;
     }
 
     // ---- Step 10: token-budget fill + example-budget estimate --------------------------------------
@@ -931,7 +934,7 @@ export async function assembleTextCompletionPrompt(input) {
     // ---- Step 12: prompt-size backoff --------------------------------------------------------------
     const { mesSend, mesExmString } = await resolvePromptStrings({
         mesSend: builtMesSend, mesExamplesArray, countExmAdd: initialCountExmAdd, pinExmString,
-        combinedStoryString, generatedPromptCache, thisMaxContext, countTokens, mainApi, naiPreamble, chatStart,
+        combinedStoryString, generatedPromptCache, thisMaxContext, countTokens: countPromptTokens, mainApi, naiPreamble, chatStart,
         macroContext, modifyLastPromptLineParams,
     });
 

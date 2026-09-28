@@ -264,7 +264,7 @@ async function fetchTextgenStatusFor({ type, url, directories }) {
  * @param {string|undefined} name
  * @returns {string|null}
  */
-function knownModelName(name) {
+export function knownModelName(name) {
     return typeof name === 'string' && name !== '' && !UNKNOWN_MODEL_NAMES.has(name) ? name : null;
 }
 

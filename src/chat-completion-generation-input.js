@@ -420,6 +420,8 @@ import { substituteParams } from './macro-substitution.js';
  * @property {string} [ai21_model]
  * @property {string} [mistralai_model]
  * @property {string} [custom_model]
+ * @property {string} [custom_url]
+ * @property {string} [custom_include_headers]
  * @property {string} [cohere_model]
  * @property {string} [perplexity_model]
  * @property {string} [groq_model]
@@ -1002,7 +1004,10 @@ export async function resolveChatCompletionGenerationInput(directories, {
     // See doc comment decision 3.
     const tokenizerOutcome = createTokenizerOutcome();
     const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(
-        await resolveTokenizer({ api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '' }),
+        await resolveTokenizer(
+            { api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '', url: oaiSettings.custom_url },
+            { directories, customIncludeHeaders: substituteParams(oaiSettings.custom_include_headers, macroContext) },
+        ),
         tokenizerOutcome,
         directories,
     ));
