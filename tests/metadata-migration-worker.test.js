@@ -221,6 +221,22 @@ describe('createMetadataMigrationCoordinator()', () => {
         await done;
     });
 
+    test('a tag-move-failed message is handed to onTagMoveFailed with its payload', async () => {
+        const onTagMoveFailed = jest.fn();
+        const { coordinator, workers } = fakeSetup({ onTagMoveFailed });
+        const done = coordinator.start(directories);
+        await flush();
+        const payload = { tagId: 'x', tagName: 'Ex', anchorId: 'a', anchorName: null, refusedId: 'a', reason: 'deleted' };
+
+        workers[0].emit('message', { type: 'tag-move-failed', payload });
+        await flush();
+        expect(onTagMoveFailed).toHaveBeenCalledTimes(1);
+        expect(onTagMoveFailed).toHaveBeenCalledWith(directories, payload);
+
+        workers[0].emit('exit', 0);
+        await done;
+    });
+
     test('dispose() asks the worker to close, and terminates it if it has not exited in time', async () => {
         const { coordinator, workers } = fakeSetup();
         const done = coordinator.start(directories);

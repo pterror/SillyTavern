@@ -11,6 +11,7 @@ import { setConfigFilePath } from './util.js';
  * Messages to the coordinator:
  *   { type: 'batch', changed, tagDefinitionsChanged }   a batch committed that wrote change rows (changed) and/or
  *                                                     tag definitions (tagDefinitionsChanged).
+ *   { type: 'tag-move-failed', payload }               a queued tag move couldn't be applied (reportTagMoveFailed()).
  *   { type: 'error', message }
  * Requests from the coordinator: { type: 'close' }: stop before the next pass, then exit.
  */
@@ -51,6 +52,11 @@ metadataDb.characterChangeEmitter.on('change', () => {
 metadataDb.characterChangeEmitter.on(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, () => {
     tagDefinitionsChanged = true;
     queueBatchReport();
+});
+// The main process reports it on to the user's clients, or logs it.
+metadataDb.characterChangeEmitter.on(metadataDb.TAG_MOVE_FAILED_EVENT, (root, payload, ack) => {
+    post({ type: 'tag-move-failed', payload });
+    ack.delivered = true;
 });
 
 let closing = false;

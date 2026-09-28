@@ -215,6 +215,18 @@ describe('fillTagSortOrdersIfNeeded: tags without a sort_order', () => {
         expect(columnMismatches()).toEqual([]);
     });
 
+    test('after an infinite max, a tag without a sort_order is left without one and logged as unplaced, and the pass finishes', async () => {
+        await openStore();
+        insertTag('inf', '{"id":"inf","name":"inf","sort_order":1e999}');
+        insertTag('a', { name: 'A' });
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        expect(rows().get('a').sort_order).toBeNull();
+        expect(dataOrder('a')).toBeUndefined();
+        expect(warn.mock.calls.map(args => String(args[0])).join('\n')).toMatch(/left without a sort_order: no finite value is left after the current max:\n {2}a \(A\)/);
+        expect(metaValue(FLAG)).toBeDefined();
+    });
+
     test('across batches, and a restart resumes where the last commit left it', async () => {
         await openStore();
         const insert = live().transaction(() => {
