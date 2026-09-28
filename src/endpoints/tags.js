@@ -18,6 +18,7 @@ import {
     getTagsBucketMembers,
     getTagDefinitionsByIds,
 } from '../character-metadata-db.js';
+import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.js';
 
 export const router = express.Router();
 
@@ -113,6 +114,9 @@ router.post('/delete', async (request, response) => {
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
+        // Not awaited: the pass moves the deleted tag's rows onto its merge target in a worker, after this responds.
+        requestMetadataMigrationPass(request.user.directories, 'finishDeletedTags')
+            .catch(err => console.error('Could not run the deleted tag finishing pass', err));
 
         response.send({ result: 'ok' });
     } catch (err) {
