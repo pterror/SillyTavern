@@ -150,7 +150,7 @@ describe('the metadata migration passes run after the server listens', () => {
         await Promise.all(await metadataDb.initializeMetadataStores([directories]));
 
         expect(await metadataDb.characterRowExists(directories, 'Alice.png')).toBe(true);
-        for (const key of [metadataDb.GROUP_NUMERIC_ID_RECOVERY_FLAG, metadataDb.GROUP_FAV_NORMALIZED_FLAG, 'tags_json_migrated', 'card_tags_backfill_completed', 'tag_ids_shallow_json_backfill_completed', 'character_fav_normalized_v1', 'character_tag_ids_normalized_v1']) {
+        for (const key of [metadataDb.GROUP_NUMERIC_ID_RECOVERY_FLAG, metadataDb.GROUP_FAV_NORMALIZED_FLAG, 'tags_json_migrated', 'card_tags_backfill_completed', 'tag_ids_shallow_json_backfill_completed', 'character_fav_normalized_v1', 'character_tag_ids_normalized_v1', 'orphan_tag_rows_removed_v1']) {
             expect(await metadataDb.getMetaValue(directories, key)).toBeNull();
         }
     });

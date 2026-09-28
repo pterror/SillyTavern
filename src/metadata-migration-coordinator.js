@@ -19,6 +19,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'backfillTagIdsInShallowJson',
     'normalizeCharacterFavIfNeeded',
     'normalizeCharacterTagIdsIfNeeded',
+    // Before finishDeletedTags, so a deleted tag that only orphan rows carry finishes in the same run.
+    'removeOrphanTagRowsIfNeeded',
     'finishDeletedTags',
 ]);
 
