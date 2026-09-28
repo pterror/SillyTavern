@@ -620,6 +620,17 @@ function characterFieldSaveKey(avatar, formId) {
 }
 
 /**
+ * The `id` CHARACTER_EDITED carries for an edit to `avatar`'s card: upstream's index into `characters`, which
+ * upstream always takes from the edited character. `this_chid` when the edited character is the current one,
+ * and undefined otherwise, so the event never carries an index that names a different character.
+ * @param {string|undefined} avatar
+ * @returns {string|undefined}
+ */
+function characterEditedId(avatar) {
+    return avatar !== undefined && avatar === this_avatar ? this_chid : undefined;
+}
+
+/**
  * Saves exactly one character field - only this field is sent, through `/api/characters/merge-attributes`,
  * with its own per-field conflict check. Never reads the form.
  * @param {string} avatar Avatar filename of the character being edited.
@@ -720,7 +731,7 @@ export function saveCharacterField(avatar, formId, value) {
                 _loadedCharacterFieldHashes.set(mapping.v2, chain.hash);
             }
 
-            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character } });
+            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(avatar), character } });
             updateCharacterListRow(avatar);
             return true;
         } catch (error) {
@@ -9522,7 +9533,7 @@ async function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes
     applyGreetingsModelToCharacter(character, { greetings, defaultIndex });
     setGreetingPagerGreetings(greetings, defaultIndex, hashes);
     const greetingEdit = findGreetingEdit(before, cardToGreetingsModel(character).greetings);
-    await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: character, greetingEdit } });
+    await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(character?.avatar), character: character, greetingEdit } });
 }
 
 /**
@@ -10509,7 +10520,7 @@ async function mergeCharacterPaths(avatar, changes) {
             throw new Error(`merge-attributes answered ${response.status}`);
         }
         await getOneCharacter(avatar);
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: charactersStore.get(avatar) } });
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(avatar), character: charactersStore.get(avatar) } });
         updateCharacterListRow(avatar);
         return true;
     } catch (error) {
@@ -10681,7 +10692,7 @@ async function saveCharacterAvatar(avatar, file) {
         crop_data = undefined;
 
         await getOneCharacter(avatar);
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: charactersStore.get(avatar) } });
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(avatar), character: charactersStore.get(avatar) } });
         updateCharacterListRow(avatar);
         return true;
     } catch (error) {
