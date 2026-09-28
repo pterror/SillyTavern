@@ -285,7 +285,7 @@ describe.each([
     });
 });
 
-describe('native streamWrite() over more than one read chunk', () => {
+describe('native streamWrite() over 100001 rows', () => {
     let tmpDir;
     let handle;
 
@@ -301,7 +301,7 @@ describe('native streamWrite() over more than one read chunk', () => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    test('reopens the reader per 100000-row chunk and resumes after the last key: every row once, in key order', () => {
+    test('no reader is ever opened, and every row is handed over once, in key order', () => {
         const openReader = handle.openReader;
         let opens = 0;
         handle.openReader = () => {
@@ -324,7 +324,7 @@ describe('native streamWrite() over more than one read chunk', () => {
                 }
             },
         });
-        expect(opens).toBe(2);
+        expect(opens).toBe(0);
         expect(outOfOrder).toBe(0);
         expect(expectedId).toBe(100002);
         expect(batchSizes.length).toBe(101);
@@ -334,7 +334,7 @@ describe('native streamWrite() over more than one read chunk', () => {
 });
 
 describe.each([
-    ['native', (dbPath) => openNativeDatabase(Database, dbPath), 100001, 2],
+    ['native', (dbPath) => openNativeDatabase(Database, dbPath), 100001, 0],
     ['wasm', (dbPath) => openWasmDatabase(WasmDatabase, dbPath), 2500, 0],
 ])('%s engine streamRows()', (name, open, rowCount, fullPassReaderOpens) => {
     let tmpDir;
@@ -416,10 +416,10 @@ describe.each([
                 }
             })()).rejects.toThrow('boom after 1000');
         }],
-    ])('ending the for-await early by %s closes the reader and leaves the handle writable', async (_how, consume) => {
+    ])('ending the for-await early by %s opens no reader and leaves the handle writable', async (_how, consume) => {
         await consume(streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' }));
-        expect(readerCloses).toBe(readerOpens);
-        expect(readerOpens).toBe(name === 'native' ? 1 : 0);
+        expect(readerOpens).toBe(0);
+        expect(readerCloses).toBe(0);
         expect(() => handle.run('UPDATE t SET v = ? WHERE id = ?', ['after', 1])).not.toThrow();
     });
 });
@@ -479,6 +479,30 @@ describe('native WAL housekeeping and close()', () => {
     test('openReader() on a closed handle throws', () => {
         handle.close();
         expect(() => handle.openReader()).toThrow('database handle is closed');
+    });
+
+    test('a streamRows() pass that writes per batch leaves nothing pinning the WAL: every checkpoint between batches is complete, and the WAL restarts', async () => {
+        const other = new Database(dbPath);
+        const checkpoints = [];
+        try {
+            for await (const rows of streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' })) {
+                handle.transaction(() => {
+                    for (const row of rows) {
+                        handle.run('UPDATE t SET v = ? WHERE id = ?', ['new', row.id]);
+                    }
+                });
+                await new Promise(resolve => setImmediate(resolve));
+                checkpoints.push(other.pragma('wal_checkpoint(PASSIVE)')[0]);
+            }
+        } finally {
+            other.close();
+        }
+        expect(checkpoints.length).toBeGreaterThan(1);
+        for (const { log, checkpointed } of checkpoints) {
+            expect(checkpointed).toBe(log);
+        }
+        expect(checkpoints.some((cp, i) => i > 0 && cp.log < checkpoints[i - 1].log)).toBe(true);
+        expect(handle.get('SELECT COUNT(*) AS n FROM t WHERE v = \'old\'').n).toBe(0);
     });
 
     test('a streamRows() suspended between batches throws when resumed after close()', async () => {
