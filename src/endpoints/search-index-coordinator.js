@@ -1,12 +1,17 @@
+import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
 import { characterChangeEmitter } from '../character-metadata-db.js';
+import { isReadOnlyMode } from '../read-only-mode.js';
 import { color, getConfigFilePath } from '../util.js';
 import { getTantivyModule } from './tantivy-engine.js';
 
 const WORKER_MODULE_PATH = fileURLToPath(new URL('./search-index-worker.js', import.meta.url));
 const TARGETS = /** @type {const} */ (['characters', 'groups']);
+/** Each target's index dir under `<directories.root>/search-index`, as characters-search-index.js and
+ * groups-search-index.js name it. Read-only mode opens these directly. */
+const INDEX_DIR_NAMES = { characters: 'characters-tantivy', groups: 'groups-tantivy' };
 const DISPOSE_TIMEOUT_MS = 10000;
 const SEARCH_INDEX_UPDATED_INTERVAL_MS = 1000;
 
@@ -35,6 +40,8 @@ function spawnSearchIndexWorker(workerData) {
  * that reload when the worker reports a commit, so nothing on the request path waits for index maintenance.
  * Boot starts the worker of every handle whose index exists (start()); otherwise the first request spawns it,
  * and a request that arrives before its index is openable waits for that.
+ * In read-only mode (read-only-mode.js) no worker is spawned: each target's existing index is opened for reading
+ * on its first request and kept per handle, start() starts nothing, and rebuild() throws.
  * @param {object} [options]
  * @param {(workerData: object) => SearchIndexWorker} [options.spawnWorker]
  * @param {(dir: string) => SearchIndexReader} [options.openIndex] Defaults to tantivy's Index.open().
@@ -53,6 +60,11 @@ export function createSearchIndexCoordinator({
 } = {}) {
     /** @type {Map<string, WorkerEntry>} */
     const entries = new Map();
+    /**
+     * Read-only mode's readers, per handle.
+     * @type {Map<string, Partial<Record<SearchIndexTarget, SearchIndexReader>>>}
+     */
+    const readOnlyReaders = new Map();
     /**
      * Per handle, kept across worker respawns so the interval holds for the handle.
      * @type {Map<string, { lastSentAt: number, timer: NodeJS.Timeout | null, seq: number }>}
@@ -220,21 +232,44 @@ export function createSearchIndexCoordinator({
      * @param {import('../users.js').UserDirectoryList} directories
      */
     async function getEntry(handle, directories) {
+        await loadTantivy();
+        // No await between the get and spawn()'s set, so concurrent first calls share one worker.
+        return entries.get(handle) ?? spawn(handle, directories);
+    }
+
+    async function loadTantivy() {
         if (!openIndex && !tantivy) {
             tantivy = await getTantivyModule();
         }
-        // No await between the get and spawn()'s set, so concurrent first calls share one worker.
-        return entries.get(handle) ?? spawn(handle, directories);
+    }
+
+    /**
+     * Read-only mode: the handle's existing index for `target`, opened for reading on the first request. A
+     * missing index dir throws, since nothing can build it read-only.
+     * @param {string} handle
+     * @param {import('../users.js').UserDirectoryList} directories
+     * @param {SearchIndexTarget} target
+     * @returns {Promise<SearchIndexReader>}
+     */
+    async function getReadOnlyIndex(handle, directories, target) {
+        await loadTantivy();
+        let readers = readOnlyReaders.get(handle);
+        if (!readers) {
+            readers = {};
+            readOnlyReaders.set(handle, readers);
+        }
+        return readers[target] ??= open(path.join(directories.root, 'search-index', INDEX_DIR_NAMES[target]));
     }
 
     return {
         /**
          * Starts the handle's worker if it isn't running. Doesn't wait for its indexes: the readers open when the
-         * worker reports each one ready.
+         * worker reports each one ready. Starts nothing in read-only mode.
          * @param {string} handle
          * @param {import('../users.js').UserDirectoryList} directories
          */
         async start(handle, directories) {
+            if (isReadOnlyMode()) return;
             await getEntry(handle, directories);
         },
 
@@ -247,6 +282,9 @@ export function createSearchIndexCoordinator({
          * @returns {Promise<SearchIndexReader | null>}
          */
         async getIndex(handle, directories, target) {
+            if (isReadOnlyMode()) {
+                return getReadOnlyIndex(handle, directories, target);
+            }
             const entry = await getEntry(handle, directories);
             await entry.targets[target].ready.promise;
             return entry.targets[target].reader;
@@ -254,9 +292,13 @@ export function createSearchIndexCoordinator({
 
         /**
          * A full characters rebuild-and-swap in the handle's worker. Resolves once searches read the new index.
+         * Throws in read-only mode.
          * @returns {Promise<boolean>} false when the metadata store is unavailable.
          */
         async rebuild(handle, directories) {
+            if (isReadOnlyMode()) {
+                throw new Error('the search index can\'t be rebuilt in read-only mode');
+            }
             const entry = await getEntry(handle, directories);
             const reply = await request(entry, { type: 'rebuild' });
             if (reply.error) {

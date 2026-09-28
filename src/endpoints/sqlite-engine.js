@@ -31,7 +31,7 @@ let engine = undefined;
  * @property {(fn: () => void) => void} transaction Runs fn inside a single BEGIN/COMMIT, rolling back on throw.
  * @property {() => void} checkpoint Folds WAL into the main file (native only; no-op on wasm).
  * @property {(name: string, fn: (...args: any[]) => any) => void} defineFunction Registers a scalar SQL function.
- * @property {() => void} close Native: TRUNCATE-checkpoints the WAL, then closes.
+ * @property {() => void} close Native: TRUNCATE-checkpoints the WAL (unless opened `readonly`), then closes.
  *   On both engines, iterate() afterwards throws, so a streamRows()/streamWrite() interrupted by close() throws instead of ending early.
  */
 
@@ -41,6 +41,9 @@ let engine = undefined;
  *   Default 15000.
  * @property {boolean} [retryOnBusy] false: run/insertMany/transaction throw the first busy error instead of
  *   retrying it. Default true.
+ * @property {boolean} [readonly] Native engine only; the wasm engine ignores it. true: opens an existing file
+ *   read-only (better-sqlite3 `readonly`, `fileMustExist`), sets no journal_mode, and close() doesn't checkpoint.
+ *   Writes fail in SQLite (SQLITE_READONLY). Default false.
  */
 
 const WRITE_WHILE_ITERATING_MESSAGE = 'write while iterate() is open';
@@ -179,10 +182,12 @@ function busyRetryFor(retryOnBusy) {
  * @param {SqliteOpenOptions} [options]
  * @returns {SqliteEngineHandle}
  */
-export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TIMEOUT_MS, retryOnBusy = true } = {}) {
+export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TIMEOUT_MS, retryOnBusy = true, readonly = false } = {}) {
     const withBusyRetry = busyRetryFor(retryOnBusy);
-    const db = new DatabaseCtor(path);
-    db.pragma('journal_mode = WAL');
+    const db = readonly ? new DatabaseCtor(path, { readonly: true, fileMustExist: true }) : new DatabaseCtor(path);
+    if (!readonly) {
+        db.pragma('journal_mode = WAL');
+    }
     db.pragma(`busy_timeout = ${busyTimeoutMs}`);
     db.pragma(`journal_size_limit = ${JOURNAL_SIZE_LIMIT_BYTES}`);
 
@@ -234,10 +239,13 @@ export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TI
         checkpoint: () => { assertNoOpenIterator(); db.pragma('wal_checkpoint(TRUNCATE)'); },
         // deterministic: true is safe - every registered function in this codebase is a pure hash.
         defineFunction: (name, fn) => { db.function(name, { deterministic: true }, fn); },
-        // An ordinary close never shrinks the WAL file; the TRUNCATE checkpoint does (best-effort).
+        // An ordinary close never shrinks the WAL file; the TRUNCATE checkpoint does (best-effort). A read-only
+        // handle doesn't checkpoint.
         close: () => {
             closed = true;
-            try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best-effort */ }
+            if (!readonly) {
+                try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best-effort */ }
+            }
             db.close();
         },
     };

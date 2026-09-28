@@ -2,6 +2,7 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
 import { characterChangeEmitter, clearTagCache, waitForMetadataBootChain } from './character-metadata-db.js';
+import { isReadOnlyMode } from './read-only-mode.js';
 import { color, getConfigFilePath } from './util.js';
 
 const WORKER_MODULE_PATH = fileURLToPath(new URL('./metadata-migration-worker.js', import.meta.url));
@@ -117,11 +118,12 @@ export function createMetadataMigrationCoordinator({
     return {
         /**
          * Starts the store's migration worker once its boot chain has finished. One per store: a second call
-         * returns the first one's promise.
+         * returns the first one's promise. Starts nothing in read-only mode.
          * @param {import('./users.js').UserDirectoryList} directories
          * @returns {Promise<void>} Settles once the store's worker has exited and its messages are handled.
          */
         start(directories) {
+            if (isReadOnlyMode()) return Promise.resolve();
             let started = starts.get(directories.root);
             if (!started) {
                 started = run(directories);
