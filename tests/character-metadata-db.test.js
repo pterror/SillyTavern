@@ -1366,6 +1366,49 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
     });
 });
 
+describe('assignEntityTag/unassignEntityTag commit the tag row and its write-back together', () => {
+    /**
+     * Makes every later write to `column` of `table` fail, from another connection.
+     * @param {string} table
+     * @param {string} column
+     */
+    async function failWritesTo(table, column) {
+        metadataDb.disposeMetadataStores();
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        rawDb.exec(`CREATE TRIGGER test_fail_write_back BEFORE UPDATE OF ${column} ON ${table} BEGIN SELECT RAISE(ABORT, 'write-back failed'); END`);
+        rawDb.close();
+    }
+
+    test('a character\'s tag row rolls back when its shallow_json write fails', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
+        const before = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+        await failWritesTo('characters', 'shallow_json');
+
+        await expect(metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).rejects.toThrow('write-back failed');
+        await expect(metadataDb.unassignEntityTag(directories, 'Bob.png', 'keep')).rejects.toThrow('write-back failed');
+
+        expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['keep']);
+        expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toEqual(before);
+        expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(0);
+        expect(await metadataDb.getTagUsageCount(directories, 'keep')).toBe(1);
+    });
+
+    test('a group\'s tag row rolls back when its digest_tag_ids write fails', async () => {
+        await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
+        await metadataDb.assignEntityTag(directories, 'group1', 'keep');
+        await failWritesTo('groups', 'digest_tag_ids');
+
+        await expect(metadataDb.assignEntityTag(directories, 'group1', 'tag1')).rejects.toThrow('write-back failed');
+        await expect(metadataDb.unassignEntityTag(directories, 'group1', 'keep')).rejects.toThrow('write-back failed');
+
+        expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['keep']);
+        expect(await metadataDb.getTagUsageCount(directories, 'tag1')).toBe(0);
+        expect(await metadataDb.getTagUsageCount(directories, 'keep')).toBe(1);
+    });
+});
+
 describe('phase 3 extension: groups (owner decision - tags.json removal includes group tags)', () => {
     function writeGroupFile(id, name) {
         fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify({ id, name, members: [] }));
