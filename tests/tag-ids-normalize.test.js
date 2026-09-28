@@ -75,22 +75,6 @@ function recordingHandle(handle) {
         record('transaction', '', null);
         return handle.transaction(fn);
     };
-    if (handle.openReader) {
-        wrapped.openReader = () => {
-            const reader = handle.openReader();
-            return {
-                ...reader,
-                iterate: (sql, params) => {
-                    record('reader.iterate', sql, params);
-                    return reader.iterate(sql, params);
-                },
-                get: (sql, params) => {
-                    record('reader.get', sql, params);
-                    return reader.get(sql, params);
-                },
-            };
-        };
-    }
     return wrapped;
 }
 
@@ -335,7 +319,7 @@ describe('server: one-time sort of existing shallow_json.tag_ids (normalizeChara
         }
 
         expect(calls.filter(c => c.method === 'all' || c.method === 'query')).toEqual([]);
-        const streamed = calls.filter(c => (c.method === 'iterate' || c.method === 'reader.iterate') && /FROM characters\b/.test(c.sql));
+        const streamed = calls.filter(c => c.method === 'iterate' && /FROM characters\b/.test(c.sql));
         expect(streamed.length).toBeGreaterThan(0);
         for (const call of streamed) {
             expect(call.sql).toMatch(/LIMIT @limit/);

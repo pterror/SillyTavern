@@ -47,22 +47,6 @@ function recordingHandle(handle) {
         record('transaction', '', null);
         return handle.transaction(fn);
     };
-    if (handle.openReader) {
-        wrapped.openReader = () => {
-            const reader = handle.openReader();
-            return {
-                ...reader,
-                iterate: (sql, params) => {
-                    record('reader.iterate', sql, params);
-                    return reader.iterate(sql, params);
-                },
-                get: (sql, params) => {
-                    record('reader.get', sql, params);
-                    return reader.get(sql, params);
-                },
-            };
-        };
-    }
     return wrapped;
 }
 
@@ -87,7 +71,7 @@ async function recordCalls(fn) {
  */
 function expectBoundedStreaming(recorded, table, minTransactions) {
     expect(recorded.filter(c => c.method === 'all' || c.method === 'query')).toEqual([]);
-    const streamed = recorded.filter(c => (c.method === 'iterate' || c.method === 'reader.iterate') && new RegExp(`FROM ${table}\\b`).test(c.sql));
+    const streamed = recorded.filter(c => c.method === 'iterate' && new RegExp(`FROM ${table}\\b`).test(c.sql));
     expect(streamed.length).toBeGreaterThan(0);
     for (const call of streamed) {
         expect(call.sql).toMatch(/LIMIT @limit/);

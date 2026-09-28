@@ -6,7 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
 
-import { openNativeDatabase, openNativeReadDatabase, openWasmDatabase, streamRows, streamWrite } from '../src/endpoints/sqlite-engine.js';
+import { openNativeDatabase, openWasmDatabase, streamRows, streamWrite } from '../src/endpoints/sqlite-engine.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -132,85 +132,12 @@ describe.each([
     });
 });
 
-describe('native read connection', () => {
-    let tmpDir;
-    let dbPath;
-    let main;
-
-    beforeEach(() => {
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-sqlite-reader-'));
-        dbPath = path.join(tmpDir, 'db.sqlite');
-        main = openNativeDatabase(Database, dbPath);
-        main.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
-        main.insertMany('INSERT INTO t (id, v) VALUES (@id, @v)', [1, 2, 3, 4, 5].map(id => ({ id, v: `v${id}` })));
-    });
-
-    afterEach(() => {
-        main.close();
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-    });
-
-    test('exposes only get, iterate and close', () => {
-        const reader = openNativeReadDatabase(Database, dbPath);
-        try {
-            expect(Object.keys(reader).sort()).toEqual(['close', 'get', 'iterate']);
-        } finally {
-            reader.close();
-        }
-    });
-
-    test('the main connection writes in batched transactions while the reader streams, and the reader keeps its snapshot', () => {
-        const reader = openNativeReadDatabase(Database, dbPath);
-        const seen = [];
-        try {
-            let batch = [];
-            for (const row of reader.iterate('SELECT id, v FROM t ORDER BY id')) {
-                seen.push(row.v);
-                batch.push(row.id);
-                if (batch.length === 2) {
-                    const ids = batch;
-                    main.transaction(() => {
-                        for (const id of ids) {
-                            main.run('UPDATE t SET v = @v WHERE id = @id', { id, v: `new${id}` });
-                        }
-                    });
-                    batch = [];
-                }
-            }
-        } finally {
-            reader.close();
-        }
-        expect(seen).toEqual(['v1', 'v2', 'v3', 'v4', 'v5']);
-        expect(main.get('SELECT v FROM t WHERE id = 4').v).toBe('new4');
-    });
-
-    test('get() reads committed data', () => {
-        main.run('UPDATE t SET v = ? WHERE id = ?', ['changed', 1]);
-        const reader = openNativeReadDatabase(Database, dbPath);
-        try {
-            expect(reader.get('SELECT v FROM t WHERE id = @id', { id: 1 }).v).toBe('changed');
-        } finally {
-            reader.close();
-        }
-    });
-
-    test('the reader cannot write', () => {
-        const reader = openNativeReadDatabase(Database, dbPath);
-        try {
-            expect(() => Array.from(reader.iterate('DELETE FROM t RETURNING id'))).toThrow(/readonly/);
-        } finally {
-            reader.close();
-        }
-        expect(main.get('SELECT COUNT(*) AS n FROM t').n).toBe(5);
-    });
-});
-
 const KEYED_READ_SQL = 'SELECT id, v FROM t WHERE (@after IS NULL OR id > @after) AND id % @mod = 0 ORDER BY id LIMIT @limit';
 
 describe.each([
-    ['native', (dbPath) => openNativeDatabase(Database, dbPath), true],
-    ['wasm', (dbPath) => openWasmDatabase(WasmDatabase, dbPath), false],
-])('%s engine streamWrite()', (_name, open, hasReader) => {
+    ['native', (dbPath) => openNativeDatabase(Database, dbPath)],
+    ['wasm', (dbPath) => openWasmDatabase(WasmDatabase, dbPath)],
+])('%s engine streamWrite()', (_name, open) => {
     let tmpDir;
     let handle;
 
@@ -224,10 +151,6 @@ describe.each([
     afterEach(() => {
         handle.close();
         fs.rmSync(tmpDir, { recursive: true, force: true });
-    });
-
-    test(`the handle ${hasReader ? 'has' : 'has no'} openReader()`, () => {
-        expect(typeof handle.openReader === 'function').toBe(hasReader);
     });
 
     test('hands every matching row to onBatch once, in key order, 1000 per batch, with writes applied', () => {
@@ -307,13 +230,7 @@ describe('native streamWrite() over 100001 rows', () => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    test('no reader is ever opened, and every row is handed over once, in key order', () => {
-        const openReader = handle.openReader;
-        let opens = 0;
-        handle.openReader = () => {
-            opens++;
-            return openReader();
-        };
+    test('every row is handed over once, in key order', () => {
         let expectedId = 1;
         let outOfOrder = 0;
         const batchSizes = [];
@@ -330,7 +247,6 @@ describe('native streamWrite() over 100001 rows', () => {
                 }
             },
         });
-        expect(opens).toBe(0);
         expect(outOfOrder).toBe(0);
         expect(expectedId).toBe(100002);
         expect(batchSizes.length).toBe(101);
@@ -341,33 +257,16 @@ describe('native streamWrite() over 100001 rows', () => {
 
 describe.each([
     ['native', (dbPath) => openNativeDatabase(Database, dbPath), 100001, 0],
-    ['wasm', (dbPath) => openWasmDatabase(WasmDatabase, dbPath), 2500, 0],
-])('%s engine streamRows()', (name, open, rowCount, fullPassReaderOpens) => {
+    ['wasm', (dbPath) => openWasmDatabase(WasmDatabase, dbPath), 2500],
+])('%s engine streamRows()', (_name, open, rowCount) => {
     let tmpDir;
     let handle;
-    let readerOpens;
-    let readerCloses;
 
     beforeEach(() => {
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-sqlite-streamrows-'));
         handle = open(path.join(tmpDir, 'db.sqlite'));
         handle.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
         handle.insertMany('INSERT INTO t (id, v) VALUES (@id, @v)', Array.from({ length: rowCount }, (_, i) => ({ id: i + 1, v: 'old' })));
-        readerOpens = 0;
-        readerCloses = 0;
-        if (handle.openReader) {
-            const openReader = handle.openReader;
-            handle.openReader = () => {
-                readerOpens++;
-                const reader = openReader();
-                const close = reader.close;
-                reader.close = () => {
-                    readerCloses++;
-                    close();
-                };
-                return reader;
-            };
-        }
     });
 
     afterEach(() => {
@@ -389,8 +288,6 @@ describe.each([
         expect(oversized).toBe(0);
         expect(outOfOrder).toBe(0);
         expect(expectedId).toBe(rowCount + 1);
-        expect(readerOpens).toBe(fullPassReaderOpens);
-        expect(readerCloses).toBe(fullPassReaderOpens);
     });
 
     test('the main handle is writable while the consumer is suspended between yields', async () => {
@@ -422,10 +319,8 @@ describe.each([
                 }
             })()).rejects.toThrow('boom after 1000');
         }],
-    ])('ending the for-await early by %s opens no reader and leaves the handle writable', async (_how, consume) => {
+    ])('ending the for-await early by %s leaves the handle writable', async (_how, consume) => {
         await consume(streamRows(handle, { readSql: KEYED_READ_SQL, params: { mod: 1 }, keyColumn: 'id' }));
-        expect(readerOpens).toBe(0);
-        expect(readerCloses).toBe(0);
         expect(() => handle.run('UPDATE t SET v = ? WHERE id = ?', ['after', 1])).not.toThrow();
     });
 });
@@ -448,16 +343,6 @@ describe('native WAL housekeeping and close()', () => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    test('journal_size_limit is 64 MiB on the main connection and on readers', () => {
-        expect(handle.get('PRAGMA journal_size_limit').journal_size_limit).toBe(64 * 1024 * 1024);
-        const reader = handle.openReader();
-        try {
-            expect(reader.get('PRAGMA journal_size_limit').journal_size_limit).toBe(64 * 1024 * 1024);
-        } finally {
-            reader.close();
-        }
-    });
-
     test('close() truncates the WAL even when another connection keeps the file open', () => {
         const other = new Database(dbPath);
         other.prepare('SELECT COUNT(*) FROM t').get();
@@ -469,22 +354,6 @@ describe('native WAL housekeeping and close()', () => {
         } finally {
             other.close();
         }
-    });
-
-    test('close() closes readers opened with openReader(), including one mid-iteration', () => {
-        const idle = handle.openReader();
-        const busy = handle.openReader();
-        const rows = busy.iterate('SELECT id FROM t ORDER BY id');
-        expect(rows.next().value).toEqual({ id: 1 });
-        handle.close();
-        expect(() => idle.get('SELECT 1 AS x')).toThrow(/not open/);
-        expect(() => busy.get('SELECT 1 AS x')).toThrow(/not open/);
-        expect(() => rows.next()).toThrow('database handle is closed');
-    });
-
-    test('openReader() on a closed handle throws', () => {
-        handle.close();
-        expect(() => handle.openReader()).toThrow('database handle is closed');
     });
 
     test('a streamRows() pass that writes per batch leaves nothing pinning the WAL: every checkpoint between batches is complete, and the WAL restarts', async () => {
