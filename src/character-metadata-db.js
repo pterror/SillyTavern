@@ -1631,17 +1631,25 @@ export async function deleteCharacterRow(directories, avatar) {
 }
 
 // Corrects date_added on a rename (the generic write hook treats newAvatar as brand-new) and unions
-// oldAvatar's tags into newAvatar.
+// oldAvatar's tags into newAvatar. newAvatar must already have a row (in the table or the batch buffer): without
+// one, the copied tags would point at a missing character, so this throws before writing anything.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} oldAvatar
  * @param {string} newAvatar
+ * @returns {Promise<{ copiedOrphanTagIds: string[] } | undefined>} copiedOrphanTagIds: the tag ids copied from
+ * oldAvatar while oldAvatar itself had no row, so the caller can list them.
  */
 export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
+    if (entry.batch?.pending.has(newAvatar) !== true && !entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: newAvatar })) {
+        throw new Error(`Cannot rename character ${oldAvatar} to ${newAvatar}: ${newAvatar} has no metadata row, so nothing was changed`);
+    }
+
     const oldRow = (/** @type {{ date_added: number } | undefined} */ (entry.db.get('SELECT date_added FROM characters WHERE id = @id', { id: oldAvatar })));
+    const oldIsOrphan = !oldRow && entry.batch?.pending.has(oldAvatar) !== true;
     if (oldRow) {
         const dateAdded = Number(oldRow.date_added);
         // A rename landing mid-batch-import means newAvatar may still be in the buffer, not the table.
@@ -1650,13 +1658,10 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
             pending.row.date_added = dateAdded;
             pending.row.shallow_json = withPatchedDateAdded(pending.row.shallow_json, dateAdded);
         } else {
-            const newRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar })));
-            if (newRow) {
-                const shallow = JSON.parse(withPatchedDateAdded(newRow.shallow_json, dateAdded));
-                writeShallowJson(entry.db, newAvatar, shallow, ['date_added'], { date_added: dateAdded });
-            } else {
-                entry.db.run('UPDATE characters SET date_added = @dateAdded WHERE id = @id', { dateAdded, id: newAvatar });
-            }
+            // Checked to exist at the top, with no await in between.
+            const newRow = (/** @type {{ shallow_json: string }} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar })));
+            const shallow = JSON.parse(withPatchedDateAdded(newRow.shallow_json, dateAdded));
+            writeShallowJson(entry.db, newAvatar, shallow, ['date_added'], { date_added: dateAdded });
         }
     }
 
@@ -1689,6 +1694,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
         deleteRowSync(entry.db, oldAvatar);
     });
     dropFromBuffer(entry, newAvatar, flushed);
+    return { copiedOrphanTagIds: oldIsOrphan ? oldTagIds : [] };
 }
 
 /**
