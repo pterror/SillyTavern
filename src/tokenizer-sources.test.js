@@ -33,7 +33,7 @@ mock.module('node-fetch', {
     namedExports: {},
 });
 
-const { TOKENIZER_SOURCES, getPinnedTokenizerFile, getSourceUrl, getTokenizerDisplayName, getTokenizerConfigHash, getTokenizerIdentity } = await import('./tokenizer-sources.js');
+const { TOKENIZER_SOURCES, findEntriesByRepo, getPinnedTokenizerFile, getSourceUrl, getTokenizerDisplayName, getTokenizerConfigHash, getTokenizerIdentity } = await import('./tokenizer-sources.js');
 const { writeSecret, SECRET_KEYS } = await import('./endpoints/secrets.js');
 
 /**
@@ -372,6 +372,34 @@ await testCase('every registry entry has its fixed `tokenizers` value, on the se
     for (const [key, value] of Object.entries(tokenizers)) {
         assert.equal(value >= 1000, registryKeys.has(key), `tokenizers.${key}: only registry entries are 1000 and up`);
     }
+});
+
+await testCase('a repo id names the entries whose file the repo ships, ignoring letter case', () => {
+    const idsFor = repo => findEntriesByRepo(repo).map(entry => entry.id);
+    for (const entry of TOKENIZER_SOURCES) {
+        const sourceRepos = entry.sources.filter(source => source.repo).map(source => source.repo.toLowerCase());
+        for (const repo of entry.repos ?? []) {
+            assert.match(repo, /^[\w.-]+\/[\w.-]+$/, `${entry.id}: ${repo}`);
+            assert.ok(!sourceRepos.includes(repo.toLowerCase()), `${entry.id}: ${repo} is already a source`);
+        }
+    }
+    assert.deepEqual(idsFor('Qwen/Qwen2.5-7B-Instruct'), ['qwen2.5'], 'a source');
+    assert.deepEqual(idsFor('qwen/qwen2.5-72b-instruct'), ['qwen2.5'], 'another repo shipping the file');
+    assert.deepEqual(idsFor('meta-llama/Meta-Llama-3.1-8B-Instruct'), ['llama3.1'], 'an old id Hugging Face redirects');
+    assert.deepEqual(idsFor('CohereForAI/c4ai-command-r-08-2024'), ['command-r-08-2024-hf'], 'an old org id Hugging Face redirects');
+    assert.deepEqual(idsFor('moonshotai/Kimi-K3'), ['kimi-k3'], 'an entry sharing its file with others: only its own repos');
+    assert.deepEqual(idsFor('mistralai/Mixtral-8x22B-Instruct-v0.1'), ['mistral-7b-v0.3', 'mistral-7b-v0.3-hf'], 'a repo shipping two files');
+    assert.deepEqual(idsFor('some-owner/some-model'), []);
+});
+
+await testCase('the entries of models whose vendor\'s official files disagree say so', () => {
+    const marked = TOKENIZER_SOURCES.filter(entry => entry.severalOfficialFiles).map(entry => entry.id).sort();
+    assert.deepEqual(marked, [
+        'aya-vision-32b', 'aya-vision-32b-hf', 'codestral-22b-hf', 'codestral-mamba-hf', 'command-r-08-2024-hf',
+        'mathstral', 'mathstral-hf', 'ministral-3-base-hf', 'ministral-3-instruct-hf', 'ministral-8b-2410-hf',
+        'mistral-7b-v0.3', 'mistral-7b-v0.3-hf', 'mistral-large-2411', 'mistral-large-2411-hf', 'mistral-small-3-hf',
+        'mistral-small-4-hf', 'nemo-tekken', 'shieldstral-hf',
+    ]);
 });
 
 fs.rmSync(dataRoot, { recursive: true, force: true });

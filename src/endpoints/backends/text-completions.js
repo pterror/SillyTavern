@@ -25,6 +25,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings } from '../../tokenizer-resolve.js';
 import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
+import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
 import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
@@ -376,6 +377,10 @@ router.post('/status', async function (request, response) {
 
         if (apiType === TEXTGEN_TYPES.OOBA) {
             rememberRemoteTokenization('textgenerationwebui', apiType, baseUrl, status.supportsTokenization);
+        }
+
+        if (apiType === TEXTGEN_TYPES.OPENROUTER) {
+            rememberOpenRouterModels(status.data);
         }
 
         if (status.supportsTokenization) {

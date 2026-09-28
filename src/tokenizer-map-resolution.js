@@ -1,7 +1,8 @@
 import { CHAT_COMPLETION_SOURCES, TEXTGEN_TYPES } from './constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 import { lookupModelTokenizer } from './tokenizer-model-map.js';
-import { findTokenizerSource, getTokenizerDisplayName } from './tokenizer-sources.js';
+import { findEntriesByRepo, findTokenizerSource, getTokenizerDisplayName } from './tokenizer-sources.js';
+import { lookupOpenRouterHuggingFaceId } from './openrouter-models.js';
 
 // The parts of resolveTokenizer() (src/tokenizer-resolve.js) that need only the model map, kept
 // apart so src/endpoints/tokenizers.js can resolve chat-completion models without importing the
@@ -33,6 +34,7 @@ export const TOKENIZER_NAMES = {
  * @typedef {object} MapDeps
  * @property {typeof lookupModelTokenizer} [lookupModel] Replaces the model map, for tests
  * @property {readonly import('./tokenizer-sources.js').TokenizerSourceEntry[]} [registry] Replaces TOKENIZER_SOURCES, for tests
+ * @property {() => Promise<any[]|null>} [fetchOpenRouterModels] Replaces the OpenRouter model list fetch, for tests
  */
 
 /**
@@ -119,6 +121,51 @@ export function selectBackendResult(result, state) {
 }
 
 /**
+ * @param {{ api: string, type?: string, source?: string }} state
+ * @returns {boolean}
+ */
+function isOpenRouter(state) {
+    return (state.api === 'openai' && state.source === CHAT_COMPLETION_SOURCES.OPENROUTER)
+        || (state.api === 'textgenerationwebui' && state.type === TEXTGEN_TYPES.OPENROUTER);
+}
+
+/**
+ * The model's result for this backend, after selectBackendResult().
+ *
+ * On OpenRouter, the `hugging_face_id` OpenRouter lists for the model comes first: a repo that ships a
+ * registry entry's file names the model's exact tokenizer. OpenRouter forwards to third-party hosts, so
+ * where the vendor's own files disagree (the repo ships several entries' files, or an entry only the
+ * vendor's API is known to read), the repo gets what the map gives its name on such a host. A model
+ * whose repo ships no entry's file goes through the map by its OpenRouter id. Without OpenRouter's
+ * list, the model is unknown.
+ * @param {string} api
+ * @param {string} model
+ * @param {{ api: string, type?: string, source?: string, model?: string }} state
+ * @param {MapDeps} [deps]
+ * @returns {Promise<import('./tokenizer-model-map.js').MapResult|null>}
+ */
+export async function selectModelResult(api, model, state, deps = {}) {
+    const { lookupModel = lookupModelTokenizer, registry, fetchOpenRouterModels } = deps;
+    const backendState = { ...state, model };
+    if (isOpenRouter(state) && model) {
+        const listed = await lookupOpenRouterHuggingFaceId(model, fetchOpenRouterModels ? { fetchModels: fetchOpenRouterModels } : {});
+        if (!listed.ok) {
+            return null;
+        }
+        const entries = listed.huggingFaceId ? findEntriesByRepo(listed.huggingFaceId, registry) : [];
+        if (entries.length === 1 && !entries[0].severalOfficialFiles) {
+            return { source: entries[0].id };
+        }
+        if (entries.length > 0) {
+            const repoResult = lookupModel(api, /** @type {string} */ (listed.huggingFaceId));
+            const isPerBackend = repoResult !== null && typeof repoResult === 'object' && 'byBackend' in repoResult;
+            return isPerBackend ? selectBackendResult(repoResult, backendState) : null;
+        }
+    }
+    return selectBackendResult(lookupModel(api, model), backendState);
+}
+
+/**
  * @param {import('./tokenizer-model-map.js').MapResult|null} entry A lookupModelTokenizer() answer,
  * after selectBackendResult().
  * @param {string} api
@@ -174,11 +221,10 @@ export function estimateResolution(basis) {
  * @param {string|null|undefined} model
  * @param {string} [source] The chat-completion source
  * @param {MapDeps} [deps]
- * @returns {import('./tokenizer-resolve.js').ResolvedTokenizer}
+ * @returns {Promise<import('./tokenizer-resolve.js').ResolvedTokenizer>}
  */
-export function resolveChatCompletionTokenizer(model, source = undefined, deps = {}) {
-    const { lookupModel = lookupModelTokenizer, registry } = deps;
-    const result = selectBackendResult(lookupModel('openai', String(model ?? '')), { api: 'openai', source });
-    const local = describeMapEntry(result, 'openai', registry);
+export async function resolveChatCompletionTokenizer(model, source = undefined, deps = {}) {
+    const result = await selectModelResult('openai', String(model ?? ''), { api: 'openai', source }, deps);
+    const local = describeMapEntry(result, 'openai', deps.registry);
     return local ? localResolution(local, local) : estimateResolution('unknown');
 }
