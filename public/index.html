@@ -7802,6 +7802,13 @@
                     Group members can select one of them to initiate the conversation.
                 </small>
                 <input type="text" class="text_pole greeting-filter-input" placeholder="Filter greetings..." />
+                <div class="greeting-refresh-failed flex-container alignItemsCenter" style="display:none;">
+                    <span data-i18n="greeting_refresh_failed">Couldn't refresh the greeting list. Moves are blocked until it's refreshed.</span>
+                    <div class="menu_button menu_button_icon greeting_refresh_retry">
+                        <i class="fa-solid fa-rotate"></i>
+                        <span data-i18n="Retry">Retry</span>
+                    </div>
+                </div>
                 <hr>
                 <div class="alternate_greetings_list flexFlowColumn flex-container wide100p">
                     <strong class="alternate_grettings_hint margin-bot-10px">
