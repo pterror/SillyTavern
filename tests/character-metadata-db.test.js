@@ -1391,6 +1391,44 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         expect(second.tagIds).toEqual([mintedId]);
     });
 
+    test('seedCardTagsForSingleCharacter writes shallow_json and a change entry only when tag_ids change', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        try {
+            const shallow = JSON.parse(rawDb.prepare('SELECT shallow_json FROM characters WHERE id = ?').get('Bob.png').shallow_json);
+            shallow.data.tags = ['Shared'];
+            shallow.tag_ids = [];
+            rawDb.prepare('UPDATE characters SET shallow_json = ? WHERE id = ?').run(JSON.stringify(shallow), 'Bob.png');
+            rawDb.prepare('DELETE FROM character_tags WHERE character_id = ?').run('Bob.png');
+            rawDb.exec(`
+                CREATE TABLE shallow_json_writes (id TEXT NOT NULL);
+                CREATE TRIGGER count_shallow_json_writes AFTER UPDATE OF shallow_json ON characters
+                BEGIN INSERT INTO shallow_json_writes (id) VALUES (NEW.id); END;
+            `);
+            const snapshot = () => ({
+                changes: rawDb.prepare('SELECT COUNT(*) AS n FROM changes WHERE id = ?').get('Bob.png').n,
+                changeSeq: rawDb.prepare('SELECT change_seq FROM characters WHERE id = ?').get('Bob.png').change_seq,
+                shallowWrites: rawDb.prepare('SELECT COUNT(*) AS n FROM shallow_json_writes WHERE id = ?').get('Bob.png').n,
+                tagIds: JSON.parse(rawDb.prepare('SELECT shallow_json FROM characters WHERE id = ?').get('Bob.png').shallow_json).tag_ids,
+            });
+
+            const before = snapshot();
+            const first = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
+            const afterChange = snapshot();
+            expect(first.tagIds).toHaveLength(1);
+            expect(afterChange.tagIds).toEqual(first.tagIds);
+            expect(afterChange.changes).toBe(before.changes + 1);
+            expect(afterChange.changeSeq).toBeGreaterThan(before.changeSeq);
+            expect(afterChange.shallowWrites).toBe(before.shallowWrites + 1);
+
+            await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
+            expect(snapshot()).toEqual(afterChange);
+        } finally {
+            rawDb.close();
+        }
+    });
+
     test('getTagDefinitionsByIds skips a tag row that will not parse with a warning naming it, and still returns the other requested tags', async () => {
         await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }, { id: 'tag2', name: 'Broken' }, { id: 'tag3', name: 'Serious' }]);
         const { default: Database } = await import('better-sqlite3');
