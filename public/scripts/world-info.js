@@ -99,7 +99,13 @@ export let world_info_use_group_scoring = false;
 export let world_info_character_strategy = world_info_insertion_strategy.character_first;
 export let world_info_budget_cap = 0;
 export let world_info_max_recursion_steps = 0;
-const saveWorldDebounced = debounce(async (name, data) => await _save(name, data), debounce_timeout.relaxed);
+const saveWorldDebounced = debounce(async (name, data) => {
+    try {
+        await _save(name, data);
+    } catch {
+        // _save has already shown and logged the failure.
+    }
+}, debounce_timeout.relaxed);
 const sortFn = (a, b) => b.order - a.order;
 let updateEditor = (navigation, flashOnNav = true) => { console.debug('Triggered WI navigation', navigation, flashOnNav); };
 let worldInfoOneTimeInitDone = false;
@@ -2728,7 +2734,12 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         const finalName = await Popup.show.input('Create a new World Info?', 'Enter a name for the new file:', tempName);
 
         if (finalName) {
-            await saveWorldInfo(finalName, data, true);
+            if (refuseEmbeddedWorldName(finalName)) {
+                return;
+            }
+            if (!await saveWorldInfo(finalName, data, true)) {
+                return;
+            }
             await updateWorldInfoList();
 
             const selectedIndex = world_names.indexOf(finalName);
@@ -4299,16 +4310,87 @@ export async function createWorldInfoEntry(name, data) {
     return newEntry;
 }
 
+/**
+ * Shows the error toast for a World Info write that didn't reach the file, naming what wasn't saved.
+ * @param {string} name Name of the book the write was for
+ * @param {string|number|null} uid uid of the entry the write was for, or null for a whole-book write
+ * @param {any} entryData The entry's data, for its title (only for an entry write)
+ * @param {Response|unknown} reason The server's response, or the error the request failed with
+ */
+function showWorldInfoSaveFailed(name, uid, entryData, reason) {
+    const entryLabel = entryData?.comment ? `${uid} (${entryData.comment})` : String(uid);
+    const what = uid === null
+        ? t`'${name}' was not saved.`
+        : t`Entry ${entryLabel} in '${name}' was not saved.`;
+    const hint = reason instanceof Response
+        ? t`Check the server console for details.`
+        : t`Check the server connection.`;
+    console.error(`[WI] ${what}`, reason);
+    toastr.error(`${what} ${hint}`, t`World Info could not be saved`);
+}
+
+/**
+ * `saveWorldInfo` routes a book named {@link EMBEDDED_WORLD_NAME} to the embedded lorebook open in the editor,
+ * never to a file, so a book can't be written under that name. Called before anything else is done for a book
+ * about to be written under `name`; when it's that name, shows the error toast and returns true, and the caller
+ * stops.
+ * @param {string} name Name the book would be written under
+ * @returns {boolean} Whether the name is refused
+ */
+function refuseEmbeddedWorldName(name) {
+    if (name !== EMBEDDED_WORLD_NAME) {
+        return false;
+    }
+    const what = t`'${name}' was not saved.`;
+    console.error(`[WI] ${what} The name is reserved for embedded lorebooks.`);
+    toastr.error(`${what} ${t`That name is reserved for embedded lorebooks. Choose another name.`}`, t`World Info could not be saved`);
+    return true;
+}
+
+/**
+ * Writes a whole World Info book to its file.
+ * @param {string} name - The name of the world info
+ * @param {any} data - The data to be saved
+ * @returns {Promise<boolean>} Whether the file was written. A write the server refuses shows an error toast and
+ * resolves false; a request that fails outright shows the same toast and rejects.
+ */
 async function _save(name, data) {
     // Prevent double saving if both immediate and debounced save are called
     cancelDebounce(saveWorldDebounced);
 
-    await fetch('/api/worldinfo/edit', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ name: name, data: data }),
-    });
+    let response;
+    try {
+        response = await fetch('/api/worldinfo/edit', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: name, data: data }),
+        });
+    } catch (error) {
+        dropUnwrittenBookFromCache(name);
+        showWorldInfoSaveFailed(name, null, null, error);
+        throw error;
+    }
+
+    if (!response.ok) {
+        dropUnwrittenBookFromCache(name);
+        showWorldInfoSaveFailed(name, null, null, response);
+        return false;
+    }
+
     await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
+    return true;
+}
+
+/**
+ * A book that has no file (a new name that failed its first write) mustn't stay in the cache, or
+ * `loadWorldInfo` would hand it out as if the file existed. A book that has a file keeps its cached copy,
+ * which holds the edits that just failed to save.
+ * @param {string} name
+ */
+function dropUnwrittenBookFromCache(name) {
+    if (!world_names?.includes(name)) {
+        worldInfoCache.delete(name);
+    }
 }
 
 /**
@@ -4330,18 +4412,44 @@ const flushEntrySavesDebounced = debounce(async () => {
         for (const uid of uids) {
             const entryData = data?.entries?.[uid];
             if (!entryData) continue;
-            await _saveEntry(bookName, uid, entryData, data);
+            try {
+                await _saveEntry(bookName, uid, entryData, data);
+            } catch {
+                // _saveEntry has already shown and logged the failure; the other pending entries still get saved.
+            }
         }
     }
 }, debounce_timeout.relaxed);
 
+/**
+ * Writes one World Info entry to its book's file.
+ * @param {string} name - The name of the world info
+ * @param {string|number} uid - uid of the entry
+ * @param {any} entryData - The entry's data
+ * @param {any} data - The full in-memory World Info data, for the WORLDINFO_UPDATED event
+ * @returns {Promise<boolean>} Whether the entry was written. A write the server refuses shows an error toast
+ * and resolves false; a request that fails outright shows the same toast and rejects.
+ */
 async function _saveEntry(name, uid, entryData, data) {
-    await fetch('/api/worldinfo/entry/edit', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ name: name, uid: uid, data: entryData }),
-    });
+    let response;
+    try {
+        response = await fetch('/api/worldinfo/entry/edit', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: name, uid: uid, data: entryData }),
+        });
+    } catch (error) {
+        showWorldInfoSaveFailed(name, uid, entryData, error);
+        throw error;
+    }
+
+    if (!response.ok) {
+        showWorldInfoSaveFailed(name, uid, entryData, response);
+        return false;
+    }
+
     await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
+    return true;
 }
 
 /**
@@ -4356,7 +4464,9 @@ async function _saveEntry(name, uid, entryData, data) {
  * @param {any} data - The full in-memory World Info data (only `data.entries[uid]` is sent)
  * @param {string|number} uid - uid of the single entry that changed
  * @param {boolean} [immediately=false] - Whether to save immediately or use debouncing
- * @return {Promise<void>} A promise that resolves when the world info entry is saved
+ * @return {Promise<boolean|void>} For an immediate save of an entry in a World Info file, whether it was
+ * written (a failed write shows an error toast); nothing otherwise. A debounced write that fails shows the
+ * same toast when it runs.
  */
 export async function saveWorldInfoEntry(name, data, uid, immediately = false) {
     if (!name || !data || uid === undefined || uid === null) {
@@ -4403,7 +4513,9 @@ export async function saveWorldInfoEntry(name, data, uid, immediately = false) {
  * @param {string} name - The name of the world info
  * @param {any} data - The data to be saved
  * @param {boolean} [immediately=false] - Whether to save immediately or use debouncing
- * @return {Promise<void>} A promise that resolves when the world info is saved
+ * @return {Promise<boolean|void>} For an immediate save of a World Info file, whether the file was written
+ * (a failed write shows an error toast); nothing otherwise. A debounced write that fails shows the same
+ * toast when it runs.
  */
 export async function saveWorldInfo(name, data, immediately = false) {
     if (!name || !data) {
@@ -4439,11 +4551,17 @@ async function renameWorldInfo(name, data) {
         toastr.warning(t`Name not accepted, as it is the same as before (ignoring case and accents).`, t`Rename World Info`);
         return;
     }
+    if (refuseEmbeddedWorldName(newName)) {
+        return;
+    }
 
     const entryPreviouslySelected = selected_world_info.findIndex((e) => e === oldName);
     const retargetPersonaLore = getPersonaDescriptionLorebook() === oldName;
 
-    await saveWorldInfo(newName, data, true);
+    // The old file is deleted only once the new one is written.
+    if (!await saveWorldInfo(newName, data, true)) {
+        return;
+    }
     await deleteWorldInfo(oldName);
 
     await updateWorldInfoLinks(oldName, newName, { retargetPersonaLore });
@@ -4759,6 +4877,11 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
         return false;
     }
 
+    // Before the overwrite check, which may delete an existing book of that name.
+    if (refuseEmbeddedWorldName(worldName)) {
+        return false;
+    }
+
     const sanitizedWorldName = await getSanitizedFilename(worldName);
 
     /** @type {OverwrittenWorldInfo|undefined} */
@@ -4769,7 +4892,9 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
     }
 
     try {
-        await saveWorldInfo(worldName, worldInfoTemplate, true);
+        if (!await saveWorldInfo(worldName, worldInfoTemplate, true)) {
+            return false;
+        }
         await updateWorldInfoList();
     } finally {
         await warnIfOverwrittenWorldInfoGone(overwritten);
@@ -6183,6 +6308,10 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
 
     const bookName = character.data?.character_book?.name || `${character.name}'s Lorebook`;
 
+    if (refuseEmbeddedWorldName(bookName)) {
+        return;
+    }
+
     if (!skipPopup) {
         const confirmation = await Popup.show.confirm(t`Are you sure you want to import '${bookName}'?`, world_names.includes(bookName) ? t`It will overwrite the World/Lorebook with the same name.` : '');
         if (!confirmation) {
@@ -6192,7 +6321,10 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
 
     const convertedBook = convertCharacterBook(character.data.character_book);
 
-    await saveWorldInfo(bookName, convertedBook, true);
+    // The card is linked, and success reported, only once the book's file is written.
+    if (!await saveWorldInfo(bookName, convertedBook, true)) {
+        return;
+    }
     await updateWorldInfoList();
     $('#character_world').val(bookName);
     saveCharacterFieldDebounced(avatar, '#character_world', bookName);
