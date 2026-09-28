@@ -17,8 +17,8 @@ async function getRecordingSqliteEngine() {
     }
     return {
         ...engine,
-        openDatabase: (dbPath) => {
-            const handle = engine.openDatabase(dbPath);
+        openDatabase: (dbPath, options) => {
+            const handle = engine.openDatabase(dbPath, options);
             const realGet = handle.get;
             handle.get = (sql, params) => {
                 recordedGets.push({ sql, handle });
