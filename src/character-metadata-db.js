@@ -13,7 +13,9 @@ import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readC
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
 import { calculateChatSize, calculateDataSize, calculateGroupChatStats, resolveGroupOwner, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
-import { getSqliteEngine, isBusyError, streamRows } from './endpoints/sqlite-engine.js';
+import { getSqliteEngine, isBusyError, openNativeDatabase, streamRows } from './endpoints/sqlite-engine.js';
+import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
+import { isReadOnlyMode } from './read-only-mode.js';
 import { TAGS_FILE } from './constants.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
@@ -970,7 +972,8 @@ function migrateFavSortIndex(db) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_groups_fav_desc_name_fold_asc ON groups(fav DESC, name_fold ASC)');
 }
 
-// Returns null if no SQLite engine is usable on this install - callers must no-op rather than throw.
+// Returns null if no SQLite engine is usable on this install - callers must no-op rather than throw. In read-only
+// mode it throws instead when better-sqlite3 isn't usable (openReadOnlyEntry()).
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<MetadataDbEntry | null>}
@@ -980,6 +983,10 @@ async function getEntry(directories) {
     const existing = entries.get(key);
     if (existing) {
         return existing;
+    }
+
+    if (isReadOnlyMode()) {
+        return openReadOnlyEntry(directories);
     }
 
     const engine = await getSqliteEngine();
@@ -1012,12 +1019,38 @@ async function getEntry(directories) {
     migrateGroupDigestColumns(db, directories);
     migrateFavSortIndex(db);
     migrateTagNameKeyColumn(db);
-    // Registers cyrb53 as a SQL function so random-sort order can be a per-query ORDER BY RANDHASH(id, seed),
-    // composing with LIMIT/OFFSET pagination instead of a JS-side sort over every row.
-    db.defineFunction('RANDHASH', (id, seed) => getStringHash(String(id ?? ''), Number(seed ?? 0)));
+    defineRandHash(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
     entries.set(key, entry);
+    return entry;
+}
+
+// Registers cyrb53 as a SQL function so random-sort order can be a per-query ORDER BY RANDHASH(id, seed),
+// composing with LIMIT/OFFSET pagination instead of a JS-side sort over every row.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function defineRandHash(db) {
+    db.defineFunction('RANDHASH', (id, seed) => getStringHash(String(id ?? ''), Number(seed ?? 0)));
+}
+
+// Read-only mode (read-only-mode.js): the existing db opens read-only on better-sqlite3, with no mkdir, no
+// SCHEMA_SQL and no migrations, so a write through the store fails in SQLite (SQLITE_READONLY).
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<MetadataDbEntry>}
+ */
+async function openReadOnlyEntry(directories) {
+    const DatabaseCtor = await getBetterSqlite3();
+    if (!DatabaseCtor) {
+        throw new Error('read-only mode needs better-sqlite3, which is not usable on this install');
+    }
+    const db = openNativeDatabase(DatabaseCtor, getDbPath(directories), { readonly: true });
+    defineRandHash(db);
+    /** @type {MetadataDbEntry} */
+    const entry = { db, directories, batch: null, bootstrapPromise: null };
+    entries.set(directories.root, entry);
     return entry;
 }
 
@@ -2904,7 +2937,8 @@ const noWaitMetaConnections = new Map();
 
 /**
  * Writes every key in `values` in one transaction, on a connection of its own that fails at once on a lock
- * instead of waiting for it.
+ * instead of waiting for it. In read-only mode that connection opens read-only, so the write fails in SQLite
+ * (SQLITE_READONLY) and the error is thrown.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Record<string, unknown>} values
  * @returns {Promise<boolean>} false: another connection held the write lock, and nothing was written. With no
@@ -2915,7 +2949,7 @@ export async function trySetMetaValues(directories, values) {
     const engine = await getSqliteEngine();
     if (!entry || !engine) return true;
     const db = noWaitMetaConnections.get(directories.root)
-        ?? engine.openDatabase(getDbPath(directories), { busyTimeoutMs: 0, retryOnBusy: false });
+        ?? engine.openDatabase(getDbPath(directories), { busyTimeoutMs: 0, retryOnBusy: false, readonly: isReadOnlyMode() });
     noWaitMetaConnections.set(directories.root, db);
     try {
         db.transaction(() => {
