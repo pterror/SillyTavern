@@ -252,6 +252,8 @@ export function buildExcludeIdsQuery(tantivy, schema, excludeIds) {
 }
 
 /**
+ * tantivy's booleanQuery does not implicitly match-all, so with only excluded tags the query gets an explicit
+ * Query.allQuery() Must clause as its positive base.
  * @returns {import('@oxdev03/node-tantivy-binding').Query | null} null if the tags object produces no constraints
  */
 export function buildTagFilterQuery(tantivy, schema, tags, fieldName) {
@@ -265,6 +267,8 @@ export function buildTagFilterQuery(tantivy, schema, tags, fieldName) {
             include.map(id => ({ occur: mode, query: tantivy.Query.termQuery(schema, fieldName, id) })),
         );
         subqueries.push({ occur: tantivy.Occur.Must, query: includeQuery });
+    } else if (exclude.length > 0) {
+        subqueries.push({ occur: tantivy.Occur.Must, query: tantivy.Query.allQuery() });
     }
 
     for (const id of exclude) {

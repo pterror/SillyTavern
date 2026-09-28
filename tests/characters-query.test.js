@@ -935,6 +935,61 @@ describe('POST /api/characters/query - sort.field "search" applies filters insid
     });
 });
 
+describe('POST /api/characters/query - a tag filter with only excluded tags', () => {
+    const cardFor = (name) => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+    const rowId = (r) => r.type === 'group' ? r.item.id : (r.avatar ?? r.item?.avatar);
+
+    async function seedCharacters() {
+        await seedCharacterWithFile('a-tagged.png', cardFor('A zephyr'));
+        await seedCharacterWithFile('b-kept.png', cardFor('B zephyr'));
+        await seedCharacterWithFile('c-tagged.png', cardFor('C zephyr'));
+        await seedCharacterWithFile('d-kept.png', cardFor('D zephyr'));
+        await metadataDb.assignEntityTag(directories, 'a-tagged.png', 'tag-x');
+        await metadataDb.assignEntityTag(directories, 'c-tagged.png', 'tag-x');
+    }
+
+    async function seedGroups() {
+        await seedGroup('grp-a-tagged', { name: 'A zephyr' });
+        await seedGroup('grp-b-kept', { name: 'B zephyr' });
+        await seedGroup('grp-c-tagged', { name: 'C zephyr' });
+        await seedGroup('grp-d-kept', { name: 'D zephyr' });
+        await metadataDb.assignEntityTag(directories, 'grp-a-tagged', 'tag-x');
+        await metadataDb.assignEntityTag(directories, 'grp-c-tagged', 'tag-x');
+    }
+
+    test('search sort: characters without the excluded tag come back', async () => {
+        await seedCharacters();
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'zephyr', tags: { exclude: ['tag-x'] } }, sort: { field: 'search' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId).sort()).toEqual(['b-kept.png', 'd-kept.png']);
+    });
+
+    test('search sort with includeGroups: groups without the excluded tag come back', async () => {
+        await seedGroups();
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'zephyr', tags: { exclude: ['tag-x'] } }, sort: { field: 'search' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId).sort()).toEqual(['grp-b-kept', 'grp-d-kept']);
+    });
+
+    test('name sort: characters without the excluded tag come back', async () => {
+        await seedCharacters();
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'zephyr', tags: { exclude: ['tag-x'] } }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId)).toEqual(['b-kept.png', 'd-kept.png']);
+    });
+
+    test('name sort with includeGroups: groups without the excluded tag come back', async () => {
+        await seedGroups();
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'zephyr', tags: { exclude: ['tag-x'] } }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId)).toEqual(['grp-b-kept', 'grp-d-kept']);
+    });
+});
+
 describe('POST /api/characters/search-index/rebuild (design doc §3.2 explicit repair endpoint)', () => {
     test('forces a rebuild and reports which engine tier served it', async () => {
         await seedCharacterWithFile('Rebuildable.png');
