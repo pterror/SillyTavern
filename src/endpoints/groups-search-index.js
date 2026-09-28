@@ -158,12 +158,10 @@ export function createGroupIndexMaintainer(directories, tantivy) {
     };
 }
 
-/**
- * Fuzzy-searches a user's groups, rebuilding the persistent index first if it's missing or stale.
- * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'unavailable' }>}
- * `total` is the true match count, independent of `maxRows`.
- */
-export async function searchGroups(handle, directories, searchTerm, maxRows, favOnly) {
+// `filter`'s fav and tags are ANDed into the query the same way searchGroupsSorted() does it (withFavFilter(),
+// buildTagFilterQuery()/TAG_IDS_FIELD), so they narrow the matches before `maxRows` caps them.
+async function runGroupSearch(handle, directories, searchTerm, maxRows, filter = {}) {
+    const { fav, tags } = filter;
     const engine = await timePhase('groups_index_get', () => resolveSearchEngine());
 
     if (engine.tier !== 'unavailable') {
@@ -171,7 +169,21 @@ export async function searchGroups(handle, directories, searchTerm, maxRows, fav
         if (!tantivyIndex) {
             return { results: [], total: 0, backend: 'unavailable' };
         }
-        const query = timePhase('groups_query_build', () => buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly }));
+        const query = timePhase('groups_query_build', () => {
+            const { tantivy } = engine;
+            const { schema } = tantivyIndex;
+            let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
+            if (!q) return null;
+            q = withFavFilter(tantivy, schema, q, fav);
+            const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD) : null;
+            if (tagQuery) {
+                q = tantivy.Query.booleanQuery([
+                    { occur: tantivy.Occur.Must, query: q },
+                    { occur: tantivy.Occur.Must, query: tagQuery },
+                ]);
+            }
+            return q;
+        });
         if (!query) {
             return { results: [], total: 0, backend: 'tantivy' };
         }
@@ -182,6 +194,15 @@ export async function searchGroups(handle, directories, searchTerm, maxRows, fav
     }
 
     return { results: [], total: 0, backend: 'unavailable' };
+}
+
+/**
+ * Fuzzy-searches a user's groups, rebuilding the persistent index first if it's missing or stale.
+ * @returns {Promise<{ results: { item: object, score: number }[], total: number, backend: 'tantivy' | 'unavailable' }>}
+ * `total` is the true match count, independent of `maxRows`.
+ */
+export async function searchGroups(handle, directories, searchTerm, maxRows, favOnly) {
+    return runGroupSearch(handle, directories, searchTerm, maxRows, { fav: favOnly ? true : undefined });
 }
 
 /**
@@ -256,8 +277,8 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
 /** Id-only counterpart to searchGroups() - just discards `item` from its already-in-memory result rather than
  * running a separate id-only query, since group counts are small enough not to need that.
  * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'unavailable' }>} */
-export async function searchGroupIds(handle, directories, searchTerm, maxRows, favOnly) {
-    const { results, total, backend } = await searchGroups(handle, directories, searchTerm, maxRows, favOnly);
+export async function searchGroupIds(handle, directories, searchTerm, maxRows, filter = {}) {
+    const { results, total, backend } = await runGroupSearch(handle, directories, searchTerm, maxRows, filter);
     return timePhase('groups_ids', () => ({
         ids: results.map(r => r.item.id),
         scoresById: new Map(results.map(r => [r.item.id, r.score])),

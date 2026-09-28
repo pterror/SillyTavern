@@ -564,12 +564,13 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
 }
 
 // `backend: 'unavailable'` distinguishes "nothing usable could be loaded" from a genuine no-match.
-// `tags` is ANDed into the query the same way searchCharacterIdsSorted() already does it, via
-// buildTagFilterQuery()/TAG_IDS_FIELD - so a tags-narrowed search-sorted request's ranked id list only ever
-// contains ids that would also pass buildWhereClause()'s tags filter, and callers can page it directly with no
-// separate DB-side re-check. `world` has no equivalent: no field for it exists in the tantivy schema
-// (buildSchema()'s fast/filter field lists), so it isn't applied here - see this change's commit message.
-async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly, tags) {
+// `filter`'s fav, tags, ids and excludeIds are ANDed into the query the same way searchCharacterIdsSorted() does
+// it (withFavFilter(), buildTagFilterQuery()/TAG_IDS_FIELD, buildIdsQuery(), buildExcludeIdsQuery()), so they
+// narrow the matches before `maxRows` caps them: a hit they rule out never takes a place in the capped list.
+// `world` has no equivalent: no field for it exists in the tantivy schema (buildSchema()'s fast/filter field
+// lists), so it isn't applied here and a caller has to check it itself.
+async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}) {
+    const { fav, tags, excludeIds, ids } = filter;
     const engine = await timePhase('chars_index_get', () => resolveSearchEngine());
 
     if (engine.tier === 'unavailable') {
@@ -580,20 +581,35 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly, ta
     if (!tantivyIndex) {
         return { hits: [], total: 0, backend: 'unavailable' };
     }
-    let query = timePhase('chars_query_build', () => buildTantivyQuery(engine.tantivy, tantivyIndex.schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS, { favOnly }));
+    const query = timePhase('chars_query_build', () => {
+        const { tantivy } = engine;
+        const { schema } = tantivyIndex;
+        let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
+        if (!q) return null;
+        q = withFavFilter(tantivy, schema, q, fav);
+        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD) : null;
+        if (tagQuery) {
+            q = tantivy.Query.booleanQuery([
+                { occur: tantivy.Occur.Must, query: q },
+                { occur: tantivy.Occur.Must, query: tagQuery },
+            ]);
+        }
+        if (Array.isArray(ids)) {
+            q = tantivy.Query.booleanQuery([
+                { occur: tantivy.Occur.Must, query: q },
+                { occur: tantivy.Occur.Must, query: buildIdsQuery(tantivy, schema, ids) },
+            ]);
+        }
+        if (Array.isArray(excludeIds) && excludeIds.length > 0) {
+            q = tantivy.Query.booleanQuery([
+                { occur: tantivy.Occur.Must, query: q },
+                { occur: tantivy.Occur.MustNot, query: buildExcludeIdsQuery(tantivy, schema, excludeIds) },
+            ]);
+        }
+        return q;
+    });
     if (!query) {
         return { hits: [], total: 0, backend: 'tantivy' };
-    }
-    if (tags && (tags.include?.length > 0 || tags.exclude?.length > 0)) {
-        timePhase('chars_query_build', () => {
-            const tagQuery = buildTagFilterQuery(engine.tantivy, tantivyIndex.schema, tags, TAG_IDS_FIELD);
-            if (tagQuery) {
-                query = engine.tantivy.Query.booleanQuery([
-                    { occur: engine.tantivy.Occur.Must, query },
-                    { occur: engine.tantivy.Occur.Must, query: tagQuery },
-                ]);
-            }
-        });
     }
     const boundedMaxRows = Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
     const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'chars' });
@@ -602,7 +618,7 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, favOnly, ta
 
 // A matched id that can no longer be resolved (deleted, or corrupt) is silently dropped.
 export async function searchCharacters(handle, directories, searchTerm, maxRows, favOnly, tags) {
-    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly, tags);
+    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, { fav: favOnly ? true : undefined, tags });
     if (hits.length === 0) {
         return { results: [], total, backend };
     }
@@ -620,8 +636,8 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
 }
 
 // Id-only counterpart to searchCharacters() - no per-hit disk read, for a caller that resolves rows itself.
-export async function searchCharacterIds(handle, directories, searchTerm, maxRows, favOnly, tags) {
-    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, favOnly, tags);
+export async function searchCharacterIds(handle, directories, searchTerm, maxRows, filter = {}) {
+    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, filter);
     return timePhase('chars_ids', () => ({ ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend }));
 }
 

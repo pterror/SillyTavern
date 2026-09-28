@@ -863,6 +863,78 @@ describe('search hits whose row no longer exists (the index can lag a delete)', 
     });
 });
 
+describe('POST /api/characters/query - sort.field "search" applies filters inside the search index, so the page fills', () => {
+    const cardFor = (name, description = '') => ({ name, data: { name, description, personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+    const rowId = (r) => r.type === 'group' ? r.item.id : (r.avatar ?? r.item?.avatar);
+
+    // With pageSize 1 the search engine is asked for 1 + pageOverFetch(1) = 6 hits, so six hits ranked above the
+    // kept one fill that whole window.
+    const aboveCharacterIds = ['above0.png', 'above1.png', 'above2.png', 'above3.png', 'above4.png', 'above5.png'];
+    const aboveGroupIds = ['grp-above0', 'grp-above1', 'grp-above2', 'grp-above3', 'grp-above4', 'grp-above5'];
+
+    /** Six characters with the term in their name (boost 20), and kept.png with it only in its description
+     * (boost 3), so the six rank above kept.png. */
+    async function seedCharacters() {
+        for (const id of aboveCharacterIds) {
+            await seedCharacterWithFile(id, cardFor('Zephyr'));
+        }
+        await seedCharacterWithFile('kept.png', cardFor('Plain', 'zephyr'));
+    }
+
+    /** Six groups with the term in their name (boost 20), and grp-kept with it only in its members (boost 15),
+     * so the six rank above grp-kept. */
+    async function seedGroups(aboveOverrides = {}) {
+        for (const id of aboveGroupIds) {
+            await seedGroup(id, { name: 'Zephyr', ...aboveOverrides });
+        }
+        await seedGroup('grp-kept', { name: 'Plain', members: ['zephyr.png'] });
+    }
+
+    test('fav false: favorited characters ranked above the page don\'t leave it short', async () => {
+        await seedCharacters();
+        for (const id of aboveCharacterIds) {
+            await metadataDb.setCharacterFav(directories, id, true);
+        }
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'zephyr', fav: false }, sort: { field: 'search' }, page: 1, pageSize: 1 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId)).toEqual(['kept.png']);
+    });
+
+    test('fav false with includeGroups: favorited groups ranked above the page don\'t leave it short', async () => {
+        await seedGroups({ fav: true });
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'zephyr', fav: false }, sort: { field: 'search' }, page: 1, pageSize: 1 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId)).toEqual(['grp-kept']);
+    });
+
+    test('tags include with includeGroups: untagged groups ranked above the page don\'t leave it short', async () => {
+        await seedGroups();
+        await metadataDb.assignEntityTag(directories, 'grp-kept', 'tag-kept');
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'zephyr', tags: { include: ['tag-kept'] } }, sort: { field: 'search' }, page: 1, pageSize: 1 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId)).toEqual(['grp-kept']);
+    });
+
+    test('ids: characters outside the list ranked above the page don\'t leave it short', async () => {
+        await seedCharacters();
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'zephyr', ids: ['kept.png'] }, sort: { field: 'search' }, page: 1, pageSize: 1 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId)).toEqual(['kept.png']);
+    });
+
+    test('excludeIds: excluded characters ranked above the page don\'t leave it short', async () => {
+        await seedCharacters();
+
+        const response = await postJson('/api/characters/query', { filter: { search: 'zephyr', excludeIds: aboveCharacterIds }, sort: { field: 'search' }, page: 1, pageSize: 1 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(rowId)).toEqual(['kept.png']);
+    });
+});
+
 describe('POST /api/characters/search-index/rebuild (design doc §3.2 explicit repair endpoint)', () => {
     test('forces a rebuild and reports which engine tier served it', async () => {
         await seedCharacterWithFile('Rebuildable.png');

@@ -4617,13 +4617,12 @@ export async function queryCharacters(directories, params = {}) {
         const numericLimit = typeof limit === 'number' && Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
         // orderedIds is the search engine's full relevance-ranked id list, known before any DB query - slice to
         // the requested page first, then fetch only those ids, so cost is bounded by page size, never by the
-        // total match count. `tags` is applied inside the search engine itself (runIdSearch/buildTagFilterQuery),
-        // so a tags-narrowed orderedIds is already tags-consistent with `where` below. `world`, `excludeIds`, and
-        // an explicit `ids` allowlist are NOT applied by the search engine (no world field exists in the tantivy
-        // schema; excludeIds/ids aren't passed into it on this path) - `where` still enforces them here, but since
-        // orderedIds's ranking doesn't know about them, a page that lands on an id one of them excludes comes back
-        // short of `limit` rather than backfilled from further down the ranking. Known gap, not silently dropped -
-        // see this change's commit message.
+        // total match count. `fav`, `tags`, `excludeIds` and an explicit `ids` allowlist are applied inside the
+        // search engine itself (runIdSearch()), so orderedIds is already consistent with them; `where` below still
+        // enforces them because the index can lag the db. `world` is NOT applied by the search engine (no world
+        // field exists in the tantivy schema) - `where` enforces it here, but since orderedIds's ranking doesn't
+        // know about it, a page that lands on an id it excludes comes back short of `limit` rather than backfilled
+        // from further down the ranking. Known gap, not silently dropped.
         const pageIds = orderedIds.slice(numericOffset, numericOffset + numericLimit);
         if (pageIds.length === 0) {
             hashRows = wantHashes ? [] : undefined;
