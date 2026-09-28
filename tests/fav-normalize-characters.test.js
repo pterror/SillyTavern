@@ -314,3 +314,58 @@ describe('every card-sending route sends both fav fields as the column boolean, 
         expect(digestFav).toBe(expectedDigest(expected));
     }, 30000);
 });
+
+describe('a write that stores shallow_json read back re-derives its fav fields from the column when they disagree', () => {
+    /** @param {string} id @param {boolean} shallowFav */
+    function setShallowFavFields(id, shallowFav) {
+        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        try {
+            const { shallow_json } = db.prepare('SELECT shallow_json FROM characters WHERE id = ?').get(id);
+            const shallow = JSON.parse(shallow_json);
+            shallow.fav = shallowFav;
+            shallow.data.extensions.fav = shallowFav;
+            db.prepare('UPDATE characters SET shallow_json = ? WHERE id = ?').run(JSON.stringify(shallow), id);
+        } finally {
+            db.close();
+        }
+    }
+
+    /** @param {string} id @returns {string[] | null} */
+    function lastChangeFields(id) {
+        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
+        try {
+            return JSON.parse(db.prepare('SELECT fields FROM changes WHERE id = ? ORDER BY seq DESC LIMIT 1').get(id).fields);
+        } finally {
+            db.close();
+        }
+    }
+
+    const WRITERS = [
+        ['setCharacterAllowGlobalStyles', ['allow_global_styles'], () => metadataDb.setCharacterAllowGlobalStyles(directories, 'Bob.png', true)],
+        ['setCharacterDateAdded', ['date_added'], () => metadataDb.setCharacterDateAdded(directories, 'Bob.png', 1700000000000)],
+        ['setCharacterActiveChat', ['active_chat'], () => metadataDb.setCharacterActiveChat(directories, 'Bob.png', 'chat-1')],
+    ];
+
+    test.each(WRITERS.flatMap(([name, fields, write]) => [true, false].map(column => [name, column, fields, write])))('%s, column %p: shallow fav fields and digest_fav match the column, and the change entry lists fav', async (_name, column, fields, write) => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(column));
+        setShallowFavFields('Bob.png', !column);
+        await write();
+        expect(storedFav('Bob.png')).toEqual(storedFavFor(column));
+        expect(lastChangeFields('Bob.png')).toEqual([...fields, 'fav']);
+    });
+
+    test.each(WRITERS)('%s: shallow fav fields that already match leave fav out of the change entry', async (_name, fields, write) => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(true));
+        await write();
+        expect(storedFav('Bob.png')).toEqual(storedFavFor(true));
+        expect(lastChangeFields('Bob.png')).toEqual(fields);
+    });
+
+    test.each([true, false])('setCharacterFav(%p) on a row whose shallow fav fields disagree with the column stores the new value', async (value) => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardWithFav(!value));
+        setShallowFavFields('Bob.png', value);
+        expect(await metadataDb.setCharacterFav(directories, 'Bob.png', value)).toBe(true);
+        expect(storedFav('Bob.png')).toEqual(storedFavFor(value));
+        expect(lastChangeFields('Bob.png')).toEqual(['fav']);
+    });
+});
