@@ -16,7 +16,7 @@ const { Database: WasmDatabase } = NodeSqlite3Wasm;
 // logic (schema, recursive CTEs, dedup) goes untested by picking this tier.
 const getSqliteEngineMock = jest.fn(async () => ({
     kind: 'wasm',
-    openDatabase: (dbPath) => openWasmDatabase(WasmDatabase, dbPath),
+    openDatabase: (dbPath, options) => openWasmDatabase(WasmDatabase, dbPath, options),
 }));
 
 jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({

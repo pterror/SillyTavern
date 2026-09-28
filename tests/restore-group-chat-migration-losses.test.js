@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
-import { openWasmDatabase, streamRows } from '../src/endpoints/sqlite-engine.js';
+import { isBusyError, openWasmDatabase, streamRows } from '../src/endpoints/sqlite-engine.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -12,11 +12,12 @@ const { Database: WasmDatabase } = NodeSqlite3Wasm;
 jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
     getSqliteEngine: jest.fn(async () => ({
         kind: 'wasm',
-        openDatabase: (dbPath) => openWasmDatabase(WasmDatabase, dbPath),
+        openDatabase: (dbPath, options) => openWasmDatabase(WasmDatabase, dbPath, options),
     })),
     openWasmDatabase,
     openNativeDatabase: jest.fn(),
     streamRows,
+    isBusyError,
 }));
 
 /** @type {typeof import('../src/migrations/restore-group-chat-migration-losses.js')} */
