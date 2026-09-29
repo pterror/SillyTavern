@@ -25,8 +25,32 @@ import { default_avatar, getCurrentCharacter, per_page_default, selectCharacterB
 let saveCharactersPage = 0;
 
 // Seeds pagination.js's totalNumber on reconstruction, or it reads 0 until the first ajax response and clamps
-// the page back to 1 (see the resetPageNumberOnInit: false pairing below).
+// the page back to 1 (see the resetPageNumberOnInit: false pairing below). Only a full refresh or a query change
+// (resetListPositionOnNextPrint) zeroes it; every other reprint stays on the page it was on.
 let saveCharactersTotal = 0;
+
+// Only the user changing the query (search term, a filter, the sort, "Tags as folders") sends the list to page 1 at
+// the top. A reprint for anything else - a data change, a display setting - keeps the page and scroll distance.
+let resetListPositionOnNextPrint = false;
+
+/** For a query change the user made that doesn't go through setFilterDataFromUser(). Only call it when the value changed. */
+export function resetCharacterListPositionOnNextPrint() {
+    resetListPositionOnNextPrint = true;
+}
+
+/**
+ * setFilterData() for a search or filter change the user made.
+ * @param {FilterHelper} filterHelper
+ * @param {string} filterType
+ * @param {any} data
+ */
+export function setFilterDataFromUser(filterHelper, filterType, data) {
+    // setFilterData()'s own change test: an unchanged value starts no reprint, so it mustn't leave a reset pending.
+    if (filterHelper === entitiesFilter && JSON.stringify(filterHelper.getFilterData(filterType)) !== JSON.stringify(data)) {
+        resetListPositionOnNextPrint = true;
+    }
+    filterHelper.setFilterData(filterType, data);
+}
 
 /** @type {debounce_timeout} The debounce timeout used for printing. debounce_timeout.quick: 100 ms */
 export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
@@ -291,10 +315,13 @@ export async function printCharacters(fullRefresh = false) {
 
     let currentScrollTop = $(listId).scrollTop();
 
-    if (fullRefresh) {
+    if (fullRefresh || resetListPositionOnNextPrint) {
+        resetListPositionOnNextPrint = false;
         saveCharactersPage = 0;
         saveCharactersTotal = 0;
         currentScrollTop = 0;
+        // A current-page refresh started before this would otherwise keep its scroll distance on this render.
+        keepScrollOnNextRender = false;
         await delay(1);
     }
 
@@ -481,7 +508,8 @@ export async function printCharacters(fullRefresh = false) {
                     const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
                     return `${rangeStart}-${rangeEnd} .. ${pageTotalApprox ? '~' : ''}${totalNumber}`;
                 },
-                // Lets a re-render restore the page the user was on instead of bouncing to page 1 while the ajax response is in flight.
+                // Keeps a re-render on saveCharactersPage instead of pagination.js bouncing it to page 1 while the ajax
+                // response is in flight.
                 totalNumber: saveCharactersTotal || undefined,
                 resetPageNumberOnInit: false,
                 totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
@@ -1286,7 +1314,7 @@ export function initCharacterSearch() {
 
     const debouncedCharacterSearch = debounce(async (searchQuery) => {
         await fetchServerCharacterSearchResults(searchQuery);
-        entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, searchQuery);
+        setFilterDataFromUser(entitiesFilter, FILTER_TYPES.SEARCH, searchQuery);
     });
 
     const searchForm = $('#form_character_search_form');

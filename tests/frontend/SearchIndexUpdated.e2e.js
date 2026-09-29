@@ -546,6 +546,8 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
     /** @type {Awaited<ReturnType<typeof instrument>>} */
     let log;
     let term;
+    /** @type {string[]} */
+    let avatars;
 
     const listPageQueries = (from) => pageQueries(log, from).filter(q => q.pageSize === PAGE_SIZE);
     const listScrollTop = page => page.locator('#rm_print_characters_block').evaluate(el => el.scrollTop);
@@ -557,17 +559,20 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         await testSetup.awaitST({ page });
         await awaitAppReady(page);
         term = `Pagekeep${Date.now()}`;
-        await page.evaluate(async ({ term, count, size }) => {
+        avatars = await page.evaluate(async ({ term, count, size }) => {
             // @ts-ignore
             const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+            const created = [];
             for (let i = 0; i < count; i++) {
                 const form = new FormData();
                 form.set('ch_name', `${term} ${String(i).padStart(2, '0')}`);
                 const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
                 if (!response.ok) throw new Error(`create failed: ${response.status}`);
+                created.push(await response.text());
             }
             const { accountStorage } = await import('/scripts/util/AccountStorage.js');
             accountStorage.setItem('Characters_PerPage', String(size));
+            return created;
         }, { term, count: CHARACTER_COUNT, size: PAGE_SIZE });
         await page.reload();
         await awaitAppReady(page);
@@ -721,6 +726,135 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         expect(listPageQueries(from)).toEqual([]);
         expect(await currentPage(page)).toBe(2);
         expect(await listScrollTop(page)).toBe(SCROLLED_TO);
+    });
+
+    test('on a background sync dropping a tag filter whose tag is gone', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+        const staleTagId = `stale-${Date.now()}`;
+        // Excluding a tag that doesn't exist leaves the list as it is; the next print's filter-bar pass drops it.
+        await page.evaluate(async (staleTagId) => {
+            const { entitiesFilter } = await import('/scripts/character-list.js');
+            const { FILTER_TYPES } = await import('/scripts/filters.js');
+            const { selected, excluded } = entitiesFilter.getFilterData(FILTER_TYPES.TAG);
+            entitiesFilter.setFilterData(FILTER_TYPES.TAG, { selected, excluded: [...excluded, staleTagId] }, true);
+        }, staleTagId);
+        const changesBefore = log.changes;
+
+        await fireStreamEvents(page, ['error', 'open']);
+        await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        expect(await page.evaluate(async () => {
+            const { entitiesFilter } = await import('/scripts/character-list.js');
+            const { FILTER_TYPES } = await import('/scripts/filters.js');
+            return entitiesFilter.getFilterData(FILTER_TYPES.TAG).excluded;
+        })).not.toContain(staleTagId);
+        await expectPage2Kept(page, from);
+    });
+
+    test('on changing how rows look (the extra field shown on each row)', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+
+        await page.evaluate(() => {
+            const select = window['$']('#aux_field');
+            select.val(select.val() === 'creator' ? 'character_version' : 'creator').trigger('change');
+        });
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        await expectPage2Kept(page, from);
+    });
+
+    test('on editing a character\'s data (adding a tag with /tag-add)', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+
+        await page.evaluate(async (name) => {
+            const { executeSlashCommandsWithOptions } = window['SillyTavern'].getContext();
+            await executeSlashCommandsWithOptions(`/tag-add name="${name}" Keeptag${Date.now()}`);
+        }, `${term} 00`);
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        await expectPage2Kept(page, from);
+    });
+
+    test.describe('except the user changing the query, which goes to page 1 at the top', () => {
+        async function expectPage1Top(page) {
+            expect(await currentPage(page)).toBe(1);
+            expect(await listScrollTop(page)).toBe(0);
+        }
+
+        test('the search term', async ({ page }) => {
+            await searchCreated(page);
+            await page.locator('#character_search_bar').fill('');
+            await expect.poll(() => page.evaluate(async () => {
+                const { hasActiveCharacterSearch } = await import('/scripts/character-list.js');
+                return hasActiveCharacterSearch();
+            })).toBe(false);
+            await waitForQuiet(log);
+            const from = await toPage2Scrolled(page);
+
+            await page.locator('#character_search_bar').fill(term);
+            await expect.poll(() => listPageQueries(from).some(q => q.search === term)).toBe(true);
+            await waitForQuiet(log);
+
+            await expectPage1Top(page);
+        });
+
+        test('a filter (favorites only)', async ({ page }) => {
+            await page.evaluate(async (avatars) => {
+                // @ts-ignore
+                const headers = SillyTavern.getContext().getRequestHeaders();
+                const response = await fetch('/api/characters/fav', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ bulk: avatars.map(avatar => ({ avatar, fav: true })) }),
+                });
+                if (!response.ok) throw new Error(`fav failed: ${response.status}`);
+            }, avatars);
+            await toPage2Scrolled(page);
+
+            await page.locator('#rm_characters_block .rm_tag_filter .tag[id="1"]').click();
+            await waitForQuiet(log);
+
+            expect(await page.evaluate(async () => {
+                const { entitiesFilter } = await import('/scripts/character-list.js');
+                const { FILTER_TYPES } = await import('/scripts/filters.js');
+                return entitiesFilter.getFilterData(FILTER_TYPES.FAV);
+            })).toBe('SELECTED');
+            await expectPage1Top(page);
+        });
+
+        test('the sort', async ({ page }) => {
+            const from = await toPage2Scrolled(page);
+
+            await page.evaluate(() => {
+                const select = window['$']('#character_sort_order');
+                const target = select.find('option[data-field="name"][data-order="desc"]').is(':selected')
+                    ? 'option[data-field="name"][data-order="asc"]'
+                    : 'option[data-field="name"][data-order="desc"]';
+                select.find(target).prop('selected', true);
+                select.trigger('change');
+            });
+            await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+            await waitForQuiet(log);
+
+            await expectPage1Top(page);
+        });
+
+        test('"Tags as folders"', async ({ page }) => {
+            const from = await toPage2Scrolled(page);
+
+            await page.evaluate(() => {
+                const checkbox = window['$']('#bogus_folders');
+                checkbox.prop('checked', !checkbox.prop('checked')).trigger('input');
+            });
+            await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+            await waitForQuiet(log);
+
+            await expectPage1Top(page);
+        });
     });
 });
 

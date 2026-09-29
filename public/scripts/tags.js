@@ -7,7 +7,7 @@ import {
     menu_type,
     buildAvatarList,
 } from '../script.js';
-import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, fetchServerCharacterSearchResults } from './character-list.js';
+import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, fetchServerCharacterSearchResults, setFilterDataFromUser } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { characters, charactersStore } from './character-store.js';
@@ -1279,7 +1279,7 @@ function applyActionableTagFilter(filterHelper, tag, filterType, storageKey) {
         tag.filter_state = state;
     }
 
-    filterHelper.setFilterData(filterType, state);
+    setFilterDataFromUser(filterHelper, filterType, state);
 }
 
 /**
@@ -2586,7 +2586,7 @@ function runTagFilters(listElement) {
     const tagIds = [...($(listElement).find('.tag.selected:not(.actionable)').map((_, el) => $(el).attr('id')))];
     const excludedTagIds = [...($(listElement).find('.tag.excluded:not(.actionable)').map((_, el) => $(el).attr('id')))];
     const filterHelper = getFilterHelper($(listElement));
-    filterHelper.setFilterData(FILTER_TYPES.TAG, { excluded: excludedTagIds, selected: tagIds });
+    setFilterDataFromUser(filterHelper, FILTER_TYPES.TAG, { excluded: excludedTagIds, selected: tagIds });
 }
 
 /**
