@@ -21,7 +21,7 @@ import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
 import { parse, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer, reclaimReflinkPrefix } from '../character-card-parser.js';
 import { getCharaCardV2, convertToV2, readFromV2, charaFormatData, unsetPrivateFields, omitInstallLocalFields, omitFavField, omitChatField, computeContentIdentityHash, V1_V2_FIELD_MAPPINGS } from '../character-card-normalize.js';
-import { calculateChatSize, calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
+import { calculateDataSize, toShallow, shallowCharactersIncludeCreatorNotes } from '../character-shallow.js';
 import { touchBrowserPresence, PRESENCE_PING_INTERVAL_MS } from '../browser-presence.js';
 import { invalidateThumbnail, getThumbnailVersion } from './thumbnails.js';
 import { importRisuSprites, importChubExpressions, importChubRelatedLorebooks } from './sprites.js';
@@ -35,7 +35,7 @@ import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuild
 import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -582,8 +582,8 @@ async function tryReadImage(imgPath, crop) {
  * @param  {object} options Options for the character processing
  * @param  {boolean} options.shallow If true, only return the core character's metadata
  * @param  {string|null} [options.cardJson] The row's card_json when the caller already read it; otherwise it is read here
- * @param  {{ chatSize: number, dateLastChat: number }} [options.chatStats] The row's chat_size and date_last_chat;
- *   without them both come from the character's chats folder
+ * @param  {{ chatSize: number, dateLastChat: number }} [options.chatStats] The row's chat_size and date_last_chat when
+ *   the caller already read them; otherwise they are read from the row here
  * @return {Promise<object>}     A Promise that resolves when the character processing is done.
  */
 export const processCharacter = async (item, directories, { shallow, cardJson = undefined, chatStats = undefined }) => {
@@ -607,10 +607,11 @@ export const processCharacter = async (item, directories, { shallow, cardJson = 
         character.json_data = imgData;
         character.date_added = charStat.ctimeMs;
         character.create_date = jsonObject.create_date || new Date(Math.round(charStat.ctimeMs)).toISOString();
-        const charDirName = item.replace('.png', '');
-        const chatsDirectory = charDirName ? path.join(directories.chats, charDirName) : null;
 
-        const { chatSize, dateLastChat } = chatStats ?? (chatsDirectory ? calculateChatSize(chatsDirectory) : { chatSize: 0, dateLastChat: 0 });
+        // The row is the one source of both: every message write keeps them there (applyCharacterChatStats()).
+        const rowChatStats = chatStats ?? await getCharacterChatStats(directories, item);
+        if (!rowChatStats) throw new Error('Failed to read character row');
+        const { chatSize, dateLastChat } = rowChatStats;
         character.chat_size = chatSize;
         character.date_last_chat = dateLastChat;
         character.data_size = calculateDataSize(jsonObject?.data);
@@ -1987,7 +1988,11 @@ router.post('/all', async function (request, response) {
                 await writeBackpressured(response, '[');
                 for await (const rows of streamCharacterCardJsonBatches(request.user.directories)) {
                     const processed = await mapWithConcurrency(rows, STREAM_ALL_READ_CONCURRENCY, row =>
-                        processCharacter(row.id, request.user.directories, { shallow: useShallowCharacters, cardJson: row.card_json }));
+                        processCharacter(row.id, request.user.directories, {
+                            shallow: useShallowCharacters,
+                            cardJson: row.card_json,
+                            chatStats: { chatSize: row.chat_size, dateLastChat: row.date_last_chat },
+                        }));
                     const batch = processed.filter(c => 'name' in c);
                     await stampDbFav(request.user.directories, batch);
                     await stampDbActiveChat(request.user.directories, batch);
@@ -2811,8 +2816,15 @@ router.post('/batch', async function (request, response) {
         }
 
         // Scoped to just the requested ids - unlike /all and /query, this endpoint never wants the whole table.
-        const staleCards = await getCardJsonByIds(request.user.directories, avatars);
-        const processingPromises = avatars.map(avatar => processCharacter(avatar, request.user.directories, { shallow: useShallowCharacters, cardJson: staleCards.get(avatar) ?? null }));
+        const rowById = await getCharacterIndexRowsByIds(request.user.directories, avatars);
+        const processingPromises = avatars.map(avatar => {
+            const row = rowById.get(avatar);
+            return processCharacter(avatar, request.user.directories, {
+                shallow: useShallowCharacters,
+                cardJson: row?.card_json ?? null,
+                chatStats: row ? { chatSize: row.chat_size, dateLastChat: row.date_last_chat } : undefined,
+            });
+        });
         const data = (await Promise.all(processingPromises)).filter(c => 'name' in c);
         // fav/active_chat are db-authoritative once a row exists; without this stamp, a toggle made purely
         // through /fav or /chat would come back here still carrying the stale PNG-embedded value.

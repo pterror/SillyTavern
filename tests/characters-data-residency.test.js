@@ -119,7 +119,7 @@ describe('metadata-only edits do not touch the PNG', () => {
 
     test('/batch resolves parked content for multiple characters in one request', async () => {
         // /batch is the route fetchCharactersDelta() (script.js) calls to catch up on changed characters - it
-        // has its own getCardJsonByIds() prefetch (mirroring /all's per-batch one), so this exercises that it still
+        // has its own getCharacterIndexRowsByIds() prefetch (mirroring /all's per-batch one), so this exercises that it still
         // resolves each avatar's parked content correctly when several ids in the same request are stale.
         await post('create', { ch_name: 'Alice', description: 'original', file_name: 'Alice' });
         await post('create', { ch_name: 'Bob', description: 'original', file_name: 'Bob' });
