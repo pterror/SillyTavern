@@ -63,17 +63,20 @@ function spawnSearchIndexWorker(workerData) {
  * @param {object} [options]
  * @param {(workerData: object) => SearchIndexWorker} [options.spawnWorker]
  * @param {(dir: string) => SearchIndexReader} [options.openIndex] Defaults to tantivy's Index.open().
- * @param {(handle: string, seq: number) => void} [options.onSearchIndexUpdated] Called when a commit or a
- * rebuild-and-swap changed a handle's characters index, with the change-log seq the index now covers. At most once
- * per SEARCH_INDEX_UPDATED_INTERVAL_MS per handle: the first change in a quiet period is passed on at once, later
- * ones in the interval are coalesced into one call at its end, with the latest seq. Defaults to emitting
- * characterChangeEmitter's 'search-index-updated' (handle, seq).
+ * @param {(handle: string, seq: number | null, groupsVersion: number | null) => void} [options.onSearchIndexUpdated]
+ * Called when a commit or a rebuild-and-swap changed a handle's characters index, or a rebuild-and-swap changed its
+ * groups index. Every call carries both readers' current positions as of the call: `seq`, the change-log seq the
+ * characters reader covers, and `groupsVersion`, the groups version the groups reader was built from; each is null
+ * when that reader has no known position. At most once per SEARCH_INDEX_UPDATED_INTERVAL_MS per handle, characters
+ * and groups together: the first change in a quiet period is passed on at once, later ones in the interval are
+ * coalesced into one call at its end. Defaults to emitting characterChangeEmitter's 'search-index-updated'
+ * (handle, seq, groupsVersion).
  * @param {object} [options.workerOptions] Extra workerData (tickIntervalMs, tickBudgetMs).
  */
 export function createSearchIndexCoordinator({
     spawnWorker = spawnSearchIndexWorker,
     openIndex = undefined,
-    onSearchIndexUpdated = (handle, seq) => characterChangeEmitter.emit('search-index-updated', handle, seq),
+    onSearchIndexUpdated = (handle, seq, groupsVersion) => characterChangeEmitter.emit('search-index-updated', handle, seq, groupsVersion),
     workerOptions = {},
 } = {}) {
     /** @type {Map<string, WorkerEntry>} */
@@ -85,7 +88,7 @@ export function createSearchIndexCoordinator({
     const readOnlyReaders = new Map();
     /**
      * Per handle, kept across worker respawns so the interval holds for the handle.
-     * @type {Map<string, { lastSentAt: number, timer: NodeJS.Timeout | null, seq: number }>}
+     * @type {Map<string, { lastSentAt: number, timer: NodeJS.Timeout | null }>}
      */
     const indexUpdates = new Map();
     let nextRequestId = 0;
@@ -93,22 +96,36 @@ export function createSearchIndexCoordinator({
     let tantivy = null;
 
     /**
+     * The handle's readers' current positions, as search-index-updated carries them: null for a reader that
+     * doesn't exist or has no known position.
      * @param {string} handle
-     * @param {number} seq
+     * @returns {{ seq: number | null, groupsVersion: number | null }}
      */
-    function searchIndexUpdated(handle, seq) {
+    function currentPositions(handle) {
+        const targets = entries.get(handle)?.targets;
+        const characters = /** @type {SearchIndexPosition | null | undefined} */ (targets?.characters.reader?.position);
+        const groups = /** @type {GroupsIndexPosition | null | undefined} */ (targets?.groups.reader?.position);
+        return { seq: characters?.seq ?? null, groupsVersion: groups?.version ?? null };
+    }
+
+    /**
+     * Announces that one of the handle's indexes changed. The positions are read when the call is made, so a
+     * coalesced call carries the current ones.
+     * @param {string} handle
+     */
+    function searchIndexUpdated(handle) {
         let state = indexUpdates.get(handle);
         if (!state) {
-            state = { lastSentAt: -Infinity, timer: null, seq };
+            state = { lastSentAt: -Infinity, timer: null };
             indexUpdates.set(handle, state);
         }
-        state.seq = seq;
         if (state.timer) return;
         const send = () => {
             state.timer = null;
             state.lastSentAt = Date.now();
             try {
-                onSearchIndexUpdated(handle, state.seq);
+                const { seq, groupsVersion } = currentPositions(handle);
+                onSearchIndexUpdated(handle, seq, groupsVersion);
             } catch (err) {
                 console.error(color.red(`[search] search-index-updated for ${handle} failed: ${err.message}`));
             }
@@ -245,15 +262,13 @@ export function createSearchIndexCoordinator({
                     reader.position = positionOf(msg);
                 }
                 if (msg.target === 'characters') {
-                    searchIndexUpdated(handle, msg.seq);
+                    searchIndexUpdated(handle);
                 }
                 return;
             }
             case 'swapped': {
                 entry.targets[msg.target].reader = openAt(msg.dir, positionOf(msg));
-                if (msg.target === 'characters') {
-                    searchIndexUpdated(handle, msg.seq);
-                }
+                searchIndexUpdated(handle);
                 return;
             }
             case 'reply': {
