@@ -2395,6 +2395,7 @@ async function handleQuery(request, response) {
             seed,
             offset,
             limit: pageSize,
+            handle: request.user.profile.handle,
             wantRows,
             wantTotal,
             wantHashes,
@@ -2521,7 +2522,7 @@ async function handleQuery(request, response) {
                 const combinedIds = timePhase('merge_ids', () => [...effectiveIds, ...effectiveGroupIds]);
                 const entityParams = {
                     tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
-                    ids: combinedIds, wantRows, wantTotal, wantHashes,
+                    ids: combinedIds, handle, wantRows, wantTotal, wantHashes,
                 };
                 if (sort.field === 'search') {
                     // No SQL column for relevance - fetch every matched row so the JS reorder+slice below sees the true top-K.
