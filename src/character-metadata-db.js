@@ -1624,8 +1624,11 @@ function warnTagMapEntryNotArray(key, value, outcome) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {string} cardJson
+ * @param {object} [options]
+ * @param {boolean} [options.fromImport] Only the import path sets this: its row may wait in an open batch import's
+ * buffer. Any other write lands in the table right away, with any buffered copy of the row written first.
  */
-export async function upsertCharacterFromWrite(directories, avatar, cardJson, contentHash = null, avatarIdentityHash = null) {
+export async function upsertCharacterFromWrite(directories, avatar, cardJson, contentHash = null, avatarIdentityHash = null, { fromImport = false } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
@@ -1650,7 +1653,19 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, co
     const tagIds = getTagIdsFor(directories, avatar);
     const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson });
 
-    applyOrBuffer(entry, row, tagIds);
+    if (fromImport) {
+        applyOrBuffer(entry, row, tagIds);
+        return;
+    }
+
+    // The buffered copy goes first so its date_added and tag assignments are what this write finds in the table.
+    /** @type {PendingRow | undefined} */
+    let flushed;
+    entry.db.transaction(() => {
+        flushed = writeBufferedRowSync(entry, avatar);
+        writeRowSync(entry.db, row, tagIds);
+    });
+    dropFromBuffer(entry, avatar, flushed);
 }
 
 // The one writer (besides a row's first INSERT) allowed to change fav. Pure metadata-store mutation - no PNG
@@ -1665,6 +1680,7 @@ export async function setCharacterFav(directories, avatar, fav) {
     const entry = await getEntry(directories);
     if (!entry) return false;
 
+    flushBufferedRow(entry, avatar);
     const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!existing) return false;
 
@@ -1687,6 +1703,7 @@ export async function setCharacterAllowGlobalStyles(directories, avatar, allowed
     const entry = await getEntry(directories);
     if (!entry) return false;
 
+    flushBufferedRow(entry, avatar);
     const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!existing) return false;
 
@@ -1710,6 +1727,7 @@ export async function setCharacterActiveChat(directories, avatar, chat) {
     const entry = await getEntry(directories);
     if (!entry) return false;
 
+    flushBufferedRow(entry, avatar);
     const existing = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: avatar })));
     if (!existing) return false;
 
@@ -1974,55 +1992,36 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     if (entry.batch?.pending.has(newAvatar) !== true && !entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: newAvatar })) {
         throw new Error(`Cannot rename character ${oldAvatar} to ${newAvatar}: ${newAvatar} has no metadata row, so nothing was changed`);
     }
+    // oldAvatar's buffered copy too: its date_added and tags carry over, and deleting only its table row would
+    // leave the copy to be written back when the import ends.
+    flushBufferedRow(entry, oldAvatar);
+    flushBufferedRow(entry, newAvatar);
 
     const oldRow = (/** @type {{ date_added: number } | undefined} */ (entry.db.get('SELECT date_added FROM characters WHERE id = @id', { id: oldAvatar })));
-    const oldIsOrphan = !oldRow && entry.batch?.pending.has(oldAvatar) !== true;
     if (oldRow) {
         const dateAdded = Number(oldRow.date_added);
-        // A rename landing mid-batch-import means newAvatar may still be in the buffer, not the table.
-        const pending = entry.batch?.pending.get(newAvatar);
-        if (pending) {
-            pending.row.date_added = dateAdded;
-            pending.row.shallow_json = withPatchedDateAdded(pending.row.shallow_json, dateAdded);
-        } else {
-            // Checked to exist at the top, with no await in between.
-            const newRow = (/** @type {{ shallow_json: string }} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar })));
-            const shallow = JSON.parse(withPatchedDateAdded(newRow.shallow_json, dateAdded));
-            writeShallowJson(entry.db, newAvatar, shallow, ['date_added'], { date_added: dateAdded });
-        }
+        // Checked to exist at the top and flushed into the table if it was buffered, with no await in between.
+        const newRow = (/** @type {{ shallow_json: string }} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id: newAvatar })));
+        const shallow = JSON.parse(withPatchedDateAdded(newRow.shallow_json, dateAdded));
+        writeShallowJson(entry.db, newAvatar, shallow, ['date_added'], { date_added: dateAdded });
     }
 
     // Must read before the transaction below deletes oldAvatar's rows.
     const oldTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar }))).map(r => r.tag_id);
     if (oldTagIds.length > 0) {
-        flushBufferedRowOverExisting(entry, newAvatar);
-        const pending = entry.batch?.pending.get(newAvatar);
-        if (pending) {
-            pending.tagIds = [...new Set([...pending.tagIds, ...oldTagIds])];
-            patchPendingRowTagIds(pending);
-        } else {
-            entry.db.transaction(() => {
-                for (const tagId of oldTagIds) {
-                    entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@newAvatar, @tagId)', { newAvatar, tagId });
-                }
-                syncShallowTagIdsFromTable(entry.db, newAvatar);
-            });
-        }
+        entry.db.transaction(() => {
+            for (const tagId of oldTagIds) {
+                entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@newAvatar, @tagId)', { newAvatar, tagId });
+            }
+            syncShallowTagIdsFromTable(entry.db, newAvatar);
+        });
     }
 
-    /** @type {PendingRow | undefined} */
-    let flushed;
     entry.db.transaction(() => {
-        flushed = undefined;
-        if (entry.db.get('SELECT 1 FROM tag_names_held WHERE character_id = @id LIMIT 1', { id: oldAvatar })) {
-            // Held names are resolved against the characters table, so newAvatar can't stay in the buffer.
-            flushed = writeBufferedRowSync(entry, newAvatar);
-            entry.db.run('UPDATE OR IGNORE tag_names_held SET character_id = @newAvatar WHERE character_id = @oldAvatar', { newAvatar, oldAvatar });
-        }
+        entry.db.run('UPDATE OR IGNORE tag_names_held SET character_id = @newAvatar WHERE character_id = @oldAvatar', { newAvatar, oldAvatar });
         deleteRowSync(entry.db, oldAvatar);
     });
-    dropFromBuffer(entry, newAvatar, flushed);
-    return { copiedOrphanTagIds: oldIsOrphan ? oldTagIds : [] };
+    return { copiedOrphanTagIds: oldRow ? [] : oldTagIds };
 }
 
 /**
@@ -2054,15 +2053,17 @@ function writeBufferedRowOverExistingSync(entry, avatar) {
 }
 
 /**
- * writeBufferedRowOverExistingSync() in its own transaction, then dropFromBuffer().
+ * writeBufferedRowSync() in its own transaction, then dropFromBuffer(). A user request's write calls this first, so
+ * it lands on the table row right away instead of waiting in the buffer for the import to end.
  * @param {MetadataDbEntry} entry
  * @param {string} avatar
  */
-function flushBufferedRowOverExisting(entry, avatar) {
+function flushBufferedRow(entry, avatar) {
+    if (entry.batch?.pending.has(avatar) !== true) return;
     /** @type {PendingRow | undefined} */
     let flushed;
     entry.db.transaction(() => {
-        flushed = writeBufferedRowOverExistingSync(entry, avatar);
+        flushed = writeBufferedRowSync(entry, avatar);
     });
     dropFromBuffer(entry, avatar, flushed);
 }
@@ -3590,8 +3591,8 @@ function patchPendingRowTagIds(pending) {
 }
 
 // Requires the entity to exist in its own type's table (tagEntityTypeOf()) since neither tag table has an FK to
-// enforce it. Checks the batch-import pending buffer too: a just-imported, still-buffered row's auto-assign
-// would otherwise race the flush and silently lose the tag.
+// enforce it. A character still in the batch-import buffer counts as existing, and is written to the table before
+// the tag, so the assignment lands right away.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id
@@ -3616,15 +3617,7 @@ export async function assignEntityTag(directories, id, tagId) {
     }
     tagId = resolvedTagId;
 
-    if (type === 'character') flushBufferedRowOverExisting(entry, id);
-    const pending = type === 'character' ? entry.batch?.pending.get(id) : undefined;
-    if (pending) {
-        if (!pending.tagIds.includes(tagId)) {
-            pending.tagIds.push(tagId);
-        }
-        patchPendingRowTagIds(pending);
-        return 'ok';
-    }
+    if (type === 'character') flushBufferedRow(entry, id);
 
     // An object, not a let: TypeScript doesn't see the callback's assignment and narrows a let to false.
     const result = { found: false };
@@ -3683,7 +3676,8 @@ function warnDeletedTagsNotAssigned(entityId, tagIds) {
 }
 
 // Not a 404 on a nonexistent entity: nothing to reject. Touches only the id's own type's table
-// (tagEntityTypeOf()). Checks the batch-import pending buffer too, same reasoning as assignEntityTag().
+// (tagEntityTypeOf()). A character still in the batch-import buffer is written to the table first, as in
+// assignEntityTag().
 // Unassigning a marked tag removes that tag's own row, never its merge target's: the client's delete-and-merge sends
 // it for every loaded entity carrying the marked tag, including one that already had the target.
 /**
@@ -3699,13 +3693,7 @@ export async function unassignEntityTag(directories, id, tagId) {
     const type = tagEntityTypeOf(id);
     if (type === null) return 'ok';
 
-    if (type === 'character') flushBufferedRowOverExisting(entry, id);
-    const pending = type === 'character' ? entry.batch?.pending.get(id) : undefined;
-    if (pending) {
-        pending.tagIds = pending.tagIds.filter(t => t !== tagId);
-        patchPendingRowTagIds(pending);
-        return 'ok';
-    }
+    if (type === 'character') flushBufferedRow(entry, id);
 
     entry.db.transaction(() => {
         if (type === 'group') {
@@ -3779,17 +3767,10 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
             const { tagIds, dropped } = resolveTagIdsToAssign(Array.isArray(tagIdsByEntity[id]) ? tagIdsByEntity[id] : [], deletions);
             if (dropped.length > 0) notAssigned.set(id, dropped);
 
-            const flushedRow = tagEntityTypeOf(id) === 'character' ? writeBufferedRowOverExistingSync(entry, id) : undefined;
+            const flushedRow = tagEntityTypeOf(id) === 'character' ? writeBufferedRowSync(entry, id) : undefined;
             if (flushedRow) flushed.push({ id, row: flushedRow });
-            const pending = tagEntityTypeOf(id) === 'character' && !flushedRow ? entry.batch?.pending.get(id) : undefined;
-            if (pending) {
-                pending.tagIds = tagIds;
-                patchPendingRowTagIds(pending);
-                result[id] = 'ok';
-                continue;
-            }
 
-            if (characterIds.has(id)) {
+            if (characterIds.has(id) || flushedRow) {
                 entry.db.run('DELETE FROM character_tags WHERE character_id = @id', { id });
                 for (const tagId of tagIds) {
                     entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
@@ -4109,6 +4090,7 @@ export async function bumpCharacterDateLastChat(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
+    flushBufferedRow(entry, avatar);
     const now = Date.now();
     entry.db.run('UPDATE characters SET date_last_chat = @now WHERE id = @id', { now, id: avatar });
 }

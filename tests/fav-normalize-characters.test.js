@@ -234,6 +234,17 @@ describe('character column writers store the normalized fav in the column, both 
         expect(response.status).toBe(200);
         expect(storedFav(avatar)).toEqual(storedFavFor(expected));
     });
+
+    test('POST /create with a batch import open: the row and its fav are in the table before the import ends', async () => {
+        expect((await postJson('/api/characters/metadata/batch-import/begin', {})).status).toBe(204);
+        try {
+            const avatar = await createCharacter(true);
+            expect(storedFav(avatar)).toEqual(storedFavFor(true));
+        } finally {
+            await postJson('/api/characters/metadata/batch-import/end', {});
+        }
+        expect(storedFav('Zorkmid.png')).toEqual(storedFavFor(true));
+    });
 });
 
 describe('card_json never gains fav', () => {

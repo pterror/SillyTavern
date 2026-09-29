@@ -286,11 +286,12 @@ export async function materializeCardPng(directories, avatar, filePath = undefin
  * @param {string} data The Spec-V2 JSON string that was just written
  * @param {string|null} [contentHash]
  * @param {string|null} [avatarIdentityHash] `null` means "don't touch whatever is already stored", not "clear it".
+ * @param {{ fromImport?: boolean }} [options] As for upsertCharacterFromWrite().
  * @returns {Promise<void>}
  */
-export async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null, avatarIdentityHash = null) {
+export async function fireMetadataUpsertHook(directories, avatar, data, contentHash = null, avatarIdentityHash = null, options = {}) {
     try {
-        await upsertCharacterFromWrite(directories, avatar, data, contentHash, avatarIdentityHash);
+        await upsertCharacterFromWrite(directories, avatar, data, contentHash, avatarIdentityHash, options);
     } catch (err) {
         // The reconciler only picks up files with no row yet, so a stale existing row is invisible to it.
         console.error(`[character-metadata] Failed to update the metadata store for "${avatar}" after its character write succeeded. The row is now STALE and nothing will repair it automatically - re-save the character, or run POST /api/characters/metadata/rescan.`, err);
@@ -388,9 +389,11 @@ export async function reflinkAgainstExistingDuplicate(directories, selfAvatar, f
  * @param {boolean} [imageOnly] - true for a brand-new import/create write: the PNG gets image bytes only (any
  * embedded chara/ccv3 chunk stripped), `data` goes to the metadata db exclusively, and reflinkAgainstExistingDuplicate()
  * looks for a byte-identical existing character to share extents with after writing.
+ * @param {boolean} [fromImport] - true only on the import path: the metadata row may wait in an open batch import's
+ * buffer (upsertCharacterFromWrite()'s `fromImport`).
  * @returns {Promise<true>} Always resolves to `true` on success - a failed write rejects instead.
  */
-async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null, imageOnly = false) {
+async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, contentHash = null, freshFieldPaths = null, imageOnly = false, fromImport = false) {
     try {
         const oldDiskCacheKey = (useDiskCache && !Buffer.isBuffer(inputFile)) ? getCacheKey(inputFile) : null;
         /**
@@ -438,7 +441,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             && path.resolve(inputFile) === path.resolve(outputImagePath);
 
         if (isMetadataOnlyWrite) {
-            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, contentHash, null)
+            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, contentHash, null, { fromImport })
                 .catch(err => console.error('[character-metadata] Failed to persist a metadata-only character write:', err));
             if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
             return true;
@@ -448,7 +451,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             const outputImage = stripCardData(await getInputImage());
             const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(outputImage);
             writeFileAtomicSync(outputImagePath, outputImage);
-            await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
+            await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash, { fromImport });
             await reflinkAgainstExistingDuplicate(request.user.directories, `${outputFile}.png`, outputImagePath, data, avatarIdentityHash);
             if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
             return true;
@@ -459,7 +462,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             try {
                 const crossReflinkCandidatePath = await findCrossCharacterReflinkCandidate(request.user.directories, `${outputFile}.png`, data);
                 const { avatarIdentityHash } = await writeCardToFile(inputFile, outputImagePath, data, crossReflinkCandidatePath);
-                await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
+                await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash, { fromImport });
                 if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
                 return true;
             } catch (error) {
@@ -476,7 +479,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
 
         writeFileAtomicSync(outputImagePath, outputImage);
 
-        await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash);
+        await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash, { fromImport });
         if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
 
         return true;
@@ -656,7 +659,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'tags': '',
     }, context.request.user.directories);
     omitInstallLocalFields(char);
-    await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash, null, true);
+    await writeCharacterData(DEFAULT_AVATAR_PATH, JSON.stringify(char), fileName, context.request, undefined, context.contentHash, null, true, true);
     return fileName;
 }
 
@@ -703,7 +706,7 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
         }
     }
 
-    await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request, undefined, contentHash, null, true);
+    await writeCharacterData(avatar, JSON.stringify(processedCard), fileName, request, undefined, contentHash, null, true, true);
     return fileName;
 }
 
@@ -783,7 +786,7 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
         }
     }
 
-    await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request, undefined, contentHash, null, true);
+    await writeCharacterData(byafData.images[0].image, JSON.stringify(card), fileName, request, undefined, contentHash, null, true, true);
 
     return fileName;
 }
@@ -803,7 +806,7 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     const data = buildJsonImportData(rawText, request.user.directories, pngName);
     if (data === null) return '';
 
-    await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash, null, true);
+    await writeCharacterData(DEFAULT_AVATAR_PATH, data, pngName, request, undefined, contentHash, null, true, true);
     return pngName;
 }
 
@@ -901,7 +904,7 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
 
     // Temp upload gets cleaned up whether the write succeeds or throws.
     try {
-        await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash, null, true);
+        await writeCharacterData(uploadPath, data, pngName, request, undefined, contentHash, null, true, true);
     } finally {
         fs.unlinkSync(uploadPath);
     }

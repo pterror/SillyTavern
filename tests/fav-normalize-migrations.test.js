@@ -416,7 +416,7 @@ describe('character fav migration (normalizeCharacterFavIfNeeded)', () => {
         const count = 1001;
         await metadataDb.beginBatchImport(directories);
         for (let i = 0; i < count; i++) {
-            await metadataDb.upsertCharacterFromWrite(directories, `c${String(i).padStart(5, '0')}.png`, card(`c${i}`));
+            await metadataDb.upsertCharacterFromWrite(directories, `c${String(i).padStart(5, '0')}.png`, card(`c${i}`), null, null, { fromImport: true });
         }
         await metadataDb.endBatchImport(directories);
         withRawDb(db => db.prepare('UPDATE characters SET digest_fav = 12345').run());

@@ -55,8 +55,13 @@ function card(name, fav = false) {
     return JSON.stringify({ name, spec: 'chara_card_v2', spec_version: '2.0', data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav, world: '' } } });
 }
 
-async function seedCharacter(id, fav = false) {
-    await metadataDb.upsertCharacterFromWrite(directories, id, card(id.replace(/\.png$/, ''), fav));
+/**
+ * @param {string} id
+ * @param {boolean} [fav]
+ * @param {{ fromImport?: boolean }} [options] As for upsertCharacterFromWrite().
+ */
+async function seedCharacter(id, fav = false, options = {}) {
+    await metadataDb.upsertCharacterFromWrite(directories, id, card(id.replace(/\.png$/, ''), fav), null, null, options);
 }
 
 async function seedGroup(id, fav = false) {
@@ -344,8 +349,8 @@ describe('entity counters', () => {
         await openWithFrontier({ character: { upto: 'm', done: false }, group: DONE });
         await saveTags(['t1']);
         await metadataDb.beginBatchImport(directories);
-        await seedCharacter('a1.png', true);
-        await seedCharacter('z1.png');
+        await seedCharacter('a1.png', true, { fromImport: true });
+        await seedCharacter('z1.png', false, { fromImport: true });
         await metadataDb.endBatchImport(directories);
         expectCountersExact();
         await assign('a1.png', 't1');

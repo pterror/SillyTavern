@@ -478,7 +478,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     importedCharacterId = `${pngName}.png`;
                     const destPath = path.join(directories.characters, `${pngName}.png`);
                     await pipelineResult.finish({ type: 'write', destPath, data });
-                    await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash, pipelineResult.avatarIdentityHash);
+                    await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash, pipelineResult.avatarIdentityHash, { fromImport: true });
                     await reflinkAgainstExistingDuplicate(directories, `${pngName}.png`, destPath, data, pipelineResult.avatarIdentityHash);
                     try {
                         await setCharacterDateAdded(directories, `${pngName}.png`, stat.mtimeMs);

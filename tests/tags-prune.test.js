@@ -124,7 +124,7 @@ describe('POST /api/tags/unused-count and /api/tags/prune', () => {
     test('keeps a tag carried only by a batch-import row not yet flushed', async () => {
         await saveTags(['pendingTag']);
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson('Bob'));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson('Bob'), null, null, { fromImport: true });
         expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'pendingTag')).toBe('ok');
 
         expect(await unusedCount()).toBe(0);
