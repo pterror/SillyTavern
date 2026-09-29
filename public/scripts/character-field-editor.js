@@ -63,6 +63,8 @@ export function insertMacroSpans(html, values) {
  * @property {(value: string) => Promise<boolean>} saveGreetingField
  * @property {(value: string) => Promise<boolean>} saveSystemPromptField
  * @property {(value: string) => Promise<boolean>} savePostHistoryInstructionsField
+ * @property {(id: string) => void} [onEditStart] Called once a field has entered edit mode.
+ * @property {(id: string) => void} [onEditEnd] Called once a field has left edit mode (Done or cancel).
  */
 
 /** @type {CharacterFieldEditorDeps} */
@@ -211,6 +213,7 @@ export function beginEdit(id) {
     const textarea = getTextarea(id);
     activeEdit = { id, original: String(textarea.val() ?? ''), saving: false };
     getPanel(id).addClass('field_editing');
+    deps.onEditStart?.(id);
     textarea.trigger('focus');
 }
 
@@ -218,6 +221,7 @@ function endEdit() {
     const { id } = activeEdit;
     activeEdit = null;
     getPanel(id).removeClass('field_editing');
+    deps.onEditEnd?.(id);
     refreshFieldPreview(id);
 }
 
