@@ -502,6 +502,138 @@ test.describe('Drawer overlap, desktop', () => {
     drawerPairTests('desktop');
 });
 
+/**
+ * Sets a User Settings number through its own input handler, as typing into it does.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} selector
+ * @param {number} value
+ */
+async function setSettingInput(page, selector, value) {
+    await page.locator(selector).evaluate((el, v) => {
+        el.value = String(v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, value);
+}
+
+/**
+ * Moves the Chat Width slider as a drag does: the width is applied when the pointer is released, not on input.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} value
+ */
+async function dragChatWidthSlider(page, value) {
+    await page.locator('#chat_width_slider').evaluate((el, v) => {
+        el.value = String(v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    }, value);
+}
+
+/**
+ * The width in px of `n` ch, in character info's own font. Character info must be open.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} n
+ */
+function chWidthInCharInfo(page, n) {
+    return page.locator('#char-info-panel').evaluate((panel, count) => {
+        const probe = document.createElement('div');
+        probe.style.cssText = `position: absolute; visibility: hidden; height: 0; width: ${count}ch;`;
+        panel.append(probe);
+        const width = probe.getBoundingClientRect().width;
+        probe.remove();
+        return width;
+    }, n);
+}
+
+/** @param {import('@playwright/test').Page} page */
+function charInfoWidth(page) {
+    return page.locator('#char-info-panel').evaluate(el => el.getBoundingClientRect().width);
+}
+
+test.describe('Character info fullscreen width', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+        await page.setViewportSize({ width: 1400, height: 900 });
+    });
+
+    /**
+     * Pinned AI Response Configuration open, then fullscreen character info opened in front of it, with Chat Width
+     * Max set so the cap is 40% of a 1400px viewport: below the chat column's 50%, so both are exactly the cap wide.
+     * @param {import('@playwright/test').Page} page
+     * @returns {Promise<number>} The Chat Width Max set.
+     */
+    async function openCappedBesidePinnedLeftPanel(page) {
+        await startScenario(page, { variants: [{ id: 'char-info-panel', fullscreen: true }], pinned: ['left-nav-panel'] });
+        await openDrawer(page, 'left-nav-panel');
+        await openDrawer(page, 'char-info-panel');
+        const chatWidthMax = Math.floor(560 / await chWidthInCharInfo(page, 1));
+        await setSettingInput(page, '#chat_width_max', chatWidthMax);
+        await expect.poll(async () => Math.abs(await charInfoWidth(page) - await chWidthInCharInfo(page, chatWidthMax))).toBeLessThan(1);
+        await expect.poll(() => page.locator('#sheld').evaluate(el => el.getBoundingClientRect().width)).toBeCloseTo(await charInfoWidth(page), 0);
+        return chatWidthMax;
+    }
+
+    test('fullscreen character info is as wide as Chat Width Max and spans the sidebars when that is wider than the chat column', async ({ page }) => {
+        await startScenario(page, { variants: [{ id: 'char-info-panel', fullscreen: true }], pinned: ['left-nav-panel'] });
+        await openDrawer(page, 'left-nav-panel');
+        await openDrawer(page, 'char-info-panel');
+        // 1200px: wider than the 700px chat column, narrower than the 1400px viewport.
+        const chatWidthMax = Math.floor(1200 / await chWidthInCharInfo(page, 1));
+        await setSettingInput(page, '#chat_width_max', chatWidthMax);
+        await expect.poll(async () => Math.abs(await charInfoWidth(page) - await chWidthInCharInfo(page, chatWidthMax))).toBeLessThan(1);
+        await expectOneVisibleWhereOverlapping(page, 'capped wider than the chat column', 'char-info-panel');
+        await expect(page.locator('#left-nav-panel')).toBeHidden();
+        await expect(page.locator('#left-nav-panel')).toHaveClass(/openDrawer/);
+    });
+
+    test('fullscreen character info is as wide as the viewport when Chat Width Max is wider', async ({ page }) => {
+        await page.setViewportSize({ width: 1100, height: 900 });
+        await startScenario(page, { variants: [{ id: 'char-info-panel', fullscreen: true }], pinned: ['left-nav-panel'] });
+        await openDrawer(page, 'left-nav-panel');
+        await openDrawer(page, 'char-info-panel');
+        await setSettingInput(page, '#chat_width_max', 500);
+        await expect.poll(async () => Math.abs(await charInfoWidth(page) - await page.evaluate(() => window.innerWidth))).toBeLessThan(1);
+        await expectOneVisibleWhereOverlapping(page, 'viewport wide', 'char-info-panel');
+        await expect(page.locator('#left-nav-panel')).toBeHidden();
+        await expect(page.locator('#left-nav-panel')).toHaveClass(/openDrawer/);
+    });
+
+    test('fullscreen character info capped to the chat column\'s width leaves pinned AI Response Configuration visible', async ({ page }) => {
+        await openCappedBesidePinnedLeftPanel(page);
+        await expectOneVisibleWhereOverlapping(page, 'capped to the chat column', 'char-info-panel', ['left-nav-panel']);
+    });
+
+    test('changing Chat Width Max changes whether fullscreen character info hides pinned AI Response Configuration', async ({ page }) => {
+        const chatWidthMax = await openCappedBesidePinnedLeftPanel(page);
+        await setSettingInput(page, '#chat_width_max', 500);
+        await expectOneVisibleWhereOverlapping(page, 'after raising Chat Width Max past the chat column', 'char-info-panel');
+        await expect(page.locator('#left-nav-panel')).toBeHidden();
+        await setSettingInput(page, '#chat_width_max', chatWidthMax);
+        await expectOneVisibleWhereOverlapping(page, 'after lowering Chat Width Max back', 'char-info-panel', ['left-nav-panel']);
+    });
+
+    test('changing Chat Width changes whether fullscreen character info hides pinned AI Response Configuration', async ({ page }) => {
+        await openCappedBesidePinnedLeftPanel(page);
+        // 30% of 1400px is narrower than the 560px cap, so the chat column shrinks and character info doesn't.
+        await dragChatWidthSlider(page, 30);
+        await expectOneVisibleWhereOverlapping(page, 'after narrowing Chat Width', 'char-info-panel');
+        await expect(page.locator('#left-nav-panel')).toBeHidden();
+        await dragChatWidthSlider(page, 50);
+        await expectOneVisibleWhereOverlapping(page, 'after widening Chat Width back', 'char-info-panel', ['left-nav-panel']);
+    });
+
+    test('resizing the window changes whether fullscreen character info hides pinned AI Response Configuration', async ({ page }) => {
+        await openCappedBesidePinnedLeftPanel(page);
+        // 50% of 1050px is narrower than the 560px cap, so the chat column shrinks and character info doesn't.
+        await page.setViewportSize({ width: 1050, height: 900 });
+        await expectOneVisibleWhereOverlapping(page, 'after narrowing the window', 'char-info-panel');
+        await expect(page.locator('#left-nav-panel')).toBeHidden();
+        await page.setViewportSize({ width: 1400, height: 900 });
+        await expectOneVisibleWhereOverlapping(page, 'after widening the window back', 'char-info-panel', ['left-nav-panel']);
+    });
+});
+
 test.describe('Drawer overlap, mobile', () => {
     test.use({ viewport: { width: 412, height: 915 } });
 

@@ -207,12 +207,13 @@ body.charGalleryView:has(#right-nav-panel.galleryFullscreen.frontFillRight.front
 }
 
 /* Same fullscreen pattern as the character list above, but for #char-info-panel (a separate .fillRight
-   drawer) - sized to match #sheld's width rather than the full viewport. */
+   drawer) - capped at Chat Width Max. The cap can leave it no wider than #sheld, off the sidebars; getDrawerZones
+   in script.js measures which it covers. */
 #char-info-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight.openDrawer {
     left: 0;
     right: 0;
-    width: var(--sheldWidth);
-    max-width: var(--sheldWidth);
+    width: min(100vw, var(--chatWidthMax, 120ch));
+    max-width: min(100vw, var(--chatWidthMax, 120ch));
     margin: 0 auto;
     top: var(--topBarBlockSize);
     height: calc(100vh - var(--topBarBlockSize));
@@ -242,7 +243,8 @@ body:has(#AdvancedFormatting.openDrawer) #sheld {
 
 /* Zone system (see getDrawerZones/activateZoneFront in script.js): left = #left-nav-panel +
    .zoomed_avatar_container, center = #sheld + most drawers, right = #right-nav-panel + #char-info-panel.
-   galleryFullscreen spans all 3 zones, charInfoFullscreen spans center - so a fullscreen .fillRight panel
+   galleryFullscreen spans all 3 zones, charInfoFullscreen spans center plus whichever sidebars it reaches (its
+   data-drawer-zones) - so a fullscreen .fillRight panel
    can end up sharing a zone with a pinned drawer that normally lives there. Whichever is frontInZone wins;
    the loser stays logically open but hidden, same trick as .fillRight.openDrawer:not(.frontFillRight) above. */
 #left-nav-panel.openDrawer:not(.frontInZone),
@@ -256,7 +258,8 @@ body:has(#AdvancedFormatting.openDrawer) #sheld {
 /* .zoomed_avatar_container isn't a drawer (no open/close state of its own), so it just sits under
    whichever left-zone drawer currently has focus, same as #sheld does for the center zone. */
 body:has(#left-nav-panel.openDrawer.frontInZone) .zoomed_avatar_container,
-body:has(#right-nav-panel.galleryFullscreen.openDrawer.frontInZone) .zoomed_avatar_container {
+body:has(#right-nav-panel.galleryFullscreen.openDrawer.frontInZone) .zoomed_avatar_container,
+body:has(#char-info-panel.openDrawer.frontInZone[data-drawer-zones~="left"]) .zoomed_avatar_container {
     visibility: hidden;
 }
 

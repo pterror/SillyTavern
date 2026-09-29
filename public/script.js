@@ -8356,7 +8356,8 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
 
 // Desktop layout has 3 zones: left (#left-nav-panel, .zoomed_avatar_container), center (#sheld and most
 // drawers), right (#right-nav-panel, #char-info-panel). Fullscreen character management spans all 3 zones;
-// fullscreen character info spans center only - each only while toggle-dependent.css actually draws it fullscreen.
+// fullscreen character info spans center plus each sidebar it reaches - each only while toggle-dependent.css
+// actually draws it fullscreen.
 // Only pinnable drawers can stay open behind another drawer: opening or bringing forward a drawer closes every
 // unpinned one (closeUnpinnedDrawersFor), and a pinned drawer that isn't in front is open but hidden.
 const ZONE_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
@@ -8375,10 +8376,37 @@ function getDrawerZones(id) {
     }
     if (id === 'char-info-panel') {
         const fullscreen = el.classList.contains('charInfoFullscreen') && menu === 'rm_ch_create_block';
-        return fullscreen ? ['center'] : ['right'];
+        return fullscreen ? getCharInfoFullscreenZones(el) : ['right'];
     }
     return ['center'];
 }
+
+/**
+ * Fullscreen character info is capped at Chat Width Max, so depending on the window, Chat Width and Chat Width Max
+ * it may be no wider than #sheld and leave both sidebars uncovered.
+ * @param {HTMLElement} panel
+ * @returns {string[]}
+ */
+function getCharInfoFullscreenZones(panel) {
+    const box = panel.getBoundingClientRect();
+    const sheld = document.getElementById('sheld')?.getBoundingClientRect();
+    if (!box.width || !sheld) return ['center'];
+    // Each sidebar ends 1px short of #sheld (.fillLeft / .fillRight in style.css) unless held wider by its min-width.
+    const minWidth = id => parseFloat(getComputedStyle(document.getElementById(id)).minWidth) || 0;
+    const leftEnd = Math.max(sheld.left - 1, minWidth('left-nav-panel'));
+    const rightStart = Math.min(sheld.right + 1, document.documentElement.clientWidth - minWidth('right-nav-panel'));
+    return [
+        ...(box.left < leftEnd ? ['left'] : []),
+        'center',
+        ...(box.right > rightStart ? ['right'] : []),
+    ];
+}
+
+/** @returns {string} Every top-bar drawer's zones, to tell when a resize changed them. */
+function drawerZonesKey() {
+    return Array.from(document.querySelectorAll(ZONE_DRAWER_SELECTOR), el => `${el.id}:${getDrawerZones(el.id).join(' ')}`).join();
+}
+let lastDrawerZonesKey = '';
 
 // Drawer ids, most recently fronted last. Which drawers are open is read from .openDrawer, not from here,
 // so a drawer opened without frontDrawer() (e.g. by an extension) still counts, ranked behind all fronted ones.
@@ -8426,8 +8454,11 @@ function recomputeDrawerFronts() {
     for (const zone of ['left', 'center', 'right']) zoneTop[zone] = topOf(zoneDrawerIds.filter(id => getDrawerZones(id).includes(zone)));
     for (const id of zoneDrawerIds) {
         const zones = getDrawerZones(id);
-        document.getElementById(id).classList.toggle('frontInZone', zones.length > 0 && zones.every(zone => zoneTop[zone] === id));
+        const el = document.getElementById(id);
+        el.classList.toggle('frontInZone', zones.length > 0 && zones.every(zone => zoneTop[zone] === id));
+        if (el.getAttribute('data-drawer-zones') !== zones.join(' ')) el.setAttribute('data-drawer-zones', zones.join(' '));
     }
+    lastDrawerZonesKey = drawerZonesKey();
 
     if (panelOpenStatesRead) {
         for (const [id, key] of Object.entries(PANEL_OPEN_STATE_KEYS)) {
@@ -14341,6 +14372,13 @@ jQuery(async function () {
             saveSettingsDebounced('power_user.charGalleryFullscreen');
         }
     });
+
+    // Which sidebars fullscreen character info reaches depends on its width and #sheld's.
+    const drawerZonesObserver = new ResizeObserver(() => {
+        if (drawerZonesKey() !== lastDrawerZonesKey) recomputeDrawerFronts();
+    });
+    drawerZonesObserver.observe(document.getElementById('sheld'));
+    drawerZonesObserver.observe(document.getElementById('char-info-panel'));
 
     $('#charInfoFullscreenToggle').on('click', () => {
         const panel = document.getElementById('char-info-panel');
