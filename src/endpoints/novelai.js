@@ -8,7 +8,7 @@ import { readSecret, SECRET_KEYS } from './secrets.js';
 import { readAllChunks, extractFileFromZipBuffer } from '../util.js';
 import { readSettingsAtPaths } from '../settings-store.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../tokenizer-resolve.js';
-import { createStoredCounter } from '../token-count-store.js';
+import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
@@ -317,6 +317,9 @@ router.post('/generate', async function (req, res) {
     // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
+    // The raw-action build's counts and ids, stored once the backend has the request.
+    /** @type {import('../token-count-store.js').PendingTokenRows | null} */
+    let tokenCountRows = null;
     if (req.body.owner_id && (req.body.character_avatar || req.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
@@ -346,6 +349,7 @@ router.post('/generate', async function (req, res) {
             return res.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
         }
         warnings.push(...built.warnings);
+        tokenCountRows = built.tokenCountRows;
 
         // Same three-mode persistence contract as text-completions.js's/kobold.js's own raw-action
         // branches - see text-completions.js's own extensive comment on impersonate/quiet skipping,
@@ -480,6 +484,10 @@ router.post('/generate', async function (req, res) {
         const baseURL = (req.body.model.includes('kayra') || req.body.model.includes('erato')) ? TEXT_NOVELAI : API_NOVELAI;
         const url = req.body.streaming ? `${baseURL}/ai/generate-stream` : `${baseURL}/ai/generate`;
         const response = await fetch(url, { method: 'POST', ...args });
+        if (tokenCountRows) {
+            writeBack(req.user.directories, tokenCountRows)
+                .catch(error => console.error('Failed to store token counts:', error));
+        }
 
         if (req.body.streaming) {
             // Re-encode NovelAI's own SSE data payload shape (`{"token": "...", "logprobs": {...}}`,

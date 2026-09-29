@@ -7,7 +7,7 @@ import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } 
 import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
-import { createStoredCounter } from '../../token-count-store.js';
+import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
@@ -188,6 +188,19 @@ router.post('/generate', async function (request, response_generate) {
     // full rationale. Covers every branch, not gated on persistence; sent only when non-empty.
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
+
+    // The raw-action build's counts and ids, stored once the backend has the request.
+    /** @type {import('../../token-count-store.js').PendingTokenRows | null} */
+    let tokenCountRows = null;
+    const storeTokenCountRows = () => {
+        if (!tokenCountRows) return;
+        const rows = tokenCountRows;
+        // A retry after a returned request doesn't store the same rows again.
+        tokenCountRows = null;
+        writeBack(request.user.directories, rows)
+            .catch(error => console.error('Failed to store token counts:', error));
+    };
+
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const {
             character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
@@ -222,6 +235,7 @@ router.post('/generate', async function (request, response_generate) {
             return response_generate.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
         }
         warnings.push(...built.warnings);
+        tokenCountRows = built.tokenCountRows;
 
         // Same three-mode persistence contract as text-completions.js's own raw-action branch - see
         // that file's own extensive comment on impersonate/quiet skipping, the swipe/regenerate
@@ -377,6 +391,7 @@ router.post('/generate', async function (request, response_generate) {
         try {
             const url = request.body.streaming ? `${request.body.api_server}/extra/generate/stream` : `${request.body.api_server}/v1/generate`;
             const response = await fetch(url, { method: 'POST', ...args });
+            storeTokenCountRows();
 
             if (request.body.streaming) {
                 // Re-encode Kobold's own SSE data payload shape (`{"token": "..."}`, verified against

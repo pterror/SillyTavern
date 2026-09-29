@@ -64,12 +64,13 @@ const { default: nodeFetch } = await import('node-fetch');
 const { router, buildRawActionNovelRequest } = await import('./novelai.js');
 const { writeAllSettings } = await import('../settings-store.js');
 const { writeSecret, SECRET_KEYS } = await import('./secrets.js');
-const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } = await import('../message-tree-db.js');
+const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores, getMessageTreeDb } = await import('../message-tree-db.js');
 const { forwardAndPersistCompactStream } = await import('./backends/text-completions.js');
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
 const { upsertCharacterFromWrite } = await import('../character-metadata-db.js');
 const { tokenizers } = await import('../tokenizer-ids.js');
 const { writeBack } = await import('../token-count-store.js');
+const { resolveTokenizer, tokenizerIdentity } = await import('../tokenizer-resolve.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-novelai-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -720,6 +721,101 @@ async function run() {
 
         const branchAfter = await loadBranch(directories, ownerId, branchName);
         assert.equal(branchAfter.messages.length, messageCountBefore, 'no persistence was attempted for a non-raw-action request');
+    }
+
+    // --- write-back: /generate stores its counts and ids once the backend has the request ---
+    /** Rows stored under `identity` in token_counts and token_ids together. */
+    async function storedRowsUnder(identity) {
+        const db = await getMessageTreeDb(directories);
+        const counts = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_counts WHERE identity = @identity', { identity }));
+        const ids = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_ids WHERE identity = @identity', { identity }));
+        return Number(counts.n) + Number(ids.n);
+    }
+
+    let writeBackChats = 0;
+    /**
+     * A new chat on clio (the bundled NerdStash tokenizer); `onGenerate(req, res)` answers `/ai/generate`. Returns
+     * the backend, the URLs it was asked, the tokenizer identity and the request body.
+     */
+    async function setUpWriteBackGeneration(onGenerate) {
+        const name = `NovelWriteBack${++writeBackChats}`;
+        const writeBackAvatar = await writeCharacter(`${name}.png`, { name, data: { name, description: `${name} keeps the orchard.`, first_mes: 'Welcome.' } });
+        await saveChatToTree(directories, writeBackAvatar, 'write-back-chat', [
+            { chat_metadata: {} },
+            { name, is_user: false, mes: 'Welcome.', send_date: 1, extra: {} },
+            { name: 'Tester', is_user: true, mes: `Are the pears ripe, ${name}?`, send_date: 2, extra: {} },
+            { name, is_user: false, mes: 'Nearly.', send_date: 3, extra: {} },
+        ]);
+        const leafId = (await loadBranch(directories, writeBackAvatar, 'write-back-chat')).branch.leaf_id;
+        const urls = [];
+        const backend = await startFakeBackend((req, res) => {
+            urls.push(req.url);
+            if (req.url === '/ai/generate') return onGenerate(req, res);
+            res.writeHead(404);
+            res.end();
+        });
+        pointNovelBackendAt(backend.url);
+        const settings = tokenizerSettings('clio-v1', undefined);
+        writeAllSettings(directories, settings);
+        const identity = await tokenizerIdentity(await resolveTokenizer({ api: 'novel', model: 'clio-v1', tokenizerSetting: undefined }, { directories }));
+        assert.ok(identity, 'the bundled NerdStash tokenizer has an identity');
+        return {
+            backend, urls, identity,
+            body: { owner_id: writeBackAvatar, character_avatar: writeBackAvatar, node_id: leafId, type: 'normal', user_message: `Any apples, ${name}?`, stream: false },
+        };
+    }
+
+    {
+        let rowsWhenReceived = null;
+        let identityForCase = null;
+        const { backend, urls, identity, body } = await setUpWriteBackGeneration(async (_req, res) => {
+            rowsWhenReceived = await storedRowsUnder(identityForCase);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ output: 'Soon.' }));
+        });
+        identityForCase = identity;
+        try {
+            const rowsBefore = await storedRowsUnder(identity);
+            const { status } = await postGenerate(buildTestApp(), body);
+            assert.equal(status, 200);
+            assert.ok(urls.includes('/ai/generate'), 'the backend received the generation');
+            assert.equal(rowsWhenReceived, rowsBefore, 'nothing stored when the backend received its request');
+            await waitFor(async () => (await storedRowsUnder(identity)) > rowsBefore);
+        } finally {
+            backend.server.close();
+            pointNovelBackendAt(null);
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
+    {
+        const { backend, urls, identity, body } = await setUpWriteBackGeneration((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ output: 'Soon.' }));
+        });
+        const request = http.request;
+        let refused = 0;
+        http.request = function (url, ...rest) {
+            if (String(url).endsWith('/ai/generate')) {
+                refused++;
+                throw new Error('refused before sending');
+            }
+            return request.call(this, url, ...rest);
+        };
+        try {
+            const rowsBefore = await storedRowsUnder(identity);
+            const { data } = await postGenerate(buildTestApp(), body);
+            assert.equal(data.error, true, 'the generation failed');
+            assert.equal(refused, 1, 'the backend request threw');
+            assert.ok(!urls.includes('/ai/generate'), 'the backend never received the generation');
+            await new Promise(resolve => setTimeout(resolve, 200));
+            assert.equal(await storedRowsUnder(identity), rowsBefore, 'nothing stored');
+        } finally {
+            http.request = request;
+            backend.server.close();
+            pointNovelBackendAt(null);
+            writeAllSettings(directories, buildSettingsFixture());
+        }
     }
 
     console.log('novelai.test.js: all assertions passed');
