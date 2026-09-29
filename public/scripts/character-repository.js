@@ -49,6 +49,8 @@ import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normali
  * approximate count and must not be read as a truncated/capped one. Callers needing arithmetic must strip the
  * `~` themselves - not coerced here, to avoid silently losing the "approximate" signal.
  * @property {number} rev - the metadata store's current change revision at query time.
+ * @property {string|null} [token] - `/query`'s freshness token: an opaque hash of what the response was built
+ * from, sent back as `ifToken` on a repeat of the same request. `null` when there is nothing to send back.
  * @property {string} [searchBackend] - which search engine answered `filter.search` ('tantivy'), present only
  * when `filter.search` was non-empty.
  */
@@ -56,10 +58,11 @@ import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normali
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
 
 /**
- * Last-seen `/query` response per exact request signature, so a repeated request can send back its `seq` and
- * let the server skip row hydration when nothing changed. Cleared wholesale past the size limit rather than
- * LRU-evicted - a miss just costs one extra full fetch, never a correctness issue, since a hit is always
- * re-verified against the server's current `seq`.
+ * Last-seen `/query` response per exact request signature, so a repeated request can send back its `token` as
+ * `ifToken` and let the server skip row hydration when nothing changed. Only responses with a token are kept.
+ * Cleared wholesale past the size limit rather than LRU-evicted - a miss just costs one extra full fetch, never a
+ * correctness issue, since a hit is always re-verified by the server against a token rebuilt from the current
+ * state.
  * @type {Map<string, any>}
  */
 const queryResponseCache = new Map();
@@ -234,7 +237,7 @@ const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 
  * `serializeQueryHashesBinary()` server-side (src/endpoints/characters.js) for the matching encoder and the
  * field-by-field layout spec this just walks with a `DataView`.
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, total: number|undefined, totalApprox: boolean, searchBackend: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, searchBackend: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
  */
 function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -279,12 +282,17 @@ function deserializeQueryHashesBinary(buffer) {
         });
     }
 
-    return { seq, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows };
+    // Trailer: tokenLen(2) + token(tokenLen, utf8); tokenLen 0 means a null token.
+    const tokenLen = view.getUint16(offset, true); offset += 2;
+    const token = tokenLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, tokenLen)) : null;
+    offset += tokenLen;
+
+    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows };
 }
 
 /**
- * Sends `/query` with `want: ['hashes', ...]` and parses the binary (or, on an `ifSeq` cache hit, small JSON
- * `{seq, unchanged: true}`) response. Mirrors `postJson()`'s error handling for the non-ok case.
+ * Sends `/query` with `want: ['hashes', ...]` and parses the binary (or, on an `ifToken` cache hit, small JSON
+ * `{seq, token, unchanged: true}`) response. Mirrors `postJson()`'s error handling for the non-ok case.
  * @param {object} body
  * @returns {Promise<{unchanged: true}|ReturnType<typeof deserializeQueryHashesBinary>>}
  */
@@ -308,7 +316,7 @@ async function postHashQuery(body) {
     }
     const contentType = response.headers.get('content-type') ?? '';
     if (contentType.includes('application/json')) {
-        // JSON here only ever means the ifSeq "unchanged" stub - hash rows themselves are always binary.
+        // JSON here only ever means the ifToken "unchanged" stub - hash rows themselves are always binary.
         return response.json();
     }
     return deserializeQueryHashesBinary(await response.arrayBuffer());
@@ -517,7 +525,7 @@ export class CharacterRepository {
         const fetchStamp = tagFetchStamp();
         const result = useHashMode
             ? await this.#queryHashMode(requestShape, cached, includeGroups)
-            : await postJson('/api/characters/query', cached ? { ...requestShape, ifSeq: cached.seq } : requestShape);
+            : await postJson('/api/characters/query', cached ? { ...requestShape, ifToken: cached.token } : requestShape);
 
         // Server confirmed nothing changed - reuse the cached response rather than the rows/total-less stub.
         if (result?.unchanged === true && cached) {
@@ -525,7 +533,8 @@ export class CharacterRepository {
             return cached;
         }
 
-        if (result && typeof result.seq === 'number') {
+        // Kept under its token: a response without one has nothing to send back, so it isn't kept.
+        if (result && typeof result.token === 'string' && result.token.length > 0) {
             if (queryResponseCache.size >= QUERY_RESPONSE_CACHE_LIMIT) queryResponseCache.clear();
             queryResponseCache.set(signature, result);
         }
@@ -546,7 +555,7 @@ export class CharacterRepository {
     async #queryHashMode(requestShape, cached, includeGroups) {
         const hashWant = requestShape.want.map(w => w === 'rows' ? 'hashes' : w);
         const body = { ...requestShape, want: hashWant };
-        if (cached) body.ifSeq = cached.seq;
+        if (cached) body.ifToken = cached.token;
 
         const decoded = await postHashQuery(body);
         if (decoded?.unchanged === true) {
@@ -554,7 +563,7 @@ export class CharacterRepository {
         }
 
         /** @type {CharacterQueryResult} */
-        const result = { seq: decoded.seq };
+        const result = { seq: decoded.seq, token: decoded.token };
         if (decoded.total !== undefined) result.total = decoded.totalApprox ? `~${decoded.total}` : decoded.total;
         if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
         result.rows = await this.#resolveHashRows(decoded.hashRows, includeGroups);
