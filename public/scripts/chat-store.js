@@ -401,16 +401,49 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
         return keptSwipes.indexOf(extras[before].mes);
     };
 
+    /**
+     * The card-only opening the shown slot's greeting became when its text changed without an edit of this page's
+     * saying so (another session edited it): the card-only openings before and after the slot are matched, in order,
+     * against the new card-only openings, and the one new text they leave between them is it. -1 when they don't
+     * leave exactly one, or it is text that was already among the openings.
+     */
+    const placeShownSlot = () => {
+        /** @type {string[]} */
+        const oldCardOnly = [];
+        let slot = -1;
+        for (let k = 0; k < swipes.length; k++) {
+            if (typeof swipes[k] !== 'string' || isStoredNodeId(swipeInfo[k]?.node_id)) continue;
+            if (k === shownWas) slot = oldCardOnly.length;
+            oldCardOnly.push(swipes[k]);
+        }
+        if (slot < 0) return -1;
+        const fresh = extras.map(e => e.mes);
+        let before = 0;
+        for (let j = 0; j < slot && before < fresh.length; j++) {
+            if (oldCardOnly[j] === fresh[before]) before++;
+        }
+        let after = 0;
+        for (let j = oldCardOnly.length - 1; j > slot && before + after < fresh.length; j--) {
+            if (oldCardOnly[j] === fresh[fresh.length - 1 - after]) after++;
+        }
+        if (before + after + 1 !== fresh.length) return -1;
+        const text = fresh[before];
+        if (swipes.includes(text)) return -1;
+        return keptSwipes.indexOf(text);
+    };
+
     let landAt = shownAt;
     if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
-        // The card greeting on screen is gone: follow it to its new text if it was edited (by position on the
-        // card when its new text isn't among the openings), otherwise show the default.
+        // The card greeting on screen is gone: follow it to its new text if this page edited it (by position on the
+        // card when its new text isn't among the openings), else by its slot among the card's openings if another
+        // session changed its text, otherwise show the default.
         // With several greetings changed from the shown text, the shown text was left only once the last of them was.
         const edit = edits.findLast(e => e.from === shownText);
         if (edit) {
             landAt = await placeText(edit.to);
             if (landAt < 0 && edit.index !== undefined) landAt = placeCardPosition(edit.index);
         }
+        if (landAt < 0) landAt = placeShownSlot();
         if (landAt < 0) landAt = placeDefault();
         if (_chatAt(0) !== current) return;
     }
