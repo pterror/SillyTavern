@@ -73,10 +73,10 @@ const SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
 
 /**
  * Mirrors serializeQueryHashesBinary() in src/endpoints/characters.js byte for byte (it isn't exported).
- * @param {{seq:number, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
  * @returns {ArrayBuffer}
  */
-function encodeQueryHashes({ seq, total, approxTotal, hashRows, searchBackend }) {
+function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBackend }) {
     const hasTotal = typeof total === 'number';
     const searchBackendCode = SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
@@ -86,6 +86,8 @@ function encodeQueryHashes({ seq, total, approxTotal, hashRows, searchBackend })
         const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
         totalSize += 1 + 2 + idBytes + 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
+    const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
+    totalSize += 2 + tokenBytes;
 
     const buf = Buffer.alloc(totalSize);
     let offset = 0;
@@ -121,6 +123,11 @@ function encodeQueryHashes({ seq, total, approxTotal, hashRows, searchBackend })
         if (chatBytes > 0) {
             buf.write(row.chat, offset, chatBytes, 'utf8'); offset += chatBytes;
         }
+    }
+
+    buf.writeUInt16LE(tokenBytes, offset); offset += 2;
+    if (tokenBytes > 0) {
+        buf.write(token, offset, tokenBytes, 'utf8'); offset += tokenBytes;
     }
 
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
@@ -165,9 +172,20 @@ function addGroup(group) {
     return group;
 }
 
-/** The next /query answer: `ids` in server order, each a character or group fixture id. */
-function queueQuery({ ids, total = undefined, approxTotal = false, seq, searchBackend = undefined }) {
-    server.queryResponses.push({ ids, total, approxTotal, seq, searchBackend });
+/**
+ * The next /query answer: `ids` in server order, each a character or group fixture id. With `unchanged`, the
+ * answer is the server's JSON `{seq, token, unchanged: true}` stub instead.
+ */
+function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, searchBackend = undefined, unchanged = false }) {
+    server.queryResponses.push({ ids, total, approxTotal, seq, token, searchBackend, unchanged });
+}
+
+function jsonResponse(data) {
+    return {
+        ok: true,
+        headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null },
+        json: async () => data,
+    };
 }
 
 function hashRowFor(id) {
@@ -184,8 +202,15 @@ async function fakeFetch(url, init) {
     if (url === '/api/characters/query') {
         const next = server.queryResponses.shift();
         if (!next) throw new Error('unexpected /api/characters/query call');
+        if (next.unchanged) return jsonResponse({ seq: next.seq, token: next.token, unchanged: true });
+        if (!body.want.includes('hashes')) {
+            const payload = { seq: next.seq, token: next.token };
+            if (next.total !== undefined) payload.total = next.approxTotal ? `~${next.total}` : next.total;
+            if (next.searchBackend !== undefined) payload.searchBackend = next.searchBackend;
+            return jsonResponse(payload);
+        }
         const buffer = encodeQueryHashes({
-            seq: next.seq, total: next.total, approxTotal: next.approxTotal, searchBackend: next.searchBackend,
+            seq: next.seq, token: next.token, total: next.total, approxTotal: next.approxTotal, searchBackend: next.searchBackend,
             hashRows: next.ids.map(hashRowFor),
         });
         return {
@@ -271,7 +296,7 @@ let CharacterQueryError;
 /** @type {typeof import('../public/scripts/character-repository.js').isInvalidSortFieldError} */
 let isInvalidSortFieldError;
 
-// Re-imported per test: the module keeps a last-response-per-request cache that would otherwise carry `ifSeq`
+// Re-imported per test: the module keeps a last-response-per-request cache that would otherwise carry `ifToken`
 // from one test's request into another's.
 beforeEach(async () => {
     jest.resetModules();
@@ -433,7 +458,7 @@ describe('query()', () => {
         const sort = { field: 'random', seed: 42 };
         const result = await repo.query(filter, sort, 2, 50, ['rows', 'total']);
 
-        expect(result).toEqual({ rows: [hashModeCharacter(a)], total: 1, seq: 5, searchBackend: 'tantivy' });
+        expect(result).toEqual({ rows: [hashModeCharacter(a)], total: 1, seq: 5, token: null, searchBackend: 'tantivy' });
         const [url, init] = global.fetch.mock.calls[0];
         expect(url).toBe('/api/characters/query');
         expect(init.method).toBe('POST');
@@ -489,6 +514,77 @@ describe('query()', () => {
 
         expect(second.rows).toEqual([carol, bob, alice].map(hashModeCharacter));
         expect(fetchedUrls()).toEqual(['/api/characters/query']);
+    });
+
+    test('hash mode sends the last response\'s token as ifToken, never ifSeq, and reuses that response when the server answers unchanged', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        const alice = addCharacter({ avatar: 'alice', name: 'Alice' });
+        const sort = { field: 'name', order: 'asc' };
+        queueQuery({ ids: ['alice'], total: 1, seq: 4, token: 'tokenA' });
+
+        const first = await repo.query({ search: 'ali' }, sort);
+        expect(first).toEqual({ rows: [hashModeCharacter(alice)], total: 1, seq: 4, token: 'tokenA' });
+        expect(JSON.parse(global.fetch.mock.calls[0][1].body)).not.toHaveProperty('ifToken');
+
+        global.fetch.mockClear();
+        queueQuery({ seq: 4, token: 'tokenA', unchanged: true });
+
+        const second = await repo.query({ search: 'ali' }, sort);
+        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(body.ifToken).toBe('tokenA');
+        expect(body).not.toHaveProperty('ifSeq');
+        expect(second).toBe(first);
+    });
+
+    test('hash mode keeps a response under its new token even when seq did not move', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        const alice = addCharacter({ avatar: 'alice', name: 'Alice' });
+        const bob = addCharacter({ avatar: 'bob', name: 'Bob' });
+        await cacheCharacters(alice, bob);
+        queueQuery({ ids: ['alice'], total: 1, seq: 4, token: 'tokenA' });
+        await repo.query({ search: 'a' });
+
+        // The index caught up with a write: same seq, new token, a new hit.
+        queueQuery({ ids: ['alice', 'bob'], total: 2, seq: 4, token: 'tokenB' });
+        const second = await repo.query({ search: 'a' });
+        expect(second.rows).toEqual([alice, bob].map(hashModeCharacter));
+        expect(second.token).toBe('tokenB');
+
+        global.fetch.mockClear();
+        queueQuery({ seq: 4, token: 'tokenB', unchanged: true });
+        const third = await repo.query({ search: 'a' });
+        expect(JSON.parse(global.fetch.mock.calls[0][1].body).ifToken).toBe('tokenB');
+        expect(third).toBe(second);
+    });
+
+    test('a response with a null token is not kept, so the next identical request sends no ifToken', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        queueQuery({ ids: [], total: 0, seq: 4, token: null });
+        await repo.query({ includeGroups: true });
+
+        global.fetch.mockClear();
+        queueQuery({ ids: [], total: 0, seq: 4, token: null });
+        await repo.query({ includeGroups: true });
+        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(body).not.toHaveProperty('ifToken');
+        expect(body).not.toHaveProperty('ifSeq');
+    });
+
+    test('the JSON transport sends the last response\'s token as ifToken, never ifSeq, and reuses that response when unchanged', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        queueQuery({ total: 3, seq: 4, token: 'tokenA' });
+
+        const first = await repo.query({ search: 'a' }, undefined, 1, 100, ['total']);
+        expect(first).toEqual({ total: 3, seq: 4, token: 'tokenA' });
+
+        global.fetch.mockClear();
+        queueQuery({ seq: 4, token: 'tokenA', unchanged: true });
+
+        const second = await repo.query({ search: 'a' }, undefined, 1, 100, ['total']);
+        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(body.ifToken).toBe('tokenA');
+        expect(body).not.toHaveProperty('ifSeq');
+        expect(second).toBe(first);
     });
 
     test('rejects with a descriptive error on a non-ok response', async () => {
@@ -702,6 +798,7 @@ describe('query()/queryAll() with includeGroups', () => {
             ],
             total: 2,
             seq: 1,
+            token: null,
         });
         expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
             filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 50, want: ['hashes', 'total'],
