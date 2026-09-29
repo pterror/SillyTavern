@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, setStackedDrawers } from './frontent-test-utils.js';
 import { changeStreamRetryDelayMs } from '../../public/scripts/change-stream-backoff.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -344,6 +344,8 @@ test.describe('the list going from hidden to showing', () => {
 
     /** Covers the list with the character info panel, then waits for quiet. */
     async function coverList(page) {
+        // Only stacked drawers keep the list open behind character info; with it off, opening character info closes it.
+        await setStackedDrawers(page, true);
         await page.locator('#rm_button_create').click();
         await expect.poll(() => listShowing(page)).toBe(false);
         await waitForQuiet(log);
@@ -620,6 +622,8 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
     }
 
     async function coverList(page) {
+        // Only stacked drawers keep the list open behind character info; with it off, opening character info closes it.
+        await setStackedDrawers(page, true);
         await page.locator('#rm_button_create').click();
         await expect.poll(() => listShowing(page)).toBe(false);
         await waitForQuiet(log);
@@ -908,6 +912,8 @@ test.describe('the change stream reopening', () => {
         });
 
         test('with the list covered, sends nothing; uncovering it syncs and fetches the page once', async ({ page }) => {
+            // Only stacked drawers keep the list open behind character info; with it off, opening character info closes it.
+            await setStackedDrawers(page, true);
             await page.locator('#rm_button_create').click();
             await expect.poll(() => listShowing(page)).toBe(false);
             await waitForQuiet(log);
