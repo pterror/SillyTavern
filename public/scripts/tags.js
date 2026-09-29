@@ -4156,9 +4156,17 @@ function resolveInsetClipPath(clipPath, width, height) {
     };
 }
 
+/** @type {(() => void) | null} */
+let updateTagsDrawerUnderlayClip = null;
+
+/** Re-applies the tags panel's underlay clipping after power_user.stacked_drawers changes. */
+export function refreshTagsDrawerUnderlayClip() {
+    updateTagsDrawerUnderlayClip?.();
+}
+
 /**
- * The open tags panel overlays the form without reflowing it and is see-through, so everything it
- * covers is clipped away by cutting the panel's currently visible rectangle out of each covered
+ * The open tags panel overlays the form without reflowing it and is see-through. With stacked drawers on,
+ * everything it covers is clipped away by cutting the panel's currently visible rectangle out of each covered
  * element - frame by frame while the panel's clip-path transition runs.
  */
 function initTagsDrawerUnderlayClip() {
@@ -4191,7 +4199,7 @@ function initTagsDrawerUnderlayClip() {
             bottom: box.bottom - inset.bottom,
             left: box.left + inset.left,
         };
-        const covering = cover.bottom > cover.top && cover.right > cover.left;
+        const covering = power_user.stacked_drawers && cover.bottom > cover.top && cover.right > cover.left;
 
         /** @type {Set<HTMLElement>} */
         const covered = new Set();
@@ -4232,6 +4240,7 @@ function initTagsDrawerUnderlayClip() {
         frame = requestAnimationFrame(step);
     }
 
+    updateTagsDrawerUnderlayClip = update;
     new MutationObserver(track).observe(icon, { attributes: true, attributeFilter: ['class'] });
     const resizeObserver = new ResizeObserver(() => icon.classList.contains('up') && update());
     resizeObserver.observe(panel);

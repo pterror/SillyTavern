@@ -391,18 +391,18 @@
     }
 
     /* Single-panel width: any open panel already covers #sheld's spot, so hide it behind them too. */
-    body:has(#left-nav-panel.openDrawer) #sheld,
-    body:has(#right-nav-panel.openDrawer) #sheld,
-    body:has(#char-info-panel.openDrawer) #sheld,
-    body:has(.drawer-content.openDrawer) #sheld {
+    body.stackedDrawers:has(#left-nav-panel.openDrawer) #sheld,
+    body.stackedDrawers:has(#right-nav-panel.openDrawer) #sheld,
+    body.stackedDrawers:has(#char-info-panel.openDrawer) #sheld,
+    body.stackedDrawers:has(.drawer-content.openDrawer) #sheld {
         visibility: hidden;
     }
 
     /* Pinning can leave more than one of the 4 pinnable panels open; only the front one is shown here. */
-    #left-nav-panel.openDrawer:not(.frontMobileOverlay),
-    #right-nav-panel.openDrawer:not(.frontMobileOverlay),
-    #char-info-panel.openDrawer:not(.frontMobileOverlay),
-    #WorldInfo.openDrawer:not(.frontMobileOverlay) {
+    body.stackedDrawers #left-nav-panel.openDrawer:not(.frontMobileOverlay),
+    body.stackedDrawers #right-nav-panel.openDrawer:not(.frontMobileOverlay),
+    body.stackedDrawers #char-info-panel.openDrawer:not(.frontMobileOverlay),
+    body.stackedDrawers #WorldInfo.openDrawer:not(.frontMobileOverlay) {
         visibility: hidden;
     }
 
@@ -890,18 +890,18 @@ body.forceMobileView #char-info-panel:not(.openDrawer) {
     }
 
 /* Single-panel width: any open panel already covers #sheld's spot, so hide it behind them too. */
-body.forceMobileView:has(#left-nav-panel.openDrawer) #sheld,
-body.forceMobileView:has(#right-nav-panel.openDrawer) #sheld,
-body.forceMobileView:has(#char-info-panel.openDrawer) #sheld,
-body.forceMobileView:has(.drawer-content.openDrawer) #sheld {
+body.forceMobileView.stackedDrawers:has(#left-nav-panel.openDrawer) #sheld,
+body.forceMobileView.stackedDrawers:has(#right-nav-panel.openDrawer) #sheld,
+body.forceMobileView.stackedDrawers:has(#char-info-panel.openDrawer) #sheld,
+body.forceMobileView.stackedDrawers:has(.drawer-content.openDrawer) #sheld {
         visibility: hidden;
     }
 
 /* Pinning can leave more than one of the 4 pinnable panels open; only the front one is shown here. */
-body.forceMobileView #left-nav-panel.openDrawer:not(.frontMobileOverlay),
-body.forceMobileView #right-nav-panel.openDrawer:not(.frontMobileOverlay),
-body.forceMobileView #char-info-panel.openDrawer:not(.frontMobileOverlay),
-body.forceMobileView #WorldInfo.openDrawer:not(.frontMobileOverlay) {
+body.forceMobileView.stackedDrawers #left-nav-panel.openDrawer:not(.frontMobileOverlay),
+body.forceMobileView.stackedDrawers #right-nav-panel.openDrawer:not(.frontMobileOverlay),
+body.forceMobileView.stackedDrawers #char-info-panel.openDrawer:not(.frontMobileOverlay),
+body.forceMobileView.stackedDrawers #WorldInfo.openDrawer:not(.frontMobileOverlay) {
         visibility: hidden;
     }
 

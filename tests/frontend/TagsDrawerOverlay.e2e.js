@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, setStackedDrawers } from './frontent-test-utils.js';
 
 // NixOS host: the Playwright-managed Chromium download is missing system libs.
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -18,6 +18,10 @@ async function openCharacterWithTags(page) {
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button_label').click();
     await page.locator('.character_select', { hasText: name }).first().click();
+    // #tagInput counts as visible even in a closed panel, so wait for the selection itself: typing sooner is undone
+    // when the form is filled with the selected character.
+    await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
+    await expect(page.locator('#char-info-panel')).toHaveClass(/openDrawer/);
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
 
     const tags = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta'];
@@ -86,6 +90,7 @@ async function panelSettled(page) {
 
 test.describe('tags drawer overlay', () => {
     test.beforeEach(testSetup.awaitST);
+    test.beforeEach(async ({ page }) => setStackedDrawers(page, true));
 
     test('expanded panel starts at the collapsed row, reflows nothing, and hides what it covers', async ({ page }) => {
         await openCharacterWithTags(page);
@@ -163,6 +168,31 @@ test.describe('tags drawer overlay', () => {
                 }
             }
             expect(closing.at(-1).holeBottom).toBeNull();
+        } finally {
+            await deleteOpenCharacter(page);
+        }
+    });
+});
+
+test.describe('tags drawer overlay, stacked drawers off', () => {
+    test.beforeEach(testSetup.awaitST);
+    test.beforeEach(async ({ page }) => setStackedDrawers(page, false));
+
+    test('the expanded panel clips nothing under it until stacked drawers is turned on, and again once it is off', async ({ page }) => {
+        await openCharacterWithTags(page);
+        try {
+            await page.locator('#tags_div .inline-drawer-icon').click();
+            await expect(page.locator('#tags_div .inline-drawer-icon')).toHaveClass(/\bup\b/);
+            await panelSettled(page);
+            expect(await underlayHitUnderPanel(page)).toBe(true);
+            await expect(page.locator('#creatorInfoWrapper')).not.toHaveAttribute('style', /clip-path/);
+
+            await setStackedDrawers(page, true);
+            expect(await underlayHitUnderPanel(page)).toBe(false);
+
+            await setStackedDrawers(page, false);
+            expect(await underlayHitUnderPanel(page)).toBe(true);
+            await expect(page.locator('#creatorInfoWrapper')).not.toHaveAttribute('style', /clip-path/);
         } finally {
             await deleteOpenCharacter(page);
         }

@@ -67,3 +67,20 @@ export async function openCharacterManagementDrawer(page) {
 export async function openInfoTab(page, tab) {
     await page.locator(`label:has(> input[name="charInfoTabs_tab"][value="${tab}"])`).click();
 }
+
+/**
+ * Turns the Stacked Drawers setting on or off through its checkbox (styled out of view in the closed User Settings
+ * drawer) and waits until the change is applied and saved, so it survives a reload.
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
+export async function setStackedDrawers(page, on) {
+    const checkbox = page.locator('#stackedDrawers');
+    if (await checkbox.isChecked() === on) return;
+    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
+        && response.ok()
+        && (response.request().postData() ?? '').includes('stacked_drawers'));
+    await checkbox.evaluate(el => el.click());
+    await saved;
+    await page.waitForFunction(expected => document.body.classList.contains('stackedDrawers') === expected, on);
+}
