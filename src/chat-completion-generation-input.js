@@ -797,6 +797,8 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId, ow
  * @param {import('./chat-completion-budget.js').CountTokenAsyncFn} [params.countTokenAsyncFn] Overrides the real, internally-resolved OpenAI token counter.
  * @param {import('./chat-completion-budget.js').TokenHandler} [params.tokenHandler] Overrides the whole internally-constructed `TokenHandler`.
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
+ * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps] The send's `/props`
+ * check for a custom URL that is llama.cpp (see ChatCompletionConnection).
  * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome }>}
  */
 export async function resolveChatCompletionGenerationInput(directories, {
@@ -807,7 +809,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     regexScripts = [], regexExtensionEnabled = true,
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
-    macroExtras = {},
+    macroExtras = {}, llamaCppProps,
 } = {}) {
     void isImpersonate; void isContinue; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
     // `isSwipe` IS read (see `promptChat` below) - unlike isImpersonate/isContinue, it drives real
@@ -1007,7 +1009,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(
         await resolveTokenizer(
             { api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '', url: oaiSettings.custom_url },
-            { directories, customIncludeHeaders: substituteParams(oaiSettings.custom_include_headers, macroContext) },
+            { directories, customIncludeHeaders: substituteParams(oaiSettings.custom_include_headers, macroContext), llamaCppProps },
         ),
         tokenizerOutcome,
         directories,

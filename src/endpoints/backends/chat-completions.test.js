@@ -917,7 +917,7 @@ async function run() {
         const fakeLlamaCpp = await startFakeBackend((req, res, body) => {
             requests.push({ method: req.method, path: req.url, headers: req.headers, body: body ? JSON.parse(body) : undefined });
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            if (req.url === '/props') {
+            if (req.url.split('?')[0] === '/props') {
                 // llama.cpp's own `/props` shape (llama.cpp server README, "GET `/props`").
                 return res.end(JSON.stringify({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc' }));
             }
@@ -972,8 +972,10 @@ async function run() {
         assert.equal(sent.status, 200);
         const tokenizes = sendRequests.filter(r => r.path === '/tokenize');
         assert.ok(sendRequests.some(r => r.method === 'GET' && r.path === '/props'), 'the send asked whether the URL is llama.cpp');
+        const propsForSend = sendRequests.filter(r => r.path === '/props?model=some-unheard-of-model');
+        assert.equal(propsForSend.length, 1, 'one /props for every count and encode of the send, with ?model= for its model setting');
         assert.ok(tokenizes.length > 0, 'the send counted with llama.cpp\'s /tokenize');
-        for (const request of sendRequests.filter(r => r.path === '/props' || r.path === '/tokenize')) {
+        for (const request of sendRequests.filter(r => r.path.startsWith('/props') || r.path === '/tokenize')) {
             assert.equal(request.headers['x-user'], 'Tester', `${request.path}: the custom headers, substituted with the send's macros`);
             assert.equal(request.headers.authorization, 'Bearer custom-key', request.path);
             assert.equal(JSON.stringify(request.headers).includes('textgen-llamacpp-key'), false, request.path);

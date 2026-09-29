@@ -725,11 +725,12 @@ await testCase('/current/*: a request without state answers 400', async () => {
 // A fake llama.cpp recording each request: `/props` answers llama.cpp's shape (llama.cpp server README,
 // "GET `/props`"), `/tokenize` one token per UTF-8 byte (with `with_pieces`, each piece that byte as a
 // list, as llama.cpp gives a piece that isn't valid UTF-8), or 500 when `stepFake.fail`.
-const stepFake = { fail: false, requests: [] };
+const stepFake = { fail: false, requests: [], props: {} };
 const stepLlamaCpp = express();
 stepLlamaCpp.use(express.json());
 stepLlamaCpp.use((req, _res, next) => { stepFake.requests.push({ path: req.path, headers: req.headers, body: req.body }); next(); });
-stepLlamaCpp.get('/props', (_req, res) => res.send({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc' }));
+stepLlamaCpp.get('/props', (_req, res) => res.send({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc', ...stepFake.props }));
+stepLlamaCpp.get('/v1/models', (_req, res) => res.send({ data: [{ id: 'from-v1-models' }] }));
 stepLlamaCpp.post('/tokenize', (req, res) => {
     if (stepFake.fail) return res.sendStatus(500);
     const bytes = Array.from(Buffer.from(String(req.body.content)));
@@ -744,7 +745,7 @@ const { writeSecret } = await import('./secrets.js');
 writeSecret({ root: dataRoot }, 'api_key_custom', 'custom-key');
 writeSecret({ root: dataRoot }, 'api_key_llamacpp', 'textgen-llamacpp-key');
 const tokenizeBodies = () => stepFake.requests.filter(r => r.path === '/tokenize').map(r => r.body);
-const resetStepFake = () => { stepFake.fail = false; stepFake.requests.length = 0; };
+const resetStepFake = () => { stepFake.fail = false; stepFake.requests.length = 0; stepFake.props = {}; };
 
 await testCase('/current/count: a single field sent to llama.cpp carries no add_special, as upstream (a guard: passes before)', async () => {
     resetStepFake();
@@ -825,6 +826,41 @@ await testCase('/current/count, chat completion at a custom URL that is llama.cp
     assert.equal(counted.count, Buffer.byteLength(`user\n\n${text}`));
     assert.deepEqual({ id: counted.tokenizer.id, basis: counted.tokenizer.basis }, { id: tokenizers.API_TEXTGENERATIONWEBUI, basis: 'remote' });
     assert.equal(counted.tokenizer.key, `openai|custom|${stepUrl}|gemma-2-9b-it|api_textgenerationwebui`, 'keyed like textgen llama.cpp');
+});
+
+await testCase('/current/count on llama.cpp: two requests within PROPS_REUSE_MS ask /props once; one after it asks again', async () => {
+    const { clearLlamaCppPropsMemory, PROPS_REUSE_MS } = await import('../llamacpp-props.js');
+    clearLlamaCppPropsMemory();
+    resetStepFake();
+    const realNow = Date.now();
+    const clock = mock.method(Date, 'now', () => realNow);
+    const propsAsked = () => stepFake.requests.filter(r => r.path === '/props').length;
+    try {
+        await postCurrent('count', { state: stepTextgenState, texts: [text] });
+        clock.mock.mockImplementation(() => realNow + PROPS_REUSE_MS - 1);
+        await postCurrent('count', { state: stepTextgenState, texts: ['another text'] });
+        assert.equal(propsAsked(), 1, 'within PROPS_REUSE_MS: one /props');
+        clock.mock.mockImplementation(() => realNow + PROPS_REUSE_MS);
+        await postCurrent('count', { state: stepTextgenState, texts: [text] });
+        assert.equal(propsAsked(), 2, 'after PROPS_REUSE_MS: asked again');
+    } finally {
+        clock.mock.restore();
+    }
+    assert.equal(PROPS_REUSE_MS, 5000);
+});
+
+await testCase('/current/count, chat completion at a custom llama.cpp URL with no model setting: the name from /props model_alias, no /v1/models', async () => {
+    const { clearLlamaCppPropsMemory } = await import('../llamacpp-props.js');
+    clearLlamaCppPropsMemory();
+    resetStepFake();
+    stepFake.props = { model_alias: 'gemma-2-9b-it', model_path: '/models/x.gguf' };
+    const counted = await postCurrent('count', { state: { ...stepCustomState, model: '' }, messages });
+    assert.deepEqual(stepFake.requests.filter(r => r.path === '/props' || r.path === '/v1/models').map(r => r.path), ['/props']);
+    assert.equal(counted.count, Buffer.byteLength(`user\n\n${text}`));
+    stepFake.fail = true;
+    const fallback = await postCurrent('encode', { state: { ...stepTextgenState, model: '' }, texts: [text] });
+    assert.deepEqual(fallback.ids, [await encodeTextByLocalTokenizerType('gemma', text)], 'textgen too: the gemma copy, from model_alias');
+    assert.equal(stepFake.requests.some(r => r.path === '/v1/models'), false);
 });
 
 fakeServer.close();

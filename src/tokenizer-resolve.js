@@ -5,6 +5,7 @@ import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
 import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getBytePieceChunks, getLocalTokenizerFileIdentity, getTiktokenIdentity, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
 import { lookupModelTokenizer, mapResultKey } from './tokenizer-model-map.js';
 import { hasRemoteTokenizer, lookupBackendModel } from './backend-status.js';
+import { llamaCppPropsModelName, textgenLlamaCppBackend } from './llamacpp-props.js';
 import { TOKENIZER_NAMES, describeMapEntry, describeTokenizerId, localResolution, estimateResolution, resolveChatCompletionTokenizer, selectBackendResult, selectModelResult } from './tokenizer-map-resolution.js';
 import { findTokenizerSource } from './tokenizer-sources.js';
 import { loadRegistryTokenizer } from './tokenizer-loader.js';
@@ -379,9 +380,12 @@ function resolveExplicitSetting(id, registry) {
  * The one tokenizer resolution, used for counts and token ids alike. Never falls back to LLAMA:
  * only the map, an explicit setting or the NovelAI list give llama.
  * @param {TokenizerState} state
- * @param {{ directories?: import('./users.js').UserDirectoryList, customIncludeHeaders?: string } & import('./tokenizer-map-resolution.js').MapDeps} [deps]
+ * @param {{ directories?: import('./users.js').UserDirectoryList, customIncludeHeaders?: string, llamaCppProps?: import('./llamacpp-props.js').LlamaCppPropsCheck } & import('./tokenizer-map-resolution.js').MapDeps} [deps]
  * directories give the backend's API key headers for the model lookup and capability probe;
  * customIncludeHeaders are a server-built chat-completion send's custom headers, its macros substituted.
+ * llamaCppProps asks a llama.cpp backend's `/props`, for its identity (tokenizerIdentity()) and, when
+ * the model setting is empty and the reply has `model_alias`, its model name in place of `/v1/models`.
+ * Without it, the name comes from `/v1/models` and nothing asks `/props`.
  * @returns {Promise<ResolvedTokenizer>}
  */
 export async function resolveTokenizer(state, deps = {}) {
@@ -414,7 +418,11 @@ export async function resolveTokenizer(state, deps = {}) {
     }
 
     const backend = { api, type, url, directories: deps.directories };
-    const model = state.model || await lookupBackendModel(backend);
+    const props = api === 'textgenerationwebui' && type === TEXTGEN_TYPES.LLAMACPP && deps.llamaCppProps
+        ? await deps.llamaCppProps.ask(textgenLlamaCppBackend(url, state.model ?? '', deps.directories))
+        : undefined;
+    const propsName = state.model ? undefined : llamaCppPropsModelName(props);
+    const model = state.model || (propsName !== undefined ? propsName : await lookupBackendModel(backend));
     const local = describeMapEntry(await selectModelResult(api, model, state, deps), api, registry);
 
     if (await hasRemoteTokenizer(backend, TEXTGEN_TOKENIZERS)) {

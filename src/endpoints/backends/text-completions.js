@@ -23,7 +23,8 @@ import { createTextGenGenerationData } from '../../textgen-generation-data.js';
 import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
-import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
+import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
 import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
@@ -521,7 +522,9 @@ router.post('/props', async function (request, response) {
  * forwarded verbatim to `resolveTextCompletionGenerationInput()` and reused as-is for the real
  * persisted append below (the route handler is responsible for having already sanitized whatever the
  * client sent; this function does not re-validate it). Ignored when `userMessageText` is omitted.
- * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, warnings: object[] }>}
+ * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, tokenizerIdentity: string|null, name1: string, name2: string, warnings: object[] }>}
+ * `tokenizerIdentity` is the resolved tokenizer's tokenizerIdentity(), for llama.cpp from this
+ * generation's own `/props` answer.
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
@@ -593,7 +596,10 @@ export async function buildRawActionTextCompletionRequest(directories, {
         api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, model: backend.model ?? '',
         tokenizerSetting: powerUser.tokenizer,
     };
-    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    // llama.cpp says nothing when its model changes, so a generation asks its /props afresh.
+    const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
+    const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories, llamaCppProps });
+    const identity = await tokenizerIdentity(resolvedTokenizer, { textgenApiType: backend.type, llamaCppProps: llamaCppProps.props });
     const tokenizerOutcome = createTokenizerOutcome();
     const encodeOptions = {
         request, textgenBaseUrl: backend.serverUrl, textgenModel: backend.model, textgenApiType: backend.type,
@@ -646,7 +652,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, backend, anchorNodeId, anchorContent,
+        params: assembled.generate_data, backend, anchorNodeId, anchorContent, tokenizerIdentity: identity,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         // Prompt-itemization breakdown for the client's itemizedPrompts entry - see

@@ -7,6 +7,7 @@ import {
 } from '../tokenizer-resolve.js';
 import { localResolution } from '../tokenizer-map-resolution.js';
 import { readTokenizerState } from '../connection-state-header.js';
+import { createLlamaCppPropsCheck } from '../llamacpp-props.js';
 
 // The `/api/tokenizers/current/*` routes. They live apart from ./tokenizers.js because the
 // resolver imports that module.
@@ -85,7 +86,9 @@ function currentTokenizerRoute(parse, handle) {
             return response.sendStatus(400);
         }
         try {
-            const resolved = await resolveTokenizer({ ...state, explicitTokenizer }, { directories: request.user?.directories });
+            // A recent /props answer is reused, so typing in a field doesn't ask llama.cpp on every keystroke.
+            const llamaCppProps = createLlamaCppPropsCheck({ reuse: true });
+            const resolved = await resolveTokenizer({ ...state, explicitTokenizer }, { directories: request.user?.directories, llamaCppProps });
             const outcome = createTokenizerOutcome();
             const options = {
                 // setAdditionalHeaders() picks the backend's API key by the body's api_type.
