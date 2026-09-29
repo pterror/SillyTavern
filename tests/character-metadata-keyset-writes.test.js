@@ -1,0 +1,167 @@
+import { describe, test, expect, jest, beforeAll, beforeEach, afterEach } from '@jest/globals';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
+
+// Wraps whichever engine this install resolves to (native or wasm), recording every call's method, SQL and arguments.
+/** @type {{ method: string, sql: string, args: any[] }[]} */
+const calls = [];
+
+async function getRecordingSqliteEngine() {
+    const engine = await realSqliteEngine.getSqliteEngine();
+    if (!engine) {
+        return engine;
+    }
+    return {
+        ...engine,
+        openDatabase: (dbPath, options) => {
+            const handle = engine.openDatabase(dbPath, options);
+            for (const method of ['all', 'get', 'iterate', 'run', 'readBounded']) {
+                const real = handle[method];
+                handle[method] = (sql, ...args) => {
+                    calls.push({ method, sql, args });
+                    return real(sql, ...args);
+                };
+            }
+            return handle;
+        },
+    };
+}
+
+jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
+    ...realSqliteEngine,
+    getSqliteEngine: getRecordingSqliteEngine,
+}));
+
+/** @type {typeof import('../src/character-metadata-db.js')} */
+let metadataDb;
+/** @type {typeof import('../src/util.js').parseCreateDateToEpochMs} */
+let parseCreateDateToEpochMs;
+/** @type {typeof import('better-sqlite3')} */
+let Database;
+/** @type {import('../src/users.js').UserDirectoryList} */
+let directories;
+
+beforeAll(async () => {
+    const util = await import('../src/util.js');
+    util.setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
+    parseCreateDateToEpochMs = util.parseCreateDateToEpochMs;
+
+    metadataDb = await import('../src/character-metadata-db.js');
+    Database = (await import('better-sqlite3')).default;
+});
+
+beforeEach(() => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-cmdb-keyset-writes-test-'));
+    directories = /** @type {any} */ ({
+        root: tempDir,
+        characters: path.join(tempDir, 'characters'),
+        chats: path.join(tempDir, 'chats'),
+        groups: path.join(tempDir, 'groups'),
+        groupChats: path.join(tempDir, 'groupChats'),
+    });
+    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    calls.length = 0;
+});
+
+afterEach(() => {
+    jest.restoreAllMocks();
+    metadataDb.disposeMetadataStores();
+    fs.rmSync(directories.root, { recursive: true, force: true });
+});
+
+/** @template T @param {(db: import('better-sqlite3').Database) => T} fn @returns {T} */
+function withRawDb(fn) {
+    const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+    try {
+        return fn(db);
+    } finally {
+        db.close();
+    }
+}
+
+/** @param {{ sql: string }} call */
+const oneLine = (call) => call.sql.replace(/\s+/g, ' ').trim();
+
+describe('migrateCreateDateColumn reads the rows to convert in keyset chunks', () => {
+    test('2001 parseable, one unparseable and one NULL create_date: three bounded chunk reads, every row converted', async () => {
+        /** @type {Map<string, string | null>} */
+        const seeded = new Map();
+        for (let i = 0; i < 2001; i++) {
+            const id = `char-${String(i).padStart(5, '0')}.png`;
+            // Every other row uses the ST "humanized" format, the rest ISO 8601.
+            seeded.set(id, i % 2 === 0
+                ? new Date(Date.UTC(2024, 0, 1) + i * 1000).toISOString()
+                : `2024-6-5 @14h ${Math.floor(i / 60) % 60}m ${i % 60}s 682ms`);
+        }
+        seeded.set('char-01000-garbage.png', 'not a date at all');
+        seeded.set('char-01500-missing.png', null);
+
+        // The table as it was before create_date became INTEGER.
+        withRawDb(db => {
+            db.exec(`
+                CREATE TABLE characters (
+                    id             TEXT PRIMARY KEY,
+                    name           TEXT NOT NULL,
+                    name_fold      TEXT NOT NULL,
+                    fav            INTEGER NOT NULL,
+                    date_added     INTEGER NOT NULL,
+                    create_date    TEXT,
+                    date_last_chat INTEGER NOT NULL,
+                    chat_size      INTEGER NOT NULL,
+                    data_size      INTEGER NOT NULL,
+                    file_mtime     INTEGER NOT NULL,
+                    world          TEXT,
+                    creator        TEXT,
+                    version        TEXT,
+                    creator_notes  TEXT,
+                    shallow_json   TEXT NOT NULL,
+                    change_seq     INTEGER NOT NULL
+                );
+                CREATE INDEX idx_characters_create_date ON characters(create_date);
+            `);
+            const insert = db.prepare(`
+                INSERT INTO characters (id, name, name_fold, fav, date_added, create_date, date_last_chat, chat_size, data_size, file_mtime, world, creator, version, creator_notes, shallow_json, change_seq)
+                VALUES (@id, @id, @id, 0, 500, @createDate, 0, 0, 0, 500, NULL, NULL, NULL, NULL, '{}', 1)
+            `);
+            db.transaction(() => {
+                for (const [id, createDate] of seeded) insert.run({ id, createDate });
+            })();
+        });
+
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        // Any exported call opens the store, which runs migrateCreateDateColumn().
+        await metadataDb.getCharacterMetadataRow(directories, 'char-00000.png');
+
+        const chunkSql = 'SELECT id, create_date FROM characters WHERE create_date IS NOT NULL AND id > ? ORDER BY id LIMIT ?';
+        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
+        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
+        for (const read of chunkReads) {
+            expect(read.args[1]).toBe(1000);
+            expect(read.args[0][1]).toBe(1000);
+        }
+        expect(calls.filter(c => c.method === 'all' && /\bcreate_date\b/.test(c.sql))).toEqual([]);
+
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('1 of 2002 row(s)'));
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('not a date at all'));
+
+        withRawDb(db => {
+            const column = Array.from(db.prepare('PRAGMA table_info(characters)').iterate()).find(c => c.name === 'create_date');
+            expect(column.type).toBe('INTEGER');
+
+            const migrated = new Map(Array.from(db.prepare('SELECT id, create_date FROM characters').iterate(), r => [r.id, r.create_date]));
+            expect(migrated.size).toBe(seeded.size);
+            const expected = new Map(Array.from(seeded, ([id, createDate]) => [id, createDate === null ? null : parseCreateDateToEpochMs(createDate)]));
+            expect(Array.from(expected.values()).filter(v => v !== null)).toHaveLength(2001);
+            expect(migrated).toEqual(expected);
+            expect(migrated.get('char-01000-garbage.png')).toBeNull();
+            expect(migrated.get('char-01500-missing.png')).toBeNull();
+            expect(migrated.get('char-00000.png')).toBe(Date.UTC(2024, 0, 1));
+        });
+    });
+});

@@ -141,6 +141,9 @@ function inItemSavepoint(db, fn) {
 
 const BATCH_FLUSH_SIZE = 500;
 
+// Rows per keyset read (WHERE id > ? ORDER BY id LIMIT ?) in the read-then-write migrations and writers.
+const KEYSET_CHUNK = 1000;
+
 // Rows applyOrBuffer() lets accumulate in entry.batch.pending before flushBatch() commits them. Bounds the
 // restart-loss window and the buffer's peak memory during a large batch-import pass (350k+ files here) -
 // NOT chosen to amortize flush overhead, since a bare transaction commit measures ~0.01-0.05ms under WAL
@@ -771,28 +774,44 @@ function migrateCreateDateColumn(db) {
 
     // If create_date_ms already exists (interrupted run), skip ADD + backfill and go straight to DROP + RENAME.
     if (!createDateMsColumn) {
-        const rows = (/** @type {{ id: string, create_date: number | null }[]} */ (db.all('SELECT id, create_date FROM characters WHERE create_date IS NOT NULL')));
-
         // SQLite refuses to DROP COLUMN while an index still references it.
         db.exec('DROP INDEX IF EXISTS idx_characters_create_date');
         db.exec('ALTER TABLE characters ADD COLUMN create_date_ms INTEGER');
 
         /** @type {{ id: string, value: number | null }[]} */
         const unparseable = [];
+        let lastId = '';
+        let rowsRead = 0;
         db.transaction(() => {
-            for (const row of rows) {
-                const ms = parseCreateDateToEpochMs(row.create_date);
-                if (ms === null) {
-                    unparseable.push({ id: row.id, value: row.create_date });
-                    continue;
+            // transaction() reruns this callback on busy; a rerun starts over from the first row.
+            lastId = '';
+            rowsRead = 0;
+            for (;;) {
+                const chunk = (/** @type {{ id: string, create_date: number | null }[]} */ (db.readBounded(
+                    'SELECT id, create_date FROM characters WHERE create_date IS NOT NULL AND id > ? ORDER BY id LIMIT ?',
+                    [lastId, KEYSET_CHUNK],
+                    KEYSET_CHUNK,
+                )));
+                if (chunk.length === 0) break;
+                rowsRead += chunk.length;
+
+                for (const row of chunk) {
+                    const ms = parseCreateDateToEpochMs(row.create_date);
+                    if (ms === null) {
+                        unparseable.push({ id: row.id, value: row.create_date });
+                        continue;
+                    }
+                    db.run('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id', { id: row.id, createDateMs: ms });
                 }
-                db.run('UPDATE characters SET create_date_ms = @createDateMs WHERE id = @id', { id: row.id, createDateMs: ms });
+
+                lastId = chunk[chunk.length - 1].id;
+                if (chunk.length < KEYSET_CHUNK) break;
             }
         });
 
         if (unparseable.length > 0) {
             console.error(color.yellow(
-                `[character-metadata] create_date migration: ${unparseable.length} of ${rows.length} row(s) had a ` +
+                `[character-metadata] create_date migration: ${unparseable.length} of ${rowsRead} row(s) had a ` +
                 'create_date value that could not be parsed as a date (neither ISO 8601 nor the ST "humanized" ' +
                 'format) and were set to NULL instead. Affected rows: ' +
                 JSON.stringify(unparseable),
