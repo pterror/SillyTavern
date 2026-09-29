@@ -64,6 +64,7 @@ import { createGenerationParameters } from '../../chat-completion-generation-dat
 import { substituteParams } from '../../macro-substitution.js';
 import { refreshLlamaCppDetection } from '../../custom-llamacpp.js';
 import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
+import { writeBack } from '../../token-count-store.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
@@ -236,8 +237,9 @@ function setJsonObjectFormat(bodyParams, messages, jsonSchema) {
  * the bytes/JSON actually sent to the client are unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendClaudeRequest(request, response, persist, warnings = null) {
+async function sendClaudeRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiUrl = new URL(request.body.reverse_proxy || API_CLAUDE).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE, request.body.secret_id);
     const divider = '-'.repeat(process.stdout.columns);
@@ -425,6 +427,7 @@ async function sendClaudeRequest(request, response, persist, warnings = null) {
                 ...additionalHeaders,
             },
         });
+        onDispatched?.();
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
@@ -496,8 +499,9 @@ async function sendClaudeRequest(request, response, persist, warnings = null) {
  * unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendMakerSuiteRequest(request, response, persist, warnings = null) {
+async function sendMakerSuiteRequest(request, response, persist, warnings = null, onDispatched = null) {
     const useVertexAi = request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.VERTEXAI;
     const apiName = useVertexAi ? 'Google Vertex AI' : 'Google AI Studio';
     let apiUrl;
@@ -783,6 +787,7 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
             headers: headers,
             signal: controller.signal,
         });
+        onDispatched?.();
 
         if (stream) {
             try {
@@ -880,8 +885,9 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
  * the bytes/JSON actually sent to the client are unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendAI21Request(request, response, persist, warnings = null) {
+async function sendAI21Request(request, response, persist, warnings = null, onDispatched = null) {
     if (!request.body) return response.sendStatus(400);
 
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AI21, request.body.secret_id);
@@ -935,6 +941,7 @@ async function sendAI21Request(request, response, persist, warnings = null) {
 
     try {
         const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
+        onDispatched?.();
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
@@ -988,8 +995,9 @@ async function sendAI21Request(request, response, persist, warnings = null) {
  * the client are unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendMistralAIRequest(request, response, persist, warnings = null) {
+async function sendMistralAIRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiUrl = new URL(request.body.reverse_proxy || API_MISTRAL).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.MISTRALAI, request.body.secret_id);
 
@@ -1052,6 +1060,7 @@ async function sendMistralAIRequest(request, response, persist, warnings = null)
         console.debug('MisralAI request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        onDispatched?.();
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
@@ -1115,8 +1124,9 @@ async function sendMistralAIRequest(request, response, persist, warnings = null)
  * unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendCohereRequest(request, response, persist, warnings = null) {
+async function sendCohereRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.COHERE, request.body.secret_id);
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
@@ -1189,6 +1199,7 @@ async function sendCohereRequest(request, response, persist, warnings = null) {
 
         if (request.body.stream) {
             const stream = await fetch(apiUrl, config);
+            onDispatched?.();
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
             // accumulate the real reply text for persistence when `persist` is set - the compact re-encoding itself always
             // happens; a falsy `persist` only skips persistence (see
@@ -1204,6 +1215,7 @@ async function sendCohereRequest(request, response, persist, warnings = null) {
                     : undefined, null, warnings);
         } else {
             const generateResponse = await fetch(apiUrl, config);
+            onDispatched?.();
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
                 console.warn(`Cohere API returned error: ${generateResponse.status} ${generateResponse.statusText} ${errorText}`);
@@ -1258,8 +1270,9 @@ async function sendCohereRequest(request, response, persist, warnings = null) {
  * sent to the client are unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendDeepSeekRequest(request, response, persist, warnings = null) {
+async function sendDeepSeekRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiUrl = new URL(request.body.reverse_proxy || API_DEEPSEEK).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.DEEPSEEK, request.body.secret_id);
 
@@ -1343,6 +1356,7 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null) 
         console.debug('DeepSeek request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        onDispatched?.();
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
@@ -1404,8 +1418,9 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null) 
  * bytes/JSON actually sent to the client are unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendXaiRequest(request, response, persist, warnings = null) {
+async function sendXaiRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiUrl = new URL(request.body.reverse_proxy || API_XAI).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.XAI, request.body.secret_id);
 
@@ -1483,6 +1498,7 @@ async function sendXaiRequest(request, response, persist, warnings = null) {
         console.debug('xAI request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        onDispatched?.();
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
@@ -1539,8 +1555,9 @@ async function sendXaiRequest(request, response, persist, warnings = null) {
  * unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendAimlapiRequest(request, response, persist, warnings = null) {
+async function sendAimlapiRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiUrl = API_AIMLAPI;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AIMLAPI, request.body.secret_id);
 
@@ -1617,6 +1634,7 @@ async function sendAimlapiRequest(request, response, persist, warnings = null) {
         console.debug('AI/ML API request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        onDispatched?.();
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
@@ -1673,8 +1691,9 @@ async function sendAimlapiRequest(request, response, persist, warnings = null) {
  * Purely additive: the bytes/JSON actually sent to the client are unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendElectronHubRequest(request, response, persist, warnings = null) {
+async function sendElectronHubRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiUrl = API_ELECTRONHUB;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.ELECTRONHUB, request.body.secret_id);
 
@@ -1758,6 +1777,7 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
         console.debug('Electron Hub request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        onDispatched?.();
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
@@ -1816,8 +1836,9 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
  * either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendChutesRequest(request, response, persist, warnings = null) {
+async function sendChutesRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiUrl = API_CHUTES;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.CHUTES, request.body.secret_id);
 
@@ -1890,6 +1911,7 @@ async function sendChutesRequest(request, response, persist, warnings = null) {
         console.debug('Chutes request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        onDispatched?.();
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
@@ -1949,8 +1971,9 @@ async function sendChutesRequest(request, response, persist, warnings = null) {
  * Purely additive: the bytes/JSON actually sent to the client are unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendMinimaxRequest(request, response, persist, warnings = null) {
+async function sendMinimaxRequest(request, response, persist, warnings = null, onDispatched = null) {
     const apiUrl = request.body.minimax_endpoint === MINIMAX_ENDPOINT.CN
         ? API_MINIMAX_CN : API_MINIMAX;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.MINIMAX, request.body.secret_id);
@@ -2003,6 +2026,7 @@ async function sendMinimaxRequest(request, response, persist, warnings = null) {
         console.debug('MiniMax request:', requestBody);
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+        onDispatched?.();
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
@@ -2061,8 +2085,9 @@ async function sendMinimaxRequest(request, response, persist, warnings = null) {
  * client are unaffected either way.
  * @param {Array<{kind: string, key: string, message: string, entries?: string[]}>|null} [warnings] The `/generate`
  * route's per-request warnings - passed to the stream writer, or set as the reply's `warnings`, only when non-empty.
+ * @param {(() => void) | null} [onDispatched] Called once the backend request has been sent.
  */
-async function sendAzureOpenAIRequest(request, response, persist, warnings = null) {
+async function sendAzureOpenAIRequest(request, response, persist, warnings = null, onDispatched = null) {
     // 1. GATHER & VALIDATE SETTINGS
     const { azure_base_url, azure_deployment_name, azure_api_version } = request.body;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AZURE_OPENAI, request.body.secret_id);
@@ -2127,6 +2152,7 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
     console.debug('Azure OpenAI Request Body:', apiRequestBody);
     try {
         const fetchResponse = await fetch(endpointUrl, config);
+        onDispatched?.();
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
@@ -2778,7 +2804,7 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * client-only to begin with.
  * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>} `warnings`: the `dropped` warning when bias entries were left out.
  * `tokenCountRows` are the message counts and bias ids this build read from or added to the token tables,
- * for writeBack() once the request is sent; nothing writes them yet.
+ * written back by the `/generate` route once the backend request is sent.
  * `enabledServerTools` is the same list used to build `params.tools` (empty when no server tool is
  * currently enabled for this request) - returned so the route handler's tool-execution loop doesn't
  * need to re-query the registry (and re-run every tool's own `shouldEnable(ctx)`) a second time.
@@ -3674,6 +3700,16 @@ function parseServerToolArguments(rawArguments) {
  * whatever it already was BEFORE this round (unchanged), returned only so a caller that logs/asserts
  * on it has something real, never a node this round itself created.
  */
+/**
+ * Stores a raw-action build's counts and ids without holding up the request; a failure is only logged.
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {import('../../token-count-store.js').PendingTokenRows | null} rows
+ */
+function storeTokenCountRowsInBackground(directories, rows) {
+    if (!rows) return;
+    writeBack(directories, rows).catch(error => console.error('Failed to store token counts:', error));
+}
+
 async function runServerToolRounds({ directories, ownerId, characterAvatar, groupId, enabledTools, clientToolNames, clientToolSchemas, stealthToolNames = new Set(), leafNodeId, isSwipe = false, initialJson, refetch }) {
     const toolsByName = new Map(enabledTools.map(tool => [tool.name, tool]));
     let json = initialJson;
@@ -3791,6 +3827,7 @@ async function runServerToolRounds({ directories, ownerId, characterAvatar, grou
         });
 
         const fetchResponse = await refetch(rebuilt.params.messages);
+        storeTokenCountRowsInBackground(directories, rebuilt.tokenCountRows);
         if (!fetchResponse.ok) {
             const responseText = await fetchResponse.text().catch(() => '');
             return {
@@ -3973,6 +4010,11 @@ router.post('/generate', async function (request, response) {
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
 
+    // The raw-action build's counts and ids, stored once the backend has the request.
+    /** @type {import('../../token-count-store.js').PendingTokenRows | null} */
+    let tokenCountRows = null;
+    const storeTokenCountRows = () => storeTokenCountRowsInBackground(request.user.directories, tokenCountRows);
+
     try {
         if (!request.body) return response.status(400).send({ error: true });
 
@@ -4121,6 +4163,7 @@ router.post('/generate', async function (request, response) {
                 return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
             }
             warnings.push(...built.warnings);
+            tokenCountRows = built.tokenCountRows;
 
             // Persist the NEW USER MESSAGE - "the user sent this" - BEFORE dispatching to the
             // backend. This is a real fact that should be committed regardless of whether generation
@@ -4250,19 +4293,19 @@ router.post('/generate', async function (request, response) {
         }
 
         switch (request.body.chat_completion_source) {
-            case CHAT_COMPLETION_SOURCES.CLAUDE: return await sendClaudeRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.AI21: return await sendAI21Request(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.MAKERSUITE: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.VERTEXAI: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.MISTRALAI: return await sendMistralAIRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.COHERE: return await sendCohereRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.DEEPSEEK: return await sendDeepSeekRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.AIMLAPI: return await sendAimlapiRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.XAI: return await sendXaiRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.CHUTES: return await sendChutesRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.MINIMAX: return await sendMinimaxRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.ELECTRONHUB: return await sendElectronHubRequest(request, response, pendingAssistantPersist, warnings);
-            case CHAT_COMPLETION_SOURCES.AZURE_OPENAI: return await sendAzureOpenAIRequest(request, response, pendingAssistantPersist, warnings);
+            case CHAT_COMPLETION_SOURCES.CLAUDE: return await sendClaudeRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.AI21: return await sendAI21Request(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.MAKERSUITE: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.VERTEXAI: return await sendMakerSuiteRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.MISTRALAI: return await sendMistralAIRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.COHERE: return await sendCohereRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.DEEPSEEK: return await sendDeepSeekRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.AIMLAPI: return await sendAimlapiRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.XAI: return await sendXaiRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.CHUTES: return await sendChutesRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.MINIMAX: return await sendMinimaxRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.ELECTRONHUB: return await sendElectronHubRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
+            case CHAT_COMPLETION_SOURCES.AZURE_OPENAI: return await sendAzureOpenAIRequest(request, response, pendingAssistantPersist, warnings, storeTokenCountRows);
         }
 
         let apiUrl;
@@ -4681,6 +4724,7 @@ router.post('/generate', async function (request, response) {
         console.debug('Chat Completion request:', requestBody);
 
         const fetchResponse = await fetch(endpointUrl, config);
+        storeTokenCountRows();
 
         if (request.body.stream) {
             // Server-native (chunk (b)) AND client-proxy (chunk (c)) tool-calling loop, STREAMING
