@@ -10061,31 +10061,33 @@ function openAlternateGreetings() {
             const avatar = $('.open_alternate_greetings').data('avatar');
             const character = avatar ? charactersStore.get(avatar) : null;
             if (!character) return;
-            const expectedHash = greetingPagerState.hashes[sourceIndex];
-            const targetExpectedHash = greetingPagerState.hashes[targetIndex];
-            if (!Number.isFinite(expectedHash) || !Number.isFinite(targetExpectedHash)) return;
-            const result = await postGreetingOp('move', { avatar_url: avatar, source_position: sourceIndex, expected_hash: expectedHash, side, target_position: targetIndex, target_expected_hash: targetExpectedHash });
-            if (!result.ok) {
-                console.error('Greeting move failed', { avatar, sourceIndex, side, targetIndex, status: result.status, reason: result.reason });
-                if (result.status === 409) {
-                    if (await reloadGreetingsFromServer(avatar)) {
-                        toastr.warning(t`The greetings were changed in another session, so this move was not made. The list has been reloaded.`, t`Greeting not moved`);
-                    } else {
-                        blockMoves();
-                        toastr.error(t`The greetings were changed in another session, so this move was not made, and the list couldn't be refreshed.`, t`Greeting not moved`);
+            await queueGreetingSave(avatar, async () => {
+                const expectedHash = greetingPagerState.hashes[sourceIndex];
+                const targetExpectedHash = greetingPagerState.hashes[targetIndex];
+                if (!Number.isFinite(expectedHash) || !Number.isFinite(targetExpectedHash)) return;
+                const result = await postGreetingOp('move', { avatar_url: avatar, source_position: sourceIndex, expected_hash: expectedHash, side, target_position: targetIndex, target_expected_hash: targetExpectedHash });
+                if (!result.ok) {
+                    console.error('Greeting move failed', { avatar, sourceIndex, side, targetIndex, status: result.status, reason: result.reason });
+                    if (result.status === 409) {
+                        if (await reloadGreetingsFromServer(avatar)) {
+                            toastr.warning(t`The greetings were changed in another session, so this move was not made. The list has been reloaded.`, t`Greeting not moved`);
+                        } else {
+                            blockMoves();
+                            toastr.error(t`The greetings were changed in another session, so this move was not made, and the list couldn't be refreshed.`, t`Greeting not moved`);
+                        }
+                        return;
                     }
+                    toastr.error(t`Failed to move the greeting.`, t`Greeting not moved`);
                     return;
                 }
-                toastr.error(t`Failed to move the greeting.`, t`Greeting not moved`);
-                return;
-            }
-            const newGreetings = array.slice();
-            const [moved] = newGreetings.splice(sourceIndex, 1);
-            newGreetings.splice(insertIndex, 0, moved);
-            await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
+                const newGreetings = array.slice();
+                const [moved] = newGreetings.splice(sourceIndex, 1);
+                newGreetings.splice(insertIndex, 0, moved);
+                await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
 
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            openAlternateGreetings();
+                await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+                openAlternateGreetings();
+            });
         },
     });
 
@@ -10261,23 +10263,25 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const avatar = $('.open_alternate_greetings').data('avatar');
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
-        const expectedHash = greetingPagerState.hashes[index];
-        if (!Number.isFinite(expectedHash)) return;
-        const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
-        if (!result.ok) {
-            console.error('Greeting delete failed', { avatar, position: index, status: result.status, reason: result.reason });
-            toastr.error(result.status === 409
-                ? t`This character was changed in another session, so this greeting was not deleted. Close and reopen this popup to see the current version.`
-                : t`Failed to delete the greeting.`, t`Greeting not deleted`);
-            return;
-        }
-        const newGreetings = array.slice();
-        newGreetings.splice(index, 1);
-        await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
+        await queueGreetingSave(avatar, async () => {
+            const expectedHash = greetingPagerState.hashes[index];
+            if (!Number.isFinite(expectedHash)) return;
+            const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
+            if (!result.ok) {
+                console.error('Greeting delete failed', { avatar, position: index, status: result.status, reason: result.reason });
+                toastr.error(result.status === 409
+                    ? t`This character was changed in another session, so this greeting was not deleted. Close and reopen this popup to see the current version.`
+                    : t`Failed to delete the greeting.`, t`Greeting not deleted`);
+                return;
+            }
+            const newGreetings = array.slice();
+            newGreetings.splice(index, 1);
+            await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
 
-        // Sync and reopen
-        await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-        openAlternateGreetings();
+            // Sync and reopen
+            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+            openAlternateGreetings();
+        });
     });
 
     // Pick up to move (pick-and-place reordering)
@@ -10318,20 +10322,22 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const avatar = $('.open_alternate_greetings').data('avatar');
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
-        const expectedHash = greetingPagerState.hashes[index];
-        if (!Number.isFinite(expectedHash)) return;
-        const result = await postGreetingOp('default/set', { avatar_url: avatar, position: index, expected_hash: expectedHash });
-        if (!result.ok) {
-            console.error('Set default greeting failed', { avatar, position: index, status: result.status, reason: result.reason });
-            toastr.error(result.status === 409
-                ? t`This character was changed in another session, so the default was not changed. Close and reopen this popup to see the current version.`
-                : t`Failed to set the default greeting.`, t`Default not changed`);
-            return;
-        }
-        await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
+        await queueGreetingSave(avatar, async () => {
+            const expectedHash = greetingPagerState.hashes[index];
+            if (!Number.isFinite(expectedHash)) return;
+            const result = await postGreetingOp('default/set', { avatar_url: avatar, position: index, expected_hash: expectedHash });
+            if (!result.ok) {
+                console.error('Set default greeting failed', { avatar, position: index, status: result.status, reason: result.reason });
+                toastr.error(result.status === 409
+                    ? t`This character was changed in another session, so the default was not changed. Close and reopen this popup to see the current version.`
+                    : t`Failed to set the default greeting.`, t`Default not changed`);
+                return;
+            }
+            await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
 
-        await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-        openAlternateGreetings();
+            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+            openAlternateGreetings();
+        });
     });
 
     // Clears the default entirely - a card can have no default at all.
@@ -10349,16 +10355,18 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const avatar = $('.open_alternate_greetings').data('avatar');
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
-        const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_position: greetingPagerState.defaultIndex });
-        if (!result.ok) {
-            console.error('Unset default greeting failed', { avatar, status: result.status, reason: result.reason });
-            toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
-            return;
-        }
-        await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
+        await queueGreetingSave(avatar, async () => {
+            const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_position: greetingPagerState.defaultIndex });
+            if (!result.ok) {
+                console.error('Unset default greeting failed', { avatar, status: result.status, reason: result.reason });
+                toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
+                return;
+            }
+            await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
 
-        await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-        openAlternateGreetings();
+            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
+            openAlternateGreetings();
+        });
     });
 
     template.find('.alternate_greetings_list').append(greetingBlock);
@@ -10856,55 +10864,58 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
         return true;
     }
 
-    const greetings = start.greetings.slice();
-    let hashes = greetings.map(hashGreetingText);
-    let defaultIndex = start.defaultIndex;
+    // One queued save for the whole run: its ops never overlap another greeting write for this character.
+    return await queueGreetingSave(avatar, async () => {
+        const greetings = start.greetings.slice();
+        let hashes = greetings.map(hashGreetingText);
+        let defaultIndex = start.defaultIndex;
 
-    /**
-     * @param {string} opName
-     * @param {object} body
-     * @param {() => void} applyLocally
-     */
-    const runOp = async (opName, body, applyLocally) => {
-        const result = await postGreetingOp(opName, { avatar_url: avatar, ...body });
-        if (!result.ok) {
-            console.error('Greeting save failed', { avatar, opName, status: result.status, reason: result.reason });
-            toastr.error(result.status === 409
-                ? t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`
-                : t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-            return false;
+        /**
+         * @param {string} opName
+         * @param {object} body
+         * @param {() => void} applyLocally
+         */
+        const runOp = async (opName, body, applyLocally) => {
+            const result = await postGreetingOp(opName, { avatar_url: avatar, ...body });
+            if (!result.ok) {
+                console.error('Greeting save failed', { avatar, opName, status: result.status, reason: result.reason });
+                toastr.error(result.status === 409
+                    ? t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`
+                    : t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+                return false;
+            }
+            applyLocally();
+            hashes = result.hashes;
+            defaultIndex = result.defaultPosition;
+            const character = charactersStore.get(avatar);
+            if (character) {
+                await applyGreetingOpSuccess(character, greetings.slice(), defaultIndex, hashes);
+            }
+            return true;
+        };
+
+        const shared = Math.min(greetings.length, target.greetings.length);
+        for (let position = 0; position < shared; position++) {
+            const text = target.greetings[position];
+            if (greetings[position] === text) continue;
+            if (!await runOp('edit', { position, expected_hash: hashes[position], text }, () => { greetings[position] = text; })) return false;
         }
-        applyLocally();
-        hashes = result.hashes;
-        defaultIndex = result.defaultPosition;
-        const character = charactersStore.get(avatar);
-        if (character) {
-            await applyGreetingOpSuccess(character, greetings.slice(), defaultIndex, hashes);
+        while (greetings.length < target.greetings.length) {
+            const text = target.greetings[greetings.length];
+            if (!await runOp('add', { position: greetings.length, expected_length: hashes.length, text }, () => { greetings.push(text); })) return false;
+        }
+        while (greetings.length > target.greetings.length) {
+            const position = greetings.length - 1;
+            if (!await runOp('delete', { position, expected_hash: hashes[position] }, () => { greetings.pop(); })) return false;
+        }
+        if (defaultIndex !== target.defaultIndex) {
+            const ok = target.defaultIndex === null
+                ? await runOp('default/unset', { expected_default_position: defaultIndex }, () => { })
+                : await runOp('default/set', { position: target.defaultIndex, expected_hash: hashes[target.defaultIndex] }, () => { });
+            if (!ok) return false;
         }
         return true;
-    };
-
-    const shared = Math.min(greetings.length, target.greetings.length);
-    for (let position = 0; position < shared; position++) {
-        const text = target.greetings[position];
-        if (greetings[position] === text) continue;
-        if (!await runOp('edit', { position, expected_hash: hashes[position], text }, () => { greetings[position] = text; })) return false;
-    }
-    while (greetings.length < target.greetings.length) {
-        const text = target.greetings[greetings.length];
-        if (!await runOp('add', { position: greetings.length, expected_length: hashes.length, text }, () => { greetings.push(text); })) return false;
-    }
-    while (greetings.length > target.greetings.length) {
-        const position = greetings.length - 1;
-        if (!await runOp('delete', { position, expected_hash: hashes[position] }, () => { greetings.pop(); })) return false;
-    }
-    if (defaultIndex !== target.defaultIndex) {
-        const ok = target.defaultIndex === null
-            ? await runOp('default/unset', { expected_default_position: defaultIndex }, () => { })
-            : await runOp('default/set', { position: target.defaultIndex, expected_hash: hashes[target.defaultIndex] }, () => { });
-        if (!ok) return false;
-    }
-    return true;
+    });
 }
 
 /**
