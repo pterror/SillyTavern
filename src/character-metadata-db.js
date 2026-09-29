@@ -11,7 +11,7 @@ import { color, delay, generateTimestamp, getConfigValue, mapWithConcurrency, pa
 import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
-import { calculateChatSize, calculateDataSize, calculateGroupChatStats, resolveGroupOwner, toShallow } from './character-shallow.js';
+import { calculateChatSize, calculateDataSize, calculateGroupChatStats, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, isBusyError, openNativeDatabase, streamRows } from './endpoints/sqlite-engine.js';
 import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
@@ -3926,8 +3926,8 @@ const GROUP_UPSERT_SQL = `
         OR groups.digest_fav IS NOT excluded.digest_fav
         OR groups.digest_content IS NOT excluded.digest_content
     -- digest_tag_ids absent: owned by assignEntityTag()/unassignEntityTag()'s group branch, not this upsert.
-    -- date_added absent: write-once. date_last_chat/chat_size absent: owned by bumpGroupChatStats() and the
-    -- backfill passes, not by /create or /edit requests.
+    -- date_added absent: write-once. date_last_chat/chat_size absent: owned by applyGroupChatStats(), which follows
+    -- every write to the group's messages, and the backfill passes, not by /create or /edit requests.
 `;
 
 const GROUP_INSERT_IF_MISSING_SQL = `
@@ -4086,6 +4086,20 @@ function sameFileContents(a, b) {
 }
 
 /**
+ * An owner's `date_last_chat` after one committed write: its newest message's `created_at`, read after a row delete,
+ * otherwise the stored value or the newest inserted `created_at`, whichever is later.
+ * @param {number} stored
+ * @param {object} change
+ * @param {number | null} change.addedCreatedAt
+ * @param {(() => number) | null} change.readLastCreatedAt
+ * @returns {number}
+ */
+function nextDateLastChat(stored, { addedCreatedAt, readLastCreatedAt }) {
+    if (readLastCreatedAt) return readLastCreatedAt();
+    return addedCreatedAt === null ? stored : Math.max(stored, addedCreatedAt);
+}
+
+/**
  * Applies one committed write's change to a character's chat stats: `chat_size` by the write's size change, and
  * `date_last_chat` to its newest message's `created_at`. Writes nothing when neither changes.
  * @param {import('./users.js').UserDirectoryList} directories
@@ -4108,12 +4122,7 @@ export async function applyCharacterChatStats(directories, avatar, { sizeChange,
             console.warn(color.yellow(`[character-metadata] Chat stats change for ${avatar} (${sizeChange} bytes) not applied: it has no character row.`));
             return;
         }
-        let dateLastChat = Number(row.date_last_chat);
-        if (readLastCreatedAt) {
-            dateLastChat = readLastCreatedAt();
-        } else if (addedCreatedAt !== null) {
-            dateLastChat = Math.max(dateLastChat, addedCreatedAt);
-        }
+        const dateLastChat = nextDateLastChat(Number(row.date_last_chat), { addedCreatedAt, readLastCreatedAt });
         /** @type {string[]} */
         const fields = [];
         if (sizeChange !== 0) fields.push('chat_size');
@@ -4130,28 +4139,35 @@ export async function applyCharacterChatStats(directories, avatar, { sizeChange,
     });
 }
 
-/** `stats`, when supplied, is used verbatim instead of statting the group's chat files, which get renamed away. */
 /**
+ * Applies one committed write's change to a group's chat stats, the same way {@link applyCharacterChatStats} does for a
+ * character: `chat_size` by the write's size change, and `date_last_chat` to its newest message's `created_at`. A
+ * change adds a groups version log row in the same transaction. Writes nothing when neither changes.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {string} chatId
- * @param {object} [params]
- * @param {string} [params.groupId]
- * @param {{ chatSize: number, dateLastChat: number }} [params.stats]
+ * @param {string} groupId
+ * @param {object} change
+ * @param {number} change.sizeChange
+ * @param {number | null} change.addedCreatedAt The newest `created_at` the write inserted, if it inserted any.
+ * @param {(() => number) | null} change.readLastCreatedAt Set when the write deleted a row: reads the group's newest
+ *   message `created_at` (0 with none left) at the moment of this write.
  */
-export async function bumpGroupChatStats(directories, chatId, { groupId, stats } = {}) {
+export async function applyGroupChatStats(directories, groupId, { sizeChange, addedCreatedAt, readLastCreatedAt }) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
-    const group = resolveGroupOwner(directories.groups, { chatId, groupId });
-    if (!group) return; // Not a group chat this store knows about - nothing to bump.
-
-    const { chatSize, dateLastChat } = stats ?? calculateGroupChatStats(directories.groupChats, group.chats);
     entry.db.transaction(() => {
-        const { changes } = entry.db.run(
-            'UPDATE groups SET date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id AND (date_last_chat IS NOT @dateLastChat OR chat_size IS NOT @chatSize)',
-            { dateLastChat, chatSize, id: group.id },
-        );
-        if (changes > 0) insertGroupChange(entry.db, group.id);
+        const row = (/** @type {{ date_last_chat: number } | undefined} */ (entry.db.get(
+            'SELECT date_last_chat FROM groups WHERE id = @id', { id: groupId })));
+        if (!row) {
+            console.warn(color.yellow(`[character-metadata] Chat stats change for group ${groupId} (${sizeChange} bytes) not applied: it has no group row.`));
+            return;
+        }
+        const dateLastChat = nextDateLastChat(Number(row.date_last_chat), { addedCreatedAt, readLastCreatedAt });
+        if (sizeChange === 0 && dateLastChat === Number(row.date_last_chat)) return;
+
+        entry.db.run('UPDATE groups SET chat_size = chat_size + @sizeChange, date_last_chat = @dateLastChat WHERE id = @id',
+            { sizeChange, dateLastChat, id: groupId });
+        insertGroupChange(entry.db, groupId);
     });
 }
 

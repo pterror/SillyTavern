@@ -53,8 +53,9 @@ beforeEach(() => {
         chats: path.join(root, 'chats'),
         groups: path.join(root, 'groups'),
         groupChats: path.join(root, 'group chats'),
+        backups: path.join(root, 'backups'),
     };
-    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
+    for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats, directories.backups]) {
         fs.mkdirSync(dir, { recursive: true });
     }
 });
@@ -272,5 +273,122 @@ describe('fillTreeOwnerKinds', () => {
         }
         expect(tree.characterAvatarsForOwnerId('x.png y')).toContain('.pngx.png y');
         expect(tree.characterAvatarsForOwnerId('x.png y')).not.toContain('x.png y');
+    });
+});
+
+describe('a group\'s chat stats follow every write to its messages', () => {
+    const GROUP_ID = 'g1';
+
+    async function seedGroup() {
+        const group = { id: GROUP_ID, name: 'G1', members: ['Alice.png'], chats: [], fav: false };
+        await metadataDb.writeGroupFileAndRow(directories, group, () => fs.writeFileSync(path.join(directories.groups, `${GROUP_ID}.json`), JSON.stringify(group)));
+    }
+
+    async function storedGroup() {
+        const { default: Database } = await import('better-sqlite3');
+        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
+        try {
+            const row = raw.prepare('SELECT chat_size, date_last_chat FROM groups WHERE id = ?').get(GROUP_ID);
+            return { chatSize: row.chat_size, dateLastChat: row.date_last_chat };
+        } finally {
+            raw.close();
+        }
+    }
+
+    async function expectGroupMatchesMessages() {
+        expect(await storedGroup()).toEqual(await recompute(GROUP_ID));
+    }
+
+    /**
+     * Groups version log rows for the group added by `write`.
+     * @param {() => Promise<unknown>} write
+     */
+    async function groupRowsDuring(write) {
+        const before = await metadataDb.getGroupsVersion(directories);
+        await write();
+        const after = await metadataDb.getGroupsVersion(directories);
+        return after - before;
+    }
+
+    /** @param {string} chatId @param {string[]} texts */
+    async function saveGroupChat(chatId, texts) {
+        const res = await postJson('/api/chats/group/save', {
+            id: chatId,
+            group_id: GROUP_ID,
+            chat: [{ chat_metadata: {} }, ...texts.map(msg)],
+        });
+        expect(res.status).toBe(200);
+        return res.body.assigned_node_ids.map(a => a.node_id);
+    }
+
+    test('/group/save adds each chat\'s messages to chat_size instead of replacing it with the last chat saved, and bumps the groups version', async () => {
+        await seedGroup();
+
+        const added = await groupRowsDuring(() => saveGroupChat('chat one', ['first chat, a fairly long message', 'another']));
+        expect(added).toBeGreaterThan(0);
+        await saveGroupChat('chat two', ['second']);
+
+        const stats = await storedGroup();
+        expect(stats.chatSize).toBeGreaterThan(0);
+        await expectGroupMatchesMessages();
+    });
+
+    test('edit, append, graft, alternative, and alternative delete each keep the stats equal to the messages, with a groups version row', async () => {
+        await seedGroup();
+        const [firstId, replyId] = await saveGroupChat('chat one', ['hello', 'hello there']);
+
+        expect(await groupRowsDuring(async () => {
+            expect((await postJson('/api/chats/message/edit', { group_id: GROUP_ID, node_id: replyId, content: msg('hello there, a longer reply') })).status).toBe(200);
+        })).toBe(1);
+        await expectGroupMatchesMessages();
+
+        let appended;
+        expect(await groupRowsDuring(async () => {
+            appended = await postJson('/api/chats/message/append', { group_id: GROUP_ID, after_node_id: replyId, messages: [msg('and?')] });
+            expect(appended.status).toBe(200);
+        })).toBe(1);
+        await expectGroupMatchesMessages();
+
+        expect(await groupRowsDuring(async () => {
+            expect((await postJson('/api/chats/message/graft', { group_id: GROUP_ID, after_node_id: firstId, before_node_id: replyId, content: msg('spliced in') })).status).toBe(200);
+        })).toBe(1);
+        await expectGroupMatchesMessages();
+
+        let alt;
+        expect(await groupRowsDuring(async () => {
+            alt = await postJson('/api/chats/message/alternative', { group_id: GROUP_ID, sibling_node_id: appended.body.node_ids[0], content: msg('something else entirely') });
+            expect(alt.status).toBe(200);
+        })).toBe(1);
+        await expectGroupMatchesMessages();
+
+        expect(await groupRowsDuring(async () => {
+            expect((await postJson('/api/chats/message/alternative/delete', { group_id: GROUP_ID, node_id: alt.body.node_ids[0] })).status).toBe(200);
+        })).toBe(1);
+        await expectGroupMatchesMessages();
+    });
+
+    test('deleting a group chat keeps its messages, so its stats stay', async () => {
+        await seedGroup();
+        await saveGroupChat('chat one', ['hello', 'hello there']);
+        const before = await storedGroup();
+
+        expect((await postJson('/api/chats/group/delete', { id: 'chat one', group_id: GROUP_ID })).status).toBe(200);
+
+        expect(await storedGroup()).toEqual(before);
+    });
+
+    test('a group write that changes no stats adds no groups version row', async () => {
+        await seedGroup();
+        await saveGroupChat('chat one', ['hello']);
+
+        expect(await groupRowsDuring(() => metadataDb.applyGroupChatStats(directories, GROUP_ID, { sizeChange: 0, addedCreatedAt: 1, readLastCreatedAt: null }))).toBe(0);
+    });
+
+    test('a group with no row is logged and nothing is written', async () => {
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        await metadataDb.getGroupsVersion(directories);
+
+        expect(await groupRowsDuring(() => metadataDb.applyGroupChatStats(directories, 'missing', { sizeChange: 10, addedCreatedAt: 5, readLastCreatedAt: null }))).toBe(0);
+        expect(warn.mock.calls.some(args => String(args[0]).includes('missing'))).toBe(true);
     });
 });

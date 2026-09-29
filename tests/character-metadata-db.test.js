@@ -2143,13 +2143,12 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         expect(after.fav).toBe(1);
     });
 
-    test('upsertGroupRow does not reset date_last_chat/chat_size set by bumpGroupChatStats', async () => {
+    test('upsertGroupRow does not reset date_last_chat/chat_size set by applyGroupChatStats', async () => {
         writeGroupFile('g1', { name: 'G1', chats: ['c1'] });
         await metadataDb.upsertGroupRow(directories, 'g1', 'G1');
-        fs.writeFileSync(path.join(groupChatsDir, 'c1.jsonl'), 'x'.repeat(42));
-        await metadataDb.bumpGroupChatStats(directories, 'c1');
+        await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 42, addedCreatedAt: 1000, readLastCreatedAt: null });
 
-        // A plain /edit-shaped call (rename) must not clobber the stats just bumped.
+        // A plain /edit-shaped call (rename) must not clobber the stats just applied.
         await metadataDb.upsertGroupRow(directories, 'g1', 'G1 Renamed');
 
         const { default: Database } = await import('better-sqlite3');
@@ -2158,23 +2157,18 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         db.close();
 
         expect(row.chat_size).toBe(42);
-        expect(row.date_last_chat).toBeGreaterThan(0);
+        expect(row.date_last_chat).toBe(1000);
         expect(row.name).toBe('G1 Renamed');
     });
 
-    test('bumpGroupChatStats resolves the owning group from the chat id (not the group id) and stats only its own chats', async () => {
+    test('applyGroupChatStats adds each size change to its own group\'s row only, and keeps the newest date', async () => {
         writeGroupFile('g1', { name: 'G1', chats: ['c1', 'c2'] });
         writeGroupFile('g2', { name: 'G2', chats: ['c3'] });
         await metadataDb.upsertGroupRow(directories, 'g1', 'G1');
         await metadataDb.upsertGroupRow(directories, 'g2', 'G2');
 
-        fs.writeFileSync(path.join(groupChatsDir, 'c1.jsonl'), 'x'.repeat(10));
-        fs.writeFileSync(path.join(groupChatsDir, 'c2.jsonl'), 'x'.repeat(20));
-        fs.writeFileSync(path.join(groupChatsDir, 'c3.jsonl'), 'x'.repeat(999));
-
-        // c2 is one of g1's *other* chats (not the one "just saved") - bumpGroupChatStats still sums the whole
-        // group's chats, matching what getGroupsData() would compute, not just the single saved chat's size.
-        await metadataDb.bumpGroupChatStats(directories, 'c2');
+        await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 10, addedCreatedAt: 2000, readLastCreatedAt: null });
+        await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 20, addedCreatedAt: 1000, readLastCreatedAt: null });
 
         const { default: Database } = await import('better-sqlite3');
         const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
@@ -2182,15 +2176,16 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         const g2 = db.prepare('SELECT chat_size, date_last_chat FROM groups WHERE id = ?').get('g2');
         db.close();
 
-        expect(g1.chat_size).toBe(30); // c1 (10) + c2 (20), not just c2
-        expect(g1.date_last_chat).toBeGreaterThan(0);
-        expect(g2.chat_size).toBe(0); // g2's own chat stats untouched
-        expect(g2.date_last_chat).toBe(0);
+        expect(g1).toEqual({ chat_size: 30, date_last_chat: 2000 });
+        expect(g2).toEqual({ chat_size: 0, date_last_chat: 0 });
     });
 
-    test('bumpGroupChatStats on a chat id no group owns is a harmless no-op', async () => {
+    test('applyGroupChatStats on a group with no row warns and writes nothing', async () => {
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
         await metadataDb.upsertGroupRow(directories, 'g1', 'G1');
-        await expect(metadataDb.bumpGroupChatStats(directories, 'no-such-chat')).resolves.toBeUndefined();
+        await expect(metadataDb.applyGroupChatStats(directories, 'no-such-group', { sizeChange: 5, addedCreatedAt: 1, readLastCreatedAt: null })).resolves.toBeUndefined();
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
     });
 
     test('bootstrapGroupsIfNeeded seeds fav/date_added/date_last_chat/chat_size/name_fold from disk, once', async () => {
