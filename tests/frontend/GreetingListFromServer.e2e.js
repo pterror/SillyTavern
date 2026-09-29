@@ -693,6 +693,18 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(opening).toEqual({ mes: g[12], swipe_id: 12 });
     });
 
+    test('when finding where the chat lands fails, a warning says so and the chat shows the default', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
+        await page.route('**/api/chats/openings/land', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: true }) }));
+        const opening = await chatAfterOtherSession(page, {
+            name: `LandingFails-${s}`, g, shown: 1, defaultRow: 3, expected: g[3],
+            otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]) }),
+        });
+        expect(opening.mes).toBe(g[3]);
+        await expect(page.locator('.toast-warning', { hasText: 'couldn\'t follow' })).toBeVisible({ timeout: 10000 });
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
