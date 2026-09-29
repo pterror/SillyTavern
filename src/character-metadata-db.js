@@ -5111,6 +5111,29 @@ export async function getTagDefinitionsByIds(directories, ids) {
 }
 
 /**
+ * getTagDefinitions()'s definitions, limited to `ids`: a tag marked deleted is left out, and a definition that
+ * can't be parsed throws.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<object[] | null>} null when the store is unavailable.
+ */
+export async function getTagDefinitionsForIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const wanted = [...new Set(ids)];
+    const definitions = [];
+    for (let i = 0; i < wanted.length; i += BATCH_FLUSH_SIZE) {
+        const chunk = wanted.slice(i, i + BATCH_FLUSH_SIZE);
+        const placeholders = chunk.map(() => '?').join(', ');
+        for (const row of /** @type {Iterable<{ data: string }>} */ (entry.db.iterate(`SELECT data FROM tags WHERE id IN (${placeholders}) AND ${NOT_MARKED_DELETED_SQL}`, chunk))) {
+            definitions.push(JSON.parse(row.data));
+        }
+    }
+    return definitions;
+}
+
+/**
  * Every entity-to-tag assignment across both tables. Returned compactly: `avatars`/`tagIds` intern each unique
  * id/tag string to an integer index, and `map[i]` lists the tag-id indices assigned to `avatars[i]`.
  * @returns {Promise<{avatars: string[], tagIds: string[], map: number[][]} | null>}
