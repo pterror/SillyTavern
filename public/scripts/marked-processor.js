@@ -1,4 +1,4 @@
-import { Marked } from '../lib.js';
+import { Marked, showdown } from '../lib.js';
 
 // No power-user.js or script.js imports here on purpose: both transitively import
 // every consumer of this module (message-formatting.js, chats.js,
@@ -202,6 +202,44 @@ const htmlBlockExt = {
     }],
 };
 
+/** Upstream's emoji set: the one showdown's `emoji` option uses. */
+const EMOJIS = showdown.helper.emojis;
+const emojiShortcodeRegex = /^:([^\s:]+):/;
+const emojiCandidateRegex = /:([^\s:]+):/g;
+
+/**
+ * `:name:` shortcodes render as emoji, for the names in showdown's emoji set; any other name stays as written.
+ * An inline token, so code, URLs, HTML tags and kept-whole HTML blocks are left alone.
+ * @type {import('marked').MarkedExtension}
+ */
+const emojiExt = {
+    extensions: [{
+        name: 'emoji',
+        level: 'inline',
+        start(src) {
+            emojiCandidateRegex.lastIndex = 0;
+            let candidate;
+            while ((candidate = emojiCandidateRegex.exec(src))) {
+                if (Object.hasOwn(EMOJIS, candidate[1])) {
+                    return candidate.index;
+                }
+                emojiCandidateRegex.lastIndex = candidate.index + 1;
+            }
+            return undefined;
+        },
+        tokenizer(src) {
+            const match = emojiShortcodeRegex.exec(src);
+            if (!match || !Object.hasOwn(EMOJIS, match[1])) {
+                return undefined;
+            }
+            return { type: 'emoji', raw: match[0], name: match[1] };
+        },
+        renderer(token) {
+            return EMOJIS[token.name];
+        },
+    }],
+};
+
 /**
  * @param {string} [escapeStrings] power_user.markdown_escape_strings; pass the real value when calling this from a module that already imports power_user (e.g. on power_user.markdown_escape_strings change), same as the old reloadMarkdownProcessor() was called.
  * @param {(text: string) => string} [substituteParamsFn] The real `substituteParams` from script.js, from a module that already imports it.
@@ -214,6 +252,7 @@ export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identi
     markedProcessor.use(markdownExclusionExt(escapeStrings, substituteParamsFn));
     markedProcessor.use(urlTrailingUnderscoreExt);
     markedProcessor.use(htmlBlockExt);
+    markedProcessor.use(emojiExt);
 
     markedLiteralTagsProcessor = new Marked({
         gfm: true,
@@ -222,6 +261,7 @@ export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identi
     markedLiteralTagsProcessor.use(markdownExclusionExt(escapeStrings, substituteParamsFn));
     markedLiteralTagsProcessor.use(urlTrailingUnderscoreExt);
     markedLiteralTagsProcessor.use(htmlBlockExt);
+    markedLiteralTagsProcessor.use(emojiExt);
     markedLiteralTagsProcessor.use(literalTagsExt);
     return markedProcessor;
 }

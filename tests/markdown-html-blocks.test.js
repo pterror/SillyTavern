@@ -1,5 +1,6 @@
 import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
+import showdown from 'showdown';
 
 // An HTML block that starts with one of showdown's hashHTMLBlocks tags runs to its matching closing tag
 // (nesting-aware), blank lines and indentation included, and its inside isn't parsed as markdown.
@@ -10,6 +11,7 @@ import { Marked } from 'marked';
 
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
+    showdown,
     DOMPurify: { sanitize: (html) => html },
 }));
 jest.unstable_mockModule('../public/script.js', () => ({
