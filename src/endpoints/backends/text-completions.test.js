@@ -2156,6 +2156,43 @@ async function run() {
         }
     });
 
+    await tokenizerCase('raw-action /generate on llama.cpp with the token tables failing to read: the same prompt and bias as counted fresh, and the generation succeeds', async () => {
+        const props = { model_alias: 'write-back-model', model_path: '/models/write-back-model.gguf', build_info: 'b-read-fails' };
+        const identity = `llamacpp:${JSON.stringify([props.model_path, props.build_info])}`;
+        const completions = [];
+        const { backend, urls, body } = await setUpWriteBackGeneration(props, (_req, res, completionBody) => {
+            completions.push(JSON.parse(completionBody));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ content: 'Yes.', choices: [{ text: 'Yes.' }] }));
+        });
+        const db = await getMessageTreeDb(directories);
+        const realGet = db.get;
+        try {
+            const fresh = await postGenerate(buildTestApp(), body);
+            assert.equal(fresh.status, 200);
+            await waitFor(async () => (await storedRowsUnder(identity)) > 0);
+            const freshTokenizes = urls.filter(url => url === '/tokenize').length;
+            urls.length = 0;
+
+            db.get = (sql, params) => {
+                if (/FROM token_(counts|ids)\b/.test(sql)) throw new Error('token table read failed (test)');
+                return realGet(sql, params);
+            };
+            const failing = await postGenerate(buildTestApp(), body);
+            db.get = realGet;
+            assert.equal(failing.status, 200);
+            assert.notEqual(failing.data?.error, true, 'the generation succeeded');
+            assert.equal(completions.length, 2, 'the backend received both generations');
+            assert.equal(completions[1].prompt, completions[0].prompt, 'the same prompt');
+            assert.deepEqual(completions[1].logit_bias, completions[0].logit_bias, 'the same bias');
+            assert.equal(urls.filter(url => url === '/tokenize').length, freshTokenizes, 'everything counted and encoded fresh again');
+        } finally {
+            db.get = realGet;
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    });
+
     assert.deepEqual(tokenizerCaseFailures, [], 'tokenizer resolution cases');
 
     console.log('text-completions.test.js: all assertions passed');

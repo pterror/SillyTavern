@@ -1231,6 +1231,38 @@ async function run() {
         }
     }
 
+    // (a-11) the token tables failing to read: the generation succeeds with the same request as counted fresh,
+    // because upstream's /generate never reads them.
+    {
+        const sent = [];
+        const { backend, body } = await setUpLlamaCppWriteBack((_req, res, requestBody) => {
+            sent.push(JSON.parse(requestBody));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Soon.' } }] }));
+        });
+        const db = await getMessageTreeDb(directories);
+        const realGet = db.get;
+        try {
+            const fresh = await postGenerate(buildTestApp(), body);
+            assert.equal(fresh.status, 200);
+            db.get = (sql, params) => {
+                if (/FROM token_(counts|ids)\b/.test(sql)) throw new Error('token table read failed (test)');
+                return realGet(sql, params);
+            };
+            const failing = await postGenerate(buildTestApp(), body);
+            db.get = realGet;
+            assert.equal(failing.status, 200, 'token table reads failing: the generation succeeds');
+            assert.equal(sent.length, 2, 'token table reads failing: the backend received both generations');
+            assert.deepEqual(sent[1].messages, sent[0].messages, 'token table reads failing: the same messages');
+            assert.deepEqual(sent[1].logit_bias, sent[0].logit_bias, 'token table reads failing: the same bias');
+            assert.ok(sent[0].logit_bias && Object.keys(sent[0].logit_bias).length > 0, 'the bias was encoded');
+        } finally {
+            db.get = realGet;
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
     // (b) a failed backend response (non-2xx) does NOT append an assistant reply (the user message,
     // already committed as "the user really sent this" before dispatch, is unaffected either way).
     {

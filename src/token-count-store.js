@@ -150,6 +150,22 @@ function addToRowCount(db, key, delta) {
 }
 
 /**
+ * A read of the token tables, where a failure is logged and answers null, a miss: upstream never reads these
+ * tables, so a request mustn't fail because they can't be read.
+ * @template T
+ * @param {() => Promise<T | null>} read
+ * @returns {Promise<T | null>}
+ */
+async function readOrMiss(read) {
+    try {
+        return await read();
+    } catch (error) {
+        console.error('Failed to read stored token counts:', error);
+        return null;
+    }
+}
+
+/**
  * @typedef {object} StoredCounter
  * @property {(text: string) => Promise<number>} countText A plain count, no BOS.
  * @property {(text: string) => Promise<number>} countPromptText A `promptStart` count, with BOS.
@@ -172,7 +188,7 @@ function addToRowCount(db, key, delta) {
  * Otherwise a text already stored under `identity` is read, not counted, and its row is pending so write-back
  * marks it used; a text not stored is counted, and its row is pending under the identity of the tokenizer
  * that answered, so a local copy's answer is stored under the copy's identity and an estimate or null ids
- * aren't stored. Each key is read or counted once per counter.
+ * aren't stored. A read that fails is logged and counts as not stored. Each key is read or counted once per counter.
  * @param {object} args
  * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} args.resolved A resolveTokenizer() answer.
  * @param {string | null} args.identity `tokenizerIdentity(resolved, facts)`, as the caller computed it.
@@ -262,9 +278,9 @@ export function createStoredCounter({
         if (seen.has(readKey)) {
             return seen.get(readKey);
         }
-        const read = kind === TOKEN_KEY_KINDS.IDS
-            ? await readIds(directories, identity, readHash)
-            : await readCount(directories, identity, readHash);
+        const read = await readOrMiss(() => (kind === TOKEN_KEY_KINDS.IDS
+            ? readIds(directories, identity, readHash)
+            : readCount(directories, identity, readHash)));
         if (read !== null) {
             push(kind, identity, readHash, read);
             return read;
@@ -302,7 +318,7 @@ export function createStoredCounter({
         if (seenWithChunks.has(readKey)) {
             return seenWithChunks.get(readKey);
         }
-        const read = await readIdsRow(directories, identity, hash);
+        const read = await readOrMiss(() => readIdsRow(directories, identity, hash));
         if (read !== null && read.chunks !== null) {
             push(TOKEN_KEY_KINDS.IDS, identity, hash, read.ids);
             seenWithChunks.set(readKey, read);
