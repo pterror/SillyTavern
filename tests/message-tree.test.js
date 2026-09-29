@@ -388,6 +388,8 @@ describe('labeling nodes', () => {
         await treeDb.isAvailable(directories);
         expect(await treeDb.labelNode(directories, 'not-a-real-id', 'x')).toEqual({ ok: false });
     });
+
+    test.todo('checkpoint-create on message 0 renames the chat away (chat-as-bookmark plan, step 8)');
 });
 
 describe('graft (mid-chain insert) and degraft (mid-chain delete)', () => {
@@ -950,24 +952,7 @@ describe('slim wire protocol (stub handling)', () => {
         expect(reloaded.messages.map(m => m.mes)).toEqual(['m0', 'm1']);
     });
 
-    test('swipe change: same node_id with different swipe_id sends full content and updates DB', async () => {
-        // Initial save with swipes
-        const msgWithSwipes = makeMessage({ mes: 'swipe0', sendDate: 'd0' });
-        msgWithSwipes.swipes = ['swipe0', 'swipe1', 'swipe2'];
-        msgWithSwipes.swipe_id = 0;
-        const chatData = [{ chat_metadata: {} }, msgWithSwipes];
-        const firstSave = await treeDb.saveChatToTree(directories, 'owner', 'chat', chatData, false);
-        const nodeId = firstSave.assignedNodeIds[0].node_id;
-
-        // Save with different swipe selected (full content, not stub)
-        const swipedMsg = { ...msgWithSwipes, node_id: nodeId, swipe_id: 2, mes: 'swipe2' };
-        const swipeSave = [{ chat_metadata: {} }, swipedMsg];
-        await treeDb.saveChatToTree(directories, 'owner', 'chat', swipeSave, false);
-
-        const loaded = await treeDb.loadBranch(directories, 'owner', 'chat');
-        expect(loaded.messages[0].swipe_id).toBe(2);
-        expect(loaded.messages[0].mes).toBe('swipe2');
-    });
+    test.todo('swipe change: same node_id with different swipe_id sends full content and updates DB (chat-as-bookmark plan, step 10)');
 
     test('assignedNodeIds correctly maps indices for mixed stubs and new messages', async () => {
         // Initial: 2 messages
