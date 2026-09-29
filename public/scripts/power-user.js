@@ -186,6 +186,7 @@ export const power_user = {
     waifuMode: false,
     stacked_drawers: false,
     drawer_bar_position: 'top',
+    drawer_bar_position_mobile: 'top',
     forceMobileView: false,
     movingUI: false,
     movingUIState: {},
@@ -1201,6 +1202,17 @@ function applyDrawerBarPosition() {
     $('#drawer_bar_position').val(power_user.drawer_bar_position);
 }
 
+/** Values of power_user.drawer_bar_position_mobile, the Drawer Bar in the mobile layout. */
+const drawerBarMobilePositions = ['top', 'bottom'];
+
+function applyDrawerBarMobilePosition() {
+    if (!drawerBarMobilePositions.includes(power_user.drawer_bar_position_mobile)) {
+        power_user.drawer_bar_position_mobile = 'top';
+    }
+    $('body').toggleClass('drawerBarMobileBottom', power_user.drawer_bar_position_mobile === 'bottom');
+    $('#drawer_bar_position_mobile').val(power_user.drawer_bar_position_mobile);
+}
+
 function switchForceMobileView() {
     $('body').toggleClass('forceMobileView', power_user.forceMobileView);
     $('#forceMobileView').prop('checked', power_user.forceMobileView);
@@ -1541,6 +1553,12 @@ function applyTheme(name) {
             key: 'drawer_bar_position',
             action: () => {
                 applyDrawerBarPosition();
+            },
+        },
+        {
+            key: 'drawer_bar_position_mobile',
+            action: () => {
+                applyDrawerBarMobilePosition();
             },
         },
         {
@@ -2097,6 +2115,7 @@ export async function loadPowerUserSettings(settings, data) {
     switchWaifuMode();
     switchStackedDrawers();
     applyDrawerBarPosition();
+    applyDrawerBarMobilePosition();
     switchForceMobileView();
     switchSpoilerMode();
     loadMovingUIState();
@@ -3014,6 +3033,7 @@ export function getThemeObject(name) {
         chat_display: power_user.chat_display,
         toastr_position: power_user.toastr_position,
         drawer_bar_position: power_user.drawer_bar_position,
+        drawer_bar_position_mobile: power_user.drawer_bar_position_mobile,
         noShadows: power_user.noShadows,
         chat_width: power_user.chat_width,
         chat_width_max: power_user.chat_width_max,
@@ -3905,6 +3925,12 @@ jQuery(() => {
         power_user.drawer_bar_position = String($(this).val());
         applyDrawerBarPosition();
         saveSettingsDebounced('power_user.drawer_bar_position');
+    });
+
+    $('#drawer_bar_position_mobile').on('change', function () {
+        power_user.drawer_bar_position_mobile = String($(this).val());
+        applyDrawerBarMobilePosition();
+        saveSettingsDebounced('power_user.drawer_bar_position_mobile');
     });
 
     $('#chat_width_slider').on('input', function (e, data) {

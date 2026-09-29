@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, setDrawerBarPosition, setStackedDrawers } from './frontent-test-utils.js';
+import { testSetup, setDrawerBarPosition, setDrawerBarMobilePosition, setStackedDrawers } from './frontent-test-utils.js';
 
 const VIEWPORT = { width: 1400, height: 900 };
 
@@ -411,8 +411,61 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
     });
 }
 
+const MOBILE_VIEWPORT = { width: 412, height: 915 };
+
+/**
+ * An element's corner radii in px: top left, top right, bottom right, bottom left.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} selector
+ */
+function cornerRadii(page, selector) {
+    return page.locator(selector).evaluate(el => {
+        const style = getComputedStyle(el);
+        return [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius]
+            .map(radius => parseFloat(radius));
+    });
+}
+
+/** The mobile bar at the bottom edge, the full window width, and the chat from the top edge to the bar. */
+async function expectMobileBarAtBottom(page, viewport) {
+    const size = await barSize(page);
+    const holder = await rect(page, '#top-settings-holder');
+    const bar = await rect(page, '#top-bar');
+    for (const r of [holder, bar]) {
+        expect(r.bottom).toBeCloseTo(viewport.height, 1);
+        expect(r.left).toBeCloseTo(0, 1);
+        expect(r.width).toBeCloseTo(viewport.width, 1);
+    }
+    expect(holder.height).toBeCloseTo(size, 1);
+    const sheld = await rect(page, '#sheld');
+    expect(sheld.top).toBeCloseTo(0, 1);
+    expect(sheld.bottom).toBeLessThanOrEqual(holder.top);
+    expect(sheld.width).toBeCloseTo(viewport.width, 1);
+}
+
+/**
+ * With the mobile bar at the bottom: User Settings and the character management and AI Response Configuration panels
+ * open from the top edge, end at or above the bar, the panels rounded at the top, and their icons open and close them.
+ */
+async function expectMobileBottomDrawers(page) {
+    const holder = await rect(page, '#top-settings-holder');
+
+    const drawer = await openByIcon(page, '#user-settings-button .drawer-icon', '#user-settings-block');
+    expect(drawer.top).toBeCloseTo(0, 1);
+    expect(drawer.bottom).toBeLessThanOrEqual(holder.top + 0.5);
+    await closeByIcon(page, '#user-settings-button .drawer-icon', '#user-settings-block');
+
+    for (const [icon, selector] of [['#rightNavDrawerIcon', '#right-nav-panel'], ['#leftNavDrawerIcon', '#left-nav-panel']]) {
+        const panel = await openByIcon(page, icon, selector);
+        expect(panel.top).toBeCloseTo(0, 1);
+        expect(panel.bottom).toBeLessThanOrEqual(holder.top + 0.5);
+        expect(await cornerRadii(page, selector)).toEqual([20, 20, 0, 0]);
+        await closeByIcon(page, icon, selector);
+    }
+}
+
 test.describe('Drawer bar position, mobile', () => {
-    test.use({ viewport: { width: 412, height: 915 } });
+    test.use({ viewport: MOBILE_VIEWPORT });
 
     test.beforeEach(testSetup.awaitST);
 
@@ -420,7 +473,9 @@ test.describe('Drawer bar position, mobile', () => {
         await awaitAppReady(page);
     });
 
+    // The data root is shared by the worker's later tests, which expect the defaults.
     test.afterEach(async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'top');
         await setDrawerBarPosition(page, 'top');
     });
 
@@ -431,4 +486,113 @@ test.describe('Drawer bar position, mobile', () => {
             await expectBarAtTop(page);
         });
     }
+
+    test('mobile top: the bar at the top edge, the full window width, drawers and panels below it, panels rounded at the bottom', async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'top');
+        const size = await barSize(page);
+        await expectBarAtTop(page);
+        for (const selector of ['#top-settings-holder', '#top-bar']) {
+            const bar = await rect(page, selector);
+            expect(bar.left).toBeCloseTo(0, 1);
+            expect(bar.width).toBeCloseTo(MOBILE_VIEWPORT.width, 1);
+        }
+        expect((await rect(page, '#sheld')).bottom).toBeCloseTo(MOBILE_VIEWPORT.height - 1, 1);
+
+        const drawer = await openByIcon(page, '#user-settings-button .drawer-icon', '#user-settings-block');
+        expect(drawer.top).toBeCloseTo(size, 1);
+        await closeByIcon(page, '#user-settings-button .drawer-icon', '#user-settings-block');
+
+        for (const [icon, selector] of [['#rightNavDrawerIcon', '#right-nav-panel'], ['#leftNavDrawerIcon', '#left-nav-panel']]) {
+            const panel = await openByIcon(page, icon, selector);
+            expect(panel.top).toBeCloseTo(size, 1);
+            expect(await cornerRadii(page, selector)).toEqual([0, 0, 20, 20]);
+            await closeByIcon(page, icon, selector);
+        }
+    });
+
+    test('mobile bottom: the bar at the bottom edge, the full window width, the chat from the top edge to the bar', async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'bottom');
+        await expect(page.locator('body')).toHaveClass(/\bdrawerBarMobileBottom\b/);
+        await expectMobileBarAtBottom(page, MOBILE_VIEWPORT);
+    });
+
+    test('mobile bottom: drawers and panels open from the top edge down to the bar, panels rounded at the top, by their icons', async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'bottom');
+        await expect(page.locator('body')).toHaveClass(/\bdrawerBarMobileBottom\b/);
+        await expectMobileBottomDrawers(page);
+    });
+
+    for (const position of ['bottom', 'left', 'right']) {
+        test(`mobile bottom with the desktop bar at the ${position}: only the mobile setting applies`, async ({ page }) => {
+            await setDrawerBarPosition(page, position);
+            await setDrawerBarMobilePosition(page, 'bottom');
+            await expect(page.locator('body')).toHaveClass(/\bdrawerBarMobileBottom\b/);
+            await expectMobileBarAtBottom(page, MOBILE_VIEWPORT);
+        });
+    }
+
+    test('mobile bottom survives a reload', async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'bottom');
+        await page.reload();
+        await page.waitForFunction('document.getElementById("preloader") === null', { timeout: 0 });
+        await expect(page.locator('body')).toHaveClass(/\bdrawerBarMobileBottom\b/);
+        await expect(page.locator('#drawer_bar_position_mobile')).toHaveValue('bottom');
+        await expectMobileBarAtBottom(page, MOBILE_VIEWPORT);
+    });
+});
+
+test.describe('Drawer bar position, mobile setting on a wide window', () => {
+    test.use({ viewport: VIEWPORT });
+
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+    });
+
+    // The data root is shared by the worker's later tests, which expect the defaults.
+    test.afterEach(async ({ page }) => {
+        await setForceMobileView(page, false);
+        await setDrawerBarMobilePosition(page, 'top');
+        await setDrawerBarPosition(page, 'top');
+    });
+
+    test('mobile bottom with Force Mobile View: the bar at the bottom edge, drawers and panels from the top edge down to it', async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'bottom');
+        await setForceMobileView(page, true);
+        await expectMobileBarAtBottom(page, VIEWPORT);
+        await expectMobileBottomDrawers(page);
+        await expect(page.locator('body')).toHaveClass(/\bdrawerBarMobileBottom\b/);
+    });
+
+    test('mobile bottom with Force Mobile View and the desktop bar at the left: only the mobile setting applies', async ({ page }) => {
+        await setDrawerBarPosition(page, 'left');
+        await setDrawerBarMobilePosition(page, 'bottom');
+        await setForceMobileView(page, true);
+        await expect(page.locator('body')).toHaveClass(/\bdrawerBarMobileBottom\b/);
+        await expectMobileBarAtBottom(page, VIEWPORT);
+    });
+
+    test('mobile bottom has no effect on desktop', async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'bottom');
+        await expectBarAtTop(page);
+        const holder = await rect(page, '#top-settings-holder');
+        const sheld = await rect(page, '#sheld');
+        expect(holder.left).toBeCloseTo(sheld.left, 1);
+        expect(holder.width).toBeCloseTo(sheld.width, 1);
+    });
+
+    test('mobile bottom has no effect on desktop with the desktop bar at the left', async ({ page }) => {
+        await setDrawerBarPosition(page, 'left');
+        await setDrawerBarMobilePosition(page, 'bottom');
+        const size = await barSize(page);
+        for (const selector of ['#top-bar', '#top-settings-holder']) {
+            const bar = await rect(page, selector);
+            expect(bar.left).toBeCloseTo(0, 1);
+            expect(bar.width).toBeCloseTo(size, 1);
+            expect(bar.top).toBeCloseTo(0, 1);
+            expect(bar.height).toBeCloseTo(VIEWPORT.height, 1);
+        }
+        expect((await rect(page, '#sheld')).top).toBeCloseTo(0, 1);
+    });
 });
