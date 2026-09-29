@@ -2658,8 +2658,10 @@ router.post('/changes', async function (request, response) {
 /**
  * SSE endpoint that pushes an empty "something changed, go ask" notification whenever the metadata store's
  * `changes` table gets a new row, so a client can call `/changes` instead of polling, and a
- * `{ type: 'search-index-updated', seq }` message when a commit or a rebuild-and-swap changed this user's characters
- * search index (seq: the change-log seq the index now covers), and a `{ type: 'tag-move-failed', tagId, tagName,
+ * `{ type: 'search-index-updated', seq, groupsVersion }` message when a commit or a rebuild-and-swap changed this
+ * user's characters search index, or a rebuild-and-swap changed their groups search index (seq: the change-log seq
+ * the characters index now covers; groupsVersion: the groups version the groups index was built from; each null
+ * when that index's position isn't known), and a `{ type: 'tag-move-failed', tagId, tagName,
  * anchorId, anchorName, refusedId, reason }` message when a tag move queued for this user couldn't be applied
  * (reportTagMoveFailed(); the client shows it as a warning). Also carries the former
  * `/api/browser-heartbeat` job (touches browser-presence on connect/ping) - merged in because the browser's
@@ -2695,9 +2697,9 @@ router.get('/changes/stream', function (request, response) {
 
     // Already at most once a second per handle (search-index-coordinator.js).
     const handle = request.user.profile.handle;
-    const onSearchIndexUpdated = (updatedHandle, seq) => {
+    const onSearchIndexUpdated = (updatedHandle, seq, groupsVersion) => {
         if (updatedHandle !== handle) return;
-        response.write(`data: ${JSON.stringify({ type: 'search-index-updated', seq })}\n\n`);
+        response.write(`data: ${JSON.stringify({ type: 'search-index-updated', seq: seq ?? null, groupsVersion: groupsVersion ?? null })}\n\n`);
     };
     characterChangeEmitter.on('search-index-updated', onSearchIndexUpdated);
 

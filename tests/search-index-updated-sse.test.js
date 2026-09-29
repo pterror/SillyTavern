@@ -47,7 +47,7 @@ afterAll(async () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-/** Stands in for search-index-worker.js, so a test can post a 'committed' message. */
+/** Stands in for search-index-worker.js, so a test can post a 'committed' or 'swapped' message. */
 class FakeWorker extends EventEmitter {
     postMessage() { }
     terminate() { }
@@ -56,7 +56,10 @@ class FakeWorker extends EventEmitter {
     }
 }
 
-/** A coordinator with the default onSearchIndexUpdated, and a way to post a characters commit for a handle. */
+/**
+ * A coordinator with the default onSearchIndexUpdated, and ways to post a characters commit or a groups swap for a
+ * handle. Nothing sends 'ready', so the other index's reader has no position.
+ */
 async function coordinatorWithWorkers() {
     /** @type {Map<string, FakeWorker>} */
     const workers = new Map();
@@ -68,15 +71,25 @@ async function coordinatorWithWorkers() {
         },
         openIndex: () => ({ index: { reload() { } }, schema: {} }),
     });
-    /** @param {string} handle @param {number} seq */
-    const commit = async (handle, seq) => {
+    /** @param {string} handle */
+    const workerFor = async (handle) => {
         if (!workers.has(handle)) {
             coordinator.getIndex(handle, /** @type {any} */ ({}), 'characters').catch(() => { });
             for (let i = 0; i < 5; i++) await Promise.resolve();
         }
-        workers.get(handle).send({ type: 'committed', target: 'characters', changed: true, seq });
+        return workers.get(handle);
     };
-    return { commit };
+    /** @param {string} handle @param {number} seq */
+    const commit = async (handle, seq) => {
+        const worker = await workerFor(handle);
+        worker.send({ type: 'ready', target: 'characters', dir: '/chars', seq: 0, tagNameSeq: 0 });
+        worker.send({ type: 'committed', target: 'characters', changed: true, seq, tagNameSeq: 0 });
+    };
+    /** @param {string} handle @param {number} version */
+    const swapGroups = async (handle, version) => {
+        (await workerFor(handle)).send({ type: 'swapped', target: 'groups', dir: '/groups', version });
+    };
+    return { commit, swapGroups };
 }
 
 /**
@@ -127,13 +140,25 @@ async function openStream(handle) {
     return { messages, nextMessage, close: () => request.destroy() };
 }
 
-test('a characters commit reaches /changes/stream within a second as data: {"type":"search-index-updated","seq":N}', async () => {
+test('a characters commit reaches /changes/stream within a second as data: {"type":"search-index-updated","seq":N,"groupsVersion":V}', async () => {
     const { commit } = await coordinatorWithWorkers();
     const stream = await openStream('sse-user-live');
     try {
         await commit('sse-user-live', 42);
         expect(await stream.nextMessage(1000)).toBe(true);
-        expect(stream.messages).toEqual(['data: {"type":"search-index-updated","seq":42}']);
+        expect(stream.messages).toEqual(['data: {"type":"search-index-updated","seq":42,"groupsVersion":null}']);
+    } finally {
+        stream.close();
+    }
+});
+
+test('a groups swap reaches /changes/stream within a second with its groupsVersion, and seq null while the characters reader has no position', async () => {
+    const { swapGroups } = await coordinatorWithWorkers();
+    const stream = await openStream('sse-user-groups');
+    try {
+        await swapGroups('sse-user-groups', 17);
+        expect(await stream.nextMessage(1000)).toBe(true);
+        expect(stream.messages).toEqual(['data: {"type":"search-index-updated","seq":null,"groupsVersion":17}']);
     } finally {
         stream.close();
     }
@@ -146,7 +171,7 @@ test('search-index-updated reaches only the streams of the commit\'s handle', as
     try {
         await commit('sse-user-a', 3);
         expect(await mine.nextMessage(1000)).toBe(true);
-        expect(mine.messages).toEqual(['data: {"type":"search-index-updated","seq":3}']);
+        expect(mine.messages).toEqual(['data: {"type":"search-index-updated","seq":3,"groupsVersion":null}']);
         expect(await other.nextMessage(300)).toBe(false);
     } finally {
         mine.close();
