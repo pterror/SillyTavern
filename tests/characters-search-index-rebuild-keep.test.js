@@ -27,6 +27,8 @@ let tantivy;
 let now;
 /** Every console.error / console.warn call, joined into one line each. */
 let logged;
+/** Every warning the maintainer handed to its onIndexFailure. */
+let warnings;
 
 const SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
 const GOOD = 'Good.png';
@@ -178,6 +180,7 @@ beforeEach(() => {
     maintainer = null;
     now = 1_000_000;
     logged = [];
+    warnings = [];
     jest.spyOn(Date, 'now').mockImplementation(() => now);
     const record = (...args) => { logged.push(args.map(String).join(' ')); };
     jest.spyOn(console, 'error').mockImplementation(record);
@@ -203,7 +206,7 @@ async function setUp() {
     await writeCard('Flaky', 'flakyword');
     await writeCard('Third', 'thirdword');
     await metadataDb.bootstrapIfNeeded(directories);
-    maintainer = searchIndex.createCharacterIndexMaintainer(directories, tantivy);
+    maintainer = searchIndex.createCharacterIndexMaintainer(directories, tantivy, { onIndexFailure: warning => warnings.push(warning) });
     expect(await maintainer.rebuild()).not.toBeNull();
     expect(docCount(FLAKY, 'flakyword')).toBe(1);
     return true;
@@ -341,5 +344,39 @@ describe('characters-search-index.js: a full rebuild keeps the old doc of a card
         expect(docCount(GOOD)).toBe(1);
         expect(retryMarks()).toEqual([{ id: FLAKY, next_attempt_at: now + 1000, delay_ms: 1000, last_error: parseError('not json') }]);
         expect(await metadataDb.getMetaValue(directories, SCHEMA_VERSION_META_KEY)).not.toBe('999');
+    }, 20000);
+});
+
+describe('characters-search-index.js: a card that fails during a full rebuild is warned about', () => {
+    test('a failure hands one warning naming the card to onIndexFailure, saying it keeps its old entry', async () => {
+        if (!await setUp()) return;
+        setCardJson(FLAKY, 'not json', { change: false });
+
+        await maintainer.rebuild();
+
+        expect(warnings).toEqual([{ id: FLAKY, name: 'Flaky', error: parseError('not json'), retryInMs: 1000, keptEntry: true }]);
+    }, 20000);
+
+    test('a card already marked with the same error isn\'t warned about again', async () => {
+        if (!await setUp()) return;
+        setCardJson(FLAKY, 'not json', { change: true });
+        await tick();
+        expect(warnings).toHaveLength(1);
+
+        await maintainer.rebuild();
+
+        expect(warnings).toHaveLength(1);
+    }, 20000);
+
+    test('when the rebuild starts empty, the warning says the card has no entry', async () => {
+        if (!await setUp()) return;
+        setCardJson(FLAKY, 'not json', { change: false });
+        jest.spyOn(fs, 'linkSync').mockImplementation(() => {
+            throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+        });
+
+        await maintainer.rebuild();
+
+        expect(warnings).toEqual([{ id: FLAKY, name: 'Flaky', error: parseError('not json'), retryInMs: 1000, keptEntry: false }]);
     }, 20000);
 });

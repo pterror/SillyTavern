@@ -222,8 +222,8 @@ async function timeAsync(phases, phase, fn) {
 
 /**
  * What adding docs for a set of ids did. indexed: got a new doc. missing: no row, so not indexed. failures: the card
- * couldn't be processed, so it got no new doc.
- * @typedef {{ indexed: string[], missing: string[], failures: { id: string, err: unknown }[] }} AddOutcome
+ * couldn't be processed, so it got no new doc; name is its row's.
+ * @typedef {{ indexed: string[], missing: string[], failures: { id: string, name: string, err: unknown }[] }} AddOutcome
  */
 
 // Adds a doc per id, INDEX_BUILD_BATCH_SIZE ids at a time, reading each batch's rows by id.
@@ -285,7 +285,7 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
     }));
     for (const result of results) {
         if (!('character' in result)) {
-            outcome.failures.push({ id: result.id, err: result.err });
+            outcome.failures.push({ id: result.id, name: rowById.get(result.id).name, err: result.err });
             continue;
         }
         const doc = timeSync(phases, 'build', () => characterToTantivyDoc(tantivy, schema, result.character, tagNamesFor, favFor, tagIdsFor));
@@ -326,15 +326,25 @@ export function formatCatchUpLine(r) {
 }
 
 /**
+ * The warning for a card that couldn't be indexed, handed on whenever its failure is logged. name: its row's, which
+ * may be empty. error: as its retry mark records it. retryInMs: when it's retried. keptEntry: whether it keeps the
+ * search entry it had, if it had one; false when a full rebuild that started empty left it with none.
+ * @typedef {{ id: string, name: string, error: string, retryInMs: number, keptEntry: boolean }} CharacterIndexFailure
+ * @typedef {{ line: string, warning: CharacterIndexFailure }} FailureReport
+ */
+
+/**
  * The only writer of a user's characters index. Runs in search-index-worker.js, never in the request process:
  * every call here is synchronous work (better-sqlite3, processCharacter()'s fs reads, tantivy's napi calls) that
  * would otherwise hold the event loop.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
- * @param {{ tickBudgetMs?: number }} [options] tickBudgetMs: how long one tick keeps taking change-log pages
- * before it commits, so a large backlog still commits about once per tick.
+ * @param {{ tickBudgetMs?: number, onIndexFailure?: (warning: CharacterIndexFailure) => void }} [options]
+ * tickBudgetMs: how long one tick keeps taking change-log pages before it commits, so a large backlog still commits
+ * about once per tick. onIndexFailure: called with each failure's warning right after its log line, so under the
+ * same once-per-new-error rule.
  */
-export function createCharacterIndexMaintainer(directories, tantivy, { tickBudgetMs = 1000 } = {}) {
+export function createCharacterIndexMaintainer(directories, tantivy, { tickBudgetMs = 1000, onIndexFailure = () => { } } = {}) {
     const indexDir = tantivyIndexDir(directories);
     /** @type {any} */
     let index = null;
@@ -414,7 +424,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
      * Writes one rebuild batch's retry marks in a transaction of their own, then logs. A crashed rebuild just starts
      * over, and the marks it wrote are still true.
      * @param {string[]} cleared Ids that got a new doc or have no row: their marks are deleted.
-     * @param {{ id: string, err: unknown }[]} failures
+     * @param {AddOutcome['failures']} failures
      * @param {boolean} keptOldDocs Whether the rebuild started from the old index, so a failing card keeps its doc.
      */
     async function persistRebuildMarks(cleared, failures, keptOldDocs) {
@@ -423,21 +433,40 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const stored = await getCharacterIndexRetryMarksByIds(directories, ids);
         /** @type {{ id: string, mark: import('../character-metadata-db.js').CharacterIndexRetryMark | null }[]} */
         const writes = [...new Set(cleared)].filter(id => stored.has(id)).map(id => ({ id, mark: null }));
-        const logs = [];
-        for (const { id, err } of failures) {
+        /** @type {FailureReport[]} */
+        const reports = [];
+        for (const { id, name, err } of failures) {
             const next = failedAttemptMark(stored.get(id) ?? null, err);
             writes.push({ id, mark: next.mark });
             if (next.log) {
-                logs.push(keptOldDocs
-                    ? `[search] couldn't index character ${id} in the full rebuild, so it keeps its search entry from before the rebuild, if it had one, and it's retried in ${next.mark.delayMs} ms: ${next.mark.lastError}`
-                    : `[search] couldn't index character ${id} in the full rebuild, so it has no search entry until it's retried in ${next.mark.delayMs} ms and that succeeds: ${next.mark.lastError}`);
+                reports.push({
+                    line: keptOldDocs
+                        ? `[search] couldn't index character ${id} in the full rebuild, so it keeps its search entry from before the rebuild, if it had one, and it's retried in ${next.mark.delayMs} ms: ${next.mark.lastError}`
+                        : `[search] couldn't index character ${id} in the full rebuild, so it has no search entry until it's retried in ${next.mark.delayMs} ms and that succeeds: ${next.mark.lastError}`,
+                    warning: { id, name, error: next.mark.lastError, retryInMs: next.mark.delayMs, keptEntry: keptOldDocs },
+                });
             }
         }
         if (writes.length === 0) return;
         while (!await trySetMetaValuesAndRetryMarks(directories, {}, writes)) {
             await new Promise(resolve => setTimeout(resolve, REBUILD_PERSIST_RETRY_MS));
         }
-        for (const line of logs) console.error(color.red(line));
+        report(reports);
+    }
+
+    /**
+     * Logs each failure and hands its warning on.
+     * @param {FailureReport[]} reports
+     */
+    function report(reports) {
+        for (const { line, warning } of reports) {
+            console.error(color.red(line));
+            try {
+                onIndexFailure(warning);
+            } catch (err) {
+                console.error(color.red(`[search] handing on the warning for character ${warning.id} failed: ${err?.message ?? err}`));
+            }
+        }
     }
 
     /**
@@ -630,12 +659,12 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
          * @type {Map<string, { mark: import('../character-metadata-db.js').CharacterIndexRetryMark | null, stored: boolean }>}
          */
         const markWrites = new Map();
-        /** @type {string[]} */
-        const failureLogs = [];
+        /** @type {FailureReport[]} */
+        const failureReports = [];
 
         /**
          * @param {string[]} cleared Ids that got a new doc or are deleted.
-         * @param {{ id: string, err: unknown }[]} [failures]
+         * @param {AddOutcome['failures']} [failures]
          */
         async function noteOutcomes(cleared, failures = []) {
             const unseen = [...cleared, ...failures.map(f => f.id)].filter(id => !markWrites.has(id));
@@ -653,12 +682,15 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                     markWrites.delete(id);
                 }
             }
-            for (const { id, err } of failures) {
+            for (const { id, name, err } of failures) {
                 failed++;
                 const { mark, stored: inDb } = current(id);
                 const next = failedAttemptMark(mark, err);
                 if (next.log) {
-                    failureLogs.push(`[search] couldn't index character ${id}, so its previous search entry is kept and it's retried in ${next.mark.delayMs} ms: ${next.mark.lastError}`);
+                    failureReports.push({
+                        line: `[search] couldn't index character ${id}, so its previous search entry is kept and it's retried in ${next.mark.delayMs} ms: ${next.mark.lastError}`,
+                        warning: { id, name, error: next.mark.lastError, retryInMs: next.mark.delayMs, keptEntry: true },
+                    });
                 }
                 markWrites.set(id, { mark: next.mark, stored: inDb });
             }
@@ -794,7 +826,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             deleteCursor = deleteCursorFrom;
             retrySeq = retrySeqFrom;
         } else {
-            for (const line of failureLogs) console.error(color.red(line));
+            report(failureReports);
         }
         // Not maxSeq: upsert pages aren't capped at it, so a change written during the tick puts seqCursor past it.
         const endSeq = await timeAsync(phases, 'read', () => getCurrentSeq(directories));

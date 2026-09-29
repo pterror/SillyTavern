@@ -16,6 +16,8 @@ import { setConfigFilePath } from '../util.js';
  * reader's position. For characters, seq and tagNameSeq are the change-log and tag-rename-log seqs the index covers,
  * and retrySeq its retry counter (SearchIndexPosition);
  * for groups, version is the groups version the index was built from.
+ *   { type: 'character-index-failed', warning }   a card couldn't be indexed; warning is its CharacterIndexFailure
+ *                                         (characters-search-index.js), sent once its failure is logged.
  *   { type: 'reply', id, ok, error? }     answer to a request; ok false without error: metadata store unavailable.
  *   { type: 'error', message }
  * Requests from the coordinator: { type: 'rebuild', id } (characters), { type: 'close', id }.
@@ -64,7 +66,10 @@ async function startup() {
         post({ type: 'ready', target: 'groups', error: 'the tantivy search backend is not usable on this install' });
         return false;
     }
-    characters = createCharacterIndexMaintainer(directories, tantivy, { tickBudgetMs });
+    characters = createCharacterIndexMaintainer(directories, tantivy, {
+        tickBudgetMs,
+        onIndexFailure: warning => post({ type: 'character-index-failed', warning }),
+    });
     groups = createGroupIndexMaintainer(directories, tantivy);
 
     const notReady = new Set(['characters', 'groups']);

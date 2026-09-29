@@ -692,3 +692,46 @@ test.describe('the change stream reopening', () => {
         expect([0, 1, 2, 3, 4, 5, 6, 7, 20].map(changeStreamRetryDelayMs)).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
     });
 });
+
+test.describe('character-index-failed on /changes/stream', () => {
+    /** @type {Awaited<ReturnType<typeof instrument>>} */
+    let log;
+
+    test.beforeEach(async ({ page }) => {
+        log = await instrument(page);
+        await testSetup.awaitST({ page });
+        await awaitAppReady(page);
+        await openCharacterManagementDrawer(page);
+        await expect.poll(() => listShowing(page)).toBe(true);
+        await waitForQuiet(log);
+    });
+
+    const failure = { type: 'character-index-failed', id: 'Flaky.png', name: 'Flaky', error: 'SyntaxError: Unexpected token', retryInMs: 1000, keptEntry: true };
+    const warningToast = page => page.locator('.toast-warning').filter({ hasText: 'Flaky.png' });
+
+    test('shows a warning naming the card, its error and when it is retried, and syncs nothing', async ({ page }) => {
+        const changesBefore = log.changes;
+        const queriesBefore = log.queries.length;
+
+        await sendStreamMessage(page, failure);
+
+        await expect(warningToast(page)).toHaveCount(1);
+        const text = await warningToast(page).textContent();
+        expect(text).toContain('"Flaky"');
+        expect(text).toContain('SyntaxError: Unexpected token');
+        expect(text).toContain('keeps its previous search entry');
+        expect(text).toContain('1s');
+        await waitForQuiet(log);
+        expect(log.changes).toBe(changesBefore);
+        expect(log.queries.length).toBe(queriesBefore);
+    });
+
+    test('a card with no entry kept says so, and one with an empty name is named by its id', async ({ page }) => {
+        await sendStreamMessage(page, { ...failure, name: '', keptEntry: false });
+
+        await expect(warningToast(page)).toHaveCount(1);
+        const text = await warningToast(page).textContent();
+        expect(text).not.toContain('""');
+        expect(text).toContain('has no search entry');
+    });
+});

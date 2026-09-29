@@ -35,6 +35,7 @@ import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuild
 import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
+import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
@@ -2712,7 +2713,9 @@ router.post('/changes', async function (request, response) {
  * the characters index now covers; groupsVersion: the groups version the groups index was built from; each null
  * when that index's position isn't known), and a `{ type: 'tag-move-failed', tagId, tagName,
  * anchorId, anchorName, refusedId, reason }` message when a tag move queued for this user couldn't be applied
- * (reportTagMoveFailed(); the client shows it as a warning). Also carries the former
+ * (reportTagMoveFailed(); the client shows it as a warning), and a `{ type: 'character-index-failed', id, name,
+ * error, retryInMs, keptEntry }` message when one of this user's cards couldn't be put in their characters search
+ * index (a CharacterIndexFailure; the client shows it as a warning). Also carries the former
  * `/api/browser-heartbeat` job (touches browser-presence on connect/ping) - merged in because the browser's
  * per-origin connection pool is shared across tabs, and two permanent per-tab SSE connections each was enough
  * to exhaust it at only ~3 tabs open and stall every other request.
@@ -2760,10 +2763,17 @@ router.get('/changes/stream', function (request, response) {
     };
     characterChangeEmitter.on(TAG_MOVE_FAILED_EVENT, onTagMoveFailed);
 
+    const onCharacterIndexFailed = (failedHandle, warning) => {
+        if (failedHandle !== handle) return;
+        response.write(`data: ${JSON.stringify({ type: 'character-index-failed', ...warning })}\n\n`);
+    };
+    characterChangeEmitter.on(CHARACTER_INDEX_FAILED_EVENT, onCharacterIndexFailed);
+
     request.on('close', () => {
         characterChangeEmitter.off('change', onChange);
         characterChangeEmitter.off('search-index-updated', onSearchIndexUpdated);
         characterChangeEmitter.off(TAG_MOVE_FAILED_EVENT, onTagMoveFailed);
+        characterChangeEmitter.off(CHARACTER_INDEX_FAILED_EVENT, onCharacterIndexFailed);
         onChange.cancel();
         clearInterval(presenceInterval);
     });

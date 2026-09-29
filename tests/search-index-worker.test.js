@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
+import Database from 'better-sqlite3';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const ORIGINAL_CWD = process.cwd();
@@ -316,6 +317,57 @@ describe('search-index-worker.js (real worker thread)', () => {
         await waitFor(() => indexCovers(afterSeq));
         expect(searchNames(await second.getIndex(HANDLE, directories, 'characters'), 'After')).toEqual(['After.png']);
     }, 30000);
+
+    describe('a card that fails to index emits CHARACTER_INDEX_FAILED_EVENT (handle, warning)', () => {
+        /** @type {{ handle: string, warning: any }[]} */
+        let failures;
+        const onFailed = (handle, warning) => failures.push({ handle, warning });
+
+        beforeEach(() => {
+            failures = [];
+            metadataDb.characterChangeEmitter.on(coordinatorModule.CHARACTER_INDEX_FAILED_EVENT, onFailed);
+        });
+
+        afterEach(() => {
+            metadataDb.characterChangeEmitter.off(coordinatorModule.CHARACTER_INDEX_FAILED_EVENT, onFailed);
+        });
+
+        /** Breaks a row's card_json straight in the db, optionally with a change row for it. */
+        function breakCardJson(id, { change }) {
+            const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+            try {
+                db.prepare('UPDATE characters SET card_json = ? WHERE id = ?').run('not json', id);
+                if (change) db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'upsert\', NULL)').run(id);
+            } finally {
+                db.close();
+            }
+        }
+
+        test('from a catch-up tick', async () => {
+            if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+
+            await seedCharacter('Broken');
+            const coordinator = makeCoordinator();
+            await coordinator.getIndex(HANDLE, directories, 'characters');
+
+            breakCardJson('Broken.png', { change: true });
+            await waitFor(() => failures.length > 0);
+            expect(failures).toEqual([{ handle: HANDLE, warning: expect.objectContaining({ id: 'Broken.png', name: 'Broken', retryInMs: 1000, keptEntry: true }) }]);
+        }, 30000);
+
+        test('from a full rebuild', async () => {
+            if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+
+            await seedCharacter('Broken');
+            const coordinator = makeCoordinator();
+            await coordinator.getIndex(HANDLE, directories, 'characters');
+
+            breakCardJson('Broken.png', { change: false });
+            await expect(coordinator.rebuild(HANDLE, directories)).resolves.toBe(true);
+            await waitFor(() => failures.length > 0);
+            expect(failures).toEqual([{ handle: HANDLE, warning: expect.objectContaining({ id: 'Broken.png', name: 'Broken', retryInMs: 1000, keptEntry: true }) }]);
+        }, 30000);
+    });
 });
 
 describe('characters index chat stats', () => {

@@ -198,3 +198,22 @@ test('a tag move failure for the stream\'s store is written as data: {"type":"ta
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(characterChangeEmitter.listenerCount(TAG_MOVE_FAILED_EVENT)).toBe(0);
 });
+
+test('a character index failure for the stream\'s handle is written as data: {"type":"character-index-failed",...}; another handle\'s isn\'t', async () => {
+    const { characterChangeEmitter } = await import('../src/character-metadata-db.js');
+    const { CHARACTER_INDEX_FAILED_EVENT } = await import('../src/endpoints/search-index-coordinator.js');
+    const mine = await openStream('sse-user-index-failed');
+    const other = await openStream('sse-user-index-failed-other');
+    try {
+        const warning = { id: 'Flaky.png', name: 'Flaky', error: 'SyntaxError: x', retryInMs: 1000, keptEntry: true };
+        characterChangeEmitter.emit(CHARACTER_INDEX_FAILED_EVENT, 'sse-user-index-failed', warning);
+        expect(await mine.nextMessage(1000)).toBe(true);
+        expect(mine.messages).toEqual([`data: ${JSON.stringify({ type: 'character-index-failed', ...warning })}`]);
+        expect(await other.nextMessage(300)).toBe(false);
+    } finally {
+        mine.close();
+        other.close();
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(characterChangeEmitter.listenerCount(CHARACTER_INDEX_FAILED_EVENT)).toBe(0);
+});

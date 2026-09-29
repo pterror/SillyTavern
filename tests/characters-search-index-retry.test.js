@@ -27,6 +27,8 @@ let tantivy;
 let now;
 /** Every console.error / console.warn call, joined into one line each. */
 let logged;
+/** Every warning the maintainer handed to its onIndexFailure. */
+let warnings;
 
 const SEQ_META_KEY = 'tantivy_char_index_seq';
 const TAG_NAME_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
@@ -160,6 +162,7 @@ beforeEach(() => {
     maintainer = null;
     now = 1_000_000;
     logged = [];
+    warnings = [];
     jest.spyOn(Date, 'now').mockImplementation(() => now);
     const record = (...args) => { logged.push(args.map(String).join(' ')); };
     jest.spyOn(console, 'error').mockImplementation(record);
@@ -184,7 +187,7 @@ async function setUp() {
     await writeCard('Good', 'steadyword');
     await writeCard('Flaky', 'flakyword');
     await metadataDb.bootstrapIfNeeded(directories);
-    maintainer = searchIndex.createCharacterIndexMaintainer(directories, tantivy);
+    maintainer = searchIndex.createCharacterIndexMaintainer(directories, tantivy, { onIndexFailure: warning => warnings.push(warning) });
     expect(await maintainer.rebuild()).not.toBeNull();
     expect(docCount(FLAKY, 'flakyword')).toBe(1);
     return true;
@@ -410,5 +413,55 @@ describe('characters-search-index.js: a card that fails to re-index keeps its do
         expect(Number(await metadataDb.getMetaValue(directories, SEQ_META_KEY))).toBe(redone.seq);
         expect(logsAbout(FLAKY)).toHaveLength(1);
         expect(docCount(FLAKY, 'flakyword')).toBe(1);
+    }, 20000);
+});
+
+describe('characters-search-index.js: a card that fails to re-index is warned about', () => {
+    test('a failure hands one warning naming the card to onIndexFailure', async () => {
+        if (!await setUp()) return;
+        setCardJson(FLAKY, 'not json', { change: true });
+        await tick();
+
+        expect(warnings).toEqual([{ id: FLAKY, name: 'Flaky', error: parseError('not json'), retryInMs: 1000, keptEntry: true }]);
+    }, 20000);
+
+    test('a failure is warned about only when its error differs from the last one for that card', async () => {
+        if (!await setUp()) return;
+        setCardJson(FLAKY, 'not json', { change: true });
+        await tick();
+        now = retryMarks()[0].next_attempt_at;
+        await tick();
+        now = retryMarks()[0].next_attempt_at;
+        await tick();
+        expect(warnings).toHaveLength(1);
+
+        setCardJson(FLAKY, '{', { change: false });
+        now = retryMarks()[0].next_attempt_at;
+        await tick();
+        expect(warnings).toHaveLength(2);
+        expect(warnings[1]).toEqual({ id: FLAKY, name: 'Flaky', error: parseError('{'), retryInMs: 8000, keptEntry: true });
+
+        now = retryMarks()[0].next_attempt_at;
+        await tick();
+        expect(warnings).toHaveLength(2);
+    }, 20000);
+
+    test('under a lock nothing is warned about; the tick that lands the mark warns', async () => {
+        if (!await setUp()) return;
+        setCardJson(FLAKY, 'not json', { change: true });
+
+        const blocker = new Database(dbPath());
+        try {
+            blocker.exec('BEGIN IMMEDIATE');
+            expect((await tick()).persistSkipped).toBe(true);
+        } finally {
+            blocker.exec('ROLLBACK');
+            blocker.close();
+        }
+        expect(warnings).toEqual([]);
+
+        await tick();
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0].id).toBe(FLAKY);
     }, 20000);
 });
