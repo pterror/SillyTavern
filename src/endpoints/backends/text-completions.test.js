@@ -37,7 +37,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
-const { saveChatToTree, loadBranch, appendMessages, editMessage, getAncestorPath, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
+const { saveChatToTree, loadBranch, appendMessages, editMessage, getAncestorPath, getAlternatives, disposeMessageTreeStores, getMessageTreeDb } = await import('../../message-tree-db.js');
 const { writeBack } = await import('../../token-count-store.js');
 // The client-side compact-stream decoder (public/scripts/llamacpp-compact-stream.js) has no browser-
 // only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
@@ -2036,6 +2036,121 @@ async function run() {
             assert.deepEqual(afterEdit.sent.filter(body => !body.content.includes(newText)).map(body => body.content), [],
                 'every /tokenize holds the edited message\'s new text');
         } finally {
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    });
+
+    /** Rows stored under `identity` in token_counts and token_ids together. */
+    async function storedRowsUnder(identity) {
+        const db = await getMessageTreeDb(directories);
+        const counts = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_counts WHERE identity = @identity', { identity }));
+        const ids = /** @type {{ n: number }} */ (db.get('SELECT COUNT(*) AS n FROM token_ids WHERE identity = @identity', { identity }));
+        return Number(counts.n) + Number(ids.n);
+    }
+
+    let writeBackChats = 0;
+    /**
+     * A new chat on a llama.cpp backend whose `/props` gives `props` and whose `/tokenize` answers; `onCompletion(req,
+     * res, body)` answers `/completion`. Returns the backend, the URLs it was asked and the request body for its generation.
+     */
+    async function setUpWriteBackGeneration(props, onCompletion) {
+        const name = `WriteBack${++writeBackChats}`;
+        const avatar = await writeCharacter(`${name}.png`, { name, data: { name, description: `${name} tends the garden.`, first_mes: 'Hello.' } });
+        await saveChatToTree(directories, avatar, 'write-back-chat', [
+            { chat_metadata: {} },
+            { name, is_user: false, mes: 'Hello.', send_date: 1, extra: {} },
+            { name: 'Tester', is_user: true, mes: 'What grows here?', send_date: 2, extra: {} },
+            { name, is_user: false, mes: 'Roses, mostly.', send_date: 3, extra: {} },
+        ]);
+        const branch = await loadBranch(directories, avatar, 'write-back-chat');
+        const urls = [];
+        const backend = await startFakeBackend((req, res, body) => {
+            urls.push(req.url);
+            if (req.url.startsWith('/props')) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(props));
+            }
+            if (req.url === '/tokenize') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ tokens: Array.from(Buffer.from(JSON.parse(body).content), (_, i) => i) }));
+            }
+            if (req.url === '/completion') return onCompletion(req, res, body);
+            res.writeHead(500);
+            res.end('no');
+        });
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        Object.assign(settings.textgenerationwebui_settings, {
+            type: 'llamacpp',
+            llamacpp_model: '',
+            server_urls: { llamacpp: backend.url },
+            logit_bias: [{ id: 'a', text: 'thorn', value: -5 }],
+        });
+        writeAllSettings(directories, settings);
+        return {
+            backend, urls,
+            body: { owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: 'Any tulips?' },
+        };
+    }
+
+    for (const stream of [false, true]) {
+        await tokenizerCase(`raw-action /generate on llama.cpp (${stream ? 'stream' : 'non-stream'}): the counts and ids are stored only after the backend has received its request`, async () => {
+            const props = { model_alias: 'write-back-model', model_path: '/models/write-back-model.gguf', build_info: `b-write-back-${stream}` };
+            let rowsWhenReceived = null;
+            const identity = `llamacpp:${JSON.stringify([props.model_path, props.build_info])}`;
+            const { backend, urls, body } = await setUpWriteBackGeneration(props, async (_req, res) => {
+                rowsWhenReceived = await storedRowsUnder(identity);
+                if (stream) {
+                    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                    res.write(`data: ${JSON.stringify({ content: 'Yes.', stop: false })}\n\n`);
+                    return res.end(`data: ${JSON.stringify({ content: '', stop: true })}\n\n`);
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ content: 'Yes.', choices: [{ text: 'Yes.' }] }));
+            });
+            try {
+                const { status } = stream
+                    ? await postGenerateStreamBytes(buildTestApp(), { ...body, stream: true })
+                    : await postGenerate(buildTestApp(), body);
+                assert.equal(status, 200);
+                assert.ok(urls.includes('/tokenize'), 'the generation tokenized');
+                assert.ok(urls.includes('/completion'), 'the backend received the generation');
+                assert.equal(rowsWhenReceived, 0, 'nothing stored when the backend received its request');
+                await waitFor(async () => (await storedRowsUnder(identity)) > 0);
+            } finally {
+                backend.server.close();
+                writeAllSettings(directories, buildSettingsFixture());
+            }
+        });
+    }
+
+    await tokenizerCase('raw-action /generate on llama.cpp: a backend request that throws before sending stores nothing', async () => {
+        const props = { model_alias: 'write-back-model', model_path: '/models/write-back-model.gguf', build_info: 'b-write-back-throws' };
+        const identity = `llamacpp:${JSON.stringify([props.model_path, props.build_info])}`;
+        const { backend, urls, body } = await setUpWriteBackGeneration(props, (_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ content: 'Yes.', choices: [{ text: 'Yes.' }] }));
+        });
+        const request = http.request;
+        let refused = 0;
+        http.request = function (url, ...rest) {
+            if (String(url).endsWith('/completion')) {
+                refused++;
+                throw new Error('refused before sending');
+            }
+            return request.call(this, url, ...rest);
+        };
+        try {
+            const { data } = await postGenerate(buildTestApp(), body);
+            assert.equal(data.error, true, 'the generation failed');
+            assert.equal(refused, 1, 'the backend request threw');
+            assert.ok(urls.includes('/tokenize'), 'the generation tokenized');
+            assert.ok(!urls.includes('/completion'), 'the backend never received the generation');
+            await new Promise(resolve => setTimeout(resolve, 200));
+            assert.equal(await storedRowsUnder(identity), 0, 'nothing stored');
+        } finally {
+            http.request = request;
             backend.server.close();
             writeAllSettings(directories, buildSettingsFixture());
         }
