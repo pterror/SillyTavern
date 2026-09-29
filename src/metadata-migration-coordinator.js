@@ -16,6 +16,7 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'recoverNumericIdGroupsIfNeeded',
     'normalizeGroupFavIfNeeded',
     'migrateTagsJsonIfNeeded',
+    'migrateSettingsTagsIfNeeded',
     'backfillCardTagsIfNeeded',
     'backfillTagIdsInShallowJson',
     'normalizeCharacterFavIfNeeded',

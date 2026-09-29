@@ -18,6 +18,8 @@ import {
     writeNamedSettings,
     settingsExist,
 } from '../settings-store.js';
+import { restartSettingsTagsImport } from '../character-metadata-db.js';
+import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.js';
 
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
@@ -493,9 +495,15 @@ router.post('/restore-snapshot', getFileNameValidationFunction('name'), async (r
         const snapshotContent = fs.readFileSync(snapshotPath, 'utf8');
         const snapshotSettings = JSON.parse(snapshotContent);
 
-        // An old snapshot carrying `tags`/`tag_map` restores those fields inertly; they're never imported
-        // into the metadata store.
         writeAllSettings(request.user.directories, snapshotSettings);
+
+        // The import pass marks itself done once it has moved these files out of the settings store.
+        if (snapshotSettings && typeof snapshotSettings === 'object'
+            && (Object.hasOwn(snapshotSettings, 'tags') || Object.hasOwn(snapshotSettings, 'tag_map'))
+            && await restartSettingsTagsImport(request.user.directories)) {
+            requestMetadataMigrationPass(request.user.directories, 'migrateSettingsTagsIfNeeded')
+                .catch(err => console.error('Could not run the settings tags import', err));
+        }
 
         response.sendStatus(204);
     } catch (error) {

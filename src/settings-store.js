@@ -16,12 +16,12 @@ import { getAtPath, setAtPath } from '../public/scripts/hash-utils.js';
 const SETTINGS_SUBDIR = 'settings';
 
 /** @param {import('./users.js').UserDirectoryList} directories */
-function settingsDirPath(directories) {
+export function settingsDirPath(directories) {
     return path.join(directories.root, SETTINGS_SUBDIR);
 }
 
 /** @param {import('./users.js').UserDirectoryList} directories */
-function legacySettingsPath(directories) {
+export function legacySettingsPath(directories) {
     return path.join(directories.root, SETTINGS_FILE);
 }
 

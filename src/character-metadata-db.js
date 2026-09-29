@@ -7,7 +7,7 @@ import path from 'node:path';
 import _ from 'lodash';
 import sanitize from 'sanitize-filename';
 
-import { color, delay, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
+import { color, delay, generateTimestamp, getConfigValue, mapWithConcurrency, parseCreateDateToEpochMs } from './util.js';
 import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
@@ -17,6 +17,7 @@ import { getSqliteEngine, isBusyError, openNativeDatabase, streamRows } from './
 import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { TAGS_FILE } from './constants.js';
+import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
@@ -5187,6 +5188,283 @@ export async function migrateTagsJsonIfNeeded(directories) {
     return { batches, rowsChanged };
 }
 
+const SETTINGS_TAGS_MIGRATED_FLAG = 'settings_tags_migrated';
+const SETTINGS_TAGS_IMPORT_BATCH_SIZE = 500;
+
+/**
+ * @param {string} filePath
+ * @returns {{ missing: true } | { error: string } | { text: string, value: unknown }}
+ */
+function readSettingsTagsSource(filePath) {
+    let text;
+    try {
+        text = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+        if (/** @type {any} */ (err)?.code === 'ENOENT') return { missing: true };
+        return { error: String(/** @type {any} */ (err)?.message ?? err) };
+    }
+    try {
+        return { text, value: JSON.parse(text) };
+    } catch (err) {
+        return { error: String(/** @type {any} */ (err)?.message ?? err) };
+    }
+}
+
+/**
+ * Creates each tag of `tags` whose id has no `tags` row and no tag_deletions mark, as createTagDefinition() does:
+ * an own sort_order is kept (and queued while moves queue); tags without one get max+1 upward, alphabetically,
+ * after every tag in the list that has one. Everything not created is listed in a warning.
+ * @param {MetadataDbEntry} entry
+ * @param {string} label
+ * @param {unknown[]} tags
+ * @returns {Promise<{ batches: number, rowsChanged: number }>}
+ */
+async function importSettingsTagDefinitions(entry, label, tags) {
+    /** @type {string[]} */
+    const skipped = [];
+    /** @type {TagDefinitionInput[]} */
+    const ordered = [];
+    /** @type {TagDefinitionInput[]} */
+    const orderless = [];
+    for (const raw of tags) {
+        const tag = /** @type {TagDefinitionInput | null} */ (raw);
+        if (!tag || typeof tag !== 'object' || Array.isArray(tag) || typeof tag.id !== 'string' || !tag.id) {
+            skipped.push(`  ${JSON.stringify(raw)}: not a tag with a non-empty string id`);
+            continue;
+        }
+        (Object.hasOwn(tag, 'sort_order') ? ordered : orderless).push(tag);
+    }
+    // Stable, so tags with the same name key keep the list's order, as rowid does in fillTagSortOrdersIfNeeded().
+    orderless.sort((a, b) => compareNameKeys(tagDefinitionNameKey(a), tagDefinitionNameKey(b)));
+    const sequence = [...ordered, ...orderless];
+
+    let batches = 0;
+    let rowsChanged = 0;
+    for (let i = 0; i < sequence.length; i += SETTINGS_TAGS_IMPORT_BATCH_SIZE) {
+        if (i > 0) await delay(TAG_MAP_IMPORT_BATCH_PAUSE_MS);
+        const batch = sequence.slice(i, i + SETTINGS_TAGS_IMPORT_BATCH_SIZE);
+        const ids = [...new Set(batch.map(tag => tag.id))];
+        /** @type {string[]} */
+        let batchSkipped = [];
+        /** @type {string[]} */
+        let batchInserted = [];
+        entry.db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            batchSkipped = [];
+            batchInserted = [];
+            const placeholders = ids.map(() => '?').join(',');
+            /** @type {Set<string>} */
+            const existing = new Set();
+            for (const row of /** @type {Generator<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM tags WHERE id IN (${placeholders})`, ids))) existing.add(row.id);
+            /** @type {Set<string>} */
+            const marked = new Set();
+            for (const row of /** @type {Generator<{ tag_id: string }>} */ (entry.db.iterate(`SELECT tag_id FROM tag_deletions WHERE tag_id IN (${placeholders})`, ids))) marked.add(row.tag_id);
+            const settled = tagSortOrdersSettledSync(entry.db);
+            let next = nextTagSortOrderSync(entry);
+
+            for (const source of batch) {
+                const id = source.id;
+                if (marked.has(id)) {
+                    batchSkipped.push(`  ${id}: deleted`);
+                    continue;
+                }
+                if (existing.has(id) || batchInserted.includes(id)) {
+                    batchSkipped.push(`  ${id}: already exists`);
+                    continue;
+                }
+                const tag = { ...source };
+                const assignOrder = !Object.hasOwn(tag, 'sort_order');
+                if (assignOrder) tag.sort_order = next;
+                const params = tagRowParams(tag);
+                entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
+                if (params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
+                if (!assignOrder && !settled) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
+                batchInserted.push(id);
+            }
+            if (batchInserted.length > 0) {
+                updateTagsHashSync(entry.db);
+                characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            }
+        });
+        batches++;
+        rowsChanged += batchInserted.length;
+        skipped.push(...batchSkipped);
+        if (batchInserted.length > 0) entry.tagCache = null;
+    }
+
+    if (skipped.length > 0) {
+        console.warn(color.yellow(`[character-metadata] ${label}: ${skipped.length} tag(s) not imported:\n${skipped.join('\n')}`));
+    }
+    return { batches, rowsChanged };
+}
+
+/**
+ * Imports one settings source: its `tags` (when it has the key) and then its `tag_map`, leaving out assignments to
+ * tags that have no definition. Everything left out is listed in a warning.
+ * @param {MetadataDbEntry} entry
+ * @param {string} label
+ * @param {{ tags?: unknown, tag_map?: unknown }} source Only own keys are read.
+ * @param {{ batches: number, rowsChanged: number }} totals Added to.
+ * @returns {Promise<boolean>} Whether every tag_map key could be written.
+ */
+async function importSettingsTagsSource(entry, label, source, totals) {
+    if (Object.hasOwn(source, 'tags')) {
+        if (Array.isArray(source.tags)) {
+            const result = await importSettingsTagDefinitions(entry, label, source.tags);
+            totals.batches += result.batches;
+            totals.rowsChanged += result.rowsChanged;
+        } else {
+            console.warn(color.yellow(`[character-metadata] ${label}: tags is not a list, no tag imported from it: ${JSON.stringify(source.tags)}`));
+        }
+    }
+    if (!Object.hasOwn(source, 'tag_map')) return true;
+    const tagMap = source.tag_map;
+    if (!tagMap || typeof tagMap !== 'object' || Array.isArray(tagMap)) {
+        console.warn(color.yellow(`[character-metadata] ${label}: tag_map is not an object, no assignment imported from it: ${JSON.stringify(tagMap)}`));
+        return true;
+    }
+    const imported = await importTagMap(entry, /** @type {Record<string, unknown>} */ (tagMap), { label, requireDefinitions: true });
+    totals.batches += imported.batches;
+    totals.rowsChanged += imported.rowsChanged;
+    if (imported.droppedKeys.length > 0) {
+        console.warn(color.yellow(`[character-metadata] ${label}: ${imported.droppedKeys.length} tag_map key(s) matched neither a known character nor a known group, not imported: ${imported.droppedKeys.join(', ')}`));
+    }
+    if (imported.undefinedTagIds.length > 0) {
+        console.warn(color.yellow(`[character-metadata] ${label}: tag ids with no tag definition, not assigned:\n${imported.undefinedTagIds.map(u => `  ${u.key}: ${u.tagIds.join(', ')}`).join('\n')}`));
+    }
+    return imported.failedKeys === 0;
+}
+
+/**
+ * Moves an imported settings key file out of the settings store, to `<file>.migrated`, or to a timestamped name when
+ * that is taken. Never overwrites a file, and leaves the file where it is if it no longer holds what was imported.
+ * @param {string} filePath
+ * @param {string} importedText
+ * @returns {boolean} Whether the file is gone from its place.
+ */
+function moveImportedSettingsFile(filePath, importedText) {
+    const current = readSettingsTagsSource(filePath);
+    if ('missing' in current) return true;
+    if (!('text' in current) || current.text !== importedText) {
+        console.warn(color.yellow(`[character-metadata] ${filePath} changed after it was imported; left in place, imported again next boot.`));
+        return false;
+    }
+    const stamp = generateTimestamp();
+    for (let attempt = 0; ; attempt++) {
+        const target = attempt === 0 ? `${filePath}.migrated` : `${filePath}.migrated-${stamp}${attempt > 1 ? `-${attempt}` : ''}`;
+        try {
+            fs.copyFileSync(filePath, target, fs.constants.COPYFILE_EXCL);
+        } catch (err) {
+            const code = /** @type {any} */ (err)?.code;
+            if (code === 'EEXIST') continue;
+            if (code === 'ENOENT') return true;
+            console.error(`[character-metadata] Imported ${filePath} but could not copy it to ${target}; left in place:`, /** @type {any} */ (err)?.message);
+            return false;
+        }
+        try {
+            if (fs.readFileSync(target, 'utf8') !== importedText || fs.readFileSync(filePath, 'utf8') !== importedText) {
+                fs.rmSync(target, { force: true });
+                console.warn(color.yellow(`[character-metadata] ${filePath} changed after it was imported; left in place, imported again next boot.`));
+                return false;
+            }
+            fs.rmSync(filePath);
+        } catch (err) {
+            console.error(`[character-metadata] Imported ${filePath} and copied it to ${target}, but could not remove it; left in place:`, /** @type {any} */ (err)?.message);
+            return false;
+        }
+        return true;
+    }
+}
+
+// Imports settings' `tags` and `tag_map` into the tag store: from a legacy settings.json not yet split, then from
+// the key files settings/tags.json + settings/tag_map.json. It reads the files itself: going through the settings
+// store would run ensureMigrated(), which the server may be running at the same time. The legacy file is read first
+// because ensureMigrated() writes every key file before it deletes it, so a legacy file that is gone means the key
+// files are complete. Needs bootstrapIfNeeded() and bootstrapGroupsIfNeeded() done, to classify tag_map keys.
+//
+// A source (the legacy file, or the two key files together) is imported whole or not at all: one unreadable file
+// imports nothing from its source. What already exists is skipped, so a rerun from the start is safe. Imported key
+// files leave the settings store (moveImportedSettingsFile()), which reads every key file on every request; the
+// legacy file holds every setting and is never touched. The pass is marked done once no source is left; until
+// then it runs every boot. restartSettingsTagsImport() clears the mark.
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>}
+ */
+export async function migrateSettingsTagsIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const totals = { batches: 0, rowsChanged: 0 };
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: SETTINGS_TAGS_MIGRATED_FLAG })) return totals;
+
+    let sourceLeft = false;
+
+    const legacyPath = legacySettingsPath(directories);
+    const legacy = readSettingsTagsSource(legacyPath);
+    if (!('missing' in legacy)) {
+        sourceLeft = true;
+        const label = `settings tags import (${legacyPath})`;
+        if ('error' in legacy) {
+            console.error(color.red(`[character-metadata] ${label}: could not read ${legacyPath}, nothing imported from it; retrying next boot: ${legacy.error}`));
+        } else if (!legacy.value || typeof legacy.value !== 'object' || Array.isArray(legacy.value)) {
+            console.warn(color.yellow(`[character-metadata] ${label}: ${legacyPath} is not an object, nothing imported from it.`));
+        } else {
+            await importSettingsTagsSource(entry, label, /** @type {object} */ (legacy.value), totals);
+        }
+    }
+
+    const dir = settingsDirPath(directories);
+    const keyFiles = [path.join(dir, 'tags.json'), path.join(dir, 'tag_map.json')].map(filePath => ({ filePath, read: readSettingsTagsSource(filePath) }));
+    const present = keyFiles.filter(file => !('missing' in file.read));
+    if (present.length > 0) {
+        const label = `settings tags import (${present.map(file => file.filePath).join(' + ')})`;
+        const unreadable = present.filter(file => 'error' in file.read);
+        if (unreadable.length > 0) {
+            sourceLeft = true;
+            for (const file of unreadable) {
+                console.error(color.red(`[character-metadata] ${label}: could not read ${file.filePath}, nothing imported from the key files; retrying next boot: ${/** @type {{ error: string }} */ (file.read).error}`));
+            }
+        } else {
+            /** @type {{ tags?: unknown, tag_map?: unknown }} */
+            const source = {};
+            const [tagsFile, tagMapFile] = keyFiles;
+            if ('value' in tagsFile.read) source.tags = tagsFile.read.value;
+            if ('value' in tagMapFile.read) source.tag_map = tagMapFile.read.value;
+            if (await importSettingsTagsSource(entry, label, source, totals)) {
+                for (const file of present) {
+                    if (!moveImportedSettingsFile(file.filePath, /** @type {{ text: string }} */ (file.read).text)) sourceLeft = true;
+                }
+            } else {
+                sourceLeft = true;
+                console.warn(color.yellow(`[character-metadata] ${label}: some tag_map keys failed (listed above); the key files are left in place and imported again next boot.`));
+            }
+        }
+    }
+
+    if (!sourceLeft) {
+        entry.db.run(UPSERT_META_VALUE_SQL, { key: SETTINGS_TAGS_MIGRATED_FLAG, value: String(Date.now()) });
+        // A restore may have written a source after it was looked for, and cleared the mark before it was set.
+        if ([legacyPath, ...keyFiles.map(file => file.filePath)].some(filePath => fs.existsSync(filePath))) {
+            entry.db.run('DELETE FROM meta WHERE key = @key', { key: SETTINGS_TAGS_MIGRATED_FLAG });
+        }
+    }
+    if (totals.batches > 0 && !isReadOnlyMode()) entry.db.checkpoint();
+    return totals;
+}
+
+/**
+ * Makes migrateSettingsTagsIfNeeded() read the settings sources again on its next run.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<boolean>} Whether the store was there to mark.
+ */
+export async function restartSettingsTagsImport(directories) {
+    if (isReadOnlyMode()) return false;
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    entry.db.run('DELETE FROM meta WHERE key = @key', { key: SETTINGS_TAGS_MIGRATED_FLAG });
+    return true;
+}
+
 // Imports a `{[id]: tagId[]}` map into character_tags/group_tags. Each key is looked for only in its own type's
 // table (tagEntityTypeOf()). Returns keys not found there.
 /**
@@ -5243,12 +5521,18 @@ const TAG_MAP_IMPORT_BATCH_PAUSE_MS = 10;
 /**
  * @param {MetadataDbEntry} entry
  * @param {Record<string, unknown>} tagMap Externally-supplied - each value is runtime-checked as string[] below.
- * @returns {Promise<{ droppedKeys: string[], failedKeys: number, batches: number, rowsChanged: number }>}
+ * @param {object} [options]
+ * @param {string} [options.label] Names the import in its warnings.
+ * @param {boolean} [options.requireDefinitions] Leaves out, and returns in `undefinedTagIds`, the tag ids (after
+ *   merge-target resolution) that have no `tags` row when their batch runs.
+ * @returns {Promise<{ droppedKeys: string[], undefinedTagIds: { key: string, tagIds: string[] }[], failedKeys: number, batches: number, rowsChanged: number }>}
  *   rowsChanged counts the keys whose assignments or shallow_json changed.
  */
-async function importTagMap(entry, tagMap) {
+async function importTagMap(entry, tagMap, { label = 'tags.json migration', requireDefinitions = false } = {}) {
     /** @type {string[]} */
     const droppedKeys = [];
+    /** @type {{ key: string, tagIds: string[] }[]} */
+    const undefinedTagIds = [];
     let failedKeys = 0;
     let batches = 0;
     let rowsChanged = 0;
@@ -5304,13 +5588,32 @@ async function importTagMap(entry, tagMap) {
         let batchChanged = 0;
         /** @type {Map<string, string[]>} */
         let batchNotAssigned = new Map();
+        /** @type {{ key: string, tagIds: string[] }[]} */
+        let batchUndefined = [];
         entry.db.transaction(() => {
             // Reset here: a transaction that hits busy is rolled back and rerun.
             batchDropped = [];
             batchFailed = [];
             batchChanged = 0;
             batchNotAssigned = new Map();
+            batchUndefined = [];
             const deletions = readTagDeletionsSync(entry.db);
+            /** @type {Set<string> | null} */
+            const definedTagIds = requireDefinitions ? new Set() : null;
+            if (definedTagIds) {
+                /** @type {Set<string>} */
+                const wanted = new Set();
+                for (const [, rawTagIds] of batch) {
+                    if (Array.isArray(rawTagIds)) for (const tagId of resolveTagIdsToAssign(rawTagIds, deletions).tagIds) wanted.add(tagId);
+                }
+                const ids = [...wanted];
+                for (let j = 0; j < ids.length; j += TAG_MAP_IMPORT_BATCH_SIZE) {
+                    const chunk = ids.slice(j, j + TAG_MAP_IMPORT_BATCH_SIZE);
+                    for (const row of /** @type {Generator<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM tags WHERE id IN (${chunk.map(() => '?').join(',')})`, chunk))) {
+                        definedTagIds.add(row.id);
+                    }
+                }
+            }
             const characterKeys = batch.filter(([key]) => tagEntityTypeOf(key) === 'character').map(([key]) => key);
             const groupKeys = batch.filter(([key]) => tagEntityTypeOf(key) === 'group').map(([key]) => key);
             /** @type {Set<string>} */
@@ -5331,8 +5634,18 @@ async function importTagMap(entry, tagMap) {
             for (const [key, rawTagIds] of batch) {
                 if (!Array.isArray(rawTagIds)) continue;
                 const type = tagEntityTypeOf(key);
-                const { tagIds, dropped } = resolveTagIdsToAssign(rawTagIds, deletions);
-                if (dropped.length > 0 && ((type === 'character' && knownCharacterIds.has(key)) || (type === 'group' && knownGroupIds.has(key)))) batchNotAssigned.set(key, dropped);
+                const resolved = resolveTagIdsToAssign(rawTagIds, deletions);
+                const { dropped } = resolved;
+                let { tagIds } = resolved;
+                const known = (type === 'character' && knownCharacterIds.has(key)) || (type === 'group' && knownGroupIds.has(key));
+                if (dropped.length > 0 && known) batchNotAssigned.set(key, dropped);
+                if (definedTagIds && known) {
+                    const missing = tagIds.filter(tagId => !definedTagIds.has(tagId));
+                    if (missing.length > 0) {
+                        batchUndefined.push({ key, tagIds: missing });
+                        tagIds = tagIds.filter(tagId => definedTagIds.has(tagId));
+                    }
+                }
                 /** @type {(() => boolean) | null} */
                 let write;
                 if (type === 'character' && knownCharacterIds.has(key)) {
@@ -5355,17 +5668,18 @@ async function importTagMap(entry, tagMap) {
         batches++;
         rowsChanged += batchChanged;
         droppedKeys.push(...batchDropped);
+        undefinedTagIds.push(...batchUndefined);
         for (const [key, tagIds] of batchNotAssigned) warnDeletedTagsNotAssigned(key, tagIds);
         failedKeys += batchFailed.length;
         if (batchFailed.length > 0) {
-            console.warn(color.yellow(`[character-metadata] tags.json migration: ${batchFailed.length} tag_map key(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.key}: ${f.message}`).join('\n')}`));
+            console.warn(color.yellow(`[character-metadata] ${label}: ${batchFailed.length} tag_map key(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.key}: ${f.message}`).join('\n')}`));
         }
         if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0) {
             if (!isReadOnlyMode()) entry.db.get('PRAGMA wal_checkpoint(PASSIVE)');
         }
     }
 
-    return { droppedKeys, failedKeys, batches, rowsChanged };
+    return { droppedKeys, undefinedTagIds, failedKeys, batches, rowsChanged };
 }
 
 // A card's own `data.tags` array is user-authored free text, not a curated tag set - ROOT/TAVERN are structural
