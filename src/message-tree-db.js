@@ -481,7 +481,7 @@ async function getEntry(directories) {
  */
 /** @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db */
 function migrateIdentityHashSync(db) {
-    const columns = new Set(/** @type {{ name: string }[]} */ (db.all('PRAGMA table_info(messages)')).map(c => c.name));
+    const columns = new Set(Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(messages)')), c => c.name));
     if (!columns.has('identity_hash')) {
         db.exec('ALTER TABLE messages ADD COLUMN identity_hash TEXT');
     }
@@ -959,7 +959,7 @@ function setDefaultChildSync(db, parentId, childId) {
  * @returns {Omit<MessageRow, 'identity_hash'>[]}
  */
 function getPathSync(db, leafId) {
-    return /** @type {Omit<MessageRow, 'identity_hash'>[]} */ (db.all(PATH_CTE_SQL, { leafId }));
+    return Array.from(/** @type {Iterable<Omit<MessageRow, 'identity_hash'>>} */ (db.iterate(PATH_CTE_SQL, { leafId })));
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,12 +1048,12 @@ function firstUnlabeledOnPathSync(db, nodeId) {
  */
 function getSiblingsSync(db, parentId, nodeId) {
     if (parentId == null) {
-        return /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (db.all('SELECT id, content FROM messages WHERE id = @nodeId', { nodeId }));
+        return Array.from(/** @type {Iterable<Pick<MessageRow, 'id' | 'content'>>} */ (db.iterate('SELECT id, content FROM messages WHERE id = @nodeId', { nodeId })));
     }
-    return /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (db.all(
+    return Array.from(/** @type {Iterable<Pick<MessageRow, 'id' | 'content'>>} */ (db.iterate(
         'SELECT id, content FROM messages WHERE parent_id = @parentId ORDER BY created_at ASC, id ASC',
         { parentId },
-    ));
+    )));
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,10 +1137,10 @@ function getLabeledNodeSync(db, ownerId, name) {
  * @returns {MessageRow[]}
  */
 function listLabeledNodesSync(db, ownerId) {
-    return /** @type {MessageRow[]} */ (db.all(
+    return Array.from(/** @type {Iterable<MessageRow>} */ (db.iterate(
         'SELECT * FROM messages WHERE owner_id = @ownerId AND label IS NOT NULL ORDER BY created_at ASC, id ASC',
         { ownerId },
-    ));
+    )));
 }
 
 /**
@@ -1200,18 +1200,16 @@ function createBranchSync(db, { leafId, name, isGroup, metadata }) {
  */
 function getForkSiblingsSync(db, messageId) {
     // One walk of the whole subtree carrying which immediate child each row descends through, rather than one walk per child.
-    const rows = /** @type {{ id: string, childId: string, name: string | null }[]} */ (db.all(`
+    /** @type {Map<string, { id: string, name: string | null }[]>} */
+    const byChild = new Map();
+    for (const r of /** @type {Iterable<{ id: string, childId: string, name: string | null }>} */ (db.iterate(`
         WITH RECURSIVE sub(id, root_child, label) AS (
             SELECT id, id, label FROM messages WHERE parent_id = @messageId
             UNION ALL
             SELECT m.id, s.root_child, m.label FROM messages m JOIN sub s ON m.parent_id = s.id
         )
         SELECT id, root_child AS childId, label AS name FROM sub WHERE label IS NOT NULL
-    `, { messageId }));
-
-    /** @type {Map<string, { id: string, name: string | null }[]>} */
-    const byChild = new Map();
-    for (const r of rows) {
+    `, { messageId }))) {
         if (!byChild.has(r.childId)) byChild.set(r.childId, []);
         /** @type {{ id: string, name: string | null }[]} */ (byChild.get(r.childId)).push({ id: r.id, name: r.name });
     }
@@ -1229,12 +1227,11 @@ function getSiblingsBatchSync(db, parentIds) {
     /** @type {Map<string, { id: string, content: string }[]>} */
     const out = new Map();
     if (ids.length === 0) return out;
-    const rows = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'content'>[]} */ (db.all(
+    for (const r of /** @type {Iterable<Pick<MessageRow, 'id' | 'parent_id' | 'content'>>} */ (db.iterate(
         `SELECT id, parent_id, content FROM messages WHERE parent_id IN (${ids.map((_, i) => '@p' + i).join(',')})
          ORDER BY created_at ASC, id ASC`,
         Object.fromEntries(ids.map((v, i) => ['p' + i, v])),
-    ));
-    for (const r of rows) {
+    ))) {
         // r.parent_id is never null here - it's constrained by the IN(...) list of non-null ids above.
         const parentId = /** @type {string} */ (r.parent_id);
         if (!out.has(parentId)) out.set(parentId, []);
@@ -1254,11 +1251,10 @@ function getChildIdsBatchSync(db, nodeIds) {
     /** @type {Map<string, string[]>} */
     const out = new Map();
     if (ids.length === 0) return out;
-    const rows = /** @type {Pick<MessageRow, 'id' | 'parent_id'>[]} */ (db.all(
+    for (const r of /** @type {Iterable<Pick<MessageRow, 'id' | 'parent_id'>>} */ (db.iterate(
         `SELECT id, parent_id FROM messages WHERE parent_id IN (${ids.map((_, i) => '@p' + i).join(',')})`,
         Object.fromEntries(ids.map((v, i) => ['p' + i, v])),
-    ));
-    for (const r of rows) {
+    ))) {
         const parentId = /** @type {string} */ (r.parent_id);
         if (!out.has(parentId)) out.set(parentId, []);
         /** @type {string[]} */ (out.get(parentId)).push(r.id);
@@ -1840,9 +1836,9 @@ export async function getAlternatives(directories, nodeId, range = {}) {
     if (!node) return null;
 
     const siblings = /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (node.parent_id !== null
-        ? entry.db.all(
+        ? Array.from(entry.db.iterate(
             'SELECT id, content FROM messages WHERE parent_id = @p ORDER BY created_at ASC, id ASC',
-            { p: node.parent_id })
+            { p: node.parent_id }))
         : [entry.db.get('SELECT id, content FROM messages WHERE id = @id', { id: nodeId })]);
 
     const selected = siblings.findIndex(s => s.id === nodeId);
@@ -2510,10 +2506,10 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
     // No anchor just means nothing stored yet — the card's greetings are still valid openings.
     const anchor = getAnchorSync(entry.db, ownerId);
 
-    const rows = /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (anchor ? entry.db.all(
+    const rows = /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (anchor ? Array.from(entry.db.iterate(
         'SELECT id, content FROM messages WHERE parent_id = @p ORDER BY created_at ASC, id ASC',
         { p: anchor.id },
-    ) : []);
+    )) : []);
 
     // The card's current greetings are merged in at read time rather than synced into the tree, so an
     // edited greeting is never stale; a greeting not yet opened gets no row until first used.
@@ -2771,12 +2767,12 @@ export async function listLabels(directories, ownerId) {
     const entry = await getEntry(directories);
     if (!entry) return [];
 
-    return /** @type {Pick<MessageRow, 'id' | 'label' | 'created_at' | 'content'>[]} */ (entry.db.all(
+    return Array.from(/** @type {Iterable<Pick<MessageRow, 'id' | 'label' | 'created_at' | 'content'>>} */ (entry.db.iterate(
         `SELECT id, label, created_at, content FROM messages
          WHERE owner_id = @ownerId AND label IS NOT NULL
          ORDER BY created_at ASC, id ASC`,
         { ownerId },
-    )).map(r => {
+    )), r => {
         let mes = '';
         try { mes = JSON.parse(r.content)?.mes ?? ''; } catch { /* leave empty */ }
         return { node_id: r.id, label: r.label, created_at: r.created_at, mes };
