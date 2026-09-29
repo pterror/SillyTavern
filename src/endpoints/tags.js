@@ -41,7 +41,7 @@ router.post('/save', async function (request, response) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
 
-        // Search indexes key off getTagsHash(), so no explicit invalidation is needed here.
+        // Search indexes follow renames through the logs saveTagDefinitions() writes, so no explicit invalidation is needed here.
         response.send({ result: 'ok' });
     } catch (err) {
         console.error('Could not save tag definitions', err);
