@@ -2493,6 +2493,7 @@ export async function setChatMetadata(directories, ownerId, chatName, metadata, 
  * @property {ChatMessageExtra} extra
  * @property {string | undefined} name
  * @property {boolean} is_user
+ * @property {boolean} [is_system] True for a stored opening that was hidden.
  */
 
 /**
@@ -2543,7 +2544,7 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
             /** @type {any} Raw stored JSON, read only for display fields below - not validated further. */
             let o = {};
             try { o = JSON.parse(r.content); } catch { /* leave empty */ }
-            return { node_id: r.id, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user };
+            return { node_id: r.id, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user, is_system: !!o?.is_system };
         }),
         ...virtual.map(o => ({ node_id: null, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user })),
     ];

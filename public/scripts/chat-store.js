@@ -669,6 +669,14 @@ export async function chatOpEdit(mesId) {
  * failure itself, so the generic one doesn't also fire for the same failure.
  */
 export async function chatOpEditMany(mesIds, silent = false) {
+    // A card greeting with no row gets its stored row first, so the edit has a row to land on.
+    let ensuredOpening = false;
+    for (const mesId of mesIds) {
+        if (!isProvisionalNodeId(_chatAt(mesId)?.node_id)) continue;
+        if (isStoredNodeId(await ensureOpeningRow(mesId))) ensuredOpening = true;
+    }
+    if (ensuredOpening) await _mergeCardGreetingsIntoOpening();
+
     /** @type {{node_id: string, content: Partial<ChatMessageWithSpeakerDefault>, _mesId: number}[]} */
     const edits = [];
     for (const mesId of mesIds) {

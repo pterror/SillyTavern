@@ -7057,7 +7057,7 @@ async function _openingFromTree(cardGreetings, preferredIndex) {
     const message = {
         name: chosen.name ?? speaker,
         is_user: !!chosen.is_user,
-        is_system: false,
+        is_system: !!chosen.is_system,
         send_date: chosen.send_date ?? sendDate,
         mes: chosen.mes,
         extra: chosen.extra ?? {},

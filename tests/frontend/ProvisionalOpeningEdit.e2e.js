@@ -111,3 +111,38 @@ test.describe('editing a card greeting in the chat', () => {
         expect(reloaded.swipes).toEqual([edited, g[0], g[1], g[2]]);
     });
 });
+
+test.describe('hiding messages that include a card greeting with no row', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test('/hide over the opening saves it as a stored opening that stays hidden after a reload', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`];
+        const avatar = await createCharacter(page, `HideOpening-${s}`, g);
+        await openCharacter(page, avatar);
+        expect((await opening(page)).node_id.startsWith('card:')).toBe(true);
+
+        await page.evaluate(async () => {
+            // @ts-ignore
+            await SillyTavern.getContext().executeSlashCommandsWithOptions('/hide 0');
+        });
+        await expect(page.locator('#chat .mes[mesid="0"]')).toHaveAttribute('is_system', 'true');
+
+        await expect.poll(() => storedOpenings(page, avatar), { timeout: 10000 }).toEqual([
+            { stored: true, mes: g[0] },
+            { stored: false, mes: g[1] },
+        ]);
+
+        await page.reload();
+        await testSetup.awaitST({ page });
+        await openCharacter(page, avatar);
+        const reloaded = await page.evaluate(() => {
+            // @ts-ignore
+            const m = SillyTavern.getContext().chat[0];
+            return { mes: m.mes, is_system: m.is_system, node_id: m.node_id };
+        });
+        expect(reloaded.mes).toBe(g[0]);
+        expect(reloaded.is_system).toBe(true);
+        expect(reloaded.node_id.startsWith('card:')).toBe(false);
+    });
+});
