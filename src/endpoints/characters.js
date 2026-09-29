@@ -585,37 +585,50 @@ async function tryReadImage(imgPath, crop) {
  * @param  {{ chatSize: number, dateLastChat: number }} [options.chatStats] The row's chat_size and date_last_chat when
  *   the caller already read them; otherwise they are read from the row here
  * @return {Promise<object>}     A Promise that resolves when the character processing is done.
+ * @throws When the character can't be read or processed.
  */
 export const processCharacter = async (item, directories, { shallow, cardJson = undefined, chatStats = undefined }) => {
+    const imgFile = path.join(directories.characters, item);
+    // Reused for both the cache key and date_added.
+    let charStat;
     try {
-        const imgFile = path.join(directories.characters, item);
-        // Reused for both the cache key and date_added.
-        let charStat;
-        try {
-            charStat = fs.statSync(imgFile);
-        } catch (err) {
-            if (err.code !== 'ENOENT') throw err;
-            charStat = fs.statSync(DEFAULT_AVATAR_PATH);
-        }
-        // card_json is the only source of card content - the PNG is never read for it.
-        const imgData = cardJson ?? await readCardContent(directories, item);
-        if (imgData === undefined) throw new Error('Failed to read character file');
+        charStat = fs.statSync(imgFile);
+    } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        charStat = fs.statSync(DEFAULT_AVATAR_PATH);
+    }
+    // card_json is the only source of card content - the PNG is never read for it.
+    const imgData = cardJson ?? await readCardContent(directories, item);
+    if (imgData === undefined) throw new Error('Failed to read character file');
 
-        let jsonObject = getCharaCardV2(JSON.parse(imgData), directories, false);
-        jsonObject.avatar = item;
-        const character = jsonObject;
-        character.json_data = imgData;
-        character.date_added = charStat.ctimeMs;
-        character.create_date = jsonObject.create_date || new Date(Math.round(charStat.ctimeMs)).toISOString();
+    let jsonObject = getCharaCardV2(JSON.parse(imgData), directories, false);
+    jsonObject.avatar = item;
+    const character = jsonObject;
+    character.json_data = imgData;
+    character.date_added = charStat.ctimeMs;
+    character.create_date = jsonObject.create_date || new Date(Math.round(charStat.ctimeMs)).toISOString();
 
-        // The row is the one source of both: every message write keeps them there (applyCharacterChatStats()).
-        const rowChatStats = chatStats ?? await getCharacterChatStats(directories, item);
-        if (!rowChatStats) throw new Error('Failed to read character row');
-        const { chatSize, dateLastChat } = rowChatStats;
-        character.chat_size = chatSize;
-        character.date_last_chat = dateLastChat;
-        character.data_size = calculateDataSize(jsonObject?.data);
-        return shallow ? toShallow(character) : character;
+    // The row is the one source of both: every message write keeps them there (applyCharacterChatStats()).
+    const rowChatStats = chatStats ?? await getCharacterChatStats(directories, item);
+    if (!rowChatStats) throw new Error('Failed to read character row');
+    const { chatSize, dateLastChat } = rowChatStats;
+    character.chat_size = chatSize;
+    character.date_last_chat = dateLastChat;
+    character.data_size = calculateDataSize(jsonObject?.data);
+    return shallow ? toShallow(character) : character;
+};
+
+/**
+ * processCharacter() for the upstream routes: a character that fails is logged and comes back as the nameless
+ * placeholder those routes have always returned.
+ * @param {string} item
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {Parameters<typeof processCharacter>[2]} options
+ * @return {Promise<object>}
+ */
+export const processCharacterOrPlaceholder = async (item, directories, options) => {
+    try {
+        return await processCharacter(item, directories, options);
     } catch (err) {
         console.error(`Could not process character: ${item}`);
 
@@ -1988,7 +2001,7 @@ router.post('/all', async function (request, response) {
                 await writeBackpressured(response, '[');
                 for await (const rows of streamCharacterCardJsonBatches(request.user.directories)) {
                     const processed = await mapWithConcurrency(rows, STREAM_ALL_READ_CONCURRENCY, row =>
-                        processCharacter(row.id, request.user.directories, {
+                        processCharacterOrPlaceholder(row.id, request.user.directories, {
                             shallow: useShallowCharacters,
                             cardJson: row.card_json,
                             chatStats: { chatSize: row.chat_size, dateLastChat: row.date_last_chat },
@@ -2819,7 +2832,7 @@ router.post('/batch', async function (request, response) {
         const rowById = await getCharacterIndexRowsByIds(request.user.directories, avatars);
         const processingPromises = avatars.map(avatar => {
             const row = rowById.get(avatar);
-            return processCharacter(avatar, request.user.directories, {
+            return processCharacterOrPlaceholder(avatar, request.user.directories, {
                 shallow: useShallowCharacters,
                 cardJson: row?.card_json ?? null,
                 chatStats: row ? { chatSize: row.chat_size, dateLastChat: row.date_last_chat } : undefined,
@@ -2848,7 +2861,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
             return response.sendStatus(404);
         }
 
-        const data = await processCharacter(item, request.user.directories, { shallow: false });
+        const data = await processCharacterOrPlaceholder(item, request.user.directories, { shallow: false });
         await stampDbFav(request.user.directories, [data]);
         await stampDbActiveChat(request.user.directories, [data]);
         await stampDbTagIds(request.user.directories, [data]);
@@ -3078,7 +3091,7 @@ router.post('/import', async function (request, response) {
 
         // Hands the client the freshly-imported character's data in the same response, so it can insert it
         // directly instead of a second full-library fetch just to learn what it itself just uploaded.
-        const character = await processCharacter(`${fileName}.png`, request.user.directories, { shallow: useShallowCharacters });
+        const character = await processCharacterOrPlaceholder(`${fileName}.png`, request.user.directories, { shallow: useShallowCharacters });
         await stampDbFav(request.user.directories, [character]);
         await stampDbTagIds(request.user.directories, [character]);
 
