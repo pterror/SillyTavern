@@ -165,3 +165,52 @@ describe('migrateCreateDateColumn reads the rows to convert in keyset chunks', (
         });
     });
 });
+
+describe('migrateGroupsColumns reads the group ids to backfill in keyset chunks', () => {
+    test('2001 groups in a pre-columns table: three bounded chunk reads, every row backfilled from its file and queued', async () => {
+        /** @type {string[]} */
+        const ids = [];
+        for (let i = 0; i < 2001; i++) {
+            const id = `group-${String(i).padStart(5, '0')}`;
+            ids.push(id);
+            fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify({ id, name: `Group ${i}`, fav: i % 3 === 0, members: [], chats: [] }));
+        }
+
+        // The id/name-only table an install that already ran bootstrapGroupsIfNeeded() has.
+        withRawDb(db => {
+            // The digest columns are already there so migrateGroupDigestColumns() returns early and only this migration reads the ids.
+            db.exec('CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, digest_fav INTEGER, digest_tag_ids INTEGER, digest_content INTEGER);');
+            db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta (key, value) VALUES (\'groups_bootstrap_completed\', \'1\');');
+            const insert = db.prepare('INSERT INTO groups (id, name) VALUES (@id, \'old\')');
+            db.transaction(() => {
+                for (const id of ids) insert.run({ id });
+            })();
+        });
+
+        // bootstrapGroupsIfNeeded() is a no-op (its meta flag is set); getGroupTagIds() opens the store, which runs migrateGroupsColumns().
+        await metadataDb.bootstrapGroupsIfNeeded(directories);
+        expect(await metadataDb.getGroupTagIds(directories, 'group-00000')).toEqual([]);
+
+        const chunkSql = 'SELECT id FROM groups WHERE id > ? ORDER BY id LIMIT ?';
+        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
+        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
+        for (const read of chunkReads) {
+            expect(read.args[1]).toBe(1000);
+            expect(read.args[0][1]).toBe(1000);
+        }
+        expect(calls.filter(c => c.method === 'all' && oneLine(c) === 'SELECT id FROM groups')).toEqual([]);
+
+        withRawDb(db => {
+            const rows = new Map(Array.from(db.prepare('SELECT id, name, name_fold, fav, date_added FROM groups').iterate(), r => [r.id, r]));
+            expect(rows.size).toBe(2001);
+            ids.forEach((id, i) => {
+                const birthtimeMs = Math.round(fs.statSync(path.join(directories.groups, `${id}.json`)).birthtimeMs);
+                expect(rows.get(id)).toEqual({ id, name: `Group ${i}`, name_fold: `group ${i}`, fav: i % 3 === 0 ? 1 : 0, date_added: birthtimeMs });
+            });
+            expect(Array.from(rows.values()).filter(r => r.fav === 1)).toHaveLength(667);
+
+            const queued = Array.from(db.prepare('SELECT kind, id FROM chat_stats_pending ORDER BY id').iterate());
+            expect(queued).toEqual(ids.map(id => ({ kind: 'group', id })));
+        });
+    });
+});

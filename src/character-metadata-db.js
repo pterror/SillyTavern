@@ -875,29 +875,46 @@ function migrateGroupsColumns(db, directories) {
 
     if (!isPreExistingTable) return;
 
-    const existingIds = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM groups'))).map(r => r.id);
-    if (existingIds.length === 0) return;
+    const readIdChunk = (/** @type {string} */ afterId) => (/** @type {{ id: string }[]} */ (db.readBounded(
+        'SELECT id FROM groups WHERE id > ? ORDER BY id LIMIT ?',
+        [afterId, KEYSET_CHUNK],
+        KEYSET_CHUNK,
+    )));
 
+    const firstChunk = readIdChunk('');
+    if (firstChunk.length === 0) return;
+
+    let lastId = '';
     db.transaction(() => {
-        for (const id of existingIds) {
-            // The chat stats columns were just added at 0/0, whether or not the group's file can be read.
-            queueChatStatsReconcileSync(db, 'group', id);
-            try {
-                const filePath = path.join(directories.groups, `${id}.json`);
-                const raw = fs.readFileSync(filePath, 'utf8');
-                const group = JSON.parse(raw);
-                const stat = fs.statSync(filePath);
-                inItemSavepoint(db, () => {
-                    const { changes } = db.run(
-                        `UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded
-                            WHERE id = @id AND (name IS NOT @name OR name_fold IS NOT @nameFold OR fav IS NOT @fav OR date_added IS NOT @dateAdded)`,
-                        { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs) },
-                    );
-                    if (changes > 0) insertGroupChange(db, id);
-                });
-            } catch (err) {
-                console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
+        // transaction() reruns this callback on busy; a rerun starts over from the first chunk.
+        lastId = '';
+        let chunk = firstChunk;
+        for (;;) {
+            for (const { id } of chunk) {
+                // The chat stats columns were just added at 0/0, whether or not the group's file can be read.
+                queueChatStatsReconcileSync(db, 'group', id);
+                try {
+                    const filePath = path.join(directories.groups, `${id}.json`);
+                    const raw = fs.readFileSync(filePath, 'utf8');
+                    const group = JSON.parse(raw);
+                    const stat = fs.statSync(filePath);
+                    inItemSavepoint(db, () => {
+                        const { changes } = db.run(
+                            `UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded
+                                WHERE id = @id AND (name IS NOT @name OR name_fold IS NOT @nameFold OR fav IS NOT @fav OR date_added IS NOT @dateAdded)`,
+                            { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs) },
+                        );
+                        if (changes > 0) insertGroupChange(db, id);
+                    });
+                } catch (err) {
+                    console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
+                }
             }
+
+            if (chunk.length < KEYSET_CHUNK) break;
+            lastId = chunk[chunk.length - 1].id;
+            chunk = readIdChunk(lastId);
+            if (chunk.length === 0) break;
         }
     });
 }
