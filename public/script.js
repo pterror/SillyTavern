@@ -920,34 +920,80 @@ function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, re
     }
 }
 
+// The browser never reconnects an EventSource that reached CLOSED (non-200 status, wrong content type), so it's rebuilt.
+const CHANGE_STREAM_RETRY_FIRST_MS = 1000;
+const CHANGE_STREAM_RETRY_MAX_MS = 60000;
+const CHANGE_STREAM_NOTICE_AFTER_FAILED_TRIES = 3;
+
+/**
+ * The wait before the next rebuild of a closed /changes/stream EventSource.
+ * @param {number} failedTries Rebuilds that closed without opening since the stream was last open.
+ * @returns {number} Milliseconds.
+ */
+export function changeStreamRetryDelayMs(failedTries) {
+    return Math.min(CHANGE_STREAM_RETRY_FIRST_MS * 2 ** failedTries, CHANGE_STREAM_RETRY_MAX_MS);
+}
+
+function onCharacterChangeMessage() {
+    if (isCharacterListShowing()) {
+        getCharactersDebounced();
+    } else {
+        _charactersDirty = true;
+    }
+}
+
 // One SSE connection per tab, doubling as change notification and presence heartbeat - avoids exhausting the per-origin connection pool.
 function setupCharacterChangeStream() {
     if (typeof EventSource === 'undefined') return;
-    const source = new EventSource('/api/characters/changes/stream');
-    source.onmessage = (event) => {
-        let message;
-        try {
-            message = JSON.parse(event.data);
-        } catch {
-            message = null;
-        }
-        if (message?.type === 'search-index-updated') {
+    // Messages sent while the stream was down are lost, so an open that follows an error counts as both kinds of message.
+    let hadError = false;
+    let failedTries = 0;
+    let notice = null;
+
+    const connect = (isRebuild) => {
+        const source = new EventSource('/api/characters/changes/stream');
+        let opened = false;
+        source.onmessage = (event) => {
+            let message;
+            try {
+                message = JSON.parse(event.data);
+            } catch {
+                message = null;
+            }
+            if (message?.type === 'search-index-updated') {
+                onSearchIndexUpdated();
+                return;
+            }
+            if (message?.type === 'tag-move-failed') {
+                toastr.warning(tagMoveFailedText(message));
+                return;
+            }
+            onCharacterChangeMessage();
+        };
+        source.onopen = () => {
+            opened = true;
+            failedTries = 0;
+            if (notice) {
+                toastr.clear(notice);
+                notice = null;
+            }
+            if (!hadError) return;
+            hadError = false;
+            onCharacterChangeMessage();
             onSearchIndexUpdated();
-            return;
-        }
-        if (message?.type === 'tag-move-failed') {
-            toastr.warning(tagMoveFailedText(message));
-            return;
-        }
-        if (isCharacterListShowing()) {
-            getCharactersDebounced();
-        } else {
-            _charactersDirty = true;
-        }
+        };
+        source.onerror = () => {
+            hadError = true;
+            // Any other state is the browser reconnecting on its own.
+            if (source.readyState !== EventSource.CLOSED) return;
+            if (isRebuild && !opened) failedTries++;
+            if (failedTries >= CHANGE_STREAM_NOTICE_AFTER_FAILED_TRIES && !notice) {
+                notice = toastr.warning(t`Live updates are disconnected. Retrying...`, '', { timeOut: 0, extendedTimeOut: 0 });
+            }
+            setTimeout(() => connect(true), changeStreamRetryDelayMs(failedTries));
+        };
     };
-    source.onerror = () => {
-        // EventSource auto-reconnects on error; nothing to do
-    };
+    connect(false);
 }
 
 /**
