@@ -18,7 +18,7 @@ import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
-import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
+import { normalizeGroupId, normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
@@ -4009,6 +4009,32 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
 }
 
 /**
+ * Writes a group file that is not the group's own `<id>.json` (via `writeFile`). No row describes that file, but the
+ * groups search index reads every file in the folder, so a change to its bytes adds a groups version log row: for the
+ * group's id, or NULL ("every group") when it has no valid id. Never throws after the file is written.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} group The exact object `writeFile` serializes.
+ * @param {string} filePath The file `writeFile` writes.
+ * @param {() => void} writeFile
+ */
+export async function writeGroupFileAtOtherPath(directories, group, filePath, writeFile) {
+    const entry = await getEntry(directories);
+    if (!entry) {
+        writeFile();
+        return;
+    }
+    const fileBefore = readFileForComparison(filePath);
+    writeFile();
+    if (sameFileContents(fileBefore, readFileForComparison(filePath))) return;
+    const groupId = normalizeGroupId(/** @type {any} */ (group).id);
+    try {
+        entry.db.transaction(() => insertGroupChange(entry.db, groupId));
+    } catch (err) {
+        console.error(`[character-metadata] Could not add the groups version log row for group file ${filePath} after writing it; results that include groups may stay stale until the next group write:`, /** @type {any} */ (err).message);
+    }
+}
+
+/**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} id
  * @returns {string} Every column of the group's row, comparable with ===; 'null' when it has none.
@@ -4082,14 +4108,17 @@ export async function bumpGroupChatStats(directories, chatId, { groupId, stats }
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id
+ * @param {object} [options]
+ * @param {boolean} [options.fileDeleted] The caller deleted the group's file, which the groups search index reads, so
+ * the delete is a group change even when the group had no rows.
  */
-export async function deleteGroupRow(directories, id) {
+export async function deleteGroupRow(directories, id, { fileDeleted = false } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.transaction(() => {
         const rowDeleted = entry.db.run('DELETE FROM groups WHERE id = @id', { id }).changes > 0;
         const tagsDeleted = entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id }).changes > 0;
-        if (rowDeleted || tagsDeleted) insertGroupChange(entry.db, id);
+        if (rowDeleted || tagsDeleted || fileDeleted) insertGroupChange(entry.db, id);
     });
 }
 

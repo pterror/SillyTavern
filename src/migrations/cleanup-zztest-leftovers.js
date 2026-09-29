@@ -601,18 +601,13 @@ async function applyGroup({ dirs, groupPlan, groupRow, backupDir, log, warn }) {
         writeBackupFile(path.join(backupDir, 'character-metadata-groups-row.json'), JSON.stringify(groupRow, (_k, v) => (typeof v === 'bigint' ? Number(v) : v), 4));
     }
     const writeFile = () => writeFileAtomicSync(groupPlan.filePath, groupPlan.newText);
-    if (!groupRow) {
-        writeFile();
-        log(`${LOG_PREFIX} 1. group file: chats updated; groups row missing, digest write skipped`);
-        return true;
-    }
     const { writeGroupFileAndRow, disposeMetadataStores } = await import('../character-metadata-db.js');
     try {
         await writeGroupFileAndRow(dirs, groupPlan.newGroup, writeFile, { createIfMissing: false });
     } finally {
         disposeMetadataStores();
     }
-    log(`${LOG_PREFIX} 1. group file: chats updated; groups row updated with it`);
+    log(`${LOG_PREFIX} 1. group file: chats updated; ${groupRow ? 'groups row updated with it' : 'groups row missing, digest write skipped'}`);
     return true;
 }
 

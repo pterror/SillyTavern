@@ -407,7 +407,9 @@ describe('cleanup-zztest-leftovers', () => {
 
     test('a missing groups row is reported, its digest write skipped, and no row created', async () => {
         const scratch = await makeScratch();
-        withDb(path.join(scratch.root, 'character-metadata.sqlite'), db => db.run('DELETE FROM groups WHERE id = ?', [cleanup.GROUP_ID]));
+        const metaPath = path.join(scratch.root, 'character-metadata.sqlite');
+        withDb(metaPath, db => db.run('DELETE FROM groups WHERE id = ?', [cleanup.GROUP_ID]));
+        const versionBefore = withDb(metaPath, db => db.get('SELECT COALESCE(MAX(version), 0) AS v FROM group_changes').v);
 
         const dry = await run(scratch, ['--dry-run']);
         expect(dry.all).toContain(`groups row for ${cleanup.GROUP_ID}: missing - the digest write is skipped`);
@@ -418,6 +420,8 @@ describe('cleanup-zztest-leftovers', () => {
         expect(out.all).toContain('groups row missing, digest write skipped');
         expect(readGroup(scratch.dirs).chats).toEqual([cleanup.GROUP_CHAT]);
         expect(groupRow(scratch.root)).toBeNull();
+        // The groups search index reads the file, so changing it is a group change even with no row.
+        expect(withDb(metaPath, db => db.all('SELECT group_id FROM group_changes WHERE version > ?', [versionBefore]))).toEqual([{ group_id: cleanup.GROUP_ID }]);
         const backupParent = path.join(scratch.dirs.backups, '_cleanup-zztest-leftovers');
         const [backupDir] = fs.readdirSync(backupParent);
         expect(fs.existsSync(path.join(backupParent, backupDir, 'character-metadata-groups-row.json'))).toBe(false);
