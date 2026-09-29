@@ -5,9 +5,9 @@ import {
     getTagDefinitionsByIds, getEntityTagIdsForMany, getTagDeletions,
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
     streamDeletedIdsBetween, getMetaValue, trySetMetaValuesAndRetryMarks, getCharacterFavsByIds, getCharacterIndexRowsByIds,
-    getCharacterIndexRetryMarksByIds, getDueCharacterIndexRetries,
+    getCharacterIndexRetryMarksByIds, getDueCharacterIndexRetries, checkCharactersExist,
 } from '../character-metadata-db.js';
-import { processCharacter, processCharacterOrPlaceholder, logProcessCharacterFailure } from './characters.js';
+import { processCharacter, processCharacterOrPlaceholder } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter, stringToSortKey } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { getSearchIndex, rebuildSearchIndex, startSearchWorker, CHARACTERS_INDEX_SEQ_META_KEY, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, CHARACTERS_INDEX_RETRY_SEQ_META_KEY } from './search-index-coordinator.js';
@@ -92,6 +92,18 @@ const RETRY_INITIAL_DELAY_MS = 1000;
 const RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
 /** The most due retries one tick attempts. */
 export const CHARACTER_INDEX_RETRY_BATCH_SIZE = 100;
+
+/**
+ * The retry mark for a failed attempt at indexing a card, given the mark it had. log: its error differs from the last
+ * one logged for it.
+ * @param {import('../character-metadata-db.js').CharacterIndexRetryMark | null} previous
+ * @param {unknown} err
+ */
+function failedAttemptMark(previous, err) {
+    const lastError = String(err);
+    const delayMs = previous ? Math.min(previous.delayMs * 2, RETRY_MAX_DELAY_MS) : RETRY_INITIAL_DELAY_MS;
+    return { mark: { nextAttemptAt: Date.now() + delayMs, delayMs, lastError }, log: previous?.lastError !== lastError };
+}
 
 const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
@@ -399,8 +411,121 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
     }
 
     /**
-     * Streams every characters row into a brand-new index in a temp dir, then swaps it into place. The
-     * watermarks are read before the stream starts, so the next tick picks up whatever changed during it.
+     * Writes one rebuild batch's retry marks in a transaction of their own, then logs. A crashed rebuild just starts
+     * over, and the marks it wrote are still true.
+     * @param {string[]} cleared Ids that got a new doc or have no row: their marks are deleted.
+     * @param {{ id: string, err: unknown }[]} failures
+     * @param {boolean} keptOldDocs Whether the rebuild started from the old index, so a failing card keeps its doc.
+     */
+    async function persistRebuildMarks(cleared, failures, keptOldDocs) {
+        const ids = [...new Set([...cleared, ...failures.map(f => f.id)])];
+        if (ids.length === 0) return;
+        const stored = await getCharacterIndexRetryMarksByIds(directories, ids);
+        /** @type {{ id: string, mark: import('../character-metadata-db.js').CharacterIndexRetryMark | null }[]} */
+        const writes = [...new Set(cleared)].filter(id => stored.has(id)).map(id => ({ id, mark: null }));
+        const logs = [];
+        for (const { id, err } of failures) {
+            const next = failedAttemptMark(stored.get(id) ?? null, err);
+            writes.push({ id, mark: next.mark });
+            if (next.log) {
+                logs.push(keptOldDocs
+                    ? `[search] couldn't index character ${id} in the full rebuild, so it keeps its search entry from before the rebuild, if it had one, and it's retried in ${next.mark.delayMs} ms: ${next.mark.lastError}`
+                    : `[search] couldn't index character ${id} in the full rebuild, so it has no search entry until it's retried in ${next.mark.delayMs} ms and that succeeds: ${next.mark.lastError}`);
+            }
+        }
+        if (writes.length === 0) return;
+        while (!await trySetMetaValuesAndRetryMarks(directories, {}, writes)) {
+            await new Promise(resolve => setTimeout(resolve, REBUILD_PERSIST_RETRY_MS));
+        }
+        for (const line of logs) console.error(color.red(line));
+    }
+
+    /**
+     * Makes `dir` a copy of the persisted index to rebuild from, when that index was built under this schema version.
+     * Segment files are hard-linked, not copied: tantivy never changes one once written, so both dirs can share it at
+     * no extra disk. The json files tantivy rewrites are copied, and lock files are left out. The old writer must
+     * have finished merging, so the persisted index doesn't change while it's linked.
+     * @param {string} dir
+     * @returns {Promise<{ index: any, schema: any, searcher: any } | null>} searcher: the copy as it was linked, before
+     * any rebuild write. null: there's nothing usable to start from, and `dir` doesn't exist.
+     */
+    async function linkPersistedIndexInto(dir) {
+        if (Number(await getMetaValue(directories, TANTIVY_INDEX_SCHEMA_VERSION_META_KEY)) !== TANTIVY_SCHEMA_VERSION
+            || !fs.existsSync(path.join(indexDir, 'meta.json'))) {
+            return null;
+        }
+        fs.mkdirSync(dir);
+        for (const entry of fs.readdirSync(indexDir, { withFileTypes: true })) {
+            if (!entry.isFile() || entry.name.endsWith('.lock')) continue;
+            const from = path.join(indexDir, entry.name);
+            const to = path.join(dir, entry.name);
+            if (entry.name.endsWith('.json')) {
+                fs.copyFileSync(from, to);
+                continue;
+            }
+            try {
+                fs.linkSync(from, to);
+            } catch (err) {
+                fs.rmSync(dir, { recursive: true, force: true });
+                console.error(color.red(`[search] the filesystem can't hard-link the character search index (${err.code ?? err.message}), so this full rebuild starts empty and can't keep the old search entry of a card that fails to index`));
+                return null;
+            }
+        }
+        try {
+            const index = tantivy.Index.open(dir);
+            return { index, schema: index.schema, searcher: index.searcher() };
+        } catch (err) {
+            fs.rmSync(dir, { recursive: true, force: true });
+            console.error(color.red('[search] failed to open the persisted character tantivy index to rebuild from, so this full rebuild starts empty:'));
+            console.error(color.red(`[search]   ${err.message}`));
+            return null;
+        }
+    }
+
+    /**
+     * Deletes through `w` every doc in `searcher`'s segments whose card has no row, INDEX_BUILD_BATCH_SIZE stored ids
+     * at a time, and clears those cards' retry marks.
+     * @param {any} searcher
+     * @param {any} w
+     */
+    async function removeDocsWithoutRows(searcher, w) {
+        /** @type {string[]} */
+        let batch = [];
+        const flush = async () => {
+            if (batch.length === 0) return;
+            const exists = await checkCharactersExist(directories, batch);
+            if (!exists) throw new Error('the metadata store became unavailable during the full rebuild');
+            const gone = [...new Set(batch.filter(id => !exists[id]))];
+            for (const id of gone) w.deleteDocumentsByTerm(DATA_FIELD, id);
+            await persistRebuildMarks(gone, [], true);
+            batch = [];
+        };
+        // A segment ordinal past numSegments panics in tantivy, so it's never asked for. A doc number past a
+        // segment's last doc throws this error; a deleted doc is still read.
+        for (let segmentOrd = 0; segmentOrd < searcher.numSegments; segmentOrd++) {
+            for (let doc = 0; ; doc++) {
+                let stored;
+                try {
+                    stored = searcher.doc({ segmentOrd, doc });
+                } catch (err) {
+                    if (/Failed to lookup Doc/.test(String(err?.message))) break;
+                    throw err;
+                }
+                const id = stored.toDict()[DATA_FIELD]?.[0];
+                if (typeof id === 'string') batch.push(id);
+                if (batch.length >= INDEX_BUILD_BATCH_SIZE) await flush();
+            }
+        }
+        await flush();
+    }
+
+    /**
+     * Streams every characters row into a new index in a temp dir, then swaps it into place. The watermarks are read
+     * before the stream starts, so the next tick picks up whatever changed during it.
+     * The new index starts as a hard-linked copy of the persisted one when that was built under this schema version
+     * (see linkPersistedIndexInto()); otherwise it starts empty. Each card gets its doc replaced, and a card that
+     * fails to process keeps the doc it had, stale rather than gone. A second pass then deletes the copied docs whose
+     * row is gone. Each batch's retry marks (see tick()) are written as the batch is done, not with the cursors.
      * @returns {Promise<string | null>} The index dir, or null when the metadata store is unavailable (it is
      * the only source of truth, so there is no index).
      */
@@ -417,31 +542,33 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         }
         cleanupStaleRebuildDirs(parentDir, INDEX_DIR_NAME);
 
+        // Its dir is linked into the rebuild, and is about to be renamed away; its lock goes with it.
+        if (writer) {
+            writer.waitMergingThreads();
+            writer = null;
+        }
         const tempDir = rebuildTempDir(parentDir, INDEX_DIR_NAME);
-        const built = createEmptyTantivyIndexAt(tantivy, tempDir);
+        const linked = await linkPersistedIndexInto(tempDir);
+        const built = linked ?? createEmptyTantivyIndexAt(tantivy, tempDir);
         const tempWriter = built.index.writer();
         try {
             let batchIndex = 0;
             // Each streamed batch is one unit: its rows came with it, and its tag/fav lookups cover exactly it.
             for await (const rows of streamCharacterCardJsonBatches(directories)) {
-                const { failures } = await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row])));
-                for (const { id, err } of failures) logProcessCharacterFailure(id, err);
+                const { indexed, failures } = await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row])), undefined, { replace: Boolean(linked) });
+                await persistRebuildMarks(indexed, failures, Boolean(linked));
                 batchIndex++;
                 if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
                     tempWriter.commit();
                 }
             }
+            if (linked) await removeDocsWithoutRows(linked.searcher, tempWriter);
             tempWriter.commit();
         } finally {
             // commit() alone does not release the writer's on-disk lock; waitMergingThreads() does.
             tempWriter.waitMergingThreads();
         }
 
-        // The old dir is about to be renamed away; its writer's lock goes with it.
-        if (writer) {
-            writer.waitMergingThreads();
-            writer = null;
-        }
         swapIndexIntoPlace(indexDir, tempDir);
         index = tantivy.Index.open(indexDir);
         schema = index.schema;
@@ -529,12 +656,11 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             for (const { id, err } of failures) {
                 failed++;
                 const { mark, stored: inDb } = current(id);
-                const error = String(err);
-                const delayMs = mark ? Math.min(mark.delayMs * 2, RETRY_MAX_DELAY_MS) : RETRY_INITIAL_DELAY_MS;
-                if (mark?.lastError !== error) {
-                    failureLogs.push(`[search] couldn't index character ${id}, so its previous search entry is kept and it's retried in ${delayMs} ms: ${error}`);
+                const next = failedAttemptMark(mark, err);
+                if (next.log) {
+                    failureLogs.push(`[search] couldn't index character ${id}, so its previous search entry is kept and it's retried in ${next.mark.delayMs} ms: ${next.mark.lastError}`);
                 }
-                markWrites.set(id, { mark: { nextAttemptAt: Date.now() + delayMs, delayMs, lastError: error }, stored: inDb });
+                markWrites.set(id, { mark: next.mark, stored: inDb });
             }
         }
 
