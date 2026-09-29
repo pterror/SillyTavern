@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { hashGreetingText, opDelete, opEdit, opMove, opSetDefault } from '../src/greeting-ops.js';
+import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault } from '../src/greeting-ops.js';
 
 const h = hashGreetingText;
 const modelOf = (greetings, defaultIndex = 0) => ({ greetings, defaultIndex });
@@ -250,5 +250,26 @@ describe('opMove looks each end up by its hash', () => {
 
     test('ends that are found to be the same greeting are refused', () => {
         expect(opMove(abcde(), 0, h('b'), 'after', 1, h('b'))).toEqual({ ok: false, reason: 'cannot move a greeting next to itself' });
+    });
+});
+
+describe('opAppend', () => {
+    test('puts the text after the last greeting, whatever the length', () => {
+        expect(opAppend(modelOf(['a', 'b'], 0), 'c')).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], 0), position: 2 });
+        expect(opAppend(modelOf([], null), 'a')).toEqual({ ok: true, model: modelOf(['a'], null), position: 0 });
+    });
+
+    test('keeps the default where it is', () => {
+        expect(opAppend(modelOf(['a', 'b'], 1), 'c')).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], 1), position: 2 });
+    });
+
+    test('refuses empty text', () => {
+        expect(opAppend(modelOf(['a'], 0), '')).toEqual({ ok: false, reason: 'refused to add empty greeting text' });
+    });
+
+    test('never mutates the input model', () => {
+        const model = modelOf(['a'], 0);
+        opAppend(model, 'b');
+        expect(model).toEqual(modelOf(['a'], 0));
     });
 });
