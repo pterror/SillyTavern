@@ -67,14 +67,12 @@ jest.unstable_mockModule('../public/scripts/constants.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({
     getRandomSortSeed: jest.fn(() => 42),
+    compareByRandomSeed: () => 0,
 }));
 
 // buildCharacterQuery/isServerQueryableSort/CharacterQueryError/isInvalidSortFieldError are re-implemented
 // minimally here (they're pure, and the real versions live in character-repository.js which itself depends on
-// script.js) - this mock is what getGroupCharacters()'s buildGroupCandidateQuery() and
-// canUseServerQueryForGroupCandidates() actually call. `queryAllMock` backs `characterRepository.queryAll()`,
-// the candidate-path call `getGroupCharacters()` attempts and falls back from on a caught
-// `isInvalidSortFieldError()` - see the "getGroupCharacters() candidates" describe block below.
+// script.js).
 const queryAllMock = jest.fn();
 
 class CharacterQueryError extends Error {
@@ -176,6 +174,7 @@ jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
     getCharacters: jest.fn(),
     showCharacterSyncFailedToast: jest.fn(),
     SYNC_REQUEST_TIMEOUT_MS: 60000,
+    queryWithSortFallback: async (filter, sort, request) => ({ sort, result: await request(sort) }),
 }));
 
 jest.unstable_mockModule('../public/scripts/chat-state.js', () => ({
@@ -233,6 +232,8 @@ jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/filters.js', () => ({
     FILTER_TYPES: { SEARCH: 'search', TAG: 'tag', FOLDER: 'folder', FAV: 'fav', GROUP: 'group' },
+    FILTER_STATES: { SELECTED: { key: 'SELECTED' }, EXCLUDED: { key: 'EXCLUDED' }, UNDEFINED: { key: 'UNDEFINED' } },
+    isFilterState: () => false,
     FilterHelper: class {
         constructor() { this.filterData = {}; }
         getFilterData(type) { return this.filterData[type]; }

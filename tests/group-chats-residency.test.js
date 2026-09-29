@@ -64,14 +64,13 @@ jest.unstable_mockModule('../public/scripts/constants.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({
     getRandomSortSeed: jest.fn(() => 42),
+    // Reverse key order, so a test can tell the seeded order from the order the rows came in.
+    compareByRandomSeed: (aKey, bKey) => (aKey < bKey ? 1 : aKey > bKey ? -1 : 0),
 }));
 
 // buildCharacterQuery/isServerQueryableSort/CharacterQueryError/isInvalidSortFieldError are re-implemented
 // minimally here (they're pure, and the real versions live in character-repository.js which itself depends on
-// script.js) - this mock is what getGroupCharacters()'s buildGroupCandidateQuery() and
-// canUseServerQueryForGroupCandidates() actually call. `queryAllMock` backs `characterRepository.queryAll()`,
-// the candidate-path call `getGroupCharacters()` attempts and falls back from on a caught
-// `isInvalidSortFieldError()` - see the "getGroupCharacters() candidates" describe block below.
+// script.js).
 const queryAllMock = jest.fn();
 
 class CharacterQueryError extends Error {
@@ -89,8 +88,12 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
         getMany: getManyMock,
         queryAll: queryAllMock,
     },
-    buildCharacterQuery: ({ sortField, sortOrder = 'asc', randomSeed } = {}) => {
+    buildCharacterQuery: ({ searchTerm = '', tagsInclude = [], tagsExclude = [], fav, sortField, sortOrder = 'asc', randomSeed } = {}) => {
         const filter = {};
+        const search = String(searchTerm ?? '').trim();
+        if (search) filter.search = search;
+        if (tagsInclude.length > 0 || tagsExclude.length > 0) filter.tags = { include: tagsInclude, exclude: tagsExclude, mode: 'and' };
+        if (typeof fav === 'boolean') filter.fav = fav;
         let sort;
         if (sortField === 'random') sort = { field: 'random', order: sortOrder, seed: randomSeed };
         else if (sortField) sort = { field: sortField, order: sortOrder };
@@ -169,10 +172,26 @@ jest.unstable_mockModule('../public/scripts/character-field-editor.js', () => ({
     blockWhileFieldEditing: jest.fn(),
 }));
 
+// queryWithSortFallback's contract (character-list.js, covered against the real route by
+// character-list-sort-fallback.test.js): a rejected sort, or `search` with no term, is run again in name order, or
+// relevance order with a term, after a warning; any other failure reaches the caller.
+const unsupportedSortWarnings = [];
 jest.unstable_mockModule('../public/scripts/character-list.js', () => ({
     getCharacters: jest.fn(),
     showCharacterSyncFailedToast: jest.fn(),
     SYNC_REQUEST_TIMEOUT_MS: 60000,
+    queryWithSortFallback: async (filter, sort, request) => {
+        if (!(sort?.field === 'search' && !filter.search)) {
+            try {
+                return { sort, result: await request(sort) };
+            } catch (error) {
+                if (!(error instanceof CharacterQueryError && error.reason === 'invalid-sort-field')) throw error;
+            }
+        }
+        unsupportedSortWarnings.push(String(sort?.field));
+        const fallback = filter.search ? { field: 'search', order: 'asc' } : { field: 'name', order: 'asc' };
+        return { sort: fallback, result: await request(fallback) };
+    },
 }));
 
 jest.unstable_mockModule('../public/scripts/chat-state.js', () => ({
@@ -230,11 +249,17 @@ jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/filters.js', () => ({
     FILTER_TYPES: { SEARCH: 'search', TAG: 'tag', FOLDER: 'folder', FAV: 'fav', GROUP: 'group' },
+    FILTER_STATES: {
+        SELECTED: { key: 'SELECTED', class: 'selected' },
+        EXCLUDED: { key: 'EXCLUDED', class: 'excluded' },
+        UNDEFINED: { key: 'UNDEFINED', class: 'undefined' },
+    },
+    isFilterState: (a, b) => (typeof a === 'string' ? a : a?.key) === (typeof b === 'string' ? b : b?.key),
     FilterHelper: class {
-        constructor() { this.filterData = {}; }
+        constructor() { this.filterData = {}; this.applyFiltersCalls = []; }
         getFilterData(type) { return this.filterData[type]; }
         setFilterData(type, value) { this.filterData[type] = value; }
-        applyFilters(data) { return data; }
+        applyFilters(data, options) { this.applyFiltersCalls.push(options); return data; }
         clearFuzzySearchCaches() {}
     },
 }));
@@ -497,20 +522,28 @@ describe('buildGroupCandidateQuery()', () => {
 });
 
 describe('getGroupCharacters() candidates', () => {
-    // canUseServerQueryForGroupCandidates() reads `$('#character_sort_order option[data-field="search"]').is(':selected')`
-    // - the module-wide chainable jQuery stand-in (top of this file) makes every jQuery call return a truthy
-    // Proxy, including `.is(...)`, which would make that check always short-circuit to "no search sort
-    // selected... wait, selected" and always decline the server path. This block swaps in a narrower `$` for
-    // just that one selector so the candidates path can actually be exercised, and restores the original after.
+    // The module-wide jQuery stand-in answers `.is(':selected')` with a truthy Proxy; this block answers the sort
+    // dropdown's "Search" option from `searchOptionSelected` instead.
     const originalDollar = global.$;
+    let searchOptionSelected = false;
+    /** @type {import('../public/scripts/filters.js').FilterHelper} */
+    let groupCandidatesFilter;
+
+    beforeAll(async () => {
+        ({ groupCandidatesFilter } = await import('../public/scripts/group-chats.js'));
+    });
 
     beforeEach(() => {
         power_user.sort_field = 'name';
         power_user.sort_order = 'asc';
         queryAllMock.mockReset();
+        unsupportedSortWarnings.length = 0;
+        searchOptionSelected = false;
+        groupCandidatesFilter.filterData = {};
+        groupCandidatesFilter.applyFiltersCalls = [];
         global.$ = (selector) => {
             if (selector === '#character_sort_order option[data-field="search"]') {
-                return { is: () => false };
+                return { is: () => searchOptionSelected };
             }
             return originalDollar(selector);
         };
@@ -520,6 +553,8 @@ describe('getGroupCharacters() candidates', () => {
         global.$ = originalDollar;
     });
 
+    const toEntity = (item) => ({ item, id: item.avatar, type: 'character' });
+
     test('doFilter: true with a queryable sort attempts characterRepository.queryAll() and uses its rows', async () => {
         const remote = { avatar: 'remote.png', name: 'Remote' };
         queryAllMock.mockResolvedValue([remote]);
@@ -527,17 +562,101 @@ describe('getGroupCharacters() candidates', () => {
         const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
 
         expect(queryAllMock).toHaveBeenCalledTimes(1);
-        expect(result).toEqual([{ item: remote, id: 'remote.png', type: 'character' }]);
+        expect(result).toEqual([toEntity(remote)]);
     });
 
-    test('a 400 invalid-sort-field rejection falls back to the local resident character scan', async () => {
+    test('a rejected sort is asked for again in name order, with the warning, and never reads the resident characters', async () => {
+        addResidentCharacter('resident.png', 'Resident');
+        power_user.sort_field = 'made_up_field';
+        const remote = { avatar: 'remote.png', name: 'Remote' };
+        queryAllMock
+            .mockRejectedValueOnce(new CharacterQueryError('bad field', { status: 400, reason: 'invalid-sort-field' }))
+            .mockResolvedValueOnce([remote]);
+
+        const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
+
+        expect(queryAllMock.mock.calls.map(([, sort]) => sort)).toEqual([
+            { field: 'made_up_field', order: 'asc' },
+            { field: 'name', order: 'asc' },
+        ]);
+        expect(unsupportedSortWarnings).toEqual(['made_up_field']);
+        expect(result).toEqual([toEntity(remote)]);
+    });
+
+    test('a search term is sent to the server in relevance order, with the members excluded', async () => {
         addResidentCharacter('alice.png', 'Alice');
-        queryAllMock.mockRejectedValue(new CharacterQueryError('bad field', { status: 400, reason: 'invalid-sort-field' }));
+        groupCandidatesFilter.filterData.search = 'ali';
+        const remote = { avatar: 'alicia.png', name: 'Alicia' };
+        queryAllMock.mockResolvedValue([remote]);
 
         const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
 
         expect(queryAllMock).toHaveBeenCalledTimes(1);
-        expect(result).toEqual([{ item: charactersById.get('alice.png'), id: 'alice.png', type: 'character' }]);
+        const [filter, sort] = queryAllMock.mock.calls[0];
+        expect(filter).toEqual({ search: 'ali', excludeIds: [] });
+        expect(sort).toEqual({ field: 'search', order: 'asc' });
+        expect(result).toEqual([toEntity(remote)]);
+        // The server did the search, tags and fav; the browser's pass keeps only the other filters.
+        expect(groupCandidatesFilter.applyFiltersCalls).toEqual([{
+            tempOverrides: { search: '', tag: { selected: [], excluded: [] }, fav: 'UNDEFINED' },
+        }]);
+    });
+
+    test('the tag and fav filters are sent to the server', async () => {
+        groupCandidatesFilter.filterData.tag = { selected: ['t1'], excluded: ['t2'] };
+        groupCandidatesFilter.filterData.fav = 'SELECTED';
+        queryAllMock.mockResolvedValue([]);
+
+        await getGroupCharacters({ doFilter: true, onlyMembers: false });
+
+        const [filter] = queryAllMock.mock.calls[0];
+        expect(filter).toEqual({ tags: { include: ['t1'], exclude: ['t2'], mode: 'and' }, fav: true, excludeIds: [] });
+    });
+
+    test('an excluded fav filter is sent as fav: false', async () => {
+        groupCandidatesFilter.filterData.fav = 'EXCLUDED';
+        queryAllMock.mockResolvedValue([]);
+
+        await getGroupCharacters({ doFilter: true, onlyMembers: false });
+
+        expect(queryAllMock.mock.calls[0][0]).toEqual({ fav: false, excludeIds: [] });
+    });
+
+    test('the main list\'s "Search" option with no candidate term uses the saved sort, with no warning', async () => {
+        searchOptionSelected = true;
+        power_user.sort_field = 'date_added';
+        power_user.sort_order = 'desc';
+        queryAllMock.mockResolvedValue([]);
+
+        await getGroupCharacters({ doFilter: true, onlyMembers: false });
+
+        expect(queryAllMock.mock.calls.map(([, sort]) => sort)).toEqual([{ field: 'date_added', order: 'desc' }]);
+        expect(unsupportedSortWarnings).toEqual([]);
+    });
+
+    test('random order sorts the rows by the seed, since queryAll pages come unsorted', async () => {
+        power_user.sort_order = 'random';
+        const a = { avatar: 'a.png', name: 'A' };
+        const b = { avatar: 'b.png', name: 'B' };
+        queryAllMock.mockResolvedValue([a, b]);
+
+        const result = await getGroupCharacters({ doFilter: true, onlyMembers: false });
+
+        expect(queryAllMock.mock.calls[0][1]).toEqual({ field: 'random', order: 'asc', seed: 42 });
+        expect(result).toEqual([toEntity(b), toEntity(a)]);
+    });
+
+    test('doFilter: false asks the server for every non-member in the saved sort, with no filters', async () => {
+        addResidentCharacter('resident.png', 'Resident');
+        groupCandidatesFilter.filterData.search = 'ali';
+        const remote = { avatar: 'remote.png', name: 'Remote' };
+        queryAllMock.mockResolvedValue([remote]);
+
+        const result = await getGroupCharacters({ doFilter: false, onlyMembers: false });
+
+        expect(queryAllMock.mock.calls).toEqual([[{ excludeIds: [] }, { field: 'name', order: 'asc' }]]);
+        expect(groupCandidatesFilter.applyFiltersCalls).toEqual([]);
+        expect(result).toEqual([toEntity(remote)]);
     });
 
     test('a different server rejection (e.g. a 500) propagates instead of silently falling back', async () => {
