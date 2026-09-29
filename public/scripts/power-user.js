@@ -1297,6 +1297,7 @@ function applyChatWidth(type) {
     if (type === 'forced') {
         let r = document.documentElement;
         r.style.setProperty('--sheldWidth', getChatWidthValue());
+        r.style.setProperty('--chatWidthMax', `${power_user.chat_width_max}ch`);
         $('#chat_width_slider').val(power_user.chat_width);
         $('#chat_width_max').val(power_user.chat_width_max);
         //document.documentElement.style.setProperty('--sheldWidth', power_user.chat_width);
