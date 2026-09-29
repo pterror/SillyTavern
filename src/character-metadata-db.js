@@ -10257,7 +10257,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
  * @param {number} [params.seed]
  * @param {number} [params.offset]
  * @param {number} [params.limit]
- * @param {string} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq, groupsVersion) cache.
+ * @param {string|null} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq, groupsVersion) cache.
  * Required when a random-sorted page is read (sortField 'random' with wantRows or wantHashes); throws if missing or ''.
  * @param {boolean} [params.wantRows]
  * @param {boolean} [params.wantTotal]
