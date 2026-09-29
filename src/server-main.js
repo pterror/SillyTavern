@@ -76,7 +76,7 @@ import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
-import { initializeMetadataStores, disposeMetadataStores } from './character-metadata-db.js';
+import { initializeMetadataStores, disposeMetadataStores, startChatStatsReconcile } from './character-metadata-db.js';
 import { startMetadataMigrations, disposeMetadataMigrationWorkers } from './metadata-migration-coordinator.js';
 import { startSearchWorkerIfIndexed } from './endpoints/characters-search-index.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
@@ -507,6 +507,9 @@ async function postSetupTasks(result) {
 
     setupLogLevel();
     serverEvents.emit(EVENT_NAMES.SERVER_STARTED, { url: browserLaunchUrl });
+
+    // Counts the chat stats of rows inserted before now, a small batch at a time on this thread.
+    startChatStatsReconcile(await getUserDirectoriesList());
 
     // Not awaited. Each store's one-time metadata migration passes, in a worker per store, once its boot chain ends.
     startMetadataMigrations(await getUserDirectoriesList())

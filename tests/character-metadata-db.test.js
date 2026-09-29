@@ -2087,7 +2087,7 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         fs.writeFileSync(path.join(groupsDir, `${id}.json`), JSON.stringify({ id, name: id, members: [], chats: [], ...overrides }));
     }
 
-    test('migrates an existing (pre-columns) groups table in place, backfilling real values for existing rows', async () => {
+    test('migrates an existing (pre-columns) groups table in place, backfilling real values for existing rows and queuing their chat stats', async () => {
         // Simulates an install that already ran bootstrapGroupsIfNeeded() under the old id/name-only shape:
         // build that table directly and seed one row, then let a normal call pick up both the ALTER and the
         // one-time backfill (migrateGroupsColumns()).
@@ -2112,9 +2112,13 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
 
         const rawDb2 = new Database(dbPath);
         const migrated = rawDb2.prepare('SELECT * FROM groups WHERE id = ?').get('OldGroup');
+        const queued = rawDb2.prepare('SELECT kind, id FROM chat_stats_pending').all();
         rawDb2.close();
         expect(migrated.fav).toBe(1);
-        expect(migrated.chat_size).toBe(10);
+        // Counted from the group's messages by the chat stats queue, not from its chat files.
+        expect(migrated.chat_size).toBe(0);
+        expect(migrated.date_last_chat).toBe(0);
+        expect(queued).toEqual([{ kind: 'group', id: 'OldGroup' }]);
         expect(migrated.date_added).toBeGreaterThan(0);
         expect(migrated.name_fold).toBe('old group');
     });
@@ -2188,7 +2192,7 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         warn.mockRestore();
     });
 
-    test('bootstrapGroupsIfNeeded seeds fav/date_added/date_last_chat/chat_size/name_fold from disk, once', async () => {
+    test('bootstrapGroupsIfNeeded seeds fav/date_added/name_fold from disk and queues the chat stats, once', async () => {
         writeGroupFile('g1', { name: 'Alpha Group', fav: true, chats: ['c1'] });
         fs.writeFileSync(path.join(groupChatsDir, 'c1.jsonl'), 'x'.repeat(7));
 
@@ -2197,12 +2201,15 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         const { default: Database } = await import('better-sqlite3');
         const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
         const row = db.prepare('SELECT * FROM groups WHERE id = ?').get('g1');
+        const queued = db.prepare('SELECT kind, id FROM chat_stats_pending').all();
         db.close();
 
         expect(row.fav).toBe(1);
         expect(row.name_fold).toBe('alpha group');
-        expect(row.chat_size).toBe(7);
-        expect(row.date_last_chat).toBeGreaterThan(0);
+        // Counted from the group's messages by the chat stats queue, not from its chat files.
+        expect(row.chat_size).toBe(0);
+        expect(row.date_last_chat).toBe(0);
+        expect(queued).toEqual([{ kind: 'group', id: 'g1' }]);
         expect(row.date_added).toBeGreaterThan(0);
     });
 });

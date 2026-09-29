@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 
 import _ from 'lodash';
 import sanitize from 'sanitize-filename';
@@ -11,7 +12,7 @@ import { color, delay, generateTimestamp, getConfigValue, mapWithConcurrency, pa
 import extract from 'png-chunks-extract';
 import { parse as parseCharacterCard, read as readCharacterCardFromBuffer, readCharaChunkPristineFromChunks, computeAvatarIdentityHashFromChunks } from './character-card-parser.js';
 import { getCharaCardV2, computeContentIdentityHash } from './character-card-normalize.js';
-import { calculateChatSize, calculateDataSize, calculateGroupChatStats, toShallow } from './character-shallow.js';
+import { calculateDataSize, toShallow } from './character-shallow.js';
 import { readTagsData } from './endpoints/tags-data.js';
 import { getSqliteEngine, isBusyError, openNativeDatabase, streamRows } from './endpoints/sqlite-engine.js';
 import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
@@ -20,7 +21,7 @@ import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
-import { characterAvatarsForOwnerId, dropOwnerCreatedAtIndex, listOwnersWithoutKind, recordOwnerKinds } from './message-tree-db.js';
+import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
@@ -595,6 +596,15 @@ const SCHEMA_SQL = `
         source_path TEXT PRIMARY KEY,
         mtime_ms    INTEGER NOT NULL
     );
+
+    -- Character and group rows whose chat_size/date_last_chat haven't been counted from their owner's messages
+    -- since the row was inserted at 0/0. Added in the same transaction as the insert, removed in the same one as
+    -- the reconcile's write (reconcileQueuedChatStatsSync()).
+    CREATE TABLE IF NOT EXISTS chat_stats_pending (
+        kind TEXT NOT NULL CHECK (kind IN ('character', 'group')),
+        id   TEXT NOT NULL,
+        PRIMARY KEY (kind, id)
+    );
 `;
 
 const UPSERT_SQL = `
@@ -839,17 +849,18 @@ function migrateGroupsColumns(db, directories) {
 
     db.transaction(() => {
         for (const id of existingIds) {
+            // The chat stats columns were just added at 0/0, whether or not the group's file can be read.
+            queueChatStatsReconcileSync(db, 'group', id);
             try {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
                 const group = JSON.parse(raw);
                 const stat = fs.statSync(filePath);
-                const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
                 inItemSavepoint(db, () => {
                     const { changes } = db.run(
-                        `UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded, date_last_chat = @dateLastChat, chat_size = @chatSize
-                            WHERE id = @id AND (name IS NOT @name OR name_fold IS NOT @nameFold OR fav IS NOT @fav OR date_added IS NOT @dateAdded OR date_last_chat IS NOT @dateLastChat OR chat_size IS NOT @chatSize)`,
-                        { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs), dateLastChat, chatSize },
+                        `UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded
+                            WHERE id = @id AND (name IS NOT @name OR name_fold IS NOT @nameFold OR fav IS NOT @fav OR date_added IS NOT @dateAdded)`,
+                        { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs) },
                     );
                     if (changes > 0) insertGroupChange(db, id);
                 });
@@ -1459,8 +1470,6 @@ function setShallowFav(shallow, fav) {
  * @param {HoistedCharacterCard} character
  * @param {object} params
  * @param {number} params.dateAddedCandidate
- * @param {number} params.chatSize
- * @param {number} params.dateLastChat
  * @param {string | null} [params.contentHash]
  * @param {string | null} [params.contentIdentityHash]
  * @param {string | null} [params.avatarIdentityHash]
@@ -1468,7 +1477,7 @@ function setShallowFav(shallow, fav) {
  * @param {string} params.cardJson
  * @returns {CharacterUpsertRow}
  */
-function buildRow(id, character, { dateAddedCandidate, chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson }) {
+function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson }) {
     if (typeof cardJson !== 'string') throw new TypeError(`buildRow(${id}): cardJson is required (card_json is NOT NULL) - got ${typeof cardJson}`);
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character.data ?? {});
@@ -1476,8 +1485,8 @@ function buildRow(id, character, { dateAddedCandidate, chatSize, dateLastChat, c
         ...character,
         avatar: id,
         date_added: dateAddedCandidate,
-        date_last_chat: dateLastChat,
-        chat_size: chatSize,
+        date_last_chat: 0,
+        chat_size: 0,
         data_size: dataSize,
         tag_ids: normalizeTagIds(tagIds),
     };
@@ -1493,8 +1502,9 @@ function buildRow(id, character, { dateAddedCandidate, chatSize, dateLastChat, c
         fav: fav ? 1 : 0,
         date_added: dateAddedCandidate,
         create_date: parseCreateDateToEpochMs(character.create_date),
-        date_last_chat: dateLastChat,
-        chat_size: chatSize,
+        // A new row starts at 0/0 and is queued for reconcileQueuedChatStatsSync(); an existing row keeps its own.
+        date_last_chat: 0,
+        chat_size: 0,
         data_size: dataSize,
         // Card `data.*` extension fields are genuinely caller-arbitrary (Spec-V2), hence the `any` cast here.
         world: _.get(/** @type {any} */ (character), 'data.extensions.world', '') || null,
@@ -1558,6 +1568,8 @@ function writeRowSync(db, row, tagIds) {
 
     const lastInsertRowid = insertChange(db, row.id, 'upsert', null);
     db.run(UPSERT_SQL, { ...row, changeSeq: Number(lastInsertRowid) });
+
+    if (!existed) queueChatStatsReconcileSync(db, 'character', row.id);
 
     if (!existed && tagIds.length > 0) {
         const deletions = readTagDeletionsSync(db);
@@ -1652,9 +1664,8 @@ export async function upsertCharacterFromWrite(directories, avatar, cardJson, co
         chat: card.chat,
         fav: card.fav ?? _.get(card, 'data.extensions.fav'),
     };
-    const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, avatar.replace(/\.png$/, '')));
     const tagIds = getTagIdsFor(directories, avatar);
-    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), chatSize, dateLastChat, contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson });
+    const row = buildRow(avatar, character, { dateAddedCandidate: Date.now(), contentHash, contentIdentityHash, avatarIdentityHash, tagIds, cardJson });
 
     if (fromImport) {
         applyOrBuffer(entry, row, tagIds);
@@ -2264,9 +2275,8 @@ export async function bootstrapIfNeeded(directories) {
                 const imgData = readCharacterCardFromBuffer(rawBuffer);
                 const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-                const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                 const tagIds = tagMapEntryTagIds(tag_map, file);
-                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
+                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), avatarIdentityHash, tagIds, cardJson: imgData });
                 return { row, tagIds };
             } catch (err) {
                 console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, /** @type {any} */ (err).message);
@@ -2814,9 +2824,8 @@ export async function reconcile(directories) {
                     const imgData = readCharacterCardFromBuffer(rawBuffer);
                     const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
                     const character = getCharaCardV2(JSON.parse(imgData), directories, false);
-                    const { chatSize, dateLastChat } = calculateChatSize(path.join(directories.chats, file.replace(/\.png$/, '')));
                     const tagIds = getTagIdsFor(directories, file);
-                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), chatSize, dateLastChat, avatarIdentityHash, tagIds, cardJson: imgData });
+                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), avatarIdentityHash, tagIds, cardJson: imgData });
                     return { row, tagIds };
                 } catch (err) {
                     console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, /** @type {any} */ (err).message);
@@ -2980,6 +2989,7 @@ export async function initializeMetadataStores(directoriesList) {
 }
 
 export function disposeMetadataStores() {
+    chatStatsReconcileStarted = false;
     // The random-order cache holds these connections; its warm timer must not run on a closed one.
     clearTimeout(randomCacheWarmTimer);
     randomSortCache.clear();
@@ -3953,7 +3963,7 @@ const DROP_ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => `DRO
 
 const GROUP_UPSERT_SQL = `
     INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
-    VALUES (@id, @name, @nameFold, @fav, @dateAdded, @dateLastChat, @chatSize, @digestFav, @digestContent)
+    VALUES (@id, @name, @nameFold, @fav, @dateAdded, 0, 0, @digestFav, @digestContent)
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         name_fold = excluded.name_fold,
@@ -3972,7 +3982,7 @@ const GROUP_UPSERT_SQL = `
 
 const GROUP_INSERT_IF_MISSING_SQL = `
     INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
-    VALUES (@id, @name, @nameFold, @fav, @dateAdded, @dateLastChat, @chatSize, @digestFav, @digestContent)
+    VALUES (@id, @name, @nameFold, @fav, @dateAdded, 0, 0, @digestFav, @digestContent)
     ON CONFLICT(id) DO NOTHING
 `;
 
@@ -3985,25 +3995,24 @@ const GROUP_INSERT_IF_MISSING_SQL = `
  * @param {boolean} [params.fav]
  * @param {object} [params.group] Group's own JSON file contents, for digest_content only.
  * @param {number} params.dateAdded
- * @param {number} params.dateLastChat
- * @param {number} params.chatSize
  * @param {boolean} [params.insertOnly] true: leave an existing row untouched.
  * @returns {boolean} Whether the row was inserted or changed.
  */
-function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat, chatSize, insertOnly = false }) {
+function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, insertOnly = false }) {
     const normalizedFav = normalizeFav(fav);
-    return db.run(insertOnly ? GROUP_INSERT_IF_MISSING_SQL : GROUP_UPSERT_SQL, {
+    const existed = !!db.get('SELECT 1 AS ok FROM groups WHERE id = @id', { id });
+    const changed = db.run(insertOnly ? GROUP_INSERT_IF_MISSING_SQL : GROUP_UPSERT_SQL, {
         id,
         name: name ?? '',
         nameFold: foldName(name),
         fav: normalizedFav ? 1 : 0,
         dateAdded,
-        dateLastChat,
-        chatSize,
         digestFav: groupDigestFavHash({ fav: normalizedFav }),
         // Round-tripped so the digest is of what the group's JSON file holds, which is what clients hash.
         digestContent: groupDigestContentHash(group ? JSON.parse(JSON.stringify(group)) : {}),
     }).changes > 0;
+    if (!existed) queueChatStatsReconcileSync(db, 'group', id);
+    return changed;
 }
 
 /**
@@ -4018,7 +4027,7 @@ export async function upsertGroupRow(directories, id, name, { fav, group } = {})
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.transaction(() => {
-        if (upsertGroupRowSync(entry.db, { id, name, fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 })) insertGroupChange(entry.db, id);
+        if (upsertGroupRowSync(entry.db, { id, name, fav, group, dateAdded: Date.now() })) insertGroupChange(entry.db, id);
     });
 }
 
@@ -4038,7 +4047,7 @@ export async function upsertGroupRow(directories, id, name, { fav, group } = {})
  * @param {() => void} writeFile
  * @param {object} [options]
  * @param {boolean} [options.createIfMissing] false: don't insert a missing row. For writers that can run before
- * bootstrapGroupsIfNeeded(), whose insert must be the one that sets date_added and the chat stats.
+ * bootstrapGroupsIfNeeded(), whose insert must be the one that sets date_added.
  */
 export async function writeGroupFileAndRow(directories, group, writeFile, { createIfMissing = true } = {}) {
     const entry = await getEntry(directories);
@@ -4057,7 +4066,7 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
     try {
         entry.db.transaction(() => {
             if (createIfMissing || entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
-                upsertGroupRowSync(entry.db, { id, name: group.name, fav: group.fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
+                upsertGroupRowSync(entry.db, { id, name: group.name, fav: group.fav, group, dateAdded: Date.now() });
             }
             if (fileChanged || groupRowSnapshot(entry.db, id) !== rowBefore) insertGroupChange(entry.db, id);
         });
@@ -4211,6 +4220,216 @@ export async function applyGroupChatStats(directories, groupId, { sizeChange, ad
     });
 }
 
+/** @typedef {{ kind: 'character' | 'group', id: string }} QueuedChatStats */
+
+/** How many queued rows one read of chat_stats_pending takes. */
+const CHAT_STATS_QUEUE_PAGE_SIZE = 64;
+/** Work time after which a page stops early and the rest of it waits for the next one. */
+const CHAT_STATS_QUEUE_BUDGET_MS = 20;
+/** The pause between pages. */
+const CHAT_STATS_QUEUE_PAUSE_MS = 10;
+/** How long a round that left rows queued behind an in-flight write waits before going round again. */
+const CHAT_STATS_QUEUE_RETRY_MS = 100;
+
+/** Set once the server listens (startChatStatsReconcile()) and cleared by disposeMetadataStores(); while unset,
+ * queued rows only wait. */
+let chatStatsReconcileStarted = false;
+
+/**
+ * Each store's running drain of chat_stats_pending, by store root. `again` asks it to go round once more, from the
+ * start, when it finishes the round it's on.
+ * @type {Map<string, { again: boolean, done: Promise<void> }>}
+ */
+const chatStatsDrains = new Map();
+
+/**
+ * Queues a row just inserted at chat_size 0 and date_last_chat 0 to be counted from its owner's messages. Meant to
+ * run inside the transaction that inserts it.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {'character' | 'group'} kind
+ * @param {string} id
+ */
+function queueChatStatsReconcileSync(db, kind, id) {
+    db.run('INSERT OR IGNORE INTO chat_stats_pending (kind, id) VALUES (@kind, @id)', { kind, id });
+    for (const entry of entries.values()) {
+        // Runs once the current synchronous work, and so the inserting transaction, has finished.
+        if (entry.db === db) setImmediate(() => kickChatStatsReconcile(entry.directories));
+    }
+}
+
+/**
+ * Starts draining every store's chat_stats_pending, and lets rows queued from now on start a drain. Called once the
+ * server listens.
+ * @param {import('./users.js').UserDirectoryList[]} directoriesList
+ */
+export function startChatStatsReconcile(directoriesList) {
+    chatStatsReconcileStarted = true;
+    for (const directories of directoriesList) kickChatStatsReconcile(directories);
+}
+
+/**
+ * Makes sure the store's chat_stats_pending gets drained: starts a drain, or has the running one go round again.
+ * Only on the main thread, where every message write's stats change is applied (message-tree-db.js
+ * reportOwnerWrite()), so the drain can tell which owners have one in flight. Rows queued in a worker wait for the
+ * next kick here.
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export function kickChatStatsReconcile(directories) {
+    if (!chatStatsReconcileStarted || !isMainThread || isReadOnlyMode()) return;
+    const running = chatStatsDrains.get(directories.root);
+    if (running) {
+        running.again = true;
+        return;
+    }
+    const drain = { again: false, done: Promise.resolve() };
+    chatStatsDrains.set(directories.root, drain);
+    drain.done = drainChatStatsQueue(directories, drain)
+        .catch(err => console.error(color.red(`[character-metadata] Counting queued chat stats for ${directories.root} failed; they stay queued:`), err))
+        .finally(() => {
+            if (chatStatsDrains.get(directories.root) === drain) chatStatsDrains.delete(directories.root);
+        });
+}
+
+/**
+ * Settles once the store has no drain running.
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+export async function chatStatsReconcileIdle(directories) {
+    for (let drain = chatStatsDrains.get(directories.root); drain; drain = chatStatsDrains.get(directories.root)) {
+        await drain.done;
+    }
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ again: boolean }} drain
+ */
+async function drainChatStatsQueue(directories, drain) {
+    do {
+        drain.again = false;
+        let waiting = 0;
+        /** @type {QueuedChatStats | null} */
+        let after = null;
+        for (;;) {
+            // Stopped by disposeMetadataStores(); the rows stay queued for the next start.
+            if (!chatStatsReconcileStarted) return;
+            const entry = await getEntry(directories);
+            if (!entry) return;
+            const view = await openOwnerStatsView(directories);
+            const page = readChatStatsQueuePage(entry.db, after);
+            if (page.length === 0) break;
+            const started = performance.now();
+            for (const queued of page) {
+                after = queued;
+                try {
+                    if (!reconcileQueuedChatStatsSync(entry.db, view, queued)) waiting++;
+                } catch (err) {
+                    console.error(color.red(`[character-metadata] Counting the chat stats of ${queued.kind} ${queued.id} failed; it stays queued:`), err);
+                }
+                if (performance.now() - started >= CHAT_STATS_QUEUE_BUDGET_MS) break;
+            }
+            await delay(CHAT_STATS_QUEUE_PAUSE_MS);
+        }
+        if (waiting > 0) {
+            drain.again = true;
+            await delay(CHAT_STATS_QUEUE_RETRY_MS);
+        }
+    } while (drain.again);
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {QueuedChatStats | null} after
+ * @returns {QueuedChatStats[]}
+ */
+function readChatStatsQueuePage(db, after) {
+    const rows = after === null
+        ? db.iterate('SELECT kind, id FROM chat_stats_pending ORDER BY kind, id LIMIT @limit', { limit: CHAT_STATS_QUEUE_PAGE_SIZE })
+        : db.iterate('SELECT kind, id FROM chat_stats_pending WHERE kind > @kind OR (kind = @kind AND id > @id) ORDER BY kind, id LIMIT @limit',
+            { kind: after.kind, id: after.id, limit: CHAT_STATS_QUEUE_PAGE_SIZE });
+    return Array.from(rows, row => /** @type {QueuedChatStats} */ (row));
+}
+
+/**
+ * Counts one queued row's chat stats from its owner's messages and removes it from the queue, all in one synchronous
+ * step, so no message write's stats change can land between the count and the write. The row gets the owner's
+ * stats only when the owner is recorded as this row; an owner with messages but no recorded kind is first recorded
+ * by the rows that exist (ownerKindFromRowsSync()), so later writes keep the row current.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {import('./message-tree-db.js').OwnerStatsView | null} view null when the tree store is unavailable.
+ * @param {QueuedChatStats} queued
+ * @returns {boolean} false when it was left queued because a write to its owner has a stats change in flight.
+ */
+function reconcileQueuedChatStatsSync(db, view, { kind, id }) {
+    const ownerId = kind === 'group' ? id : characterOwnerIdOf(id);
+    if (view !== null && view.hookInFlight(ownerId)) return false;
+
+    let stats = { chatSize: 0, dateLastChat: 0 };
+    if (view) {
+        let owner = view.kindOf(ownerId);
+        if (!owner && view.exists(ownerId)) {
+            const found = ownerKindFromRowsSync(db, ownerId);
+            if (found && view.recordKind(ownerId, found)) owner = found;
+        }
+        if (owner?.kind === kind && owner.rowId === id) stats = view.readStats(ownerId);
+    }
+
+    db.transaction(() => {
+        if (kind === 'character') writeCharacterChatStatsSync(db, id, stats);
+        else writeGroupChatStatsSync(db, id, stats);
+        db.run('DELETE FROM chat_stats_pending WHERE kind = @kind AND id = @id', { kind, id });
+    });
+    return true;
+}
+
+/**
+ * @param {string} what
+ * @param {{ chat_size: number, date_last_chat: number }} row
+ * @param {{ chatSize: number, dateLastChat: number }} stats
+ */
+function logChatStatsCorrection(what, row, stats) {
+    console.log(`[character-metadata] Chat stats of ${what} counted from its messages: chat_size ${row.chat_size} -> ${stats.chatSize}, date_last_chat ${row.date_last_chat} -> ${stats.dateLastChat}.`);
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} avatar
+ * @param {{ chatSize: number, dateLastChat: number }} stats
+ */
+function writeCharacterChatStatsSync(db, avatar, stats) {
+    const row = (/** @type {{ chat_size: number, date_last_chat: number, shallow_json: string } | undefined} */ (db.get(
+        'SELECT chat_size, date_last_chat, shallow_json FROM characters WHERE id = @id', { id: avatar })));
+    if (!row) return;
+    /** @type {string[]} */
+    const fields = [];
+    if (Number(row.chat_size) !== stats.chatSize) fields.push('chat_size');
+    if (Number(row.date_last_chat) !== stats.dateLastChat) fields.push('date_last_chat');
+    if (fields.length === 0) return;
+
+    db.run('UPDATE characters SET chat_size = @chatSize, date_last_chat = @dateLastChat WHERE id = @id', { ...stats, id: avatar });
+    const shallow = JSON.parse(row.shallow_json);
+    shallow.chat_size = stats.chatSize;
+    shallow.date_last_chat = stats.dateLastChat;
+    writeShallowJson(db, avatar, shallow, fields);
+    logChatStatsCorrection(`character ${avatar}`, row, stats);
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} groupId
+ * @param {{ chatSize: number, dateLastChat: number }} stats
+ */
+function writeGroupChatStatsSync(db, groupId, stats) {
+    const row = (/** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (db.get(
+        'SELECT chat_size, date_last_chat FROM groups WHERE id = @id', { id: groupId })));
+    if (!row) return;
+    if (Number(row.chat_size) === stats.chatSize && Number(row.date_last_chat) === stats.dateLastChat) return;
+
+    db.run('UPDATE groups SET chat_size = @chatSize, date_last_chat = @dateLastChat WHERE id = @id', { ...stats, id: groupId });
+    insertGroupChange(db, groupId);
+    logChatStatsCorrection(`group ${groupId}`, row, stats);
+}
+
 // group_tags has no real foreign key; cascade is application code, same as deleteRowSync() for characters.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -4250,7 +4469,6 @@ export async function bootstrapGroupsIfNeeded(directories) {
                     const group = normalizeGroupRecord(JSON.parse(raw));
                     if (hasGroupIdForRow(group)) {
                         const stat = fs.statSync(filePath);
-                        const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
                         inItemSavepoint(entry.db, () => {
                             const changed = upsertGroupRowSync(entry.db, {
                                 id: group.id,
@@ -4258,8 +4476,6 @@ export async function bootstrapGroupsIfNeeded(directories) {
                                 fav: normalizeFav(group.fav),
                                 group,
                                 dateAdded: Math.round(stat.birthtimeMs),
-                                dateLastChat,
-                                chatSize,
                             });
                             if (changed) insertGroupChange(entry.db, group.id);
                         });
@@ -4327,7 +4543,6 @@ export async function recoverNumericIdGroupsIfNeeded(directories) {
         if (!hasGroupIdForRow(group)) return null;
         if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id: group.id })) return null;
         const stat = fs.statSync(filePath);
-        const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
         return () => {
             const inserted = upsertGroupRowSync(entry.db, {
                 id: group.id,
@@ -4335,8 +4550,6 @@ export async function recoverNumericIdGroupsIfNeeded(directories) {
                 fav: normalizeFav(group.fav),
                 group,
                 dateAdded: Math.round(stat.birthtimeMs),
-                dateLastChat,
-                chatSize,
                 insertOnly: true,
             });
             if (inserted) insertGroupChange(entry.db, group.id);
@@ -5346,23 +5559,36 @@ export async function fillTreeOwnerKinds(directories) {
         /** @type {{ ownerId: string, owner: import('./message-tree-db.js').OwnerDescriptor }[]} */
         const found = [];
         for (const ownerId of ownerIds) {
-            /** @type {import('./message-tree-db.js').OwnerDescriptor[]} */
-            const matches = [
-                ...existingRowIds(entry.db, 'characters', characterAvatarsForOwnerId(ownerId)).map(rowId => ({ kind: /** @type {const} */ ('character'), rowId })),
-                ...existingRowIds(entry.db, 'groups', [ownerId]).map(rowId => ({ kind: /** @type {const} */ ('group'), rowId })),
-            ];
-            if (matches.length === 1) {
-                found.push({ ownerId, owner: matches[0] });
-            } else if (matches.length === 0) {
-                console.warn(color.yellow(`[character-metadata] Message tree owner ${ownerId} matches no character or group, so its chat stats aren't kept.`));
-            } else {
-                console.warn(color.yellow(`[character-metadata] Message tree owner ${ownerId} matches more than one entity (${matches.map(m => `${m.kind} ${m.rowId}`).join(', ')}), so its chat stats aren't kept.`));
-            }
+            const owner = ownerKindFromRowsSync(entry.db, ownerId);
+            if (owner) found.push({ ownerId, owner });
         }
         rowsChanged += await recordOwnerKinds(directories, found);
         batches++;
     }
     return { batches, rowsChanged };
+}
+
+/**
+ * The kind a message tree owner's messages belong to, by the rows that exist: the one characters row whose chats
+ * live under the owner id, or the groups row with that id when it's the only match. No match, or more than one, is
+ * logged and gives undefined.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} ownerId
+ * @returns {import('./message-tree-db.js').OwnerDescriptor | undefined}
+ */
+function ownerKindFromRowsSync(db, ownerId) {
+    /** @type {import('./message-tree-db.js').OwnerDescriptor[]} */
+    const matches = [
+        ...existingRowIds(db, 'characters', characterAvatarsForOwnerId(ownerId)).map(rowId => ({ kind: /** @type {const} */ ('character'), rowId })),
+        ...existingRowIds(db, 'groups', [ownerId]).map(rowId => ({ kind: /** @type {const} */ ('group'), rowId })),
+    ];
+    if (matches.length === 1) return matches[0];
+    if (matches.length === 0) {
+        console.warn(color.yellow(`[character-metadata] Message tree owner ${ownerId} matches no character or group, so its chat stats aren't kept.`));
+    } else {
+        console.warn(color.yellow(`[character-metadata] Message tree owner ${ownerId} matches more than one entity (${matches.map(m => `${m.kind} ${m.rowId}`).join(', ')}), so its chat stats aren't kept.`));
+    }
+    return undefined;
 }
 
 /**
