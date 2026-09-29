@@ -25,8 +25,8 @@ import { normalizeFav } from './hash-utils.js';
 import { RA_CountCharTokens, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, loadMovingUIState, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
-import { getRandomSortSeed } from './random-sort.js';
-import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError } from './character-repository.js';
+import { getRandomSortSeed, compareByRandomSeed } from './random-sort.js';
+import { characterRepository, buildCharacterQuery } from './character-repository.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 
 import {
@@ -78,7 +78,7 @@ import {
     chatElement,
     ensureMessageMediaIsArray,
 } from '../script.js';
-import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS } from './character-list.js';
+import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
@@ -86,7 +86,7 @@ import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget, updateMessage } from './chat-store.js';
 import { provisionalNodeId } from './node-identity.js';
-import { FILTER_TYPES, FilterHelper } from './filters.js';
+import { FILTER_TYPES, FILTER_STATES, FilterHelper, isFilterState } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
@@ -1747,41 +1747,28 @@ async function onGroupNameInput() {
 }
 
 /**
- * Checks if a character with the given avatar ID is a member of the group.
- * @param {Group} group Group object
- * @param {string} avatarId Avatar ID to check
- * @returns {boolean} True if the avatar is a member of the group, false otherwise
- */
-function isGroupMember(group, avatarId) {
-    if (group && Array.isArray(group.members)) {
-        return group.members.includes(avatarId);
-    } else {
-        return newGroupMembers.includes(avatarId);
-    }
-}
-
-/**
- * Whether the non-member candidate set should attempt the server `/query` endpoint instead of scanning the
- * resident `characters` array. An active search term stays on the local path, since group-candidate search
- * runs through the same fuzzy/score-cache pipeline the server's search backend doesn't necessarily agree with.
- * @returns {boolean}
- */
-function canUseServerQueryForGroupCandidates() {
-    if (groupCandidatesFilter.getFilterData(FILTER_TYPES.SEARCH)) return false;
-    if ($('#character_sort_order option[data-field="search"]').is(':selected')) return false;
-    const sortField = power_user.sort_order === 'random' ? 'random' : power_user.sort_field;
-    return isServerQueryableSort(sortField);
-}
-
-/**
- * Maps the current sort UI state plus the current group's member set into the server `/query` wire shape.
+ * The candidates' `/query` request: every character but `excludeIds`, in the saved sort. With `doFilter`, the
+ * candidates' search term, tag filter and fav filter go with it, and a search term orders by relevance.
  * @param {string[]} excludeIds Current group's member list - excluded from the result.
+ * @param {object} [options]
+ * @param {boolean} [options.doFilter=false]
  * @returns {{filter: import('./character-repository.js').CharacterQueryFilter, sort: import('./character-repository.js').CharacterQuerySort|undefined}}
  */
-export function buildGroupCandidateQuery(excludeIds) {
-    const isRandom = power_user.sort_order === 'random';
+export function buildGroupCandidateQuery(excludeIds, { doFilter = false } = {}) {
+    const searchTerm = doFilter ? String(groupCandidatesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '').trim() : '';
+    const tagFilterData = (doFilter && groupCandidatesFilter.getFilterData(FILTER_TYPES.TAG)) || { selected: [], excluded: [] };
+    const favState = doFilter ? groupCandidatesFilter.getFilterData(FILTER_TYPES.FAV) : undefined;
+    let fav;
+    if (isFilterState(favState, FILTER_STATES.SELECTED)) fav = true;
+    else if (isFilterState(favState, FILTER_STATES.EXCLUDED)) fav = false;
+
+    const isRandom = !searchTerm && power_user.sort_order === 'random';
     const { filter, sort } = buildCharacterQuery({
-        sortField: isRandom ? 'random' : power_user.sort_field,
+        searchTerm,
+        tagsInclude: tagFilterData.selected ?? [],
+        tagsExclude: tagFilterData.excluded ?? [],
+        fav,
+        sortField: searchTerm ? 'search' : (isRandom ? 'random' : power_user.sort_field),
         sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
         randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
     });
@@ -1792,28 +1779,16 @@ export function buildGroupCandidateQuery(excludeIds) {
 /**
  * Gets group characters based on filters.
  *
- * The non-member (candidate) path backs the "add member" picker over the entire non-member library, so it
- * attempts `characterRepository.queryAll()` with `excludeIds` set to the current members instead of scanning
- * the resident `characters` array when eligible (see `canUseServerQueryForGroupCandidates()`), falling back to
- * the local scan on an invalid-sort-field response. The member path is bounded by the group's own member count
- * regardless, so it stays resolved through `resolveGroupMembers()` rather than a resident-array scan.
+ * The non-member (candidate) path backs the "add member" picker: it reads `/query` with the current members
+ * excluded (see `buildGroupCandidateQuery()`), and a sort the server doesn't know falls back as the character
+ * list's does (`queryWithSortFallback()`). The member path is bounded by the group's own member count, so it is
+ * resolved through `resolveGroupMembers()`.
  * @param {object} param
  * @param {boolean} [param.doFilter=false] Whether to apply filters
  * @param {boolean} [param.onlyMembers=false] Whether to include only group members
  * @returns {Promise<Array<{item: Character, id: string, type: string}>>} Array of group character objects
  */
 export async function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
-    function applyFilterAndSort(results, filter, filterSelector) {
-        let filtered = results;
-        if (doFilter) {
-            filtered = filter.applyFilters(filtered);
-        }
-        const useFilterOrder = doFilter && !!$(filterSelector).val();
-        sortEntitiesList(filtered, useFilterOrder, filter);
-        filter.clearFuzzySearchCaches();
-        return filtered;
-    }
-
     function handleMembers(results, thisGroup) {
         const membersArray = thisGroup?.members ?? newGroupMembers;
 
@@ -1848,21 +1823,26 @@ export async function getGroupCharacters({ doFilter = false, onlyMembers = false
 
     // Candidates (non-members): the entire non-member library as a pagination dataSource (§4.1).
     if (!onlyMembers) {
-        if (doFilter && canUseServerQueryForGroupCandidates()) {
-            const { filter, sort } = buildGroupCandidateQuery(membersArray);
-            try {
-                const rows = await characterRepository.queryAll(filter, sort);
-                const results = rows.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
-                return applyFilterAndSort(results, groupCandidatesFilter, '#rm_group_filter');
-            } catch (error) {
-                if (!isInvalidSortFieldError(error)) throw error;
-                // Falls through to the local scan below.
-            }
+        const { filter, sort: wantedSort } = buildGroupCandidateQuery(membersArray, { doFilter });
+        const { sort, result: rows } = await queryWithSortFallback(filter, wantedSort,
+            trySort => characterRepository.queryAll(filter, trySort));
+        let results = rows.map((x) => ({ item: x, id: x.avatar, type: 'character' }));
+        if (sort?.field === 'random') {
+            // queryAll() asks for its pages unsorted when the sort is random.
+            results.sort((a, b) => compareByRandomSeed(`${a.type}.${a.id}`, `${b.type}.${b.id}`, sort.seed));
         }
-        const results = characters
-            .filter((x) => isGroupMember(thisGroup, x.avatar) == onlyMembers)
-            .map((x) => ({ item: x, id: x.avatar, type: 'character' }));
-        return applyFilterAndSort(results, groupCandidatesFilter, '#rm_group_filter');
+        if (doFilter) {
+            // The server applied the search, tag and fav filters; the rest (Groups, Folders) never match a character.
+            results = groupCandidatesFilter.applyFilters(results, {
+                tempOverrides: {
+                    [FILTER_TYPES.SEARCH]: '',
+                    [FILTER_TYPES.TAG]: { selected: [], excluded: [] },
+                    [FILTER_TYPES.FAV]: FILTER_STATES.UNDEFINED.key,
+                },
+            });
+            groupCandidatesFilter.clearFuzzySearchCaches();
+        }
+        return results;
     }
 
     // Members: bounded by the group's own member count, resolved authoritatively (see doc comment above).
