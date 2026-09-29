@@ -276,6 +276,64 @@ describe('fillTreeOwnerKinds', () => {
     });
 });
 
+describe('the (owner, created_at) index', () => {
+    const INDEX_NAME = 'idx_messages_owner_created_at';
+
+    /** @param {string} sql @param {object} params */
+    async function writeMetadataRaw(sql, params) {
+        const { default: Database } = await import('better-sqlite3');
+        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        try {
+            raw.prepare(sql).run(params);
+        } finally {
+            raw.close();
+        }
+    }
+
+    test('buildTreeOwnerCreatedAtIndex builds it once, in the migration worker\'s pass list', async () => {
+        const db = await tree.getDbHandle(directories);
+        const hasIndex = () => !!db.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'index\' AND name = @name', { name: INDEX_NAME });
+        expect(hasIndex()).toBe(false);
+
+        expect(await metadataDb.buildTreeOwnerCreatedAtIndex(directories)).toEqual({ batches: 1, rowsChanged: 0 });
+        expect(hasIndex()).toBe(true);
+        expect(await metadataDb.buildTreeOwnerCreatedAtIndex(directories)).toEqual({ batches: 0, rowsChanged: 0 });
+
+        const { MIGRATION_PASSES } = await import('../src/metadata-migration-coordinator.js');
+        expect(MIGRATION_PASSES).toContain('buildTreeOwnerCreatedAtIndex');
+    });
+
+    test('the newest-message read goes through it', async () => {
+        await metadataDb.buildTreeOwnerCreatedAtIndex(directories);
+        const db = await tree.getDbHandle(directories);
+        const plan = db.all('EXPLAIN QUERY PLAN SELECT created_at FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL ORDER BY created_at DESC LIMIT 1', { ownerId: 'Alice' });
+        expect(plan.map(row => row.detail).join('\n')).toContain(INDEX_NAME);
+    });
+
+    test('once it exists, date_last_chat is the newest message\'s created_at after every write, not the larger of that and the stored value', async () => {
+        await seedCharacter('Alice.png');
+        const [, replyId] = await saveAliceChat();
+        const far = Date.now() + 10 ** 9;
+        await writeMetadataRaw('UPDATE characters SET date_last_chat = @far WHERE id = @id', { far, id: 'Alice.png' });
+
+        await metadataDb.buildTreeOwnerCreatedAtIndex(directories);
+        expect((await postJson('/api/chats/message/append', { avatar_url: 'Alice.png', after_node_id: replyId, messages: [msg('and?')] })).status).toBe(200);
+
+        expect((await stored('Alice.png')).dateLastChat).toBe((await recompute('Alice')).dateLastChat);
+    });
+
+    test('before it exists, a write that only adds rows keeps a larger stored date_last_chat', async () => {
+        await seedCharacter('Alice.png');
+        const [, replyId] = await saveAliceChat();
+        const far = Date.now() + 10 ** 9;
+        await writeMetadataRaw('UPDATE characters SET date_last_chat = @far WHERE id = @id', { far, id: 'Alice.png' });
+
+        expect((await postJson('/api/chats/message/append', { avatar_url: 'Alice.png', after_node_id: replyId, messages: [msg('and?')] })).status).toBe(200);
+
+        expect((await stored('Alice.png')).dateLastChat).toBe(far);
+    });
+});
+
 describe('a group\'s chat stats follow every write to its messages', () => {
     const GROUP_ID = 'g1';
 
