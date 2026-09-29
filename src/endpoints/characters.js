@@ -2711,8 +2711,6 @@ router.post('/query', (request, response) => withSearchTiming(response, () => ha
 /** Rows a folder tile's avatar strip shows. */
 export const FOLDER_TILE_STRIP_ROWS = 10;
 export const MAX_FOLDER_TILES_PER_REQUEST = 200;
-/** Closed folders a folder-tiles request reads. Past this many it fails rather than hide entities from part of them. */
-export const MAX_FOLDER_TILES_CLOSED_FOLDERS = 1000;
 
 /**
  * @param {number | string | undefined} total A `/query` total, `~`-prefixed when approximate.
@@ -2752,12 +2750,9 @@ router.post('/folder-tiles', async function (request, response) {
             return response.status(400).send({ error: true, reason: 'too-many-tiles', max: MAX_FOLDER_TILES_PER_REQUEST });
         }
 
-        const tags = await getFolderTileTags(request.user.directories, tileIds, MAX_FOLDER_TILES_CLOSED_FOLDERS);
+        const tags = await getFolderTileTags(request.user.directories, tileIds);
         if (tags === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-        }
-        if (tags.closedIds === null) {
-            return response.status(500).send({ error: true, reason: 'too-many-closed-folders', max: MAX_FOLDER_TILES_CLOSED_FOLDERS });
         }
 
         const include = Array.isArray(filter.tags?.include) ? filter.tags.include.filter(id => typeof id === 'string' && id) : [];

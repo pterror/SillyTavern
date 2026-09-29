@@ -250,14 +250,30 @@ describe('POST /api/characters/folder-tiles', () => {
         expect(await tilesRequest({ tiles: ['open'], filter: {}, sort: { field: 'nonsense' } })).toEqual({ status: 400, body: { error: true, reason: 'invalid-sort-field' } });
     });
 
-    test('more closed folders than it reads fails the request instead of hiding entities from only some of them', async () => {
-        const closed = Array.from({ length: charactersModule.MAX_FOLDER_TILES_CLOSED_FOLDERS + 1 }, (_, i) => ({ id: `c${i}`, name: `Closed ${i}`, folder_type: 'CLOSED' }));
-        expect(await metadataDb.saveTagDefinitions(directories, [...FOLDERS, ...closed])).toBe('ok');
-        jest.spyOn(console, 'error').mockImplementation(() => {});
-        expect(await tilesRequest({ tiles: ['open'], filter: {}, sort: { field: 'name' } })).toEqual({
-            status: 500,
-            body: { error: true, reason: 'too-many-closed-folders', max: charactersModule.MAX_FOLDER_TILES_CLOSED_FOLDERS },
-        });
+    describe.each([['tag columns filled', true], ['tag columns not filled yet', false]])('%s', (_, ready) => {
+        test('every closed folder hides, however many there are: past one read batch and past SQLite\'s bound-parameter limit', async () => {
+            // Ids sort as c00000 … c39999, so the last one is read in the last batch.
+            const closed = Array.from({ length: 40000 }, (_, i) => ({ id: `c${String(i).padStart(5, '0')}`, name: `Closed ${i}`, folder_type: 'CLOSED' }));
+            expect(await metadataDb.saveTagDefinitions(directories, [...FOLDERS, ...closed])).toBe('ok');
+            if (ready) await makeTagColumnsReady();
+            expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(ready);
+            await seedCharacter('A.png');
+            await seedCharacter('First.png');
+            await seedCharacter('Last.png');
+            await seedGroup('g1', 'Gamma');
+            await tag('A.png', ['open']);
+            await tag('First.png', ['open', 'c00000']);
+            await tag('Last.png', ['open', 'c39999']);
+            await tag('g1', ['open', 'c39999']);
+
+            for (const filter of [{}, { group: true }, { group: false }]) {
+                const [open] = await tiles({ tiles: ['open'], filter });
+                expect(open.hidden).toBe(filter.group === true ? 4 : 3);
+                expect(open.rows.map(rowId)).toEqual(filter.group === true ? [] : ['A.png']);
+            }
+            const [last] = await tiles({ tiles: ['c39999'], filter: {} });
+            expect(last.rows.map(rowId)).toEqual(['group:g1', 'Last.png']);
+        }, 60000);
     });
 
     describe('with a search term', () => {
@@ -305,6 +321,27 @@ describe('POST /api/characters/folder-tiles', () => {
             expect(groupsOnly).toMatchObject({ count: 1, hidden: 4 });
             expect(groupsOnly.rows.map(rowId)).toEqual(['group:g1']);
         }, 30000);
+
+        test.each([
+            ['a field order', { field: 'name', order: 'asc' }],
+            ['relevance order', { field: 'search' }],
+        ])('in %s, every closed folder hides, past SQLite\'s bound-parameter limit', async (_, sort) => {
+            if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+            const closed = Array.from({ length: 40000 }, (_, i) => ({ id: `c${String(i).padStart(5, '0')}`, name: `Closed ${i}`, folder_type: 'CLOSED' }));
+            expect(await metadataDb.saveTagDefinitions(directories, [...FOLDERS, ...closed])).toBe('ok');
+            await seedCharacter('Anna.png', { name: 'Anna the Vampire', file: true });
+            await seedCharacter('Last.png', { name: 'Last the Vampire', file: true });
+            await seedGroup('g1', 'Vampire Coven');
+            await tag('Anna.png', ['open']);
+            await tag('Last.png', ['open', 'c39999']);
+            await tag('g1', ['open', 'c39999']);
+            // The closed folder's own tile shows both: they're indexed.
+            const [shut] = await settledTiles({ tiles: ['c39999'], filter: { search: 'vampire' }, sort });
+            expect(shut).toMatchObject({ count: 2, hidden: 0 });
+            const [open] = await tiles({ tiles: ['open'], filter: { search: 'vampire' }, sort });
+            expect(open).toMatchObject({ count: 1, hidden: 2 });
+            expect(open.rows.map(rowId)).toEqual(['Anna.png']);
+        }, 60000);
 
         test('in relevance order, the count covers matches past the strip', async () => {
             if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
