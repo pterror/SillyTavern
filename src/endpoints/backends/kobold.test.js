@@ -855,7 +855,7 @@ async function run() {
 
     let writeBackChats = 0;
     /**
-     * A new chat on a Kobold backend with the bundled LLaMA tokenizer picked; `onGenerate(req, res)` answers the
+     * A new chat on a Kobold backend with the bundled LLaMA tokenizer picked; `onGenerate(req, res, body)` answers the
      * generate request. Returns the backend, the URLs it was asked, the tokenizer identity and the request body.
      */
     async function setUpWriteBackGeneration(onGenerate) {
@@ -869,9 +869,9 @@ async function run() {
         ]);
         const leafId = (await loadBranch(directories, writeBackAvatar, 'write-back-chat')).branch.leaf_id;
         const urls = [];
-        const backend = await startFakeBackend((req, res) => {
+        const backend = await startFakeBackend((req, res, requestBody) => {
             urls.push(req.url);
-            if (req.url === '/v1/generate' || req.url === '/extra/generate/stream') return onGenerate(req, res);
+            if (req.url === '/v1/generate' || req.url === '/extra/generate/stream') return onGenerate(req, res, requestBody);
             res.writeHead(404);
             res.end();
         });
@@ -940,6 +940,36 @@ async function run() {
             assert.equal(await storedRowsUnder(identity), rowsBefore, 'nothing stored');
         } finally {
             http.request = request;
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
+    // --- a failed read of the token tables fails nothing: upstream's /generate never reads them ---
+    {
+        const generates = [];
+        const { backend, body } = await setUpWriteBackGeneration((_req, res, requestBody) => {
+            generates.push(JSON.parse(requestBody));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ results: [{ text: 'Two.' }] }));
+        });
+        const db = await getMessageTreeDb(directories);
+        const realGet = db.get;
+        try {
+            const fresh = await postGenerate(buildTestApp(), body);
+            assert.equal(fresh.status, 200);
+            db.get = (sql, params) => {
+                if (/FROM token_(counts|ids)\b/.test(sql)) throw new Error('token table read failed (test)');
+                return realGet(sql, params);
+            };
+            const failing = await postGenerate(buildTestApp(), body);
+            db.get = realGet;
+            assert.equal(failing.status, 200, 'token table reads failing: the generation succeeds');
+            assert.notEqual(failing.data?.error, true, 'token table reads failing: no error');
+            assert.equal(generates.length, 2, 'token table reads failing: the backend received both generations');
+            assert.deepEqual(generates[1], generates[0], 'token table reads failing: the same request as counted fresh');
+        } finally {
+            db.get = realGet;
             backend.server.close();
             writeAllSettings(directories, buildSettingsFixture());
         }

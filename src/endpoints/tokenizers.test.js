@@ -994,6 +994,56 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
         assert.equal(await idsRowsRunning(), rowsBefore, 'no row added');
     });
 
+    // --- A failed read of the token tables fails nothing: upstream's /current/* never read them ---
+
+    /**
+     * Runs `body` with every read of token_counts and token_ids throwing, as a broken store would.
+     * @param {() => Promise<void>} body
+     */
+    const withFailingTokenReads = async (body) => {
+        const db = await getMessageTreeDb(directories);
+        const realGet = db.get;
+        const get = mock.method(db, 'get', (sql, params) => {
+            if (/FROM token_(counts|ids)\b/.test(sql)) throw new Error('token table read failed (test)');
+            return realGet(sql, params);
+        });
+        try {
+            await body();
+        } finally {
+            get.mock.restore();
+        }
+    };
+
+    await testCase('/current/count with the token tables failing to read: the fresh counts, and the request succeeds', async () => {
+        storedState();
+        const texts = ['a count whose read throws', 'another count whose read throws'];
+        const hashes = texts.map(t => tokenKeyHash(TOKEN_KEY_KINDS.TEXT, t));
+        await writeBack(directories, { counts: [{ identity, hash: hashes[0], count: 999 }] });
+        await withFailingTokenReads(async () => {
+            const counted = await postCurrent('count', { state: stepTextgenState, texts, padding: 2 });
+            assert.deepEqual(counted.counts, texts.map(t => Buffer.byteLength(t) + 2), 'counted fresh, not the stored 999');
+            const prompt = await postCurrent('count', { state: stepTextgenState, texts: [texts[1]], promptStart: true });
+            assert.deepEqual(prompt.counts, [Buffer.byteLength(texts[1])]);
+            const counted2 = await postCurrent('count', { state: stepCustomState, messages });
+            assert.equal(counted2.count, Buffer.byteLength(`user\n\n${text}`));
+        });
+        assert.deepEqual(tokenizeBodies().map(body => body.content), [...texts, texts[1], `user\n\n${text}`], 'every text went to /tokenize');
+    });
+
+    await testCase('/current/encode with the token tables failing to read: the fresh ids and chunks, and the request succeeds', async () => {
+        storedState();
+        const sample = 'an encode whose read throws é';
+        await writeBack(directories, { ids: [{ identity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, sample), ids: [7], chunks: ['x'] }] });
+        const localIds = await encodeTextByLocalTokenizerType('llama3', sample);
+        await withFailingTokenReads(async () => {
+            const encoded = await postCurrent('encode', { state: stepTextgenState, texts: [sample] });
+            assert.deepEqual(encoded.ids, [Array.from(Buffer.from(sample), (_, i) => i)], 'the fresh ids, not the stored [7]');
+            assert.equal(encoded.chunks[0].join(''), sample);
+            const local = await postCurrent('encode', { state: llama3State, texts: [sample] });
+            assert.deepEqual(local.ids, [localIds]);
+        });
+    });
+
     resetStepFake();
     disposeMessageTreeStores();
 }
