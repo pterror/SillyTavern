@@ -2,6 +2,7 @@ import { describe, test, expect, jest, beforeAll, beforeEach, afterEach } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { Buffer } from 'node:buffer';
 
 import * as realSqliteEngine from '../src/endpoints/sqlite-engine.js';
 import { groupDigestTagIdsHash } from '../public/scripts/hash-utils.js';
@@ -265,5 +266,73 @@ describe('migrateGroupDigestColumns reads the group ids to backfill in keyset ch
         // A write leaves an untagged group's digest_tag_ids NULL; the backfill sets it to the empty tag list's hash.
         const emptyTagIdsHash = groupDigestTagIdsHash({ tag_ids: [] });
         expect(readDigests()).toEqual(written.map(row => tagged.has(row.id) ? row : { ...row, digest_tag_ids: emptyTagIdsHash }));
+    });
+});
+
+describe('migrateCardJsonColumn reads the ids to backfill in keyset chunks', () => {
+    // A minimal valid 1x1 transparent PNG, so character-card-parser.js's write() can attach a `chara` chunk to it.
+    const BLANK_PNG = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64',
+    );
+
+    /** @param {string} name */
+    const card = (name) => JSON.stringify({ name, spec: 'chara_card_v2', spec_version: '2.0', data: { name, tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+    test('2001 NULL rows with a readable PNG and one without: three bounded chunk reads, the 2001 backfilled from their PNG, the column left nullable', async () => {
+        const { write: writeCard, read: readCard } = await import('../src/character-card-parser.js');
+
+        /** @type {string[]} */
+        const ids = [];
+        for (let i = 0; i < 2002; i++) {
+            const id = `char-${String(i).padStart(5, '0')}.png`;
+            ids.push(id);
+            await metadataDb.upsertCharacterFromWrite(directories, id, card(id.replace(/\.png$/, '')), null, null, {});
+        }
+        const unresolvedId = ids[2001];
+        /** @type {Map<string, string>} */
+        const expected = new Map();
+        for (const id of ids.slice(0, 2001)) {
+            const filePath = path.join(directories.characters, id);
+            fs.writeFileSync(filePath, writeCard(BLANK_PNG, card(`png ${id}`)));
+            expected.set(id, readCard(fs.readFileSync(filePath)));
+        }
+        metadataDb.disposeMetadataStores();
+
+        // A store whose card_json is still nullable, with every row's card_json NULL.
+        withRawDb(db => {
+            const columns = Array.from(db.prepare('PRAGMA table_info(characters)').iterate());
+            db.pragma('legacy_alter_table = ON');
+            db.exec('CREATE TABLE characters_old (' + columns.map(c => `${c.name} ${c.type}${c.name !== 'card_json' && c.notnull ? ' NOT NULL' : ''}${c.pk ? ' PRIMARY KEY' : ''}`).join(', ') + ')');
+            db.exec('INSERT INTO characters_old SELECT * FROM characters');
+            db.exec('DROP TABLE characters');
+            db.exec('ALTER TABLE characters_old RENAME TO characters');
+            expect(db.prepare('UPDATE characters SET card_json = NULL').run().changes).toBe(2002);
+        });
+
+        const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        calls.length = 0;
+        await metadataDb.ensureSchemaMigrated(directories);
+        metadataDb.disposeMetadataStores();
+
+        const chunkSql = 'SELECT id FROM characters WHERE card_json IS NULL AND id > ? ORDER BY id LIMIT ?';
+        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
+        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
+        for (const read of chunkReads) {
+            expect(read.args[1]).toBe(1000);
+            expect(read.args[0][1]).toBe(1000);
+        }
+        expect(calls.filter(c => c.method === 'all' && /card_json IS NULL/.test(oneLine(c)))).toEqual([]);
+
+        expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('backfilled 2001/2002'));
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(unresolvedId));
+
+        withRawDb(db => {
+            const rows = new Map(Array.from(db.prepare('SELECT id, card_json FROM characters').iterate(), r => [r.id, r.card_json]));
+            expect(rows).toEqual(new Map([...expected, [unresolvedId, null]]));
+            expect(db.prepare('SELECT "notnull" FROM pragma_table_info(\'characters\') WHERE name = \'card_json\'').get().notnull).toBe(0);
+        });
     });
 });
