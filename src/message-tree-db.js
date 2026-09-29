@@ -2911,36 +2911,51 @@ export async function renameGroupMemberInMessages(directories, groupOwnerId, old
     const entry = await getEntry(directories);
     if (!entry) return 0;
 
-    const rows = /** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (entry.db.all(
+    const readChunk = (/** @type {string} */ lastId) => (/** @type {Pick<MessageRow, 'id' | 'content'>[]} */ (entry.db.readBounded(
         `SELECT id, content FROM messages
          WHERE owner_id = @groupOwnerId
            AND parent_id IS NOT NULL
-           AND json_extract(content, '$.original_avatar') = @oldAvatar`,
-        { groupOwnerId, oldAvatar },
-    ));
-    if (rows.length === 0) return 0;
+           AND json_extract(content, '$.original_avatar') = @oldAvatar
+           AND id > @lastId
+         ORDER BY id LIMIT @limit`,
+        { groupOwnerId, oldAvatar, lastId, limit: KEYSET_CHUNK },
+        KEYSET_CHUNK,
+    )));
+
+    const firstChunk = readChunk('');
+    if (firstChunk.length === 0) return 0;
 
     const oldEncoded = encodeURIComponent(oldAvatar);
     const newEncoded = encodeURIComponent(newAvatar);
 
     let updated = 0;
+    let lastId = '';
     const stats = newWriteStats();
     entry.db.transaction(() => {
-        // Reset here: a transaction that hits busy is rolled back and rerun.
+        // Reset here: a transaction that hits busy is rolled back and rerun, starting over from the first chunk.
         Object.assign(stats, newWriteStats());
-        for (const row of rows) {
-            try {
-                const msg = JSON.parse(row.content);
-                msg.name = newName;
-                msg.original_avatar = newAvatar;
-                if (typeof msg.force_avatar === 'string') {
-                    msg.force_avatar = msg.force_avatar.replace(oldEncoded, newEncoded);
-                }
-                const next = JSON.stringify(msg);
-                updateMessageContentSync(entry.db, row.id, next);
-                countReplace(stats, row.content, next);
-                updated++;
-            } catch { /* skip malformed */ }
+        lastId = '';
+        let chunk = firstChunk;
+        for (;;) {
+            for (const row of chunk) {
+                try {
+                    const msg = JSON.parse(row.content);
+                    msg.name = newName;
+                    msg.original_avatar = newAvatar;
+                    if (typeof msg.force_avatar === 'string') {
+                        msg.force_avatar = msg.force_avatar.replace(oldEncoded, newEncoded);
+                    }
+                    const next = JSON.stringify(msg);
+                    updateMessageContentSync(entry.db, row.id, next);
+                    countReplace(stats, row.content, next);
+                    updated++;
+                } catch { /* skip malformed */ }
+            }
+
+            if (chunk.length < KEYSET_CHUNK) break;
+            lastId = chunk[chunk.length - 1].id;
+            chunk = readChunk(lastId);
+            if (chunk.length === 0) break;
         }
     });
     await reportOwnerWrite(directories, entry.db, groupOwnerId, stats);
