@@ -120,6 +120,17 @@ export class FilterHelper {
     }
 
     /**
+     * @returns {boolean} Whether searchFilter() matches characters and groups by the server search results, so it
+     * keeps only the entities those results hold.
+     */
+    usesServerSearchResults() {
+        const searchValue = this.filterData[FILTER_TYPES.SEARCH];
+        if (!searchValue || !power_user.fuzzy_search) return false;
+        const favOnly = isFilterState(this.filterData[FILTER_TYPES.FAV], FILTER_STATES.SELECTED);
+        return this.serverSearchResults?.searchValue === searchValue && this.serverSearchResults?.favOnly === favOnly;
+    }
+
+    /**
      * Checks if the filter data has any values.
      * @returns {boolean} Whether the filter data has any values
      */
@@ -339,8 +350,7 @@ export class FilterHelper {
             const fuzzySearchTagsResult = fuzzySearchTags(searchValue, this.fuzzySearchCaches);
             this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchTagsResult.map(i => [`tag.${i.item.id}`, i.score])));
 
-            const favOnly = isFilterState(this.filterData[FILTER_TYPES.FAV], FILTER_STATES.SELECTED);
-            if (this.serverSearchResults?.searchValue === searchValue && this.serverSearchResults?.favOnly === favOnly) {
+            if (this.usesServerSearchResults()) {
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.characterScores].map(([avatar, score]) => [`character.${avatar}`, score])));
                 this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.groupScores].map(([id, score]) => [`group.${id}`, score])));
             } else {
