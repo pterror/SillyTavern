@@ -3,19 +3,32 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import http from 'node:http';
+import { fileURLToPath } from 'node:url';
+
 import { disposeMessageTreeStores } from './message-tree-db.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
-import {
+// token-count-store.js imports tokenizer-resolve.js, whose import chain reads process-wide config at import
+// time (src/endpoints/secrets.js), so the config path is set first and the module imported after it.
+import { setConfigFilePath } from './util.js';
+
+setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config.yaml'));
+
+const {
     TOKEN_KEY_KINDS,
     tokenKeyHash,
     chatMessageKeyText,
     readCount,
     readIds,
     writeBack,
-} from './token-count-store.js';
+    createStoredCounter,
+} = await import('./token-count-store.js');
+const { tokenizers, tokenizerIdentity } = await import('./tokenizer-resolve.js');
+const { countChatCompletionMessages } = await import('./endpoints/tokenizers.js');
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
 const directories = { root: tmpRoot };
+const storedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
 
 /** Reads the rows and the running counts straight from the file, on a handle of its own. */
 async function inspect() {
@@ -37,6 +50,33 @@ async function inspect() {
         db.close();
     }
 }
+
+// A fake llama.cpp `/tokenize`: one token per UTF-8 byte, ids 0..n-1, or 500 when `fakeTokenize.fail`.
+// Every request is recorded, so a test counts the tokenizer calls a counter made.
+const fakeTokenize = { fail: false, contents: /** @type {string[]} */ ([]) };
+const fakeServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+        if (req.url !== '/tokenize') {
+            res.writeHead(404).end();
+            return;
+        }
+        const content = String(JSON.parse(body).content);
+        fakeTokenize.contents.push(content);
+        if (fakeTokenize.fail) {
+            res.writeHead(500).end();
+            return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ tokens: Array.from(Buffer.from(content)).map((_, id) => id) }));
+    });
+});
+fakeServer.listen(0, '127.0.0.1');
+await new Promise(resolve => fakeServer.once('listening', resolve));
+const fakeUrl = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (fakeServer.address()).port}`;
+const tokenizerCalls = () => fakeTokenize.contents.length;
+const resetFake = () => { fakeTokenize.fail = false; fakeTokenize.contents.length = 0; };
 
 try {
     // --- keys: the kind and everything the result depends on besides the tokenizer ---
@@ -128,9 +168,225 @@ try {
     await writeBack(directories, {}, 5000);
     const after = await inspect();
     assert.deepEqual(after, state);
+
+    // ===== createStoredCounter =====
+    const storedDirs = { root: storedRoot };
+    const gpt4 = { id: tokenizers.OPENAI, model: 'gpt-4', name: 'OpenAI' };
+    const llamaCpp = (localCopy = null) => ({
+        kind: /** @type {const} */ ('remote'),
+        id: tokenizers.API_TEXTGENERATIONWEBUI,
+        name: 'API (Text Completion)',
+        basis: /** @type {const} */ ('remote'),
+        model: 'test-model',
+        llamaCpp: { url: fakeUrl, model: 'test-model', headers: {} },
+        localCopy,
+    });
+    const llamaIdentity = 'llamacpp:["/models/test.gguf","b1"]';
+    const bytes = text => Buffer.byteLength(text);
+    const byteIds = text => Array.from(Buffer.from(text)).map((_, id) => id);
+    const t1 = 'The first text';
+    const t2 = 'Another text';
+    const m1 = [{ role: 'user', content: t1 }];
+    const m1Bytes = bytes(`user\n\n${t1}`);
+
+    // --- identity null: the tokenizer on every call, nothing pending ---
+    {
+        resetFake();
+        const counter = createStoredCounter({ resolved: llamaCpp(), identity: null, directories: storedDirs });
+        for (let i = 0; i < 2; i++) {
+            assert.equal(await counter.countText(t1), bytes(t1));
+            assert.equal(await counter.countPromptText(t1), bytes(t1));
+            assert.deepEqual(await counter.encodeText(t1), byteIds(t1));
+            assert.equal(await counter.countChatMessage(m1), m1Bytes);
+        }
+        assert.equal(tokenizerCalls(), 8, 'every call asks the tokenizer');
+        assert.deepEqual(counter.pending, { counts: [], ids: [] });
+    }
+
+    // --- identity set: once per distinct text, one row each ---
+    const expectedRows = {
+        counts: [
+            { identity: llamaIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, t1), count: bytes(t1) },
+            { identity: llamaIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, t2), count: bytes(t2) },
+            { identity: llamaIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.PROMPT, t1), count: bytes(t1) },
+            { identity: llamaIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('test-model', m1)), count: m1Bytes },
+        ],
+        ids: [
+            { identity: llamaIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, t1), ids: byteIds(t1) },
+        ],
+    };
+    /** Every method on t1/t2/m1, each text twice, checking the values. */
+    const countAll = async counter => {
+        for (let i = 0; i < 2; i++) {
+            assert.equal(await counter.countText(t1), bytes(t1));
+            assert.equal(await counter.countText(t2), bytes(t2));
+        }
+        for (let i = 0; i < 2; i++) assert.equal(await counter.countPromptText(t1), bytes(t1));
+        for (let i = 0; i < 2; i++) assert.deepEqual(Array.from(await counter.encodeText(t1)), byteIds(t1));
+        for (let i = 0; i < 2; i++) assert.equal(await counter.countChatMessage(m1), m1Bytes);
+    };
+    {
+        resetFake();
+        const first = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs });
+        await countAll(first);
+        assert.deepEqual(fakeTokenize.contents, [t1, t2, t1, t1, `user\n\n${t1}`], 'once per distinct text and kind');
+        assert.deepEqual(first.pending, expectedRows, 'one row per distinct text and kind; a count and a prompt count are two');
+
+        // --- after write-back, a new counter reads them all: no tokenizer call, the same rows pending ---
+        await writeBack(storedDirs, first.pending);
+        resetFake();
+        const second = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs });
+        await countAll(second);
+        assert.equal(tokenizerCalls(), 0, 'every value read from the tables');
+        assert.deepEqual(second.pending, expectedRows, 'the rows read are pending, so write-back marks them used');
+
+        // --- another identity misses ---
+        const other = createStoredCounter({ resolved: llamaCpp(), identity: 'llamacpp:["/models/test.gguf","b2"]', directories: storedDirs });
+        assert.equal(await other.countText(t1), bytes(t1));
+        assert.equal(await other.encodeText(t1).then(ids => ids.length), bytes(t1));
+        assert.equal(tokenizerCalls(), 2, 'another identity asks the tokenizer');
+        assert.deepEqual(other.pending.counts.map(row => row.identity), ['llamacpp:["/models/test.gguf","b2"]']);
+    }
+
+    // --- a pending object shared across counters ---
+    {
+        resetFake();
+        const pending = { counts: [], ids: [] };
+        const a = createStoredCounter({ resolved: llamaCpp(), identity: 'shared-a', directories: storedDirs, pending });
+        const b = createStoredCounter({ resolved: llamaCpp(), identity: 'shared-b', directories: storedDirs, pending });
+        assert.equal(a.pending, pending);
+        await a.countText(t1);
+        await b.countText(t1);
+        assert.deepEqual(pending.counts.map(row => row.identity), ['shared-a', 'shared-b']);
+    }
+
+    // --- the local copy answering for a failed remote: the row goes under the copy's identity ---
+    {
+        resetFake();
+        fakeTokenize.fail = true;
+        const identityFacts = {};
+        const copyIdentity = await tokenizerIdentity(gpt4, identityFacts);
+        assert.ok(copyIdentity, 'tiktoken has an identity');
+        const counter = createStoredCounter({ resolved: llamaCpp(gpt4), identity: llamaIdentity, directories: storedDirs, identityFacts });
+        const t3 = 'Counted by the copy';
+        const m3 = [{ role: 'user', content: t3 }];
+        const count = await counter.countText(t3);
+        const ids = await counter.encodeText(t3);
+        const messagesCount = await counter.countChatMessage(m3);
+        assert.equal(tokenizerCalls(), 3, 'the remote was tried each time');
+        assert.equal(count, ids.length);
+        assert.equal(messagesCount, await countChatCompletionMessages({ kind: 'local', ...gpt4, basis: 'local', localCopy: null }, m3));
+        assert.deepEqual(counter.pending, {
+            counts: [
+                { identity: copyIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, t3), count },
+                { identity: copyIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('gpt-4', m3)), count: messagesCount },
+            ],
+            ids: [{ identity: copyIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, t3), ids: Array.from(ids) }],
+        });
+    }
+
+    // --- an estimate answer, or no ids, pushes nothing ---
+    {
+        resetFake();
+        fakeTokenize.fail = true;
+        const noCopy = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs });
+        const t4 = 'No tokenizer answers';
+        assert.equal(typeof await noCopy.countText(t4), 'number', 'the estimate');
+        assert.equal(await noCopy.encodeText(t4), null);
+        assert.equal(typeof await noCopy.countChatMessage([{ role: 'user', content: t4 }]), 'number', 'the estimate');
+        // The copy doesn't answer a prompt count for llama.cpp, so that one is the estimate too.
+        const withCopy = createStoredCounter({ resolved: llamaCpp(gpt4), identity: llamaIdentity, directories: storedDirs });
+        assert.equal(typeof await withCopy.countPromptText(t4), 'number');
+        assert.deepEqual(noCopy.pending, { counts: [], ids: [] });
+        assert.deepEqual(withCopy.pending, { counts: [], ids: [] });
+
+        const estimate = { kind: /** @type {const} */ ('estimate'), id: tokenizers.NONE, name: 'Estimate', basis: /** @type {const} */ ('unknown'), localCopy: null };
+        const estimated = createStoredCounter({ resolved: estimate, identity: 'given-anyway', directories: storedDirs });
+        await estimated.countText(t4);
+        await estimated.countChatMessage([{ role: 'user', content: t4 }]);
+        assert.deepEqual(estimated.pending, { counts: [], ids: [] }, 'an estimate resolution');
+
+        const nullIds = createStoredCounter({
+            resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs,
+            encode: async (_text, answeredOut) => { answeredOut.tokenizer = null; return null; },
+        });
+        assert.equal(await nullIds.encodeText(t4), null);
+        assert.deepEqual(nullIds.pending, { counts: [], ids: [] }, 'an encode giving null');
+    }
+
+    // --- a messages count is keyed by the counting tokenizer's model too ---
+    {
+        const tiktokenIdentity = 'tiktoken:cl100k_base@test';
+        const m5 = [{ role: 'user', content: 'Same messages, other model' }];
+        const asGpt4 = { kind: /** @type {const} */ ('local'), ...gpt4, basis: /** @type {const} */ ('local'), localCopy: null };
+        const asTurbo = { ...asGpt4, model: 'gpt-3.5-turbo-0301' };
+        const first = createStoredCounter({ resolved: asGpt4, identity: tiktokenIdentity, directories: storedDirs });
+        const gpt4Count = await first.countChatMessage(m5);
+        await writeBack(storedDirs, first.pending);
+        const second = createStoredCounter({ resolved: asTurbo, identity: tiktokenIdentity, directories: storedDirs });
+        const turboCount = await second.countChatMessage(m5);
+        assert.notEqual(turboCount, gpt4Count, 'the models count the messages differently');
+        assert.equal(turboCount, await countChatCompletionMessages(asTurbo, m5), 'counted, not read');
+        assert.notEqual(second.pending.counts[0].hash, first.pending.counts[0].hash);
+    }
+
+    // --- the encode and countMessages overrides, and where the answeredOut they set puts the row ---
+    {
+        const copyIdentity = await tokenizerIdentity(gpt4, {});
+        /** @type {Array<[string, unknown]>} */
+        const calls = [];
+        const resolved = llamaCpp(gpt4);
+        const encode = async (text, answeredOut) => {
+            calls.push(['encode', text]);
+            answeredOut.tokenizer = gpt4;
+            return Uint32Array.from([7, 8]);
+        };
+        const countMessages = async (messages, answeredOut) => {
+            calls.push(['countMessages', messages]);
+            answeredOut.tokenizer = resolved;
+            return 42;
+        };
+        const m6 = [{ role: 'user', content: 'Overridden' }];
+
+        const unstored = createStoredCounter({ resolved, identity: null, directories: storedDirs, encode, countMessages });
+        assert.deepEqual(Array.from(await unstored.encodeText('six')), [7, 8]);
+        assert.equal(await unstored.encodeText('six').then(ids => ids.length), 2);
+        assert.equal(await unstored.countChatMessage(m6), 42);
+        assert.equal(await unstored.countChatMessage(m6), 42);
+        assert.deepEqual(calls.map(([name]) => name), ['encode', 'encode', 'countMessages', 'countMessages'], 'identity null: every call');
+        assert.deepEqual(unstored.pending, { counts: [], ids: [] });
+
+        calls.length = 0;
+        const stored = createStoredCounter({ resolved, identity: 'overrides', directories: storedDirs, encode, countMessages });
+        const ids = await stored.encodeText('six');
+        assert.ok(ids instanceof Uint32Array, 'a miss returns what the encoder gave');
+        await stored.encodeText('six');
+        assert.equal(await stored.countChatMessage(m6), 42);
+        await stored.countChatMessage(m6);
+        // The copy's row is under the copy's identity, and reads are under the resolution's, so the copy
+        // is asked again for the same text; its row is pending once.
+        assert.deepEqual(calls, [['encode', 'six'], ['encode', 'six'], ['countMessages', m6]]);
+        assert.deepEqual(stored.pending, {
+            counts: [{ identity: 'overrides', hash: tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('test-model', m6)), count: 42 }],
+            ids: [{ identity: copyIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'six'), ids: [7, 8] }],
+        }, 'the copy\'s answer under the copy\'s identity, the resolution\'s under the given one');
+        assert.ok(Array.isArray(stored.pending.ids[0].ids));
+
+        // A messages count the copy answered is keyed by the copy's model.
+        const byCopy = createStoredCounter({
+            resolved, identity: 'overrides', directories: storedDirs,
+            countMessages: async (_messages, answeredOut) => { answeredOut.tokenizer = gpt4; return 5; },
+        });
+        await byCopy.countChatMessage(m6);
+        assert.deepEqual(byCopy.pending.counts, [
+            { identity: copyIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('gpt-4', m6)), count: 5 },
+        ]);
+    }
 } finally {
+    fakeServer.close();
     disposeMessageTreeStores();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+    fs.rmSync(storedRoot, { recursive: true, force: true });
 }
 
 console.log('token-count-store.test.js: all assertions passed');

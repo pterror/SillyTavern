@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 
 import { getMessageTreeDb } from './message-tree-db.js';
+import { countWithTokenizer, encodeWithTokenizer, tokenizerIdentity } from './tokenizer-resolve.js';
+import { countChatCompletionMessages } from './endpoints/tokenizers.js';
 
 /**
  * What a stored result is of. The same text counts differently with and without BOS, or as a
@@ -130,4 +132,146 @@ function addToRowCount(db, key, delta) {
         `INSERT INTO meta (key, value) VALUES (@key, @delta)
          ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + @delta`,
         { key, delta });
+}
+
+/**
+ * @typedef {object} StoredCounter
+ * @property {(text: string) => Promise<number>} countText A plain count, no BOS.
+ * @property {(text: string) => Promise<number>} countPromptText A `promptStart` count, with BOS.
+ * @property {(messages: object[]) => Promise<number>} countChatMessage A chat-completion messages count.
+ * @property {(text: string) => Promise<ArrayLike<number> | null>} encodeText Token ids, no BOS; null when
+ * no tokenizer answered.
+ * @property {PendingTokenRows} pending The rows read or counted, for {@link writeBack}.
+ */
+
+/**
+ * @typedef {{ tokenizer?: import('./tokenizer-resolve.js').ResolvedTokenizer | import('./tokenizer-resolve.js').LocalTokenizer | null }} AnsweredOut
+ */
+
+/**
+ * Counts and encodes through the `token_counts` and `token_ids` tables, for one request. With a null
+ * identity everything is counted or encoded as it is without the tables, and nothing is read or pending.
+ * Otherwise a text already stored under `identity` is read, not counted, and its row is pending so write-back
+ * marks it used; a text not stored is counted, and its row is pending under the identity of the tokenizer
+ * that answered, so a local copy's answer is stored under the copy's identity and an estimate or null ids
+ * aren't stored. Each key is read or counted once per counter.
+ * @param {object} args
+ * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} args.resolved A resolveTokenizer() answer.
+ * @param {string | null} args.identity `tokenizerIdentity(resolved, facts)`, as the caller computed it.
+ * @param {import('./users.js').UserDirectoryList} args.directories The user's directories: the message tree db,
+ * and the Hugging Face token for a messages count.
+ * @param {import('./tokenizer-resolve.js').EncodeWithTokenizerTypeOptions} [args.encodeOptions] For
+ * countWithTokenizer() and encodeWithTokenizer(); its `outcome` goes to countChatCompletionMessages().
+ * @param {import('./tokenizer-resolve.js').TokenizerIdentityFacts} [args.identityFacts] For the identity of a
+ * tokenizer that answered and isn't `resolved`.
+ * @param {PendingTokenRows} [args.pending] Where rows are pushed; one object may be shared by several counters.
+ * @param {(text: string, answeredOut: AnsweredOut) => Promise<ArrayLike<number> | null>} [args.encode]
+ * Replaces encodeWithTokenizer() for `encodeText`, setting `answeredOut.tokenizer` as it does.
+ * @param {(messages: object[], answeredOut: AnsweredOut) => Promise<number>} [args.countMessages] Replaces
+ * countChatCompletionMessages() for `countChatMessage`, setting `answeredOut.tokenizer` as it does.
+ * @returns {StoredCounter}
+ */
+export function createStoredCounter({
+    resolved,
+    identity,
+    directories,
+    encodeOptions = {},
+    identityFacts = {},
+    pending = { counts: [], ids: [] },
+    encode = undefined,
+    countMessages = undefined,
+}) {
+    const compute = {
+        [TOKEN_KEY_KINDS.TEXT]: (text, answeredOut) => countWithTokenizer(resolved, text, { ...encodeOptions, answeredOut }),
+        [TOKEN_KEY_KINDS.PROMPT]: (text, answeredOut) => countWithTokenizer(resolved, text, { ...encodeOptions, promptStart: true, answeredOut }),
+        [TOKEN_KEY_KINDS.IDS]: encode ?? ((text, answeredOut) => encodeWithTokenizer(resolved, text, { ...encodeOptions, answeredOut })),
+        [TOKEN_KEY_KINDS.CC_MESSAGE]: countMessages
+            ?? ((messages, answeredOut) => countChatCompletionMessages(resolved, messages, encodeOptions.outcome, directories, answeredOut)),
+    };
+
+    if (identity === null || identity === undefined) {
+        return {
+            countText: text => countWithTokenizer(resolved, text, encodeOptions),
+            countPromptText: text => countWithTokenizer(resolved, text, { ...encodeOptions, promptStart: true }),
+            encodeText: text => (encode ? encode(text, {}) : encodeWithTokenizer(resolved, text, encodeOptions)),
+            countChatMessage: messages => (countMessages
+                ? countMessages(messages, {})
+                : countChatCompletionMessages(resolved, messages, encodeOptions.outcome, directories)),
+            pending,
+        };
+    }
+
+    pending.counts ??= [];
+    pending.ids ??= [];
+    /** @type {Map<string, number | number[] | ArrayLike<number>>} Values read or pending in this counter, by identity and hash. */
+    const seen = new Map();
+
+    /**
+     * @param {string} kind
+     * @param {{ model?: string } | null | undefined} tokenizer
+     * @param {any} input
+     * @returns {string}
+     */
+    const keyText = (kind, tokenizer, input) => (kind === TOKEN_KEY_KINDS.CC_MESSAGE
+        ? chatMessageKeyText(tokenizer?.model, input)
+        : String(input ?? ''));
+
+    /**
+     * @param {string} kind
+     * @param {string} rowIdentity
+     * @param {string} hash
+     * @param {any} value
+     */
+    const push = (kind, rowIdentity, hash, value) => {
+        if (kind === TOKEN_KEY_KINDS.IDS) {
+            pending.ids.push({ identity: rowIdentity, hash, ids: value });
+        } else {
+            pending.counts.push({ identity: rowIdentity, hash, count: value });
+        }
+        seen.set(`${rowIdentity}\n${hash}`, value);
+    };
+
+    /**
+     * @param {string} kind
+     * @param {any} input
+     */
+    const stored = async (kind, input) => {
+        const readHash = tokenKeyHash(kind, keyText(kind, resolved, input));
+        const readKey = `${identity}\n${readHash}`;
+        if (seen.has(readKey)) {
+            return seen.get(readKey);
+        }
+        const read = kind === TOKEN_KEY_KINDS.IDS
+            ? await readIds(directories, identity, readHash)
+            : await readCount(directories, identity, readHash);
+        if (read !== null) {
+            push(kind, identity, readHash, read);
+            return read;
+        }
+
+        /** @type {AnsweredOut} */
+        const answeredOut = { tokenizer: null };
+        const result = await compute[kind](input, answeredOut);
+        const answered = answeredOut.tokenizer;
+        if (answered === null || answered === undefined || (kind === TOKEN_KEY_KINDS.IDS && result === null)) {
+            return result;
+        }
+        const answeredIdentity = answered === resolved ? identity : await tokenizerIdentity(answered, identityFacts);
+        if (answeredIdentity === null) {
+            return result;
+        }
+        const writeHash = tokenKeyHash(kind, keyText(kind, answered, input));
+        if (!seen.has(`${answeredIdentity}\n${writeHash}`)) {
+            push(kind, answeredIdentity, writeHash, kind === TOKEN_KEY_KINDS.IDS ? Array.from(result) : result);
+        }
+        return result;
+    };
+
+    return {
+        countText: text => stored(TOKEN_KEY_KINDS.TEXT, text),
+        countPromptText: text => stored(TOKEN_KEY_KINDS.PROMPT, text),
+        encodeText: text => stored(TOKEN_KEY_KINDS.IDS, text),
+        countChatMessage: messages => stored(TOKEN_KEY_KINDS.CC_MESSAGE, messages),
+        pending,
+    };
 }

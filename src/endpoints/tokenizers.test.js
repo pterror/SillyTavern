@@ -57,7 +57,7 @@ if (canMockDownloads) {
     });
 }
 
-const { computeLogitBias, computeTextgenLogitBias, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
+const { computeLogitBias, computeTextgenLogitBias, countChatCompletionMessages, router, encodeTextByLocalTokenizerType, getTiktokenTokenizer, guesstimate } = await import('./tokenizers.js');
 // OpenRouter models resolve as if OpenRouter's model list named no hugging_face_id for them, and the
 // list is not fetched.
 const { rememberOpenRouterModels } = await import('../openrouter-models.js');
@@ -861,6 +861,34 @@ await testCase('/current/count, chat completion at a custom llama.cpp URL with n
     const fallback = await postCurrent('encode', { state: { ...stepTextgenState, model: '' }, texts: [text] });
     assert.deepEqual(fallback.ids, [await encodeTextByLocalTokenizerType('gemma', text)], 'textgen too: the gemma copy, from model_alias');
     assert.equal(stepFake.requests.some(r => r.path === '/v1/models'), false);
+});
+
+await testCase('countChatCompletionMessages: answeredOut names the tokenizer that counted, null for the estimate', async () => {
+    resetStepFake();
+    const gpt4 = { id: tokenizers.OPENAI, model: 'gpt-4', name: 'OpenAI' };
+    const llamaCpp = { url: stepUrl, model: 'gemma-2-9b-it', headers: {} };
+    const remote = { kind: 'remote', id: tokenizers.API_TEXTGENERATIONWEBUI, name: 'API (Text Completion)', basis: 'remote', model: 'gemma-2-9b-it', llamaCpp, localCopy: gpt4 };
+    const answeredBy = async (resolved) => {
+        const answeredOut = { tokenizer: 'unset' };
+        const count = await countChatCompletionMessages(resolved, messages, undefined, undefined, answeredOut);
+        return { count, tokenizer: answeredOut.tokenizer };
+    };
+
+    const local = { kind: 'local', ...gpt4, basis: 'local', localCopy: null };
+    assert.equal((await answeredBy(local)).tokenizer, local, 'a local resolution');
+    const answered = await answeredBy(remote);
+    assert.equal(answered.tokenizer, remote, 'a working remote');
+    assert.equal(answered.count, Buffer.byteLength(`user\n\n${text}`));
+
+    stepFake.fail = true;
+    const byCopy = await answeredBy(remote);
+    assert.equal(byCopy.tokenizer, gpt4, 'a failing remote answered by its copy');
+    assert.equal(byCopy.count, await countChatCompletionMessages(local, messages));
+
+    const estimate = { kind: 'estimate', id: tokenizers.NONE, name: 'Estimate', basis: 'unknown', localCopy: null };
+    assert.deepEqual(await answeredBy(estimate), { count: guesstimate(JSON.stringify(messages)), tokenizer: null }, 'an estimate resolution');
+    assert.deepEqual(await answeredBy({ ...remote, localCopy: null }), { count: guesstimate(JSON.stringify(messages)), tokenizer: null }, 'everything failing');
+    resetStepFake();
 });
 
 fakeServer.close();
