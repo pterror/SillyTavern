@@ -6,7 +6,7 @@ import { reindexDefaultAfterMove, reindexDefaultAfterRemoval } from './greeting-
  * (see {@link import('./greeting-list.js').GreetingsModel}). Every op takes a precondition and refuses
  * with `{ ok: false, reason }` when it doesn't match (append, which can't overwrite anything, takes none): ops that target an existing greeting (edit,
  * delete, move's source and its anchor, set-default) take an `expectedHash` of that greeting, found at
- * the position given or, if it moved, by the hash alone (see {@link findGreeting}); add takes the `expectedLength` of the list, unset-default the `expectedDefaultPosition`. Pure: each
+ * the position given or, if it moved, by the hash alone (see {@link findGreeting}); add takes the `expectedLength` of the list, unset-default the `expectedDefaultPosition` or the hash of the default greeting. Pure: each
  * returns either `{ ok: true, model }` (new model, input never mutated) or `{ ok: false, reason }`.
  */
 
@@ -178,6 +178,19 @@ export function opSetDefault(model, position, expectedHash) {
     const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
     if (!found.ok) return found;
     return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: found.position }, position: found.position };
+}
+
+/**
+ * Clears the default entirely when the default greeting is the one whose hash is `expectedDefaultHash`, wherever it
+ * now sits. Refuses when the default is another greeting or there is none. The list keeps its order and membership.
+ * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {number} expectedDefaultHash
+ */
+export function opUnsetDefaultByHash(model, expectedDefaultHash) {
+    if (model.defaultIndex === null || !hashMatches(model, model.defaultIndex, expectedDefaultHash)) {
+        return { ok: false, reason: 'default greeting changed since it was loaded' };
+    }
+    return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: null } };
 }
 
 /**

@@ -10416,7 +10416,9 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
         await queueGreetingSave(avatar, async () => {
-            const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_position: greetingPagerState.defaultIndex });
+            const { defaultIndex, hashes } = greetingPagerState;
+            const precondition = defaultIndex === null ? { expected_default_position: null } : { expected_default_hash: hashes[defaultIndex] };
+            const result = await postGreetingOp('default/unset', { avatar_url: avatar, ...precondition });
             if (!result.ok) {
                 console.error('Unset default greeting failed', { avatar, status: result.status, reason: result.reason });
                 toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
@@ -10912,7 +10914,8 @@ function withoutEmptyGreetings(model) {
 /**
  * Makes the stored greetings equal the JSON's, through the greeting operations. Every edit, delete and default
  * change is checked against the greetings as the fork last loaded them (with this run's own saved ops applied), so a
- * greeting another session changed since then is refused, not overwritten. A refused op is skipped and the rest of
+ * greeting another session changed since then is refused, not overwritten; clearing the default is checked against
+ * the default greeting's text, not its position. A refused op is skipped and the rest of
  * the run still goes through; a warning then lists each change that wasn't saved, with its text. Adds can't
  * overwrite anything, so they are appended to the list as currently stored, with no length check.
  * @param {string} avatar
@@ -10995,7 +10998,7 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
             }
             if (plannedDefault !== target.defaultIndex) {
                 if (target.defaultIndex === null) {
-                    const outcome = await runOp('default/unset', { expected_default_position: plannedDefault }, t`Default greeting cleared`);
+                    const outcome = await runOp('default/unset', { expected_default_hash: hashGreetingText(planned[plannedDefault]) }, t`Default greeting cleared`);
                     if (outcome === 'failed') return false;
                 } else {
                     const text = target.greetings[target.defaultIndex];

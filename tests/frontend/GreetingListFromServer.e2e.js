@@ -331,6 +331,76 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('.toast-warning')).toHaveCount(0);
     });
 
+    /**
+     * Creates a character with greetings g0, g1, g2 whose default is g1, and opens it.
+     * @param {import('@playwright/test').Page} page
+     * @param {string} name
+     */
+    async function withDefaultAtOne(page, name) {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `${name}-${s}`, g);
+        await otherSessionOp(page, 'default/set', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]) });
+        await openCharacter(page, avatar);
+        return { s, g, avatar };
+    }
+
+    /**
+     * Sets `#character_json_data` to hold `greetings` with no default greeting, and saves it.
+     * @param {import('@playwright/test').Page} page
+     * @param {string[]} greetings
+     */
+    async function formSaveWithNoDefault(page, greetings) {
+        await page.evaluate(async (greetings) => {
+            // @ts-ignore
+            const card = JSON.parse($('#character_json_data').val());
+            card.first_mes = '';
+            card.data.first_mes = '';
+            card.data.alternate_greetings = greetings;
+            delete card.data.extensions?.greeting_default_position;
+            // @ts-ignore
+            $('#character_json_data').val(JSON.stringify(card));
+            const { createOrEditCharacter } = await import('/script.js');
+            await createOrEditCharacter(new CustomEvent('newChat'));
+        }, greetings);
+    }
+
+    test('popup demote: another session deleting an earlier greeting doesn\'t stop the default being cleared', async ({ page }) => {
+        const { g, avatar } = await withDefaultAtOne(page, 'DemoteShifted');
+        await openGreetingsPopup(page, 3);
+        await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
+
+        const response = greetingOpResponse(page, 'default/unset');
+        await popupRow(page, 1).locator('.demote_default_greeting').click();
+        expect((await response).status()).toBe(200);
+        expect(await storedModel(page, avatar)).toEqual({ greetings: [g[1], g[2]], defaultIndex: null });
+        await expectPageHoldsServerList(page, avatar);
+    });
+
+    test('#character_json_data save: another session deleting an earlier greeting doesn\'t stop the default being cleared', async ({ page }) => {
+        const { g, avatar } = await withDefaultAtOne(page, 'FormUnsetShifted');
+        await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
+
+        await formSaveWithNoDefault(page, g);
+
+        expect(await storedModel(page, avatar)).toEqual({ greetings: [g[1], g[2]], defaultIndex: null });
+        await expectPageHoldsServerList(page, avatar);
+        await expect(page.locator('.toast-warning')).toHaveCount(0);
+    });
+
+    test('#character_json_data save: clearing a default another session changed is refused and listed in the warning', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `FormUnsetChanged-${s}`, g);
+        await openCharacter(page, avatar);
+        await otherSessionOp(page, 'default/set', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g[2]) });
+
+        await formSaveWithNoDefault(page, g);
+
+        expect(await storedModel(page, avatar)).toEqual({ greetings: g, defaultIndex: 2 });
+        await expect(page.locator('.toast-warning', { hasText: 'Default greeting cleared' })).toBeVisible({ timeout: 10000 });
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];

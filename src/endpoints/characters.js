@@ -39,7 +39,7 @@ import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
-import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
+import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
 import { copyCharacterFile } from '../local-import-copy.js';
 import { withSearchTiming, timePhase, markSinceStart } from '../search-timing.js';
 
@@ -1710,11 +1710,24 @@ router.post('/greetings/default/set', validateAvatarUrlMiddleware, async functio
 
 /**
  * Clears the default entirely - no default greeting at all. The list keeps its order and membership.
- * Refuses a stale `expected_default_position` (an integer, or `null` for "no default").
+ * Refuses a stale `expected_default_position` (an integer, or `null` for "no default"). Given instead an
+ * `expected_default_hash`, it refuses only when the default greeting isn't the one with that hash, wherever it sits.
  */
 router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
+        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
+        if (request.body.expected_default_hash !== undefined) {
+            if (request.body.expected_default_position !== undefined) {
+                return response.status(400).send({ ok: false, reason: 'expected_default_hash and expected_default_position can\'t both be given' });
+            }
+            const expectedDefaultHash = Number(request.body.expected_default_hash);
+            if (!Number.isFinite(expectedDefaultHash)) {
+                return response.status(400).send({ ok: false, reason: 'expected_default_hash must be a number' });
+            }
+            const byHash = await applyGreetingOperation(request, avatar, model => opUnsetDefaultByHash(model, expectedDefaultHash));
+            return sendGreetingOpResult(response, byHash);
+        }
         const rawExpectedDefault = request.body.expected_default_position;
         const expectedDefaultPosition = rawExpectedDefault === null ? null : Number(rawExpectedDefault);
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
