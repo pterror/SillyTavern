@@ -5126,11 +5126,30 @@ export async function saveTagDefinitions(directories, tagsArray) {
     entry.db.transaction(() => {
         skipped = [];
         const deletions = readTagDeletionsSync(entry.db);
-        const oldNames = new Map((/** @type {TagRow[]} */ (entry.db.all('SELECT id, data FROM tags'))).map(row => {
-            let parsed = null;
-            try { parsed = JSON.parse(row.data); } catch { /* an unparseable old row has no name to compare against */ }
-            return [row.id, parsed?.name ?? ''];
-        }));
+        /** @type {Set<string>} */
+        const savedIds = new Set();
+        for (const raw of tagsArray) {
+            const tag = /** @type {TagDefinitionInput | null | undefined} */ (raw);
+            if (!tag || typeof tag.id !== 'string' || !tag.id) continue;
+            if (deletions.has(tag.id)) continue;
+            savedIds.add(tag.id);
+        }
+        const idsToLookUp = [...savedIds];
+        /** @type {Map<string, string>} */
+        const oldNames = new Map();
+        for (let start = 0; start < idsToLookUp.length; start += KEYSET_CHUNK) {
+            const slice = idsToLookUp.slice(start, start + KEYSET_CHUNK);
+            const rows = /** @type {TagRow[]} */ (entry.db.readBounded(
+                'SELECT id, data FROM tags WHERE id IN (SELECT value FROM json_each(?))',
+                [JSON.stringify(slice)],
+                slice.length,
+            ));
+            for (const row of rows) {
+                let parsed = null;
+                try { parsed = JSON.parse(row.data); } catch { /* an unparseable old row has no name to compare against */ }
+                oldNames.set(row.id, parsed?.name ?? '');
+            }
+        }
 
         entry.db.run('DELETE FROM tags');
         for (const raw of tagsArray) {

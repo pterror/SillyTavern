@@ -269,6 +269,52 @@ describe('migrateGroupDigestColumns reads the group ids to backfill in keyset ch
     });
 });
 
+describe('saveTagDefinitions looks up old names only for the ids it saves, in bounded chunks', () => {
+    test('2002 tags, then 2000 of them (every tenth renamed), the marked one renamed and one new: three bounded lookups, one rename row per renamed saved id', async () => {
+        const ids = Array.from({ length: 2002 }, (_, i) => `tag-${String(i).padStart(5, '0')}`);
+        expect(await metadataDb.saveTagDefinitions(directories, ids.map(id => ({ id, name: `name-${id}` })))).toBe('ok');
+
+        const markedId = ids[2000];
+        const leftOutId = ids[2001];
+        const keptIds = ids.slice(0, 2000);
+        await metadataDb.deleteTagDefinition(directories, markedId, null);
+
+        calls.length = 0;
+        const seqBefore = withRawDb(db => db.prepare('SELECT COALESCE(MAX(seq), 0) FROM tag_name_changes').pluck().get());
+        const versionBefore = withRawDb(db => db.prepare('SELECT COALESCE(MAX(version), 0) FROM group_changes').pluck().get());
+
+        const renamedIds = keptIds.filter((_, i) => i % 10 === 0);
+        const renamed = new Set(renamedIds);
+        const newTag = { id: 'tag-new', name: 'name-tag-new' };
+        const keptTags = keptIds.map(id => ({ id, name: renamed.has(id) ? `renamed-${id}` : `name-${id}` }));
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        expect(await metadataDb.saveTagDefinitions(directories, [...keptTags, { id: markedId, name: `renamed-${markedId}` }, newTag])).toBe('ok');
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(markedId));
+
+        const lookupSql = 'SELECT id, data FROM tags WHERE id IN (SELECT value FROM json_each(?))';
+        const lookups = calls.filter(c => oneLine(c) === lookupSql);
+        expect(lookups.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
+        expect(lookups.map(c => c.args[1])).toEqual([1000, 1000, 1]);
+        expect(lookups.map(c => JSON.parse(c.args[0][0]))).toEqual([keptIds.slice(0, 1000), keptIds.slice(1000, 2000), [newTag.id]]);
+        expect(calls.filter(c => c.method === 'all' && oneLine(c) === 'SELECT id, data FROM tags')).toEqual([]);
+
+        withRawDb(db => {
+            const nameChanges = Array.from(db.prepare('SELECT tag_id FROM tag_name_changes WHERE seq > ? ORDER BY seq').pluck().iterate(seqBefore));
+            expect(nameChanges).toEqual(renamedIds);
+            expect(renamedIds).toHaveLength(200);
+            expect(nameChanges).not.toContain(markedId);
+            expect(nameChanges).not.toContain(newTag.id);
+            expect(nameChanges).not.toContain(leftOutId);
+
+            const groupChanges = Array.from(db.prepare('SELECT group_id FROM group_changes WHERE version > ? ORDER BY version').pluck().iterate(versionBefore));
+            expect(groupChanges).toEqual(renamedIds.map(() => null));
+
+            const stored = Array.from(db.prepare('SELECT id, data FROM tags ORDER BY id').iterate(), r => ({ id: r.id, name: JSON.parse(r.data).name }));
+            expect(stored).toEqual([...keptTags, newTag].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+        });
+    });
+});
+
 describe('migrateCardJsonColumn reads the ids to backfill in keyset chunks', () => {
     // A minimal valid 1x1 transparent PNG, so character-card-parser.js's write() can attach a `chara` chunk to it.
     const BLANK_PNG = Buffer.from(
