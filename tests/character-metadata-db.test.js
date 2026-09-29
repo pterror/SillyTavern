@@ -1615,16 +1615,6 @@ describe('phase 3 extension: groups (owner decision - tags.json removal includes
             return groupDigestTagIdsHash({ tag_ids: tagIds });
         }
 
-        test('restoreTagMap', async () => {
-            await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
-            await metadataDb.assignEntityTag(directories, 'group1', 'a');
-
-            expect(await metadataDb.restoreTagMap(directories, { group1: ['b'] })).toEqual([]);
-
-            expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['a', 'b']);
-            expect(await storedDigestTagIds('group1')).toBe(await expectedDigestTagIds(['a', 'b']));
-        });
-
         test('migrateTagsJsonIfNeeded', async () => {
             await metadataDb.upsertGroupRow(directories, 'group1', 'My Group');
             await metadataDb.assignEntityTag(directories, 'group1', 'a');
@@ -1888,31 +1878,6 @@ describe('phase 3 extension: tags.json removal (migration + settings-snapshot ro
             warnSpy.mockRestore();
         }
     });
-
-    test('getFullTagMapExport/restoreTagMap round-trip a settings snapshot\'s tag_map across both entity types', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        await metadataDb.upsertGroupRow(directories, 'group1', 'G');
-        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
-        await metadataDb.assignEntityTag(directories, 'group1', 'tag2');
-
-        const exported = await metadataDb.getFullTagMapExport(directories);
-        expect(exported).toEqual({ 'Bob.png': ['tag1'], group1: ['tag2'] });
-
-        // Simulate restoring that export into a library that has since lost the assignments (but still has the
-        // same characters/groups) - restoreTagMap() should bring them back.
-        await metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1');
-        await metadataDb.unassignEntityTag(directories, 'group1', 'tag2');
-        expect(await metadataDb.getFullTagMapExport(directories)).toEqual({});
-
-        const dropped = await metadataDb.restoreTagMap(directories, exported);
-        expect(dropped).toEqual([]);
-        expect(await metadataDb.getFullTagMapExport(directories)).toEqual({ 'Bob.png': ['tag1'], group1: ['tag2'] });
-    });
-
-    test('restoreTagMap drops keys that match neither a known character nor group, reporting them', async () => {
-        const dropped = await metadataDb.restoreTagMap(directories, { 'NoSuchCharacter.png': ['tag1'] });
-        expect(dropped).toEqual(['NoSuchCharacter.png']);
-    });
 });
 
 describe('resyncTags / tag_usage', () => {
@@ -2064,13 +2029,6 @@ describe('tags.json tag_map values: a repeated id is stored once, a non-array is
         }
         expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
         expect(await storedTagIds('Alice.png')).toEqual({ table: ['t2'], shallow: ['t2'] });
-    });
-
-    test('restoreTagMap', async () => {
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        await metadataDb.assignEntityTag(directories, 'Bob.png', 't1');
-        await expectWarnsAbout('Bob.png', 'x', () => metadataDb.restoreTagMap(directories, { 'Bob.png': 'x' }));
-        expect(await storedTagIds('Bob.png')).toEqual({ table: ['t1'], shallow: ['t1'] });
     });
 
     test('migrateTagsJsonIfNeeded', async () => {

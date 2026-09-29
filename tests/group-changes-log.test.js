@@ -212,15 +212,6 @@ const WRITERS = [
         rows: ['1001'],
     },
     {
-        name: 'restoreTagMap',
-        setup: async () => {
-            await saveTags(['x']);
-            await seedGroup('1001');
-        },
-        act: () => metadataDb.restoreTagMap(directories, { 1001: ['x'] }),
-        rows: ['1001'],
-    },
-    {
         name: 'migrateTagsJsonIfNeeded',
         setup: async () => {
             await saveTags(['x']);

@@ -142,11 +142,6 @@ describe('a group row whose id ends in .png is never read as a group', () => {
         expect(body.map[entityIndex].map(i => body.tagIds[i]).sort()).toEqual(['char-tag']);
     });
 
-    test('getFullTagMapExport() exports the character\'s tags under the id', async () => {
-        await seedCollision();
-        expect((await metadataDb.getFullTagMapExport(directories))['Alice.png']).toEqual(['char-tag']);
-    });
-
     test('/api/groups/batch serves the .png group with no tags', async () => {
         await seedCollision();
         const { status, body } = await post('/api/groups/batch', { ids: ['Alice.png'] });

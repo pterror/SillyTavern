@@ -6391,59 +6391,12 @@ export async function restartSettingsTagsImport(directories) {
     return true;
 }
 
-// Imports a `{[id]: tagId[]}` map into character_tags/group_tags. Each key is looked for only in its own type's
-// table (tagEntityTypeOf()). Returns keys not found there.
-/**
- * @param {MetadataDbEntry} entry
- * @param {Record<string, unknown>} tagMap Externally-supplied - each value is runtime-checked as string[] below.
- * @returns {string[]} Dropped keys.
- */
-function importTagMapSync(entry, tagMap) {
-    const knownCharacterIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id));
-    const knownGroupIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM groups'))).map(r => r.id));
-    /** @type {string[]} */
-    const droppedKeys = [];
-    for (const [key, tagIds] of Object.entries(tagMap)) {
-        if (!Array.isArray(tagIds)) warnTagMapEntryNotArray(key, tagIds, 'nothing imported for it');
-    }
-
-    /** @type {Map<string, string[]>} */
-    let notAssigned = new Map();
-    entry.db.transaction(() => {
-        notAssigned = new Map();
-        const deletions = readTagDeletionsSync(entry.db);
-        for (const [key, rawTagIds] of Object.entries(tagMap)) {
-            if (!Array.isArray(rawTagIds)) continue;
-            const type = tagEntityTypeOf(key);
-            const { tagIds, dropped } = resolveTagIdsToAssign(rawTagIds, deletions);
-            if (dropped.length > 0 && ((type === 'character' && knownCharacterIds.has(key)) || (type === 'group' && knownGroupIds.has(key)))) notAssigned.set(key, dropped);
-            if (type === 'character' && knownCharacterIds.has(key)) {
-                for (const tagId of tagIds) {
-                    entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
-                }
-                if (tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, key);
-            } else if (type === 'group' && knownGroupIds.has(key)) {
-                let changed = false;
-                for (const tagId of tagIds) {
-                    if (entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId }).changes > 0) changed = true;
-                }
-                if (tagIds.length > 0 && syncGroupDigestTagIdsFromTable(entry.db, key)) changed = true;
-                if (changed) insertGroupChange(entry.db, key);
-            } else {
-                droppedKeys.push(key);
-            }
-        }
-        updateTagsHashSync(entry.db);
-    });
-    for (const [key, tagIds] of notAssigned) warnDeletedTagsNotAssigned(key, tagIds);
-
-    return droppedKeys;
-}
-
 const TAG_MAP_IMPORT_BATCH_SIZE = 500;
 const TAG_MAP_IMPORT_BATCH_PAUSE_MS = 10;
 
-// importTagMapSync() in batches of keys, one transaction each, pausing between them. Leaves tags_hash alone:
+// Imports a `{[id]: tagId[]}` map into character_tags/group_tags in batches of keys, one transaction each,
+// pausing between them. Each key is looked for only in its own type's table (tagEntityTypeOf()); keys not found
+// there are returned in `droppedKeys`. Leaves tags_hash alone:
 // a tag_map import never changes `tags`. A key whose reads or parsing throw is left as it is and listed in a
 // warning; a write that throws rolls back its whole batch and fails the import.
 /**
@@ -6834,52 +6787,6 @@ function groupDigestTagIdsFromTable(db, groupId) {
  */
 function groupDigestTagIdsMatch(stored, digestTagIds) {
     return stored !== null && Number(stored) === digestTagIds;
-}
-
-// Repairs rows where shallow_json.tag_ids is stale but character_tags is correct - a safety net for any
-// character_tags write that skips syncShallowTagIdsFromTable(), not a substitute for calling it at each
-// write site. Safe to call more than once; only touches rows a full-table comparison finds mismatched.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {object} [options]
- * @param {boolean} [options.dryRun] `true` reports what would be touched without writing anything.
- * @returns {Promise<{ scanned: number, mismatched: string[] }>} `mismatched` are the affected character ids
- * (found regardless of `dryRun`; only actually repaired when `dryRun` is false).
- */
-export async function repairStaleShallowTagIds(directories, { dryRun = false } = {}) {
-    const entry = await getEntry(directories);
-    if (!entry) return { scanned: 0, mismatched: [] };
-
-    const rows = /** @type {{ id: string, shallow_json: string, tagIds: string | null }[]} */ (entry.db.all(
-        `SELECT c.id, c.shallow_json, GROUP_CONCAT(ct.tag_id) AS tagIds
-         FROM characters c LEFT JOIN character_tags ct ON ct.character_id = c.id
-         GROUP BY c.id`,
-    ));
-
-    /** @type {string[]} */
-    const mismatched = [];
-    for (const row of rows) {
-        let shallow;
-        try {
-            shallow = JSON.parse(row.shallow_json);
-        } catch {
-            continue; // Unparseable shallow_json is a separate, pre-existing problem - not this pass's job.
-        }
-        const shallowSet = new Set(Array.isArray(shallow.tag_ids) ? shallow.tag_ids : []);
-        const tableSet = new Set(row.tagIds !== null ? row.tagIds.split(',') : []);
-        const same = shallowSet.size === tableSet.size && [...shallowSet].every(id => tableSet.has(id));
-        if (!same) mismatched.push(row.id);
-    }
-
-    if (!dryRun) {
-        entry.db.transaction(() => {
-            for (const id of mismatched) {
-                syncShallowTagIdsFromTable(entry.db, id);
-            }
-        });
-    }
-
-    return { scanned: rows.length, mismatched };
 }
 
 // Accepts either shape a card may carry tags in: { data: { tags: [...] } } or a bare { tags: [...] }.
@@ -9131,47 +9038,6 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
 
     const tagDefinitions = resolved.tagIds.map(id => cache.tagIdToDefinition.get(id)).filter((t) => t !== undefined);
     return { tagIds: resolved.tagIds, tagDefinitions, heldTagNames: resolved.held };
-}
-
-// Full {[id]: tagId[]} export of every character's/group's tag assignments. Not called anywhere in the live
-// app currently; kept as a general export primitive symmetric with restoreTagMap() below.
-/**
- * @returns {Promise<Record<string, string[]> | null>} `null` if the metadata store is unavailable.
- * @param {import('./users.js').UserDirectoryList} directories
- */
-export async function getFullTagMapExport(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    // GROUP_CONCAT'd in SQL rather than pushed onto a JS array per (id, tag_id) pair - avoids millions of
-    // individual array pushes on a large library. \x1f (unit separator) instead of comma to avoid any collision
-    // with a tag_id, even though tag ids are UUIDs in practice.
-    const SEP = '\x1f';
-    const deletions = readTagDeletionsSync(entry.db);
-    /** @type {Record<string, string[]>} */
-    const result = {};
-    for (const row of (/** @type {{ id: string, tags: string }[]} */ (entry.db.all(`SELECT character_id as id, group_concat(tag_id, '${SEP}') as tags FROM character_tags GROUP BY character_id`)))) {
-        result[row.id] = resolveTagIds(row.tags.split(SEP), deletions);
-    }
-    for (const row of (/** @type {{ id: string, tags: string }[]} */ (entry.db.all(`SELECT group_id as id, group_concat(tag_id, '${SEP}') as tags FROM group_tags GROUP BY group_id`)))) {
-        if (tagEntityTypeOf(row.id) !== 'group') continue;
-        result[row.id] = resolveTagIds(row.tags.split(SEP), deletions);
-    }
-    return result;
-}
-
-// Inverse of getFullTagMapExport(); additive (OR IGNORE), not a replace-everything. Not called anywhere in
-// the live app currently; kept as a general import primitive.
-/**
- * @returns {Promise<string[] | null>} Dropped keys (matched neither a known character nor group), or `null` if
- * the metadata store is unavailable.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {unknown} tagMap
- */
-export async function restoreTagMap(directories, tagMap) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    return importTagMapSync(entry, tagMap && typeof tagMap === 'object' ? /** @type {Record<string, unknown>} */ (tagMap) : {});
 }
 
 // Columns queryCharacters() may sort by via a plain `ORDER BY <column>`. Deliberately excludes 'random'

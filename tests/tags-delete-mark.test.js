@@ -291,16 +291,12 @@ describe('entity tag lists read a marked tag as its merge target', () => {
         expect(tagIds).not.toContain('x');
     });
 
-    test('getCharacterTagIdsByIds, getCharacterTagIds, getGroupTagIds, getFullTagMapExport', async () => {
+    test('getCharacterTagIdsByIds, getCharacterTagIds, getGroupTagIds', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         expect(await metadataDb.getCharacterTagIdsByIds(directories, ['c1.png', 'c2.png'])).toEqual({ 'c1.png': ['y'], 'c2.png': ['y'] });
         expect(await metadataDb.getCharacterTagIds(directories, 'c2.png')).toEqual(['y']);
         expect(await metadataDb.getGroupTagIds(directories, 'g1')).toEqual(['y']);
-        const exported = await metadataDb.getFullTagMapExport(directories);
-        expect(exported['c1.png']).toEqual(['y']);
-        expect(exported['c2.png']).toEqual(['y']);
-        expect(exported.g1).toEqual(['y']);
     });
 
     test('shallow rows: getShallowByIds, queryCharacters rows, queryEntities rows', async () => {
@@ -471,15 +467,6 @@ describe('writes that name a marked tag', () => {
             expect(Array.from(db.prepare('SELECT tag_id FROM group_tags WHERE group_id = ?').iterate('g2'), r => r.tag_id)).toEqual(['y']);
         });
         expect(warn.mock.calls.map(args => args.join(' ')).some(m => m.includes('d') && m.includes('c4.png'))).toBe(true);
-    });
-
-    test('restoreTagMap maps x to y', async () => {
-        await seedLibrary();
-        await deleteTag('x', 'y');
-        await metadataDb.restoreTagMap(directories, { 'c4.png': ['x'] });
-        await withDb((db) => {
-            expect(Array.from(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ? ORDER BY tag_id').iterate('c4.png'), r => r.tag_id)).toEqual(['y', 'z']);
-        });
     });
 
     test('unassign x removes only the x row, so an entity that also has y keeps it', async () => {
