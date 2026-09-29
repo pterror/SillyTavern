@@ -632,6 +632,10 @@ function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {
     let fav;
     if (isFilterState(favState, FILTER_STATES.SELECTED)) fav = true;
     else if (isFilterState(favState, FILTER_STATES.EXCLUDED)) fav = false;
+    const groupState = entitiesFilter.getFilterData(FILTER_TYPES.GROUP);
+    let group;
+    if (isFilterState(groupState, FILTER_STATES.SELECTED)) group = true;
+    else if (isFilterState(groupState, FILTER_STATES.EXCLUDED)) group = false;
 
     // With no term the option is about to be deselected (verifyCharactersSearchSortRule()), so the saved sort applies.
     const isSearchSort = hasActiveCharacterSearch() && isSearchSortSelected();
@@ -645,6 +649,7 @@ function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {
         sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
         randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
         includeGroups,
+        group,
     });
 }
 

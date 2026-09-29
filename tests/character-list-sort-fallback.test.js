@@ -358,6 +358,25 @@ describe('findCharacterListPage', () => {
         expect(queryRequests.every(body => body.filter.fav === true)).toBe(true);
     }, 30000);
 
+    test('the Groups filter applies: only groups, or only characters', async () => {
+        for (let i = 0; i < 3; i++) await seedCharacter(`c${i}.png`);
+        await seedGroup('g1', 'c0x');
+        await seedGroup('g2', 'c1x');
+        const isGroup = id => entity => entity.type === 'group' && entity.item.id === id;
+
+        const { FILTER_TYPES, FILTER_STATES } = filters;
+        characterList.entitiesFilter.setFilterData(FILTER_TYPES.GROUP, FILTER_STATES.SELECTED.key, true);
+        expect(await characterList.findCharacterListPage(byAvatar('c0.png'), 1)).toBe(-1);
+        expect(await characterList.findCharacterListPage(isGroup('g2'), 1)).toBe(2);
+        expect(queryRequests.every(body => body.filter.group === true)).toBe(true);
+
+        queryRequests.length = 0;
+        characterList.entitiesFilter.setFilterData(FILTER_TYPES.GROUP, FILTER_STATES.EXCLUDED.key, true);
+        expect(await characterList.findCharacterListPage(isGroup('g1'), 1)).toBe(-1);
+        expect(await characterList.findCharacterListPage(byAvatar('c2.png'), 1)).toBe(3);
+        expect(queryRequests.every(body => body.filter.group === false)).toBe(true);
+    }, 30000);
+
     test('a saved sort the server rejects is looked up in name order, with the warning', async () => {
         for (let i = 0; i < 5; i++) await seedCharacter(`c${i}.png`);
         powerUser.sort_field = 'nonsense-find';
