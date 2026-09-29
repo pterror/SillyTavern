@@ -33,9 +33,9 @@ import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, tantivySortOrder, getCharacterIndexPosition } from './characters-search-index.js';
 import { mergeSortedWindow } from './tantivy-search.js';
-import { searchGroups, searchGroupIds, searchGroupsSorted } from './groups-search-index.js';
+import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCardJsonByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
@@ -2212,23 +2212,28 @@ function sendHashQueryResponse(response, params) {
 /**
  * `/query`'s freshness token: an opaque hash of exactly the components a response was built from. A request's
  * `ifToken` is answered `unchanged` only when the token rebuilt from those components now is equal.
- *   - no search, no groups: the change log's seq (MAX(changes.seq)).
- *   - search, no groups: that seq, plus the characters index's position (its change-log and tag-rename-log
- *     cursors) as of the search read.
- *   - with groups: null, so it's never answered `unchanged`: no component here covers what groups are read from.
- * null also when a component can't be read.
- * @param {number | null | undefined} seq
- * @param {{ search: boolean, includeGroups: boolean, position?: import('./search-index-coordinator.js').SearchIndexPosition | null }} path
+ *   - no search: the change log's seq (MAX(changes.seq)); with groups, plus the groups version (the groups
+ *     version log's latest value).
+ *   - search: the same, plus the characters index's position (its change-log and tag-rename-log cursors) as of the
+ *     search read; with groups, plus the groups version the groups index was built from, as of its search read.
+ * null when a component can't be read.
+ * @param {{ seq: number | null | undefined, groupsVersion?: number | null, search: boolean, includeGroups: boolean, position?: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition?: import('./search-index-coordinator.js').GroupsIndexPosition | null }} components
  * @returns {string | null}
  */
-function queryToken(seq, { search, includeGroups, position }) {
-    if (includeGroups || !Number.isFinite(seq)) return null;
-    let components;
+function queryToken({ seq, groupsVersion, search, includeGroups, position, groupsPosition }) {
+    if (!Number.isFinite(seq)) return null;
+    const components = [seq];
+    if (includeGroups) {
+        if (!Number.isFinite(groupsVersion)) return null;
+        components.push(groupsVersion);
+    }
     if (search) {
         if (!position) return null;
-        components = [seq, position.seq, position.tagNameSeq];
-    } else {
-        components = [seq];
+        components.push(position.seq, position.tagNameSeq);
+        if (includeGroups) {
+            if (!Number.isFinite(groupsPosition?.version)) return null;
+            components.push(groupsPosition.version);
+        }
     }
     return crypto.createHash('sha256').update(JSON.stringify(components)).digest('base64url').slice(0, 22);
 }
@@ -2248,9 +2253,10 @@ function pageOverFetch(pageSize) {
  * @param {string} handle
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{ searchTerm: string, sortField: string, sortOrder: string, filter: object, includeGroups: boolean, offset: number, count: number }} params
- * @returns {Promise<{ entities: { type: 'character'|'group', id: string }[], total: number, backend: string, position: import('./search-index-coordinator.js').SearchIndexPosition | null } | null>}
+ * @returns {Promise<{ entities: { type: 'character'|'group', id: string }[], total: number, backend: string, position: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition: import('./search-index-coordinator.js').GroupsIndexPosition | null } | null>}
  * null when the sort field has no fast field. `position` is the characters index's as of its search, null when
- * unknown or when two searches read different ones.
+ * unknown or when two searches read different ones. `groupsPosition` is the groups index's as of its search, null
+ * when unknown or groups weren't searched.
  */
 async function searchSortedPage(handle, directories, { searchTerm, sortField, sortOrder, filter, includeGroups, offset, count }) {
     const order = tantivySortOrder(sortField, sortOrder);
@@ -2260,9 +2266,9 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
         excludeIds: filter.excludeIds,
         ids: Array.isArray(filter.ids) ? filter.ids : undefined,
     };
-    const { groups, backend: groupsBackend } = includeGroups
+    const { groups, backend: groupsBackend, position: groupsPosition } = includeGroups
         ? await searchGroupsSorted(handle, directories, searchTerm, sortField, order, filterOptions)
-        : { groups: [], backend: 'tantivy' };
+        : { groups: [], backend: 'tantivy', position: null };
 
     // Each group can push the page's first character back by one rank, so the character window starts that far
     // earlier; mergeSortedWindow() then places it exactly.
@@ -2286,7 +2292,7 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
 
     const entities = timePhase('merge_ids', () => mergeSortedWindow({ ...window, groups, offset, count }));
     const backend = chars.backend === 'unavailable' || groupsBackend === 'unavailable' ? 'unavailable' : chars.backend;
-    return { entities, total: chars.total + groups.length, backend, position };
+    return { entities, total: chars.total + groups.length, backend, position, groupsPosition };
 }
 
 async function handleQuery(request, response) {
@@ -2332,12 +2338,16 @@ async function handleQuery(request, response) {
         // Cheap re-fetch guard: skip the search and row reads when the token rebuilt from the components this
         // request's response would be built from (queryToken()) equals `ifToken`. Coarser than per-bucket digests.
         // The position is read first, as the search reads the index before the rows.
-        if (typeof body.ifToken === 'string' && body.ifToken.length > 0 && !includeGroups) {
-            const position = hasSearch ? await getCharacterIndexPosition(request.user.profile.handle, request.user.directories) : null;
-            const currentSeq = await getCurrentSeq(request.user.directories);
-            const token = queryToken(currentSeq, { search: hasSearch, includeGroups, position });
+        if (typeof body.ifToken === 'string' && body.ifToken.length > 0) {
+            const handle = request.user.profile.handle;
+            const position = hasSearch ? await getCharacterIndexPosition(handle, request.user.directories) : null;
+            const groupsPosition = hasSearch && includeGroups ? await getGroupIndexPosition(handle, request.user.directories) : null;
+            const current = includeGroups
+                ? await getCurrentSeqAndGroupsVersion(request.user.directories)
+                : { seq: await getCurrentSeq(request.user.directories), groupsVersion: null };
+            const token = queryToken({ seq: current?.seq, groupsVersion: current?.groupsVersion, search: hasSearch, includeGroups, position, groupsPosition });
             if (token !== null && token === body.ifToken) {
-                return response.send({ seq: currentSeq, token, unchanged: true });
+                return response.send({ seq: current.seq, token, unchanged: true });
             }
         }
 
@@ -2365,9 +2375,11 @@ async function handleQuery(request, response) {
         // when sort.field === 'search' (no SQL column exists for text relevance).
         let combinedScoresById = null;
 
-        // The characters index's position as of the search read, for the token.
+        // The indexes' positions as of the search reads, for the token.
         let searchPosition = null;
-        const tokenFor = (seq) => queryToken(seq, { search: hasSearch, includeGroups, position: searchPosition });
+        let groupsSearchPosition = null;
+        /** @param {{ seq: number, groupsVersion?: number | null }} read The rows' read: its seq and groups version. */
+        const tokenFor = ({ seq, groupsVersion }) => queryToken({ seq, groupsVersion, search: hasSearch, includeGroups, position: searchPosition, groupsPosition: groupsSearchPosition });
 
         markSinceStart('prologue');
         if (hasSearch) {
@@ -2383,6 +2395,7 @@ async function handleQuery(request, response) {
                 if (sortedPage !== null) {
                     searchBackend = sortedPage.backend;
                     searchPosition = sortedPage.position;
+                    groupsSearchPosition = sortedPage.groupsPosition;
                     const total = wantTotal ? sortedPage.total : undefined;
                     if (includeGroups) {
                         const result = await timePhase('page_rows', () => getEntityRowsByIds(request.user.directories, sortedPage.entities, { wantRows, wantHashes }));
@@ -2390,9 +2403,9 @@ async function handleQuery(request, response) {
                             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
                         }
                         if (wantHashes) {
-                            return sendHashQueryResponse(response, { seq: result.seq, token: tokenFor(result.seq), total, approxTotal: false, hashRows: result.hashRows.slice(0, pageSize), searchBackend });
+                            return sendHashQueryResponse(response, { seq: result.seq, token: tokenFor(result), total, approxTotal: false, hashRows: result.hashRows.slice(0, pageSize), searchBackend });
                         }
-                        const payload = { seq: result.seq, token: tokenFor(result.seq), searchBackend };
+                        const payload = { seq: result.seq, token: tokenFor(result), searchBackend };
                         if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows.slice(0, pageSize)));
                         if (wantTotal) payload.total = total;
                         return response.send(payload);
@@ -2406,9 +2419,9 @@ async function handleQuery(request, response) {
                         // queryCharacters returns hashRows in id order; re-order to match tantivy's sort.
                         const idToHashRow = new Map(result.hashRows.map(r => [r.id, r]));
                         const orderedHashRows = ids.map(id => idToHashRow.get(id)).filter(Boolean).slice(0, pageSize);
-                        return sendHashQueryResponse(response, { seq: result.seq, token: tokenFor(result.seq), total, approxTotal: false, hashRows: orderedHashRows, searchBackend });
+                        return sendHashQueryResponse(response, { seq: result.seq, token: tokenFor(result), total, approxTotal: false, hashRows: orderedHashRows, searchBackend });
                     }
-                    const payload = { seq: result.seq, token: tokenFor(result.seq), searchBackend };
+                    const payload = { seq: result.seq, token: tokenFor(result), searchBackend };
                     if (wantTotal) payload.total = total;
                     if (wantRows) {
                         // Rows here are always plain toShallow() projections, so the id lives at `.avatar`.
@@ -2436,10 +2449,11 @@ async function handleQuery(request, response) {
             const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
             const effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
 
-            let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy' };
+            let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy', position: null };
             let effectiveGroupIds = [];
             if (includeGroups) {
                 groupSearchResult = await searchGroupIds(handle, request.user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags });
+                groupsSearchPosition = groupSearchResult.position;
                 effectiveGroupIds = timePhase('merge_ids', () => explicitIds ? groupSearchResult.ids.filter(id => explicitIds.has(id)) : groupSearchResult.ids);
             }
 
@@ -2454,11 +2468,15 @@ async function handleQuery(request, response) {
             approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap));
 
             if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
-                const seq = (await timePhase('query_characters', () => queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? 0;
+                const current = includeGroups
+                    ? await timePhase('query_characters', () => getCurrentSeqAndGroupsVersion(request.user.directories))
+                    : { seq: (await timePhase('query_characters', () => queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? null, groupsVersion: null };
+                const seq = current?.seq ?? 0;
+                const token = current ? tokenFor(current) : null;
                 if (wantHashes) {
-                    return sendHashQueryResponse(response, { seq, token: tokenFor(seq), total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
+                    return sendHashQueryResponse(response, { seq, token, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
                 }
-                const payload = { seq, token: tokenFor(seq), searchBackend };
+                const payload = { seq, token, searchBackend };
                 if (wantRows) payload.rows = [];
                 if (wantTotal) payload.total = 0;
                 return response.send(payload);
@@ -2502,14 +2520,14 @@ async function handleQuery(request, response) {
                 if (wantHashes) {
                     return sendHashQueryResponse(response, {
                         seq: result.seq,
-                        token: tokenFor(result.seq),
+                        token: tokenFor(result),
                         total: wantTotal ? result.total : undefined,
                         approxTotal: totalApprox,
                         hashRows,
                         searchBackend,
                     });
                 }
-                const payload = { seq: result.seq, token: tokenFor(result.seq) };
+                const payload = { seq: result.seq, token: tokenFor(result) };
                 if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
                 if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, rows));
                 if (searchBackend !== undefined) payload.searchBackend = searchBackend;
@@ -2534,14 +2552,14 @@ async function handleQuery(request, response) {
             if (wantHashes) {
                 return sendHashQueryResponse(response, {
                     seq: result.seq,
-                    token: tokenFor(result.seq),
+                    token: tokenFor(result),
                     total: wantTotal ? result.total : undefined,
                     approxTotal: result.approxTotal,
                     hashRows: result.hashRows,
                     searchBackend: undefined,
                 });
             }
-            const payload = { seq: result.seq, token: tokenFor(result.seq) };
+            const payload = { seq: result.seq, token: tokenFor(result) };
             if (wantTotal) payload.total = result.approxTotal ? `~${result.total}` : result.total;
             if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows));
             return response.send(payload);
@@ -2563,14 +2581,14 @@ async function handleQuery(request, response) {
         if (wantHashes) {
             return sendHashQueryResponse(response, {
                 seq: result.seq,
-                token: tokenFor(result.seq),
+                token: tokenFor(result),
                 total: wantTotal ? result.total : undefined,
                 approxTotal: totalApprox,
                 hashRows: result.hashRows,
                 searchBackend,
             });
         }
-        const payload = { seq: result.seq, token: tokenFor(result.seq) };
+        const payload = { seq: result.seq, token: tokenFor(result) };
         if (wantRows) payload.rows = result.rows;
         if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
         if (searchBackend !== undefined) payload.searchBackend = searchBackend;

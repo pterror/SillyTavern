@@ -264,6 +264,14 @@ describe('read-only mode: POST /api/characters/query against an existing library
         expect(again.body).toEqual({ seq: first.body.seq, token: first.body.token, unchanged: true });
     });
 
+    test.each([['no search', NO_SEARCH_QUERY], ['a search', SEARCH_QUERY]])('a query with groups and %s has a token that a repeat answers unchanged', async (_, request) => {
+        const first = await postQuery(request);
+        expect(first.status).toBe(200);
+        expect(typeof first.body.token).toBe('string');
+        const again = await postQuery({ ...request, ifToken: first.body.token });
+        expect(again.body).toEqual({ seq: first.body.seq, token: first.body.token, unchanged: true });
+    });
+
     test('the groups reader\'s position is the groups version the normal code persisted for the index', async () => {
         const version = await metadataDb.getMetaValue(directories, 'tantivy_group_index_version');
         expect(Number(version)).toBeGreaterThan(0);
