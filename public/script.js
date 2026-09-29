@@ -9851,6 +9851,15 @@ function endGreetingPagerEdit() {
 }
 
 /**
+ * @typedef {object} GreetingsPopupSession
+ * @property {Set<HTMLElement>} editing Rows being edited: focused, open in the maximize editor, or with a save scheduled or in flight.
+ * @property {() => void} editEnded Called when a row stops being edited.
+ */
+
+/** @type {((greetings: string[], defaultIndex: number|null) => void)|null} The open greetings popup's re-render, told whenever the pager's greetings are replaced. */
+let greetingsPopupListener = null;
+
+/**
  * Replaces the pager's greetings, default pointer, and precondition hashes, and clamps the current index in case the list shrank.
  * Every position here is confirmed by the server (or is the pre-load placeholder), so all are marked committed.
  * While `greeting_field` is being edited nothing is replaced: the state is kept and applied when the edit ends, so
@@ -9870,6 +9879,7 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     greetingPagerState.committed = greetingPagerState.greetings.map(() => true);
     greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
+    greetingsPopupListener?.(greetings.slice(), greetings.length > 0 ? defaultIndex : null);
 }
 
 /** Redraws the pager controls and the visible greeting field from the current pager state. */
@@ -10034,11 +10044,43 @@ function openAlternateGreetings() {
         setGreetingPagerGreetings(model.greetings, model.defaultIndex, model.greetings.map(hashGreetingText));
     }
 
+    /** @type {{greetings: string[], defaultIndex: number|null}|null} The newest list that arrived while a row was being edited. */
+    let pendingRender = null;
+    /** @type {GreetingsPopupSession} */
+    const session = {
+        editing: new Set(),
+        // Checked a task later: focus moving from one row to another blurs the first before it focuses the second,
+        // and redrawing in between would take the second row away as it is focused.
+        editEnded: () => setTimeout(() => {
+            if (session.editing.size > 0 || !pendingRender) return;
+            const { greetings, defaultIndex } = pendingRender;
+            pendingRender = null;
+            renderRows(greetings, defaultIndex);
+        }),
+    };
+
+    /**
+     * Redraws every row from this list. While a row is being edited nothing is redrawn: the newest list is applied
+     * when no row is being edited any more, so a row keeps its own text and hash until its edit ends.
+     * @param {string[]} greetings
+     * @param {number|null} defaultIndex
+     */
+    const onGreetingsReplaced = (greetings, defaultIndex) => {
+        if (session.editing.size > 0) {
+            pendingRender = { greetings, defaultIndex };
+            return;
+        }
+        renderRows(greetings, defaultIndex);
+    };
+
     const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
         wide: true,
         large: true,
         allowVerticalScrolling: true,
         onClose: async () => {
+            if (greetingsPopupListener === onGreetingsReplaced) {
+                greetingsPopupListener = null;
+            }
             if (menu_type === 'create') {
                 syncCreateModeFromUnified();
             }
@@ -10107,9 +10149,10 @@ function openAlternateGreetings() {
             const avatar = $('.open_alternate_greetings').data('avatar');
             const character = avatar ? charactersStore.get(avatar) : null;
             if (!character) return;
+            const rowHash = (key) => /** @type {any} */ (template.find(`.alternate_greetings_list .alternate_greeting[data-index="${key}"]`)[0])?.greetingHash;
             await queueGreetingSave(avatar, async () => {
-                const expectedHash = greetingPagerState.hashes[sourceIndex];
-                const targetExpectedHash = greetingPagerState.hashes[targetIndex];
+                const expectedHash = rowHash(sourceIndex);
+                const targetExpectedHash = rowHash(targetIndex);
                 if (!Number.isFinite(expectedHash) || !Number.isFinite(targetExpectedHash)) return;
                 const result = await postGreetingOp('move', { avatar_url: avatar, source_position: sourceIndex, expected_hash: expectedHash, side, target_position: targetIndex, target_expected_hash: targetExpectedHash });
                 if (!result.ok) {
@@ -10134,8 +10177,32 @@ function openAlternateGreetings() {
         },
     });
 
+    /**
+     * @param {string[]} greetings
+     * @param {number|null} defaultIndex
+     */
+    function renderRows(greetings, defaultIndex) {
+        // The rows already show this list (e.g. after this popup's own save): nothing to redraw.
+        if (defaultIndex === model.defaultIndex && lodash.isEqual(greetings, model.greetings)) return;
+        picker.cancel();
+        model.greetings = greetings.slice();
+        model.defaultIndex = defaultIndex;
+        template.find('.alternate_greetings_list').empty();
+        for (let index = 0; index < model.greetings.length; index++) {
+            addAlternateGreeting(template, model.greetings[index], index, getArray, popup, model, index + 1, false, picker, session);
+        }
+        if (movesBlocked) {
+            template.find('.pick_up_greeting').addClass('disabled');
+        }
+        template.find('.greeting-filter-input').trigger('input');
+        updateAlternateGreetingsHintVisibility(template);
+    }
+
     for (let index = 0; index < model.greetings.length; index++) {
-        addAlternateGreeting(template, model.greetings[index], index, getArray, popup, model, index + 1, false, picker);
+        addAlternateGreeting(template, model.greetings[index], index, getArray, popup, model, index + 1, false, picker, session);
+    }
+    if (menu_type !== 'create') {
+        greetingsPopupListener = onGreetingsReplaced;
     }
 
     // Filter input handler
@@ -10152,7 +10219,7 @@ function openAlternateGreetings() {
         const array = getArray();
         // The new row is UI-only until it has text - not pushed into the array here (see addAlternateGreeting()'s `pending` handling).
         const index = array.length;
-        addAlternateGreeting(template, '', index, getArray, popup, model, index + 1, true, picker);
+        addAlternateGreeting(template, '', index, getArray, popup, model, index + 1, true, picker, session);
         if (movesBlocked) {
             template.find('.alternate_greetings_list .alternate_greeting').last().find('.pick_up_greeting').addClass('disabled');
         }
@@ -10185,40 +10252,73 @@ function openAlternateGreetings() {
  * @param {number} [displayPosition] 1-based slot number to show the user; defaults to index + 1.
  * @param {boolean} [pending] True for a just-added, still-blank row - not yet a real array entry, so a write while blank never sees it.
  * @param {PickAndPlace} [picker] The popup's pick-and-place, which this row's pick-up button drives.
+ * @param {GreetingsPopupSession} [session] The popup's record of which rows are being edited.
  */
-function addAlternateGreeting(template, greeting, index, getArray, popup, model, displayPosition = index + 1, pending = false, picker) {
+function addAlternateGreeting(template, greeting, index, getArray, popup, model, displayPosition = index + 1, pending = false, picker, session) {
     const greetingBlock = $('#alternate_greeting_form_template .alternate_greeting').clone();
+    const row = /** @type {HTMLElement & {greetingHash?: number}} */ (greetingBlock[0]);
     let committed = !pending;
+    // The hash of the text this row shows as saved: every op on the row targets the greeting with it.
+    row.greetingHash = pending ? undefined : hashGreetingText(greeting);
     greetingBlock.attr('data-index', index);
     if (pending) {
         greetingBlock.addClass('greeting-draft');
     }
 
+    let focused = false;
+    let maximized = false;
+    let saveScheduled = false;
+    let savesInFlight = 0;
+    const updateEditing = () => {
+        if (!session) return;
+        if (focused || maximized || saveScheduled || savesInFlight > 0) {
+            session.editing.add(row);
+        } else if (session.editing.delete(row)) {
+            session.editEnded();
+        }
+    };
+
     // Per-row debounce, so typing in a different row doesn't reset this one's pending save. Never fires in create mode.
     const debouncedRowEdit = debounce(async (rowIndex, text) => {
-        const avatar = $('.open_alternate_greetings').data('avatar');
-        const character = avatar ? charactersStore.get(avatar) : null;
-        if (!character) return;
-        await queueGreetingSave(avatar, async () => {
-            const expectedHash = greetingPagerState.hashes[rowIndex];
-            if (!Number.isFinite(expectedHash)) return;
+        saveScheduled = false;
+        savesInFlight++;
+        try {
+            const avatar = $('.open_alternate_greetings').data('avatar');
+            const character = avatar ? charactersStore.get(avatar) : null;
+            if (!character) return;
+            await queueGreetingSave(avatar, async () => {
+                const expectedHash = row.greetingHash;
+                if (!Number.isFinite(expectedHash)) return;
 
-            const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
-            if (result.ok) {
-                applyGreetingOpSuccess(character, result, { expectedHash, text });
-                return;
-            }
-            console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
-            if (result.status === 409) {
-                toastr.error(t`This greeting was changed in another session, so this edit was not saved. Close and reopen this popup to see the current version.`, t`Greeting not saved`);
-                return;
-            }
-            toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-        });
+                const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
+                if (result.ok) {
+                    row.greetingHash = Number.isInteger(result.position) ? result.hashes[result.position] : hashGreetingText(text);
+                    applyGreetingOpSuccess(character, result, { expectedHash, text });
+                    return;
+                }
+                console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
+                if (result.status === 409) {
+                    toastr.error(t`This greeting was changed in another session, so this edit was not saved. Close and reopen this popup to see the current version.`, t`Greeting not saved`);
+                    return;
+                }
+                toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+            });
+        } finally {
+            savesInFlight--;
+            updateEditing();
+        }
     }, DEFAULT_SAVE_EDIT_TIMEOUT);
 
     greetingBlock.find('.alternate_greeting_text')
         .attr('id', `alternate_greeting_${index}`)
+        .on('focus', () => {
+            focused = true;
+            updateEditing();
+        })
+        .on('blur', () => {
+            focused = false;
+            updateEditing();
+        })
         .on('input', async function () {
             const value = String($(this).val());
             const array = getArray();
@@ -10243,13 +10343,22 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 const avatar = $('.open_alternate_greetings').data('avatar');
                 const character = avatar ? charactersStore.get(avatar) : null;
                 if (!character) return;
-                const result = await queueGreetingSave(avatar, async () => {
-                    const added = await postGreetingOp('add', { avatar_url: avatar, position: addedIndex, expected_length: greetingPagerState.hashes.length, text: value });
-                    if (added.ok) {
-                        applyGreetingOpSuccess(character, added);
-                    }
-                    return added;
-                });
+                savesInFlight++;
+                updateEditing();
+                let result;
+                try {
+                    result = await queueGreetingSave(avatar, async () => {
+                        const added = await postGreetingOp('add', { avatar_url: avatar, append: true, text: value });
+                        if (added.ok) {
+                            row.greetingHash = Number.isInteger(added.position) ? added.hashes[added.position] : hashGreetingText(value);
+                            applyGreetingOpSuccess(character, added);
+                        }
+                        return added;
+                    });
+                } finally {
+                    savesInFlight--;
+                    updateEditing();
+                }
                 if (result.ok) {
                     return;
                 }
@@ -10261,10 +10370,34 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 return;
             }
             array[index] = value;
-            if (menu_type !== 'create') debouncedRowEdit(index, value);
+            if (menu_type !== 'create') {
+                saveScheduled = true;
+                updateEditing();
+                debouncedRowEdit(index, value);
+            }
         }).val(greeting);
     greetingBlock.find('.editor_maximize').attr('data-for', `alternate_greeting_${index}`);
     greetingBlock.find('.greeting_index').text(displayPosition);
+
+    // The maximize editor (opened by a document-level handler after this one) edits this row until its popup closes.
+    greetingBlock.find('.editor_maximize').on('click', function () {
+        const textareaId = String($(this).attr('data-for'));
+        maximized = true;
+        updateEditing();
+        setTimeout(() => {
+            const dialog = Array.from(document.querySelectorAll('textarea.maximized_textarea'))
+                .find(editor => /** @type {HTMLElement} */ (editor).dataset.for === textareaId)?.closest('dialog');
+            if (!dialog) {
+                maximized = false;
+                updateEditing();
+                return;
+            }
+            dialog.addEventListener('close', () => {
+                maximized = false;
+                updateEditing();
+            }, { once: true });
+        });
+    });
 
     // Keyed on whether this row IS the current default, not its position - the default can sit anywhere in the stable order.
     if (index === model.defaultIndex) {
@@ -10307,7 +10440,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
         await queueGreetingSave(avatar, async () => {
-            const expectedHash = greetingPagerState.hashes[index];
+            const expectedHash = row.greetingHash;
             if (!Number.isFinite(expectedHash)) return;
             const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
             if (!result.ok) {
@@ -10364,7 +10497,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
         await queueGreetingSave(avatar, async () => {
-            const expectedHash = greetingPagerState.hashes[index];
+            const expectedHash = row.greetingHash;
             if (!Number.isFinite(expectedHash)) return;
             const result = await postGreetingOp('default/set', { avatar_url: avatar, position: index, expected_hash: expectedHash });
             if (!result.ok) {
@@ -10397,9 +10530,9 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
         await queueGreetingSave(avatar, async () => {
-            const { defaultIndex, hashes } = greetingPagerState;
-            const precondition = defaultIndex === null ? { expected_default_position: null } : { expected_default_hash: hashes[defaultIndex] };
-            const result = await postGreetingOp('default/unset', { avatar_url: avatar, ...precondition });
+            const expectedDefaultHash = row.greetingHash;
+            if (!Number.isFinite(expectedDefaultHash)) return;
+            const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_hash: expectedDefaultHash });
             if (!result.ok) {
                 console.error('Unset default greeting failed', { avatar, status: result.status, reason: result.reason });
                 toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
