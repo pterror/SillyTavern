@@ -596,3 +596,152 @@ test.describe('Drawer bar position, mobile setting on a wide window', () => {
         expect((await rect(page, '#sheld')).top).toBeCloseTo(0, 1);
     });
 });
+
+/**
+ * Sets Visual Novel Mode through its own checkbox, and waits until it is saved.
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
+async function setVisualNovelMode(page, on) {
+    const checkbox = page.locator('#waifuMode');
+    if (await checkbox.isChecked() === on) return;
+    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
+        && response.ok()
+        && (response.request().postData() ?? '').includes('waifuMode'));
+    await checkbox.evaluate(el => el.click());
+    await saved;
+    await page.waitForFunction(expected => document.body.classList.contains('waifuMode') === expected, on);
+}
+
+/**
+ * Shows an expression sprite the way the expressions extension does: a character's in #expression-wrapper, or with
+ * `group` a group member's, a copy of #expression-holder in #visual-novel-wrapper (Visual Novel Mode in a group chat).
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} group
+ * @returns {Promise<string>} The sprite's selector.
+ */
+async function showSprite(page, group) {
+    await page.evaluate(inGroup => {
+        const wrapper = document.getElementById('expression-wrapper');
+        const vnWrapper = document.getElementById('visual-novel-wrapper');
+        const holder = document.getElementById('expression-holder');
+        if (!inGroup) {
+            vnWrapper.style.display = 'none';
+            wrapper.style.display = '';
+            holder.style.display = '';
+            return;
+        }
+        wrapper.style.display = 'none';
+        vnWrapper.style.display = '';
+        const member = /** @type {HTMLElement} */ (holder.cloneNode(true));
+        member.id = 'expression-e2e-member.png';
+        member.dataset.avatar = 'e2e-member.png';
+        member.style.display = '';
+        member.style.left = '0px';
+        vnWrapper.append(member);
+    }, group);
+    return group ? '#visual-novel-wrapper .expression-holder' : '#expression-holder';
+}
+
+/** Hides the sprites {@link showSprite} showed. */
+function hideSprites(page) {
+    return page.evaluate(() => {
+        document.getElementById('visual-novel-wrapper').replaceChildren();
+        document.getElementById('visual-novel-wrapper').style.display = 'none';
+        document.getElementById('expression-wrapper').style.display = '';
+        document.getElementById('expression-holder').style.display = 'none';
+    });
+}
+
+// `before`: the sprite's rect with the bar at the top, measured with the CSS before the sprite followed the bar.
+const SPRITE_CASES = /** @type {const} */ ([
+    { name: 'a character\'s sprite', vnMode: false, group: false, before: { top: 800, bottom: 900, left: 0, width: 350, height: 100 } },
+    { name: 'a character\'s sprite in Visual Novel Mode', vnMode: true, group: false, before: { top: 90, bottom: 900, left: 650, width: 100, height: 810 } },
+    { name: 'a group member\'s sprite in Visual Novel Mode', vnMode: true, group: true, before: { top: 90, bottom: 900, left: 0, width: 100, height: 810 } },
+]);
+
+/** Expects `actual` to be `expected` in every edge and size, to 0.05px. */
+function expectSameRect(actual, expected) {
+    for (const key of /** @type {const} */ (['top', 'bottom', 'left', 'width', 'height'])) {
+        expect(actual[key], key).toBeCloseTo(expected[key], 1);
+    }
+}
+
+test.describe('Drawer bar position, expression sprite', () => {
+    test.use({ viewport: VIEWPORT });
+
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+    });
+
+    // The data root is shared by the worker's later tests, which expect the defaults.
+    test.afterEach(async ({ page }) => {
+        await hideSprites(page);
+        await setVisualNovelMode(page, false);
+        await setDrawerBarPosition(page, 'top');
+    });
+
+    for (const { name, vnMode, group, before } of SPRITE_CASES) {
+        test(`top: ${name} sits where it did before, at the bottom edge`, async ({ page }) => {
+            await setVisualNovelMode(page, vnMode);
+            const sprite = await rect(page, await showSprite(page, group));
+            expectSameRect(sprite, before);
+            expect(sprite.bottom).toBeCloseTo(VIEWPORT.height, 1);
+        });
+
+        test(`bottom: ${name} ends at or above the bar`, async ({ page }) => {
+            await setDrawerBarPosition(page, 'bottom');
+            await setVisualNovelMode(page, vnMode);
+            const sprite = await rect(page, await showSprite(page, group));
+            const holder = await rect(page, '#top-settings-holder');
+            expect(sprite.height).toBeGreaterThan(0);
+            expect(sprite.bottom).toBeLessThanOrEqual(holder.top + 0.5);
+            expect(sprite.bottom).toBeCloseTo(holder.top, 0);
+        });
+    }
+});
+
+test.describe('Drawer bar position, mobile, expression sprite', () => {
+    test.use({ viewport: MOBILE_VIEWPORT });
+
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+    });
+
+    // The data root is shared by the worker's later tests, which expect the defaults.
+    test.afterEach(async ({ page }) => {
+        await hideSprites(page);
+        await setVisualNovelMode(page, false);
+        await setDrawerBarMobilePosition(page, 'top');
+    });
+
+    test('mobile top: in Visual Novel Mode the sprite sits where it did before, at the bottom edge', async ({ page }) => {
+        await setVisualNovelMode(page, true);
+        const sprite = await rect(page, await showSprite(page, false));
+        // Measured with the CSS before the sprite followed the bar.
+        expectSameRect(sprite, { top: 91.5, bottom: 915, left: 156, width: 100, height: 823.5 });
+        expect(sprite.bottom).toBeCloseTo(MOBILE_VIEWPORT.height, 1);
+    });
+
+    test('mobile bottom: in Visual Novel Mode the sprite ends at or above the bar', async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'bottom');
+        await setVisualNovelMode(page, true);
+        const sprite = await rect(page, await showSprite(page, false));
+        const holder = await rect(page, '#top-settings-holder');
+        expect(sprite.height).toBeGreaterThan(0);
+        expect(sprite.bottom).toBeLessThanOrEqual(holder.top + 0.5);
+        expect(sprite.bottom).toBeCloseTo(holder.top, 0);
+    });
+
+    for (const position of ['top', 'bottom']) {
+        test(`mobile ${position}: without Visual Novel Mode the sprite is not shown`, async ({ page }) => {
+            await setDrawerBarMobilePosition(page, position);
+            await setVisualNovelMode(page, false);
+            await expect(page.locator(await showSprite(page, false))).toBeHidden();
+        });
+    }
+});

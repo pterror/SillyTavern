@@ -42,7 +42,7 @@
     max-width: 90vh;
     width: calc((var(--besideDrawerBarWidth) - var(--sheldWidth)) /2);
     position: absolute;
-    bottom: 0;
+    bottom: var(--drawerBarBottom);
     padding: 0;
     left: var(--drawerBarLeft);
     filter: drop-shadow(2px 2px 2px #51515199);
