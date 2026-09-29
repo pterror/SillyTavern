@@ -10263,7 +10263,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
  * @param {number} [params.offset]
  * @param {number} [params.limit]
  * @param {string} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq, groupsVersion) cache.
- * Required when a random-sorted page is read (sortField 'random' with wantRows or wantHashes); throws without it.
+ * Required when a random-sorted page is read (sortField 'random' with wantRows or wantHashes); throws if missing or ''.
  * @param {boolean} [params.wantRows]
  * @param {boolean} [params.wantTotal]
  * @param {boolean} [params.wantHashes]
@@ -10343,7 +10343,7 @@ export async function queryEntities(directories, params = {}) {
         const fetchLimit = numericOffset + numericLimit;
 
         if (sortField === 'random') {
-            if (handle === undefined || handle === null) {
+            if (handle === undefined || handle === null || handle === '') {
                 throw new Error('queryEntities(): a random sort needs params.handle (the random-sort id cache is keyed by it)');
             }
             const sortedAllIds = getRandomSortedEntityIds(entry.db, handle, Number(seed) || 0, seq, groupsVersion);
