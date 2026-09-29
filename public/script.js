@@ -10916,7 +10916,8 @@ function withoutEmptyGreetings(model) {
  * change is checked against the greetings as the fork last loaded them (with this run's own saved ops applied), so a
  * greeting another session changed since then is refused, not overwritten; clearing the default is checked against
  * the default greeting's text, not its position. A refused op is skipped and the rest of
- * the run still goes through; a warning then lists each change that wasn't saved, with its text. Adds can't
+ * the run still goes through; a warning then lists each change that wasn't saved, with its text. An op that fails
+ * any other way stops the run: the warning then also lists it and every change after it, none of them sent. Adds can't
  * overwrite anything, so they are appended to the list as currently stored, with no length check.
  * @param {string} avatar
  * @param {object} baselineCard
@@ -10935,14 +10936,19 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
         // The greetings as loaded, with this run's saved ops applied: every precondition is read from here.
         const planned = start.greetings.slice();
         let plannedDefault = start.defaultIndex;
-        /** @type {string[]} */
-        const notSaved = [];
+        /** @type {string[]} Changes refused because another session changed their greeting. */
+        const refused = [];
+        /** @type {string[]} The change whose op failed otherwise, and every change after it, none of them sent. */
+        const notSent = [];
+        // Set by an op that failed other than by being refused: no op after it is sent.
+        let stopped = false;
 
         const warnNotSaved = () => {
-            if (notSaved.length === 0) return;
-            const items = notSaved.map(item => `<li>${escapeHtml(item)}</li>`).join('');
+            if (refused.length === 0 && notSent.length === 0) return;
+            const section = (intro, items) => (items.length === 0 ? '' : `${escapeHtml(intro)}<ul>${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`);
             toastr.warning(
-                `${escapeHtml(t`These greetings were changed in another session, so these changes to them were not saved. Redo them if you still want them:`)}<ul>${items}</ul>`,
+                section(t`These greetings were changed in another session, so these changes to them were not saved. Redo them if you still want them:`, refused)
+                + section(t`Saving failed, so these changes were not saved. Redo them if you still want them:`, notSent),
                 t`Some greeting changes not saved`,
                 { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 },
             );
@@ -10951,19 +10957,25 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
         /**
          * @param {string} opName
          * @param {object} body
-         * @param {string} description What the change was, for the warning if it is refused.
-         * @returns {Promise<'saved'|'refused'|'failed'>}
+         * @param {string} description What the change was, for the warning if it isn't saved.
+         * @returns {Promise<'saved'|'not saved'>}
          */
         const runOp = async (opName, body, description) => {
+            if (stopped) {
+                notSent.push(description);
+                return 'not saved';
+            }
             const result = await postGreetingOp(opName, { avatar_url: avatar, ...body });
             if (!result.ok) {
                 console.error('Greeting save failed', { avatar, opName, status: result.status, reason: result.reason });
                 if (result.status === 409) {
-                    notSaved.push(description);
-                    return 'refused';
+                    refused.push(description);
+                    return 'not saved';
                 }
                 toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-                return 'failed';
+                stopped = true;
+                notSent.push(description);
+                return 'not saved';
             }
             const character = charactersStore.get(avatar);
             if (character) {
@@ -10978,19 +10990,16 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
                 const text = target.greetings[position];
                 if (planned[position] === text) continue;
                 const outcome = await runOp('edit', { position, expected_hash: hashGreetingText(planned[position]), text }, t`Greeting ${position + 1} changed to: ${text}`);
-                if (outcome === 'failed') return false;
                 if (outcome === 'saved') planned[position] = text;
             }
             for (let index = planned.length; index < target.greetings.length; index++) {
                 const text = target.greetings[index];
                 const outcome = await runOp('add', { append: true, text }, t`New greeting: ${text}`);
-                if (outcome === 'failed') return false;
                 if (outcome === 'saved') planned.push(text);
             }
             for (let position = planned.length - 1; position >= target.greetings.length; position--) {
                 const text = planned[position];
                 const outcome = await runOp('delete', { position, expected_hash: hashGreetingText(text) }, t`Greeting ${position + 1} deleted: ${text}`);
-                if (outcome === 'failed') return false;
                 if (outcome === 'saved') {
                     planned.splice(position, 1);
                     plannedDefault = reindexDefaultAfterRemoval(plannedDefault, position);
@@ -10998,21 +11007,19 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
             }
             if (plannedDefault !== target.defaultIndex) {
                 if (target.defaultIndex === null) {
-                    const outcome = await runOp('default/unset', { expected_default_hash: hashGreetingText(planned[plannedDefault]) }, t`Default greeting cleared`);
-                    if (outcome === 'failed') return false;
+                    await runOp('default/unset', { expected_default_hash: hashGreetingText(planned[plannedDefault]) }, t`Default greeting cleared`);
                 } else {
                     const text = target.greetings[target.defaultIndex];
                     const description = t`Default greeting set to: ${text}`;
                     if (planned[target.defaultIndex] !== text) {
                         // The change that would have put this greeting there wasn't saved.
-                        notSaved.push(description);
+                        (stopped ? notSent : refused).push(description);
                     } else {
-                        const outcome = await runOp('default/set', { position: target.defaultIndex, expected_hash: hashGreetingText(text) }, description);
-                        if (outcome === 'failed') return false;
+                        await runOp('default/set', { position: target.defaultIndex, expected_hash: hashGreetingText(text) }, description);
                     }
                 }
             }
-            return true;
+            return !stopped;
         };
 
         const ok = await run();
