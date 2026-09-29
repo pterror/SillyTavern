@@ -68,6 +68,16 @@ function insertChange(db, id, op, fields) {
     return Number(lastInsertRowid);
 }
 
+/**
+ * Adds a groups version log row (see group_changes in SCHEMA_SQL). Callers add it only when their write changed
+ * something, in that write's transaction.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string | null} groupId null: every group (a tag rename).
+ */
+function insertGroupChange(db, groupId) {
+    db.run('INSERT INTO group_changes (group_id) VALUES (@groupId)', { groupId });
+}
+
 // Per-user SQLite index for character metadata. FTS lives in characters-search-index.js, not here.
 // Import direction is one-way: characters.js/tags.js import this module, never the reverse.
 // date_added is write-once: every upsert's ON CONFLICT omits it from the SET list.
@@ -412,6 +422,16 @@ const SCHEMA_SQL = `
         PRIMARY KEY (group_id, tag_id)
     );
     CREATE INDEX IF NOT EXISTS idx_group_tags_tag ON group_tags(tag_id, group_id);
+
+    -- The groups version log: one row per write that changed a group's groups row, its group_tags rows or its own
+    -- JSON file (writeGroupFileAndRow()), in the same transaction as that write, and one row with group_id NULL
+    -- ("every group") next to each tag_name_changes row, since group docs carry tag names. The groups version is
+    -- MAX(version) (getGroupsVersion()), as the characters' is MAX(changes.seq). A write that changes nothing adds
+    -- no row.
+    CREATE TABLE IF NOT EXISTS group_changes (
+        version  INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id TEXT
+    );
 
     -- Exact counts of what queryEntities() counts, kept by the triggers ENTITY_COUNT_TRIGGERS_SQL creates. kind is
     -- 'character' or 'group'. entity_counts holds the rows of characters / groups by fav. entity_tag_counts holds the
@@ -764,19 +784,22 @@ function migrateGroupsColumns(db, directories) {
 
     db.transaction(() => {
         for (const id of existingIds) {
+            let changed = false;
             try {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
                 const group = JSON.parse(raw);
                 const stat = fs.statSync(filePath);
                 const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
-                db.run(
-                    'UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded, date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id',
+                changed = db.run(
+                    `UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded, date_last_chat = @dateLastChat, chat_size = @chatSize
+                        WHERE id = @id AND (name IS NOT @name OR name_fold IS NOT @nameFold OR fav IS NOT @fav OR date_added IS NOT @dateAdded OR date_last_chat IS NOT @dateLastChat OR chat_size IS NOT @chatSize)`,
                     { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs), dateLastChat, chatSize },
-                );
+                ).changes > 0;
             } catch (err) {
                 console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
             }
+            if (changed) insertGroupChange(db, id);
         }
     });
 }
@@ -803,24 +826,27 @@ function migrateGroupDigestColumns(db, directories) {
 
     db.transaction(() => {
         for (const id of existingIds) {
+            let changed = false;
             try {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
                 const group = normalizeGroupRecord(JSON.parse(raw));
                 const tagIds = tagEntityTypeOf(id) === 'group' ? (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) : [];
                 const fingerprintSource = { ...group, tag_ids: tagIds };
-                db.run(
-                    'UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash WHERE id = @id',
+                changed = db.run(
+                    `UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash
+                        WHERE id = @id AND (digest_fav IS NOT @favHash OR digest_tag_ids IS NOT @tagIdsHash OR digest_content IS NOT @contentHash)`,
                     {
                         id,
                         favHash: groupDigestFavHash(fingerprintSource),
                         tagIdsHash: groupDigestTagIdsHash(fingerprintSource),
                         contentHash: groupDigestContentHash(fingerprintSource),
                     },
-                );
+                ).changes > 0;
             } catch (err) {
                 console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, /** @type {any} */ (err).message);
             }
+            if (changed) insertGroupChange(db, id);
         }
     });
 }
@@ -3560,9 +3586,10 @@ export async function assignEntityTag(directories, id, tagId) {
             }
             result.found = true;
         } else if (type === 'group' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
-            entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+            const inserted = entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId }).changes > 0;
             const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
-            entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: currentTagIds }) });
+            const digestSet = setGroupDigestTagIdsSync(entry.db, id, groupDigestTagIdsHash({ tag_ids: currentTagIds }));
+            if (inserted || digestSet) insertGroupChange(entry.db, id);
             result.found = true;
         }
     });
@@ -3625,11 +3652,13 @@ export async function unassignEntityTag(directories, id, tagId) {
 
     entry.db.transaction(() => {
         if (type === 'group') {
-            entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId });
-            entry.db.run(
-                'UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id',
-                { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) }) },
+            const deleted = entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId }).changes > 0;
+            const digestSet = setGroupDigestTagIdsSync(
+                entry.db,
+                id,
+                groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) }),
             );
+            if (deleted || digestSet) insertGroupChange(entry.db, id);
             return;
         }
 
@@ -3716,11 +3745,16 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
                 }
                 result[id] = 'ok';
             } else if (groupIds.has(id)) {
+                /** @type {Set<string>} */
+                const oldTagIds = new Set();
+                for (const r of /** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id', { id }))) oldTagIds.add(r.tag_id);
                 entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id });
                 for (const tagId of tagIds) {
                     entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
                 }
-                entry.db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id, digestTagIds: groupDigestTagIdsHash({ tag_ids: tagIds }) });
+                const tagsChanged = oldTagIds.size !== tagIds.length || tagIds.some(tagId => !oldTagIds.has(tagId));
+                const digestSet = setGroupDigestTagIdsSync(entry.db, id, groupDigestTagIdsHash({ tag_ids: tagIds }));
+                if (tagsChanged || digestSet) insertGroupChange(entry.db, id);
                 result[id] = 'ok';
             } else {
                 result[id] = 'not_found';
@@ -3845,6 +3879,11 @@ const GROUP_UPSERT_SQL = `
         fav = excluded.fav,
         digest_fav = excluded.digest_fav,
         digest_content = excluded.digest_content
+    WHERE groups.name IS NOT excluded.name
+        OR groups.name_fold IS NOT excluded.name_fold
+        OR groups.fav IS NOT excluded.fav
+        OR groups.digest_fav IS NOT excluded.digest_fav
+        OR groups.digest_content IS NOT excluded.digest_content
     -- digest_tag_ids absent: owned by assignEntityTag()/unassignEntityTag()'s group branch, not this upsert.
     -- date_added absent: write-once. date_last_chat/chat_size absent: owned by bumpGroupChatStats() and the
     -- backfill passes, not by /create or /edit requests.
@@ -3868,10 +3907,11 @@ const GROUP_INSERT_IF_MISSING_SQL = `
  * @param {number} params.dateLastChat
  * @param {number} params.chatSize
  * @param {boolean} [params.insertOnly] true: leave an existing row untouched.
+ * @returns {boolean} Whether the row was inserted or changed.
  */
 function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat, chatSize, insertOnly = false }) {
     const normalizedFav = normalizeFav(fav);
-    db.run(insertOnly ? GROUP_INSERT_IF_MISSING_SQL : GROUP_UPSERT_SQL, {
+    return db.run(insertOnly ? GROUP_INSERT_IF_MISSING_SQL : GROUP_UPSERT_SQL, {
         id,
         name: name ?? '',
         nameFold: foldName(name),
@@ -3882,7 +3922,7 @@ function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat,
         digestFav: groupDigestFavHash({ fav: normalizedFav }),
         // Round-tripped so the digest is of what the group's JSON file holds, which is what clients hash.
         digestContent: groupDigestContentHash(group ? JSON.parse(JSON.stringify(group)) : {}),
-    });
+    }).changes > 0;
 }
 
 /**
@@ -3896,7 +3936,9 @@ function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, dateLastChat,
 export async function upsertGroupRow(directories, id, name, { fav, group } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    upsertGroupRowSync(entry.db, { id, name, fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
+    entry.db.transaction(() => {
+        if (upsertGroupRowSync(entry.db, { id, name, fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 })) insertGroupChange(entry.db, id);
+    });
 }
 
 /**
@@ -3904,7 +3946,8 @@ export async function upsertGroupRow(directories, id, name, { fav, group } = {})
  * at any step can't leave digest_content describing content the file doesn't hold:
  * 1. digest_content is set to NULL - if this throws, the file is not written.
  * 2. `writeFile()` - if this throws, the digest stays NULL.
- * 3. The row is upserted - if this throws, the digest stays NULL.
+ * 3. The row is upserted - if this throws, the digest stays NULL. Its groups version log row, when the file or the
+ *    row changed, is added here and not before the file is written, so no reader sees the new version with the old file.
  * NULL rather than a sentinel: every uint32 is a possible client hash, and hash mode recomputes a NULL digest from
  * the file itself, so a hit against it is a hit on the file's current content. Once the store is open the three
  * steps run synchronously, so no other write to the group can interleave.
@@ -3922,14 +3965,64 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
         return;
     }
     const id = group.id;
+    const filePath = path.join(directories.groups, sanitize(`${id}.json`));
+    const rowBefore = groupRowSnapshot(entry.db, id);
+    const fileBefore = readFileForComparison(filePath);
     entry.db.run('UPDATE groups SET digest_content = NULL WHERE id = @id', { id });
     writeFile();
+    // The file is read too (the groups search index builds from it), so a change to it alone is a group change.
+    const fileChanged = !sameFileContents(fileBefore, readFileForComparison(filePath));
+    const logIfChanged = () => {
+        if (fileChanged || groupRowSnapshot(entry.db, id) !== rowBefore) insertGroupChange(entry.db, id);
+    };
     try {
-        if (!createIfMissing && !entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) return;
-        upsertGroupRowSync(entry.db, { id, name: group.name, fav: group.fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
+        entry.db.transaction(() => {
+            if (createIfMissing || entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
+                upsertGroupRowSync(entry.db, { id, name: group.name, fav: group.fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
+            }
+            logIfChanged();
+        });
     } catch (err) {
         console.error(`[character-metadata] Could not update the row for group ${id} after writing its file; its digest stays NULL and is recomputed from the file:`, /** @type {any} */ (err).message);
+        try {
+            entry.db.transaction(logIfChanged);
+        } catch (logErr) {
+            console.error(`[character-metadata] Could not add the groups version log row for group ${id} after writing its file; results that include groups may stay stale until its next write:`, /** @type {any} */ (logErr).message);
+        }
     }
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @returns {string} Every column of the group's row, comparable with ===; 'null' when it has none.
+ */
+function groupRowSnapshot(db, id) {
+    const row = db.get('SELECT * FROM groups WHERE id = @id', { id });
+    return JSON.stringify(row ?? null, (_key, value) => (typeof value === 'bigint' ? String(value) : value));
+}
+
+/**
+ * @param {string} filePath
+ * @returns {Buffer | null | undefined} null when the file doesn't exist, undefined when it couldn't be read.
+ */
+function readFileForComparison(filePath) {
+    try {
+        return fs.readFileSync(filePath);
+    } catch (err) {
+        return /** @type {NodeJS.ErrnoException} */ (err)?.code === 'ENOENT' ? null : undefined;
+    }
+}
+
+/**
+ * @param {Buffer | null | undefined} a
+ * @param {Buffer | null | undefined} b
+ * @returns {boolean} false when either couldn't be read.
+ */
+function sameFileContents(a, b) {
+    if (a === undefined || b === undefined) return false;
+    if (a === null || b === null) return a === b;
+    return a.equals(b);
 }
 
 /**
@@ -3960,7 +4053,13 @@ export async function bumpGroupChatStats(directories, chatId, { groupId, stats }
     if (!group) return; // Not a group chat this store knows about - nothing to bump.
 
     const { chatSize, dateLastChat } = stats ?? calculateGroupChatStats(directories.groupChats, group.chats);
-    entry.db.run('UPDATE groups SET date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id', { dateLastChat, chatSize, id: group.id });
+    entry.db.transaction(() => {
+        const { changes } = entry.db.run(
+            'UPDATE groups SET date_last_chat = @dateLastChat, chat_size = @chatSize WHERE id = @id AND (date_last_chat IS NOT @dateLastChat OR chat_size IS NOT @chatSize)',
+            { dateLastChat, chatSize, id: group.id },
+        );
+        if (changes > 0) insertGroupChange(entry.db, group.id);
+    });
 }
 
 // group_tags has no real foreign key; cascade is application code, same as deleteRowSync() for characters.
@@ -3972,8 +4071,9 @@ export async function deleteGroupRow(directories, id) {
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.transaction(() => {
-        entry.db.run('DELETE FROM groups WHERE id = @id', { id });
-        entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id });
+        const rowDeleted = entry.db.run('DELETE FROM groups WHERE id = @id', { id }).changes > 0;
+        const tagsDeleted = entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id }).changes > 0;
+        if (rowDeleted || tagsDeleted) insertGroupChange(entry.db, id);
     });
 }
 
@@ -3992,6 +4092,8 @@ export async function bootstrapGroupsIfNeeded(directories) {
         const files = fs.readdirSync(directories.groups).filter(f => f.endsWith('.json'));
         entry.db.transaction(() => {
             for (const file of files) {
+                /** @type {string | null} */
+                let changedId = null;
                 try {
                     const filePath = path.join(directories.groups, file);
                     const raw = fs.readFileSync(filePath, 'utf8');
@@ -3999,7 +4101,7 @@ export async function bootstrapGroupsIfNeeded(directories) {
                     if (hasGroupIdForRow(group)) {
                         const stat = fs.statSync(filePath);
                         const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
-                        upsertGroupRowSync(entry.db, {
+                        const changed = upsertGroupRowSync(entry.db, {
                             id: group.id,
                             name: group.name,
                             fav: normalizeFav(group.fav),
@@ -4008,10 +4110,12 @@ export async function bootstrapGroupsIfNeeded(directories) {
                             dateLastChat,
                             chatSize,
                         });
+                        if (changed) changedId = group.id;
                     }
                 } catch (err) {
                     console.error(`[character-metadata] Bootstrap failed to process group file ${file}, skipping it (group tags for it won't resolve until it's next created/edited):`, /** @type {any} */ (err).message);
                 }
+                if (changedId !== null) insertGroupChange(entry.db, changedId);
             }
         });
     }
@@ -4073,16 +4177,19 @@ export async function recoverNumericIdGroupsIfNeeded(directories) {
         if (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id: group.id })) return null;
         const stat = fs.statSync(filePath);
         const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
-        return () => upsertGroupRowSync(entry.db, {
-            id: group.id,
-            name: group.name,
-            fav: normalizeFav(group.fav),
-            group,
-            dateAdded: Math.round(stat.birthtimeMs),
-            dateLastChat,
-            chatSize,
-            insertOnly: true,
-        });
+        return () => {
+            const inserted = upsertGroupRowSync(entry.db, {
+                id: group.id,
+                name: group.name,
+                fav: normalizeFav(group.fav),
+                group,
+                dateAdded: Math.round(stat.birthtimeMs),
+                dateLastChat,
+                chatSize,
+                insertOnly: true,
+            });
+            if (inserted) insertGroupChange(entry.db, group.id);
+        };
     };
 
     /** @param {string[]} files */
@@ -4173,7 +4280,10 @@ export async function normalizeGroupFavIfNeeded(directories) {
             const fav = normalizeFav(group?.fav);
             const params = { id, fav: fav ? 1 : 0, digestFav: groupDigestFavHash({ fav }) };
             if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id AND (fav IS NOT @fav OR digest_fav IS NOT @digestFav)', params)) return null;
-            return () => entry.db.run('UPDATE groups SET fav = @fav, digest_fav = @digestFav WHERE id = @id', params);
+            return () => {
+                entry.db.run('UPDATE groups SET fav = @fav, digest_fav = @digestFav WHERE id = @id', params);
+                insertGroupChange(entry.db, id);
+            };
         },
     });
 }
@@ -4383,6 +4493,7 @@ export async function saveTagDefinitions(directories, tagsArray) {
             entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
             if (oldNames.has(tag.id) && oldNames.get(tag.id) !== (tag.name ?? '')) {
                 entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
+                insertGroupChange(entry.db, null);
             }
         }
         updateTagsHashSync(entry.db);
@@ -4529,6 +4640,7 @@ export async function editTagDefinition(directories, id, rawPatch) {
         );
         if ((old.name ?? '') !== (merged.name ?? '')) {
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
+            insertGroupChange(entry.db, null);
         }
         updateTagsHashSync(entry.db);
         result.written = true;
@@ -4658,6 +4770,7 @@ export async function deleteTagDefinition(directories, tagId, mergeInto = null) 
         entry.db.run('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (@id, @target)', { id: tagId, target });
         for (const id of [tagId, ...movedIds]) {
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
+            insertGroupChange(entry.db, null);
         }
         updateTagsHashSync(entry.db);
         result.changed = true;
@@ -4676,12 +4789,14 @@ const DELETED_TAG_BATCH_SIZE = 1000;
  * @property {'character_id' | 'group_id'} entityColumn
  * @property {'characters' | 'groups'} entityTable
  * @property {(db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle, id: string) => void} syncStoredCopy
+ * @property {(db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle, id: string) => void} logTagRowsChanged
+ *   Called once per entity whose tag rows a transaction changed, in that transaction.
  */
 
 /** @type {TagRowSide[]} */
 const TAG_ROW_SIDES = [
-    { tagTable: 'character_tags', entityColumn: 'character_id', entityTable: 'characters', syncStoredCopy: syncShallowTagIdsFromTable },
-    { tagTable: 'group_tags', entityColumn: 'group_id', entityTable: 'groups', syncStoredCopy: syncGroupDigestTagIdsFromTable },
+    { tagTable: 'character_tags', entityColumn: 'character_id', entityTable: 'characters', syncStoredCopy: syncShallowTagIdsFromTable, logTagRowsChanged: () => {} },
+    { tagTable: 'group_tags', entityColumn: 'group_id', entityTable: 'groups', syncStoredCopy: syncGroupDigestTagIdsFromTable, logTagRowsChanged: insertGroupChange },
 ];
 
 /**
@@ -4796,7 +4911,7 @@ function tagNameForWarning(db, tagId) {
  * @returns {Promise<'walked' | 'unmarked'>} 'unmarked' when the mark was gone at a batch's start.
  */
 async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
-    const { tagTable, entityColumn, entityTable, syncStoredCopy } = side;
+    const { tagTable, entityColumn, entityTable, syncStoredCopy, logTagRowsChanged } = side;
     /** @type {string | null} */
     let after = null;
     for (;;) {
@@ -4825,6 +4940,7 @@ async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
             for (const id of page) {
                 if (db.run(`DELETE FROM ${tagTable} WHERE ${entityColumn} = @id AND tag_id = @tagId`, { id, tagId }).changes === 0) continue;
                 state.removed++;
+                logTagRowsChanged(db, id);
                 if (!db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id })) {
                     state.orphans.push(id);
                     continue;
@@ -4883,7 +4999,7 @@ export async function removeOrphanTagRowsIfNeeded(directories) {
     let batches = 0;
     let rowsChanged = 0;
     const sides = resumeAt ? TAG_ROW_SIDES.slice(TAG_ROW_SIDES.findIndex(side => side.tagTable === resumeAt.table)) : TAG_ROW_SIDES;
-    for (const { tagTable, entityColumn, entityTable } of sides) {
+    for (const { tagTable, entityColumn, entityTable, logTagRowsChanged } of sides) {
         /** @type {{ id: string, tagId: string } | null} */
         let after = resumeAt?.table === tagTable ? { id: resumeAt.id, tagId: resumeAt.tagId } : null;
         for (;;) {
@@ -4913,12 +5029,16 @@ export async function removeOrphanTagRowsIfNeeded(directories) {
                     state.removed = [];
                     /** @type {Map<string, string>} */
                     const names = new Map();
+                    /** @type {Set<string>} */
+                    const changedIds = new Set();
                     for (const row of candidates) {
                         if (db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id: row.id })) continue;
                         if (db.run(`DELETE FROM ${tagTable} WHERE ${entityColumn} = @id AND tag_id = @tagId`, row).changes === 0) continue;
                         if (!names.has(row.tagId)) names.set(row.tagId, tagNameForWarning(db, row.tagId));
                         state.removed.push(`  ${row.id}: ${names.get(row.tagId)}`);
+                        changedIds.add(row.id);
                     }
+                    for (const id of changedIds) logTagRowsChanged(db, id);
                     if (state.removed.length === 0) return;
                     db.run(UPSERT_META_VALUE_SQL, { key: ORPHAN_TAG_ROWS_PROGRESS_KEY, value: JSON.stringify({ table: tagTable, id: last.id, tagId: last.tagId }) });
                 });
@@ -4994,7 +5114,9 @@ export async function refreshGroupDigestTagIdsIfNeeded(directories) {
                 // Reset here: a transaction that hits busy is rolled back and rerun.
                 state.set = [];
                 for (const id of candidates) {
-                    if (syncGroupDigestTagIdsFromTable(db, id)) state.set.push(id);
+                    if (!syncGroupDigestTagIdsFromTable(db, id)) continue;
+                    state.set.push(id);
+                    insertGroupChange(db, id);
                 }
                 if (state.set.length === 0) return;
                 db.run(UPSERT_META_VALUE_SQL, { key: GROUP_DIGEST_TAG_IDS_PROGRESS_KEY, value: JSON.stringify({ id: last }) });
@@ -5548,10 +5670,12 @@ function importTagMapSync(entry, tagMap) {
                 }
                 if (tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, key);
             } else if (type === 'group' && knownGroupIds.has(key)) {
+                let changed = false;
                 for (const tagId of tagIds) {
-                    entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId });
+                    if (entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId }).changes > 0) changed = true;
                 }
-                if (tagIds.length > 0) syncGroupDigestTagIdsFromTable(entry.db, key);
+                if (tagIds.length > 0 && syncGroupDigestTagIdsFromTable(entry.db, key)) changed = true;
+                if (changed) insertGroupChange(entry.db, key);
             } else {
                 droppedKeys.push(key);
             }
@@ -5622,6 +5746,7 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
             if (entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId }).changes > 0) changed = true;
         }
         if (tagIds.length > 0 && syncGroupDigestTagIdsFromTable(entry.db, key)) changed = true;
+        if (changed) insertGroupChange(entry.db, key);
         return changed;
     };
 
@@ -5924,6 +6049,16 @@ function syncGroupDigestTagIdsFromTable(db, groupId) {
     if (groupDigestTagIdsMatch(row.digest_tag_ids, digestTagIds)) return false;
     db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id', { id: groupId, digestTagIds });
     return true;
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} groupId
+ * @param {number} digestTagIds
+ * @returns {boolean} Whether the group's row existed and held a different value.
+ */
+function setGroupDigestTagIdsSync(db, groupId, digestTagIds) {
+    return db.run('UPDATE groups SET digest_tag_ids = @digestTagIds WHERE id = @id AND digest_tag_ids IS NOT @digestTagIds', { id: groupId, digestTagIds }).changes > 0;
 }
 
 /**
@@ -9665,6 +9800,17 @@ export async function getCurrentSeq(directories) {
     if (!entry) return null;
     const row = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     return Number(row?.seq ?? 0);
+}
+
+/** getCurrentSeq()'s counterpart for the groups version log (group_changes): its latest version, 0 when empty.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>} `null` if the store is unavailable.
+ */
+export async function getGroupsVersion(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = (/** @type {{ version: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(version), 0) as version FROM group_changes')));
+    return Number(row?.version ?? 0);
 }
 
 /** getCurrentSeq()'s counterpart for the tag-name change log.
