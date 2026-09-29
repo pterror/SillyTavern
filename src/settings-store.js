@@ -202,27 +202,39 @@ export function writeSettingsKeys(directories, keys) {
 }
 
 /**
- * Full replace: writes one file per top-level key in `fullObject` and removes any existing per-key
- * file not present in `fullObject`, matching a whole-file settings.json overwrite.
+ * Writes one file per top-level key in `object` and removes nothing: a key `object` leaves out keeps its file.
+ * Unlike writeSettingsKeys(), a key is never read as a dotted path, and an invalid key is logged and skipped.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {Record<string, unknown>} fullObject
+ * @param {Record<string, unknown>} object
+ * @returns {Set<string>} The file names written.
  */
-export function writeAllSettings(directories, fullObject) {
+export function writeNamedSettings(directories, object) {
     ensureMigrated(directories);
     const dir = settingsDirPath(directories);
 
-    const allKeys = Object.keys(fullObject ?? {});
+    const allKeys = Object.keys(object ?? {});
     const validKeys = allKeys.filter(isValidSettingsKey);
     for (const key of allKeys) {
         if (!isValidSettingsKey(key)) {
             console.error(`Skipping non-identifier settings key "${key}" - not written to the sharded store`);
         }
     }
-    const wantedFiles = new Set(validKeys.map(k => `${k}.json`));
 
     for (const key of validKeys) {
-        writeFileAtomicSync(path.join(dir, `${key}.json`), JSON.stringify(fullObject[key], null, 4), 'utf8');
+        writeFileAtomicSync(path.join(dir, `${key}.json`), JSON.stringify(object[key], null, 4), 'utf8');
     }
+    return new Set(validKeys.map(k => `${k}.json`));
+}
+
+/**
+ * Full replace: writes one file per top-level key in `fullObject` and removes any existing per-key
+ * file not present in `fullObject`, matching a whole-file settings.json overwrite.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {Record<string, unknown>} fullObject
+ */
+export function writeAllSettings(directories, fullObject) {
+    const wantedFiles = writeNamedSettings(directories, fullObject);
+    const dir = settingsDirPath(directories);
 
     for (const file of fs.readdirSync(dir)) {
         if (file.endsWith('.json') && !wantedFiles.has(file)) {
