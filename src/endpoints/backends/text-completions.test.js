@@ -38,7 +38,7 @@ const { router, buildRawActionTextCompletionRequest } = await import('./text-com
 const { writeAllSettings } = await import('../../settings-store.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
 const { saveChatToTree, loadBranch, appendMessages, editMessage, getAncestorPath, getAlternatives, disposeMessageTreeStores, getMessageTreeDb } = await import('../../message-tree-db.js');
-const { writeBack } = await import('../../token-count-store.js');
+const { writeBack, tokenKeyHash } = await import('../../token-count-store.js');
 // The client-side compact-stream decoder (public/scripts/llamacpp-compact-stream.js) has no browser-
 // only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
 // here rather than re-implementing a second copy of the decode logic for this test file.
@@ -2052,7 +2052,8 @@ async function run() {
     let writeBackChats = 0;
     /**
      * A new chat on a llama.cpp backend whose `/props` gives `props` and whose `/tokenize` answers; `onCompletion(req,
-     * res, body)` answers `/completion`. Returns the backend, the URLs it was asked and the request body for its generation.
+     * res, body)` answers `/completion`. Returns the backend, the URLs it was asked, each request's URL and body, and the
+     * request body for its generation.
      */
     async function setUpWriteBackGeneration(props, onCompletion) {
         const name = `WriteBack${++writeBackChats}`;
@@ -2065,8 +2066,10 @@ async function run() {
         ]);
         const branch = await loadBranch(directories, avatar, 'write-back-chat');
         const urls = [];
+        const requests = [];
         const backend = await startFakeBackend((req, res, body) => {
             urls.push(req.url);
+            requests.push({ url: req.url, body });
             if (req.url.startsWith('/props')) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 return res.end(JSON.stringify(props));
@@ -2089,7 +2092,7 @@ async function run() {
         });
         writeAllSettings(directories, settings);
         return {
-            backend, urls,
+            backend, urls, requests,
             body: { owner_id: avatar, character_avatar: avatar, node_id: branch.branch.leaf_id, type: 'normal', user_message: 'Any tulips?' },
         };
     }
@@ -2188,6 +2191,43 @@ async function run() {
             assert.equal(urls.filter(url => url === '/tokenize').length, freshTokenizes, 'everything counted and encoded fresh again');
         } finally {
             db.get = realGet;
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    });
+
+    await tokenizerCase('raw-action /generate on llama.cpp, a stored chat and one new user message: one /props, no /v1/models, /tokenize only for texts not stored', async () => {
+        const props = { model_alias: 'write-back-model', model_path: '/models/write-back-model.gguf', build_info: 'b-request-log' };
+        const identity = `llamacpp:${JSON.stringify([props.model_path, props.build_info])}`;
+        const { backend, requests, body } = await setUpWriteBackGeneration(props, (_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ content: 'Yes.', choices: [{ text: 'Yes.' }] }));
+        });
+        const db = await getMessageTreeDb(directories);
+        const storedHashes = table => new Set(Array.from(/** @type {Iterable<{ text_hash: string }>} */ (db.iterate(
+            `SELECT text_hash FROM ${table} WHERE identity = @identity`, { identity })), row => row.text_hash));
+        try {
+            const cold = await postGenerate(buildTestApp(), body);
+            assert.equal(cold.status, 200);
+            await waitFor(async () => (await storedRowsUnder(identity)) > 0);
+            const counts = storedHashes('token_counts');
+            const ids = storedHashes('token_ids');
+
+            const from = requests.length;
+            // Same anchor as the first generation, so the history before the new user message is all stored.
+            const warm = await postGenerate(buildTestApp(), { ...body, user_message: 'Any daisies?' });
+            assert.equal(warm.status, 200);
+            const sent = requests.slice(from);
+            assert.equal(sent.filter(r => r.url.startsWith('/props')).length, 1, 'one /props');
+            assert.equal(sent.filter(r => r.url === '/v1/models').length, 0, 'no /v1/models');
+            // A count and an encode send the same body, so a text without add_special was stored only when it is
+            // stored under both.
+            const wasStored = ({ content, add_special }) => add_special === true
+                ? counts.has(tokenKeyHash('prompt', content))
+                : counts.has(tokenKeyHash('text', content)) && ids.has(tokenKeyHash('ids', content));
+            const tokenized = sent.filter(r => r.url === '/tokenize').map(r => JSON.parse(r.body));
+            assert.deepEqual(tokenized.filter(wasStored), [], 'no /tokenize for a text already stored');
+        } finally {
             backend.server.close();
             writeAllSettings(directories, buildSettingsFixture());
         }
