@@ -192,5 +192,24 @@ test.describe('character list count', () => {
 
             await expect.poll(() => navigatorText(page)).toBe('1-1 .. 500+');
         });
+
+        test('with fuzzy search off, a full top-500 search is not used, so the count is how many entries the list holds', async ({ page }) => {
+            await page.evaluate(async ({ size }) => {
+                const { power_user } = await import('/scripts/power-user.js');
+                power_user.fuzzy_search = false;
+                window['__stub'].topRows = Array.from({ length: size }, (_, i) => ({ type: 'character', item: { avatar: `stub-${i}.png` } }));
+                window['__stub'].topTotal = 2000;
+            }, { size: TOP_SEARCH_PAGE_SIZE });
+            // Without fuzzy search the local filter matches by name.
+            await setSearchTerm(page, 'Sera');
+            await expect.poll(() => page.evaluate(async () => {
+                const { entitiesFilter } = await import('/scripts/character-list.js');
+                return entitiesFilter.serverSearchResults?.searchValue;
+            })).toBe('Sera');
+
+            await printLocalPaginated(page);
+
+            await expect.poll(() => navigatorText(page)).toBe('1-1 .. 1');
+        });
     });
 });

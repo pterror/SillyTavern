@@ -413,8 +413,7 @@ export async function printCharacters(fullRefresh = false) {
         // A full top-500 means the search may match more than that, and nothing here knows how many, so the count
         // says "500+" rather than passing a number off as the total.
         const searchResults = entitiesFilter.serverSearchResults;
-        const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
-        const topSearchFull = Boolean(searchTerm) && searchResults?.searchValue === searchTerm
+        const topSearchFull = entitiesFilter.usesServerSearchResults()
             && searchResults.characterScores.size + searchResults.groupScores.size >= TOP_SEARCH_RESULTS_LIMIT;
 
         $('#rm_print_characters_pagination').pagination({
