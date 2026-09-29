@@ -286,6 +286,62 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(finalText);
     });
 
+    test('greetings modal: another session editing the same greeting again before the openings are read keeps that greeting shown, with the other session\'s text', async ({ page, browser }) => {
+        const s = stamp();
+        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `ProvOtherReEdit-${s}`, [g0, g1, g2]);
+        await openCharacter(page, avatar);
+        await showSwipe(page, 1, g1);
+        expect((await openingState(page)).node_id.startsWith('card:')).toBe(true);
+
+        const typed = `One edited ${s}`;
+        const otherText = `One edited elsewhere ${s}`;
+
+        await withOtherSession(browser, async (other) => {
+            // Once this page's edit is confirmed, the other session edits the same greeting again before this
+            // page's next openings read reaches the server, so that read no longer holds `typed`.
+            let armed = false;
+            let otherEdited = false;
+            await page.route('**/api/characters/greetings/edit', async (route) => {
+                const response = await route.fetch();
+                armed = true;
+                await route.fulfill({ response });
+            });
+            await page.route('**/api/chats/openings', async (route) => {
+                if (armed && !otherEdited) {
+                    otherEdited = true;
+                    const status = await other.evaluate(async ({ avatar, expectedHash, text }) => {
+                        // @ts-ignore
+                        const headers = SillyTavern.getContext().getRequestHeaders();
+                        const response = await fetch('/api/characters/greetings/edit', {
+                            method: 'POST',
+                            headers,
+                            body: JSON.stringify({ avatar_url: avatar, position: 1, expected_hash: expectedHash, text }),
+                        });
+                        return response.status;
+                    }, { avatar, expectedHash: hashGreetingText(typed), text: otherText });
+                    expect(status).toBe(200);
+                }
+                await route.continue();
+            });
+
+            await openGreetingsPopup(page, 3);
+            const editResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/greetings/edit', { timeout: 15000 });
+            await popupRow(page, 1).locator('.alternate_greeting_text').fill(typed);
+            expect((await editResponse).ok()).toBe(true);
+
+            await expect.poll(() => otherEdited, { timeout: 10000 }).toBe(true);
+            expect(await storedGreetings(other, avatar)).toEqual([g0, otherText, g2]);
+        });
+
+        await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(otherText);
+        const after = await openingState(page);
+        expect(after.length).toBe(1);
+        expect(after.swipe_id).toBe(1);
+        expect(after.swipes).toEqual([g0, otherText, g2]);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(otherText);
+    });
+
     test('sidebar pager with auto-save on: confirming while the autosave is in flight keeps the same greeting shown with its new text', async ({ page }) => {
         const previousAutoSave = await page.evaluate(async () => {
             const { power_user } = await import('/scripts/power-user.js');
