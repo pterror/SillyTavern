@@ -2364,305 +2364,331 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
     return { entities, total: chars.total + groups.length, backend, position, groupsPosition };
 }
 
-async function handleQuery(request, response) {
-    try {
-        const body = request.body ?? {};
-        const filter = body.filter ?? {};
-        const sort = body.sort ?? {};
-        const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
-        const includeGroups = filter.includeGroups === true;
+/**
+ * @typedef {{ status: number, body: object } | { hashes: Parameters<typeof serializeQueryHashesBinary>[0] }} QueryReply
+ * What runQuery() answers: a JSON body with its status, or hash mode's binary body.
+ */
 
-        const searchTerm = typeof filter.search === 'string' ? filter.search.trim() : '';
-        const hasSearch = searchTerm.length > 0;
+/** @param {number} status @param {object} body @returns {QueryReply} */
+function queryReply(status, body) {
+    return { status, body };
+}
 
-        if (sort.field === 'search' && !hasSearch) {
-            return response.status(400).send({ error: true, reason: 'search-sort-requires-search', message: 'sort.field "search" requires a non-empty filter.search.' });
+/** @param {Parameters<typeof serializeQueryHashesBinary>[0]} hashes @returns {QueryReply} */
+function queryHashesReply(hashes) {
+    return { hashes };
+}
+
+/**
+ * `/query`'s answer to one request body.
+ * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
+ * @param {object} body The request body: filter, sort, want, page, pageSize, ifToken.
+ * @returns {Promise<QueryReply>}
+ */
+async function runQuery(user, body) {
+    const filter = body.filter ?? {};
+    const sort = body.sort ?? {};
+    const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
+    const includeGroups = filter.includeGroups === true;
+
+    const searchTerm = typeof filter.search === 'string' ? filter.search.trim() : '';
+    const hasSearch = searchTerm.length > 0;
+
+    if (sort.field === 'search' && !hasSearch) {
+        return queryReply(400, { error: true, reason: 'search-sort-requires-search', message: 'sort.field "search" requires a non-empty filter.search.' });
+    }
+    if (sort.field !== undefined && !QUERY_SORT_FIELDS.has(sort.field)) {
+        return queryReply(400, { error: true, reason: 'invalid-sort-field' });
+    }
+    const seed = Number(sort.seed);
+    if (sort.field === 'random' && !Number.isFinite(seed)) {
+        return queryReply(400, { error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
+    }
+    for (const w of want) {
+        if (w !== 'rows' && w !== 'total' && w !== 'hashes') {
+            return queryReply(400, { error: true, reason: 'want-not-supported', message: `want: "${w}" is not implemented yet.` });
         }
-        if (sort.field !== undefined && !QUERY_SORT_FIELDS.has(sort.field)) {
-            return response.status(400).send({ error: true, reason: 'invalid-sort-field' });
+    }
+
+    const page = Number.isFinite(Number(body.page)) && Number(body.page) >= 1 ? Math.trunc(Number(body.page)) : 1;
+    const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) > 0
+        ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
+        : DEFAULT_QUERY_PAGE_SIZE;
+    const offset = (page - 1) * pageSize;
+    const wantRows = want.includes('rows');
+    const wantTotal = want.includes('total');
+    // Hash-only mode is mutually exclusive with `rows` - one shape or the other per request.
+    const wantHashes = want.includes('hashes');
+    if (wantHashes && wantRows) {
+        return queryReply(400, { error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
+    }
+
+    // Cheap re-fetch guard: skip the search and row reads when the token rebuilt from the components this
+    // request's response would be built from (queryToken()) equals `ifToken`. Coarser than per-bucket digests.
+    // The position is read first, as the search reads the index before the rows.
+    if (typeof body.ifToken === 'string' && body.ifToken.length > 0) {
+        const handle = user.profile.handle;
+        const position = hasSearch ? await getCharacterIndexPosition(handle, user.directories) : null;
+        const groupsPosition = hasSearch && includeGroups ? await getGroupIndexPosition(handle, user.directories) : null;
+        const current = includeGroups
+            ? await getCurrentSeqAndGroupsVersion(user.directories)
+            : { seq: await getCurrentSeq(user.directories), groupsVersion: null };
+        const token = queryToken({ seq: current?.seq, groupsVersion: current?.groupsVersion, search: hasSearch, includeGroups, position, groupsPosition });
+        if (token !== null && token === body.ifToken) {
+            return queryReply(200, { seq: current.seq, token, unchanged: true });
         }
-        const seed = Number(sort.seed);
-        if (sort.field === 'random' && !Number.isFinite(seed)) {
-            return response.status(400).send({ error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
-        }
-        for (const w of want) {
-            if (w !== 'rows' && w !== 'total' && w !== 'hashes') {
-                return response.status(400).send({ error: true, reason: 'want-not-supported', message: `want: "${w}" is not implemented yet.` });
-            }
-        }
+    }
 
-        const page = Number.isFinite(Number(body.page)) && Number(body.page) >= 1 ? Math.trunc(Number(body.page)) : 1;
-        const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) > 0
-            ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
-            : DEFAULT_QUERY_PAGE_SIZE;
-        const offset = (page - 1) * pageSize;
-        const wantRows = want.includes('rows');
-        const wantTotal = want.includes('total');
-        // Hash-only mode is mutually exclusive with `rows` - one shape or the other per request.
-        const wantHashes = want.includes('hashes');
-        if (wantHashes && wantRows) {
-            return response.status(400).send({ error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
-        }
+    let searchBackend;
+    let queryParams = {
+        tags: filter.tags,
+        fav: filter.fav,
+        world: filter.world,
+        excludeIds: filter.excludeIds,
+        ids: filter.ids,
+        sortField: sort.field,
+        sortOrder: sort.order,
+        seed,
+        offset,
+        limit: pageSize,
+        handle: user.profile.handle,
+        wantRows,
+        wantTotal,
+        wantHashes,
+    };
+    // Whether a total computed against a search-narrowed candidate set is exact or approximate
+    // (wire convention: a `~` prefix, never a silently-truncated number).
+    let approxTotal = false;
 
-        // Cheap re-fetch guard: skip the search and row reads when the token rebuilt from the components this
-        // request's response would be built from (queryToken()) equals `ifToken`. Coarser than per-bucket digests.
-        // The position is read first, as the search reads the index before the rows.
-        if (typeof body.ifToken === 'string' && body.ifToken.length > 0) {
-            const handle = request.user.profile.handle;
-            const position = hasSearch ? await getCharacterIndexPosition(handle, request.user.directories) : null;
-            const groupsPosition = hasSearch && includeGroups ? await getGroupIndexPosition(handle, request.user.directories) : null;
-            const current = includeGroups
-                ? await getCurrentSeqAndGroupsVersion(request.user.directories)
-                : { seq: await getCurrentSeq(request.user.directories), groupsVersion: null };
-            const token = queryToken({ seq: current?.seq, groupsVersion: current?.groupsVersion, search: hasSearch, includeGroups, position, groupsPosition });
-            if (token !== null && token === body.ifToken) {
-                return response.send({ seq: current.seq, token, unchanged: true });
-            }
-        }
+    // Populated only in the hasSearch+includeGroups branch below, for JS-sorting merged relevance order
+    // when sort.field === 'search' (no SQL column exists for text relevance).
+    let combinedScoresById = null;
 
-        let searchBackend;
-        let queryParams = {
-            tags: filter.tags,
-            fav: filter.fav,
-            world: filter.world,
-            excludeIds: filter.excludeIds,
-            ids: filter.ids,
-            sortField: sort.field,
-            sortOrder: sort.order,
-            seed,
-            offset,
-            limit: pageSize,
-            handle: request.user.profile.handle,
-            wantRows,
-            wantTotal,
-            wantHashes,
-        };
-        // Whether a total computed against a search-narrowed candidate set is exact or approximate
-        // (wire convention: a `~` prefix, never a silently-truncated number).
-        let approxTotal = false;
+    // The indexes' positions as of the search reads, for the token.
+    let searchPosition = null;
+    let groupsSearchPosition = null;
+    /** @param {{ seq: number, groupsVersion?: number | null }} read The rows' read: its seq and groups version. */
+    const tokenFor = ({ seq, groupsVersion }) => queryToken({ seq, groupsVersion, search: hasSearch, includeGroups, position: searchPosition, groupsPosition: groupsSearchPosition });
 
-        // Populated only in the hasSearch+includeGroups branch below, for JS-sorting merged relevance order
-        // when sort.field === 'search' (no SQL column exists for text relevance).
-        let combinedScoresById = null;
+    markSinceStart('prologue');
+    if (hasSearch) {
+        const handle = user.profile.handle;
 
-        // The indexes' positions as of the search reads, for the token.
-        let searchPosition = null;
-        let groupsSearchPosition = null;
-        /** @param {{ seq: number, groupsVersion?: number | null }} read The rows' read: its seq and groups version. */
-        const tokenFor = ({ seq, groupsVersion }) => queryToken({ seq, groupsVersion, search: hasSearch, includeGroups, position: searchPosition, groupsPosition: groupsSearchPosition });
-
-        markSinceStart('prologue');
-        if (hasSearch) {
-            const handle = request.user.profile.handle;
-
-            // tantivy sorts natively when the sort field has a fast field, and only the page is hydrated. The index
-            // has no world field, so a world-filtered search takes the SQL path below.
-            if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world) {
-                const sortedPage = await searchSortedPage(handle, request.user.directories, {
-                    searchTerm, sortField: sort.field, sortOrder: sort.order, filter, includeGroups,
-                    offset, count: pageSize + pageOverFetch(pageSize),
-                });
-                if (sortedPage !== null) {
-                    searchBackend = sortedPage.backend;
-                    searchPosition = sortedPage.position;
-                    groupsSearchPosition = sortedPage.groupsPosition;
-                    const total = wantTotal ? sortedPage.total : undefined;
-                    if (includeGroups) {
-                        const result = await timePhase('page_rows', () => getEntityRowsByIds(request.user.directories, sortedPage.entities, { wantRows, wantHashes }));
-                        if (result === null) {
-                            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
-                        }
-                        if (wantHashes) {
-                            return sendHashQueryResponse(response, { seq: result.seq, token: tokenFor(result), total, approxTotal: false, hashRows: result.hashRows.slice(0, pageSize), searchBackend });
-                        }
-                        const payload = { seq: result.seq, token: tokenFor(result), searchBackend };
-                        if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows.slice(0, pageSize)));
-                        if (wantTotal) payload.total = total;
-                        return response.send(payload);
-                    }
-                    const ids = sortedPage.entities.map(e => e.id);
-                    const result = await timePhase('page_rows', () => queryCharacters(request.user.directories, { ids, wantRows, wantHashes, wantTotal: false }));
+        // tantivy sorts natively when the sort field has a fast field, and only the page is hydrated. The index
+        // has no world field, so a world-filtered search takes the SQL path below.
+        if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world) {
+            const sortedPage = await searchSortedPage(handle, user.directories, {
+                searchTerm, sortField: sort.field, sortOrder: sort.order, filter, includeGroups,
+                offset, count: pageSize + pageOverFetch(pageSize),
+            });
+            if (sortedPage !== null) {
+                searchBackend = sortedPage.backend;
+                searchPosition = sortedPage.position;
+                groupsSearchPosition = sortedPage.groupsPosition;
+                const total = wantTotal ? sortedPage.total : undefined;
+                if (includeGroups) {
+                    const result = await timePhase('page_rows', () => getEntityRowsByIds(user.directories, sortedPage.entities, { wantRows, wantHashes }));
                     if (result === null) {
-                        return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+                        return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
                     }
                     if (wantHashes) {
-                        // queryCharacters returns hashRows in id order; re-order to match tantivy's sort.
-                        const idToHashRow = new Map(result.hashRows.map(r => [r.id, r]));
-                        const orderedHashRows = ids.map(id => idToHashRow.get(id)).filter(Boolean).slice(0, pageSize);
-                        return sendHashQueryResponse(response, { seq: result.seq, token: tokenFor(result), total, approxTotal: false, hashRows: orderedHashRows, searchBackend });
+                        return queryHashesReply({ seq: result.seq, token: tokenFor(result), total, approxTotal: false, hashRows: result.hashRows.slice(0, pageSize), searchBackend });
                     }
                     const payload = { seq: result.seq, token: tokenFor(result), searchBackend };
+                    if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, result.rows.slice(0, pageSize)));
                     if (wantTotal) payload.total = total;
-                    if (wantRows) {
-                        // Rows here are always plain toShallow() projections, so the id lives at `.avatar`.
-                        const idToRow = new Map(result.rows.map(r => [r.avatar, r]));
-                        payload.rows = ids.map(id => idToRow.get(id)).filter(Boolean).slice(0, pageSize);
-                    }
-                    return response.send(payload);
+                    return queryReply(200, payload);
                 }
-            }
-
-            // 'search' sort only needs a relevance-ordered page-sized window, plus a margin for hits whose row is
-            // gone (the rows read below drop them, since the index can lag a delete); any other sort needs the full
-            // matched set since ordering comes from SQL. Undefined tells the search engine to return all matches.
-            const idFetchCap = sort.field === 'search' ? offset + pageSize + pageOverFetch(pageSize) : undefined;
-            // fav, tags, ids and excludeIds (for groups: fav and tags) are applied inside the search engine itself
-            // (runIdSearch/runGroupSearch), before idFetchCap, so a hit they rule out never takes a place in the
-            // capped list and leaves the page short. world isn't: the search engine has no world field. The SQL
-            // below still checks fav, tags and excludeIds, and explicitIds still intersects, because the index can
-            // lag the db by about a second.
-            const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags, ids: Array.isArray(filter.ids) ? filter.ids : undefined, excludeIds: filter.excludeIds });
-            searchPosition = searchResult.position;
-
-            // filter.ids and filter.search both restrict the candidate set - when both are present they
-            // intersect, not override each other, for both types when includeGroups is active.
-            const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
-            const effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
-
-            let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy', position: null };
-            let effectiveGroupIds = [];
-            if (includeGroups) {
-                groupSearchResult = await searchGroupIds(handle, request.user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags });
-                groupsSearchPosition = groupSearchResult.position;
-                effectiveGroupIds = timePhase('merge_ids', () => explicitIds ? groupSearchResult.ids.filter(id => explicitIds.has(id)) : groupSearchResult.ids);
-            }
-
-            // Character and group search resolve their engine tier independently but always agree in practice
-            // (both go through the same process-wide resolveSearchEngine() cache) - report whichever is worse,
-            // matching the `/all` route's identical BACKEND_SEVERITY comparison, in case they ever don't.
-            const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
-            searchBackend = includeGroups && BACKEND_SEVERITY[groupSearchResult.backend] > BACKEND_SEVERITY[searchResult.backend]
-                ? groupSearchResult.backend
-                : searchResult.backend;
-
-            approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap));
-
-            if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
-                const current = includeGroups
-                    ? await timePhase('query_characters', () => getCurrentSeqAndGroupsVersion(request.user.directories))
-                    : { seq: (await timePhase('query_characters', () => queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? null, groupsVersion: null };
-                const seq = current?.seq ?? 0;
-                const token = current ? tokenFor(current) : null;
-                if (wantHashes) {
-                    return sendHashQueryResponse(response, { seq, token, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
-                }
-                const payload = { seq, token, searchBackend };
-                if (wantRows) payload.rows = [];
-                if (wantTotal) payload.total = 0;
-                return response.send(payload);
-            }
-
-            if (includeGroups) {
-                // Groups have their own full-text index - resolve both id sets, then answer from
-                // queryEntities()'s UNION ALL restricted to their union.
-                combinedScoresById = timePhase('merge_ids', () => new Map([...searchResult.scoresById, ...groupSearchResult.scoresById]));
-                const combinedIds = timePhase('merge_ids', () => [...effectiveIds, ...effectiveGroupIds]);
-                const entityParams = {
-                    tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
-                    ids: combinedIds, handle, wantRows, wantTotal, wantHashes,
-                };
-                if (sort.field === 'search') {
-                    // No SQL column for relevance - fetch every matched row so the JS reorder+slice below sees the true top-K.
-                    entityParams.offset = 0;
-                    entityParams.limit = combinedIds.length;
-                } else {
-                    // A non-relevance sort composes with search narrowing - SQL does ORDER BY/LIMIT/OFFSET directly.
-                    entityParams.sortField = sort.field;
-                    entityParams.sortOrder = sort.order;
-                    entityParams.seed = seed;
-                    entityParams.offset = offset;
-                    entityParams.limit = pageSize;
-                }
-                const result = await timePhase('query_entities', () => queryEntities(request.user.directories, entityParams));
+                const ids = sortedPage.entities.map(e => e.id);
+                const result = await timePhase('page_rows', () => queryCharacters(user.directories, { ids, wantRows, wantHashes, wantTotal: false }));
                 if (result === null) {
-                    return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+                    return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
                 }
-
-                let rows = result.rows;
-                let hashRows = result.hashRows;
-                if (sort.field === 'search' && (wantRows || wantHashes)) {
-                    // No SQL column for relevance - queryEntities() returned every matched row in id order; reorder by score here.
-                    if (wantRows) rows = timePhase('js_sort', () => rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
-                    if (wantHashes) hashRows = timePhase('js_sort', () => hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
-                }
-
-                const totalApprox = approxTotal || result.approxTotal;
                 if (wantHashes) {
-                    return sendHashQueryResponse(response, {
-                        seq: result.seq,
-                        token: tokenFor(result),
-                        total: wantTotal ? result.total : undefined,
-                        approxTotal: totalApprox,
-                        hashRows,
-                        searchBackend,
-                    });
+                    // queryCharacters returns hashRows in id order; re-order to match tantivy's sort.
+                    const idToHashRow = new Map(result.hashRows.map(r => [r.id, r]));
+                    const orderedHashRows = ids.map(id => idToHashRow.get(id)).filter(Boolean).slice(0, pageSize);
+                    return queryHashesReply({ seq: result.seq, token: tokenFor(result), total, approxTotal: false, hashRows: orderedHashRows, searchBackend });
                 }
-                const payload = { seq: result.seq, token: tokenFor(result) };
-                if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
-                if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, rows));
-                if (searchBackend !== undefined) payload.searchBackend = searchBackend;
-                return response.send(payload);
-            }
-
-            queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
-            if (sort.field === 'search') {
-                // queryCharacters() pages the ranked ids before reading rows, so hits whose row is gone would
-                // leave the page short; it reads the margin too, and the page is trimmed back below.
-                queryParams.limit = pageSize + pageOverFetch(pageSize);
+                const payload = { seq: result.seq, token: tokenFor(result), searchBackend };
+                if (wantTotal) payload.total = total;
+                if (wantRows) {
+                    // Rows here are always plain toShallow() projections, so the id lives at `.avatar`.
+                    const idToRow = new Map(result.rows.map(r => [r.avatar, r]));
+                    payload.rows = ids.map(id => idToRow.get(id)).filter(Boolean).slice(0, pageSize);
+                }
+                return queryReply(200, payload);
             }
         }
 
-        // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly.
-        if (!hasSearch && includeGroups) {
-            const result = await timePhase('query_entities', () => queryEntities(request.user.directories, queryParams));
+        // 'search' sort only needs a relevance-ordered page-sized window, plus a margin for hits whose row is
+        // gone (the rows read below drop them, since the index can lag a delete); any other sort needs the full
+        // matched set since ordering comes from SQL. Undefined tells the search engine to return all matches.
+        const idFetchCap = sort.field === 'search' ? offset + pageSize + pageOverFetch(pageSize) : undefined;
+        // fav, tags, ids and excludeIds (for groups: fav and tags) are applied inside the search engine itself
+        // (runIdSearch/runGroupSearch), before idFetchCap, so a hit they rule out never takes a place in the
+        // capped list and leaves the page short. world isn't: the search engine has no world field. The SQL
+        // below still checks fav, tags and excludeIds, and explicitIds still intersects, because the index can
+        // lag the db by about a second.
+        const searchResult = await searchCharacterIds(handle, user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags, ids: Array.isArray(filter.ids) ? filter.ids : undefined, excludeIds: filter.excludeIds });
+        searchPosition = searchResult.position;
+
+        // filter.ids and filter.search both restrict the candidate set - when both are present they
+        // intersect, not override each other, for both types when includeGroups is active.
+        const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
+        const effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
+
+        let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy', position: null };
+        let effectiveGroupIds = [];
+        if (includeGroups) {
+            groupSearchResult = await searchGroupIds(handle, user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags });
+            groupsSearchPosition = groupSearchResult.position;
+            effectiveGroupIds = timePhase('merge_ids', () => explicitIds ? groupSearchResult.ids.filter(id => explicitIds.has(id)) : groupSearchResult.ids);
+        }
+
+        // Character and group search resolve their engine tier independently but always agree in practice
+        // (both go through the same process-wide resolveSearchEngine() cache) - report whichever is worse,
+        // matching the `/all` route's identical BACKEND_SEVERITY comparison, in case they ever don't.
+        const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
+        searchBackend = includeGroups && BACKEND_SEVERITY[groupSearchResult.backend] > BACKEND_SEVERITY[searchResult.backend]
+            ? groupSearchResult.backend
+            : searchResult.backend;
+
+        approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap));
+
+        if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
+            const current = includeGroups
+                ? await timePhase('query_characters', () => getCurrentSeqAndGroupsVersion(user.directories))
+                : { seq: (await timePhase('query_characters', () => queryCharacters(user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? null, groupsVersion: null };
+            const seq = current?.seq ?? 0;
+            const token = current ? tokenFor(current) : null;
+            if (wantHashes) {
+                return queryHashesReply({ seq, token, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
+            }
+            const payload = { seq, token, searchBackend };
+            if (wantRows) payload.rows = [];
+            if (wantTotal) payload.total = 0;
+            return queryReply(200, payload);
+        }
+
+        if (includeGroups) {
+            // Groups have their own full-text index - resolve both id sets, then answer from
+            // queryEntities()'s UNION ALL restricted to their union.
+            combinedScoresById = timePhase('merge_ids', () => new Map([...searchResult.scoresById, ...groupSearchResult.scoresById]));
+            const combinedIds = timePhase('merge_ids', () => [...effectiveIds, ...effectiveGroupIds]);
+            const entityParams = {
+                tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
+                ids: combinedIds, handle, wantRows, wantTotal, wantHashes,
+            };
+            if (sort.field === 'search') {
+                // No SQL column for relevance - fetch every matched row so the JS reorder+slice below sees the true top-K.
+                entityParams.offset = 0;
+                entityParams.limit = combinedIds.length;
+            } else {
+                // A non-relevance sort composes with search narrowing - SQL does ORDER BY/LIMIT/OFFSET directly.
+                entityParams.sortField = sort.field;
+                entityParams.sortOrder = sort.order;
+                entityParams.seed = seed;
+                entityParams.offset = offset;
+                entityParams.limit = pageSize;
+            }
+            const result = await timePhase('query_entities', () => queryEntities(user.directories, entityParams));
             if (result === null) {
-                return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+                return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
             }
 
+            let rows = result.rows;
+            let hashRows = result.hashRows;
+            if (sort.field === 'search' && (wantRows || wantHashes)) {
+                // No SQL column for relevance - queryEntities() returned every matched row in id order; reorder by score here.
+                if (wantRows) rows = timePhase('js_sort', () => rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
+                if (wantHashes) hashRows = timePhase('js_sort', () => hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
+            }
+
+            const totalApprox = approxTotal || result.approxTotal;
             if (wantHashes) {
-                return sendHashQueryResponse(response, {
+                return queryHashesReply({
                     seq: result.seq,
                     token: tokenFor(result),
                     total: wantTotal ? result.total : undefined,
-                    approxTotal: result.approxTotal,
-                    hashRows: result.hashRows,
-                    searchBackend: undefined,
+                    approxTotal: totalApprox,
+                    hashRows,
+                    searchBackend,
                 });
             }
             const payload = { seq: result.seq, token: tokenFor(result) };
-            if (wantTotal) payload.total = result.approxTotal ? `~${result.total}` : result.total;
-            if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows));
-            return response.send(payload);
+            if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
+            if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, rows));
+            if (searchBackend !== undefined) payload.searchBackend = searchBackend;
+            return queryReply(200, payload);
         }
 
-        const result = await timePhase('query_characters', () => queryCharacters(request.user.directories, queryParams));
+        queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
+        if (sort.field === 'search') {
+            // queryCharacters() pages the ranked ids before reading rows, so hits whose row is gone would
+            // leave the page short; it reads the margin too, and the page is trimmed back below.
+            queryParams.limit = pageSize + pageOverFetch(pageSize);
+        }
+    }
 
+    // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly.
+    if (!hasSearch && includeGroups) {
+        const result = await timePhase('query_entities', () => queryEntities(user.directories, queryParams));
         if (result === null) {
-            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+            return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
         }
 
-        if (hasSearch && sort.field === 'search') {
-            if (result.rows) result.rows = result.rows.slice(0, pageSize);
-            if (result.hashRows) result.hashRows = result.hashRows.slice(0, pageSize);
-        }
-
-        // includeGroups is always false here - both includeGroups branches already returned above.
-        const totalApprox = approxTotal || result.approxTotal;
         if (wantHashes) {
-            return sendHashQueryResponse(response, {
+            return queryHashesReply({
                 seq: result.seq,
                 token: tokenFor(result),
                 total: wantTotal ? result.total : undefined,
-                approxTotal: totalApprox,
+                approxTotal: result.approxTotal,
                 hashRows: result.hashRows,
-                searchBackend,
+                searchBackend: undefined,
             });
         }
         const payload = { seq: result.seq, token: tokenFor(result) };
-        if (wantRows) payload.rows = result.rows;
-        if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
-        if (searchBackend !== undefined) payload.searchBackend = searchBackend;
-        return response.send(payload);
+        if (wantTotal) payload.total = result.approxTotal ? `~${result.total}` : result.total;
+        if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, result.rows));
+        return queryReply(200, payload);
+    }
+
+    const result = await timePhase('query_characters', () => queryCharacters(user.directories, queryParams));
+
+    if (result === null) {
+        return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
+    }
+
+    if (hasSearch && sort.field === 'search') {
+        if (result.rows) result.rows = result.rows.slice(0, pageSize);
+        if (result.hashRows) result.hashRows = result.hashRows.slice(0, pageSize);
+    }
+
+    // includeGroups is always false here - both includeGroups branches already returned above.
+    const totalApprox = approxTotal || result.approxTotal;
+    if (wantHashes) {
+        return queryHashesReply({
+            seq: result.seq,
+            token: tokenFor(result),
+            total: wantTotal ? result.total : undefined,
+            approxTotal: totalApprox,
+            hashRows: result.hashRows,
+            searchBackend,
+        });
+    }
+    const payload = { seq: result.seq, token: tokenFor(result) };
+    if (wantRows) payload.rows = result.rows;
+    if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
+    if (searchBackend !== undefined) payload.searchBackend = searchBackend;
+    return queryReply(200, payload);
+}
+
+async function handleQuery(request, response) {
+    try {
+        const reply = await runQuery(request.user, request.body ?? {});
+        if ('hashes' in reply) return sendHashQueryResponse(response, reply.hashes);
+        return response.status(reply.status).send(reply.body);
     } catch (err) {
         console.error('[characters/query] Query failed:', err);
         return response.status(500).send({ error: true });
