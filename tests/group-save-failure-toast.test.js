@@ -187,11 +187,35 @@ jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({
     getRequestHeaders: jest.fn(() => ({})),
 }));
 
-jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
-    characters,
-    charactersStore: charactersStoreMock,
-    setCharacterId: jest.fn(),
-}));
+jest.unstable_mockModule('../public/scripts/character-store.js', () => {
+    // The real resolveCharacterRef, resolveCharacterRefPair and CHARACTER_REF_MISMATCH over this mock's stores.
+    const CHARACTER_REF_MISMATCH = Symbol('CHARACTER_REF_MISMATCH');
+    const resolveCharacterRef = (ref) => {
+        const upstreamHit = characters[ref];
+        if (upstreamHit !== undefined) {
+            return upstreamHit;
+        }
+        if (typeof ref === 'string') {
+            return charactersStoreMock.get(ref);
+        }
+        if (typeof ref === 'object' && ref !== null && typeof ref.avatar === 'string') {
+            return charactersStoreMock.get(ref.avatar);
+        }
+        return undefined;
+    };
+    const resolveCharacterRefPair = (ref, avatar) => {
+        const character = resolveCharacterRef(ref);
+        return typeof character?.avatar === 'string' && character.avatar === avatar ? character : CHARACTER_REF_MISMATCH;
+    };
+    return {
+        characters,
+        charactersStore: charactersStoreMock,
+        setCharacterId: jest.fn(),
+        resolveCharacterRef,
+        resolveCharacterRefPair,
+        CHARACTER_REF_MISMATCH,
+    };
+});
 
 jest.unstable_mockModule('../public/scripts/events.js', () => ({
     eventSource: { emit: jest.fn() },
