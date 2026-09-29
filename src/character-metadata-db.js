@@ -5061,12 +5061,11 @@ const NOT_MARKED_DELETED_SQL = 'id NOT IN (SELECT tag_id FROM tag_deletions)';
  * are left out of both.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} tileIds Distinct tag ids.
- * @param {number} maxClosed
- * @returns {Promise<{ closedByTileId: Map<string, boolean>, closedIds: string[] | null } | null>} closedByTileId: for
- *   each of `tileIds` that exists, whether its folder_type is CLOSED. closedIds: every closed folder, null when there
- *   are more than `maxClosed`. null when no SQLite engine is usable.
+ * @returns {Promise<{ closedByTileId: Map<string, boolean>, closedIds: string[] } | null>} closedByTileId: for each of
+ *   `tileIds` that exists, whether its folder_type is CLOSED. closedIds: every closed folder, read in keyset batches.
+ *   null when no SQLite engine is usable.
  */
-export async function getFolderTileTags(directories, tileIds, maxClosed) {
+export async function getFolderTileTags(directories, tileIds) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     /** @type {Map<string, boolean>} */
@@ -5090,12 +5089,17 @@ export async function getFolderTileTags(directories, tileIds, maxClosed) {
     const closedWhere = tagQueryColumnsReady(entry)
         ? 'is_folder = 1 AND folder_type = \'CLOSED\''
         : 'CASE WHEN json_valid(data) THEN json_extract(data, \'$.folder_type\') END = \'CLOSED\'';
-    const closedRows = /** @type {{ id: string }[]} */ (entry.db.readBounded(
-        `SELECT id FROM tags WHERE ${closedWhere} AND ${NOT_MARKED_DELETED_SQL} ORDER BY id LIMIT ?`,
-        [maxClosed + 1],
-        maxClosed + 1,
-    ));
-    const closedIds = closedRows.length > maxClosed ? null : closedRows.map(row => row.id);
+    /** @type {string[]} */
+    const closedIds = [];
+    for await (const rows of streamRows(entry.db, {
+        firstPageSql: `SELECT id FROM tags WHERE ${closedWhere} AND ${NOT_MARKED_DELETED_SQL} ORDER BY id LIMIT @limit`,
+        firstPageParams: {},
+        nextPageSql: `SELECT id FROM tags WHERE ${closedWhere} AND ${NOT_MARKED_DELETED_SQL} AND id > @after ORDER BY id LIMIT @limit`,
+        nextPageParams: {},
+        keyColumn: 'id',
+    })) {
+        for (const row of /** @type {{ id: string }[]} */ (rows)) closedIds.push(row.id);
+    }
     return { closedByTileId, closedIds };
 }
 
@@ -9298,9 +9302,9 @@ function pushExpandedTagClauses(clauses, args, expanded, { tagTable, entityColum
     }
     if (exclude.length > 0) {
         clauses.push(perRow
-            ? `NOT EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id IN (${placeholders(exclude)})${rowCondition})`
-            : `id NOT IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (${placeholders(exclude)})${rowCondition})`);
-        args.push(...exclude);
+            ? `NOT EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id IN (SELECT value FROM json_each(?))${rowCondition})`
+            : `id NOT IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (SELECT value FROM json_each(?))${rowCondition})`);
+        args.push(JSON.stringify(exclude));
     }
 }
 
@@ -9366,9 +9370,9 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}, deletions 
         if (exclude.length > 0) {
             // With an id list, each hit's own rows are checked by primary key, as for an included tag above.
             clauses.push(hasIds
-                ? `NOT EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id IN (${exclude.map(() => '?').join(', ')}))`
-                : `id NOT IN (SELECT character_id FROM character_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}))`);
-            args.push(...exclude);
+                ? 'NOT EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id IN (SELECT value FROM json_each(?)))'
+                : 'id NOT IN (SELECT character_id FROM character_tags WHERE tag_id IN (SELECT value FROM json_each(?)))');
+            args.push(JSON.stringify(exclude));
         }
     }
 
@@ -10122,9 +10126,9 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = 
         }
         if (exclude.length > 0) {
             clauses.push(hasIds
-                ? `NOT EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id IN (${exclude.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`
-                : `id NOT IN (SELECT group_id FROM group_tags WHERE tag_id IN (${exclude.map(() => '?').join(', ')}) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
-            args.push(...exclude);
+                ? `NOT EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id IN (SELECT value FROM json_each(?)) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`
+                : `id NOT IN (SELECT group_id FROM group_tags WHERE tag_id IN (SELECT value FROM json_each(?)) AND ${GROUP_TAG_ROW_IS_GROUP_SQL})`);
+            args.push(JSON.stringify(exclude));
         }
     }
 
