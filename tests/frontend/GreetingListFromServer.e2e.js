@@ -265,6 +265,33 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(opening).toEqual({ mes: edited, swipe_id: 1 });
     });
 
+    test('#character_json_data save: a greeting another session changed since load is not overwritten, the rest lands, and a warning lists the change not saved', async ({ page }) => {
+        const s = stamp();
+        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `FormConflict-${s}`, [g0, g1, g2]);
+        await openCharacter(page, avatar);
+        const elsewhere = `Two changed elsewhere ${s}`;
+        await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g2), text: elsewhere });
+
+        const [e1, e2, added] = [`One edited ${s}`, `Two edited ${s}`, `Three added ${s}`];
+        await page.evaluate(async (greetings) => {
+            // @ts-ignore
+            const card = JSON.parse($('#character_json_data').val());
+            card.data.alternate_greetings = greetings;
+            // @ts-ignore
+            $('#character_json_data').val(JSON.stringify(card));
+            const { createOrEditCharacter } = await import('/script.js');
+            await createOrEditCharacter(new CustomEvent('newChat'));
+        }, [e1, e2, added]);
+
+        expect((await storedModel(page, avatar)).greetings).toEqual([g0, e1, elsewhere, added]);
+        await expectPageHoldsServerList(page, avatar);
+        const warning = page.locator('.toast-warning', { hasText: e2 });
+        await expect(warning).toBeVisible({ timeout: 10000 });
+        await expect(warning).not.toContainText(e1);
+        await expect(warning).not.toContainText(added);
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];

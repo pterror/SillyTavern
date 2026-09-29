@@ -10910,12 +10910,15 @@ function withoutEmptyGreetings(model) {
 }
 
 /**
- * Makes the stored greetings equal the JSON's, through the greeting operations. Each op's precondition
- * starts from the JSON the fork last loaded, so a greeting changed elsewhere since then is refused, not overwritten.
+ * Makes the stored greetings equal the JSON's, through the greeting operations. Every edit, delete and default
+ * change is checked against the greetings as the fork last loaded them (with this run's own saved ops applied), so a
+ * greeting another session changed since then is refused, not overwritten. A refused op is skipped and the rest of
+ * the run still goes through; a warning then lists each change that wasn't saved, with its text. Adds can't
+ * overwrite anything, so they go at the end of the list as currently stored.
  * @param {string} avatar
  * @param {object} baselineCard
  * @param {object} card
- * @returns {Promise<boolean>} False when an op failed; the ones after it were not sent.
+ * @returns {Promise<boolean>} False when an op failed other than by being refused; the ones after it were not sent.
  */
 async function saveGreetingsFromForm(avatar, baselineCard, card) {
     const start = cardToGreetingsModel(baselineCard);
@@ -10926,56 +10929,119 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
 
     // One queued save for the whole run: its ops never overlap another greeting write for this character.
     return await queueGreetingSave(avatar, async () => {
-        const greetings = start.greetings.slice();
-        let hashes = greetings.map(hashGreetingText);
-        let defaultIndex = start.defaultIndex;
+        // The greetings as loaded, with this run's saved ops applied: every precondition is read from here.
+        const planned = start.greetings.slice();
+        let plannedDefault = start.defaultIndex;
+        /** @type {number|null} Length of the list as stored, from the latest op response. */
+        let storedLength = null;
+        /** @type {string[]} */
+        const notSaved = [];
+
+        const warnNotSaved = () => {
+            if (notSaved.length === 0) return;
+            const items = notSaved.map(item => `<li>${escapeHtml(item)}</li>`).join('');
+            toastr.warning(
+                `${escapeHtml(t`These greetings were changed in another session, so these changes to them were not saved. Redo them if you still want them:`)}<ul>${items}</ul>`,
+                t`Some greeting changes not saved`,
+                { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 },
+            );
+        };
 
         /**
          * @param {string} opName
          * @param {object} body
-         * @param {() => void} applyLocally
+         * @param {string} description What the change was, for the warning if it is refused.
+         * @returns {Promise<'saved'|'refused'|'failed'>}
          */
-        const runOp = async (opName, body, applyLocally) => {
+        const runOp = async (opName, body, description) => {
             const result = await postGreetingOp(opName, { avatar_url: avatar, ...body });
             if (!result.ok) {
                 console.error('Greeting save failed', { avatar, opName, status: result.status, reason: result.reason });
-                toastr.error(result.status === 409
-                    ? t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`
-                    : t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-                return false;
+                if (result.status === 409) {
+                    notSaved.push(description);
+                    return 'refused';
+                }
+                toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+                return 'failed';
             }
-            applyLocally();
-            hashes = result.hashes;
-            defaultIndex = result.defaultPosition;
+            storedLength = result.hashes.length;
             const character = charactersStore.get(avatar);
             if (character) {
                 applyGreetingOpSuccess(character, result, opName === 'edit' ? { expectedHash: body.expected_hash, text: body.text } : undefined);
             }
+            return 'saved';
+        };
+
+        const run = async () => {
+            const shared = Math.min(planned.length, target.greetings.length);
+            for (let position = 0; position < shared; position++) {
+                const text = target.greetings[position];
+                if (planned[position] === text) continue;
+                const outcome = await runOp('edit', { position, expected_hash: hashGreetingText(planned[position]), text }, t`Greeting ${position + 1} changed to: ${text}`);
+                if (outcome === 'failed') return false;
+                if (outcome === 'saved') planned[position] = text;
+            }
+            for (let index = planned.length; index < target.greetings.length; index++) {
+                const text = target.greetings[index];
+                if (storedLength === null) {
+                    storedLength = await readStoredGreetingCount(avatar);
+                    if (storedLength === null) {
+                        toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+                        return false;
+                    }
+                }
+                const outcome = await runOp('add', { position: storedLength, expected_length: storedLength, text }, t`New greeting: ${text}`);
+                if (outcome === 'failed') return false;
+                if (outcome === 'saved') planned.push(text);
+            }
+            for (let position = planned.length - 1; position >= target.greetings.length; position--) {
+                const text = planned[position];
+                const outcome = await runOp('delete', { position, expected_hash: hashGreetingText(text) }, t`Greeting ${position + 1} deleted: ${text}`);
+                if (outcome === 'failed') return false;
+                if (outcome === 'saved') {
+                    planned.splice(position, 1);
+                    plannedDefault = reindexDefaultAfterRemoval(plannedDefault, position);
+                }
+            }
+            if (plannedDefault !== target.defaultIndex) {
+                if (target.defaultIndex === null) {
+                    const outcome = await runOp('default/unset', { expected_default_position: plannedDefault }, t`Default greeting cleared`);
+                    if (outcome === 'failed') return false;
+                } else {
+                    const text = target.greetings[target.defaultIndex];
+                    const description = t`Default greeting set to: ${text}`;
+                    if (planned[target.defaultIndex] !== text) {
+                        // The change that would have put this greeting there wasn't saved.
+                        notSaved.push(description);
+                    } else {
+                        const outcome = await runOp('default/set', { position: target.defaultIndex, expected_hash: hashGreetingText(text) }, description);
+                        if (outcome === 'failed') return false;
+                    }
+                }
+            }
             return true;
         };
 
-        const shared = Math.min(greetings.length, target.greetings.length);
-        for (let position = 0; position < shared; position++) {
-            const text = target.greetings[position];
-            if (greetings[position] === text) continue;
-            if (!await runOp('edit', { position, expected_hash: hashes[position], text }, () => { greetings[position] = text; })) return false;
-        }
-        while (greetings.length < target.greetings.length) {
-            const text = target.greetings[greetings.length];
-            if (!await runOp('add', { position: greetings.length, expected_length: hashes.length, text }, () => { greetings.push(text); })) return false;
-        }
-        while (greetings.length > target.greetings.length) {
-            const position = greetings.length - 1;
-            if (!await runOp('delete', { position, expected_hash: hashes[position] }, () => { greetings.pop(); })) return false;
-        }
-        if (defaultIndex !== target.defaultIndex) {
-            const ok = target.defaultIndex === null
-                ? await runOp('default/unset', { expected_default_position: defaultIndex }, () => { })
-                : await runOp('default/set', { position: target.defaultIndex, expected_hash: hashes[target.defaultIndex] }, () => { });
-            if (!ok) return false;
-        }
-        return true;
+        const ok = await run();
+        warnNotSaved();
+        return ok;
     });
+}
+
+/**
+ * How many greetings the character has as stored.
+ * @param {string} avatar
+ * @returns {Promise<number|null>} Null when it couldn't be read.
+ */
+async function readStoredGreetingCount(avatar) {
+    try {
+        const response = await fetch('/api/characters/get', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
+        if (!response.ok) return null;
+        return cardToGreetingsModel(await response.json()).greetings.length;
+    } catch (error) {
+        console.error('Greeting list read failed', error);
+        return null;
+    }
 }
 
 /**
