@@ -16,7 +16,7 @@ import {
     readSavedPanelOpenStates,
     isSwipingAllowed,
 } from '../script.js';
-import { queryEntitiesList, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
+import { queryWithSortFallback, characterToEntity, groupToEntity, entitiesFilter } from './character-list.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { main_api, max_context } from './generation-params.js';
 import { getRequestHeaders } from './request-headers.js';
@@ -26,10 +26,9 @@ import { eventSource } from './events.js';
 import {
     power_user,
     send_on_enter_options,
-    sortEntitiesList,
 } from './power-user.js';
 
-import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
+import { characterRepository, buildCharacterQuery, normalizeQueryRow } from './character-repository.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { selected_group, is_group_generating, openGroupById, groups } from './group-chats.js';
 import { applyTagsOnCharacterSelect } from './tags.js';
@@ -39,7 +38,6 @@ import {
     secret_state,
 } from './secrets.js';
 import { debounce, getStringHash, isValidUrl } from './utils.js';
-import { normalizeFav } from './hash-utils.js';
 import { chat_completion_sources, oai_settings, POLLINATIONS_ENDPOINT } from './chat-completion-settings.js';
 import { getRememberedTokenizerAnswer, getTokenCountsWithTokenizer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
@@ -381,10 +379,8 @@ async function RA_autoloadchat() {
 }
 
 /**
- * Fills the favorites hotswap strip. Queries the server for the top FAVS_LIMIT favorited characters (already
- * sorted) instead of building/sorting the whole resident list, and merges in favorited groups locally (groups
- * aren't part of the server query). Falls back to the fully-local path when the sort field can't be
- * server-queried, or the server rejects it as an invalid sort field.
+ * Fills the favorites hotswap strip with the top FAVS_LIMIT favorited characters and groups, in the list's sort (or
+ * its fallback, see queryWithSortFallback()).
  */
 export async function favsToHotswap() {
     // The refresh is decorative and most callers don't await/catch it, so an uncaught throw here becomes
@@ -410,38 +406,20 @@ async function favsToHotswapImpl() {
     const { FILTER_TYPES } = await import('./filters.js');
     const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) || '';
 
-    let favs;
-    let usedServerQuery = false;
-    if (isServerQueryableSort(sortField)) {
-        try {
-            const { filter, sort } = buildCharacterQuery({
-                fav: true,
-                includeGroups: true,
-                searchTerm,
-                sortField,
-                sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
-                randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
-            });
-            const { rows = [] } = await characterRepository.query(filter, sort, 1, FAVS_LIMIT, ['rows']);
-            favs = rows.map(row => {
-                const { type, item } = normalizeQueryRow(row);
-                return type === 'group' ? groupToEntity(item) : characterToEntity(item);
-            });
-            usedServerQuery = true;
-        } catch (error) {
-            if (!isInvalidSortFieldError(error)) throw error;
-            // Falls through to the fully-local path below.
-        }
-    }
-    if (!usedServerQuery) {
-        let entities = await queryEntitiesList({ doFilter: false, doSort: false });
-        if (searchTerm) {
-            entities = entitiesFilter.searchFilter(entities);
-        }
-        favs = entities.filter(x => normalizeFav(x.item.fav));
-        sortEntitiesList(favs, false);
-        favs = favs.slice(0, FAVS_LIMIT);
-    }
+    const { filter, sort } = buildCharacterQuery({
+        fav: true,
+        includeGroups: true,
+        searchTerm,
+        sortField,
+        sortOrder: power_user.sort_order === 'desc' ? 'desc' : 'asc',
+        randomSeed: isRandom ? getRandomSortSeed(accountStorage) : undefined,
+    });
+    const { result } = await queryWithSortFallback(filter, sort,
+        trySort => characterRepository.query(filter, trySort, 1, FAVS_LIMIT, ['rows']));
+    const favs = (result.rows ?? []).map(row => {
+        const { type, item } = normalizeQueryRow(row);
+        return type === 'group' ? groupToEntity(item) : characterToEntity(item);
+    });
 
     if (favs.length == 0) {
         container.html(`<small><span><i class="fa-solid fa-star"></i>&nbsp;${DOMPurify.sanitize(container.attr('no_favs'))}</span></small>`);
