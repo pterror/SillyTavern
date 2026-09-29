@@ -725,19 +725,123 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
         expect(current).toEqual({ seq: caughtUp.seq, token: caughtUp.token, unchanged: true });
     }, 30000);
 
-    test('with includeGroups there is no token and ifToken is never answered unchanged, on either path', async () => {
+    /**
+     * Repeats `request` until two answers in a row have the same token, so the indexes have settled.
+     * @param {object} request
+     */
+    async function settledQuery(request) {
+        let previous = await (await postJson('/api/characters/query', request)).json();
+        const deadline = Date.now() + 10000;
+        for (;;) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+            const next = await (await postJson('/api/characters/query', request)).json();
+            if (next.token === previous.token || Date.now() > deadline) return next;
+            previous = next;
+        }
+    }
+
+    const groupRequests = {
+        'the SQL path': { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 },
+        'the search path, tantivy sorted': { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 },
+        'the search path, SQL sorted': { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 10 },
+    };
+    const typedIds = (body) => body.rows.map(r => `${r.type}:${r.type === 'group' ? r.item.id : r.item.avatar}`).sort();
+
+    test.each(Object.keys(groupRequests))('with includeGroups on %s, a repeat answers unchanged when nothing moved, and a group write that moves only the groups log is not', async (path) => {
+        const request = groupRequests[path];
         await seedCharacterWithFile('Vampire.png', cardFor('Vampire Lord'));
         await seedGroup('g1', { name: 'Vampire Coven' });
-        for (const filter of [{ includeGroups: true }, { includeGroups: true, search: 'vampire' }]) {
-            const request = { filter, page: 1, pageSize: 10 };
-            const first = await (await postJson('/api/characters/query', request)).json();
-            expect(first.token).toBeNull();
-            const withoutGroups = await (await postJson('/api/characters/query', { ...request, filter: { ...filter, includeGroups: false } })).json();
-            const again = await (await postJson('/api/characters/query', { ...request, ifToken: withoutGroups.token })).json();
-            expect(again.unchanged).toBeUndefined();
-            expect(again.rows.length).toBe(2);
+
+        const first = await settledQuery(request);
+        expect(typeof first.token).toBe('string');
+        expect(typedIds(first)).toEqual(['character:Vampire.png', 'group:g1']);
+        const again = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
+        expect(again).toEqual({ seq: first.seq, token: first.token, unchanged: true });
+
+        // A group tag write: it moves the groups log but not MAX(changes.seq), and the groups index doesn't rebuild on it.
+        const versionBefore = await metadataDb.getGroupsVersion(directories);
+        await metadataDb.assignEntityTag(directories, 'g1', 'folder-1');
+        expect(await metadataDb.getGroupsVersion(directories)).toBeGreaterThan(versionBefore);
+        const afterWrite = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
+        expect(afterWrite.unchanged).toBeUndefined();
+        expect(afterWrite.seq).toBe(first.seq);
+        expect(afterWrite.token).not.toBe(first.token);
+        expect(typedIds(afterWrite)).toEqual(['character:Vampire.png', 'group:g1']);
+    }, 30000);
+
+    test.each(['the search path, tantivy sorted', 'the search path, SQL sorted'])('with includeGroups on %s, a search that lands between a group write and the groups index catching up is not answered unchanged once it has caught up', async (path) => {
+        const request = groupRequests[path];
+        await seedCharacterWithFile('Vampire.png', cardFor('Vampire Lord'));
+        await seedGroup('g0', { name: 'Vampire Coven 0' });
+        await settledQuery(request);
+
+        // The groups index rebuilds about once a second, so a search right after a write usually doesn't have it yet.
+        let behind = null;
+        let groupId = null;
+        for (let i = 1; i <= 20 && !behind; i++) {
+            groupId = `g${i}`;
+            await seedGroup(groupId, { name: `Vampire Coven ${i}` });
+            const body = await (await postJson('/api/characters/query', request)).json();
+            if (!body.rows.some(r => r.type === 'group' && r.item.id === groupId)) behind = body;
         }
-    }, 20000);
+        expect(behind).not.toBeNull();
+        expect(typeof behind.token).toBe('string');
+        const logVersion = await metadataDb.getGroupsVersion(directories);
+
+        let caughtUp;
+        const deadline = Date.now() + 10000;
+        do {
+            await new Promise(resolve => setTimeout(resolve, 50));
+            caughtUp = await (await postJson('/api/characters/query', request)).json();
+        } while (!caughtUp.rows.some(r => r.type === 'group' && r.item.id === groupId) && Date.now() < deadline);
+        expect(caughtUp.rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar)).toContain(groupId);
+        // Neither log moved while the groups index caught up: only the version it was built from did.
+        expect(await metadataDb.getGroupsVersion(directories)).toBe(logVersion);
+        expect(caughtUp.seq).toBe(behind.seq);
+
+        const withToken = await (await postJson('/api/characters/query', { ...request, ifToken: behind.token })).json();
+        expect(withToken.unchanged).toBeUndefined();
+        expect(withToken.rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar)).toContain(groupId);
+        expect(withToken.token).not.toBe(behind.token);
+    }, 30000);
+
+    test('with includeGroups, a groups version that can\'t be read gives no token and is never answered unchanged; without groups the token stays', async () => {
+        await seedCharacter('Alice.png');
+        await seedGroup('g1');
+        const request = groupRequests['the SQL path'];
+        const before = await (await postJson('/api/characters/query', request)).json();
+        expect(typeof before.token).toBe('string');
+
+        const Database = (await import('better-sqlite3')).default;
+        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        raw.exec('DROP TABLE group_changes');
+        raw.close();
+
+        const withGroups = await (await postJson('/api/characters/query', request)).json();
+        expect(withGroups.token).toBeNull();
+        expect(withGroups.rows.length).toBe(2);
+        const again = await (await postJson('/api/characters/query', { ...request, ifToken: before.token })).json();
+        expect(again.unchanged).toBeUndefined();
+
+        const charactersOnly = { ...request, filter: {} };
+        const withoutGroups = await (await postJson('/api/characters/query', charactersOnly)).json();
+        expect(typeof withoutGroups.token).toBe('string');
+        const repeat = await (await postJson('/api/characters/query', { ...charactersOnly, ifToken: withoutGroups.token })).json();
+        expect(repeat.unchanged).toBe(true);
+    });
+
+    test('with includeGroups, hash mode carries the token and answers a matching ifToken unchanged', async () => {
+        await seedCharacterWithFile('Vampire.png', cardFor('Vampire Lord'));
+        await seedGroup('g1', { name: 'Vampire Coven' });
+        for (const request of Object.values(groupRequests)) {
+            const json = await settledQuery(request);
+            const response = await postJson('/api/characters/query', { ...request, want: ['hashes', 'total'] });
+            const token = hashResponseToken(await response.arrayBuffer());
+            expect(token).toBe(json.token);
+            const again = await postJson('/api/characters/query', { ...request, want: ['hashes', 'total'], ifToken: token });
+            expect(await again.json()).toEqual({ seq: json.seq, token, unchanged: true });
+        }
+    }, 30000);
 
     test('hash mode carries the token in its trailer and answers a matching ifToken with the JSON unchanged stub', async () => {
         await seedCharacterWithFile('Vampire.png', cardFor('Vampire Lord'));
@@ -790,6 +894,36 @@ describe('POST /api/characters/query - sort.field "random" (design doc §5.3, de
 
         const allAvatars = [...page1.rows, ...page2.rows, ...page3.rows].map(r => r.avatar);
         expect(new Set(allAvatars).size).toBe(9);
+    });
+
+    test('with includeGroups, a group added or removed with no character change shows on the next page read', async () => {
+        for (let i = 0; i < 4; i++) {
+            await seedCharacter(`Char${i}.png`);
+        }
+        await seedGroup('g1');
+        // A seed no other test uses: the random-sort id cache is process-wide.
+        const request = { filter: { includeGroups: true }, sort: { field: 'random', seed: 918273 }, page: 1, pageSize: 20 };
+        const ids = (body) => body.rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar).sort();
+
+        const first = await (await postJson('/api/characters/query', request)).json();
+        expect(ids(first)).toEqual(['Char0.png', 'Char1.png', 'Char2.png', 'Char3.png', 'g1']);
+
+        await seedGroup('g2');
+        const added = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
+        expect(added.unchanged).toBeUndefined();
+        expect(added.seq).toBe(first.seq);
+        expect(ids(added)).toEqual(['Char0.png', 'Char1.png', 'Char2.png', 'Char3.png', 'g1', 'g2']);
+
+        // The group that sorts first, so a page read from ids that still hold it misses the one that sorts last.
+        const { getStringHash } = await import('../public/scripts/hash-utils.js');
+        const gone = getStringHash('g1', request.sort.seed) < getStringHash('g2', request.sort.seed) ? 'g1' : 'g2';
+        const kept = gone === 'g1' ? 'g2' : 'g1';
+        fs.unlinkSync(path.join(directories.groups, `${gone}.json`));
+        await metadataDb.deleteGroupRow(directories, gone, { fileDeleted: true });
+        const removed = await (await postJson('/api/characters/query', { ...request, pageSize: 5, ifToken: added.token })).json();
+        expect(removed.unchanged).toBeUndefined();
+        expect(removed.seq).toBe(first.seq);
+        expect(ids(removed)).toEqual(['Char0.png', 'Char1.png', 'Char2.png', 'Char3.png', kept]);
     });
 
     test('rejects a non-finite seed with 400', async () => {

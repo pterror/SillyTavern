@@ -180,6 +180,7 @@ export function createGroupIndexMaintainer(directories, tantivy) {
 
 // `filter`'s fav and tags are ANDed into the query the same way searchGroupsSorted() does it (withFavFilter(),
 // buildTagFilterQuery()/TAG_IDS_FIELD), so they narrow the matches before `maxRows` caps them.
+// `position` is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
 async function runGroupSearch(handle, directories, searchTerm, maxRows, filter = {}) {
     const { fav, tags } = filter;
     const engine = await timePhase('groups_index_get', () => resolveSearchEngine());
@@ -187,11 +188,13 @@ async function runGroupSearch(handle, directories, searchTerm, maxRows, filter =
     if (engine.tier !== 'unavailable') {
         const tantivyIndex = await timePhase('groups_index_get', () => getSearchIndex(handle, directories, 'groups'));
         if (!tantivyIndex) {
-            return { results: [], total: 0, backend: 'unavailable' };
+            return { results: [], total: 0, backend: 'unavailable', position: null };
         }
         const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+        // Nothing below awaits, so the reader can't move between here and the search.
+        const position = groupsPositionOf(tantivyIndex);
         if (expandedTags?.none) {
-            return { results: [], total: 0, backend: 'tantivy' };
+            return { results: [], total: 0, backend: 'tantivy', position };
         }
         const query = timePhase('groups_query_build', () => {
             const { tantivy } = engine;
@@ -209,15 +212,37 @@ async function runGroupSearch(handle, directories, searchTerm, maxRows, filter =
             return q;
         });
         if (!query) {
-            return { results: [], total: 0, backend: 'tantivy' };
+            return { results: [], total: 0, backend: 'tantivy', position };
         }
         const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
         const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'groups' });
         const items = timePhase('groups_ids', () => results.map(r => ({ item: JSON.parse(r.raw), score: r.score })));
-        return { results: items, total, backend: 'tantivy' };
+        return { results: items, total, backend: 'tantivy', position };
     }
 
-    return { results: [], total: 0, backend: 'unavailable' };
+    return { results: [], total: 0, backend: 'unavailable', position: null };
+}
+
+/**
+ * @param {import('./search-index-coordinator.js').SearchIndexReader} reader
+ * @returns {import('./search-index-coordinator.js').GroupsIndexPosition | null}
+ */
+function groupsPositionOf(reader) {
+    return /** @type {import('./search-index-coordinator.js').GroupsIndexPosition | null | undefined} */ (reader.position) ?? null;
+}
+
+/**
+ * The groups index's position as searches read it now (search-index-coordinator.js), or null when it isn't known
+ * or there is no index.
+ * @param {string} handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {Promise<import('./search-index-coordinator.js').GroupsIndexPosition | null>}
+ */
+export async function getGroupIndexPosition(handle, directories) {
+    const engine = await resolveSearchEngine();
+    if (engine.tier === 'unavailable') return null;
+    const tantivyIndex = await getSearchIndex(handle, directories, 'groups');
+    return tantivyIndex ? groupsPositionOf(tantivyIndex) : null;
 }
 
 /**
@@ -255,21 +280,24 @@ function groupSortValue(group, sortField) {
  * fastFieldOrderValue(), ties by exact sort value in `order`, then by id. A user's groups are few, so all of them are read and sorted here.
  * @param {'asc'|'desc'} order The order tantivy sorts characters in (tantivySortOrder()).
  * @param {{ fav?: boolean, tags?: object, excludeIds?: string[], ids?: string[] }} [filter]
- * @returns {Promise<{ groups: { id: string, order: number }[], backend: 'tantivy' | 'unavailable' }>}
+ * @returns {Promise<{ groups: { id: string, order: number }[], backend: 'tantivy' | 'unavailable', position: import('./search-index-coordinator.js').GroupsIndexPosition | null }>}
+ * `position` is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
  */
 export async function searchGroupsSorted(handle, directories, searchTerm, sortField, order, filter = {}) {
     const { fav, tags, excludeIds, ids } = filter;
     const engine = await timePhase('groups_index_get', () => resolveSearchEngine());
     if (engine.tier === 'unavailable') {
-        return { groups: [], backend: 'unavailable' };
+        return { groups: [], backend: 'unavailable', position: null };
     }
     const tantivyIndex = await timePhase('groups_index_get', () => getSearchIndex(handle, directories, 'groups'));
     if (!tantivyIndex) {
-        return { groups: [], backend: 'unavailable' };
+        return { groups: [], backend: 'unavailable', position: null };
     }
     const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+    // Nothing below awaits, so the reader can't move between here and the search.
+    const position = groupsPositionOf(tantivyIndex);
     if (expandedTags?.none) {
-        return { groups: [], backend: 'tantivy' };
+        return { groups: [], backend: 'tantivy', position };
     }
     const query = timePhase('groups_query_build', () => {
         const { tantivy } = engine;
@@ -287,7 +315,7 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
         return q;
     });
     if (!query) {
-        return { groups: [], backend: 'tantivy' };
+        return { groups: [], backend: 'tantivy', position };
     }
     const { results } = runTantivySearch(tantivyIndex.index, query, undefined, { timingLabel: 'groups' });
     const groups = timePhase('groups_ids', () => {
@@ -303,18 +331,19 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
             .sort((a, b) => b.order - a.order || (order === 'asc' ? a.value - b.value : b.value - a.value) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
             .map(({ id, order: groupOrder }) => ({ id, order: groupOrder }));
     });
-    return { groups, backend: 'tantivy' };
+    return { groups, backend: 'tantivy', position };
 }
 
 /** Id-only counterpart to searchGroups() - just discards `item` from its already-in-memory result rather than
  * running a separate id-only query, since group counts are small enough not to need that.
- * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'unavailable' }>} */
+ * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'unavailable', position: import('./search-index-coordinator.js').GroupsIndexPosition | null }>} */
 export async function searchGroupIds(handle, directories, searchTerm, maxRows, filter = {}) {
-    const { results, total, backend } = await runGroupSearch(handle, directories, searchTerm, maxRows, filter);
+    const { results, total, backend, position } = await runGroupSearch(handle, directories, searchTerm, maxRows, filter);
     return timePhase('groups_ids', () => ({
         ids: results.map(r => r.item.id),
         scoresById: new Map(results.map(r => [r.item.id, r.score])),
         total,
         backend,
+        position,
     }));
 }

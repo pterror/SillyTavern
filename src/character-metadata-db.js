@@ -27,7 +27,11 @@ export const characterChangeEmitter = new EventEmitter();
 
 // Bounds memory growth from seed churn.
 const MAX_RANDOM_CACHE_ENTRIES = 10;
-/** @type {Map<string, { seq: number, sortedIds: string[], db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }>} */
+/**
+ * Keyed on both the change log's seq and the groups version (readGroupsVersionSync()), since the ids include every
+ * group's.
+ * @type {Map<string, { seq: number, groupsVersion: number, sortedIds: string[], db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }>}
+ */
 const randomSortCache = new Map();
 
 /** @type {NodeJS.Timeout | undefined} */
@@ -40,7 +44,13 @@ characterChangeEmitter.on('change', () => {
         for (const [key, entry] of randomSortCache) {
             const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
             const currentSeq = Number(seqRow?.seq ?? 0);
-            if (entry.seq !== currentSeq) {
+            const currentGroupsVersion = readGroupsVersionSync(entry.db);
+            if (currentGroupsVersion === null) {
+                // Nothing to key a rebuilt entry on; getRandomSortedEntityIds() never serves one without it.
+                randomSortCache.delete(key);
+                continue;
+            }
+            if (entry.seq !== currentSeq || entry.groupsVersion !== currentGroupsVersion) {
                 const colonIdx = key.lastIndexOf(':');
                 const seed = Number(key.slice(colonIdx + 1));
                 const charIds = (/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id);
@@ -50,6 +60,7 @@ characterChangeEmitter.on('change', () => {
                 hashed.sort((a, b) => a.h - b.h);
                 entry.sortedIds = hashed.map(r => r.id);
                 entry.seq = currentSeq;
+                entry.groupsVersion = currentGroupsVersion;
             }
         }
     }, 500);
@@ -76,6 +87,29 @@ function insertChange(db, id, op, fields) {
  */
 function insertGroupChange(db, groupId) {
     db.run('INSERT INTO group_changes (group_id) VALUES (@groupId)', { groupId });
+}
+
+/** Connections whose groups version read has already failed and been logged, so it's logged once each. */
+const loggedGroupsVersionFailures = new WeakSet();
+
+/**
+ * The groups version (MAX(group_changes.version), 0 when empty), or null when it can't be read: for example in
+ * read-only mode, on a db opened before group_changes existed. null means "unknown": a response built on it is
+ * never answered unchanged and nothing is cached under it.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @returns {number | null}
+ */
+function readGroupsVersionSync(db) {
+    try {
+        const row = (/** @type {{ version: number } | undefined} */ (db.get('SELECT COALESCE(MAX(version), 0) as version FROM group_changes')));
+        return Number(row?.version ?? 0);
+    } catch (err) {
+        if (!loggedGroupsVersionFailures.has(db)) {
+            loggedGroupsVersionFailures.add(db);
+            console.error(color.yellow(`[character-metadata] Reading the groups version failed, so results that include groups are never answered unchanged: ${/** @type {any} */ (err).message}`));
+        }
+        return null;
+    }
 }
 
 /**
@@ -9377,18 +9411,20 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = 
 // characters and groups as two separate per-table queries with a JS merge-sort (see mergeSortedRows()), not a
 // UNION ALL, so each table keeps its own index-backed ORDER BY.
 
-/** Hash-sorted array of all entity IDs, cached per (handle, seed, seq). */
 /**
+ * Hash-sorted array of all entity IDs, cached per (handle, seed, seq, groupsVersion). With an unknown groups
+ * version (null) it's neither served from nor stored in the cache.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} handle
  * @param {number} seed
  * @param {number} seq
+ * @param {number | null} groupsVersion
  * @returns {string[]}
  */
-function getRandomSortedEntityIds(db, handle, seed, seq) {
+function getRandomSortedEntityIds(db, handle, seed, seq, groupsVersion) {
     const key = `${handle}:${seed}`;
-    const entry = randomSortCache.get(key);
-    if (entry && entry.seq === seq) {
+    const entry = groupsVersion === null ? undefined : randomSortCache.get(key);
+    if (entry && entry.seq === seq && entry.groupsVersion === groupsVersion) {
         randomSortCache.delete(key);
         randomSortCache.set(key, entry);
         return entry.sortedIds;
@@ -9400,13 +9436,14 @@ function getRandomSortedEntityIds(db, handle, seed, seq) {
     const hashed = allIds.map(id => ({ id, h: getStringHash(String(id), Number(seed)) }));
     hashed.sort((a, b) => a.h - b.h);
     const sortedIds = hashed.map(r => r.id);
+    if (groupsVersion === null) return sortedIds;
 
     if (randomSortCache.size >= MAX_RANDOM_CACHE_ENTRIES && !randomSortCache.has(key)) {
         const oldest = randomSortCache.keys().next().value;
         if (oldest !== undefined) randomSortCache.delete(oldest);
     }
 
-    randomSortCache.set(key, { seq, sortedIds, db });
+    randomSortCache.set(key, { seq, groupsVersion, sortedIds, db });
     return sortedIds;
 }
 
@@ -9579,7 +9616,8 @@ const ENTITY_GROUP_COLUMNS = 'id, \'group\' as type, name_fold, fav, date_added,
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {{ type: 'character'|'group', id: string }[]} entities
  * @param {{ wantRows?: boolean, wantHashes?: boolean }} [options]
- * @returns {Promise<{ rows: ReturnType<typeof toEntityWireRow>[] | undefined, hashRows: EntityHashRow[] | undefined, seq: number } | null>}
+ * @returns {Promise<{ rows: ReturnType<typeof toEntityWireRow>[] | undefined, hashRows: EntityHashRow[] | undefined, seq: number, groupsVersion: number | null } | null>}
+ * `groupsVersion`: readGroupsVersionSync()'s, read with `seq` before the rows.
  */
 export async function getEntityRowsByIds(directories, entities, { wantRows = true, wantHashes = false } = {}) {
     const entry = await getEntry(directories);
@@ -9587,6 +9625,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
 
     const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     const seq = Number(seqRow?.seq ?? 0);
+    const groupsVersion = readGroupsVersionSync(entry.db);
 
     const characterIds = entities.filter(e => e.type === 'character').map(e => e.id);
     const groupIds = entities.filter(e => e.type === 'group').map(e => e.id);
@@ -9617,7 +9656,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
     } else if (wantRows) {
         rows = rawRows.map(r => toEntityWireRow(r, deletions));
     }
-    return { rows, hashRows, seq };
+    return { rows, hashRows, seq, groupsVersion };
 }
 
 /**
@@ -9635,13 +9674,14 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
  * @param {number} [params.seed]
  * @param {number} [params.offset]
  * @param {number} [params.limit]
- * @param {string} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq) cache.
+ * @param {string} [params.handle] Cache key for getRandomSortedEntityIds()'s per-(handle, seed, seq, groupsVersion) cache.
  * @param {boolean} [params.wantRows]
  * @param {boolean} [params.wantTotal]
  * @param {boolean} [params.wantHashes]
- * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, approxTotal: boolean, seq: number } | null>}
+ * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, approxTotal: boolean, seq: number, groupsVersion: number | null } | null>}
  * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
- * `approxTotal` marks `total` as an estimate (totalWithoutCount()).
+ * `approxTotal` marks `total` as an estimate (totalWithoutCount()). `groupsVersion`: readGroupsVersionSync()'s, read
+ * with `seq` before the rows.
  */
 export async function queryEntities(directories, params = {}) {
     const entry = await getEntry(directories);
@@ -9657,9 +9697,10 @@ export async function queryEntities(directories, params = {}) {
 
     const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
     const seq = Number(seqRow?.seq ?? 0);
+    const groupsVersion = readGroupsVersionSync(entry.db);
 
     if (Array.isArray(ids) && ids.length === 0) {
-        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, approxTotal: false, seq };
+        return { rows: wantRows ? [] : undefined, hashRows: wantHashes ? [] : undefined, total: wantTotal ? 0 : undefined, approxTotal: false, seq, groupsVersion };
     }
 
     const deletions = readTagDeletionsSync(entry.db);
@@ -9713,7 +9754,7 @@ export async function queryEntities(directories, params = {}) {
         const fetchLimit = numericOffset + numericLimit;
 
         if (sortField === 'random') {
-            const sortedAllIds = getRandomSortedEntityIds(entry.db, handle ?? '', Number(seed) || 0, seq);
+            const sortedAllIds = getRandomSortedEntityIds(entry.db, handle ?? '', Number(seed) || 0, seq, groupsVersion);
 
             const hasFilters = charWhere.from !== 'characters' || charWhere.where !== '' || groupWhere.from !== 'groups' || groupWhere.where !== '';
             const filterSet = hasFilters ? new Set([
@@ -9802,7 +9843,7 @@ export async function queryEntities(directories, params = {}) {
         }
     }
 
-    return { rows, hashRows, total, approxTotal, seq };
+    return { rows, hashRows, total, approxTotal, seq, groupsVersion };
 }
 
 /**
@@ -9855,6 +9896,19 @@ export async function getGroupsVersion(directories) {
     if (!entry) return null;
     const row = (/** @type {{ version: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(version), 0) as version FROM group_changes')));
     return Number(row?.version ?? 0);
+}
+
+/**
+ * getCurrentSeq() and the groups version, read in the order queryEntities() and getEntityRowsByIds() read them.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{ seq: number, groupsVersion: number | null } | null>} `null` if the store is unavailable;
+ * `groupsVersion` null when it can't be read (readGroupsVersionSync()).
+ */
+export async function getCurrentSeqAndGroupsVersion(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
+    return { seq: Number(row?.seq ?? 0), groupsVersion: readGroupsVersionSync(entry.db) };
 }
 
 /** getCurrentSeq()'s counterpart for the tag-name change log.
