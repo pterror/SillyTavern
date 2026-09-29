@@ -401,6 +401,48 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('.toast-warning', { hasText: 'Default greeting cleared' })).toBeVisible({ timeout: 10000 });
     });
 
+    test('popup demote after another session already cleared the default succeeds', async ({ page }) => {
+        const { g, avatar } = await withDefaultAtOne(page, 'DemoteAlreadyCleared');
+        await openGreetingsPopup(page, 3);
+        await otherSessionOp(page, 'default/unset', { avatar_url: avatar, expected_default_position: 1 });
+
+        const response = greetingOpResponse(page, 'default/unset');
+        await popupRow(page, 1).locator('.demote_default_greeting').click();
+        expect((await response).status()).toBe(200);
+        expect(await storedModel(page, avatar)).toEqual({ greetings: g, defaultIndex: null });
+        await expectPageHoldsServerList(page, avatar);
+        await expect(page.locator('.toast-error')).toHaveCount(0);
+    });
+
+    test('#character_json_data save: clearing a default another session already cleared is done, with no warning', async ({ page }) => {
+        const { g, avatar } = await withDefaultAtOne(page, 'FormAlreadyCleared');
+        await otherSessionOp(page, 'default/unset', { avatar_url: avatar, expected_default_position: 1 });
+
+        await formSaveWithNoDefault(page, g);
+
+        expect(await storedModel(page, avatar)).toEqual({ greetings: g, defaultIndex: null });
+        await expectPageHoldsServerList(page, avatar);
+        await expect(page.locator('.toast-warning')).toHaveCount(0);
+    });
+
+    test('sidebar pager edit that another session already made succeeds', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`];
+        const avatar = await createCharacter(page, `PagerAlreadyEdited-${s}`, g);
+        await openCharacter(page, avatar);
+        const edited = `Zero edited ${s}`;
+        await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]), text: edited });
+
+        const saved = await page.evaluate(async (text) => {
+            const { saveGreetingField } = await import('/script.js');
+            return saveGreetingField(text);
+        }, edited);
+        expect(saved).toBe(true);
+        expect(await storedModel(page, avatar)).toEqual({ greetings: [edited, g[1]], defaultIndex: 0 });
+        await expectPageHoldsServerList(page, avatar);
+        await expect(page.locator('.toast-error')).toHaveCount(0);
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];

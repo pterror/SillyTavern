@@ -95,8 +95,9 @@ export function opAppend(model, text) {
 
 /**
  * Replaces the text of the greeting whose hash is `expectedHash`, found by {@link findGreeting}, so an edit still
- * lands on its greeting after other greetings were added, removed or moved. Refuses empty text.
- * `position` in the result is where the edit landed.
+ * lands on its greeting after other greetings were added, removed or moved. Refuses empty text. When that greeting
+ * can't be found but the one at `position` already has `text`, the edit is already in place (a retry, or the same
+ * edit from another session) and succeeds without a change. `position` in the result is where the edit landed.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
@@ -108,7 +109,12 @@ export function opEdit(model, position, expectedHash, text) {
         return { ok: false, reason: 'refused to blank stored greeting text' };
     }
     const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
-    if (!found.ok) return found;
+    if (!found.ok) {
+        if (positionInBounds(position, model.greetings.length) && model.greetings[position] === text) {
+            return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: model.defaultIndex }, position };
+        }
+        return found;
+    }
     const greetings = model.greetings.slice();
     greetings[found.position] = text;
     return { ok: true, model: { greetings, defaultIndex: model.defaultIndex }, position: found.position };
@@ -168,7 +174,9 @@ export function opMove(model, sourcePosition, expectedHash, side, targetPosition
 
 /**
  * Makes the greeting whose hash is `expectedHash`, found by {@link findGreeting}, the default. Never reorders
- * anything. `position` in the result is where that greeting is.
+ * anything. When copies of that text make the greeting ambiguous but the default already has that text, the
+ * default is already what was asked for and it succeeds without a change. `position` in the result is where the
+ * default is.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
@@ -176,30 +184,37 @@ export function opMove(model, sourcePosition, expectedHash, side, targetPosition
  */
 export function opSetDefault(model, position, expectedHash) {
     const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
-    if (!found.ok) return found;
+    if (!found.ok) {
+        if (model.defaultIndex !== null && hashMatches(model, model.defaultIndex, expectedHash)) {
+            return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: model.defaultIndex }, position: model.defaultIndex };
+        }
+        return found;
+    }
     return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: found.position }, position: found.position };
 }
 
 /**
  * Clears the default entirely when the default greeting is the one whose hash is `expectedDefaultHash`, wherever it
- * now sits. Refuses when the default is another greeting or there is none. The list keeps its order and membership.
+ * now sits. With no default already, it succeeds without a change. Refuses when the default is another greeting.
+ * The list keeps its order and membership.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} expectedDefaultHash
  */
 export function opUnsetDefaultByHash(model, expectedDefaultHash) {
-    if (model.defaultIndex === null || !hashMatches(model, model.defaultIndex, expectedDefaultHash)) {
+    if (model.defaultIndex !== null && !hashMatches(model, model.defaultIndex, expectedDefaultHash)) {
         return { ok: false, reason: 'default greeting changed since it was loaded' };
     }
     return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: null } };
 }
 
 /**
- * Clears the default entirely. The list keeps its order and membership.
+ * Clears the default entirely. With no default already, it succeeds without a change, whatever
+ * `expectedDefaultPosition` says. The list keeps its order and membership.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number|null} expectedDefaultPosition `null` asserts there is no default
  */
 export function opUnsetDefault(model, expectedDefaultPosition) {
-    if (model.defaultIndex !== expectedDefaultPosition) {
+    if (model.defaultIndex !== null && model.defaultIndex !== expectedDefaultPosition) {
         return { ok: false, reason: 'default greeting changed since it was loaded' };
     }
     return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: null } };
