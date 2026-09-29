@@ -1,6 +1,8 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
+import { createRequire } from 'node:module';
 import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 
@@ -159,6 +161,45 @@ export async function getPathToTokenizer(model) {
 }
 
 /**
+ * The tokenizer identity (src/tokenizer-resolve.js tokenizerIdentity()) of a tokenizer file read by
+ * `reader`, hashed once per wrapper: `file:<reader>:<sha256 of the file>`. A failure is not kept, so
+ * the next call tries again.
+ */
+class FileIdentity {
+    /** @type {string} */
+    #model;
+    /** @type {string} */
+    #reader;
+    /** @type {Promise<string>|null} */
+    #identity = null;
+
+    /**
+     * @param {string} model Path or URL of the tokenizer file, as getPathToTokenizer() takes it
+     * @param {string} reader What reads the file
+     */
+    constructor(model, reader) {
+        this.#model = model;
+        this.#reader = reader;
+    }
+
+    /**
+     * @returns {Promise<string>} Throws when the file can't be had.
+     */
+    get() {
+        this.#identity ??= this.#hash().catch(error => {
+            this.#identity = null;
+            throw error;
+        });
+        return this.#identity;
+    }
+
+    async #hash() {
+        const data = await fs.promises.readFile(await getPathToTokenizer(this.#model));
+        return `file:${this.#reader}:${crypto.createHash('sha256').update(data).digest('hex')}`;
+    }
+}
+
+/**
  * Sentencepiece tokenizer for tokenizing text.
  */
 class SentencePieceTokenizer {
@@ -173,6 +214,7 @@ class SentencePieceTokenizer {
      */
     constructor(model) {
         this.#model = model;
+        this.fileIdentity = new FileIdentity(model, 'sentencepiece');
     }
 
     /**
@@ -213,6 +255,7 @@ class WebTokenizer {
      */
     constructor(model) {
         this.#model = model;
+        this.fileIdentity = new FileIdentity(model, 'web-tokenizers');
     }
 
     /**
@@ -266,6 +309,7 @@ class ExactJsonTokenizer {
      */
     constructor(model) {
         this.#model = model;
+        this.fileIdentity = new FileIdentity(model, 'hf-json');
     }
 
     /**
@@ -620,6 +664,21 @@ export function getTokenizerModel(requestModel) {
 
     // default
     return 'gpt-3.5-turbo';
+}
+
+/** @type {string|null} */
+let tiktokenVersion = null;
+
+/**
+ * The tokenizer identity (src/tokenizer-resolve.js tokenizerIdentity()) of getTiktokenTokenizer(model):
+ * `tiktoken:<encoding name>@<tiktoken package version>`. The package carries the encodings' ranks.
+ * @param {string} model
+ * @returns {string} Throws for a model tiktoken doesn't know, as getTiktokenTokenizer() does.
+ */
+export function getTiktokenIdentity(model) {
+    const encoding = tiktoken.get_encoding_name_for_model(/** @type {import('tiktoken').TiktokenModel} */ (model));
+    tiktokenVersion ??= JSON.parse(fs.readFileSync(path.join(path.dirname(createRequire(import.meta.url).resolve('tiktoken')), 'package.json'), 'utf8')).version;
+    return `tiktoken:${encoding}@${tiktokenVersion}`;
 }
 
 export function getTiktokenTokenizer(model) {
@@ -1174,6 +1233,18 @@ const WEB_TOKENIZER_TYPES = new Set(['claude', 'llama3', 'qwen2', 'command-r', '
  */
 function getEncodingTokenizer(key) {
     return key === 'llama3' ? llama3ExactTokenizer : LOCAL_TOKENIZER_INSTANCES[key];
+}
+
+/**
+ * The tokenizer identity (src/tokenizer-resolve.js tokenizerIdentity()) of a bundled or downloaded
+ * local tokenizer type: the file getEncodingTokenizer() encodes with, and its reader. The reader is
+ * part of it because @agnai/web-tokenizers doesn't read every tokenizer.json as npm `tokenizers` does.
+ * @param {string} key A TOKENIZER_TYPE_KEYS value
+ * @returns {Promise<string|null>} null when the key has no such tokenizer. Throws when its file can't be had.
+ */
+export async function getLocalTokenizerFileIdentity(key) {
+    const tokenizer = Object.hasOwn(LOCAL_TOKENIZER_INSTANCES, key) ? getEncodingTokenizer(key) : undefined;
+    return tokenizer ? tokenizer.fileIdentity.get() : null;
 }
 
 /**
