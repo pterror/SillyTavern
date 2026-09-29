@@ -275,3 +275,27 @@ export function createStoredCounter({
         pending,
     };
 }
+
+/**
+ * @typedef {(resolved: import('./tokenizer-resolve.js').ResolvedTokenizer, encode: (text: string, answeredOut: AnsweredOut) => Promise<ArrayLike<number> | null>) => Promise<(text: string) => Promise<ArrayLike<number> | null>>} StoredEncoder
+ */
+
+/**
+ * Wraps an encoder with a request's stored ids, for a caller that resolves its tokenizer itself
+ * (computeLogitBias(), given it as `ChatCompletionConnection.storedEncoder`). The identity is computed
+ * when the result is called, from `llamaCppProps.props` as it is then, because the caller's resolution
+ * is what asks `/props`.
+ * @param {object} args
+ * @param {import('./users.js').UserDirectoryList} args.directories
+ * @param {PendingTokenRows} args.pending The request's rows, which encodes add to.
+ * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [args.llamaCppProps] The request's `/props` check.
+ * @returns {StoredEncoder} Given the resolution and an encoder that sets `answeredOut.tokenizer` to the
+ * tokenizer that answered (`resolved`, its local copy, or null), the stored counter's `encodeText`.
+ */
+export function createStoredEncoder({ directories, pending, llamaCppProps = undefined }) {
+    return async (resolved, encode) => {
+        const identityFacts = { llamaCppProps: llamaCppProps?.props };
+        const identity = await tokenizerIdentity(resolved, identityFacts);
+        return createStoredCounter({ resolved, identity, directories, identityFacts, pending, encode }).encodeText;
+    };
+}

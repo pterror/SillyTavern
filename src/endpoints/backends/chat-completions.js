@@ -2776,7 +2776,9 @@ const SERVER_TOOL_ROUND_LIMIT = 5;
  * `client_tools` entry (typo, or a name that lost the name-collision policy to a server tool) is
  * simply inert, never treated as "this round should abort" for a name that was never really
  * client-only to begin with.
- * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}> }>} `warnings`: the `dropped` warning when bias entries were left out.
+ * @returns {Promise<{ params: object, settings: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, enabledServerTools: import('../../server-tools.js').ServerToolRegistration[], enabledClientToolNames: Set<string>, enabledStealthClientToolNames: Set<string>, warnings: Array<{kind: string, key: string, message: string, entries?: string[]}>, tokenCountRows: import('../../token-count-store.js').PendingTokenRows }>} `warnings`: the `dropped` warning when bias entries were left out.
+ * `tokenCountRows` are the message counts and bias ids this build read from or added to the token tables,
+ * for writeBack() once the request is sent; nothing writes them yet.
  * `enabledServerTools` is the same list used to build `params.tools` (empty when no server tool is
  * currently enabled for this request) - returned so the route handler's tool-execution loop doesn't
  * need to re-query the registry (and re-run every tool's own `shouldEnable(ctx)`) a second time.
@@ -2859,9 +2861,11 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const mediaInliningEnabled = Boolean(settings.media_inlining);
     // A custom URL that is llama.cpp is asked its /props afresh, once, for every count and encode of this send.
     const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
+    /** @type {import('../../token-count-store.js').PendingTokenRows} */
+    const tokenCountRows = { counts: [], ids: [] };
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, ownerId, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, llamaCppProps,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, llamaCppProps, tokenCountRows,
         macroExtras: {
             imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
         },
@@ -2946,6 +2950,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
         toolsPayload,
         jsonSchema,
         llamaCppProps,
+        tokenCountRows,
     });
 
     // JUDGMENT CALL: unlike buildRawActionTextCompletionRequest() (which gets `name1` back directly
@@ -2968,7 +2973,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries, orchestratorInput.tokenizerOutcome,
         chatCompletionConnection(settings, directories, orchestratorInput.macroContext, llamaCppProps));
 
-    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings };
+    return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows };
 }
 
 /**

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +30,8 @@ const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('.
 // list is not fetched.
 const { rememberOpenRouterModels } = await import('./openrouter-models.js');
 rememberOpenRouterModels([]);
+const { createLlamaCppPropsCheck } = await import('./llamacpp-props.js');
+const { writeBack } = await import('./token-count-store.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completion-generation-input-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -186,8 +189,84 @@ async function gemmaModelCountsWithGemma() {
     assert.equal(await input.tokenHandler.countTokenAsyncFn([message]), gemmaCount, 'counted with gemma');
 }
 
+// A stubbed llama.cpp at a chat-completion custom URL: `/props` in llama.cpp's shape with `model_path` and
+// `build_info` (so counts have a stored identity), `/tokenize` one token per UTF-8 byte, each body recorded.
+async function startStubLlamaCpp() {
+    const tokenizeBodies = [];
+    const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (req.method === 'GET' && req.url.split('?')[0] === '/props') {
+                return res.end(JSON.stringify({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc', model_path: '/models/stub.gguf' }));
+            }
+            if (req.url === '/tokenize') {
+                const parsed = JSON.parse(body);
+                tokenizeBodies.push(parsed);
+                return res.end(JSON.stringify({ tokens: Array.from(Buffer.from(String(parsed.content))).map(byte => 1000 + byte) }));
+            }
+            res.writeHead(404);
+            res.end();
+        });
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    return { server, tokenizeBodies, url: `http://127.0.0.1:${server.address().port}` };
+}
+
+// Stored counts: a second resolution on an unchanged chat, after its first's rows are written back, sends
+// no /tokenize for a text-only message; a tool-call message is counted both times.
+async function storedCountsSkipTextOnlyMessages() {
+    const stub = await startStubLlamaCpp();
+    try {
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'custom';
+        settings.oai_settings.custom_url = stub.url;
+        settings.oai_settings.custom_model = 'stub-model';
+        settings.world_info_settings.world_info.globalSelect = [];
+        writeAllSettings(directories, settings);
+        const avatar = await writeCharacter('Stow.png', { name: 'Stow', data: { name: 'Stow', first_mes: 'Hi.' } });
+        await saveChatToTree(directories, avatar, 'stow-chat', [
+            { chat_metadata: {} },
+            { name: 'Stow', is_user: false, mes: 'Hello there.', send_date: 1, extra: {} },
+            { name: 'Tester', is_user: true, mes: 'What time is it?', send_date: 2, extra: {} },
+            {
+                name: 'Stow', is_user: false, mes: 'Checking the clock.', send_date: 3,
+                extra: { tool_invocations: [{ id: 'call_1', name: 'get_time', parameters: '{}', result: 'Noon.' }] },
+            },
+            { name: 'Stow', is_user: false, mes: 'It is noon.', send_date: 4, extra: {} },
+        ]);
+
+        const generate = async () => {
+            stub.tokenizeBodies.length = 0;
+            const input = await resolveChatCompletionGenerationInput(directories, {
+                avatar, ownerId: avatar, branchName: 'stow-chat', type: 'normal',
+                llamaCppProps: createLlamaCppPropsCheck({ reuse: false }),
+            });
+            const prepared = await prepareOpenAIMessages({ ...input, canUseToolsOverride: true });
+            return { input, prepared, bodies: stub.tokenizeBodies.map(body => String(body.content)) };
+        };
+        const isToolCallCount = (content) => content.startsWith('assistant\n\n[{"id":"call_1"');
+
+        const first = await generate();
+        assert.ok(first.bodies.some(isToolCallCount), 'the first resolution counted the tool-call message with /tokenize');
+        assert.ok(first.bodies.some(content => !isToolCallCount(content)), 'and text-only messages with /tokenize');
+        assert.ok(first.input.tokenCountRows.counts.length > 0, 'the first resolution has rows to write back');
+        await writeBack(directories, first.input.tokenCountRows);
+
+        const second = await generate();
+        assert.deepEqual(second.bodies.filter(content => !isToolCallCount(content)), [], 'no /tokenize for a text-only message counted in the first');
+        assert.deepEqual(second.bodies.filter(isToolCallCount), first.bodies.filter(isToolCallCount), 'the tool-call message is counted both times');
+        assert.deepEqual(second.prepared.chat, first.prepared.chat, 'the same messages');
+        assert.deepEqual(second.prepared.counts, first.prepared.counts, 'the same budgets');
+    } finally {
+        stub.server.close();
+    }
+}
+
 async function run() {
     await gemmaModelCountsWithGemma();
+    await storedCountsSkipTextOnlyMessages();
     writeAllSettings(directories, buildSettingsFixture());
     // A REAL, non-constant, non-stubbed lorebook entry - its key ('traveler') genuinely appears in the
     // chat history written below ('Hello there, traveler.'), so it only ends up in worldInfoBefore if

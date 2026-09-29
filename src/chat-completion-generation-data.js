@@ -1,6 +1,7 @@
 import { CHAT_COMPLETION_SOURCES, ZAI_ENDPOINT, POLLINATIONS_ENDPOINT, SILICONFLOW_ENDPOINT, MINIMAX_ENDPOINT } from './constants.js';
 import { substituteParams } from './macro-substitution.js';
 import { computeLogitBias } from './endpoints/tokenizers.js';
+import { createStoredEncoder } from './token-count-store.js';
 
 /**
  * Server-side port of public/scripts/chat-completion-settings.js's createGenerationParameters() -
@@ -199,6 +200,8 @@ function getVerbosity(settings) {
  * @property {import('./users.js').UserDirectoryList} [directories] For a custom URL that is llama.cpp: the custom key
  * @property {import('./llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps] The send's `/props` check for a
  * custom URL that is llama.cpp (see ChatCompletionConnection).
+ * @property {import('./token-count-store.js').PendingTokenRows} [tokenCountRows] The request's rows: with
+ * `directories`, the bias entries are encoded through the token tables and their rows added here.
  */
 
 /**
@@ -224,6 +227,7 @@ export async function createGenerationParameters(settings, model, type, messages
         chatId = undefined,
         directories = undefined,
         llamaCppProps = undefined,
+        tokenCountRows = undefined,
     } = context;
 
     if (!Array.isArray(messages)) {
@@ -257,9 +261,12 @@ export async function createGenerationParameters(settings, model, type, messages
     if (logitBiasOverride !== undefined) {
         logit_bias = logitBiasOverride;
     } else if (Array.isArray(biasPresetEntries) && biasPresetEntries.length && logitBiasSources.includes(settings.chat_completion_source)) {
+        const storedEncoder = tokenCountRows && directories
+            ? createStoredEncoder({ directories, pending: tokenCountRows, llamaCppProps })
+            : undefined;
         const connection = settings.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM
-            ? { url: settings.custom_url, directories, customIncludeHeaders: substituteParams(settings.custom_include_headers, macroContext), llamaCppProps }
-            : { directories };
+            ? { url: settings.custom_url, directories, customIncludeHeaders: substituteParams(settings.custom_include_headers, macroContext), llamaCppProps, storedEncoder }
+            : { directories, storedEncoder };
         logit_bias = await computeLogitBias(biasPresetEntries, model, droppedBiasEntries, settings.chat_completion_source, connection);
     }
     if (Object.keys(logit_bias).length === 0) {

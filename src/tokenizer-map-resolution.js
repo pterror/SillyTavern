@@ -226,6 +226,8 @@ export function estimateResolution(basis) {
  * @property {import('./llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps] Asks a custom URL that is
  * llama.cpp for its `/props`: for its identity, and for its model name when the model setting is empty
  * and the reply has `model_alias`. Without it, an empty model setting is looked up with `/v1/models`.
+ * @property {import('./token-count-store.js').StoredEncoder} [storedEncoder] A createStoredEncoder() result:
+ * wraps computeLogitBias()'s encoder with the request's stored ids.
  */
 
 /**

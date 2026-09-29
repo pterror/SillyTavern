@@ -134,6 +134,7 @@ const { writeSecret, SECRET_KEYS } = await import('../secrets.js');
 const { registerServerTool, unregisterServerTool } = await import('../../server-tools.js');
 const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
 const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('../tokenizers.js');
+const { tokenKeyHash, TOKEN_KEY_KINDS } = await import('../../token-count-store.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -987,6 +988,54 @@ async function run() {
 
         assert.deepEqual(biasWithMacroHeaders, { body: {}, dropped: ['hi'], asked: 0 }, '/bias, saved headers with a macro: nothing asked, the map (unmapped model)');
         assert.deepEqual(biasWithPlainHeaders, { body: { 1104: 3, 1105: 3 }, dropped: [] }, '/bias, plain saved headers: /tokenize ids');
+    }
+
+    // (a-6) a raw-action send at a custom llama.cpp URL whose `/props` carries `model_path` and
+    // `build_info`, with a bias preset: one `tokenCountRows` holds its message counts and the bias entry's ids.
+    {
+        const tokenizes = [];
+        const fakeLlamaCpp = await startFakeBackend((req, res, body) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (req.url.split('?')[0] === '/props') {
+                return res.end(JSON.stringify({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc', model_path: '/models/stub.gguf' }));
+            }
+            if (req.url === '/tokenize') {
+                const content = String(JSON.parse(body).content);
+                tokenizes.push(content);
+                return res.end(JSON.stringify({ tokens: Array.from(Buffer.from(content)).map(byte => 1000 + byte) }));
+            }
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }));
+        }, { answersProps: true });
+        const settings = buildSettingsFixture();
+        settings.oai_settings.custom_url = fakeLlamaCpp.url;
+        settings.oai_settings.custom_model = 'some-unheard-of-model';
+        settings.oai_settings.bias_preset_selected = 'Bias';
+        settings.oai_settings.bias_presets = { Bias: [{ id: 'a', text: 'hi', value: -5 }] };
+        writeAllSettings(directories, settings);
+        let built;
+        try {
+            const branch = await loadBranch(directories, ownerId, branchName);
+            built = await buildRawActionChatCompletionRequest(directories, {
+                characterAvatar: avatar, ownerId, nodeId: branch.branch.leaf_id,
+                type: 'normal', userMessageText: 'Store me, Rex.',
+            });
+        } finally {
+            fakeLlamaCpp.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+
+        const identity = `llamacpp:${JSON.stringify(['/models/stub.gguf', 'b1-abc'])}`;
+        const { tokenCountRows } = built;
+        assert.deepEqual(built.params.logit_bias, { 1104: -5, 1105: -5 });
+        assert.equal(tokenizes.filter(content => content === 'hi').length, 1, 'the bias entry encoded once');
+        assert.ok(tokenCountRows.counts.length > 0, 'the message counts are in tokenCountRows');
+        assert.equal(tokenCountRows.counts.length, tokenizes.filter(content => content !== 'hi').length, 'one count row per message count sent to /tokenize');
+        assert.ok(tokenCountRows.counts.every(row => row.identity === identity), 'counts under the llama.cpp identity');
+        assert.deepEqual(
+            tokenCountRows.ids.map(row => ({ ...row, ids: Array.from(row.ids) })),
+            [{ identity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'hi'), ids: [1104, 1105] }],
+            'the bias entry\'s ids are in the same tokenCountRows',
+        );
     }
 
     // (b) a failed backend response (non-2xx) does NOT append an assistant reply (the user message,
