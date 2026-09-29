@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
-import { characterChangeEmitter, clearTagCache, reportTagMoveFailed, waitForMetadataBootChain } from './character-metadata-db.js';
+import { characterChangeEmitter, clearTagCache, kickChatStatsReconcile, reportTagMoveFailed, waitForMetadataBootChain } from './character-metadata-db.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { color, getConfigFilePath } from './util.js';
 
@@ -57,13 +57,16 @@ function spawnMigrationWorker(workerData) {
  * chain (initializeMetadataStores()) has finished, and not at all if the chain failed, since the passes rely on what
  * it populates. Keeps this process in step with what the worker writes: after each batch that
  * wrote tag definitions the store's tag cache is cleared, and after each batch that wrote change rows 'change' is
- * emitted once. A queued tag move the worker couldn't apply is reported here (reportTagMoveFailed()).
+ * emitted once. A queued tag move the worker couldn't apply is reported here (reportTagMoveFailed()). A pass that
+ * inserts rows queues their chat stats, which only this thread counts (kickChatStatsReconcile()), so the count is
+ * started after each batch and once the worker has exited.
  * @param {object} [options]
  * @param {(workerData: object) => MigrationWorker} [options.spawnWorker]
  * @param {(directories: import('./users.js').UserDirectoryList) => Promise<boolean>} [options.waitForBootChain]
  * @param {(directories: import('./users.js').UserDirectoryList) => Promise<void>} [options.onTagDefinitionsChanged]
  * @param {() => void} [options.onChanged]
  * @param {(directories: import('./users.js').UserDirectoryList, payload: import('./character-metadata-db.js').TagMoveFailedPayload) => void} [options.onTagMoveFailed]
+ * @param {(directories: import('./users.js').UserDirectoryList) => void} [options.onChatStatsMayBeQueued]
  */
 export function createMetadataMigrationCoordinator({
     spawnWorker = spawnMigrationWorker,
@@ -71,6 +74,7 @@ export function createMetadataMigrationCoordinator({
     onTagDefinitionsChanged = clearTagCache,
     onChanged = () => characterChangeEmitter.emit('change'),
     onTagMoveFailed = (directories, payload) => reportTagMoveFailed(directories.root, payload),
+    onChatStatsMayBeQueued = kickChatStatsReconcile,
 } = {}) {
     /** @type {Map<string, WorkerEntry>} */
     const entries = new Map();
@@ -90,6 +94,7 @@ export function createMetadataMigrationCoordinator({
             case 'batch': {
                 if (msg.tagDefinitionsChanged) await onTagDefinitionsChanged(directories);
                 if (msg.changed) onChanged();
+                onChatStatsMayBeQueued(directories);
                 return;
             }
             case 'tag-move-failed': {
@@ -143,6 +148,7 @@ export function createMetadataMigrationCoordinator({
         });
         entries.set(directories.root, entry);
         await entry.exited;
+        onChatStatsMayBeQueued(directories);
     }
 
     /** @returns {QueuedRun} */

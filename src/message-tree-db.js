@@ -302,6 +302,51 @@ export async function listOwnersWithoutKind(directories, after, limit) {
 }
 
 /**
+ * A synchronous view of one store's owners, for a reconcile that has to read an owner's messages and write the
+ * owner's entity row in one step, with no write's stats change landing in between.
+ * @typedef {object} OwnerStatsView
+ * @property {(ownerId: string) => boolean} hookInFlight A committed write to this owner hasn't had its chat stats
+ *   change applied yet.
+ * @property {(ownerId: string) => OwnerDescriptor | undefined} kindOf The owner's recorded kind.
+ * @property {(ownerId: string) => boolean} exists The tree has any row for this owner.
+ * @property {(ownerId: string, owner: OwnerDescriptor) => boolean} recordKind Records the owner's kind (see
+ *   recordOwnerSync()); whether it was recorded.
+ * @property {(ownerId: string) => { chatSize: number, dateLastChat: number }} readStats The owner's chat stats from
+ *   its messages: the sum of their line bytes and their newest `created_at`, 0 for both with none. Reads every one
+ *   of the owner's messages, so it is bounded by the owner.
+ */
+
+/**
+ * @param {Directories} directories
+ * @returns {Promise<OwnerStatsView | null>} null when the tree store is unavailable.
+ */
+export async function openOwnerStatsView(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const { db } = entry;
+    return {
+        hookInFlight: ownerId => (ownerWritesInFlight.get(ownerWriteKey(directories, ownerId)) ?? 0) > 0,
+        kindOf: (ownerId) => {
+            const row = /** @type {{ kind: 'character' | 'group', row_id: string } | undefined} */ (db.get(
+                'SELECT kind, row_id FROM owners WHERE owner_id = @ownerId', { ownerId }));
+            return row ? { kind: row.kind, rowId: row.row_id } : undefined;
+        },
+        exists: ownerId => !!db.get('SELECT 1 AS ok FROM messages WHERE owner_id = @ownerId LIMIT 1', { ownerId }),
+        recordKind: (ownerId, owner) => recordOwnerSync(db, ownerId, owner),
+        readStats: (ownerId) => {
+            let chatSize = 0;
+            let dateLastChat = 0;
+            for (const row of /** @type {Iterable<{ content: string, created_at: number }>} */ (db.iterate(
+                'SELECT content, created_at FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL', { ownerId }))) {
+                chatSize += messageLineBytes(row.content);
+                dateLastChat = Math.max(dateLastChat, Number(row.created_at));
+            }
+            return { chatSize, dateLastChat };
+        },
+    };
+}
+
+/**
  * Records owners' kinds, leaving any already recorded as they are.
  * @param {Directories} directories
  * @param {{ ownerId: string, owner: OwnerDescriptor }[]} owners
@@ -331,6 +376,43 @@ export async function recordOwnerKinds(directories, owners) {
  */
 async function reportOwnerWrite(directories, db, ownerId, stats) {
     if (stats.sizeChange === 0 && stats.addedCreatedAt === null && !stats.deleted) return;
+    if (!ownerWriteHandler) return;
+    // Marked before the first await, so from the write's commit until its change is applied a reconcile of this
+    // owner (openOwnerStatsView()) sees it and waits, instead of counting the committed rows and then getting the
+    // same change added on top.
+    const inFlightKey = ownerWriteKey(directories, ownerId);
+    ownerWritesInFlight.set(inFlightKey, (ownerWritesInFlight.get(inFlightKey) ?? 0) + 1);
+    try {
+        await applyOwnerWrite(directories, db, ownerId, stats);
+    } finally {
+        const left = (ownerWritesInFlight.get(inFlightKey) ?? 1) - 1;
+        if (left > 0) ownerWritesInFlight.set(inFlightKey, left);
+        else ownerWritesInFlight.delete(inFlightKey);
+    }
+}
+
+/**
+ * Owners whose committed write's chat stats change hasn't been applied yet, keyed by {@link ownerWriteKey}, with
+ * how many such writes each has.
+ * @type {Map<string, number>}
+ */
+const ownerWritesInFlight = new Map();
+
+/**
+ * @param {Directories} directories
+ * @param {string} ownerId
+ */
+function ownerWriteKey(directories, ownerId) {
+    return `${directories.root}\0${ownerId}`;
+}
+
+/**
+ * @param {Directories} directories
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} ownerId
+ * @param {OwnerWriteStats} stats
+ */
+async function applyOwnerWrite(directories, db, ownerId, stats) {
     if (!ownerWriteHandler) return;
     const owner = /** @type {{ kind: 'character' | 'group', row_id: string } | undefined} */ (db.get(
         'SELECT kind, row_id FROM owners WHERE owner_id = @ownerId', { ownerId }));

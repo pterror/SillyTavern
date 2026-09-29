@@ -221,6 +221,23 @@ describe('createMetadataMigrationCoordinator()', () => {
         await done;
     });
 
+    test('the chat stats a worker queued are counted on this thread after each batch and once it has exited', async () => {
+        const onChatStatsMayBeQueued = jest.fn();
+        const { coordinator, workers } = fakeSetup({ onChatStatsMayBeQueued });
+        const done = coordinator.start(directories);
+        await flush();
+        const worker = workers[0];
+
+        worker.emit('message', { type: 'batch', changed: false, tagDefinitionsChanged: false });
+        await flush();
+        expect(onChatStatsMayBeQueued).toHaveBeenCalledTimes(1);
+        expect(onChatStatsMayBeQueued).toHaveBeenCalledWith(directories);
+
+        worker.emit('exit', 0);
+        await done;
+        expect(onChatStatsMayBeQueued).toHaveBeenCalledTimes(2);
+    });
+
     test('a tag-move-failed message is handed to onTagMoveFailed with its payload', async () => {
         const onTagMoveFailed = jest.fn();
         const { coordinator, workers } = fakeSetup({ onTagMoveFailed });
