@@ -166,9 +166,9 @@ const WRITERS = [
         rows: ['1001'],
     },
     {
-        name: 'bumpGroupChatStats',
+        name: 'applyGroupChatStats',
         setup: async () => { await seedGroup('1001'); },
-        act: () => metadataDb.bumpGroupChatStats(directories, /** @type {any} */ (null), { groupId: '1001', stats: { chatSize: 50, dateLastChat: 1234 } }),
+        act: () => metadataDb.applyGroupChatStats(directories, '1001', { sizeChange: 0, addedCreatedAt: 1234, readLastCreatedAt: null }),
         rows: ['1001'],
     },
     {

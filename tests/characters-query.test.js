@@ -270,8 +270,7 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
     test('each sort field orders characters and groups together: date_last_chat', async () => {
         await seedCharacter('NoChat.png');
         await seedGroup('g1', { chats: ['c1'] });
-        fs.writeFileSync(path.join(directories.groupChats, 'c1.jsonl'), 'x');
-        await metadataDb.bumpGroupChatStats(directories, 'c1');
+        await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 1, addedCreatedAt: Date.now(), readLastCreatedAt: null });
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'date_last_chat', order: 'desc' }, page: 1, pageSize: 10 });
         const body = await response.json();
@@ -283,8 +282,7 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
     test('each sort field orders characters and groups together: chat_size', async () => {
         await seedCharacter('NoChat.png');
         await seedGroup('g1', { chats: ['c1'] });
-        fs.writeFileSync(path.join(directories.groupChats, 'c1.jsonl'), 'x'.repeat(500));
-        await metadataDb.bumpGroupChatStats(directories, 'c1');
+        await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 500, addedCreatedAt: Date.now(), readLastCreatedAt: null });
 
         const response = await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'chat_size', order: 'desc' }, page: 1, pageSize: 10 });
         const body = await response.json();

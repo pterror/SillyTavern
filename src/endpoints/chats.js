@@ -15,7 +15,7 @@ import {
     formatBytes,
     isPathUnderParent,
 } from '../util.js';
-import { bumpGroupChatStats, getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
+import { getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
 import { resolveGroupOwnerFile } from '../character-shallow.js';
 import { readGroupFile, writeGroupFile } from './groups.js';
 import { withGroupLock } from '../group-lock.js';
@@ -827,20 +827,6 @@ const ownerOf = (/** @type {import('express').Request} */ request) => (request.b
 const ownerDescriptorOfRequest = (/** @type {import('express').Request} */ request) =>
     ownerDescriptorOf({ groupId: request.body.group_id, avatar: request.body.avatar_url });
 
-/**
- * Restats a group op's owner (date_last_chat and chat_size). A character's stats follow every tree write on
- * their own (message-tree-db.js's owner write hook).
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {import('express').Request} request
- */
-const bumpOwnerLastChat = async (directories, request) => {
-    if (!request.body.group_id) return;
-    // bumpGroupChatStats() declares `chatId` as a required `string` (character-metadata-db.js, not owned
-    // by this pass), but resolves the group from `groupId` alone when given - the `null` here is a
-    // pre-existing, runtime-safe call this file doesn't own the other side of; cast rather than fix there.
-    await bumpGroupChatStats(directories, /** @type {string} */ (/** @type {unknown} */ (null)), { groupId: String(request.body.group_id) });
-};
-
 /** Edits one message's content. */
 router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -877,11 +863,6 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
 
         const contents = Array.isArray(request.body.messages) ? request.body.messages : [];
         const result = await appendMessages(request.user.directories, ownerOf(request), after, contents);
-
-        if (result.ok && contents.length) {
-            await bumpOwnerLastChat(request.user.directories, request).catch(err =>
-                console.error('Could not bump date_last_chat:', err));
-        }
 
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
@@ -1002,11 +983,6 @@ router.post('/message/graft', validateAvatarUrlMiddleware, async function (reque
         if (!before) return response.status(400).send({ error: 'before_node_id is required' });
 
         const result = await graftMessage(request.user.directories, ownerOf(request), after, before, request.body.content);
-
-        if (result.ok) {
-            await bumpOwnerLastChat(request.user.directories, request).catch(err =>
-                console.error('Could not bump date_last_chat:', err));
-        }
 
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
@@ -1670,10 +1646,6 @@ router.post('/group/save', async function (request, response) {
 
         const result = await saveChatToTree(request.user.directories, group.id, id, chatData, true);
         if (result && 'integrity' in result) {
-            await bumpGroupChatStats(request.user.directories, id, {
-                groupId: group.id,
-                stats: { dateLastChat: Date.now(), chatSize: Buffer.byteLength(JSON.stringify(chatData), 'utf8') },
-            }).catch(err => console.error(`Could not update group chat stats for ${id}:`, err));
             try {
                 await registerGroupChatIdIfNew(request.user.directories, group, id);
             } catch (err) {
