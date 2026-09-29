@@ -373,7 +373,10 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
         return k < alternatives.length ? placeOpening(alternatives[k], (head.offset ?? 0) + k) : -1;
     };
 
-    /** Where the server says the shown card greeting landed among the character's full openings, applied here. */
+    /**
+     * Where the server says the shown card greeting landed among the character's full openings, applied here.
+     * @returns {Promise<number|null>} -1 when there is nowhere to land; null when it couldn't be found out or applied.
+     */
     const placeLanding = async () => {
         try {
             const response = await fetch('/api/chats/openings/land', {
@@ -382,17 +385,27 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
                 body: JSON.stringify({ avatar_url: character.avatar, shown_text: shownText, index: shownWas, edits: edits.slice(-LANDING_EDITS) }),
             });
             const landing = response.ok ? await response.json().catch(() => null) : null;
-            return landing?.opening ? placeOpening(landing.opening, landing.index) : -1;
+            if (!landing) {
+                console.warn('[greetings] Could not find where the chat lands:', response.status);
+                return null;
+            }
+            if (!landing.opening) return -1;
+            const at = placeOpening(landing.opening, landing.index);
+            return at >= 0 ? at : null;
         } catch (error) {
             console.warn('[greetings] Could not find where the chat lands:', error);
-            return -1;
+            return null;
         }
     };
 
     let landAt = shownAt;
     if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
         // The card greeting on screen isn't among the loaded openings: the server works out where it landed.
-        landAt = await placeLanding();
+        const landing = await placeLanding();
+        if (landing === null) {
+            toastr.warning(t`The chat couldn't follow the greeting change, so it shows the default greeting.`, t`Greeting not followed`);
+        }
+        landAt = landing ?? -1;
         if (landAt < 0) landAt = placeDefault();
         if (_chatAt(0) !== current) return;
     }
