@@ -237,3 +237,84 @@ describe('renameCharacterInMessages reads the rows to rename in keyset chunks', 
         }
     });
 });
+
+describe('renameGroupMemberInMessages reads the member\'s rows in keyset chunks', () => {
+    const insertSql = 'INSERT INTO messages (id, parent_id, owner_id, content, label, created_at, default_child_id, metadata, identity_hash) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, ?)';
+
+    /**
+     * Opens the store once so it has the current schema, then writes the rows straight into its file.
+     * @param {{ root: string }} directories
+     * @param {string} ownerId
+     * @param {{ id: string, content: string }[]} replies Children of the owner's anchor.
+     */
+    async function seedStore(directories, ownerId, replies) {
+        await treeDb.getDbHandle(directories);
+        treeDb.disposeMessageTreeStores();
+        const raw = new WasmDatabase(path.join(directories.root, 'message-tree.sqlite'));
+        try {
+            raw.exec('BEGIN');
+            raw.run(insertSql, [`${ownerId}-anchor`, null, ownerId, treeDb.ANCHOR_CONTENT, 1, null]);
+            replies.forEach(({ id, content }, i) => {
+                raw.run(insertSql, [id, `${ownerId}-anchor`, ownerId, content, i + 2, treeDb.identityHashOf(`${ownerId}-anchor`, content)]);
+            });
+            raw.exec('COMMIT');
+        } finally {
+            raw.close();
+        }
+    }
+
+    /** @param {{ root: string }} directories */
+    function readRows(directories) {
+        const check = new WasmDatabase(path.join(directories.root, 'message-tree.sqlite'));
+        try {
+            return new Map(Array.from(check.prepare('SELECT id, content, identity_hash FROM messages WHERE parent_id IS NOT NULL').iterate(), r => [r.id, r]));
+        } finally {
+            check.close();
+        }
+    }
+
+    test('2001 rows of the member: three bounded chunk reads, every one renamed, re-avatared and rehashed, another member\'s row untouched, a rerun opens no transaction', async () => {
+        const directories = makeDirectories();
+        const oldAvatar = 'Old Member.png';
+        const newAvatar = 'New Member.png';
+        /** @type {{ id: string, content: string }[]} */
+        const memberRows = [];
+        for (let i = 0; i < 2001; i++) {
+            const msg = { ...makeMessage(`hello ${i}`), name: 'Old', original_avatar: oldAvatar };
+            if (i % 2 === 0) msg.force_avatar = `/thumbnail?type=avatar&file=${encodeURIComponent(oldAvatar)}`;
+            memberRows.push({ id: `g${String(i).padStart(5, '0')}`, content: JSON.stringify(msg) });
+        }
+        const otherRow = { id: 'o00000', content: JSON.stringify({ ...makeMessage('someone else'), name: 'Other', original_avatar: 'Other.png', force_avatar: `/thumbnail?type=avatar&file=${encodeURIComponent('Other.png')}` }) };
+        await seedStore(directories, 'group-1', [...memberRows, otherRow]);
+        await treeDb.getDbHandle(directories);
+
+        calls.length = 0;
+        expect(await treeDb.renameGroupMemberInMessages(directories, 'group-1', oldAvatar, newAvatar, 'New')).toBe(2001);
+
+        const chunkSql = 'SELECT id, content FROM messages WHERE owner_id = @groupOwnerId AND parent_id IS NOT NULL AND json_extract(content, \'$.original_avatar\') = @oldAvatar AND id > @lastId ORDER BY id LIMIT @limit';
+        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
+        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
+        expect(chunkReads.map(c => c.args[0].lastId)).toEqual(['', 'g00999', 'g01999']);
+        for (const read of chunkReads) {
+            expect(read.args[1]).toBe(1000);
+            expect(read.args[0].limit).toBe(1000);
+        }
+        expect(calls.filter(c => c.method === 'all' && oneLine(c).startsWith('SELECT id, content FROM messages WHERE owner_id = @groupOwnerId'))).toEqual([]);
+
+        calls.length = 0;
+        expect(await treeDb.renameGroupMemberInMessages(directories, 'group-1', oldAvatar, newAvatar, 'New')).toBe(0);
+        expect(calls.filter(c => c.method === 'transaction' || c.method === 'run')).toEqual([]);
+
+        treeDb.disposeMessageTreeStores();
+        const rows = readRows(directories);
+        for (const { id, content } of memberRows) {
+            const msg = { ...JSON.parse(content), name: 'New', original_avatar: newAvatar };
+            if (typeof msg.force_avatar === 'string') msg.force_avatar = `/thumbnail?type=avatar&file=${encodeURIComponent(newAvatar)}`;
+            const expected = JSON.stringify(msg);
+            expect(rows.get(id).content).toBe(expected);
+            expect(rows.get(id).identity_hash).toBe(treeDb.identityHashOf('group-1-anchor', expected));
+        }
+        expect(rows.get(otherRow.id).content).toBe(otherRow.content);
+        expect(rows.get(otherRow.id).identity_hash).toBe(treeDb.identityHashOf('group-1-anchor', otherRow.content));
+    });
+});
