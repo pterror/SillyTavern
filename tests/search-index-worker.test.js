@@ -318,6 +318,58 @@ describe('search-index-worker.js (real worker thread)', () => {
     }, 30000);
 });
 
+describe('characters index chat stats', () => {
+    /** @returns {number} The value `reader`'s doc for `id` holds in the fast field `field`. */
+    function fastFieldOf(reader, name, field) {
+        const query = reader.index.parseQuery(name, ['name']);
+        const [hit] = tantivySearch.runSearch(reader.index, query, 1, { orderByField: field, order: 'desc' }).results;
+        return hit.order;
+    }
+
+    /**
+     * Two characters whose rows and chats folders disagree: Kept's row has chat stats and no chats folder, Scanned's
+     * row has none and a chats folder written after its row was created.
+     */
+    async function seedDisagreeingCharacters() {
+        await seedCharacter('Kept');
+        await seedCharacter('Scanned');
+        await metadataDb.applyCharacterChatStats(directories, 'Kept.png', { sizeChange: 1234, addedCreatedAt: 5678, readLastCreatedAt: null });
+        fs.mkdirSync(path.join(directories.chats, 'Scanned'));
+        fs.writeFileSync(path.join(directories.chats, 'Scanned', 'chat.jsonl'), 'x'.repeat(4321));
+    }
+
+    test('a rebuild takes chat_size and date_last_chat from the row, not the chats folder', async () => {
+        if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+
+        await seedDisagreeingCharacters();
+        const reader = await makeCoordinator().getIndex(HANDLE, directories, 'characters');
+
+        expect(fastFieldOf(reader, 'Kept', 'chat_size')).toBe(1234);
+        expect(fastFieldOf(reader, 'Kept', 'date_last_chat')).toBe(5678);
+        expect(fastFieldOf(reader, 'Scanned', 'chat_size')).toBe(0);
+        expect(fastFieldOf(reader, 'Scanned', 'date_last_chat')).toBe(0);
+    }, 30000);
+
+    test('a catch-up tick takes chat_size and date_last_chat from the row, not the chats folder', async () => {
+        if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+
+        await seedDisagreeingCharacters();
+        const coordinator = makeCoordinator();
+        await coordinator.getIndex(HANDLE, directories, 'characters');
+
+        await metadataDb.applyCharacterChatStats(directories, 'Kept.png', { sizeChange: 100, addedCreatedAt: 9999, readLastCreatedAt: null });
+        await metadataDb.applyCharacterChatStats(directories, 'Scanned.png', { sizeChange: 7, addedCreatedAt: 42, readLastCreatedAt: null });
+        const seq = await metadataDb.getCurrentSeq(directories);
+        await waitFor(() => indexCovers(seq));
+
+        const reader = await coordinator.getIndex(HANDLE, directories, 'characters');
+        expect(fastFieldOf(reader, 'Kept', 'chat_size')).toBe(1334);
+        expect(fastFieldOf(reader, 'Kept', 'date_last_chat')).toBe(9999);
+        expect(fastFieldOf(reader, 'Scanned', 'chat_size')).toBe(7);
+        expect(fastFieldOf(reader, 'Scanned', 'date_last_chat')).toBe(42);
+    }, 30000);
+});
+
 describe('createGroupIndexMaintainer tick', () => {
     test('rebuilds for a group write and a tag rename, and not for a tag edit that changes no name', async () => {
         const { getTantivyModule } = await import('../src/endpoints/tantivy-engine.js');

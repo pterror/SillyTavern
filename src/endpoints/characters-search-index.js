@@ -4,7 +4,7 @@ import path from 'node:path';
 import {
     getTagDefinitionsByIds, getEntityTagIdsForMany, getTagDeletions,
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
-    streamDeletedIdsBetween, getMetaValue, trySetMetaValues, getCharacterFavsByIds, getCardJsonByIds,
+    streamDeletedIdsBetween, getMetaValue, trySetMetaValues, getCharacterFavsByIds, getCharacterIndexRowsByIds,
 } from '../character-metadata-db.js';
 import { processCharacter } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter, stringToSortKey } from './tantivy-search.js';
@@ -199,27 +199,35 @@ async function timeAsync(phases, phase, fn) {
     }
 }
 
-// Adds a doc per id, INDEX_BUILD_BATCH_SIZE ids at a time, reading each batch's card_json by id.
+// Adds a doc per id, INDEX_BUILD_BATCH_SIZE ids at a time, reading each batch's rows by id.
 /** @param {TickPhases} [phases] */
 async function addCharacterDocs(directories, tantivy, schema, writer, ids, phases) {
     for (let i = 0; i < ids.length; i += INDEX_BUILD_BATCH_SIZE) {
         const batchIds = ids.slice(i, i + INDEX_BUILD_BATCH_SIZE);
-        const cardJsonById = await timeAsync(phases, 'load', () => getCardJsonByIds(directories, batchIds));
-        await addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, phases);
+        const rowById = await timeAsync(phases, 'load', () => getCharacterIndexRowsByIds(directories, batchIds));
+        await addCharacterBatch(directories, tantivy, schema, writer, batchIds, rowById, phases);
     }
 }
 
-// Adds a doc per id as one unit: tag/fav lookups cover exactly these ids. An id with no card_json has no row -
-// it was deleted after the change being applied - so it isn't indexed.
-/** @param {TickPhases} [phases] */
-async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, cardJsonById, phases) {
-    const ids = batchIds.filter(id => cardJsonById.has(id));
+// Adds a doc per id as one unit: tag/fav lookups cover exactly these ids. An id with no row was deleted after the
+// change being applied, so it isn't indexed.
+/**
+ * @param {Map<string, import('../character-metadata-db.js').CharacterIndexRow>} rowById
+ * @param {TickPhases} [phases]
+ */
+async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, rowById, phases) {
+    const ids = batchIds.filter(id => rowById.has(id));
     if (ids.length === 0) return;
     const { tagNamesFor, tagIdsFor } = await makeTagResolvers(directories, ids, phases);
     const favFor = await timeAsync(phases, 'load', () => makeFavResolver(directories, ids));
     const characters = await timeAsync(phases, 'build', () => mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
         try {
-            return await processCharacter(id, directories, { shallow: false, cardJson: cardJsonById.get(id) });
+            const row = rowById.get(id);
+            return await processCharacter(id, directories, {
+                shallow: false,
+                cardJson: row.card_json,
+                chatStats: { chatSize: row.chat_size, dateLastChat: row.date_last_chat },
+            });
         } catch {
             // File gone or corrupt - leave it deleted rather than throwing the whole pass away.
             return null;
@@ -355,9 +363,9 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const tempWriter = built.index.writer();
         try {
             let batchIndex = 0;
-            // Each streamed batch is one unit: its card_json came with it, and its tag/fav lookups cover exactly it.
+            // Each streamed batch is one unit: its rows came with it, and its tag/fav lookups cover exactly it.
             for await (const rows of streamCharacterCardJsonBatches(directories)) {
-                await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row.card_json])));
+                await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row])));
                 batchIndex++;
                 if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
                     tempWriter.commit();
