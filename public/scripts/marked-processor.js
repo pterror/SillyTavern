@@ -240,6 +240,158 @@ const emojiExt = {
     }],
 };
 
+const IMAGE_SIZE_UNITS = ['px', '%', 'em', 'rem', 'vw', 'vh', 'ch', 'ex', 'pt', 'pc', 'cm', 'mm', 'in'];
+const imageSizeSideRegex = new RegExp(
+    `^(?:\\*|(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:${[...IMAGE_SIZE_UNITS].sort((a, b) => b.length - a.length).join('|')})?)`,
+    'i',
+);
+/** The ` =WxH` after a url; its characters are checked by {@link parseImageSize}. */
+const IMAGE_SIZE_GROUP = '( =[^\\s"\'()]*)';
+
+/**
+ * Parses showdown's image size, `WxH`, with `*` as auto on either side, plus the shorthands `W`, `Wx` (width-only)
+ * and `xH` (height-only). Each side is a CSS number with an optional unit from {@link IMAGE_SIZE_UNITS}, longest unit
+ * first, so an `x` is the separator only when it isn't part of a unit (`1exx2`).
+ * @param {string} size The text after `=`.
+ * @returns {{ width?: string, height?: string } | null} null when it isn't a size.
+ */
+function parseImageSize(size) {
+    const width = imageSizeSideRegex.exec(size)?.[0] ?? '';
+    let rest = size.slice(width.length);
+    let height = '';
+    if (rest.startsWith('x')) {
+        height = imageSizeSideRegex.exec(rest.slice(1))?.[0] ?? '';
+        rest = rest.slice(1 + height.length);
+    }
+    if (rest !== '' || (!width && !height)) {
+        return null;
+    }
+    const auto = (side) => side === '*' ? 'auto' : side;
+    return { ...(width && { width: auto(width) }), ...(height && { height: auto(height) }) };
+}
+
+/** @type {Map<string, RegExp>} */
+const sizedRegexCache = new Map();
+/**
+ * marked's own link or definition rule with {@link IMAGE_SIZE_GROUP} inserted right after the url group, so the
+ * label, url and title follow marked exactly.
+ * @param {RegExp} rule
+ * @param {string} urlGroupEnd The text that ends the url group in the rule's source.
+ * @returns {RegExp | null} null when marked's rule no longer has that shape.
+ */
+function sizedRegex(rule, urlGroupEnd) {
+    let regex = sizedRegexCache.get(rule.source);
+    if (regex === undefined) {
+        const at = rule.source.indexOf(urlGroupEnd);
+        regex = at === -1 ? null : new RegExp(rule.source.slice(0, at + urlGroupEnd.length) + IMAGE_SIZE_GROUP, 'd');
+        if (!regex) {
+            console.warn('Image sizes are off: marked\'s link or definition rule changed shape', rule);
+        }
+        sizedRegexCache.set(rule.source, regex);
+    }
+    return regex;
+}
+
+/**
+ * Runs one of marked's own tokenizers on `src` with the size cut out, and gives the token the size.
+ * @param {(src: string) => any} tokenize
+ * @param {RegExp | null} regex From {@link sizedRegex}.
+ * @param {string} src
+ * @returns {any} undefined when `src` doesn't start with a sized form.
+ */
+function tokenizeSized(tokenize, regex, src) {
+    const match = regex?.exec(src);
+    if (!match) {
+        return undefined;
+    }
+    const size = parseImageSize(match[match.length - 1].slice(2));
+    if (!size) {
+        return undefined;
+    }
+    const [start, end] = match.indices[match.length - 1];
+    // A space in place of the size keeps a title that followed it with no space (`=1x2"t"`) separate from the url.
+    const token = tokenize(src.slice(0, start) + ' ' + src.slice(end));
+    if (!token || token.raw.length <= start) {
+        return undefined;
+    }
+    token.raw = src.slice(0, token.raw.length - 1 + end - start);
+    return Object.assign(token, size);
+}
+
+/**
+ * Image sizes, as upstream's showdown `parseImgDimensions`: `![alt](url =WxH)`, and a size on a reference
+ * definition (`[id]: url =WxH`) for the images that use it. See {@link parseImageSize} for the forms.
+ * @type {import('marked').MarkedExtension}
+ */
+const imageSizeExt = {
+    extensions: [{
+        name: 'sizedImageDef',
+        level: 'block',
+        tokenizer(src, tokens) {
+            const previous = tokens.at(-1);
+            if (previous?.type === 'paragraph' || previous?.type === 'text') {
+                return undefined;
+            }
+            const tokenizer = this.lexer.tokenizer;
+            const def = tokenizeSized(
+                (text) => Object.getPrototypeOf(tokenizer).def.call(tokenizer, text),
+                sizedRegex(tokenizer.rules.block.def, '|<.*?>)'),
+                src,
+            );
+            if (!def) {
+                return undefined;
+            }
+            const links = this.lexer.tokens.links;
+            if (!links[def.tag]) {
+                links[def.tag] = { href: def.href, title: def.title, width: def.width, height: def.height };
+            }
+            return { type: 'sizedImageDef', raw: def.raw };
+        },
+        renderer() {
+            return '';
+        },
+    }],
+    tokenizer: {
+        link(src) {
+            if (!src.startsWith('![')) {
+                return false;
+            }
+            return tokenizeSized(
+                (text) => Object.getPrototypeOf(this).link.call(this, text),
+                sizedRegex(this.rules.inline.link, '|(?=\\)))'),
+                src,
+            ) ?? false;
+        },
+        reflink(src, links) {
+            let entry;
+            const watchedLinks = new Proxy(links, {
+                get(target, key) {
+                    entry = target[key];
+                    return entry;
+                },
+            });
+            const token = Object.getPrototypeOf(this).reflink.call(this, src, watchedLinks);
+            if (token?.type === 'image' && entry) {
+                Object.assign(token, entry.width && { width: entry.width }, entry.height && { height: entry.height });
+            }
+            return token;
+        },
+    },
+    renderer: {
+        image(token) {
+            if (!token.width && !token.height) {
+                return false;
+            }
+            const html = Object.getPrototypeOf(this).image.call(this, token);
+            if (!html.startsWith('<img ')) {
+                return html;
+            }
+            const size = (token.width ? ` width="${token.width}"` : '') + (token.height ? ` height="${token.height}"` : '');
+            return html.slice(0, -1) + size + '>';
+        },
+    },
+};
+
 /**
  * @param {string} [escapeStrings] power_user.markdown_escape_strings; pass the real value when calling this from a module that already imports power_user (e.g. on power_user.markdown_escape_strings change), same as the old reloadMarkdownProcessor() was called.
  * @param {(text: string) => string} [substituteParamsFn] The real `substituteParams` from script.js, from a module that already imports it.
@@ -253,6 +405,7 @@ export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identi
     markedProcessor.use(urlTrailingUnderscoreExt);
     markedProcessor.use(htmlBlockExt);
     markedProcessor.use(emojiExt);
+    markedProcessor.use(imageSizeExt);
 
     markedLiteralTagsProcessor = new Marked({
         gfm: true,
@@ -262,6 +415,7 @@ export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identi
     markedLiteralTagsProcessor.use(urlTrailingUnderscoreExt);
     markedLiteralTagsProcessor.use(htmlBlockExt);
     markedLiteralTagsProcessor.use(emojiExt);
+    markedLiteralTagsProcessor.use(imageSizeExt);
     markedLiteralTagsProcessor.use(literalTagsExt);
     return markedProcessor;
 }
