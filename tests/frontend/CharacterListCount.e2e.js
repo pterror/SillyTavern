@@ -5,8 +5,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// fetchServerCharacterSearchResults()' request: the top 500 by relevance.
-const TOP_SEARCH_PAGE_SIZE = 500;
 const SEED_AVATAR = 'default_Seraphina.png';
 const TAG_ID = 'count-tag';
 
@@ -18,36 +16,37 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Replaces characterRepository.query() with one answering from `window.__stub`, so each test sets the totals the
- * page and the top-500 search come back with.
+ * Replaces characterRepository.query() with one answering from `window.__stub`, so each test sets what the page
+ * comes back with.
  * - `pageTotal(filter)`: the list page's `total`, as the server would count it for that filter.
- * - `topRows`, `topTotal`: the top-500 search's rows and `total`.
- * - `rejectSort`: a sort field every query but the top-500 fails with invalid-sort-field for.
- * - `calls`: every query but the top-500, as `{ fav, sort }` (the filter's fav and the sort field).
+ * - `backend`: the `searchBackend` a query with a non-blank search term comes back with, as the server sends it.
+ * - `rejectSort`: a sort field every query fails with invalid-sort-field for.
+ * - `calls`: every query, as `{ fav, sort }` (the filter's fav and the sort field).
+ * - `pageSizes`: every query's page size.
  * @param {import('@playwright/test').Page} page
  */
 async function stubQuery(page) {
-    await page.evaluate(async ({ topPageSize }) => {
+    await page.evaluate(async () => {
         const { characterRepository, CharacterQueryError } = await import('/scripts/character-repository.js');
         window['__stub'] = {
             pageTotal: () => 0,
-            topRows: [],
-            topTotal: 0,
+            backend: 'tantivy',
             rejectSort: null,
             calls: [],
+            pageSizes: [],
         };
         characterRepository.query = async (filter = {}, sort, _page, pageSize) => {
             const stub = window['__stub'];
-            if (pageSize === topPageSize) {
-                return { seq: 0, token: null, rows: stub.topRows, total: stub.topTotal, searchBackend: 'tantivy' };
-            }
             stub.calls.push({ fav: filter.fav, sort: sort?.field });
+            stub.pageSizes.push(pageSize);
             if (stub.rejectSort !== null && sort?.field === stub.rejectSort) {
                 throw new CharacterQueryError('rejected by test', { status: 400, reason: 'invalid-sort-field' });
             }
-            return { seq: 0, token: null, rows: [], total: stub.pageTotal(filter) };
+            const result = { seq: 0, token: null, rows: [], total: stub.pageTotal(filter) };
+            if (String(filter.search ?? '').trim()) result.searchBackend = stub.backend;
+            return result;
         };
-    }, { topPageSize: TOP_SEARCH_PAGE_SIZE });
+    });
 }
 
 /** @param {import('@playwright/test').Page} page */
@@ -101,19 +100,17 @@ test.describe('character list count', () => {
         test('when matches go down, search-index-updated brings the count down with the page', async ({ page }) => {
             await page.evaluate(() => {
                 window['__stub'].pageTotal = () => 50;
-                window['__stub'].topTotal = 50;
             });
             await setSearchTerm(page, 'zq');
             await expect.poll(() => navigatorText(page)).toMatch(/\.\. 50$/);
 
-            // The top-500 search isn't re-sent on this refresh, so its total stays at 50.
             await page.evaluate(() => { window['__stub'].pageTotal = () => 3; });
             await searchIndexUpdated(page);
 
             await expect.poll(() => navigatorText(page)).toBe('1-3 .. 3');
         });
 
-        test('with a tag filter, the count is the page total, not the top-500 search total', async ({ page }) => {
+        test('with a tag filter, the count is the tag-filtered page total', async ({ page }) => {
             // The filter bar lists only tags that exist and are assigned, so the tag is made on the server first.
             await api(page, '/api/tags/create', {
                 tag: {
@@ -127,7 +124,6 @@ test.describe('character list count', () => {
 
             await page.evaluate(() => {
                 window['__stub'].pageTotal = filter => filter.tags?.include?.length ? 5 : 40;
-                window['__stub'].topTotal = 40;
             });
             await setSearchTerm(page, 'zq');
             await expect.poll(() => navigatorText(page)).toMatch(/\.\. 40$/);
@@ -136,6 +132,40 @@ test.describe('character list count', () => {
             await page.locator(`#rm_characters_block .rm_tag_filter [id="${TAG_ID}"]`).dispatchEvent('click');
 
             await expect.poll(() => navigatorText(page)).toBe('1-5 .. 5');
+        });
+
+        test('the search-backend indicator and its toast follow the list page\'s searchBackend', async ({ page }) => {
+            const indicator = page.locator('#character_search_backend_indicator');
+            const changedToasts = page.locator('.toast').filter({ hasText: 'Search backend changed' });
+            await page.evaluate(() => {
+                window['__stub'].pageTotal = () => 2;
+                window['__stub'].backend = 'native';
+                window['__stub'].pageSizes = [];
+            });
+            await setSearchTerm(page, 'zq');
+
+            await expect(indicator).toBeVisible();
+            await expect(indicator).toHaveClass(/\bwarning\b/);
+            await expect(page.locator('.toast-warning').filter({ hasText: 'Search backend changed' })).toHaveCount(1);
+            // The list's page is the only search request: no separate top-500 relevance query.
+            expect(await page.evaluate(() => window['__stub'].pageSizes)).not.toContain(500);
+
+            // The same backend again: no second toast.
+            const callsBefore = await page.evaluate(() => window['__stub'].calls.length);
+            await searchIndexUpdated(page);
+            await expect.poll(() => page.evaluate(() => window['__stub'].calls.length)).toBeGreaterThan(callsBefore);
+            await expect(indicator).toBeVisible();
+            await expect(changedToasts).toHaveCount(1);
+
+            await page.evaluate(() => { window['__stub'].backend = 'unavailable'; });
+            await searchIndexUpdated(page);
+            await expect(indicator).toHaveClass(/\berror\b/);
+            await expect(page.locator('.toast-error').filter({ hasText: 'Search backend changed' })).toHaveCount(1);
+
+            await page.evaluate(() => { window['__stub'].backend = 'tantivy'; });
+            await searchIndexUpdated(page);
+            await expect(indicator).toBeHidden();
+            await expect(changedToasts).toHaveCount(2);
         });
 
         test('an approximate page total is shown with its ~', async ({ page }) => {

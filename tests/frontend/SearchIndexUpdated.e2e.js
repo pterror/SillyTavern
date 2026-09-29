@@ -6,7 +6,7 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-// fetchServerCharacterSearchResults()' request: the top 500 by relevance.
+// The page size of a separate top-500 relevance query, which the list must never send.
 const TOP_SEARCH_PAGE_SIZE = 500;
 // Over getCharactersDebounced()'s 2s delay.
 const CHANGE_DEBOUNCE_TIMEOUT_MS = 6000;
