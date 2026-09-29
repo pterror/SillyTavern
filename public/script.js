@@ -9702,15 +9702,16 @@ async function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes
 }
 
 /**
- * The one greeting whose text changed in place; null for anything else (add, delete, move, default change).
+ * The one greeting whose text changed in place, with its position in the card's greeting list; null for anything
+ * else (add, delete, move, default change).
  * @param {string[]} before
  * @param {string[]} after
- * @returns {{from: string, to: string}|null}
+ * @returns {{from: string, to: string, index: number}|null}
  */
 function findGreetingEdit(before, after) {
     if (before.length !== after.length) return null;
     const changed = after.flatMap((text, i) => (text === before[i] ? [] : [i]));
-    return changed.length === 1 ? { from: before[changed[0]], to: after[changed[0]] } : null;
+    return changed.length === 1 ? { from: before[changed[0]], to: after[changed[0]], index: changed[0] } : null;
 }
 
 /**

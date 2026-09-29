@@ -255,7 +255,7 @@ export async function ensureOpeningRow(mesId = 0) {
 // row only if someone uses it.
 /**
  * @param {object} [options]
- * @param {{from: string, to: string}|null} [options.greetingEdit] The one card greeting whose text just changed, if that's what happened.
+ * @param {{from: string, to: string, index?: number}|null} [options.greetingEdit] The one card greeting whose text just changed, if that's what happened; `index` is its position in the card's greeting list.
  */
 export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null } = {}) {
     const opening = _chatAt(0);
@@ -378,11 +378,35 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null } = {
         return k < 0 ? -1 : placeOpening(around.alternatives[k], (around.offset ?? 0) + k);
     };
 
+    /**
+     * The card-only opening the card greeting at `index` became, found by position: the card's greetings before
+     * and after it are matched, in order, against the server's card-only openings (which skip empty, stored and
+     * repeated greetings), and the one opening they leave between them is it. -1 when they don't leave exactly one.
+     * @param {number} index
+     */
+    const placeCardPosition = (index) => {
+        const cardTexts = cardToGreetingsModel(character).greetings;
+        if (!Number.isInteger(index) || index < 0 || index >= cardTexts.length) return -1;
+        let before = 0;
+        for (let j = 0; j < index && before < extras.length; j++) {
+            if (cardTexts[j] === extras[before].mes) before++;
+        }
+        let after = 0;
+        for (let j = cardTexts.length - 1; j > index && before + after < extras.length; j--) {
+            if (cardTexts[j] === extras[extras.length - 1 - after].mes) after++;
+        }
+        if (before + after + 1 !== extras.length) return -1;
+        return keptSwipes.indexOf(extras[before].mes);
+    };
+
     let landAt = shownAt;
     if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
-        // The card greeting on screen is gone: follow it to its new text if it was edited, otherwise
-        // show the default.
-        if (greetingEdit && greetingEdit.from === shownText) landAt = await placeText(greetingEdit.to);
+        // The card greeting on screen is gone: follow it to its new text if it was edited (by position on the
+        // card when its new text isn't among the openings), otherwise show the default.
+        if (greetingEdit && greetingEdit.from === shownText) {
+            landAt = await placeText(greetingEdit.to);
+            if (landAt < 0 && greetingEdit.index !== undefined) landAt = placeCardPosition(greetingEdit.index);
+        }
         if (landAt < 0) landAt = placeDefault();
         if (_chatAt(0) !== current) return;
     }
