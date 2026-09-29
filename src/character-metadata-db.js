@@ -2883,20 +2883,26 @@ export async function reconcile(directories) {
         return;
     }
 
-    const files = (await fsPromises.readdir(directories.characters)).filter(f => f.endsWith('.png'));
-    const existingIds = new Set((/** @type {{ id: string }[]} */ (entry.db.all('SELECT id FROM characters'))).map(r => r.id));
+    // The directory is read BATCH_FLUSH_SIZE names at a time, and each batch is checked against the db with one
+    // IN (...) read, so neither the file list nor the set of known ids is ever held whole. The number of new files
+    // isn't known until the pass ends, so the progress line has no total or ETA.
+    const reconcileStart = Date.now();
+    let lastProgressLog = reconcileStart;
+    let processedFiles = 0;
 
-    const newFiles = files.filter(f => !existingIds.has(f));
+    /**
+     * @param {string[]} batchFiles
+     */
+    const processBatch = async (batchFiles) => {
+        /** @type {Set<string>} */
+        const existingIds = new Set();
+        for (const row of /** @type {Generator<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM characters WHERE id IN (${batchFiles.map(() => '?').join(', ')})`, batchFiles))) {
+            existingIds.add(row.id);
+        }
+        const newFiles = batchFiles.filter(f => !existingIds.has(f));
 
-    if (newFiles.length > 0) {
-        const reconcileStart = Date.now();
-        let lastProgressLog = reconcileStart;
-        let processedFiles = 0;
-        let loggedProgress = false;
-
-        for (let i = 0; i < newFiles.length; i += BATCH_FLUSH_SIZE) {
-            const chunkFiles = newFiles.slice(i, i + BATCH_FLUSH_SIZE);
-            const chunkResults = await mapWithConcurrency(chunkFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
+        if (newFiles.length > 0) {
+            const chunkResults = await mapWithConcurrency(newFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
                 try {
                     const filePath = path.join(directories.characters, file);
                     const rawBuffer = await fsPromises.readFile(filePath);
@@ -2918,28 +2924,39 @@ export async function reconcile(directories) {
                 }
             }
 
-            processedFiles += chunkFiles.length;
+            processedFiles += newFiles.length;
 
             const now = Date.now();
             if (now - lastProgressLog >= BOOTSTRAP_PROGRESS_LOG_INTERVAL_MS) {
                 const elapsedSec = (now - reconcileStart) / 1000;
                 const rate = processedFiles / elapsedSec;
-                const remaining = newFiles.length - processedFiles;
-                const etaSec = rate > 0 ? Math.round(remaining / rate) : null;
-                console.log(color.cyan(`[character-metadata] Reconcile progress: ${processedFiles}/${newFiles.length} new files (${rate.toFixed(1)} files/sec, ETA ${etaSec === null ? 'unknown' : `${etaSec}s`})`));
+                console.log(color.cyan(`[character-metadata] Reconcile progress: ${processedFiles} new files processed (${rate.toFixed(1)} files/sec)`));
                 lastProgressLog = now;
-                loggedProgress = true;
-            }
-
-            if (i + BATCH_FLUSH_SIZE < newFiles.length) {
-                await new Promise(resolve => setImmediate(resolve));
             }
         }
 
-        if (loggedProgress || newFiles.length > 0) {
-            const totalSec = (Date.now() - reconcileStart) / 1000;
-            console.log(color.cyan(`[character-metadata] Reconcile complete: ${newFiles.length} new file(s) processed in ${totalSec.toFixed(1)}s.`));
+        // A pause between batches, so a large folder never holds up requests.
+        await new Promise(resolve => setImmediate(resolve));
+    };
+
+    /** @type {string[]} */
+    let batchFiles = [];
+    // `for await` closes the directory handle when the loop ends or throws.
+    for await (const dirent of await fsPromises.opendir(directories.characters)) {
+        if (!dirent.name.endsWith('.png')) continue;
+        batchFiles.push(dirent.name);
+        if (batchFiles.length >= BATCH_FLUSH_SIZE) {
+            await processBatch(batchFiles);
+            batchFiles = [];
         }
+    }
+    if (batchFiles.length > 0) {
+        await processBatch(batchFiles);
+    }
+
+    if (processedFiles > 0) {
+        const totalSec = (Date.now() - reconcileStart) / 1000;
+        console.log(color.cyan(`[character-metadata] Reconcile complete: ${processedFiles} new file(s) processed in ${totalSec.toFixed(1)}s.`));
 
         if (entry.batch) {
             flushBatch(entry);
