@@ -358,23 +358,28 @@ describe('labeling nodes', () => {
     test('labelNode() sets a label that loadBranch() surfaces as extra.bookmark_link', async () => {
         const directories = makeDirectories();
         const header = { chat_metadata: {} };
-        const chatData = [header, makeMessage({ mes: 'checkpoint me', sendDate: 'd0' })];
+        const chatData = [
+            header,
+            makeMessage({ mes: 'first', sendDate: 'd0' }),
+            makeMessage({ mes: 'checkpoint me', sendDate: 'd1' }),
+        ];
         await treeDb.saveChatToTree(directories, 'owner-4', 'chat-b', chatData, false);
 
         const loaded = await treeDb.loadBranch(directories, 'owner-4', 'chat-b');
-        const nodeId = loaded.messages[0].node_id;
+        const nodeId = loaded.messages[1].node_id;
         expect(loaded.messages[0].extra?.bookmark_link).toBeUndefined();
 
         const labelResult = await treeDb.labelNode(directories, nodeId, 'my-checkpoint');
-        expect(labelResult).toBe(true);
+        expect(labelResult).toEqual({ ok: true, label: 'my-checkpoint' });
 
         const relabeled = await treeDb.loadBranch(directories, 'owner-4', 'chat-b');
-        expect(relabeled.messages[0].extra.bookmark_link).toBe('my-checkpoint');
+        expect(relabeled.messages[1].extra.bookmark_link).toBe('my-checkpoint');
 
         // Passing null clears the label again.
-        await treeDb.labelNode(directories, nodeId, null);
+        const clearResult = await treeDb.labelNode(directories, nodeId, null);
+        expect(clearResult).toEqual({ ok: true, label: null });
         const cleared = await treeDb.loadBranch(directories, 'owner-4', 'chat-b');
-        expect(cleared.messages[0].extra?.bookmark_link).toBeUndefined();
+        expect(cleared.messages[1].extra?.bookmark_link).toBeUndefined();
     });
 
     test('labelNode() returns false for a node that does not exist', async () => {
