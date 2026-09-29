@@ -643,9 +643,16 @@ function _messageContent(msg, text = msg.mes) {
 }
 
 // Never sends an edit that would empty a message — the route refuses it outright with a 409.
+// A card greeting with no row yet is saved as a new stored opening with the edited text; the card's own
+// greeting is untouched and is offered again among the openings.
 /** @param {number} mesId */
 export async function chatOpEdit(mesId) {
     const msg = _chatAt(mesId);
+    if (isProvisionalNodeId(msg?.node_id)) {
+        if (!isStoredNodeId(await ensureOpeningRow(mesId))) return false;
+        await _mergeCardGreetingsIntoOpening();
+        return true;
+    }
     if (!isStoredNodeId(msg?.node_id)) return false;
     if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
 
