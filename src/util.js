@@ -9,6 +9,7 @@ import { promises as dnsPromise } from 'node:dns';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import readline from 'node:readline';
+import { once } from 'node:events';
 
 import yaml from 'yaml';
 import { sync as commandExistsSync } from 'command-exists';
@@ -180,6 +181,18 @@ export async function getVersion() {
  */
 export function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Writes `chunk` to `response`, awaiting 'drain' when the socket's write buffer is full.
+ * @param {import('express').Response} response
+ * @param {string} chunk
+ * @returns {Promise<void>}
+ */
+export async function writeBackpressured(response, chunk) {
+    if (!response.write(chunk)) {
+        await once(response, 'drain');
+    }
 }
 
 /**
