@@ -51,7 +51,12 @@ beforeAll(async () => {
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
-beforeEach(() => {
+/**
+ * A fresh temp user directory tree. Assigning it to `directories` also switches the request's handle, since the
+ * fake auth middleware derives the handle from `directories.root`.
+ * @returns {import('../src/users.js').UserDirectoryList}
+ */
+function makeUserDirectories() {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-characters-query-test-'));
     const charactersDir = path.join(tempDir, 'characters');
     const chatsDir = path.join(tempDir, 'chats');
@@ -61,7 +66,11 @@ beforeEach(() => {
     fs.mkdirSync(chatsDir, { recursive: true });
     fs.mkdirSync(groupsDir, { recursive: true });
     fs.mkdirSync(groupChatsDir, { recursive: true });
-    directories = { root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir, groupChats: groupChatsDir };
+    return /** @type {import('../src/users.js').UserDirectoryList} */ ({ root: tempDir, characters: charactersDir, chats: chatsDir, groups: groupsDir, groupChats: groupChatsDir });
+}
+
+beforeEach(() => {
+    directories = makeUserDirectories();
 });
 
 afterEach(async () => {
@@ -429,6 +438,50 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         expect(response.status).toBe(200);
         const body = await response.json();
         expect(body.rows).toEqual([]);
+    });
+});
+
+describe('POST /api/characters/query - random sort is per user', () => {
+    /**
+     * Seeds two characters (with card files, so search can index them) and one group into the current user.
+     * Every user gets the same number of each, so both users' change seq and groups version line up.
+     * @param {string} prefix
+     */
+    async function seedUser(prefix) {
+        for (const n of [1, 2]) {
+            const name = `${prefix} Vampire ${n}`;
+            await seedCharacterWithFile(`${prefix}${n}.png`, { name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        }
+        await seedGroup(`${prefix}Group`, { name: `${prefix} Group` });
+    }
+
+    /** @param {any} body */
+    const idsOf = body => body.rows.map(r => r.item.id ?? r.item.avatar).sort();
+
+    test.each([
+        ['without a search', {}],
+        ['with a search', { search: 'vampire' }],
+    ])('two users with the same seed each get only their own ids (%s)', async (_label, extraFilter) => {
+        const request = { filter: { includeGroups: true, ...extraFilter }, sort: { field: 'random', seed: 7 }, page: 1, pageSize: 10 };
+        const expectA = extraFilter.search ? ['Alpha1.png', 'Alpha2.png'] : ['Alpha1.png', 'Alpha2.png', 'AlphaGroup'];
+        const expectB = extraFilter.search ? ['Beta1.png', 'Beta2.png'] : ['Beta1.png', 'Beta2.png', 'BetaGroup'];
+
+        await seedUser('Alpha');
+        const a = await postJson('/api/characters/query', request);
+        expect(a.status).toBe(200);
+        expect(idsOf(await a.json())).toEqual(expectA);
+
+        const userA = directories;
+        directories = makeUserDirectories();
+        await seedUser('Beta');
+        const b = await postJson('/api/characters/query', request);
+        expect(b.status).toBe(200);
+        expect(idsOf(await b.json())).toEqual(expectB);
+
+        directories = userA;
+        const again = await postJson('/api/characters/query', request);
+        expect(again.status).toBe(200);
+        expect(idsOf(await again.json())).toEqual(expectA);
     });
 });
 
