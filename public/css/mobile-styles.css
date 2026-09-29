@@ -993,6 +993,113 @@ body.forceMobileView select[multiple] {
         overflow-y: auto;
     }
 
+/* Drawer Bar (Mobile) (power_user.drawer_bar_position_mobile) at the bottom: the bar at the bottom screen edge, the
+   chat and the drawers from the top edge to the bar. The desktop Drawer Bar setting has no effect in this layout.
+   A rule below that replaces values of a rule above repeats its selector with the setting in :where(), so it takes
+   precedence over exactly the rules the one above did.
+   The bar is placed from the top: the fixed elements' containing block is html (it has a transform, see style.css),
+   which the fixed body leaves 0px tall, so bottom: 0 would put the bar above the screen. The holder can't be moved
+   with a transform, which would make it its fixed drawers' containing block. */
+@media screen and (max-width: 1000px) {
+    :root:has(> body.drawerBarMobileBottom) {
+        --drawerBarTop: 0px;
+        --drawerBarBottom: var(--topBarBlockSize);
+    }
+
+    body.drawerBarMobileBottom #top-bar {
+        top: 100vh;
+        top: 100dvh;
+        transform: translateY(-100%);
+        box-shadow: 0 -2px 20px 0 var(--black70a);
+    }
+
+    body.waifuMode.drawerBarMobileBottom #top-bar {
+        border-radius: 20px 20px 0 0;
+    }
+
+    body.drawerBarMobileBottom #top-settings-holder {
+        top: calc(100vh - var(--topBarBlockSize));
+        top: calc(100dvh - var(--topBarBlockSize));
+    }
+
+    :where(body.drawerBarMobileBottom) .drawer-content {
+        max-height: calc(100vh - var(--drawerBarBottom));
+        max-height: calc(100dvh - var(--drawerBarBottom));
+    }
+
+    :where(body.drawerBarMobileBottom) #right-nav-panel,
+    :where(body.drawerBarMobileBottom) #char-info-panel,
+    :where(body.drawerBarMobileBottom) #left-nav-panel {
+        height: calc(100vh - var(--drawerBarBottom));
+        height: calc(100dvh - var(--drawerBarBottom));
+    }
+
+    :where(body.drawerBarMobileBottom) #right-nav-panel,
+    :where(body.drawerBarMobileBottom) #char-info-panel,
+    :where(body.drawerBarMobileBottom) #left-nav-panel,
+    :where(body.drawerBarMobileBottom) #floatingPrompt,
+    :where(body.drawerBarMobileBottom) #cfgConfig,
+    :where(body.drawerBarMobileBottom) #logprobsViewer,
+    :where(body.drawerBarMobileBottom) #movingDivs>div {
+        border-radius: 20px 20px 0 0;
+    }
+
+    body.waifuMode:where(.drawerBarMobileBottom) #sheld {
+        top: calc(60vh - var(--drawerBarBottom));
+        top: calc(60dvh - var(--drawerBarBottom));
+        bottom: var(--drawerBarBottom) !important;
+    }
+}
+
+:root:has(> body.forceMobileView.drawerBarMobileBottom) {
+    --drawerBarTop: 0px;
+    --drawerBarBottom: var(--topBarBlockSize);
+}
+
+body.forceMobileView.drawerBarMobileBottom #top-bar {
+    top: 100vh;
+    top: 100dvh;
+    transform: translateY(-100%);
+    box-shadow: 0 -2px 20px 0 var(--black70a);
+}
+
+body.forceMobileView.waifuMode.drawerBarMobileBottom #top-bar {
+    border-radius: 20px 20px 0 0;
+}
+
+body.forceMobileView.drawerBarMobileBottom #top-settings-holder {
+    top: calc(100vh - var(--topBarBlockSize));
+    top: calc(100dvh - var(--topBarBlockSize));
+}
+
+body.forceMobileView:where(.drawerBarMobileBottom) .drawer-content {
+    max-height: calc(100vh - var(--drawerBarBottom));
+    max-height: calc(100dvh - var(--drawerBarBottom));
+}
+
+body.forceMobileView:where(.drawerBarMobileBottom) #right-nav-panel,
+body.forceMobileView:where(.drawerBarMobileBottom) #char-info-panel,
+body.forceMobileView:where(.drawerBarMobileBottom) #left-nav-panel {
+    height: calc(100vh - var(--drawerBarBottom));
+    height: calc(100dvh - var(--drawerBarBottom));
+}
+
+body.forceMobileView:where(.drawerBarMobileBottom) #right-nav-panel,
+body.forceMobileView:where(.drawerBarMobileBottom) #char-info-panel,
+body.forceMobileView:where(.drawerBarMobileBottom) #left-nav-panel,
+body.forceMobileView:where(.drawerBarMobileBottom) #floatingPrompt,
+body.forceMobileView:where(.drawerBarMobileBottom) #cfgConfig,
+body.forceMobileView:where(.drawerBarMobileBottom) #logprobsViewer,
+body.forceMobileView:where(.drawerBarMobileBottom) #movingDivs>div {
+    border-radius: 20px 20px 0 0;
+}
+
+body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
+    top: calc(60vh - var(--drawerBarBottom));
+    top: calc(60dvh - var(--drawerBarBottom));
+    bottom: var(--drawerBarBottom) !important;
+}
+
 @media screen and (max-width: 1000px) and (orientation: landscape) {
     body.waifuMode img.expression {
         object-fit: contain;
@@ -1134,5 +1241,33 @@ body.forceMobileView select[multiple] {
 
     #horde_model {
         height: unset;
+    }
+
+    /* Drawer Bar (Mobile) at the bottom (see above). Of the sizes above, 36px is the bar, and 70px the bar and 34px. */
+    @media screen and (max-width: 1000px) {
+        :where(body.drawerBarMobileBottom) #sheld {
+            height: calc(100vh - var(--drawerBarBottom));
+            height: calc(100dvh - var(--drawerBarBottom));
+        }
+
+        :where(body.drawerBarMobileBottom) #world_popup,
+        :where(body.drawerBarMobileBottom) #left-nav-panel,
+        :where(body.drawerBarMobileBottom) #right-nav-panel,
+        :where(body.drawerBarMobileBottom) .drawer-content {
+            height: calc(100vh - 34px - var(--drawerBarBottom));
+            height: calc(100dvh - 34px - var(--drawerBarBottom));
+            max-height: calc(100vh - 34px - var(--drawerBarBottom));
+            max-height: calc(100dvh - 34px - var(--drawerBarBottom));
+        }
+
+        :where(body.drawerBarMobileBottom) #world_popup,
+        :where(body.drawerBarMobileBottom) .drawer-content {
+            margin-top: 0;
+        }
+    }
+
+    body.forceMobileView:where(.drawerBarMobileBottom) #sheld {
+        height: calc(100vh - var(--drawerBarBottom));
+        height: calc(100dvh - var(--drawerBarBottom));
     }
 }
