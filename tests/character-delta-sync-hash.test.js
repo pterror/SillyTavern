@@ -97,6 +97,7 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
     isServerQueryableSort: noop,
     isInvalidSortFieldError: noop,
     normalizeQueryRow: noop,
+    parseQueryTotal: noop,
 }));
 jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({ getRandomSortSeed: () => 42 }));
 jest.unstable_mockModule('../public/scripts/i18n.js', () => ({ t: (strings, ...values) => String.raw(strings, ...values) }));

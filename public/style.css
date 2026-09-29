@@ -1549,6 +1549,21 @@ body.hideAllSwipeButtons :is(.swipe_left, .swipe_right),
     opacity: 1 !important;
 }
 
+/* Pinned to the strip's corner: the strip clips whatever wraps past its first line. */
+.bogus_folder_avatars_block {
+    position: relative;
+}
+
+.bogus_folder_avatars_block .bogus_folder_more {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    padding: 0 4px;
+    border-radius: 5px;
+    background-color: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyColor);
+}
+
 .avatars_inline .avatar {
     margin: calc(var(--avatar-base-border-radius));
 }
