@@ -705,6 +705,142 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('.toast-warning', { hasText: 'couldn\'t follow' })).toBeVisible({ timeout: 10000 });
     });
 
+    /**
+     * Runs `/char-update` on a non-greeting field, which refetches the card and replaces the pager's greetings.
+     * @param {import('@playwright/test').Page} page
+     * @param {string} personality
+     */
+    async function charUpdate(page, personality) {
+        const refetched = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/get', { timeout: 15000 });
+        await page.evaluate(async (personality) => {
+            // @ts-ignore
+            const { executeSlashCommandsWithOptions } = SillyTavern.getContext();
+            await executeSlashCommandsWithOptions(`/char-update personality="${personality}"`);
+        }, personality);
+        expect((await refetched).ok()).toBe(true);
+    }
+
+    /**
+     * The popup row whose text box shows `text`.
+     * @param {import('@playwright/test').Page} page
+     * @param {string} text
+     */
+    async function popupRowShowing(page, text) {
+        const rows = greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting');
+        const count = await rows.count();
+        for (let i = 0; i < count; i++) {
+            if (await rows.nth(i).locator('.alternate_greeting_text').inputValue() === text) return rows.nth(i);
+        }
+        throw new Error(`no popup row shows ${text}`);
+    }
+
+    /**
+     * @param {import('@playwright/test').Page} page
+     */
+    async function popupTexts(page) {
+        return greetingsPopup(page).locator('.alternate_greetings_list .alternate_greeting .alternate_greeting_text').evaluateAll(els => els.map(el => /** @type {HTMLTextAreaElement} */ (el).value));
+    }
+
+    test('popup row edit after /char-update brought in another session\'s delete lands on that row\'s own greeting', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `RowOwnHashEdit-${s}`, g);
+        await openCharacter(page, avatar);
+        await openGreetingsPopup(page, 3);
+        await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
+        await charUpdate(page, `Personality ${s}`);
+
+        const edited = `One edited ${s}`;
+        const response = greetingOpResponse(page, 'edit');
+        await (await popupRowShowing(page, g[1])).locator('.alternate_greeting_text').fill(edited);
+        expect((await response).ok()).toBe(true);
+
+        expect((await storedModel(page, avatar)).greetings).toEqual([edited, g[2]]);
+        await expectPageHoldsServerList(page, avatar);
+    });
+
+    test('popup row delete after /char-update brought in another session\'s delete removes that row\'s own greeting', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `RowOwnHashDelete-${s}`, g);
+        await openCharacter(page, avatar);
+        await openGreetingsPopup(page, 3);
+        await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
+        await charUpdate(page, `Personality ${s}`);
+
+        const response = greetingOpResponse(page, 'delete');
+        await (await popupRowShowing(page, g[2])).locator('.delete_alternate_greeting').click();
+        await page.locator('.popup', { hasText: 'Are you sure you want to delete' }).locator('.popup-button-ok').click();
+        expect((await response).ok()).toBe(true);
+
+        expect((await storedModel(page, avatar)).greetings).toEqual([g[1]]);
+        await expectPageHoldsServerList(page, avatar);
+    });
+
+    test('a popup row being edited keeps its text through /char-update, its edit lands on its own greeting, and the list re-renders when the edit ends', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `RowOwnHashFocused-${s}`, g);
+        await openCharacter(page, avatar);
+        await openGreetingsPopup(page, 3);
+        const textarea = popupRow(page, 1).locator('.alternate_greeting_text');
+        await textarea.focus();
+        await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
+        await charUpdate(page, `Personality ${s}`);
+
+        expect(await popupTexts(page)).toEqual(g);
+        await expect(textarea).toBeFocused();
+
+        const more = ' and more';
+        const response = greetingOpResponse(page, 'edit');
+        await textarea.press('End');
+        await textarea.pressSequentially(more);
+        expect((await response).ok()).toBe(true);
+        expect((await storedModel(page, avatar)).greetings).toEqual([g[1] + more, g[2]]);
+        await expect(textarea).toHaveValue(g[1] + more);
+        expect(await popupTexts(page)).toEqual([g[0], g[1] + more, g[2]]);
+
+        await greetingsPopup(page).locator('.greeting-filter-input').focus();
+        await expect.poll(() => popupTexts(page), { timeout: 10000 }).toEqual([g[1] + more, g[2]]);
+        await expectPageHoldsServerList(page, avatar);
+    });
+
+    test('a popup row open in the maximize editor isn\'t redrawn by /char-update, keeps what is typed, and its edit lands on its own greeting', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `RowMaximized-${s}`, g);
+        await openCharacter(page, avatar);
+        await openGreetingsPopup(page, 3);
+        await popupRow(page, 1).locator('.editor_maximize').click();
+        const editor = page.locator('textarea.maximized_textarea');
+        await expect(editor).toBeVisible();
+        await expect(editor).toHaveValue(g[1]);
+
+        const typed = `${g[1]} typed`;
+        let response = greetingOpResponse(page, 'edit');
+        await editor.press('End');
+        await editor.pressSequentially(' typed');
+        expect((await response).ok()).toBe(true);
+        expect((await storedModel(page, avatar)).greetings).toEqual([g[0], typed, g[2]]);
+
+        await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
+        await charUpdate(page, `Personality ${s}`);
+        expect(await popupTexts(page)).toEqual([g[0], typed, g[2]]);
+
+        const more = `${typed} and more`;
+        response = greetingOpResponse(page, 'edit');
+        await editor.pressSequentially(' and more');
+        await expect(editor).toHaveValue(more);
+        await expect(popupRow(page, 1).locator('.alternate_greeting_text')).toHaveValue(more);
+        expect((await response).ok()).toBe(true);
+        expect((await storedModel(page, avatar)).greetings).toEqual([more, g[2]]);
+
+        await page.keyboard.press('Escape');
+        await expect(editor).toHaveCount(0);
+        await expect.poll(() => popupTexts(page), { timeout: 10000 }).toEqual([more, g[2]]);
+        await expectPageHoldsServerList(page, avatar);
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
