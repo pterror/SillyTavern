@@ -115,6 +115,8 @@ const SCHEMA_SQL = `
         identity  TEXT NOT NULL,
         text_hash TEXT NOT NULL,
         ids       TEXT NOT NULL,
+        -- llama.cpp's pieces for the ids, as /current/encode answers them (JSON); NULL when the encode didn't ask for them.
+        chunks    TEXT,
         last_used INTEGER NOT NULL,
         PRIMARY KEY (identity, text_hash)
     );
@@ -491,6 +493,7 @@ async function getEntry(directories) {
     }
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
+    migrateTokenIdsChunks(db);
     migrateIdentityHashSync(db);
     const entry = { db };
     entries.set(key, entry);
@@ -504,6 +507,17 @@ async function getEntry(directories) {
  */
 export async function getMessageTreeDb(directories) {
     return (await getEntry(directories))?.db ?? null;
+}
+
+/**
+ * Adds token_ids' chunks column to a store created before it existed. Its rows keep chunks NULL, as rows stored without them.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateTokenIdsChunks(db) {
+    const columns = new Set(Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(token_ids)')), c => c.name));
+    if (!columns.has('chunks')) {
+        db.exec('ALTER TABLE token_ids ADD COLUMN chunks TEXT');
+    }
 }
 
 /**

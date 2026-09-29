@@ -20,6 +20,7 @@ const {
     chatMessageKeyText,
     readCount,
     readIds,
+    readIdsRow,
     writeBack,
     createStoredCounter,
 } = await import('./token-count-store.js');
@@ -29,11 +30,16 @@ const { countChatCompletionMessages } = await import('./endpoints/tokenizers.js'
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
 const directories = { root: tmpRoot };
 const storedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
+const chunksRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
+const oldRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
 
-/** Reads the rows and the running counts straight from the file, on a handle of its own. */
-async function inspect() {
+/**
+ * Reads the rows and the running counts straight from the file, on a handle of its own.
+ * @param {string} [root]
+ */
+async function inspect(root = tmpRoot) {
     const engine = await getSqliteEngine();
-    const db = engine.openDatabase(path.join(tmpRoot, 'message-tree.sqlite'));
+    const db = engine.openDatabase(path.join(root, 'message-tree.sqlite'));
     try {
         const rows = table => db.readBounded(`SELECT identity, text_hash, last_used FROM ${table} ORDER BY identity, text_hash`, [], 100);
         const running = key => {
@@ -51,9 +57,10 @@ async function inspect() {
     }
 }
 
-// A fake llama.cpp `/tokenize`: one token per UTF-8 byte, ids 0..n-1, or 500 when `fakeTokenize.fail`.
+// A fake llama.cpp `/tokenize`: one token per UTF-8 byte, ids 0..n-1, or 500 when `fakeTokenize.fail`. With
+// `with_pieces`, each token's piece is its byte as a list, as llama.cpp gives a piece that isn't valid UTF-8.
 // Every request is recorded, so a test counts the tokenizer calls a counter made.
-const fakeTokenize = { fail: false, contents: /** @type {string[]} */ ([]) };
+const fakeTokenize = { fail: false, contents: /** @type {string[]} */ ([]), withPieces: /** @type {boolean[]} */ ([]) };
 const fakeServer = http.createServer((req, res) => {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -62,21 +69,24 @@ const fakeServer = http.createServer((req, res) => {
             res.writeHead(404).end();
             return;
         }
-        const content = String(JSON.parse(body).content);
+        const parsed = JSON.parse(body);
+        const content = String(parsed.content);
         fakeTokenize.contents.push(content);
+        fakeTokenize.withPieces.push(parsed.with_pieces === true);
         if (fakeTokenize.fail) {
             res.writeHead(500).end();
             return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ tokens: Array.from(Buffer.from(content)).map((_, id) => id) }));
+        const bytes = Array.from(Buffer.from(content));
+        res.end(JSON.stringify({ tokens: parsed.with_pieces ? bytes.map((byte, id) => ({ id, piece: [byte] })) : bytes.map((_, id) => id) }));
     });
 });
 fakeServer.listen(0, '127.0.0.1');
 await new Promise(resolve => fakeServer.once('listening', resolve));
 const fakeUrl = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (fakeServer.address()).port}`;
 const tokenizerCalls = () => fakeTokenize.contents.length;
-const resetFake = () => { fakeTokenize.fail = false; fakeTokenize.contents.length = 0; };
+const resetFake = () => { fakeTokenize.fail = false; fakeTokenize.contents.length = 0; fakeTokenize.withPieces.length = 0; };
 
 try {
     // --- keys: the kind and everything the result depends on besides the tokenizer ---
@@ -382,11 +392,118 @@ try {
             { identity: copyIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.CC_MESSAGE, chatMessageKeyText('gpt-4', m6)), count: 5 },
         ]);
     }
+
+    // ===== chunks: a token_ids row may hold llama.cpp's pieces, as /current/encode answers them =====
+    const chunksDirs = { root: chunksRoot };
+    const idC = 'llamacpp:["/models/c.gguf","b1"]';
+    const hashAe = tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'aé');
+    {
+        await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2] }] }, 1000);
+        assert.deepEqual(await readIdsRow(chunksDirs, idC, hashAe), { ids: [0, 1, 2], chunks: null }, 'a row stored without chunks');
+        assert.deepEqual(await readIds(chunksDirs, idC, hashAe), [0, 1, 2]);
+
+        await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2], chunks: ['a', 'é'] }] }, 2000);
+        assert.deepEqual(await readIdsRow(chunksDirs, idC, hashAe), { ids: [0, 1, 2], chunks: ['a', 'é'] }, 'a row without chunks gets them');
+        let state = await inspect(chunksRoot);
+        assert.equal(state.idsRunning, 1, 'no row added');
+        assert.equal(state.ids[0].last_used, 2000);
+
+        await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2], chunks: ['x'] }] }, 3000);
+        await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2] }] }, 4000);
+        assert.deepEqual(await readIdsRow(chunksDirs, idC, hashAe), { ids: [0, 1, 2], chunks: ['a', 'é'] }, 'a row with chunks keeps them');
+        state = await inspect(chunksRoot);
+        assert.equal(state.ids[0].last_used, 4000, 'marked used');
+
+        const hashB = tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'b');
+        await writeBack(chunksDirs, { ids: [{ identity: idC, hash: hashB, ids: [0], chunks: ['b'] }] }, 5000);
+        assert.deepEqual(await readIdsRow(chunksDirs, idC, hashB), { ids: [0], chunks: ['b'] }, 'a new row with chunks');
+        assert.equal((await inspect(chunksRoot)).idsRunning, 2);
+        assert.equal(await readIdsRow(chunksDirs, 'another', hashB), null);
+    }
+
+    // A store whose token_ids was created before it had a chunks column gains it, keeping its rows.
+    {
+        const engine = await getSqliteEngine();
+        const old = engine.openDatabase(path.join(oldRoot, 'message-tree.sqlite'));
+        old.exec(`CREATE TABLE token_ids (identity TEXT NOT NULL, text_hash TEXT NOT NULL, ids TEXT NOT NULL,
+                  last_used INTEGER NOT NULL, PRIMARY KEY (identity, text_hash))`);
+        old.run('INSERT INTO token_ids (identity, text_hash, ids, last_used) VALUES (@identity, @hash, @ids, 1)', { identity: idC, hash: hashAe, ids: '[0,1,2]' });
+        old.close();
+        const oldDirs = { root: oldRoot };
+        assert.deepEqual(await readIdsRow(oldDirs, idC, hashAe), { ids: [0, 1, 2], chunks: null });
+        await writeBack(oldDirs, { ids: [{ identity: idC, hash: hashAe, ids: [0, 1, 2], chunks: ['a', 'é'] }] }, 2);
+        assert.deepEqual(await readIdsRow(oldDirs, idC, hashAe), { ids: [0, 1, 2], chunks: ['a', 'é'] });
+    }
+
+    // --- encodeTextWithChunks ---
+    {
+        const counterDirs = { root: fs.mkdtempSync(path.join(chunksRoot, 'counter-')) };
+        const counter = () => createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: counterDirs });
+
+        resetFake();
+        const first = counter();
+        assert.deepEqual(await first.encodeTextWithChunks('aé'), { ids: [0, 1, 2], chunks: ['a', 'é'] });
+        assert.deepEqual(await first.encodeTextWithChunks('aé'), { ids: [0, 1, 2], chunks: ['a', 'é'] });
+        assert.deepEqual(fakeTokenize.withPieces, [true], 'asked once, with pieces');
+        assert.deepEqual(first.pending, { counts: [], ids: [{ identity: llamaIdentity, hash: hashAe, ids: [0, 1, 2], chunks: ['a', 'é'] }] });
+        await writeBack(counterDirs, first.pending);
+
+        resetFake();
+        const second = counter();
+        assert.deepEqual(await second.encodeTextWithChunks('aé'), { ids: [0, 1, 2], chunks: ['a', 'é'] }, 'from the table');
+        assert.equal(tokenizerCalls(), 0);
+        assert.deepEqual(second.pending.ids, [{ identity: llamaIdentity, hash: hashAe, ids: [0, 1, 2] }], 'pending, so write-back marks it used');
+
+        // A row stored without chunks, as a server-side encode stores it, met by a request that needs them: a miss.
+        resetFake();
+        const plain = counter();
+        assert.deepEqual(await plain.encodeText('bé'), [0, 1, 2]);
+        await writeBack(counterDirs, plain.pending);
+        resetFake();
+        const needsChunks = counter();
+        assert.deepEqual(await needsChunks.encodeTextWithChunks('bé'), { ids: [0, 1, 2], chunks: ['b', 'é'] });
+        assert.deepEqual(fakeTokenize.withPieces, [true], 'asked again, with pieces');
+        await writeBack(counterDirs, needsChunks.pending);
+        assert.deepEqual(await readIdsRow(counterDirs, llamaIdentity, tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'bé')), { ids: [0, 1, 2], chunks: ['b', 'é'] }, 'the row got its chunks');
+
+        // The same within one counter: ids without chunks don't answer a request that needs them.
+        resetFake();
+        const both = counter();
+        await both.encodeText('cé');
+        assert.deepEqual(await both.encodeTextWithChunks('cé'), { ids: [0, 1, 2], chunks: ['c', 'é'] });
+        assert.deepEqual(fakeTokenize.withPieces, [false, true]);
+        assert.deepEqual(await both.encodeText('cé'), [0, 1, 2]);
+        assert.equal(tokenizerCalls(), 2, 'ids with chunks answer a plain encode');
+
+        // A failing llama.cpp answered by its copy: no chunks, as before, and the row under the copy's identity.
+        resetFake();
+        fakeTokenize.fail = true;
+        const byCopy = createStoredCounter({ resolved: llamaCpp(gpt4), identity: llamaIdentity, directories: counterDirs });
+        const copied = await byCopy.encodeTextWithChunks('dé');
+        assert.deepEqual(copied, { ids: Array.from(await createStoredCounter({ resolved: { kind: 'local', ...gpt4, basis: 'local', localCopy: null }, identity: null, directories: counterDirs }).encodeText('dé')), chunks: null });
+        assert.deepEqual(byCopy.pending.ids.map(row => [row.identity, row.chunks]), [[await tokenizerIdentity(gpt4), null]]);
+
+        // identity null: llama.cpp with pieces on every call, nothing pending.
+        resetFake();
+        const unstored = createStoredCounter({ resolved: llamaCpp(), identity: null, directories: counterDirs });
+        assert.deepEqual(await unstored.encodeTextWithChunks('aé'), { ids: [0, 1, 2], chunks: ['a', 'é'] });
+        await unstored.encodeTextWithChunks('aé');
+        assert.deepEqual(fakeTokenize.withPieces, [true, true]);
+        assert.deepEqual(unstored.pending, { counts: [], ids: [] });
+
+        // A tokenizer that isn't llama.cpp has no chunks to give: ids only, as before.
+        const local = createStoredCounter({ resolved: { kind: 'local', ...gpt4, basis: 'local', localCopy: null }, identity: 'tiktoken-test', directories: counterDirs });
+        const localEncoded = await local.encodeTextWithChunks('aé');
+        assert.deepEqual(Object.keys(localEncoded), ['ids']);
+        assert.deepEqual(local.pending.ids.map(row => Object.keys(row)), [['identity', 'hash', 'ids']]);
+    }
 } finally {
     fakeServer.close();
     disposeMessageTreeStores();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(storedRoot, { recursive: true, force: true });
+    fs.rmSync(chunksRoot, { recursive: true, force: true });
+    fs.rmSync(oldRoot, { recursive: true, force: true });
 }
 
 console.log('token-count-store.test.js: all assertions passed');
