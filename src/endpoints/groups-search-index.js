@@ -125,20 +125,27 @@ async function buildTantivyIndex(directories, tantivy) {
  * moved past the version the index was built from. Runs in search-index-worker.js, never in the request process.
  * Each build records the groups version (getGroupsVersion()) it was built from, and persists it under
  * GROUPS_INDEX_VERSION_META_KEY once the new index is in place, so read-only mode can read it.
- * Without a metadata store there is no log, so only the startup build runs, as with the characters index.
+ * Without a metadata store there is no log, so it rebuilds whenever the groups folder's mtime moves instead: that
+ * catches groups added or removed, though not a file edited in place.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  */
 export function createGroupIndexMaintainer(directories, tantivy) {
     /** @type {number | null} */
     let builtVersion = null;
+    /** @type {number | null} */
+    let builtDirMtime = null;
+
+    const groupsDirMtime = () => fs.existsSync(directories.groups) ? fs.statSync(directories.groups).mtimeMs : 0;
 
     /** @returns {Promise<string>} The index dir. */
     async function build() {
-        // Read before the build, so a change made during it moves the version again.
+        // Read before the build, so a change made during it moves them again.
         const version = await getGroupsVersion(directories);
+        const dirMtime = version === null ? groupsDirMtime() : null;
         const dir = await buildTantivyIndex(directories, tantivy);
         builtVersion = version;
+        builtDirMtime = dirMtime;
         // null: the metadata store is unavailable, so there is no version and nowhere to persist one.
         if (version !== null) {
             // Not skipped on a lock: the new index is already in place, and the version persisted for the old
@@ -158,10 +165,8 @@ export function createGroupIndexMaintainer(directories, tantivy) {
         /** @returns {Promise<string | null>} The index dir when it was rebuilt, else null. */
         async tick() {
             const version = await getGroupsVersion(directories);
-            if (version === null || version === builtVersion) {
-                return null;
-            }
-            return build();
+            const unchanged = version === null ? groupsDirMtime() === builtDirMtime : version === builtVersion;
+            return unchanged ? null : build();
         },
     };
 }
