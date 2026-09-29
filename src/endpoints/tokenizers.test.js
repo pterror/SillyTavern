@@ -994,6 +994,38 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
         assert.equal(await idsRowsRunning(), rowsBefore, 'no row added');
     });
 
+    // --- A text already stored is answered from the tables ---
+
+    await testCase('/current/count on llama.cpp: a text stored under the current identity makes no /tokenize and answers the same count', async () => {
+        storedState();
+        const message = 'a message the per-message counter counts twice';
+        const fresh = await postCurrent('count', { state: stepTextgenState, texts: [message], padding: 0 });
+        assert.deepEqual(fresh.counts, [Buffer.byteLength(message)]);
+        assert.deepEqual(tokenizeBodies().map(body => body.content), [message], 'the first count asks /tokenize');
+        assert.equal(await stored(() => readCount(directories, identity, tokenKeyHash(TOKEN_KEY_KINDS.TEXT, message))), Buffer.byteLength(message));
+
+        stepFake.requests.length = 0;
+        const again = await postCurrent('count', { state: stepTextgenState, texts: [message], padding: 0 });
+        assert.deepEqual(tokenizeBodies(), [], 'no /tokenize for the stored text');
+        assert.deepEqual(again.counts, fresh.counts, 'the same count');
+        assert.deepEqual(again.tokenizer, fresh.tokenizer, 'the same tokenizer answer');
+    });
+
+    await testCase('/current/encode on llama.cpp: a text stored under the current identity makes no /tokenize and answers the same ids and chunks', async () => {
+        storedState();
+        const entry = 'a banned entry é東';
+        const fresh = await postCurrent('encode', { state: stepTextgenState, texts: [entry] });
+        assert.deepEqual(fresh.ids, [Array.from(Buffer.from(entry), (_, i) => i)]);
+        assert.deepEqual(tokenizeBodies().map(body => body.content), [entry], 'the first encode asks /tokenize');
+        assert.notEqual(await stored(() => readIdsRow(directories, identity, tokenKeyHash(TOKEN_KEY_KINDS.IDS, entry))), null);
+
+        stepFake.requests.length = 0;
+        const again = await postCurrent('encode', { state: stepTextgenState, texts: [entry] });
+        assert.deepEqual(tokenizeBodies(), [], 'no /tokenize for the stored text');
+        assert.deepEqual({ ids: again.ids, chunks: again.chunks }, { ids: fresh.ids, chunks: fresh.chunks }, 'the same ids and chunks');
+        assert.deepEqual(again.tokenizer, fresh.tokenizer, 'the same tokenizer answer');
+    });
+
     // --- A failed read of the token tables fails nothing: upstream's /current/* never read them ---
 
     /**
