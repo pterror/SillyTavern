@@ -91,6 +91,111 @@ const urlTrailingUnderscoreExt = {
     },
 };
 
+/** The tags showdown's `hashHTMLBlocks` keeps whole. */
+const HTML_BLOCK_TAGS = [
+    'pre', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'table', 'dl', 'ol', 'ul', 'script', 'noscript',
+    'form', 'fieldset', 'iframe', 'math', 'style', 'section', 'header', 'footer', 'nav', 'article', 'aside', 'address',
+    'audio', 'canvas', 'figure', 'hgroup', 'output', 'video', 'p',
+];
+const HTML_BLOCK_TAG_NAMES = `(?:${HTML_BLOCK_TAGS.join('|')})(?=[\\s/>])`;
+const htmlBlockOpenRegex = new RegExp(`^ {0,3}<(${HTML_BLOCK_TAG_NAMES})[^>]*>`, 'i');
+const htmlBlockCandidateRegex = new RegExp(`\\n {0,3}<${HTML_BLOCK_TAG_NAMES}`, 'gi');
+const htmlAttributeRegex = /\s+([^\s"'>/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+
+/**
+ * Matches an HTML block at the start of `src`: an opening tag from {@link HTML_BLOCK_TAGS} up to its matching closing
+ * tag, counting nested tags of the same name.
+ * @param {string} src
+ * @returns {{ raw: string, open: string, inner: string, close: string } | null} null when there's no matching closing tag.
+ */
+function matchHtmlBlock(src) {
+    const openMatch = htmlBlockOpenRegex.exec(src);
+    if (!openMatch) {
+        return null;
+    }
+    const tagRegex = new RegExp(`<(/?)${openMatch[1]}(?=[\\s/>])[^>]*>`, 'gi');
+    tagRegex.lastIndex = openMatch[0].length;
+    let depth = 1;
+    let tag;
+    while ((tag = tagRegex.exec(src))) {
+        depth += tag[1] ? -1 : 1;
+        if (depth === 0) {
+            const lineEnd = /^[ \t]*(?:\n|$)/.exec(src.slice(tagRegex.lastIndex))?.[0] ?? '';
+            return {
+                raw: src.slice(0, tagRegex.lastIndex) + lineEnd,
+                open: openMatch[0],
+                inner: src.slice(openMatch[0].length, tag.index),
+                close: tag[0] + lineEnd,
+            };
+        }
+    }
+    return null;
+}
+
+/**
+ * PHP Markdown Extra's opt-in: an opening tag with a `markdown` attribute has its inside parsed as markdown.
+ * @param {string} openTag
+ * @returns {boolean}
+ */
+function hasMarkdownAttribute(openTag) {
+    const attributes = openTag.trimStart().replace(/^<[^\s/>]+/, '').replace(/\/?>$/, '');
+    return Array.from(attributes.matchAll(htmlAttributeRegex)).some(([, name]) => name.toLowerCase() === 'markdown');
+}
+
+/**
+ * @param {string} text
+ * @param {string} tagName
+ * @returns {import('marked').Tokens.HTML}
+ */
+function htmlBlockToken(text, tagName) {
+    return { type: 'html', block: true, pre: ['pre', 'script', 'style'].includes(tagName), raw: text, text };
+}
+
+/**
+ * Keeps an HTML block whole: it runs to its matching closing tag, blank lines and indentation included,
+ * and its inside isn't parsed as markdown unless the opening tag has a `markdown` attribute. The tags go through the
+ * `html` renderer, so the literal-tags processor shows them as text.
+ * @type {import('marked').MarkedExtension}
+ */
+const htmlBlockExt = {
+    extensions: [{
+        name: 'htmlBlockMarkdown',
+        level: 'block',
+        start(src) {
+            htmlBlockCandidateRegex.lastIndex = 0;
+            let candidate;
+            while ((candidate = htmlBlockCandidateRegex.exec(src))) {
+                if (matchHtmlBlock(src.slice(candidate.index + 1))) {
+                    return candidate.index + 1;
+                }
+            }
+            return undefined;
+        },
+        tokenizer(src) {
+            const block = matchHtmlBlock(src);
+            if (!block) {
+                return undefined;
+            }
+            const tagName = htmlBlockOpenRegex.exec(block.open)[1].toLowerCase();
+            if (!hasMarkdownAttribute(block.open)) {
+                return htmlBlockToken(block.raw, tagName);
+            }
+            return {
+                type: 'htmlBlockMarkdown',
+                raw: block.raw,
+                tokens: [
+                    htmlBlockToken(block.open, tagName),
+                    ...this.lexer.blockTokens(block.inner, []),
+                    htmlBlockToken(block.close, tagName),
+                ],
+            };
+        },
+        renderer(token) {
+            return this.parser.parse(token.tokens);
+        },
+    }],
+};
+
 /**
  * @param {string} [escapeStrings] power_user.markdown_escape_strings; pass the real value when calling this from a module that already imports power_user (e.g. on power_user.markdown_escape_strings change), same as the old reloadMarkdownProcessor() was called.
  * @param {(text: string) => string} [substituteParamsFn] The real `substituteParams` from script.js, from a module that already imports it.
@@ -102,6 +207,7 @@ export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identi
     });
     markedProcessor.use(markdownExclusionExt(escapeStrings, substituteParamsFn));
     markedProcessor.use(urlTrailingUnderscoreExt);
+    markedProcessor.use(htmlBlockExt);
 
     markedLiteralTagsProcessor = new Marked({
         gfm: true,
@@ -109,6 +215,7 @@ export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identi
     });
     markedLiteralTagsProcessor.use(markdownExclusionExt(escapeStrings, substituteParamsFn));
     markedLiteralTagsProcessor.use(urlTrailingUnderscoreExt);
+    markedLiteralTagsProcessor.use(htmlBlockExt);
     markedLiteralTagsProcessor.use(literalTagsExt);
     return markedProcessor;
 }
