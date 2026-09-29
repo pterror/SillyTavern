@@ -20,7 +20,7 @@ import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
-import { buildOwnerCreatedAtIndex, characterAvatarsForOwnerId, listOwnersWithoutKind, recordOwnerKinds } from './message-tree-db.js';
+import { characterAvatarsForOwnerId, listOwnersWithoutKind, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
@@ -4124,9 +4124,8 @@ function nextDateLastChat(stored, { addedCreatedAt, readLastCreatedAt }) {
  * @param {object} change
  * @param {number} change.sizeChange
  * @param {number | null} change.addedCreatedAt The newest `created_at` the write inserted, if it inserted any.
- * @param {(() => number) | null} change.readLastCreatedAt Set when the write deleted a row or the tree's `(owner,
- *   created_at)` index exists: reads the character's newest message `created_at` (0 with none left) at the moment of
- *   this write.
+ * @param {(() => number) | null} change.readLastCreatedAt Set when the write deleted a row: reads the character's
+ *   newest message `created_at` (0 with none left) at the moment of this write.
  */
 export async function applyCharacterChatStats(directories, avatar, { sizeChange, addedCreatedAt, readLastCreatedAt }) {
     const entry = await getEntry(directories);
@@ -4166,9 +4165,8 @@ export async function applyCharacterChatStats(directories, avatar, { sizeChange,
  * @param {object} change
  * @param {number} change.sizeChange
  * @param {number | null} change.addedCreatedAt The newest `created_at` the write inserted, if it inserted any.
- * @param {(() => number) | null} change.readLastCreatedAt Set when the write deleted a row or the tree's `(owner,
- *   created_at)` index exists: reads the group's newest message `created_at` (0 with none left) at the moment of
- *   this write.
+ * @param {(() => number) | null} change.readLastCreatedAt Set when the write deleted a row: reads the group's newest
+ *   message `created_at` (0 with none left) at the moment of this write.
  */
 export async function applyGroupChatStats(directories, groupId, { sizeChange, addedCreatedAt, readLastCreatedAt }) {
     const entry = await getEntry(directories);
@@ -5290,17 +5288,6 @@ function existingRowIds(db, table, ids) {
         for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) found.push(row.id);
     }
     return found;
-}
-
-/**
- * Builds the message tree's `(owner, created_at)` index when it's missing. From then on every message write reads its
- * owner's `date_last_chat` through it.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<CharacterPassResult>} `batches` is 1 when the index was built.
- */
-export async function buildTreeOwnerCreatedAtIndex(directories) {
-    const built = await buildOwnerCreatedAtIndex(directories);
-    return { batches: built ? 1 : 0, rowsChanged: 0 };
 }
 
 /**
