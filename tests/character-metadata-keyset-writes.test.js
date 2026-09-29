@@ -307,7 +307,7 @@ describe('saveTagDefinitions looks up old names only for the ids it saves, in bo
             expect(nameChanges).not.toContain(leftOutId);
 
             const groupChanges = Array.from(db.prepare('SELECT group_id FROM group_changes WHERE version > ? ORDER BY version').pluck().iterate(versionBefore));
-            expect(groupChanges).toEqual(renamedIds.map(() => null));
+            expect(groupChanges).toEqual([]);
 
             const stored = Array.from(db.prepare('SELECT id, data FROM tags ORDER BY id').iterate(), r => ({ id: r.id, name: JSON.parse(r.data).name }));
             expect(stored).toEqual([...keptTags, newTag].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));

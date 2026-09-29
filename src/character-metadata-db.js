@@ -85,7 +85,7 @@ function insertChange(db, id, op, fields) {
  * Adds a groups version log row (see group_changes in SCHEMA_SQL). Callers add it only when their write changed
  * something, in that write's transaction.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string | null} groupId null: every group (a tag rename), or a group file with no id.
+ * @param {string | null} groupId null: a group file with no id.
  * @param {string | null} [fileName] The name of the group JSON file the write wrote, replaced or removed, within the
  *   groups folder; null when it touched no file.
  */
@@ -486,12 +486,13 @@ const SCHEMA_SQL = `
     CREATE INDEX IF NOT EXISTS idx_group_tags_tag ON group_tags(tag_id, group_id);
 
     -- The groups version log: one row per write that changed a group's groups row, its group_tags rows or a group
-    -- JSON file, in the same transaction as that write, and one row with group_id NULL ("every group") next to each
-    -- tag_name_changes row, since group docs carry tag names. The groups version is MAX(version)
-    -- (getGroupsVersion()), as the characters' is MAX(changes.seq). A write that changes nothing adds no row.
+    -- JSON file, in the same transaction as that write. Tag renames log no row here: the groups index follows
+    -- tag_name_changes itself. The groups version is MAX(version) (getGroupsVersion()), as the characters' is
+    -- MAX(changes.seq). A write that changes nothing adds no row.
     -- file_name: the name, within the groups folder, of the group JSON file the write wrote, replaced or removed
     -- (writeGroupFileAndRow(), writeGroupFileAtOtherPath(), deleteGroupRow() with fileDeleted); NULL when it touched
     -- no file. group_id is the group's id; a file whose JSON has no id logs group_id NULL with its file_name.
+    -- A row with both NULL was logged by an older version for a tag rename or a file with no id.
     CREATE TABLE IF NOT EXISTS group_changes (
         version   INTEGER PRIMARY KEY AUTOINCREMENT,
         group_id  TEXT,
@@ -3694,6 +3695,61 @@ export async function* streamCharacterIdsForTagIds(directories, tagIds) {
     }
 }
 
+/** streamCharacterIdsForTagIds()'s counterpart for groups: the group ids of the group_tags rows carrying any of
+ * `tagIds`, in batches, each id once. `tagIds` goes into one IN (...), so the caller bounds it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} tagIds
+ * @returns {AsyncGenerator<string[], void, undefined>}
+ */
+export async function* streamGroupIdsForTagIds(directories, tagIds) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const ids = [...new Set(tagIds)];
+    if (!ids.length) return;
+    /** @type {Record<string, string>} */
+    const params = {};
+    ids.forEach((id, i) => { params[`t${i}`] = id; });
+    const placeholders = ids.map((_id, i) => `@t${i}`).join(',');
+    for await (const rows of streamRows(entry.db, {
+        firstPageSql: `SELECT DISTINCT group_id FROM group_tags WHERE tag_id IN (${placeholders}) ORDER BY group_id LIMIT @limit`,
+        firstPageParams: params,
+        nextPageSql: `SELECT DISTINCT group_id FROM group_tags WHERE tag_id IN (${placeholders}) AND group_id > @after ORDER BY group_id LIMIT @limit`,
+        nextPageParams: params,
+        keyColumn: 'group_id',
+    })) {
+        yield rows.map(row => row.group_id);
+    }
+}
+
+/**
+ * One page of the groups version log (group_changes): at most `limit` rows past `sinceVersion`, in version order.
+ * `version` is the last row read (pass it back as sinceVersion for the next page), or `sinceVersion` when none was;
+ * `hasMore` says whether rows remain past it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} sinceVersion
+ * @param {{ limit: number }} options
+ * @returns {Promise<{ version: number, rows: { version: number, groupId: string | null, fileName: string | null }[], hasMore: boolean } | null>}
+ * null when the metadata store is unavailable.
+ */
+export async function getGroupChangesSince(directories, sinceVersion, { limit }) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    if (!Number.isInteger(limit) || limit <= 0) throw new TypeError(`getGroupChangesSince: limit must be a positive integer, got ${limit}`);
+    const since = Number.isFinite(sinceVersion) && sinceVersion >= 0 ? Math.trunc(sinceVersion) : 0;
+    /** @type {{ version: number, groupId: string | null, fileName: string | null }[]} */
+    const rows = [];
+    let hasMore = false;
+    for (const row of /** @type {Generator<{ version: number, group_id: string | null, file_name: string | null }>} */ (
+        entry.db.iterate('SELECT version, group_id, file_name FROM group_changes WHERE version > ? ORDER BY version ASC LIMIT ?', [since, limit + 1]))) {
+        if (rows.length === limit) {
+            hasMore = true;
+            break;
+        }
+        rows.push({ version: Number(row.version), groupId: row.group_id ?? null, fileName: row.file_name ?? null });
+    }
+    return { version: rows.length > 0 ? rows[rows.length - 1].version : since, rows, hasMore };
+}
+
 // INSERT OR IGNORE: a resumed migration run reuses the id minted first rather than minting a fresh one.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -5249,7 +5305,6 @@ export async function saveTagDefinitions(directories, tagsArray) {
             entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
             if (oldNames.has(tag.id) && oldNames.get(tag.id) !== (tag.name ?? '')) {
                 entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
-                insertGroupChange(entry.db, null);
             }
         }
         updateTagsHashSync(entry.db);
@@ -5396,7 +5451,6 @@ export async function editTagDefinition(directories, id, rawPatch) {
         );
         if ((old.name ?? '') !== (merged.name ?? '')) {
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
-            insertGroupChange(entry.db, null);
         }
         updateTagsHashSync(entry.db);
         result.written = true;
@@ -5526,7 +5580,6 @@ export async function deleteTagDefinition(directories, tagId, mergeInto = null) 
         entry.db.run('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (@id, @target)', { id: tagId, target });
         for (const id of [tagId, ...movedIds]) {
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
-            insertGroupChange(entry.db, null);
         }
         updateTagsHashSync(entry.db);
         result.changed = true;

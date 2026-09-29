@@ -39,10 +39,10 @@ async function writeCard(name) {
 }
 
 /** @param {string} id */
+/** Writes a group the way the groups endpoints do, so its log row names its file. */
 async function writeGroup(id) {
     const group = { id, name: id, members: [], fav: false, date_added: 1 };
-    fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group));
-    await metadataDb.upsertGroupRow(directories, id, id, { fav: false, group });
+    await metadataDb.writeGroupFileAndRow(directories, group, () => fs.writeFileSync(path.join(directories.groups, `${id}.json`), JSON.stringify(group)));
 }
 
 /**
@@ -150,7 +150,7 @@ describe('search after a tag is deleted', () => {
         await setUp(handle);
         await writeGroup('gx');
         expect(await metadataDb.assignEntityTag(directories, 'gx', 'tag-x')).toBe('ok');
-        // The groups index rebuilds on the worker's tick; wait until it holds gx under tag-x.
+        // The groups index catches up on the worker's tick; wait until it holds gx under tag-x.
         const deadline = Date.now() + 5000;
         while (Date.now() < deadline && (await groupsSearchIndex.searchGroupIds(handle, directories, 'gx', undefined, { tags: { include: ['tag-x'] } })).ids.length === 0) {
             await new Promise(resolve => setTimeout(resolve, 50));

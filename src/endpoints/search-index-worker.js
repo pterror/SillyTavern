@@ -10,12 +10,13 @@ import { setConfigFilePath } from '../util.js';
  * Messages to the coordinator:
  *   { type: 'ready', target, dir, seq?, tagNameSeq?, retrySeq?, version? }   target's index is openable at dir (dir null: it
  *                                         can't exist, the metadata store is unavailable); `error` instead when it failed.
- *   { type: 'committed', target, changed: true, seq, tagNameSeq, retrySeq, deletes, upserts, ms }   a tick committed changes.
+ *   { type: 'committed', target, changed: true, seq?, tagNameSeq, retrySeq?, version?, deletes?, upserts?, ms? }   a tick
+ *                                         committed changes.
  *   { type: 'swapped', target, dir, seq?, tagNameSeq?, retrySeq?, version? }   target's index was rebuilt and swapped in at dir.
  * These carry the index's position as of the dir or commit the message announces, which the coordinator uses as its
  * reader's position. For characters, seq and tagNameSeq are the change-log and tag-rename-log seqs the index covers,
- * and retrySeq its retry counter (SearchIndexPosition);
- * for groups, version is the groups version the index was built from.
+ * and retrySeq its retry counter (SearchIndexPosition); for groups, version and tagNameSeq are the groups version and
+ * the tag-rename-log seq it covers (GroupsIndexPosition).
  *   { type: 'character-index-failed', warning }   a card couldn't be indexed; warning is its CharacterIndexFailure
  *                                         (characters-search-index.js), sent once its failure is logged.
  *   { type: 'reply', id, ok, error? }     answer to a request; ok false without error: metadata store unavailable.
@@ -70,7 +71,7 @@ async function startup() {
         tickBudgetMs,
         onIndexFailure: warning => post({ type: 'character-index-failed', warning }),
     });
-    groups = createGroupIndexMaintainer(directories, tantivy);
+    groups = createGroupIndexMaintainer(directories, tantivy, { tickBudgetMs });
 
     const notReady = new Set(['characters', 'groups']);
     const ready = (target, dir) => {
@@ -102,7 +103,7 @@ function charactersPosition() {
 
 /** The groups index's position, as the coordinator's messages carry it. */
 function groupsPosition() {
-    return { version: groups?.version() };
+    return { version: groups?.version(), tagNameSeq: groups?.tagNameSeq() };
 }
 
 async function tick() {
@@ -122,10 +123,16 @@ async function tick() {
         }
     }
     try {
-        const dir = await groups?.tick();
-        if (dir) post({ type: 'swapped', target: 'groups', dir, ...groupsPosition() });
+        const result = await groups?.tick();
+        if (!result) {
+            // Nothing to apply, or the metadata store is unavailable and the groups folder is unchanged.
+        } else if ('swapped' in result) {
+            post({ type: 'swapped', target: 'groups', dir: result.swapped, ...groupsPosition() });
+        } else if (result.changed) {
+            post({ type: 'committed', target: 'groups', changed: true, ...groupsPosition() });
+        }
     } catch (err) {
-        post({ type: 'error', message: `group search index rebuild failed: ${errorText(err)}` });
+        post({ type: 'error', message: `group search index catch-up failed: ${errorText(err)}` });
     }
 }
 
@@ -143,6 +150,11 @@ async function shutdown() {
         characters?.close();
     } catch (err) {
         post({ type: 'error', message: `releasing the character search index writer failed: ${errorText(err)}` });
+    }
+    try {
+        groups?.close();
+    } catch (err) {
+        post({ type: 'error', message: `releasing the group search index writer failed: ${errorText(err)}` });
     }
     disposeMetadataStores();
 }

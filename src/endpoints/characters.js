@@ -2283,8 +2283,8 @@ function sendHashQueryResponse(response, params) {
  *   - no search: the change log's seq (MAX(changes.seq)); with groups, plus the groups version (the groups
  *     version log's latest value).
  *   - search: the same, plus the characters index's position (its change-log and tag-rename-log cursors and its
- *     retry counter) as of the search read; with groups, plus the groups version the groups index was built from,
- *     as of its search read.
+ *     retry counter) as of the search read; with groups, plus the groups index's position (the groups version and
+ *     tag-rename-log seq it covers) as of its search read.
  * null when a component can't be read.
  * @param {{ seq: number | null | undefined, groupsVersion?: number | null, search: boolean, includeGroups: boolean, position?: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition?: import('./search-index-coordinator.js').GroupsIndexPosition | null }} components
  * @returns {string | null}
@@ -2300,8 +2300,8 @@ function queryToken({ seq, groupsVersion, search, includeGroups, position, group
         if (!position) return null;
         components.push(position.seq, position.tagNameSeq, position.retrySeq);
         if (includeGroups) {
-            if (!Number.isFinite(groupsPosition?.version)) return null;
-            components.push(groupsPosition.version);
+            if (!Number.isFinite(groupsPosition?.version) || !Number.isFinite(groupsPosition?.tagNameSeq)) return null;
+            components.push(groupsPosition.version, groupsPosition.tagNameSeq);
         }
     }
     return crypto.createHash('sha256').update(JSON.stringify(components)).digest('base64url').slice(0, 22);
@@ -2747,8 +2747,8 @@ router.post('/changes', async function (request, response) {
  * SSE endpoint that pushes an empty "something changed, go ask" notification whenever the metadata store's
  * `changes` table gets a new row, so a client can call `/changes` instead of polling, and a
  * `{ type: 'search-index-updated', seq, groupsVersion }` message when a commit or a rebuild-and-swap changed this
- * user's characters search index, or a rebuild-and-swap changed their groups search index (seq: the change-log seq
- * the characters index now covers; groupsVersion: the groups version the groups index was built from; each null
+ * user's characters or groups search index (seq: the change-log seq the characters index now covers; groupsVersion:
+ * the groups version the groups index now covers; each null
  * when that index's position isn't known), and a `{ type: 'tag-move-failed', tagId, tagName,
  * anchorId, anchorName, refusedId, reason }` message when a tag move queued for this user couldn't be applied
  * (reportTagMoveFailed(); the client shows it as a warning), and a `{ type: 'character-index-failed', id, name,

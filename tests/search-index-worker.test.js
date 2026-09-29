@@ -33,6 +33,7 @@ const onSearchIndexUpdated = (handle, seq) => {
 
 const TANTIVY_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
 const GROUPS_INDEX_VERSION_META_KEY = 'tantivy_group_index_version';
+const GROUPS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_group_index_tag_name_change_seq';
 
 function cardJson(name) {
     return JSON.stringify({
@@ -244,28 +245,29 @@ describe('search-index-worker.js (real worker thread)', () => {
         expect(indexUpdates.map(update => update.seq)).toEqual([seq]);
     }, 30000);
 
-    test('the groups index records the groups version it was built from, as its reader\'s position and in its meta key', async () => {
+    test('the groups index records the groups version and tag-rename seq it covers, as its reader\'s position and in its meta keys', async () => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
 
         await writeGroup({ id: 'g1', name: 'First Coven', members: [] });
         const builtVersion = await metadataDb.getGroupsVersion(directories);
         expect(builtVersion).toBeGreaterThan(0);
-        const coordinator = makeCoordinator();
+        const coordinator = makeCoordinator({ tickIntervalMs: 50 });
         const reader = await coordinator.getIndex(HANDLE, directories, 'groups');
-        expect(reader.position).toEqual({ version: builtVersion });
+        expect(reader.position).toEqual({ version: builtVersion, tagNameSeq: 0 });
         expect(await metadataDb.getMetaValue(directories, GROUPS_INDEX_VERSION_META_KEY)).toBe(String(builtVersion));
+        expect(await metadataDb.getMetaValue(directories, GROUPS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY)).toBe('0');
 
         await writeGroup({ id: 'g2', name: 'Second Coven', members: [] });
-        const rebuiltVersion = await metadataDb.getGroupsVersion(directories);
-        expect(rebuiltVersion).toBeGreaterThan(builtVersion);
-        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')) !== reader);
-        const rebuilt = await coordinator.getIndex(HANDLE, directories, 'groups');
-        expect(rebuilt.position).toEqual({ version: rebuiltVersion });
-        expect(searchNames(rebuilt, 'Second').length).toBe(1);
-        expect(await metadataDb.getMetaValue(directories, GROUPS_INDEX_VERSION_META_KEY)).toBe(String(rebuiltVersion));
+        const caughtUpVersion = await metadataDb.getGroupsVersion(directories);
+        expect(caughtUpVersion).toBeGreaterThan(builtVersion);
+        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')).position?.version === caughtUpVersion);
+        const caughtUp = await coordinator.getIndex(HANDLE, directories, 'groups');
+        expect(caughtUp.position).toEqual({ version: caughtUpVersion, tagNameSeq: 0 });
+        expect(searchNames(caughtUp, 'Second').length).toBe(1);
+        expect(await metadataDb.getMetaValue(directories, GROUPS_INDEX_VERSION_META_KEY)).toBe(String(caughtUpVersion));
     }, 30000);
 
-    test('assigning and unassigning a group\'s tag rebuilds the groups index', async () => {
+    test('assigning and unassigning a group\'s tag updates the groups index', async () => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
 
         expect(await metadataDb.saveTagDefinitions(directories, [{ id: 't1', name: 'witchy' }])).toBe('ok');
@@ -275,17 +277,19 @@ describe('search-index-worker.js (real worker thread)', () => {
         expect(searchTags(reader, 'witchy')).toEqual([]);
 
         await metadataDb.assignEntityTag(directories, 'g1', 't1');
-        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')) !== reader);
+        const taggedVersion = await metadataDb.getGroupsVersion(directories);
+        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')).position?.version === taggedVersion);
         const tagged = await coordinator.getIndex(HANDLE, directories, 'groups');
-        expect(tagged.position).toEqual({ version: await metadataDb.getGroupsVersion(directories) });
+        expect(tagged.position).toEqual({ version: taggedVersion, tagNameSeq: 0 });
         expect(searchTags(tagged, 'witchy')).toEqual(['g1']);
 
         await metadataDb.unassignEntityTag(directories, 'g1', 't1');
-        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')) !== tagged);
+        const untaggedVersion = await metadataDb.getGroupsVersion(directories);
+        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')).position?.version === untaggedVersion);
         expect(searchTags(await coordinator.getIndex(HANDLE, directories, 'groups'), 'witchy')).toEqual([]);
     }, 30000);
 
-    test('renaming a tag rebuilds the groups index with the new name', async () => {
+    test('renaming a tag updates the groups index with the new name', async () => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
 
         expect(await metadataDb.saveTagDefinitions(directories, [{ id: 't1', name: 'witchy' }])).toBe('ok');
@@ -296,7 +300,8 @@ describe('search-index-worker.js (real worker thread)', () => {
         expect(searchTags(reader, 'witchy')).toEqual(['g1']);
 
         await metadataDb.editTagDefinition(directories, 't1', { name: 'spooky' });
-        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')) !== reader);
+        const renameSeq = await metadataDb.getCurrentTagNameChangeSeq(directories);
+        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')).position?.tagNameSeq === renameSeq);
         const renamed = await coordinator.getIndex(HANDLE, directories, 'groups');
         expect(searchTags(renamed, 'spooky')).toEqual(['g1']);
         expect(searchTags(renamed, 'witchy')).toEqual([]);
@@ -423,7 +428,7 @@ describe('characters index chat stats', () => {
 });
 
 describe('createGroupIndexMaintainer tick', () => {
-    test('rebuilds for a group write and a tag rename, and not for a tag edit that changes no name', async () => {
+    test('catches up for a group write and a tag rename, and not for a tag edit that changes no name', async () => {
         const { getTantivyModule } = await import('../src/endpoints/tantivy-engine.js');
         const { createGroupIndexMaintainer } = await import('../src/endpoints/groups-search-index.js');
         const tantivy = await getTantivyModule();

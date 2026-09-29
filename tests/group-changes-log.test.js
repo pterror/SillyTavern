@@ -441,43 +441,34 @@ describe('migrations run when the store opens', () => {
 });
 
 describe('tag renames', () => {
-    test('saveTagDefinitions adds a NULL row per renamed tag, and none when no name changed', async () => {
+    // The groups index follows tag_name_changes itself (groups-search-index.js).
+    /** @returns {number} */
+    const renameRows = () => withRawDb(db => /** @type {number} */ (db.prepare('SELECT COUNT(*) FROM tag_name_changes').pluck().get()));
+
+    test('saveTagDefinitions adds a tag_name_changes row per renamed tag and no groups version row', async () => {
         await saveTags(['x', 'y']);
+        const before = renameRows();
 
-        expect(await addedBy(() => metadataDb.saveTagDefinitions(directories, [{ id: 'x', name: 'new-x' }, { id: 'y', name: 'new-y' }]))).toEqual([null, null]);
-        expect(await addedBy(() => metadataDb.saveTagDefinitions(directories, [{ id: 'x', name: 'new-x' }, { id: 'y', name: 'new-y', color: '#fff' }]))).toEqual([]);
+        expect(await addedBy(() => metadataDb.saveTagDefinitions(directories, [{ id: 'x', name: 'new-x' }, { id: 'y', name: 'new-y' }]))).toEqual([]);
+        expect(renameRows()).toBe(before + 2);
     });
 
-    test('editTagDefinition adds a NULL row for a name change, and none for another field', async () => {
+    test('editTagDefinition adds a tag_name_changes row for a name change and no groups version row', async () => {
         await saveTags(['x']);
+        const before = renameRows();
 
-        expect(await addedBy(() => metadataDb.editTagDefinition(directories, 'x', { name: 'new-x' }))).toEqual([null]);
-        expect(await addedBy(() => metadataDb.editTagDefinition(directories, 'x', { color: '#fff' }))).toEqual([]);
+        expect(await addedBy(() => metadataDb.editTagDefinition(directories, 'x', { name: 'new-x' }))).toEqual([]);
+        expect(renameRows()).toBe(before + 1);
     });
 
-    test('deleteTagDefinition adds a NULL row for each tag whose name changes', async () => {
+    test('deleteTagDefinition adds a tag_name_changes row for each tag whose name changes and no groups version row', async () => {
         await saveTags(['x', 'y', 'z']);
         await metadataDb.deleteTagDefinition(directories, 'x', 'y');
+        const before = renameRows();
 
         // y and x, which now reads as y.
-        expect(await addedBy(() => metadataDb.deleteTagDefinition(directories, 'y', 'z'))).toEqual([null, null]);
         expect(await addedBy(() => metadataDb.deleteTagDefinition(directories, 'y', 'z'))).toEqual([]);
-    });
-
-    test.each([
-        ['saveTagDefinitions', () => metadataDb.saveTagDefinitions(directories, [{ id: 'x', name: 'new-x' }])],
-        ['editTagDefinition', () => metadataDb.editTagDefinition(directories, 'x', { name: 'new-x' })],
-        ['deleteTagDefinition', () => metadataDb.deleteTagDefinition(directories, 'x')],
-    ])('%s adds its NULL row in the same transaction as its tag_name_changes row', async (_name, act) => {
-        await saveTags(['x']);
-        const renames = () => withRawDb(db => db.prepare('SELECT COUNT(*) FROM tag_name_changes').pluck().get());
-        const before = renames();
-
-        failLogInsert = true;
-        await expect(act()).rejects.toThrow('simulated log insert failure');
-        failLogInsert = false;
-
-        expect(renames()).toBe(before);
+        expect(renameRows()).toBe(before + 2);
     });
 });
 
@@ -487,11 +478,9 @@ describe('getGroupsVersion', () => {
 
         await seedGroup('1001');
         await seedGroup('1002');
-        await saveTags(['x']);
-        await metadataDb.editTagDefinition(directories, 'x', { name: 'new-x' });
 
         const rows = logRows();
-        expect(rows.map(row => row.group_id)).toEqual(['1001', '1002', null]);
+        expect(rows.map(row => row.group_id)).toEqual(['1001', '1002']);
         expect(await metadataDb.getGroupsVersion(directories)).toBe(rows[rows.length - 1].version);
     });
 });

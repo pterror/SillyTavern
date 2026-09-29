@@ -303,12 +303,13 @@ export async function* streamGroupsDataBatches(directories, batchSize) {
 }
 
 /**
- * A file that can't be read or parsed is logged and left out.
+ * The groups getGroupsData() returns for just these `.json` files, named within the groups folder. A file that can't
+ * be read or parsed is logged and left out.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string[]} files
  * @returns {Promise<{ fileName: string, group: any }[]>} In the order of `files`.
  */
-async function readGroupsDataFiles(directories, files) {
+export async function readGroupsDataFiles(directories, files) {
     /** @type {{ fileName: string, group: any }[]} */
     const entries = [];
 
