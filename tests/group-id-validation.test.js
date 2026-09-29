@@ -381,7 +381,7 @@ describe('each group file read returns the id, chat_id and chats as strings', ()
 
     test('getGroupsData() and /api/groups/all', async () => {
         writeLegacyGroup(777);
-        expect(groupsModule.getGroupsData(directories).find(g => g.name === 'Legacy 777')).toMatchObject(NORMALIZED);
+        expect((await groupsModule.getGroupsData(directories)).find(g => g.name === 'Legacy 777')).toMatchObject(NORMALIZED);
         const { status, body } = await post('/api/groups/all', {});
         expect(status).toBe(200);
         expect(body.find(g => g.name === 'Legacy 777')).toMatchObject(NORMALIZED);

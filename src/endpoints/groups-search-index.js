@@ -79,7 +79,7 @@ async function buildTantivyIndex(directories, tantivy) {
     const index = new tantivy.Index(schema, tempDir, false);
     const writer = index.writer();
 
-    const groups = getGroupsData(directories);
+    const groups = await getGroupsData(directories);
     const { tagNamesFor, tagIdsFor } = await makeTagNamesResolver(directories, groups.map(group => group.id));
 
     let batchIndex = 0;

@@ -1791,6 +1791,29 @@ export async function getGroupFavsByIds(directories, ids) {
 }
 
 /**
+ * The group rows' chat_size and date_last_chat for `ids` via WHERE id IN (...), never scanning every row.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, { chatSize: number, dateLastChat: number }>>} Keyed by group id; an id with no row
+ *   (or every id, when the metadata store is unavailable) is absent.
+ */
+export async function getGroupChatStatsByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    /** @type {Map<string, { chatSize: number, dateLastChat: number }>} */
+    const result = new Map();
+    if (!entry || !Array.isArray(ids) || ids.length === 0) return result;
+
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        for (const row of /** @type {Generator<{ id: string, chat_size: number, date_last_chat: number }>} */ (entry.db.iterate(`SELECT id, chat_size, date_last_chat FROM groups WHERE id IN (${placeholders})`, batch))) {
+            result.set(row.id, { chatSize: Number(row.chat_size), dateLastChat: Number(row.date_last_chat) });
+        }
+    }
+    return result;
+}
+
+/**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} ids
  * @returns {Promise<Record<string, boolean>>}

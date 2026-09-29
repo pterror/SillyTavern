@@ -8,8 +8,7 @@ import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-f
 
 import { color, tryParse } from '../util.js';
 import { forbiddenRegExp } from '../middleware/validateFileName.js';
-import { writeGroupFileAndRow, writeGroupFileAtOtherPath, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany, groupRowExists } from '../character-metadata-db.js';
-import { calculateGroupChatStats } from '../character-shallow.js';
+import { writeGroupFileAndRow, writeGroupFileAtOtherPath, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany, groupRowExists, getGroupChatStatsByIds } from '../character-metadata-db.js';
 import { normalizeFav } from '../../public/scripts/hash-utils.js';
 import { isValidGroupId, normalizeGroupId, normalizeGroupRecord } from '../group-id.js';
 import { isChatHeaderEntry } from '../chat-header.js';
@@ -261,11 +260,12 @@ export async function migrateGroupFileMetadataFormat(userDirs, fileName) {
 }
 
 /**
- * Reads all of a user's groups from disk, with date_added/date_last_chat/chat_size stats attached.
+ * Reads all of a user's groups from disk, with date_added from the file and date_last_chat/chat_size from the group
+ * rows, which every message write keeps current (applyGroupChatStats()). A group with no row reports 0 for both.
  * @param {import('../users.js').UserDirectoryList} directories
- * @returns {object[]}
+ * @returns {Promise<object[]>}
  */
-export function getGroupsData(directories) {
+export async function getGroupsData(directories) {
     const groups = [];
 
     if (!fs.existsSync(directories.groups)) {
@@ -282,15 +282,18 @@ export function getGroupsData(directories) {
             const groupStat = fs.statSync(filePath);
             group.date_added = groupStat.birthtimeMs;
             group.create_date = new Date(groupStat.birthtimeMs).toISOString();
-
-            const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
-            group.date_last_chat = dateLastChat;
-            group.chat_size = chatSize;
             groups.push(group);
         } catch (error) {
             console.error(error);
         }
     });
+
+    const statsById = await getGroupChatStatsByIds(directories, groups.map(group => group.id).filter(id => typeof id === 'string' && id !== ''));
+    for (const group of groups) {
+        const stats = statsById.get(group.id);
+        group.date_last_chat = stats?.dateLastChat ?? 0;
+        group.chat_size = stats?.chatSize ?? 0;
+    }
 
     return groups;
 }
@@ -337,7 +340,7 @@ export async function stampDbTagIds(directories, groups) {
 }
 
 router.post('/all', async (request, response) => {
-    const groups = getGroupsData(request.user.directories);
+    const groups = await getGroupsData(request.user.directories);
     for (const group of groups) {
         group.fav = normalizeFav(group.fav);
     }
