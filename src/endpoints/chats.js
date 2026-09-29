@@ -15,7 +15,7 @@ import {
     formatBytes,
     isPathUnderParent,
 } from '../util.js';
-import { bumpCharacterDateLastChat, bumpGroupChatStats, getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
+import { bumpGroupChatStats, getCharacterActiveChatsByIds, setCharacterActiveChat } from '../character-metadata-db.js';
 import { resolveGroupOwnerFile } from '../character-shallow.js';
 import { readGroupFile, writeGroupFile } from './groups.js';
 import { withGroupLock } from '../group-lock.js';
@@ -26,7 +26,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
+    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
 /**
@@ -496,9 +496,11 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
 
         // Whole-array save: our own frontend uses this on the normal path too (a fresh chat's first
         // save, and tree-chat snapshots), alongside the named per-row operations for everything else.
+        const owner = ownerDescriptorOf({ avatar: request.body.avatar_url });
         await migrateOwnerOnTouch(request.user.directories, {
             ownerId: cardName,
             chatDir: path.join(request.user.directories.chats, cardName),
+            owner,
         });
 
         // A fresh branch/bookmark save asks for a name minted here (like /chats/label's unique:true)
@@ -507,10 +509,8 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
             chatName = await pickUniqueChatFileName(request.user.directories, cardName, chatName);
         }
 
-        const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false);
+        const result = await saveChatToTree(request.user.directories, cardName, chatName, chatData, false, owner);
         if (result && 'integrity' in result) {
-            await bumpCharacterDateLastChat(request.user.directories, String(request.body.avatar_url)).catch(err =>
-                console.error(`Could not bump date_last_chat for ${cardName}:`, err));
             return response.send({
                 ok: true,
                 integrity: result.integrity,
@@ -542,6 +542,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
             await migrateOwnerOnTouch(request.user.directories, {
                 ownerId: dirName,
                 chatDir: path.join(request.user.directories.chats, dirName),
+                owner: ownerDescriptorOf({ avatar: request.body.avatar_url }),
             });
             // The pointer may be a node id (exact) or a legacy chat name (looked up, not unique per owner);
             // both are accepted so an existing pointer keeps working while the client moves over.
@@ -595,6 +596,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
             await migrateOwnerOnTouch(request.user.directories, {
                 ownerId,
                 chatDir: path.join(request.user.directories.chats, ownerId),
+                owner: ownerDescriptorOf({ avatar: request.body.avatar_url }),
             });
         }
 
@@ -821,18 +823,23 @@ const ownerOf = (/** @type {import('express').Request} */ request) => (request.b
     ? String(request.body.group_id)
     : String(request.body.avatar_url).replace('.png', ''));
 
+/** The owner descriptor for an op's request: the group named by group_id, else the character named by avatar_url. */
+const ownerDescriptorOfRequest = (/** @type {import('express').Request} */ request) =>
+    ownerDescriptorOf({ groupId: request.body.group_id, avatar: request.body.avatar_url });
+
 /**
- * Bumps whichever "last active" stat this op's owner actually has - a character's date_last_chat, or a
- * group's (which also restats chat_size, so it's never handed a raw byte count here).
+ * Restats a group op's owner (date_last_chat and chat_size). A character's stats follow every tree write on
+ * their own (message-tree-db.js's owner write hook).
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {import('express').Request} request
  */
-const bumpOwnerLastChat = (directories, request) => (request.body.group_id
+const bumpOwnerLastChat = async (directories, request) => {
+    if (!request.body.group_id) return;
     // bumpGroupChatStats() declares `chatId` as a required `string` (character-metadata-db.js, not owned
     // by this pass), but resolves the group from `groupId` alone when given - the `null` here is a
     // pre-existing, runtime-safe call this file doesn't own the other side of; cast rather than fix there.
-    ? bumpGroupChatStats(directories, /** @type {string} */ (/** @type {unknown} */ (null)), { groupId: String(request.body.group_id) })
-    : bumpCharacterDateLastChat(directories, String(request.body.avatar_url)));
+    await bumpGroupChatStats(directories, /** @type {string} */ (/** @type {unknown} */ (null)), { groupId: String(request.body.group_id) });
+};
 
 /** Edits one message's content. */
 router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
@@ -941,7 +948,7 @@ router.post('/openings/ensure', validateAvatarUrlMiddleware, async function (req
         const contents = request.body.contents ?? request.body.content;
         if (!contents) return response.status(400).send({ error: 'content or contents is required' });
 
-        const result = await addOpeningAlternatives(request.user.directories, ownerOf(request), contents);
+        const result = await addOpeningAlternatives(request.user.directories, ownerOf(request), contents, ownerDescriptorOfRequest(request));
         return response.status(result.ok ? 200 : 409).send(result);
     } catch (error) {
         console.error('Error ensuring openings:', error);
@@ -971,7 +978,7 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
 router.post('/message/end-path', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (request.body.end_at_anchor) {
-            const ok = await endPathAtAnchor(request.user.directories, ownerOf(request));
+            const ok = await endPathAtAnchor(request.user.directories, ownerOf(request), ownerDescriptorOfRequest(request));
             return response.status(ok ? 200 : 409).send({ ok, reason: ok ? undefined : 'no tree store' });
         }
 
@@ -1297,6 +1304,7 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
             await migrateOwnerOnTouch(request.user.directories, {
                 ownerId: avatarUrl,
                 chatDir: directoryPath,
+                owner: ownerDescriptorOf({ avatar: request.body.avatar_url }),
             });
         }
 
@@ -1309,7 +1317,7 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
         const saveImportToTree = async (chatText, chatName) => {
             if (!useTree) return false;
             const chatData = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
-            const result = await saveChatToTree(request.user.directories, avatarUrl, chatName, chatData, false);
+            const result = await saveChatToTree(request.user.directories, avatarUrl, chatName, chatData, false, ownerDescriptorOf({ avatar: request.body.avatar_url }));
             return !!(result && 'integrity' in result);
         };
 

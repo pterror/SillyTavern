@@ -81,6 +81,7 @@ import { startMetadataMigrations, disposeMetadataMigrationWorkers } from './meta
 import { startSearchWorkerIfIndexed } from './endpoints/characters-search-index.js';
 import { initializeLocalImportScan, disposeLocalImportScan } from './local-import-scan.js';
 import { disposeMessageTreeStores } from './message-tree-db.js';
+import { installOwnerChatStatsHook } from './owner-chat-stats.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { runOnceAtBoot as runUnimportEmbeddedLoreAtBoot } from './migrations/unimport-embedded-lore.js';
 import { maybeStartGroupChatRestore } from './migrations/restore-group-chat-migration-losses.js';
@@ -286,6 +287,7 @@ app.get('/version', async function (_, response) {
 
 redirectDeprecatedEndpoints(app);
 setupPrivateEndpoints(app);
+installOwnerChatStatsHook();
 
 /**
  * Tasks that need to be run before the server starts listening.

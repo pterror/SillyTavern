@@ -90,6 +90,15 @@ const SCHEMA_SQL = `
         key   TEXT PRIMARY KEY,
         value TEXT
     );
+
+    -- What kind of entity owns an owner id's messages, and that entity's row id in the metadata store. Written when
+    -- the owner's anchor is created by a caller that knows the kind, or by the backfill (tree-owner-kinds.js); never
+    -- inferred from the id alone. An owner with no row here is unknown, and its writes change no entity stats.
+    CREATE TABLE IF NOT EXISTS owners (
+        owner_id TEXT PRIMARY KEY,
+        kind     TEXT NOT NULL CHECK (kind IN ('character', 'group')),
+        row_id   TEXT NOT NULL
+    );
 `;
 
 /** SQL to walk from a leaf to the root via recursive CTE, returning the path in root-to-leaf order. */
@@ -113,6 +122,219 @@ const ALTERNATIVE_WINDOW = 5;
 /** @param {Pick<MessageRow, 'parent_id'> | undefined | null} row */
 function isAnchorRow(row) {
     return !!row && row.parent_id === null;
+}
+
+// ---------------------------------------------------------------------------
+//  Owners and per-owner chat stats
+// ---------------------------------------------------------------------------
+
+/**
+ * The entity an owner id belongs to, as a caller that knows it states it.
+ * @typedef {object} OwnerDescriptor
+ * @property {'character' | 'group'} kind
+ * @property {string} rowId The entity's metadata-store row id: a character's avatar file name, a group's id.
+ */
+
+/**
+ * The bytes a message takes as a line of an upstream `.jsonl` chat file: its JSON plus the newline. A row's stored
+ * `content` is already the upstream message object minus the tree's own fields, and each alternative is its own
+ * line. Every chat size in this codebase is a sum of these.
+ * @param {string} contentJson A message row's `content`.
+ * @returns {number}
+ */
+export function messageLineBytes(contentJson) {
+    return Buffer.byteLength(contentJson, 'utf8') + 1;
+}
+
+/**
+ * The owner id upstream derives from a character's avatar for its chats folder, which the tree reuses.
+ * @param {string} avatar
+ * @returns {string}
+ */
+export function characterOwnerIdOf(avatar) {
+    return String(avatar).replace('.png', '');
+}
+
+/**
+ * Every avatar whose owner id is `ownerId`: the exact inverse of {@link characterOwnerIdOf}.
+ * @param {string} ownerId
+ * @returns {string[]}
+ */
+export function characterAvatarsForOwnerId(ownerId) {
+    /** @type {string[]} */
+    const avatars = [];
+    if (!ownerId.includes('.png')) avatars.push(ownerId);
+    for (let i = 0; i <= ownerId.length; i++) {
+        const avatar = ownerId.slice(0, i) + '.png' + ownerId.slice(i);
+        if (avatar.indexOf('.png') === i) avatars.push(avatar);
+    }
+    return avatars;
+}
+
+/**
+ * The owner descriptor a caller that knows the kind passes: a group's own id, or a character's avatar.
+ * @param {{ groupId?: unknown, avatar?: unknown }} params groupId wins when both are given, as in chats.js's ownerOf().
+ * @returns {OwnerDescriptor | undefined}
+ */
+export function ownerDescriptorOf({ groupId, avatar }) {
+    if (groupId != null && groupId !== '') return { kind: 'group', rowId: String(groupId) };
+    if (avatar != null && avatar !== '') return { kind: 'character', rowId: String(avatar) };
+    return undefined;
+}
+
+/**
+ * Records an owner's kind when the caller stated one that fits the owner id. A descriptor that doesn't fit is
+ * logged and not recorded, so the owner stays unknown rather than being attributed to the wrong entity.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} ownerId
+ * @param {OwnerDescriptor | undefined} owner
+ * @returns {boolean} Whether a kind was recorded.
+ */
+function recordOwnerSync(db, ownerId, owner) {
+    if (!owner) return false;
+    const fits = owner.kind === 'group' ? owner.rowId === ownerId : characterOwnerIdOf(owner.rowId) === ownerId;
+    if (!fits) {
+        console.warn(color.yellow(`[message-tree] Not recording owner ${ownerId} as ${owner.kind} ${owner.rowId}: that ${owner.kind}'s chats don't live under this owner id.`));
+        return false;
+    }
+    return db.run('INSERT OR IGNORE INTO owners (owner_id, kind, row_id) VALUES (@ownerId, @kind, @rowId)',
+        { ownerId, kind: owner.kind, rowId: owner.rowId }).changes > 0;
+}
+
+/**
+ * What one committed tree write did to its owner's chat stats.
+ * @typedef {object} OwnerWriteStats
+ * @property {number} sizeChange Line bytes added minus line bytes removed or replaced.
+ * @property {number | null} addedCreatedAt The newest `created_at` among inserted rows, or null if none were inserted.
+ * @property {boolean} deleted A row was deleted, so the owner's newest `created_at` may have gone down.
+ */
+
+/** @returns {OwnerWriteStats} */
+function newWriteStats() {
+    return { sizeChange: 0, addedCreatedAt: null, deleted: false };
+}
+
+/**
+ * @param {OwnerWriteStats} stats
+ * @param {string} content
+ * @param {number} createdAt
+ */
+function countInsert(stats, content, createdAt) {
+    stats.sizeChange += messageLineBytes(content);
+    stats.addedCreatedAt = stats.addedCreatedAt === null ? createdAt : Math.max(stats.addedCreatedAt, createdAt);
+}
+
+/**
+ * @param {OwnerWriteStats} stats
+ * @param {string} before
+ * @param {string} after
+ */
+function countReplace(stats, before, after) {
+    stats.sizeChange += messageLineBytes(after) - messageLineBytes(before);
+}
+
+/**
+ * The change one committed write made to a known owner's chat stats, as the hook receives it.
+ * @typedef {object} OwnerWrite
+ * @property {Directories} directories
+ * @property {string} ownerId
+ * @property {'character' | 'group'} kind
+ * @property {string} rowId
+ * @property {number} sizeChange
+ * @property {number | null} addedCreatedAt
+ * @property {(() => number) | null} readLastCreatedAt Set when a row was deleted: reads the owner's newest message
+ *   `created_at` (0 with none left). Synchronous, so the caller can read it in the same step as its own write.
+ */
+
+/** @type {((write: OwnerWrite) => Promise<void>) | null} */
+let ownerWriteHandler = null;
+
+/**
+ * Sets the one place every committed tree write reports its owner's chat stats change to.
+ * @param {((write: OwnerWrite) => Promise<void>) | null} handler
+ */
+export function setOwnerWriteHandler(handler) {
+    ownerWriteHandler = handler;
+}
+
+/**
+ * The owner's newest message `created_at`, 0 when it has none.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} ownerId
+ * @returns {number}
+ */
+function readOwnerLastCreatedAtSync(db, ownerId) {
+    const row = /** @type {{ t: number | null } | undefined} */ (db.get(
+        'SELECT MAX(created_at) AS t FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL', { ownerId }));
+    return Number(row?.t ?? 0);
+}
+
+/**
+ * One page of owner ids with no recorded kind, in id order, after `after` (from the start when null).
+ * @param {Directories} directories
+ * @param {string | null} after
+ * @param {number} limit
+ * @returns {Promise<string[]>}
+ */
+export async function listOwnersWithoutKind(directories, after, limit) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+    const rows = entry.db.iterate(
+        `SELECT DISTINCT m.owner_id AS owner_id FROM messages m
+         WHERE m.parent_id IS NULL ${after === null ? '' : 'AND m.owner_id > @after'}
+           AND NOT EXISTS (SELECT 1 FROM owners o WHERE o.owner_id = m.owner_id)
+         ORDER BY m.owner_id LIMIT @limit`,
+        after === null ? { limit } : { after, limit });
+    return Array.from(rows, row => /** @type {{ owner_id: string }} */ (row).owner_id);
+}
+
+/**
+ * Records owners' kinds, leaving any already recorded as they are.
+ * @param {Directories} directories
+ * @param {{ ownerId: string, owner: OwnerDescriptor }[]} owners
+ * @returns {Promise<number>} How many were recorded.
+ */
+export async function recordOwnerKinds(directories, owners) {
+    const entry = await getEntry(directories);
+    if (!entry || owners.length === 0) return 0;
+    let recorded = 0;
+    entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        recorded = 0;
+        for (const { ownerId, owner } of owners) {
+            if (recordOwnerSync(entry.db, ownerId, owner)) recorded++;
+        }
+    });
+    return recorded;
+}
+
+/**
+ * Reports a committed write's stats change to the hook, for an owner whose kind is known. A failure is logged, not
+ * thrown: the messages are already stored.
+ * @param {Directories} directories
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} ownerId
+ * @param {OwnerWriteStats} stats
+ */
+async function reportOwnerWrite(directories, db, ownerId, stats) {
+    if (stats.sizeChange === 0 && stats.addedCreatedAt === null && !stats.deleted) return;
+    if (!ownerWriteHandler) return;
+    const owner = /** @type {{ kind: 'character' | 'group', row_id: string } | undefined} */ (db.get(
+        'SELECT kind, row_id FROM owners WHERE owner_id = @ownerId', { ownerId }));
+    if (!owner) return;
+    try {
+        await ownerWriteHandler({
+            directories,
+            ownerId,
+            kind: owner.kind,
+            rowId: owner.row_id,
+            sizeChange: stats.sizeChange,
+            addedCreatedAt: stats.addedCreatedAt,
+            readLastCreatedAt: stats.deleted ? () => readOwnerLastCreatedAtSync(db, ownerId) : null,
+        });
+    } catch (err) {
+        console.error(color.red(`[message-tree] Could not update the chat stats of ${owner.kind} ${owner.row_id} after a write of ${stats.sizeChange} bytes:`), err);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -681,15 +903,17 @@ function getAnchorSync(db, ownerId) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} ownerId
  * @param {number} [now]
+ * @param {OwnerDescriptor} [owner] Recorded as the owner's kind when this call creates the anchor.
  * @returns {MessageRow}
  */
-function ensureAnchorSync(db, ownerId, now) {
+function ensureAnchorSync(db, ownerId, now, owner) {
     const existing = getAnchorSync(db, ownerId);
     if (existing) return existing;
     const id = newId();
     insertMessageSync(db, {
         id, parentId: null, ownerId, content: ANCHOR_CONTENT, createdAt: now ?? Date.now(),
     });
+    recordOwnerSync(db, ownerId, owner);
     // Just inserted above in the same transaction/connection - guaranteed to be found now.
     return /** @type {MessageRow} */ (getAnchorSync(db, ownerId));
 }
@@ -1080,12 +1304,14 @@ export async function loadBranch(directories, ownerId, branchName, fullSwipes = 
  *   present), the rest the messages to save. Plain `(... )[]`, not a tuple, so a caller building this
  *   array dynamically (e.g. from an on-disk `any[]`) isn't forced to prove non-emptiness at compile time.
  * @param {boolean} [isGroup]
+ * @param {OwnerDescriptor} [owner] The owner's kind, recorded if this save creates its anchor. A group save's is
+ *   known from `isGroup`.
  * @returns {Promise<{ integrity: string, assignedNodeIds: { index: number, node_id: string }[] } | { empty: true } | null>}
  *   `null` means no usable SQLite backend is available (now impossible at runtime - see
  *   server-main.js's boot-time verifySqliteBackend()). `{ empty: true }` means chatData had nothing
  *   to save; distinct from `null` so callers don't mistake "nothing to write" for "backend down".
  */
-export async function saveChatToTree(directories, ownerId, chatName, chatData, isGroup = false) {
+export async function saveChatToTree(directories, ownerId, chatName, chatData, isGroup = false, owner = undefined) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     if (!Array.isArray(chatData) || chatData.length === 0) return { empty: true };
@@ -1105,9 +1331,13 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
     const now = Date.now();
     /** @type {{ index: number, node_id: string }[]} */
     const assignedNodeIds = [];
+    const stats = newWriteStats();
+    const ownerDescriptor = owner ?? (isGroup ? /** @type {OwnerDescriptor} */ ({ kind: 'group', rowId: ownerId }) : undefined);
 
     entry.db.transaction(() => {
-        const anchor = ensureAnchorSync(entry.db, ownerId, now);
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
+        const anchor = ensureAnchorSync(entry.db, ownerId, now, ownerDescriptor);
         const existingNode = getLabeledNodeSync(entry.db, ownerId, chatName);
 
         let parentId = anchor.id;
@@ -1151,6 +1381,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                                         sid = twin.id;
                                     } else {
                                         updateMessageContentSync(entry.db, sid, c);
+                                        countReplace(stats, existing.content, c);
                                     }
                                 }
                             } else {
@@ -1166,6 +1397,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                                     insertMessageSync(entry.db, {
                                         id: sid, parentId, ownerId, content: c, createdAt: now + k,
                                     });
+                                    countInsert(stats, c, now + k);
                                 }
                             }
                             if (k === selected) chosenId = sid;
@@ -1211,6 +1443,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
                         // +k keeps sibling order == swipe order under the (created_at, id) sort.
                         createdAt: now + k,
                     });
+                    countInsert(stats, c, now + k);
                     byContent.set(ck, sid);
                 }
                 if (k === selected) chosenId = sid;
@@ -1240,6 +1473,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
         }
     });
 
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
     return { integrity: nextIntegrity, assignedNodeIds };
 }
 
@@ -1459,13 +1693,14 @@ export async function endPathAt(directories, ownerId, nodeId) {
  * of passed in.
  * @param {Directories} directories
  * @param {string} ownerId
+ * @param {OwnerDescriptor} [owner] Recorded as the owner's kind if this call creates the anchor.
  * @returns {Promise<boolean>}
  */
-export async function endPathAtAnchor(directories, ownerId) {
+export async function endPathAtAnchor(directories, ownerId, owner = undefined) {
     const entry = await getEntry(directories);
     if (!entry) return false;
 
-    const anchor = ensureAnchorSync(entry.db, ownerId, Date.now());
+    const anchor = ensureAnchorSync(entry.db, ownerId, Date.now(), owner);
     entry.db.run('UPDATE messages SET default_child_id = NULL WHERE id = @id', { id: anchor.id });
     return true;
 }
@@ -1604,7 +1839,10 @@ export async function getContinuation(directories, nodeId, branchName = null) {
 export async function editMessage(directories, ownerId, nodeId, content) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, reason: 'unavailable' };
-    return editMessageSync(entry.db, ownerId, nodeId, content);
+    const stats = newWriteStats();
+    const result = editMessageSync(entry.db, ownerId, nodeId, content, stats);
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    return result;
 }
 
 /**
@@ -1624,17 +1862,21 @@ export async function editMessages(directories, ownerId, edits) {
     let applied = 0;
     /** @type {{ node_id: string, reason: string }[]} */
     const refused = [];
+    const stats = newWriteStats();
 
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
         for (const edit of list) {
             const nodeId = String(edit.node_id || '');
             if (!nodeId) continue;
-            const result = editMessageSync(entry.db, ownerId, nodeId, edit.content);
+            const result = editMessageSync(entry.db, ownerId, nodeId, edit.content, stats);
             if (result.ok) applied++;
             else refused.push({ node_id: nodeId, reason: result.reason ?? 'refused' });
         }
     });
 
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
     return { ok: true, applied, refused };
 }
 
@@ -1644,9 +1886,10 @@ export async function editMessages(directories, ownerId, edits) {
  * @param {string} ownerId
  * @param {string} nodeId
  * @param {TreeChatMessage} content
+ * @param {OwnerWriteStats} stats Gets the edit's size change.
  * @returns {EditResult}
  */
-function editMessageSync(db, ownerId, nodeId, content) {
+function editMessageSync(db, ownerId, nodeId, content, stats) {
     const row = /** @type {Pick<MessageRow, 'id' | 'content'> | undefined} */ (db.get('SELECT id, content FROM messages WHERE id = @id AND owner_id = @ownerId',
         { id: nodeId, ownerId }));
     if (!row) return { ok: false, reason: 'unknown node' };
@@ -1666,6 +1909,7 @@ function editMessageSync(db, ownerId, nodeId, content) {
     }
 
     updateMessageContentSync(db, nodeId, next);
+    countReplace(stats, row.content, next);
     return { ok: true };
 }
 
@@ -1689,7 +1933,10 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
     const now = Date.now();
     /** @type {string[]} */
     const nodeIds = [];
+    const stats = newWriteStats();
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
         let cursor = afterNodeId;
         for (const c of contents) {
             const body = sanitizeForStorage(c);
@@ -1702,12 +1949,14 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
                 insertMessageSync(entry.db, {
                     id, parentId: cursor, ownerId, content: body, createdAt: now + nodeIds.length,
                 });
+                countInsert(stats, body, now + nodeIds.length);
             }
             setDefaultChildSync(entry.db, cursor, id);
             nodeIds.push(id);
             cursor = id;
         }
     });
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
     return { ok: true, node_ids: nodeIds };
 }
 
@@ -1746,7 +1995,10 @@ export async function graftMessage(directories, ownerId, afterNodeId, beforeNode
     // return statement reads it - the empty string never actually escapes this function.
     /** @type {string} */
     let newNodeId = '';
+    const stats = newWriteStats();
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
         const body = sanitizeForStorage(content);
         // Same convergence rule appendMessages()/addAlternatives() use: a retry that matches an
         // existing sibling of afterNodeId lands on that row instead of duplicating.
@@ -1756,6 +2008,7 @@ export async function graftMessage(directories, ownerId, afterNodeId, beforeNode
         newNodeId = twin ? twin.id : newId();
         if (!twin) {
             insertMessageSync(entry.db, { id: newNodeId, parentId: afterNodeId, ownerId, content: body, createdAt: now });
+            countInsert(stats, body, now);
         }
 
         // Reparent beforeNodeId onto the new node — identity_hash bakes in parent_id, so it must be
@@ -1769,6 +2022,7 @@ export async function graftMessage(directories, ownerId, afterNodeId, beforeNode
         setDefaultChildSync(entry.db, newNodeId, beforeNodeId);
     });
 
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
     return { ok: true, node_id: newNodeId };
 }
 
@@ -1988,9 +2242,12 @@ export async function deleteAlternative(directories, ownerId, nodeId) {
 
     /** @type {{ ok: boolean, reason?: string }} */
     let result = { ok: false, reason: 'unavailable' };
+    const stats = newWriteStats();
     entry.db.transaction(() => {
-        const node = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'label'> | undefined} */ (entry.db.get(
-            'SELECT id, parent_id, label FROM messages WHERE id = @id AND owner_id = @ownerId', { id: nodeId, ownerId }));
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
+        const node = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'label' | 'content'> | undefined} */ (entry.db.get(
+            'SELECT id, parent_id, label, content FROM messages WHERE id = @id AND owner_id = @ownerId', { id: nodeId, ownerId }));
         if (!node) { result = { ok: false, reason: 'unknown node' }; return; }
 
         // A null parent_id is exactly how this schema identifies the owner's synthetic anchor row
@@ -2011,9 +2268,12 @@ export async function deleteAlternative(directories, ownerId, nodeId) {
         if (child) { result = { ok: false, reason: 'has descendants' }; return; }
 
         entry.db.run('DELETE FROM messages WHERE id = @id', { id: nodeId });
+        stats.sizeChange -= messageLineBytes(node.content);
+        stats.deleted = true;
         result = { ok: true };
     });
 
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
     return result;
 }
 
@@ -2048,7 +2308,10 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
     /** @type {string[]} */
     const nodeIds = [];
     let added = 0;
+    const stats = newWriteStats();
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
         const now = Date.now();
         for (const content of list) {
             const body = sanitizeForStorage(content);
@@ -2060,12 +2323,14 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
             insertMessageSync(entry.db, {
                 id, parentId, ownerId, content: body, createdAt: now + added,
             });
+            countInsert(stats, body, now + added);
             byIdentity.set(key, id);
             nodeIds.push(id);
             added++;
         }
     });
 
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
     const total = getSiblingsSync(entry.db, parentId, '').length;
     return { ok: true, node_ids: nodeIds, added, total };
 }
@@ -2214,9 +2479,10 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
  * @param {Directories} directories
  * @param {string} ownerId
  * @param {TreeChatMessage | TreeChatMessage[]} contents
+ * @param {OwnerDescriptor} [owner] Recorded as the owner's kind if this call creates the anchor.
  * @returns {Promise<{ ok: boolean, node_ids: (string | null)[], added: number, total: number }>}
  */
-export async function addOpeningAlternatives(directories, ownerId, contents) {
+export async function addOpeningAlternatives(directories, ownerId, contents, owner = undefined) {
     const entry = await getEntry(directories);
     if (!entry) return { ok: false, node_ids: [], added: 0, total: 0 };
 
@@ -2225,10 +2491,13 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
     const nodeIds = [];
     let added = 0;
     let total = 0;
+    const stats = newWriteStats();
 
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
         const now = Date.now();
-        const anchor = ensureAnchorSync(entry.db, ownerId, now);
+        const anchor = ensureAnchorSync(entry.db, ownerId, now, owner);
 
         /** @type {Map<string, string>} */
         const byIdentity = new Map();
@@ -2250,6 +2519,7 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
             insertMessageSync(entry.db, {
                 id, parentId: anchor.id, ownerId, content: body, createdAt: now + added,
             });
+            countInsert(stats, body, now + added);
             byIdentity.set(key, id);
             nodeIds.push(id);
             added++;
@@ -2258,6 +2528,7 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
         total = getSiblingsSync(entry.db, anchor.id, '').length;
     });
 
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
     return { ok: true, node_ids: nodeIds, added, total };
 }
 
@@ -2270,16 +2541,17 @@ export async function addOpeningAlternatives(directories, ownerId, contents) {
  * atomic on its own.
  * @param {Directories} directories
  * @param {string} ownerId
+ * @param {OwnerDescriptor} [owner] Recorded as the owner's kind if this call creates the anchor.
  * @returns {Promise<string | null>}
  */
-export async function getOrCreateAnchor(directories, ownerId) {
+export async function getOrCreateAnchor(directories, ownerId, owner = undefined) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     // transaction() runs its callback synchronously, so this is always reassigned below before it's read.
     let anchor = /** @type {MessageRow} */ (/** @type {unknown} */ (null));
     entry.db.transaction(() => {
-        anchor = ensureAnchorSync(entry.db, ownerId, Date.now());
+        anchor = ensureAnchorSync(entry.db, ownerId, Date.now(), owner);
     });
     return anchor.id;
 }
@@ -2395,7 +2667,10 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
     if (rows.length === 0) return 0;
 
     let updated = 0;
+    const stats = newWriteStats();
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
         for (const row of rows) {
             try {
                 const msg = JSON.parse(row.content);
@@ -2413,10 +2688,12 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
                     continue;
                 }
                 updateMessageContentSync(entry.db, row.id, next);
+                countReplace(stats, row.content, next);
                 updated++;
             } catch { /* skip malformed */ }
         }
     });
+    await reportOwnerWrite(directories, entry.db, ownerId, stats);
     return updated;
 }
 
@@ -2446,7 +2723,10 @@ export async function renameGroupMemberInMessages(directories, groupOwnerId, old
     const newEncoded = encodeURIComponent(newAvatar);
 
     let updated = 0;
+    const stats = newWriteStats();
     entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        Object.assign(stats, newWriteStats());
         for (const row of rows) {
             try {
                 const msg = JSON.parse(row.content);
@@ -2455,11 +2735,14 @@ export async function renameGroupMemberInMessages(directories, groupOwnerId, old
                 if (typeof msg.force_avatar === 'string') {
                     msg.force_avatar = msg.force_avatar.replace(oldEncoded, newEncoded);
                 }
-                updateMessageContentSync(entry.db, row.id, JSON.stringify(msg));
+                const next = JSON.stringify(msg);
+                updateMessageContentSync(entry.db, row.id, next);
+                countReplace(stats, row.content, next);
                 updated++;
             } catch { /* skip malformed */ }
         }
     });
+    await reportOwnerWrite(directories, entry.db, groupOwnerId, stats);
     return updated;
 }
 

@@ -86,4 +86,5 @@ async function runPasses() {
 
 await runPasses();
 metadataDb.disposeMetadataStores();
+(await import('./message-tree-db.js')).disposeMessageTreeStores();
 parentPort?.close();

@@ -283,9 +283,9 @@ async function statMesProcess(line, type, character, oldMessage) {
     // Raw text (and, for edits, the prior text) for the server to derive the word-count delta
     // from itself - no client-side word counting. `dates` are no longer sent at all: the server
     // now stamps date_last_chat/date_first_chat from its own clock (see /api/stats/increment),
-    // the same precedent already used for date_last_chat elsewhere (bumpCharacterDateLastChat()
-    // in src/character-metadata-db.js), so a spoofed/incorrect client clock can no longer affect
-    // stored stats.
+    // the same precedent already used for a character row's date_last_chat (its newest message's
+    // server-stamped created_at, src/message-tree-db.js), so a spoofed/incorrect client clock can
+    // no longer affect stored stats.
     const wordCount = {
         is_user: !!line.is_user,
         text: line.mes,

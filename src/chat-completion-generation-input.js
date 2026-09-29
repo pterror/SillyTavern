@@ -1,5 +1,5 @@
 import { readSettingsAtPaths } from './settings-store.js';
-import { loadBranch, getAncestorPath, getOrCreateAnchor, loadAtNode } from './message-tree-db.js';
+import { loadBranch, getAncestorPath, getOrCreateAnchor, loadAtNode, ownerDescriptorOf } from './message-tree-db.js';
 import { readCardContent } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { getCharacterCardFields } from './character-card-fields.js';
@@ -705,9 +705,10 @@ async function resolveCharacterName2(directories, { avatar, groupId } = {}) {
  * @param {string} [params.ownerId]
  * @param {string} [params.branchName]
  * @param {string | null} [params.nodeId]
+ * @param {import('./message-tree-db.js').OwnerDescriptor} [params.owner] Recorded as the owner's kind if its anchor is created here.
  * @returns {Promise<{ chat: TreeChatMessage[], metadata: ChatMetadata, resolvedNodeId: string | null, ambiguous?: boolean }>}
  */
-async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) {
+async function resolveChatHistory(directories, { ownerId, branchName, nodeId, owner }) {
     if (ownerId != null && branchName != null) {
         const result = await loadBranch(directories, ownerId, branchName);
         if (result) {
@@ -721,7 +722,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
         }
     }
     if (ownerId != null && branchName == null && nodeId == null) {
-        const anchorId = await getOrCreateAnchor(directories, ownerId);
+        const anchorId = await getOrCreateAnchor(directories, ownerId, owner);
         if (anchorId != null) {
             const result = await loadAtNode(directories, ownerId, anchorId);
             if (result && result.messages.length > 0) {
@@ -847,7 +848,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     const isGroup = Boolean(groupId);
 
     const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
-        await resolveChatHistory(directories, { ownerId, branchName, nodeId });
+        await resolveChatHistory(directories, { ownerId, branchName, nodeId, owner: ownerDescriptorOf({ groupId, avatar }) });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
 
     const { name2, groupMemberNames, hasCharacter } = await resolveCharacterName2(directories, { avatar, groupId });

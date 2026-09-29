@@ -481,9 +481,9 @@ router.post('/update', function (request, response) {
  * count its own words client-side was pure redundant duplicate work, not authoritative input.
  *
  * `date_last_chat`/`date_first_chat` are stamped from THIS SERVER's own clock, not a client-
- * supplied value - the same precedent already used for `date_last_chat` elsewhere (see
- * `bumpCharacterDateLastChat()` in src/character-metadata-db.js, which also uses its own
- * `Date.now()` rather than trusting a caller-supplied timestamp).
+ * supplied value - the same precedent already used for a character row's `date_last_chat`, which is
+ * its newest message's `created_at`, stamped by src/message-tree-db.js from its own `Date.now()`
+ * rather than a caller-supplied timestamp.
  */
 router.post('/increment', function (request, response) {
     const { avatar, deltas, wordCount } = request.body ?? {};

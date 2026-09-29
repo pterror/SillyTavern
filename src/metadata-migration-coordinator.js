@@ -28,6 +28,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'fillTagSortOrdersIfNeeded',
     // After the sort_order fill, which it waits for; tags/reorder also asks for it on its own.
     'runTagReorderPassIfNeeded',
+    // Runs every boot: reads the metadata store, writes only the message tree.
+    'fillTreeOwnerKinds',
     // Last: until its walk passes an entity, the counter triggers skip that entity's writes, so the passes above
     // don't also write counters.
     'fillEntityCountsIfNeeded',

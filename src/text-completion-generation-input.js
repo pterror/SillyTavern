@@ -1,6 +1,6 @@
 import { readSettingsAtPaths } from './settings-store.js';
 import { resolveTextGenBackend } from './textgen-backend-resolve.js';
-import { loadBranch, getAncestorPath, getOrCreateAnchor, loadAtNode } from './message-tree-db.js';
+import { loadBranch, getAncestorPath, getOrCreateAnchor, loadAtNode, ownerDescriptorOf } from './message-tree-db.js';
 import { readCardContent } from './endpoints/characters.js';
 import { getGroupsByIds } from './endpoints/groups.js';
 import { extension_prompt_types, extension_prompt_roles } from './extension-prompt-table.js';
@@ -454,9 +454,10 @@ async function resolveName2AndGroupMemberNames(directories, { avatar, groupId })
  * @param {string|null} [params.nodeId] `null` is a real, distinct input (see the outer resolver's own
  * doc comment on this same param) - both flow here as "falsy, fall through to the next resolution
  * strategy", so this function makes no distinction between `null` and omitted.
+ * @param {import('./message-tree-db.js').OwnerDescriptor} [params.owner] Recorded as the owner's kind if its anchor is created here.
  * @returns {Promise<{ chat: import('./message-tree-db.js').TreeChatMessage[], metadata: ChatMetadata, resolvedNodeId: string|null, ambiguous?: boolean }>}
  */
-async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) {
+async function resolveChatHistory(directories, { ownerId, branchName, nodeId, owner }) {
     if (ownerId != null && branchName != null) {
         const result = await loadBranch(directories, ownerId, branchName);
         if (result) {
@@ -470,7 +471,7 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId }) 
         }
     }
     if (ownerId != null && branchName == null && nodeId == null) {
-        const anchorId = await getOrCreateAnchor(directories, ownerId);
+        const anchorId = await getOrCreateAnchor(directories, ownerId, owner);
         if (anchorId != null) {
             const result = await loadAtNode(directories, ownerId, anchorId);
             // A non-empty result means this owner already has a real, established conversation -
@@ -606,7 +607,7 @@ export async function resolveTextCompletionGenerationInput(directories, {
     const hasCharacterOrGroup = Boolean(avatar) || Boolean(groupId);
 
     const { chat: loadedChat, metadata: loadedChatMetadata, resolvedNodeId, ambiguous: chatResolutionAmbiguous } =
-        await resolveChatHistory(directories, { ownerId, branchName, nodeId });
+        await resolveChatHistory(directories, { ownerId, branchName, nodeId, owner: ownerDescriptorOf({ groupId, avatar }) });
     const chatMetadata = chatMetadataOverride ?? loadedChatMetadata;
 
     const { name2, groupMemberNames, character } = await resolveName2AndGroupMemberNames(directories, { avatar, groupId });
