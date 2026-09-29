@@ -100,7 +100,7 @@ const HTML_BLOCK_TAGS = [
 const HTML_BLOCK_TAG_NAMES = `(?:${HTML_BLOCK_TAGS.join('|')})(?=[\\s/>])`;
 const htmlBlockOpenRegex = new RegExp(`^ {0,3}<(${HTML_BLOCK_TAG_NAMES})[^>]*>`, 'i');
 const htmlBlockCandidateRegex = new RegExp(`\\n {0,3}<${HTML_BLOCK_TAG_NAMES}`, 'gi');
-const htmlAttributeRegex = /\s+([^\s"'>/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+const htmlAttributeRegex = /\s+([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 /**
  * Matches an HTML block at the start of `src`: an opening tag from {@link HTML_BLOCK_TAGS} up to its matching closing
@@ -133,13 +133,19 @@ function matchHtmlBlock(src) {
 }
 
 /**
- * PHP Markdown Extra's opt-in: an opening tag with a `markdown` attribute has its inside parsed as markdown.
+ * PHP Markdown Extra's opt-in: an opening tag with a `markdown` attribute has its inside parsed as markdown, unless the
+ * value is `0`. As in HTML, the first of repeated attributes counts.
  * @param {string} openTag
  * @returns {boolean}
  */
 function hasMarkdownAttribute(openTag) {
     const attributes = openTag.trimStart().replace(/^<[^\s/>]+/, '').replace(/\/?>$/, '');
-    return Array.from(attributes.matchAll(htmlAttributeRegex)).some(([, name]) => name.toLowerCase() === 'markdown');
+    for (const [, name, doubleQuoted, singleQuoted, unquoted] of attributes.matchAll(htmlAttributeRegex)) {
+        if (name.toLowerCase() === 'markdown') {
+            return (doubleQuoted ?? singleQuoted ?? unquoted) !== '0';
+        }
+    }
+    return false;
 }
 
 /**

@@ -3,7 +3,8 @@ import { Marked } from 'marked';
 
 // An HTML block that starts with one of showdown's hashHTMLBlocks tags runs to its matching closing tag
 // (nesting-aware), blank lines and indentation included, and its inside isn't parsed as markdown.
-// With a `markdown` attribute on the opening tag (PHP Markdown Extra's opt-in), the inside is parsed as markdown.
+// With a `markdown` attribute on the opening tag (PHP Markdown Extra's opt-in), the inside is parsed as markdown,
+// unless its value is "0".
 // Checked on both marked processors and through messageFormatting (the chat render path). messageFormatting's
 // DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the identity here.
 
@@ -144,6 +145,15 @@ describe('renderMarkdown', () => {
             .toBe('<div class="a" markdown="block"><p><strong>x</strong></p>\n</div>');
     });
 
+    test.each([
+        ['double-quoted', '<div markdown="0">\n\n**x**\n</div>'],
+        ['single-quoted', '<div markdown=\'0\'>\n\n**x**\n</div>'],
+        ['unquoted', '<div markdown=0>\n\n**x**\n</div>'],
+        ['upper-case name, other attributes', '<div class="a" MARKDOWN="0">\n\n**x**\n</div>'],
+    ])('markdown="0" (%s) does not opt in: kept whole', (_name, input) => {
+        expect(String(renderMarkdown(input)).trim()).toBe(input);
+    });
+
     test('"markdown" as a value of another attribute does not opt in', () => {
         const input = '<div class="markdown">\n\n**x**\n</div>';
         expect(String(renderMarkdown(input)).trim()).toBe(input);
@@ -166,6 +176,11 @@ describe('renderMarkdownLiteralTags', () => {
         expect(renderMarkdownLiteralTags(input).trim())
             .toBe(`${escape('<div markdown="1">')}<p><strong>x</strong></p>\n${escape('</div>')}`);
     });
+
+    test('markdown="0": shown as literal text, kept whole', () => {
+        const input = '<div markdown="0">\n\n**x**\n</div>';
+        expect(renderMarkdownLiteralTags(input).trim()).toBe(escape(input));
+    });
 });
 
 describe('messageFormatting', () => {
@@ -177,5 +192,10 @@ describe('messageFormatting', () => {
         const input = '<div markdown="1">\n**x**\n</div>';
         expect(messageFormatting(input, 'Alice', false, false, -1))
             .toBe('<div markdown="1"><p><strong>x</strong></p>\n</div>');
+    });
+
+    test('markdown="0": kept whole', () => {
+        const input = '<div markdown="0">\n\n**x**\n</div>';
+        expect(messageFormatting(input, 'Alice', false, false, -1)).toBe(input);
     });
 });
