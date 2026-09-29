@@ -189,6 +189,8 @@ describe('a query narrowed to a hit list returns what the hit list names, once e
 
         await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3 })).rejects.toThrow(/handle/);
         await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, wantRows: false, wantHashes: true })).rejects.toThrow(/handle/);
+        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, handle: '' })).rejects.toThrow(/handle/);
+        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, handle: '', wantRows: false, wantHashes: true })).rejects.toThrow(/handle/);
     });
 
     test('the other filters still apply to the hits', async () => {
