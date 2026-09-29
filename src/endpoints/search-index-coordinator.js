@@ -2,7 +2,7 @@ import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
-import { characterChangeEmitter } from '../character-metadata-db.js';
+import { characterChangeEmitter, getMetaValue } from '../character-metadata-db.js';
 import { isReadOnlyMode } from '../read-only-mode.js';
 import { color, getConfigFilePath } from '../util.js';
 import { getTantivyModule } from './tantivy-engine.js';
@@ -13,11 +13,18 @@ const TARGETS = /** @type {const} */ (['characters', 'groups']);
  * groups-search-index.js name it. Read-only mode opens these directly. */
 const INDEX_DIR_NAMES = { characters: 'characters-tantivy', groups: 'groups-tantivy' };
 const DISPOSE_TIMEOUT_MS = 10000;
+
+/** The meta keys the characters index persists its cursors under (characters-search-index.js writes them). */
+export const CHARACTERS_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
+export const CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
 const SEARCH_INDEX_UPDATED_INTERVAL_MS = 1000;
 
 /**
  * @typedef {'characters' | 'groups'} SearchIndexTarget
- * @typedef {{ index: any, schema: any }} SearchIndexReader
+ * @typedef {{ seq: number, tagNameSeq: number }} SearchIndexPosition How far the characters index has applied
+ * the change log (`seq`) and the tag-rename log (`tagNameSeq`).
+ * @typedef {{ index: any, schema: any, position?: SearchIndexPosition | null }} SearchIndexReader `position` is
+ * the characters index's position as of what this reader shows; null or absent when it isn't known.
  * @typedef {{ postMessage(msg: object): void, on(event: string, listener: (...args: any[]) => void): any, terminate(): Promise<number> | void, unref?(): void }} SearchIndexWorker
  * @typedef {{ promise: Promise<any>, resolve: (value?: any) => void, reject: (reason?: any) => void }} Deferred
  * @typedef {{
@@ -42,6 +49,11 @@ function spawnSearchIndexWorker(workerData) {
  * and a request that arrives before its index is openable waits for that.
  * In read-only mode (read-only-mode.js) no worker is spawned: each target's existing index is opened for reading
  * on its first request and kept per handle, start() starts nothing, and rebuild() throws.
+ *
+ * A reader shows a new commit only when reload() is called on it (tantivy's Manual reload policy), which happens
+ * here in the same step that sets its `position`, so a reader never shows more than its position says. For the
+ * characters reader the position comes from the worker's messages; in read-only mode it's the persisted cursors,
+ * read before the index is opened (null when they can't be read).
  * @param {object} [options]
  * @param {(workerData: object) => SearchIndexWorker} [options.spawnWorker]
  * @param {(dir: string) => SearchIndexReader} [options.openIndex] Defaults to tantivy's Index.open().
@@ -104,11 +116,36 @@ export function createSearchIndexCoordinator({
         state.timer.unref?.();
     }
 
-    /** @param {string} dir */
+    /**
+     * @param {string} dir
+     * @returns {SearchIndexReader}
+     */
     function open(dir) {
         if (openIndex) return openIndex(dir);
         const index = tantivy.Index.open(dir);
+        // Only reload() shows a new commit, so what a reader shows moves only together with its position.
+        index.configReader('Manual');
         return { index, schema: index.schema };
+    }
+
+    /**
+     * The characters index position a worker message carries, or null when it carries none.
+     * @param {any} msg
+     * @returns {SearchIndexPosition | null}
+     */
+    function positionOf(msg) {
+        return Number.isFinite(msg?.seq) && Number.isFinite(msg?.tagNameSeq) ? { seq: msg.seq, tagNameSeq: msg.tagNameSeq } : null;
+    }
+
+    /**
+     * @param {string} dir
+     * @param {SearchIndexPosition | null} position
+     * @returns {SearchIndexReader}
+     */
+    function openAt(dir, position) {
+        const reader = open(dir);
+        reader.position = position;
+        return reader;
     }
 
     /** @returns {Deferred} */
@@ -185,7 +222,7 @@ export function createSearchIndexCoordinator({
                     return;
                 }
                 try {
-                    target.reader = msg.dir ? open(msg.dir) : null;
+                    target.reader = msg.dir ? openAt(msg.dir, positionOf(msg)) : null;
                     target.ready.resolve(target.reader);
                 } catch (err) {
                     target.ready.reject(err);
@@ -193,14 +230,18 @@ export function createSearchIndexCoordinator({
                 return;
             }
             case 'committed': {
-                entry.targets[msg.target].reader?.index.reload();
+                const reader = entry.targets[msg.target].reader;
+                if (reader) {
+                    reader.index.reload();
+                    reader.position = positionOf(msg);
+                }
                 if (msg.target === 'characters') {
                     searchIndexUpdated(handle, msg.seq);
                 }
                 return;
             }
             case 'swapped': {
-                entry.targets[msg.target].reader = open(msg.dir);
+                entry.targets[msg.target].reader = openAt(msg.dir, positionOf(msg));
                 if (msg.target === 'characters') {
                     searchIndexUpdated(handle, msg.seq);
                 }
@@ -244,8 +285,30 @@ export function createSearchIndexCoordinator({
     }
 
     /**
+     * Read-only mode: the characters index's persisted cursors, or null when they can't be read. Groups have none.
+     * @param {import('../users.js').UserDirectoryList} directories
+     * @param {SearchIndexTarget} target
+     * @returns {Promise<SearchIndexPosition | null>}
+     */
+    async function readPersistedPosition(directories, target) {
+        if (target !== 'characters') return null;
+        try {
+            const seq = await getMetaValue(directories, CHARACTERS_INDEX_SEQ_META_KEY);
+            if (seq === null) return null;
+            // The index reads a missing tag-rename cursor as 0 (openPersisted()), so this does too.
+            const tagNameSeq = await getMetaValue(directories, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY);
+            const position = { seq: Number(seq), tagNameSeq: tagNameSeq === null ? 0 : Number(tagNameSeq) };
+            return Number.isFinite(position.seq) && Number.isFinite(position.tagNameSeq) ? position : null;
+        } catch (err) {
+            console.error(color.red(`[search] reading the characters index's persisted cursors failed: ${err.message}`));
+            return null;
+        }
+    }
+
+    /**
      * Read-only mode: the handle's existing index for `target`, opened for reading on the first request. A
-     * missing index dir throws, since nothing can build it read-only.
+     * missing index dir throws, since nothing can build it read-only. The characters index's position is read
+     * before it's opened, so the reader shows at least what the position says.
      * @param {string} handle
      * @param {import('../users.js').UserDirectoryList} directories
      * @param {SearchIndexTarget} target
@@ -258,7 +321,10 @@ export function createSearchIndexCoordinator({
             readers = {};
             readOnlyReaders.set(handle, readers);
         }
-        return readers[target] ??= open(path.join(directories.root, 'search-index', INDEX_DIR_NAMES[target]));
+        const opened = readers[target];
+        if (opened) return opened;
+        const position = await readPersistedPosition(directories, target);
+        return readers[target] ??= openAt(path.join(directories.root, 'search-index', INDEX_DIR_NAMES[target]), position);
     }
 
     return {

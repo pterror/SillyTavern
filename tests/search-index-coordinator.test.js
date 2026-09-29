@@ -255,6 +255,30 @@ describe('createSearchIndexCoordinator()', () => {
         expect(onSearchIndexUpdated.mock.calls).toEqual([['userA', 10], ['userB', 20], ['userA', 11]]);
     });
 
+    test('the characters reader\'s position follows the worker: set on ready, moved with each reload and swap, null when a message has none', async () => {
+        const { coordinator, workers } = setup();
+        const pending = coordinator.getIndex('user1', directories, 'characters');
+        await flush();
+        workers[0].send({ type: 'ready', target: 'characters', dir: '/chars', seq: 3, tagNameSeq: 1 });
+        const reader = await pending;
+        expect(reader.position).toEqual({ seq: 3, tagNameSeq: 1 });
+
+        reader.index.reload.mockImplementation(() => {
+            // What searches read changes only here, and the position mustn't run ahead of it.
+            expect(reader.position).toEqual({ seq: 3, tagNameSeq: 1 });
+        });
+        workers[0].send({ type: 'committed', target: 'characters', changed: true, seq: 5, tagNameSeq: 2 });
+        expect(reader.index.reload).toHaveBeenCalledTimes(1);
+        expect(reader.position).toEqual({ seq: 5, tagNameSeq: 2 });
+
+        workers[0].send({ type: 'swapped', target: 'characters', dir: '/chars-rebuilt', seq: 8, tagNameSeq: 2 });
+        const swapped = await coordinator.getIndex('user1', directories, 'characters');
+        expect(swapped.position).toEqual({ seq: 8, tagNameSeq: 2 });
+
+        workers[0].send({ type: 'committed', target: 'characters', changed: true, seq: 9 });
+        expect(swapped.position).toBeNull();
+    });
+
     test('"swapped" replaces the reader with one opened on the new dir', async () => {
         const { coordinator, workers } = setup();
         const pending = coordinator.getIndex('user1', directories, 'characters');
