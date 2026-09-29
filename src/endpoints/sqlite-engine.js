@@ -28,6 +28,10 @@ let engine = undefined;
  * @property {(sql: string, params?: object|any[]) => Generator<object, void, undefined>} iterate Streams rows from a
  *   fresh statement, finalized however the loop ends (break/return/throw). While one is open, run/insertMany/
  *   transaction/checkpoint/exec throw; get and nested iterate are allowed.
+ * @property {(sql: string, params: object|any[]|undefined, max: number) => object[]} readBounded Reads every row into
+ *   an array, reading at most max + 1 of them: throws if a row past max comes back, so a result cut short is never
+ *   returned as if it were whole. max must be a non-negative integer. Callers that expect more than max rows page
+ *   instead.
  * @property {(fn: () => void) => void} transaction Runs fn inside a single BEGIN/COMMIT, rolling back on throw.
  * @property {() => void} checkpoint Folds WAL into the main file (native only; no-op on wasm).
  * @property {(name: string, fn: (...args: any[]) => any) => void} defineFunction Registers a scalar SQL function.
@@ -81,7 +85,27 @@ function createRowStreaming(openRows) {
         }
     }
 
-    return { iterate, assertNoOpenIterator };
+    /**
+     * @param {string} sql
+     * @param {object|any[]|undefined} params
+     * @param {number} max
+     */
+    function readBounded(sql, params, max) {
+        if (!Number.isSafeInteger(max) || max < 0) {
+            throw new TypeError(`readBounded() needs max as a non-negative integer, got ${String(max)}`);
+        }
+        const rows = [];
+        // Ending the loop early (the throw) finalizes the statement, so no read stays open.
+        for (const row of iterate(sql, params)) {
+            if (rows.length === max) {
+                throw new Error(`readBounded(): more than ${max} rows for: ${sql}`);
+            }
+            rows.push(row);
+        }
+        return rows;
+    }
+
+    return { iterate, readBounded, assertNoOpenIterator };
 }
 
 /** node-sqlite3-wasm requires the bind-parameter prefix in the object key itself (`{'@avatar': ...}`). */
@@ -204,7 +228,7 @@ export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TI
         return stmt;
     };
 
-    const { iterate, assertNoOpenIterator } = createRowStreaming((sql, params) => {
+    const { iterate, readBounded, assertNoOpenIterator } = createRowStreaming((sql, params) => {
         if (closed) {
             throw new Error(HANDLE_CLOSED_MESSAGE);
         }
@@ -233,6 +257,7 @@ export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TI
         get: (sql, params) => prepare(sql).get(params ?? {}),
         all: (sql, params) => prepare(sql).all(params ?? {}),
         iterate,
+        readBounded,
         // .immediate, not deferred: takes the write lock up front so a read-then-write transaction never needs
         // to upgrade mid-transaction and hit SQLITE_BUSY_SNAPSHOT (which the busy handler doesn't cover).
         transaction: (fn) => { assertNoOpenIterator(); return withBusyRetry(() => db.transaction(fn).immediate(), 'transaction'); },
@@ -277,7 +302,7 @@ export function openWasmDatabase(WasmDatabaseCtor, path, { busyTimeoutMs = BUSY_
         return stmt;
     };
 
-    const { iterate, assertNoOpenIterator } = createRowStreaming((sql, params) => {
+    const { iterate, readBounded, assertNoOpenIterator } = createRowStreaming((sql, params) => {
         if (closed) {
             throw new Error(HANDLE_CLOSED_MESSAGE);
         }
@@ -318,6 +343,7 @@ export function openWasmDatabase(WasmDatabaseCtor, path, { busyTimeoutMs = BUSY_
         get: (sql, params) => prepare(sql).get(prefixNamedParamsForWasm(params) ?? {}) ?? undefined,
         all: (sql, params) => prepare(sql).all(prefixNamedParamsForWasm(params) ?? {}),
         iterate,
+        readBounded,
         // No native transaction() API on this engine - BEGIN IMMEDIATE/COMMIT/ROLLBACK is equivalent.
         transaction: (fn) => {
             assertNoOpenIterator();
