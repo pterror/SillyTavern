@@ -13,7 +13,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, queryEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too).
 export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
@@ -8673,17 +8673,15 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
         if (type === 'char_import' || type === 'char_create' || type === 'char_import_no_toast') {
             // Find the page at which the character is located
             const avatarFileName = charId;
-            const charData = await queryEntitiesList({ doFilter: true });
-            const charIndex = charData.findIndex((x) => x?.item?.avatar?.startsWith(avatarFileName));
+            const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
+            const page = await findCharacterListPage((x) => x?.item?.avatar?.startsWith(avatarFileName), perPage);
 
-            if (charIndex === -1) {
+            if (page === -1) {
                 console.log(`Could not find character ${charId} in the list`);
                 return;
             }
 
             try {
-                const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
-                const page = Math.floor(charIndex / perPage) + 1;
                 const selector = `#rm_print_characters_block [title*="${avatarFileName}"]`;
                 $('#rm_print_characters_pagination').pagination('go', page);
 
@@ -8705,17 +8703,15 @@ export function select_rm_info(type, charId, previousCharId = null, displayName 
         }
 
         if (type === 'group_create') {
-            // Find the page at which the character is located
-            const charData = await queryEntitiesList({ doFilter: true });
-            const charIndex = charData.findIndex((x) => String(x?.item?.id) === String(charId));
+            // Find the page at which the group is located
+            const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
+            const page = await findCharacterListPage((x) => x?.type === 'group' && String(x?.item?.id) === String(charId), perPage);
 
-            if (charIndex === -1) {
+            if (page === -1) {
                 console.log(`Could not find group ${charId} in the list`);
                 return;
             }
 
-            const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
-            const page = Math.floor(charIndex / perPage) + 1;
             $('#rm_print_characters_pagination').pagination('go', page);
             const selector = `#rm_print_characters_block [grid="${charId}"]`;
             try {

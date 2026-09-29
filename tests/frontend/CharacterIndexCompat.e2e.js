@@ -1644,14 +1644,15 @@ test.describe('#9 saveSettings and saveSettingsDebounced', () => {
 
 });
 
-test.describe('getEntitiesList and queryEntitiesList (step 10)', () => {
+test.describe('getEntitiesList (step 10)', () => {
     test.beforeEach(testSetup.awaitST);
 
     // Smaller than the entities setUpList() leaves in the list, so the list has more than one page.
     const PAGE_SIZE = 10;
     const LIST_CHARACTERS = 12;
-    // Not one of the server's /query sort fields, so printCharacters() falls back to paging the list locally.
-    const LOCAL_SORT_FIELD = 'avatar';
+    // Not one of the server's /query sort fields, so printCharacters() falls back to name order. No entity's item has
+    // it either, so getEntitiesList()'s browser sort by it leaves the page's order as it is.
+    const REJECTED_SORT_FIELD = 'no_such_sort_field';
     // getEntitiesList()'s argument forms; null stands for no argument.
     const FLAG_COMBINATIONS = [null, {}, { doSort: false }, { doFilter: true }, { doFilter: true, doSort: false }, { doFilter: false, doSort: true }];
 
@@ -1681,12 +1682,12 @@ test.describe('getEntitiesList and queryEntitiesList (step 10)', () => {
 
     /**
      * Creates LIST_CHARACTERS characters, every other one a favourite, then renders the list from page 1 at
-     * PAGE_SIZE rows a page, paged by the server or locally.
+     * PAGE_SIZE rows a page, with the saved sort or with one the server rejects.
      * @param {import('@playwright/test').Page} page
-     * @param {{localPaging?: boolean}} [options]
+     * @param {{rejectedSort?: boolean}} [options]
      * @returns {Promise<{avatars: string[], favs: string[], originalSortField: string}>}
      */
-    async function setUpList(page, { localPaging = false } = {}) {
+    async function setUpList(page, { rejectedSort = false } = {}) {
         const s = stamp();
         const avatars = [];
         for (let i = 0; i < LIST_CHARACTERS; i++) {
@@ -1720,12 +1721,12 @@ test.describe('getEntitiesList and queryEntitiesList (step 10)', () => {
             if (sortField) power_user.sort_field = sortField;
             await printCharacters(true);
             return original;
-        }, { pageSize: PAGE_SIZE, sortField: localPaging ? LOCAL_SORT_FIELD : null });
+        }, { pageSize: PAGE_SIZE, sortField: rejectedSort ? REJECTED_SORT_FIELD : null });
         // @ts-ignore
         await expect.poll(() => page.evaluate(() => window.__listRows().length)).toBe(PAGE_SIZE);
 
-        // The render took the intended path: the server rejects the local sort field, and serves the others.
-        if (localPaging) {
+        // The render took the intended path: the server rejects the sort field, and serves the others.
+        if (rejectedSort) {
             expect(queryStatuses).toContain(400);
         } else {
             expect(queryStatuses.length).toBeGreaterThan(0);
@@ -1797,9 +1798,9 @@ test.describe('getEntitiesList and queryEntitiesList (step 10)', () => {
         expect(results).toEqual(FLAG_COMBINATIONS.map(() => ({ isArray: true, isPromise: false, hasThen: false })));
     });
 
-    for (const localPaging of [false, true]) {
-        test(`after a ${localPaging ? 'locally' : 'server'} paged render, getEntitiesList() is the page on screen, in order, for every option, and follows a page turn`, async ({ page }) => {
-            const list = await setUpList(page, { localPaging });
+    for (const rejectedSort of [false, true]) {
+        test(`after a render ${rejectedSort ? 'with a sort the server rejects' : 'with the saved sort'}, getEntitiesList() is the page on screen, in order, for every option, and follows a page turn`, async ({ page }) => {
+            const list = await setUpList(page, { rejectedSort });
             try {
                 const first = await snapshotList(page);
                 expect(first.rows).toHaveLength(PAGE_SIZE);
@@ -1905,91 +1906,6 @@ test.describe('getEntitiesList and queryEntitiesList (step 10)', () => {
             expect(afterRender.results).toEqual(FLAG_COMBINATIONS.map(() => afterRender.rows));
         } finally {
             await deleteCharacters(page, [avatar]);
-        }
-    });
-
-    test('queryEntitiesList() returns the whole list the old getEntitiesList() computed, not the page', async ({ page }) => {
-        const list = await setUpList(page);
-        try {
-            const outcome = await page.evaluate(async () => {
-                const { queryEntitiesList } = await import('/scripts/character-list.js');
-                const { getEntitiesList, characterToEntity, groupToEntity, tagToEntity, entitiesFilter } = await import('/script.js');
-                const { characters } = await import('/scripts/character-store.js');
-                const { groups } = await import('/scripts/group-chats.js');
-                const { tags, isBogusFolder, compareTagsForSort } = await import('/scripts/tags.js');
-                const { power_user, sortEntitiesList } = await import('/scripts/power-user.js');
-                const { FILTER_TYPES, FILTER_STATES } = await import('/scripts/filters.js');
-                const { normalizeFav } = await import('/scripts/hash-utils.js');
-                // @ts-ignore
-                const keys = window.__entityKeys;
-
-                // The old getEntitiesList()'s input with no server query: every loaded character and group, then
-                // the bogus folders when they are on.
-                const loaded = () => [
-                    ...characters.map(item => characterToEntity(item)),
-                    ...groups.map(item => groupToEntity(item)),
-                    ...(power_user.bogus_folders ? tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)) : []),
-                ];
-                const sorted = (entities) => {
-                    sortEntitiesList(entities, false);
-                    return entities;
-                };
-
-                const pending = queryEntitiesList();
-                const isPromise = pending instanceof Promise;
-                const defaults = await pending;
-
-                const unsorted = await queryEntitiesList({ doFilter: false, doSort: false });
-                const expectedUnsorted = loaded();
-                const sameItems = unsorted.length === expectedUnsorted.length
-                    && unsorted.every((entity, i) => entity.type === 'tag' || entity.item === expectedUnsorted[i].item);
-
-                const filtered = await queryEntitiesList({ doFilter: true });
-
-                const previousFav = entitiesFilter.getFilterData(FILTER_TYPES.FAV);
-                entitiesFilter.setFilterData(FILTER_TYPES.FAV, FILTER_STATES.SELECTED, true);
-                let favFiltered;
-                try {
-                    favFiltered = await queryEntitiesList({ doFilter: true });
-                } finally {
-                    entitiesFilter.setFilterData(FILTER_TYPES.FAV, previousFav, true);
-                }
-
-                return {
-                    isPromise,
-                    bogusFolders: Boolean(power_user.bogus_folders),
-                    loadedCount: characters.length + groups.length,
-                    page: keys(getEntitiesList()),
-                    defaults: keys(defaults),
-                    unsorted: keys(unsorted),
-                    expectedUnsorted: keys(expectedUnsorted),
-                    sameItems,
-                    expectedSorted: keys(sorted(loaded())),
-                    filtered: keys(filtered),
-                    favFiltered: keys(favFiltered),
-                    expectedFav: keys(sorted(loaded().filter(entity => entity.type !== 'tag' && normalizeFav(entity.item.fav)))),
-                };
-            });
-            expect(outcome.isPromise).toBe(true);
-            // The fav expectation leaves folders out; with bogus folders off there are none.
-            expect(outcome.bogusFolders).toBe(false);
-
-            expect(outcome.unsorted).toEqual(outcome.expectedUnsorted);
-            expect(outcome.sameItems).toBe(true);
-            expect(outcome.defaults).toEqual(outcome.expectedSorted);
-            expect(outcome.filtered).toEqual(outcome.expectedSorted);
-            expect(outcome.favFiltered).toEqual(outcome.expectedFav);
-
-            // The whole list, not the page.
-            expect(outcome.expectedSorted).toHaveLength(outcome.loadedCount);
-            expect(outcome.page).toHaveLength(PAGE_SIZE);
-            expect(outcome.filtered.length).toBeGreaterThan(outcome.page.length);
-            for (const avatar of list.avatars) {
-                expect(outcome.filtered).toContain(`character:${avatar}`);
-                expect(outcome.favFiltered.includes(`character:${avatar}`)).toBe(list.favs.includes(avatar));
-            }
-        } finally {
-            await tearDownList(page, list);
         }
     });
 

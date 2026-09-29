@@ -1,7 +1,7 @@
 import { lodash } from '../lib.js';
 import { favsToHotswap } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, resolveCharacterRef } from './character-store.js';
-import { groups, getGroups, getGroupBlock } from './group-chats.js';
+import { getGroups, getGroupBlock } from './group-chats.js';
 import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
@@ -9,7 +9,7 @@ import { debounce_timeout } from './constants.js';
 import { tags, filterByTagState, isBogusFolder, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, tagsStore } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
-import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
+import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -211,10 +211,9 @@ export function removeCharacterListRow(id) {
 // date, fav, a random seed, or search relevance). Re-fetches only the CURRENTLY VISIBLE PAGE - bounded by page
 // size, not corpus size - through the pagination widget's own async path, rather than printCharacters()'s full
 // reinit (which also repeats the folder-tile scan and the tag-filter reprint on every call). Returns false when
-// the widget isn't already in that async/server-query mode (e.g. the active sort isn't server-queryable) - the
-// caller then still needs a real printCharacters() call to reflect the change.
+// the list hasn't been built yet - the caller then still needs a real printCharacters() call to reflect the change.
 export function refreshCharacterListCurrentPage() {
-    if (!canUseServerQueryForEntitiesList()) return false;
+    if (!serverPagedList) return false;
     const pager = document.getElementById('rm_print_characters_pagination');
     const pagination = pager ? $(pager).data('pagination') : undefined;
     if (!pagination?.initialized) return false;
@@ -234,7 +233,7 @@ let keepScrollOnNextRender = false;
 let pageFetchesInFlight = 0;
 let searchIndexRefreshPending = false;
 let shownRefreshPending = false;
-// Whether the pager was last built in server-query mode (renderLocalPaginated() has no server page).
+// Whether printCharacters() has built the server-paged list.
 let serverPagedList = false;
 
 function pageFetchSettled() {
@@ -277,8 +276,7 @@ export function onSearchIndexUpdated() {
 }
 
 // For the list going from hidden to showing, when no change sync is pending: re-queries the visible page with its
-// token, since anything that changed while it was hidden wasn't shown. A local-pagination list is built from the
-// resident characters/groups, which only a change sync updates, so there is nothing to re-query.
+// token, since anything that changed while it was hidden wasn't shown.
 export function onCharacterListShown() {
     if (!isCharacterListShowing()) return;
     if (pageFetchesInFlight > 0) {
@@ -344,8 +342,7 @@ export async function printCharacters(fullRefresh = false) {
     const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
     const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
 
-    // getHidden gives the "N hidden" count, which the two printCharacters() paths below know differently: one
-    // holds the whole filtered array, the other gets it with each page from the server.
+    // getHidden gives the "N hidden" count, which comes with each page from the server.
     function makePageCallback(getHidden) {
         return async function (/** @type {Entity[]} */ data) {
             const list = $(listId).get(0);
@@ -433,41 +430,11 @@ export async function printCharacters(fullRefresh = false) {
         },
     };
 
-    // Fallback when canUseServerQueryForEntitiesList() declines: the whole filtered/sorted set is materialized
-    // client-side and the plugin slices it in memory on page turn.
-    async function renderLocalPaginated() {
-        serverPagedList = false;
-        const entities = await queryEntitiesList({ doFilter: true });
-
-        // A full top-500 means the search may match more than that, and nothing here knows how many, so the count
-        // says "500+" rather than passing a number off as the total.
-        const searchResults = entitiesFilter.serverSearchResults;
-        const topSearchFull = entitiesFilter.usesServerSearchResults()
-            && searchResults.characterScores.size + searchResults.groupScores.size >= TOP_SEARCH_RESULTS_LIMIT;
-
-        $('#rm_print_characters_pagination').pagination({
-            ...sharedPaginationOptions,
-            dataSource: entities,
-            formatNavigator: !topSearchFull
-                ? PAGINATION_TEMPLATE
-                : function (currentPage, _totalPage, totalNumber) {
-                    const rangeStart = (currentPage - 1) * pageSize + 1;
-                    const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
-                    return `${rangeStart}-${rangeEnd} .. ${TOP_SEARCH_RESULTS_LIMIT}+`;
-                },
-            callback: makePageCallback(() => (characters.length + groups.length) - entities.length),
-        });
-    }
-
-    if (canUseServerQueryForEntitiesList()) {
-        pageFetchesInFlight++;
-        try {
-            await printServerPaginated();
-        } finally {
-            pageFetchSettled();
-        }
-    } else {
-        await renderLocalPaginated();
+    pageFetchesInFlight++;
+    try {
+        await printServerPaginated();
+    } finally {
+        pageFetchSettled();
     }
 
     favsToHotswap();
@@ -475,79 +442,68 @@ export async function printCharacters(fullRefresh = false) {
 
     async function printServerPaginated() {
         // Folder tiles are prepended to page 1 only (never paginated), so page 1 can exceed pageSize.
-        const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
+        const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
 
-        // Probe with the page-1 request up front so an unsupported sort field falls back to renderLocalPaginated() before the plugin is built.
-        /** @type {Awaited<ReturnType<typeof characterRepository.query>>|undefined} */
-        let firstPage;
-        /** @type {unknown} */
-        let firstPageError;
-        try {
-            firstPage = await characterRepository.query(filter, sort, 1, pageSize, PAGE_WANT);
-        } catch (error) {
-            if (!isInvalidSortFieldError(error)) throw error;
-            firstPageError = error;
-        }
+        // Page 1 is fetched before the plugin is built, so every later page and the folder tiles use the sort it
+        // settled on.
+        const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
+            trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT));
 
-        if (firstPageError !== undefined) {
-            await renderLocalPaginated();
-        } else {
-            // The page response's count of entities the filter leaves out, `~`-prefixed when approximate.
-            /** @type {number|string} */
-            let pageHidden = 0;
-            // Serves the already-fetched probe to ajaxFunction's first call instead of re-fetching.
-            let pendingFirstPage = firstPage;
-            // Whether the latest page response's `total` was `~`-prefixed (approximate).
-            let pageTotalApprox = isApproxTotal(firstPage.total);
+        // The page response's count of entities the filter leaves out, `~`-prefixed when approximate.
+        /** @type {number|string} */
+        let pageHidden = 0;
+        // Serves the already-fetched probe to ajaxFunction's first call instead of re-fetching.
+        let pendingFirstPage = firstPage;
+        // Whether the latest page response's `total` was `~`-prefixed (approximate).
+        let pageTotalApprox = isApproxTotal(firstPage.total);
 
-            serverPagedList = true;
-            $('#rm_print_characters_pagination').pagination({
-                ...sharedPaginationOptions,
-                dataSource: SERVER_PAGINATED_DATA_SOURCE,
-                locator: 'rows',
-                formatNavigator: function (currentPage, _totalPage, totalNumber) {
-                    const rangeStart = (currentPage - 1) * pageSize + 1;
-                    const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
-                    return `${rangeStart}-${rangeEnd} .. ${pageTotalApprox ? '~' : ''}${totalNumber}`;
-                },
-                // Keeps a re-render on saveCharactersPage instead of pagination.js bouncing it to page 1 while the ajax
-                // response is in flight.
-                totalNumber: saveCharactersTotal || undefined,
-                resetPageNumberOnInit: false,
-                totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
-                    const parsed = Number(String(response.total).replace(/^~/, ''));
-                    return Number.isFinite(parsed) ? parsed : 0;
-                },
-                ajaxFunction: function (ajaxParams) {
-                    pageFetchesInFlight++;
-                    const page = ajaxParams.data.pageNumber;
-                    const requestedPageSize = ajaxParams.data.pageSize;
-                    const resultPromise = (page === 1 && requestedPageSize === pageSize && pendingFirstPage)
-                        ? Promise.resolve(pendingFirstPage)
-                        : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT);
-                    pendingFirstPage = undefined;
-                    resultPromise
-                        .then(async result => {
-                            const folderTiles = await getFolderTileEntities(page, filter, sort, result.total);
-                            const rows = Array.isArray(result.rows) ? result.rows : [];
-                            const pageEntities = rows.map(row => queryRowToEntity(row));
-                            const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
-                            saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
-                            pageTotalApprox = isApproxTotal(result.total);
-                            pageHidden = result.hidden ?? 0;
-                            ajaxParams.success({ rows: [...folderTiles, ...pageEntities], total: result.total });
-                        })
-                        .catch(error => {
-                            console.error('[printCharacters] server-paginated /query failed:', error);
-                            // No render follows, so a refresh's keep-scroll must not carry over to a later page turn.
-                            keepScrollOnNextRender = false;
-                            ajaxParams.error(error);
-                        })
-                        .finally(pageFetchSettled);
-                },
-                callback: makePageCallback(() => pageHidden),
-            });
-        }
+        serverPagedList = true;
+        $('#rm_print_characters_pagination').pagination({
+            ...sharedPaginationOptions,
+            dataSource: SERVER_PAGINATED_DATA_SOURCE,
+            locator: 'rows',
+            formatNavigator: function (currentPage, _totalPage, totalNumber) {
+                const rangeStart = (currentPage - 1) * pageSize + 1;
+                const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
+                return `${rangeStart}-${rangeEnd} .. ${pageTotalApprox ? '~' : ''}${totalNumber}`;
+            },
+            // Keeps a re-render on saveCharactersPage instead of pagination.js bouncing it to page 1 while the ajax
+            // response is in flight.
+            totalNumber: saveCharactersTotal || undefined,
+            resetPageNumberOnInit: false,
+            totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
+                const parsed = Number(String(response.total).replace(/^~/, ''));
+                return Number.isFinite(parsed) ? parsed : 0;
+            },
+            ajaxFunction: function (ajaxParams) {
+                pageFetchesInFlight++;
+                const page = ajaxParams.data.pageNumber;
+                const requestedPageSize = ajaxParams.data.pageSize;
+                const resultPromise = (page === 1 && requestedPageSize === pageSize && pendingFirstPage)
+                    ? Promise.resolve(pendingFirstPage)
+                    : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT);
+                pendingFirstPage = undefined;
+                resultPromise
+                    .then(async result => {
+                        const folderTiles = await getFolderTileEntities(page, filter, sort, result.total);
+                        const rows = Array.isArray(result.rows) ? result.rows : [];
+                        const pageEntities = rows.map(row => queryRowToEntity(row));
+                        const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
+                        saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
+                        pageTotalApprox = isApproxTotal(result.total);
+                        pageHidden = result.hidden ?? 0;
+                        ajaxParams.success({ rows: [...folderTiles, ...pageEntities], total: result.total });
+                    })
+                    .catch(error => {
+                        console.error('[printCharacters] server-paginated /query failed:', error);
+                        // No render follows, so a refresh's keep-scroll must not carry over to a later page turn.
+                        keepScrollOnNextRender = false;
+                        ajaxParams.error(error);
+                    })
+                    .finally(pageFetchSettled);
+            },
+            callback: makePageCallback(() => pageHidden),
+        });
     }
 }
 
@@ -620,12 +576,51 @@ function isSearchSortSelected() {
     return $('#character_sort_order option[data-field="search"]').is(':selected');
 }
 
-// This is "should try", not a guaranteed-safe precheck: whether the server actually supports the current sort
-// field comes back as a real rejection, and every caller catches isInvalidSortFieldError() to fall back locally.
-function canUseServerQueryForEntitiesList() {
-    if (isSearchSortSelected()) return String(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '').trim().length > 0;
-    const sortField = power_user.sort_order === 'random' ? 'random' : power_user.sort_field;
-    return isServerQueryableSort(sortField);
+/** Sort fields already warned about by warnUnsupportedSort(), so each is named once per page load. */
+const warnedUnsupportedSorts = new Set();
+
+/**
+ * @param {string} field
+ */
+function warnUnsupportedSort(field) {
+    if (warnedUnsupportedSorts.has(field)) return;
+    warnedUnsupportedSorts.add(field);
+    toastr.warning(
+        t`The character list can't be sorted by "${field}". It is sorted by name instead, or by relevance while searching.`,
+        t`Unsupported sort`,
+    );
+}
+
+/**
+ * The sort a list uses when the server doesn't know the one asked for: relevance with a search term, else name.
+ * @param {import('./character-repository.js').CharacterQueryFilter} filter
+ * @returns {import('./character-repository.js').CharacterQuerySort}
+ */
+function fallbackSort(filter) {
+    return filter.search ? { field: 'search', order: 'asc' } : { field: 'name', order: 'asc' };
+}
+
+/**
+ * Runs a `/query` request with `sort`. When the sort is unknown to the server (old saved settings or an extension),
+ * or is relevance with no search term, it warns once naming the sort and runs the request with fallbackSort().
+ * @template T
+ * @param {import('./character-repository.js').CharacterQueryFilter} filter The request's filter.
+ * @param {import('./character-repository.js').CharacterQuerySort|undefined} sort
+ * @param {(sort: import('./character-repository.js').CharacterQuerySort|undefined) => Promise<T>} request
+ * @returns {Promise<{ sort: import('./character-repository.js').CharacterQuerySort|undefined, result: T }>} The
+ *   sort that answered, and its result.
+ */
+export async function queryWithSortFallback(filter, sort, request) {
+    if (!(sort?.field === 'search' && !filter.search)) {
+        try {
+            return { sort, result: await request(sort) };
+        } catch (error) {
+            if (!isInvalidSortFieldError(error)) throw error;
+        }
+    }
+    warnUnsupportedSort(String(sort?.field));
+    const fallback = fallbackSort(filter);
+    return { sort: fallback, result: await request(fallback) };
 }
 
 // tagFilterData.selected doubles as "which bogus folder is open", so passing it through as filter.tags.include
@@ -637,7 +632,8 @@ function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {
     if (isFilterState(favState, FILTER_STATES.SELECTED)) fav = true;
     else if (isFilterState(favState, FILTER_STATES.EXCLUDED)) fav = false;
 
-    const isSearchSort = isSearchSortSelected();
+    // With no term the option is about to be deselected (verifyCharactersSearchSortRule()), so the saved sort applies.
+    const isSearchSort = hasActiveCharacterSearch() && isSearchSortSelected();
     const isRandom = !isSearchSort && power_user.sort_order === 'random';
     return buildCharacterQuery({
         searchTerm: entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '',
@@ -668,87 +664,35 @@ function applyFinalFilterRun(entities) {
     return filtered;
 }
 
-// Filter runs must stay in this order: an initial pass, per-folder sub-lists, then the final pass with search filters last.
-function filterAndSortEntities(rawEntities, { doFilter = false, doSort = true } = {}) {
-    let entities = rawEntities;
+// Rows per /query request in findCharacterListPage(), within the server's page cap (MAX_QUERY_PAGE_SIZE).
+const FIND_PAGE_CHUNK_SIZE = 1000;
 
-    // First run filters, that will hide what should never be displayed
-    if (doFilter) {
-        entities = filterByTagState(entities);
+/**
+ * The page of the character list an entity is on, with the list's filters and sort (and its fallback), for a list of
+ * `pageSize` rows a page. The list's `/query` rows are read in order, one chunk at a time, until it turns up.
+ * @param {(entity: Entity) => boolean} isEntity
+ * @param {number} pageSize
+ * @returns {Promise<number>} The 1-based page, or -1 when the list doesn't hold it.
+ */
+export async function findCharacterListPage(isEntity, pageSize) {
+    const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
+    let sort = wantedSort;
+    for (let chunk = 1; ; chunk++) {
+        const answer = await queryWithSortFallback(filter, sort,
+            trySort => characterRepository.query(filter, trySort, chunk, FIND_PAGE_CHUNK_SIZE, ['rows']));
+        sort = answer.sort;
+        const rows = answer.result.rows ?? [];
+        const index = rows.findIndex(row => isEntity(queryRowToEntity(row)));
+        if (index !== -1) return Math.floor(((chunk - 1) * FIND_PAGE_CHUNK_SIZE + index) / pageSize) + 1;
+        if (rows.length < FIND_PAGE_CHUNK_SIZE) return -1;
     }
-
-    // Run over all entities between first and second filter to save some states
-    for (const entity of entities) {
-        // For folders, we remember the sub entities so they can be displayed later, even if they might be filtered
-        // Those sub entities should be filtered and have the search filters applied too
-        if (entity.type === 'tag') {
-            let subEntities = filterByTagState(entities, { subForEntity: entity, filterHidden: false });
-            const subCount = subEntities.length;
-            subEntities = filterByTagState(entities, { subForEntity: entity });
-            if (doFilter) {
-                // sub entities filter "hacked" because folder filter should not be applied there, so even in "only folders" mode characters show up
-                subEntities = entitiesFilter.applyFilters(subEntities, { clearScoreCache: false, tempOverrides: { [FILTER_TYPES.FOLDER]: FILTER_STATES.UNDEFINED }, clearFuzzySearchCaches: false });
-            }
-            if (doSort) {
-                sortEntitiesList(subEntities, false);
-            }
-            entity.entities = subEntities;
-            entity.hidden = subCount - subEntities.length;
-        }
-    }
-
-    // Second run filters, hiding whatever should be filtered later
-    if (doFilter) {
-        entities = applyFinalFilterRun(entities);
-    }
-
-    // Final step, updating some properties after the last filter run
-    const nonTagEntitiesCount = entities.filter(entity => entity.type !== 'tag').length;
-    for (const entity of entities) {
-        if (entity.type === 'tag') {
-            if (entity.entities?.length == nonTagEntitiesCount) entity.isUseless = true;
-        }
-    }
-
-    // Sort before returning if requested
-    if (doSort) {
-        sortEntitiesList(entities, false);
-    }
-    entitiesFilter.clearFuzzySearchCaches();
-    return entities;
-}
-
-// When eligible, fetches characters+groups already merged/sorted/filtered from the server; the local filter pipeline still runs over the result.
-export async function queryEntitiesList({ doFilter = false, doSort = true } = {}) {
-    let characterAndGroupEntities;
-    if (doFilter && canUseServerQueryForEntitiesList()) {
-        try {
-            const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
-            const rows = await characterRepository.queryAll(filter, sort);
-            characterAndGroupEntities = rows.map(row => queryRowToEntity(row));
-        } catch (error) {
-            if (!isInvalidSortFieldError(error)) throw error;
-            characterAndGroupEntities = undefined;
-        }
-    }
-    if (characterAndGroupEntities === undefined) {
-        characterAndGroupEntities = [
-            ...characters.map(item => characterToEntity(item)),
-            ...groups.map(item => groupToEntity(item)),
-        ];
-    }
-
-    const rawEntities = [
-        ...characterAndGroupEntities,
-        ...(power_user.bogus_folders ? tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)) : []),
-    ];
-
-    return filterAndSortEntities(rawEntities, { doFilter, doSort });
 }
 
 /**
- * The entities of the character list page on screen, `[]` before the list first renders. Use `queryEntitiesList()`
- * for the whole filtered list.
+ * The entities of the character list page on screen, `[]` before the list first renders.
+ *
+ * This keeps the browser's own filter (`doFilter`) and sort (`doSort`) over the page: upstream callers expect it to
+ * answer synchronously. It is the one place the browser still filters and ranks the list.
  *
  * Folder tiles' `entities`, `hidden` and `isUseless` are left as rendered: recomputing them here would only see
  * this page.
@@ -774,7 +718,7 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
  * The folder tiles on a page of the server-paged list. They all go at the top of page 1, so every other page has
  * none and asks for none.
  *
- * Which folders get a tile follows filterAndSortEntities(): a folder the tag filter selects or excludes gets none,
+ * Which folders get a tile: a folder the tag filter selects or excludes gets none,
  * none do while "Folders" is excluded, and with a search term only folders whose name matches it do, each whatever
  * its count. With no search term a folder gets a tile only when its sub-list isn't empty.
  *

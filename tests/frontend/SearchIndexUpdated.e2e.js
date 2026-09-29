@@ -73,6 +73,9 @@ async function instrument(page) {
         streamRequests: [],
         /** @type {{ search: string|undefined, pageSize: number, page: number, fav: boolean|undefined }[]} */
         queries: [],
+        /** Each of `queries`' `sort.field`, at the same index. */
+        /** @type {(string|undefined)[]} */
+        sortFields: [],
         changes: 0,
         inFlight: 0,
         lastActivity: Date.now(),
@@ -83,6 +86,7 @@ async function instrument(page) {
     await page.route('**/api/characters/query', async route => {
         const body = route.request().postDataJSON() ?? {};
         log.queries.push({ search: body.filter?.search, pageSize: body.pageSize, page: body.page, fav: body.filter?.fav });
+        log.sortFields.push(body.sort?.field);
         log.inFlight++;
         log.lastActivity = Date.now();
         if (log.hold) {
@@ -235,27 +239,31 @@ test.describe('search-index-updated on /changes/stream', () => {
         expect(topSearchQueries(log, from)).toEqual([]);
     });
 
-    test('in local-pagination mode, sends nothing', async ({ page }) => {
+    test('with a sort the server rejects, re-queries the visible page in relevance order', async ({ page }) => {
         await setSearchTerm(page, log, 'zq');
-        // A rejected sort field makes printCharacters() fall back to local pagination.
-        const rejectSort = route => route.fulfill({
-            status: 400,
-            contentType: 'application/json',
-            body: JSON.stringify({ error: true, reason: 'invalid-sort-field', message: 'rejected by test' }),
-        });
-        await page.route('**/api/characters/query', rejectSort);
         await page.evaluate(async () => {
+            const { power_user } = await import('/scripts/power-user.js');
             const { printCharacters } = await import('/scripts/character-list.js');
-            await printCharacters(true);
+            const saved = power_user.sort_field;
+            power_user.sort_field = 'nonsense-e2e';
+            // Deselects "Search", so the saved sort applies.
+            $('#character_sort_order option[data-field="name"][data-order="asc"]').prop('selected', true);
+            try {
+                await printCharacters(true);
+            } finally {
+                // The pager keeps the sort it was built with.
+                power_user.sort_field = saved;
+            }
         });
-        await page.unroute('**/api/characters/query', rejectSort);
         await waitForQuiet(log);
         const from = log.queries.length;
 
         await sendStreamMessage(page, searchIndexUpdated());
         await waitForQuiet(log);
 
-        expect(log.queries.slice(from)).toEqual([]);
+        // The pager kept the fallback it settled on, so the refresh isn't rejected first.
+        expect(pageQueries(log, from)).toEqual([{ search: 'zq', pageSize: expect.any(Number), page: 1, fav: undefined }]);
+        expect(log.sortFields.slice(from)).toEqual(['search']);
     });
 });
 
@@ -702,30 +710,6 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         await waitForQuiet(log);
 
         await expectPage2Kept(page, from);
-    });
-
-    test('on duplicating a character, when the visible page can\'t be re-queried', async ({ page }) => {
-        const from = await toPage2Scrolled(page);
-        // The search sort still selected after the search term is cleared: the list isn't server-queryable.
-        expect(await page.evaluate(async () => {
-            window['$']('#character_sort_order option[data-field="search"]').prop('selected', true);
-            const { refreshCharacterListCurrentPage } = await import('/scripts/character-list.js');
-            return refreshCharacterListCurrentPage();
-        })).toBe(false);
-        await page.evaluate(() => {
-            window['__pagesLoaded'] = 0;
-            const { eventSource, eventTypes } = window['SillyTavern'].getContext();
-            eventSource.on(eventTypes.CHARACTER_PAGE_LOADED, () => { window['__pagesLoaded']++; });
-        });
-
-        await duplicateFirstRow(page);
-        await waitForQuiet(log);
-
-        // Printed from the resident characters, without a page query.
-        expect(await page.evaluate(() => window['__pagesLoaded'])).toBeGreaterThan(0);
-        expect(listPageQueries(from)).toEqual([]);
-        expect(await currentPage(page)).toBe(2);
-        expect(await listScrollTop(page)).toBe(SCROLLED_TO);
     });
 
     test('on a background sync dropping a tag filter whose tag is gone', async ({ page }) => {

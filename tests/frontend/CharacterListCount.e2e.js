@@ -22,7 +22,8 @@ async function awaitAppReady(page) {
  * page and the top-500 search come back with.
  * - `pageTotal(filter)`: the list page's `total`, as the server would count it for that filter.
  * - `topRows`, `topTotal`: the top-500 search's rows and `total`.
- * - `rejectSort`: every query but the top-500 fails with invalid-sort-field, which puts the list in local pagination.
+ * - `rejectSort`: a sort field every query but the top-500 fails with invalid-sort-field for.
+ * - `calls`: every query but the top-500, as `{ fav, sort }` (the filter's fav and the sort field).
  * @param {import('@playwright/test').Page} page
  */
 async function stubQuery(page) {
@@ -32,14 +33,16 @@ async function stubQuery(page) {
             pageTotal: () => 0,
             topRows: [],
             topTotal: 0,
-            rejectSort: false,
+            rejectSort: null,
+            calls: [],
         };
-        characterRepository.query = async (filter = {}, _sort, _page, pageSize) => {
+        characterRepository.query = async (filter = {}, sort, _page, pageSize) => {
             const stub = window['__stub'];
             if (pageSize === topPageSize) {
                 return { seq: 0, token: null, rows: stub.topRows, total: stub.topTotal, searchBackend: 'tantivy' };
             }
-            if (stub.rejectSort) {
+            stub.calls.push({ fav: filter.fav, sort: sort?.field });
+            if (stub.rejectSort !== null && sort?.field === stub.rejectSort) {
                 throw new CharacterQueryError('rejected by test', { status: 400, reason: 'invalid-sort-field' });
             }
             return { seq: 0, token: null, rows: [], total: stub.pageTotal(filter) };
@@ -65,15 +68,6 @@ async function searchIndexUpdated(page) {
     await page.evaluate(async () => {
         const { onSearchIndexUpdated } = await import('/scripts/character-list.js');
         onSearchIndexUpdated();
-    });
-}
-
-/** Puts the list in local pagination: printCharacters() falls back to it when the sort field is rejected. */
-async function printLocalPaginated(page) {
-    await page.evaluate(async () => {
-        window['__stub'].rejectSort = true;
-        const { printCharacters } = await import('/scripts/character-list.js');
-        await printCharacters(true);
     });
 }
 
@@ -157,59 +151,30 @@ test.describe('character list count', () => {
         });
     });
 
-    test.describe('local pagination', () => {
-        test('shows how many entries the list holds, not the top-500 search total', async ({ page }) => {
-            await page.evaluate(({ avatar }) => {
-                window['__stub'].topRows = [{ type: 'character', item: { avatar } }];
-                window['__stub'].topTotal = 50;
-            }, { avatar: SEED_AVATAR });
-            await setSearchTerm(page, 'zq');
-            await expect.poll(() => page.evaluate(async () => {
-                const { entitiesFilter } = await import('/scripts/character-list.js');
-                return entitiesFilter.serverSearchResults?.searchValue;
-            })).toBe('zq');
-
-            await printLocalPaginated(page);
-
-            await expect.poll(() => navigatorText(page)).toBe('1-1 .. 1');
+    test('with a saved sort the server rejects, the count is the fallback page total, with a warning naming the sort', async ({ page }) => {
+        await page.evaluate(async () => {
+            const { power_user } = await import('/scripts/power-user.js');
+            const { printCharacters } = await import('/scripts/character-list.js');
+            window['__stub'].rejectSort = 'nonsense-count';
+            window['__stub'].pageTotal = () => 7;
+            window['__stub'].calls = [];
+            const saved = power_user.sort_field;
+            power_user.sort_field = 'nonsense-count';
+            try {
+                await printCharacters(true);
+            } finally {
+                power_user.sort_field = saved;
+            }
         });
 
-        test('when the top-500 search came back full, shows 500+', async ({ page }) => {
-            await page.evaluate(({ avatar, size }) => {
-                window['__stub'].topRows = [
-                    { type: 'character', item: { avatar } },
-                    ...Array.from({ length: size - 1 }, (_, i) => ({ type: 'character', item: { avatar: `stub-${i}.png` } })),
-                ];
-                window['__stub'].topTotal = 2000;
-            }, { avatar: SEED_AVATAR, size: TOP_SEARCH_PAGE_SIZE });
-            await setSearchTerm(page, 'zq');
-            await expect.poll(() => page.evaluate(async () => {
-                const { entitiesFilter } = await import('/scripts/character-list.js');
-                return entitiesFilter.serverSearchResults?.searchValue;
-            })).toBe('zq');
-
-            await printLocalPaginated(page);
-
-            await expect.poll(() => navigatorText(page)).toBe('1-1 .. 500+');
-        });
-
-        test('with fuzzy search off, a full top-500 search is not used, so the count is how many entries the list holds', async ({ page }) => {
-            await page.evaluate(async ({ size }) => {
-                const { power_user } = await import('/scripts/power-user.js');
-                power_user.fuzzy_search = false;
-                window['__stub'].topRows = Array.from({ length: size }, (_, i) => ({ type: 'character', item: { avatar: `stub-${i}.png` } }));
-                window['__stub'].topTotal = 2000;
-            }, { size: TOP_SEARCH_PAGE_SIZE });
-            // Without fuzzy search the local filter matches by name.
-            await setSearchTerm(page, 'Sera');
-            await expect.poll(() => page.evaluate(async () => {
-                const { entitiesFilter } = await import('/scripts/character-list.js');
-                return entitiesFilter.serverSearchResults?.searchValue;
-            })).toBe('Sera');
-
-            await printLocalPaginated(page);
-
-            await expect.poll(() => navigatorText(page)).toBe('1-1 .. 1');
-        });
+        await expect.poll(() => navigatorText(page)).toBe('1-7 .. 7');
+        await expect(page.locator('.toast-warning').filter({ hasText: '"nonsense-count"' })).toHaveCount(1);
+        // The list and the favorites hotswap each fall back to name order.
+        await expect.poll(() => page.evaluate(() => window['__stub'].calls)).toEqual([
+            { fav: undefined, sort: 'nonsense-count' },
+            { fav: undefined, sort: 'name' },
+            { fav: true, sort: 'nonsense-count' },
+            { fav: true, sort: 'name' },
+        ]);
     });
 });

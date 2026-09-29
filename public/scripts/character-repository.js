@@ -737,8 +737,7 @@ export class CharacterRepository {
     /**
      * Fetches *every* row matching a filter+sort by looping `query()` pages internally. Not the endpoint's
      * intended access pattern at scale (fully materializes the matched set client-side) - it exists for callers
-     * that need one fully resident, fully sorted array to merge with something not itself server-paginated
-     * (`getEntitiesList()`'s and `favsToHotswap()`'s always-resident group/folder merge).
+     * that need one fully resident, fully sorted array.
      *
      * Never trusts `total` as a loop-termination bound: it may be an approximate estimate. The stop condition is
      * always a short page (fewer rows than requested), exact or approximate `total` notwithstanding.
