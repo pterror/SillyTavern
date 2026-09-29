@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -721,6 +721,65 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
 
         const current = await (await postJson('/api/characters/query', { ...request, ifToken: caughtUp.token })).json();
         expect(current).toEqual({ seq: caughtUp.seq, token: caughtUp.token, unchanged: true });
+    }, 30000);
+
+    test('a retry that re-indexes a card which failed to index is not answered unchanged, though neither the db seq nor the index cursors moved', async () => {
+        const Database = (await import('better-sqlite3')).default;
+        const dbPath = path.join(directories.root, 'character-metadata.sqlite');
+        /** @param {string} json @param {boolean} change */
+        const setCardJson = (json, change) => {
+            const db = new Database(dbPath);
+            try {
+                db.prepare('UPDATE characters SET card_json = ? WHERE id = ?').run(json, 'Vampire.png');
+                if (change) db.prepare('INSERT INTO changes (id, op, fields) VALUES (?, \'upsert\', NULL)').run('Vampire.png');
+            } finally {
+                db.close();
+            }
+        };
+        const fangs = { filter: { search: 'fangs' }, sort: { field: 'search' }, page: 1, pageSize: 10 };
+        const garlic = { ...fangs, filter: { search: 'garlic' } };
+        const card = cardFor('Vampire');
+        await seedCharacterWithFile('Vampire.png', { ...card, data: { ...card.data, description: 'fangs' } });
+        expect((await settledQuery(fangs)).rows.map(r => r.avatar)).toEqual(['Vampire.png']);
+
+        // The index can't process this, so it keeps the card's old doc and marks it for retry.
+        setCardJson('not json', true);
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        let failed;
+        try {
+            const marked = () => {
+                const db = new Database(dbPath, { readonly: true });
+                try {
+                    return db.prepare('SELECT COUNT(*) AS n FROM character_index_retries').get().n > 0;
+                } catch {
+                    return false;
+                } finally {
+                    db.close();
+                }
+            };
+            const markDeadline = Date.now() + 10000;
+            while (!marked() && Date.now() < markDeadline) await new Promise(resolve => setTimeout(resolve, 50));
+            expect(marked()).toBe(true);
+            failed = await settledQuery(fangs);
+            expect(failed.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
+
+            // Mended with no change row: only the retry picks it up.
+            setCardJson(JSON.stringify({ ...card, spec: 'chara_card_v2', spec_version: '2.0', data: { ...card.data, description: 'garlic' } }), false);
+            let mended;
+            const deadline = Date.now() + 10000;
+            do {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                mended = await (await postJson('/api/characters/query', garlic)).json();
+            } while (mended.rows.length === 0 && Date.now() < deadline);
+            expect(mended.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
+            expect(mended.seq).toBe(failed.seq);
+        } finally {
+            errorSpy.mockRestore();
+        }
+
+        const stale = await (await postJson('/api/characters/query', { ...fangs, ifToken: failed.token })).json();
+        expect(stale.unchanged).toBeUndefined();
+        expect(stale.rows).toEqual([]);
     }, 30000);
 
     /**

@@ -605,6 +605,18 @@ const SCHEMA_SQL = `
         id   TEXT NOT NULL,
         PRIMARY KEY (kind, id)
     );
+
+    -- Characters the search index couldn't re-index, whose previous doc it kept. Retried from next_attempt_at on;
+    -- delay_ms is the wait that led there, doubled on each failed attempt. last_error is the last error logged for
+    -- the card. Written only by the characters index (characters-search-index.js), in the same transaction as its
+    -- cursors.
+    CREATE TABLE IF NOT EXISTS character_index_retries (
+        id              TEXT PRIMARY KEY,
+        next_attempt_at INTEGER NOT NULL,
+        delay_ms        INTEGER NOT NULL,
+        last_error      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_character_index_retries_next ON character_index_retries(next_attempt_at, id);
 `;
 
 const UPSERT_SQL = `
@@ -3417,7 +3429,24 @@ const noWaitMetaConnections = new Map();
  * @returns {Promise<boolean>} false: another connection held the write lock, and nothing was written. With no
  * usable SQLite engine there is nothing to write, and it returns true, as setMetaValue() does nothing then.
  */
-export async function trySetMetaValues(directories, values) {
+export function trySetMetaValues(directories, values) {
+    return trySetMetaValuesAndRetryMarks(directories, values, []);
+}
+
+/**
+ * @typedef {{ nextAttemptAt: number, delayMs: number, lastError: string }} CharacterIndexRetryMark A
+ * character_index_retries row (see SCHEMA_SQL).
+ */
+
+/**
+ * trySetMetaValues(), with the characters index's retry mark writes in the same transaction: each `mark` replaces
+ * the card's row, and a null one deletes it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {Record<string, unknown>} values
+ * @param {{ id: string, mark: CharacterIndexRetryMark | null }[]} retryMarks
+ * @returns {Promise<boolean>} As trySetMetaValues().
+ */
+export async function trySetMetaValuesAndRetryMarks(directories, values, retryMarks) {
     const entry = await getEntry(directories);
     const engine = await getSqliteEngine();
     if (!entry || !engine) return true;
@@ -3429,12 +3458,65 @@ export async function trySetMetaValues(directories, values) {
             for (const [key, value] of Object.entries(values)) {
                 db.run(UPSERT_META_SQL, { key, value: String(value) });
             }
+            for (const { id, mark } of retryMarks) {
+                if (mark) {
+                    db.run(
+                        'INSERT INTO character_index_retries (id, next_attempt_at, delay_ms, last_error) VALUES (@id, @nextAttemptAt, @delayMs, @lastError) '
+                        + 'ON CONFLICT(id) DO UPDATE SET next_attempt_at = excluded.next_attempt_at, delay_ms = excluded.delay_ms, last_error = excluded.last_error',
+                        { id, ...mark },
+                    );
+                } else {
+                    db.run('DELETE FROM character_index_retries WHERE id = ?', [id]);
+                }
+            }
         });
     } catch (err) {
         if (isBusyError(err)) return false;
         throw err;
     }
     return true;
+}
+
+/**
+ * The retry marks of those of `ids` that have one.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, CharacterIndexRetryMark>>}
+ */
+export async function getCharacterIndexRetryMarksByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    /** @type {Map<string, CharacterIndexRetryMark>} */
+    const result = new Map();
+    if (!entry || ids.length === 0) return result;
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        const rows = /** @type {Generator<{ id: string, next_attempt_at: number, delay_ms: number, last_error: string }>} */ (
+            entry.db.iterate(`SELECT id, next_attempt_at, delay_ms, last_error FROM character_index_retries WHERE id IN (${placeholders})`, batch));
+        for (const row of rows) {
+            result.set(row.id, { nextAttemptAt: Number(row.next_attempt_at), delayMs: Number(row.delay_ms), lastError: row.last_error });
+        }
+    }
+    return result;
+}
+
+/**
+ * Up to `limit` retry marks due at `now`, soonest due first.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} now
+ * @param {number} limit
+ * @returns {Promise<({ id: string } & CharacterIndexRetryMark)[]>} Empty when the metadata store is unavailable.
+ */
+export async function getDueCharacterIndexRetries(directories, now, limit) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+    const due = [];
+    const rows = /** @type {Generator<{ id: string, next_attempt_at: number, delay_ms: number, last_error: string }>} */ (
+        entry.db.iterate('SELECT id, next_attempt_at, delay_ms, last_error FROM character_index_retries WHERE next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT ?', [now, limit]));
+    for (const row of rows) {
+        due.push({ id: row.id, nextAttemptAt: Number(row.next_attempt_at), delayMs: Number(row.delay_ms), lastError: row.last_error });
+    }
+    return due;
 }
 
 // Tag ids whose *name* changed since sinceSeq - mirrors getChangesSince()'s truncation handling.
