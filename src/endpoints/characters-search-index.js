@@ -81,6 +81,9 @@ const CHECKPOINT_EVERY_N_BATCHES = 20;
 
 const REBUILD_PERSIST_RETRY_MS = 100;
 
+// The share of a tick's budget the tag-rename loop always gets, so a change backlog can't starve renames.
+const TAG_RENAME_BUDGET_SHARE = 0.25;
+
 const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
 /** @param {TickPhases} [phases] */
@@ -388,8 +391,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
 
     /**
      * One catch-up pass, committed at most once. Every delete in the log up to its current end is applied first,
-     * whatever upsert backlog is in front of it; then upsert and tag-rename pages until the log is drained or
-     * tickBudgetMs has passed. An upsert page never undoes an applied delete: it reads the row's current
+     * whatever upsert backlog is in front of it; then upsert pages, then tag-rename pages, each until its log is
+     * drained or its part of tickBudgetMs has passed. An upsert page never undoes an applied delete: it reads the row's current
      * card_json, and a deleted row has none.
      * @returns {Promise<TickResult | { swapped: string | null } | null>}
      * null when the metadata store is unavailable; `swapped` when a truncated change log forced a full rebuild.
@@ -430,7 +433,9 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                 }
             });
 
-            const budgetLeft = () => Date.now() - start < tickBudgetMs;
+            // With renames waiting, the change loop leaves their share of the budget to them.
+            const renamesPending = maxTagNameChangeSeq > tagNameCursor;
+            const changesDeadline = start + (renamesPending ? tickBudgetMs * (1 - TAG_RENAME_BUDGET_SHARE) : tickBudgetMs);
 
             for (;;) {
                 const page = await timeAsync(phases, 'read', () => getChangesSince(directories, lastSeq, { limit: INDEX_BUILD_BATCH_SIZE }));
@@ -462,11 +467,15 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                     await addCharacterDocs(directories, tantivy, schema, w, upsertIds, phases);
                 }
                 lastSeq = page.seq;
-                if (!page.hasMore || !budgetLeft()) break;
+                if (!page.hasMore || Date.now() >= changesDeadline) break;
             }
 
             // A tag rename doesn't produce a `changes` row for the characters carrying it, so it's tracked separately.
-            while (budgetLeft()) {
+            // Its loop always takes at least one page and gets its share of the budget from its own start, even when
+            // the last change page ran past the change loop's deadline, plus whatever the change loop left unused.
+            const renamesStart = Date.now();
+            const renamesDeadline = renamesStart + tickBudgetMs * TAG_RENAME_BUDGET_SHARE + Math.max(0, changesDeadline - renamesStart);
+            for (;;) {
                 const page = await timeAsync(phases, 'read', () => getTagNameChangesSince(directories, lastTagNameChangeSeq, { limit: INDEX_BUILD_BATCH_SIZE }));
                 if (!page) {
                     w.rollback();
@@ -497,7 +506,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                     }
                 }
                 lastTagNameChangeSeq = page.seq;
-                if (!page.hasMore) break;
+                if (!page.hasMore || Date.now() >= renamesDeadline) break;
             }
         } catch (err) {
             try {
