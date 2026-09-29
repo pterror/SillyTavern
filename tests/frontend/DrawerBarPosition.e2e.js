@@ -833,8 +833,8 @@ const IOS_DRAWERS = /** @type {const} */ ([
  * The rects of the bar, the holder, the chat, and of User Settings, both sidebars and character management, each
  * opened and closed again by its icon.
  * @param {import('@playwright/test').Page} page
- * @param {boolean} pointer Whether to click the icons with the pointer. On iOS with the bar at the top an opened
- * sidebar covers the bar, so there the icons are clicked by script.
+ * @param {boolean} pointer Whether to click the icons with the pointer, which also checks that nothing covers them,
+ * or by script.
  */
 async function iosLayout(page, pointer) {
     const layout = {};
@@ -868,16 +868,13 @@ function expectSameLayout(actual, expected) {
 
 const IPAD_VIEWPORT = { width: 1180, height: 820 };
 
-// Measured with the iOS-only CSS before it followed the Drawer Bar setting.
+// Measured with the iOS-only CSS before it followed the Drawer Bar setting. On desktop with the bar at the top, only
+// the bar, the holder and the chat are: the drawers there are placed as outside iOS.
 const IOS_BEFORE = {
     desktopTop: {
         '#top-bar': { top: 0, bottom: 34.5, left: 0, width: 1180, height: 34.5 },
         '#top-settings-holder': { top: 0, bottom: 35, left: 295, width: 590, height: 35 },
         '#sheld': { top: 35, bottom: 819, left: 0, width: 1180, height: 784 },
-        '#user-settings-block': { top: 36, bottom: 786, left: 295, width: 1175, height: 750 },
-        '#left-nav-panel': { top: 0, bottom: 750, left: 2.5, width: 1175, height: 750 },
-        '#char-info-panel': { top: 36, bottom: 786, left: 2.5, width: 1175, height: 750 },
-        '#right-nav-panel': { top: 35, bottom: 820, left: 0, width: 1180, height: 785 },
     },
     forceMobileViewTop: {
         '#top-bar': { top: 0, bottom: 34.5, left: 0, width: 1180, height: 34.5 },
@@ -909,17 +906,22 @@ const IOS_BEFORE = {
 };
 
 /**
- * Expects each of the chat and the drawers in `layout` to be on screen, from the top edge, and clear of a bar at
- * `position`.
+ * Expects each of the chat and the drawers in `layout` to be on screen, from the top edge unless the bar is there,
+ * and clear of a bar at `position`. At the top, a sidebar beside the bar may start at the top edge.
  * @param {Record<string, { top: number, bottom: number, left: number, width: number, height: number }>} layout
- * @param {'bottom'|'left'|'right'} position
+ * @param {'top'|'bottom'|'left'|'right'} position
  */
 function expectClearOfBar(layout, position) {
     const bar = layout['#top-settings-holder'];
     for (const selector of ['#sheld', ...IOS_DRAWERS.map(([, drawer]) => drawer)]) {
         const r = layout[selector];
         expect(r.height, selector).toBeGreaterThan(0);
-        expect(r.top, selector).toBeCloseTo(0, 1);
+        if (position === 'top') {
+            const beside = r.left + r.width <= bar.left + 0.5 || r.left >= bar.left + bar.width - 0.5;
+            if (!beside) expect(r.top, selector).toBeGreaterThanOrEqual(bar.bottom - 0.5);
+        } else {
+            expect(r.top, selector).toBeCloseTo(0, 1);
+        }
         expect(r.left, selector).toBeGreaterThanOrEqual(0);
         expect(r.left + r.width, selector).toBeLessThanOrEqual(IPAD_VIEWPORT.width + 0.5);
         expect(r.bottom, selector).toBeLessThanOrEqual(IPAD_VIEWPORT.height + 0.5);
@@ -950,9 +952,18 @@ test.describe('Drawer bar position, iOS, desktop layout', () => {
         await setDrawerBarPosition(page, 'top');
     });
 
-    test('top: the bar, the chat, User Settings, the sidebars and character management are where they were', async ({ page }) => {
+    test('top: the bar and the chat are where they were, User Settings, the sidebars and character management where they are outside iOS, clear of the bar', async ({ page }) => {
         await setDrawerBarPosition(page, 'top');
-        expectSameLayout(await iosLayout(page, false), IOS_BEFORE.desktopTop);
+        const onIos = await iosLayout(page, true);
+        const drawers = IOS_DRAWERS.map(([, drawer]) => drawer);
+        const pick = (layout, selectors) => Object.fromEntries(selectors.map(selector => [selector, layout[selector]]));
+        expectSameLayout(pick(onIos, Object.keys(IOS_BEFORE.desktopTop)), IOS_BEFORE.desktopTop);
+        expectClearOfBar(onIos, 'top');
+
+        await page.unroute('**/css/mobile-styles.css');
+        await reloadST(page);
+        expect(await iosCssApplies(page)).toBe(false);
+        expectSameLayout(pick(onIos, drawers), pick(await iosLayout(page, true), drawers));
     });
 
     for (const position of /** @type {const} */ (['bottom', 'left', 'right'])) {

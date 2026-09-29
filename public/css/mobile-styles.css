@@ -1197,8 +1197,8 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
         backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
     }
 
-    /* Sizes for a drawer bar at the top. On desktop with the Drawer Bar at the bottom, left or right they don't apply,
-       and the bar, the chat and the drawers are placed as outside iOS. */
+    /* Sizes for a drawer bar at the top. On desktop without Force Mobile View the drawers are placed as outside iOS,
+       and with the Drawer Bar at the bottom, left or right so are the bar and the chat. */
     @media screen and (max-width: 1000px) {
         #top-bar {
             width: 100vw;
@@ -1265,10 +1265,10 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
             height: calc(100dvh - 36px);
         }
 
-        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #world_popup,
-        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #left-nav-panel,
-        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #right-nav-panel,
-        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) .drawer-content {
+        :where(body.forceMobileView) #world_popup,
+        :where(body.forceMobileView) #left-nav-panel,
+        :where(body.forceMobileView) #right-nav-panel,
+        :where(body.forceMobileView) .drawer-content {
             width: unset;
             height: unset;
             min-width: unset;
@@ -1287,8 +1287,8 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
             max-width: calc(100dvw - 5px);
         }
 
-        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #world_popup,
-        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) .drawer-content {
+        :where(body.forceMobileView) #world_popup,
+        :where(body.forceMobileView) .drawer-content {
             margin-top: 36px;
         }
     }
