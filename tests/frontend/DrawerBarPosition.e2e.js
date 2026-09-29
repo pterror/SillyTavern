@@ -796,3 +796,251 @@ for (const [layout, viewport, setPosition] of /** @type {const} */ ([
         }
     });
 }
+
+/**
+ * Serves mobile-styles.css with its iOS-only block applying, as on iOS: Chromium doesn't match its condition,
+ * `@supports (-webkit-touch-callout: none)`. Takes effect from the next page load.
+ * @param {import('@playwright/test').Page} page
+ */
+function forceIosCss(page) {
+    return page.route('**/css/mobile-styles.css', async route => {
+        const response = await route.fetch();
+        const css = (await response.text()).replace('@supports (-webkit-touch-callout: none)', '@supports (display: block)');
+        await route.fulfill({ response, body: css });
+    });
+}
+
+/** Whether the iOS-only CSS applies (it alone sets --pwaSafeAreaBottom). */
+function iosCssApplies(page) {
+    return page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--pwaSafeAreaBottom') !== '');
+}
+
+async function reloadST(page) {
+    await page.reload();
+    await page.waitForFunction('document.getElementById("preloader") === null', { timeout: 0 });
+    await awaitAppReady(page);
+}
+
+/** The drawers {@link iosLayout} opens, by their icons. */
+const IOS_DRAWERS = /** @type {const} */ ([
+    ['#user-settings-button .drawer-icon', '#user-settings-block'],
+    ['#leftNavDrawerIcon', '#left-nav-panel'],
+    ['#charInfoDrawerIcon', '#char-info-panel'],
+    ['#rightNavDrawerIcon', '#right-nav-panel'],
+]);
+
+/**
+ * The rects of the bar, the holder, the chat, and of User Settings, both sidebars and character management, each
+ * opened and closed again by its icon.
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} pointer Whether to click the icons with the pointer. On iOS with the bar at the top an opened
+ * sidebar covers the bar, so there the icons are clicked by script.
+ */
+async function iosLayout(page, pointer) {
+    const layout = {};
+    for (const selector of ['#top-bar', '#top-settings-holder', '#sheld']) {
+        layout[selector] = await rect(page, selector);
+    }
+    for (const [icon, drawer] of IOS_DRAWERS) {
+        if (pointer) {
+            layout[drawer] = await openByIcon(page, icon, drawer);
+            await closeByIcon(page, icon, drawer);
+            continue;
+        }
+        await page.locator(icon).evaluate(el => el.click());
+        await expect(page.locator(drawer)).toHaveClass(/openDrawer/);
+        layout[drawer] = await openedRect(page, drawer);
+        await page.locator(icon).evaluate(el => el.click());
+        await expect(page.locator(drawer)).toBeHidden();
+    }
+    return layout;
+}
+
+/** Expects each rect in `actual` to be the same one in `expected`. */
+function expectSameLayout(actual, expected) {
+    expect(Object.keys(actual)).toEqual(Object.keys(expected));
+    for (const [selector, r] of Object.entries(expected)) {
+        for (const key of /** @type {const} */ (['top', 'bottom', 'left', 'width', 'height'])) {
+            expect(actual[selector][key], `${selector} ${key}`).toBeCloseTo(r[key], 1);
+        }
+    }
+}
+
+const IPAD_VIEWPORT = { width: 1180, height: 820 };
+
+// Measured with the iOS-only CSS before it followed the Drawer Bar setting.
+const IOS_BEFORE = {
+    desktopTop: {
+        '#top-bar': { top: 0, bottom: 34.5, left: 0, width: 1180, height: 34.5 },
+        '#top-settings-holder': { top: 0, bottom: 35, left: 295, width: 590, height: 35 },
+        '#sheld': { top: 35, bottom: 819, left: 0, width: 1180, height: 784 },
+        '#user-settings-block': { top: 36, bottom: 786, left: 295, width: 1175, height: 750 },
+        '#left-nav-panel': { top: 0, bottom: 750, left: 2.5, width: 1175, height: 750 },
+        '#char-info-panel': { top: 36, bottom: 786, left: 2.5, width: 1175, height: 750 },
+        '#right-nav-panel': { top: 35, bottom: 820, left: 0, width: 1180, height: 785 },
+    },
+    forceMobileViewTop: {
+        '#top-bar': { top: 0, bottom: 34.5, left: 0, width: 1180, height: 34.5 },
+        '#top-settings-holder': { top: 0, bottom: 35, left: 0, width: 1180, height: 35 },
+        '#sheld': { top: 35, bottom: 819, left: 0, width: 1180, height: 784 },
+        '#user-settings-block': { top: 35, bottom: 810, left: 0, width: 1180, height: 775 },
+        '#left-nav-panel': { top: 35, bottom: 785, left: 0, width: 1180, height: 750 },
+        '#char-info-panel': { top: 35, bottom: 810, left: 0, width: 1180, height: 775 },
+        '#right-nav-panel': { top: 35, bottom: 820, left: 0, width: 1180, height: 785 },
+    },
+    mobileTop: {
+        '#top-bar': { top: 0, bottom: 34.5, left: 0, width: 412, height: 34.5 },
+        '#top-settings-holder': { top: 0, bottom: 35, left: 0, width: 412, height: 35 },
+        '#sheld': { top: 35, bottom: 914, left: 0, width: 412, height: 879 },
+        '#user-settings-block': { top: 36, bottom: 881, left: 2.5, width: 407, height: 845 },
+        '#left-nav-panel': { top: 35, bottom: 880, left: 0, width: 412, height: 845 },
+        '#char-info-panel': { top: 71, bottom: 916, left: 0, width: 412, height: 845 },
+        '#right-nav-panel': { top: 35, bottom: 915, left: 0, width: 412, height: 880 },
+    },
+    mobileBottom: {
+        '#top-bar': { top: 880.5, bottom: 915, left: 0, width: 412, height: 34.5 },
+        '#top-settings-holder': { top: 880, bottom: 915, left: 0, width: 412, height: 35 },
+        '#sheld': { top: 0, bottom: 880, left: 0, width: 412, height: 880 },
+        '#user-settings-block': { top: 0, bottom: 846, left: 2.5, width: 407, height: 846 },
+        '#left-nav-panel': { top: 0, bottom: 846, left: 0, width: 412, height: 846 },
+        '#char-info-panel': { top: 0, bottom: 846, left: 0, width: 412, height: 846 },
+        '#right-nav-panel': { top: 0, bottom: 880, left: 0, width: 412, height: 880 },
+    },
+};
+
+/**
+ * Expects each of the chat and the drawers in `layout` to be on screen, from the top edge, and clear of a bar at
+ * `position`.
+ * @param {Record<string, { top: number, bottom: number, left: number, width: number, height: number }>} layout
+ * @param {'bottom'|'left'|'right'} position
+ */
+function expectClearOfBar(layout, position) {
+    const bar = layout['#top-settings-holder'];
+    for (const selector of ['#sheld', ...IOS_DRAWERS.map(([, drawer]) => drawer)]) {
+        const r = layout[selector];
+        expect(r.height, selector).toBeGreaterThan(0);
+        expect(r.top, selector).toBeCloseTo(0, 1);
+        expect(r.left, selector).toBeGreaterThanOrEqual(0);
+        expect(r.left + r.width, selector).toBeLessThanOrEqual(IPAD_VIEWPORT.width + 0.5);
+        expect(r.bottom, selector).toBeLessThanOrEqual(IPAD_VIEWPORT.height + 0.5);
+        if (position === 'bottom') expect(r.bottom, selector).toBeLessThanOrEqual(bar.top + 0.5);
+        if (position === 'left') expect(r.left, selector).toBeGreaterThanOrEqual(bar.left + bar.width - 0.5);
+        if (position === 'right') expect(r.left + r.width, selector).toBeLessThanOrEqual(bar.left + 0.5);
+    }
+}
+
+test.describe('Drawer bar position, iOS, desktop layout', () => {
+    test.use({ viewport: IPAD_VIEWPORT });
+
+    test.beforeEach(async ({ page }) => {
+        await forceIosCss(page);
+    });
+
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+        expect(await iosCssApplies(page)).toBe(true);
+    });
+
+    // The data root is shared by the worker's later tests, which expect the defaults.
+    test.afterEach(async ({ page }) => {
+        await setPwa(page, false);
+        await setForceMobileView(page, false);
+        await setDrawerBarPosition(page, 'top');
+    });
+
+    test('top: the bar, the chat, User Settings, the sidebars and character management are where they were', async ({ page }) => {
+        await setDrawerBarPosition(page, 'top');
+        expectSameLayout(await iosLayout(page, false), IOS_BEFORE.desktopTop);
+    });
+
+    for (const position of /** @type {const} */ (['bottom', 'left', 'right'])) {
+        test(`${position}: the bar, the chat, User Settings, the sidebars and character management are where they are outside iOS`, async ({ page }) => {
+            await setDrawerBarPosition(page, position);
+            const onIos = await iosLayout(page, true);
+            expectClearOfBar(onIos, position);
+
+            await page.unroute('**/css/mobile-styles.css');
+            await reloadST(page);
+            expect(await iosCssApplies(page)).toBe(false);
+            expectSameLayout(onIos, await iosLayout(page, true));
+        });
+    }
+
+    for (const position of /** @type {const} */ (['top', 'left', 'right'])) {
+        test(`${position}, home-screen app: the chat keeps its bottom padding clear of the home indicator, in the same place`, async ({ page }) => {
+            await setDrawerBarPosition(page, position);
+            const inTab = await barLayout(page);
+            await setPwa(page, true);
+            const inApp = await barLayout(page);
+            for (const key of /** @type {const} */ (['bar', 'holder', 'sheld'])) {
+                expectSameRect(inApp[key], inTab[key]);
+            }
+            expect(inApp.sheldPaddingBottom).toBe('15px');
+        });
+    }
+
+    test('bottom, home-screen app: the bar keeps clear of the home indicator, the chat and User Settings end at the bar', async ({ page }) => {
+        await setDrawerBarPosition(page, 'bottom');
+        const inTab = await barLayout(page);
+        await setPwa(page, true);
+        const { bar, holder, sheld, sheldPaddingBottom } = await barLayout(page);
+        // --pwaSafeAreaBottom is 15px where there is no safe area.
+        expect(bar.bottom).toBeCloseTo(IPAD_VIEWPORT.height, 1);
+        expect(bar.height).toBeCloseTo(inTab.bar.height + 15, 1);
+        expect(holder.bottom).toBeCloseTo(IPAD_VIEWPORT.height - 15, 1);
+        expect(holder.left).toBeCloseTo(inTab.holder.left, 1);
+        expect(holder.width).toBeCloseTo(inTab.holder.width, 1);
+        expect(sheld.top).toBeCloseTo(0, 1);
+        expect(sheld.bottom).toBeCloseTo(holder.top - 1, 1);
+        expect(sheldPaddingBottom).toBe('0px');
+        const drawer = await openByIcon(page, '#user-settings-button .drawer-icon', '#user-settings-block');
+        expect(drawer.top).toBeCloseTo(0, 1);
+        expect(drawer.bottom).toBeLessThanOrEqual(holder.top + 0.5);
+        await closeByIcon(page, '#user-settings-button .drawer-icon', '#user-settings-block');
+    });
+
+    test('Force Mobile View: the Drawer Bar at the bottom, left or right leaves the layout where it was with the bar at the top', async ({ page }) => {
+        await setForceMobileView(page, true);
+        for (const position of ['top', 'bottom', 'left', 'right']) {
+            await setDrawerBarPosition(page, position);
+            await test.step(position, async () => {
+                expectSameLayout(await iosLayout(page, false), IOS_BEFORE.forceMobileViewTop);
+            });
+        }
+    });
+});
+
+test.describe('Drawer bar position, iOS, mobile layout', () => {
+    test.use({ viewport: MOBILE_VIEWPORT });
+
+    test.beforeEach(async ({ page }) => {
+        await forceIosCss(page);
+    });
+
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+        expect(await iosCssApplies(page)).toBe(true);
+    });
+
+    // The data root is shared by the worker's later tests, which expect the defaults.
+    test.afterEach(async ({ page }) => {
+        await setDrawerBarMobilePosition(page, 'top');
+        await setDrawerBarPosition(page, 'top');
+    });
+
+    for (const [mobilePosition, before] of /** @type {const} */ ([['top', IOS_BEFORE.mobileTop], ['bottom', IOS_BEFORE.mobileBottom]])) {
+        test(`mobile ${mobilePosition}: the bar, the chat, User Settings and the panels are where they were, whatever the desktop Drawer Bar`, async ({ page }) => {
+            await setDrawerBarMobilePosition(page, mobilePosition);
+            for (const position of ['top', 'bottom', 'left', 'right']) {
+                await setDrawerBarPosition(page, position);
+                await test.step(position, async () => {
+                    expectSameLayout(await iosLayout(page, false), before);
+                });
+            }
+        });
+    }
+});
