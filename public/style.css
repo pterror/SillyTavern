@@ -18,6 +18,13 @@
 @import url(css/chat-backups.css);
 @import url(css/streaming-display.css);
 
+/* Set only on the drawer it applies to, never inherited (see .drawer-content). */
+@property --drawerContainerTop {
+    syntax: '<length>';
+    inherits: false;
+    initial-value: 0px;
+}
+
 :root {
     interpolate-size: allow-keywords;
     --doc-height: 100%;
@@ -114,6 +121,14 @@
     --topBarIconSize: calc(var(--mainFontSize) * 2);
     --topBarBlockSize: calc(var(--topBarIconSize) + var(--topBarBlockPadding));
     --topBarBlockPadding: calc(var(--mainFontSize) / 3);
+
+    /* How much of each screen edge the drawer bar (#top-bar + #top-settings-holder) takes, set by the Drawer Bar
+       setting (power_user.drawer_bar_position, see toggle-dependent.css). Whatever is placed from the bar uses
+       these. --topBarBlockSize stays the bar's thickness wherever it is. */
+    --drawerBarTop: var(--topBarBlockSize);
+    --drawerBarBottom: 0px;
+    --drawerBarLeft: 0px;
+    --drawerBarRight: 0px;
 
     /*styles for the color picker*/
     --tool-cool-color-picker-btn-bg: transparent;
@@ -782,15 +797,15 @@ hr {
     display: flex;
     flex-direction: column;
     /* -1px to give sheld some wiggle room to bounce off tobar when moving*/
-    height: calc(100vh - var(--topBarBlockSize) - 1px);
-    height: calc(100dvh - var(--topBarBlockSize) - 1px);
-    max-height: calc(100dvh - var(--topBarBlockSize) - 1px);
+    height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom) - 1px);
+    height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom) - 1px);
+    max-height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom) - 1px);
     overflow-x: hidden;
     /* max-width: 50vw; */
     position: absolute;
     left: calc((100vw - var(--sheldWidth))/2);
     left: calc((100dvw - var(--sheldWidth))/2);
-    top: var(--topBarBlockSize);
+    top: var(--drawerBarTop);
     margin: 0 auto;
     left: 0;
     right: 0;
@@ -868,7 +883,7 @@ body .panelControlBar {
 }
 
 #chat {
-    max-height: calc(100vh - calc(var(--topBarBlockSize) + var(--bottomFormBlockSize)));
+    max-height: calc(100vh - calc(var(--drawerBarTop) + var(--drawerBarBottom) + var(--bottomFormBlockSize)));
     overflow-x: hidden;
     padding-bottom: 0;
     overflow-y: scroll;
@@ -4146,7 +4161,8 @@ grammarly-extension {
 
 /* Override toastr default styles */
 body #toast-container {
-    margin-top: var(--topBarBlockSize);
+    margin-top: var(--drawerBarTop);
+    margin-bottom: var(--drawerBarBottom);
 }
 
 body #toast-container>div {
@@ -4790,8 +4806,8 @@ h5 {
     flex-direction: column;
     max-width: var(--sheldWidth);
     height: min-content;
-    max-height: calc(100vh - var(--topBarBlockSize));
-    max-height: calc(100dvh - var(--topBarBlockSize));
+    max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
+    max-height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
     min-height: 100px;
     position: absolute;
     z-index: 2066;
@@ -5744,11 +5760,13 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     min-width: 450px;
     width: var(--sheldWidth);
     overflow-y: hidden;
-    max-height: calc(100vh - calc(var(--topBarBlockSize) + var(--bottomFormBlockSize)));
-    max-height: calc(100dvh - calc(var(--topBarBlockSize) + var(--bottomFormBlockSize)));
+    max-height: calc(100vh - calc(var(--drawerBarTop) + var(--drawerBarBottom) + var(--bottomFormBlockSize)));
+    max-height: calc(100dvh - calc(var(--drawerBarTop) + var(--drawerBarBottom) + var(--bottomFormBlockSize)));
     display: none;
     position: absolute;
-    top: var(--topBarBlockSize);
+    /* --drawerContainerTop: where this drawer's containing block starts on screen, when the drawer bar isn't at the
+       top (toggle-dependent.css) */
+    top: calc(var(--drawerBarTop) - var(--drawerContainerTop));
     left: 0;
     right: 0;
     margin: 0 auto;
@@ -5787,7 +5805,7 @@ body.movingUI .inline-drawer-maximize {
 
 body:not(.movingUI) .drawer-content.maximized {
     width: var(--sheldWidth) !important;
-    top: var(--topBarBlockSize) !important;
+    top: var(--drawerBarTop) !important;
     margin: 0 auto !important;
     right: 0 !important;
 }

@@ -125,16 +125,16 @@ body.no-blur .popup[open]::backdrop {
 }
 
 .popup #toast-container.toast-top-left {
-    top: calc(var(--toast-edge) + var(--topBarBlockSize));
+    top: calc(var(--toast-edge) + var(--drawerBarTop));
 }
 
 .popup #toast-container.toast-top-center {
     /* toastr in core does not have a top offset on center, so we don't do that either in popups */
-    top: var(--topBarBlockSize);
+    top: var(--drawerBarTop);
 }
 
 .popup #toast-container.toast-top-right {
-    top: calc(var(--toast-edge) + var(--topBarBlockSize));
+    top: calc(var(--toast-edge) + var(--drawerBarTop));
 }
 
 .popup-crop-wrap {

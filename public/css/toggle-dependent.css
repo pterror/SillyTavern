@@ -16,6 +16,44 @@ body.stackedDrawers .fillRight.openDrawer:not(.frontFillRight) {
     transition: visibility 0s !important;
 }
 
+/* Drawer Bar (power_user.drawer_bar_position): the drawer bar at the bottom screen edge, still #sheld's width. The
+   chat and the drawers take the top strip and end at the bar. Not in the mobile layout.
+   The --drawerBar* edge insets are set on :root so that variables computed there from them see them too. */
+@media not screen and (max-width: 1000px) {
+    :root:has(> body.drawerBarBottom:not(.forceMobileView)) {
+        --drawerBarTop: 0px;
+        --drawerBarBottom: var(--topBarBlockSize);
+    }
+
+    body.drawerBarBottom:not(.forceMobileView) #top-bar {
+        top: auto;
+        bottom: 0;
+        box-shadow: 0 -2px 20px 0 var(--black70a);
+    }
+
+    body.waifuMode.drawerBarBottom:not(.forceMobileView) #top-bar {
+        border-radius: 20px 20px 0 0;
+    }
+
+    body.drawerBarBottom:not(.forceMobileView) #top-settings-holder {
+        position: fixed;
+        top: auto;
+        bottom: 0;
+        left: 0;
+        right: 0;
+    }
+
+    /* The holder is the containing block of its absolutely positioned drawers; the fixed ones measure from the
+       screen as they do with the bar at the top. */
+    body.drawerBarBottom:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight, #WorldInfo) {
+        --drawerContainerTop: calc(100dvh - var(--topBarBlockSize));
+    }
+
+    body.drawerBarBottom:not(.forceMobileView):not(.movingUI) :is(#floatingPrompt, #cfgConfig, #logprobsViewer).maximized {
+        max-height: min(90dvh, calc(100dvh - var(--drawerBarBottom)));
+    }
+}
+
 body:not(.advancedMode) .advanced-setting {
     display: none !important;
 }
@@ -187,11 +225,11 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     width: 100vw;
     max-width: 100vw;
     margin: 0;
-    top: var(--topBarBlockSize);
-    height: calc(100vh - var(--topBarBlockSize));
-    height: calc(100dvh - var(--topBarBlockSize));
-    max-height: calc(100vh - var(--topBarBlockSize));
-    max-height: calc(100dvh - var(--topBarBlockSize));
+    top: var(--drawerBarTop);
+    height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
+    height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
+    max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
+    max-height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
 }
 
 /* Hidden in fullscreen gallery view since the tile grid already shows every character with full card art. */
@@ -216,11 +254,11 @@ body.charGalleryView.stackedDrawers:has(#right-nav-panel.galleryFullscreen.front
     width: min(100vw, var(--chatWidthMax, 120ch));
     max-width: min(100vw, var(--chatWidthMax, 120ch));
     margin: 0 auto;
-    top: var(--topBarBlockSize);
-    height: calc(100vh - var(--topBarBlockSize));
-    height: calc(100dvh - var(--topBarBlockSize));
-    max-height: calc(100vh - var(--topBarBlockSize));
-    max-height: calc(100dvh - var(--topBarBlockSize));
+    top: var(--drawerBarTop);
+    height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
+    height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
+    max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
+    max-height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
 }
 
 /* Same one-visible-at-a-time trick as above, extended to #sheld while this panel is the fullscreen drawer.
@@ -664,8 +702,8 @@ body.waifuMode #top-bar {
 body.waifuMode #sheld {
     height: 40vh;
     height: 40dvh;
-    top: calc(100% - 40vh);
-    bottom: 0;
+    top: calc(100% - 40vh - var(--drawerBarBottom));
+    bottom: var(--drawerBarBottom);
 }
 
 body.waifuMode #chat {

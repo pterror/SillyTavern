@@ -301,7 +301,7 @@
         max-width: 100dvw;
         left: 0 !important;
         resize: none !important;
-        top: var(--topBarBlockSize);
+        top: calc(var(--drawerBarTop) - var(--drawerContainerTop));
     }
 
     .wi-settings {
@@ -375,7 +375,7 @@
         border-right: 1px solid var(--SmartThemeBorderColor);
         border-bottom: 1px solid var(--SmartThemeBorderColor);
         border-radius: 0 0 20px 20px;
-        top: var(--topBarBlockSize) !important;
+        top: var(--drawerBarTop) !important;
         left: 0 !important;
         backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
 
@@ -799,7 +799,7 @@ body.forceMobileView .drawer-content {
         max-width: 100dvw;
         left: 0 !important;
         resize: none !important;
-        top: var(--topBarBlockSize);
+        top: calc(var(--drawerBarTop) - var(--drawerContainerTop));
     }
 
 body.forceMobileView .wi-settings {
@@ -873,7 +873,7 @@ body.forceMobileView #movingDivs>div {
         border-right: 1px solid var(--SmartThemeBorderColor);
         border-bottom: 1px solid var(--SmartThemeBorderColor);
         border-radius: 0 0 20px 20px;
-        top: var(--topBarBlockSize) !important;
+        top: var(--drawerBarTop) !important;
         left: 0 !important;
         backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
 
