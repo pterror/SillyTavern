@@ -1505,8 +1505,8 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
  * unless the operation left the greetings and default unchanged, in which case nothing is written.
  * @param {import('express').Request} request
  * @param {string} avatar avatar filename (e.g. "char.png")
- * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel, position?: number}} op
- * @returns {Promise<{ok: boolean, reason?: string, status?: number, hashes?: number[], defaultPosition?: number|null, position?: number}>}
+ * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
+ * @returns {Promise<{ok: boolean, reason?: string, status?: number, hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
  */
 async function applyGreetingOperation(request, avatar, op) {
     const avatarPath = path.join(request.user.directories.characters, avatar);
@@ -1531,6 +1531,8 @@ async function applyGreetingOperation(request, avatar, op) {
             hashes: model.greetings.map(hashGreetingText),
             defaultPosition: model.defaultIndex,
             position: result.position,
+            sourcePosition: result.sourcePosition,
+            targetPosition: result.targetPosition,
         };
     }
 
@@ -1549,12 +1551,15 @@ async function applyGreetingOperation(request, avatar, op) {
         hashes: result.model.greetings.map(hashGreetingText),
         defaultPosition: result.model.defaultIndex,
         position: result.position,
+        sourcePosition: result.sourcePosition,
+        targetPosition: result.targetPosition,
     };
 }
 
 /**
  * On success, echoes back the post-op hash-per-position list and default position so a caller can chain further operations without re-fetching the card,
- * and, for an op that reports one (edit), the position it acted on.
+ * and the positions the op acted on: `position` for edit, delete and set-default, `source_position` and
+ * `target_position` for move.
  * @param {import('express').Response} response
  * @param {Awaited<ReturnType<typeof applyGreetingOperation>>} result
  */
@@ -1564,6 +1569,8 @@ function sendGreetingOpResult(response, result) {
     }
     const body = { ok: true, hashes: result.hashes, default_position: result.defaultPosition };
     if (result.position !== undefined) body.position = result.position;
+    if (result.sourcePosition !== undefined) body.source_position = result.sourcePosition;
+    if (result.targetPosition !== undefined) body.target_position = result.targetPosition;
     return response.status(200).send(body);
 }
 
@@ -1614,8 +1621,10 @@ router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (requ
 });
 
 /**
- * Removes the greeting at `position`. Removing the current default clears default-ness rather than
- * picking a successor.
+ * Removes the greeting at `position`, or, when the greeting there no longer has `expected_hash`, the one greeting
+ * anywhere in the list that has it. Refuses an `expected_hash` no greeting (or more than one) has. Removing the
+ * current default clears default-ness rather than picking a successor. The response's `position` is where the
+ * removed greeting was.
  */
 router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1637,7 +1646,10 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
 /**
  * Moves the greeting at `source_position` immediately before or after (`side`) the greeting at `target_position`.
  * Both positions are read against the list as it currently stands, and each is checked against its own hash
- * (`expected_hash`, `target_expected_hash`). "Move to the end" is `side: 'after'` with the last greeting as the target.
+ * (`expected_hash`, `target_expected_hash`); an end whose position no longer holds its hash is the one greeting
+ * anywhere in the list that has it, and a hash no greeting (or more than one) has is refused. "Move to the end" is
+ * `side: 'after'` with the last greeting as the target. The response's `source_position` and `target_position` are
+ * where the two were found.
  */
 router.post('/greetings/move', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1663,7 +1675,11 @@ router.post('/greetings/move', validateAvatarUrlMiddleware, async function (requ
     }
 });
 
-/** Makes the greeting at `position` the default. Never reorders anything. */
+/**
+ * Makes the greeting at `position` the default, or, when the greeting there no longer has `expected_hash`, the one
+ * greeting anywhere in the list that has it. Refuses an `expected_hash` no greeting (or more than one) has. Never
+ * reorders anything. The response's `position` is where the new default is.
+ */
 router.post('/greetings/default/set', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');

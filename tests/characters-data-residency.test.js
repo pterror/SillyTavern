@@ -356,12 +356,13 @@ describe('/greetings/move places next to a hash-checked target', () => {
         expect((await storedCard()).data.alternate_greetings).toEqual(['third', 'second']);
     });
 
-    test('a stale target_expected_hash is a 409 and leaves the card unchanged', async () => {
+    test('a target_expected_hash no greeting has is a 409 and leaves the card unchanged', async () => {
         const hashes = await aliceWithThreeGreetings();
         const before = await storedCard();
+        const { hashGreetingText } = await import('../src/greeting-ops.js');
 
         const moved = await post('greetings/move', {
-            avatar_url: 'Alice.png', source_position: 2, expected_hash: hashes[2], side: 'before', target_position: 1, target_expected_hash: hashes[0],
+            avatar_url: 'Alice.png', source_position: 2, expected_hash: hashes[2], side: 'before', target_position: 1, target_expected_hash: hashGreetingText('no such greeting'),
         });
         expect(moved.status).toBe(409);
         expect((await moved.json()).reason).toBe('target greeting changed since it was loaded');
@@ -398,6 +399,67 @@ describe('/greetings/move places next to a hash-checked target', () => {
         expect(body.hashes).toEqual(hashes);
         expect(body.default_position).toBe(0);
         expect(await changeSeq()).toBe(seqBefore);
+    });
+});
+
+describe('delete, set default and move find a greeting that moved by its hash, and answer with the positions they used', () => {
+    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+
+    /** Alice with greetings ['hello', 'second', 'third'], 'hello' the default. Resolves to their hashes. */
+    async function aliceWithThreeGreetings() {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'third' });
+        return (await add.json()).hashes;
+    }
+
+    test('delete at a stale position deletes the greeting with the hash and answers with its position', async () => {
+        const hashes = await aliceWithThreeGreetings();
+
+        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[2] });
+        expect(deleted.status).toBe(200);
+        expect(await deleted.json()).toEqual({ ok: true, hashes: [hashes[0], hashes[1]], default_position: 0, position: 2 });
+        expect((await storedCard()).data.alternate_greetings).toEqual(['second']);
+    });
+
+    test('set default at a stale position makes the greeting with the hash the default and answers with its position', async () => {
+        const hashes = await aliceWithThreeGreetings();
+
+        const set = await post('greetings/default/set', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[2] });
+        expect(set.status).toBe(200);
+        expect(await set.json()).toEqual({ ok: true, hashes, default_position: 2, position: 2 });
+        expect((await storedCard()).first_mes).toBe('third');
+    });
+
+    test('move with both ends stale finds each by its hash and answers with the positions it used', async () => {
+        const hashes = await aliceWithThreeGreetings();
+
+        const moved = await post('greetings/move', {
+            avatar_url: 'Alice.png', source_position: 0, expected_hash: hashes[2], side: 'before', target_position: 2, target_expected_hash: hashes[1],
+        });
+        expect(moved.status).toBe(200);
+        expect(await moved.json()).toEqual({
+            ok: true, hashes: [hashes[0], hashes[2], hashes[1]], default_position: 0, source_position: 2, target_position: 1,
+        });
+        expect((await storedCard()).data.alternate_greetings).toEqual(['third', 'second']);
+    });
+
+    test('a hash more than one greeting has is a 409 and leaves the card unchanged', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'twin' });
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'twin' });
+        const hashes = (await add.json()).hashes;
+        const before = await storedCard();
+
+        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', position: 0, expected_hash: hashes[1] });
+        expect(deleted.status).toBe(409);
+        const set = await post('greetings/default/set', { avatar_url: 'Alice.png', position: 0, expected_hash: hashes[1] });
+        expect(set.status).toBe(409);
+        const moved = await post('greetings/move', {
+            avatar_url: 'Alice.png', source_position: 0, expected_hash: hashes[1], side: 'after', target_position: 2, target_expected_hash: hashes[2],
+        });
+        expect(moved.status).toBe(409);
+        expect(await storedCard()).toEqual(before);
     });
 });
 
