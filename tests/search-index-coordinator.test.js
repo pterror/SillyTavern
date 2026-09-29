@@ -279,6 +279,22 @@ describe('createSearchIndexCoordinator()', () => {
         expect(swapped.position).toBeNull();
     });
 
+    test('the groups reader\'s position is the version the worker says it was built from: set on ready, replaced with each swap, null when a message has none', async () => {
+        const { coordinator, workers } = setup();
+        const pending = coordinator.getIndex('user1', directories, 'groups');
+        await flush();
+        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups', version: 4 });
+        expect((await pending).position).toEqual({ version: 4 });
+
+        workers[0].send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt', version: 7 });
+        const swapped = await coordinator.getIndex('user1', directories, 'groups');
+        expect(swapped.dir).toBe('/groups-rebuilt');
+        expect(swapped.position).toEqual({ version: 7 });
+
+        workers[0].send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt-again', version: null });
+        expect((await coordinator.getIndex('user1', directories, 'groups')).position).toBeNull();
+    });
+
     test('"swapped" replaces the reader with one opened on the new dir', async () => {
         const { coordinator, workers } = setup();
         const pending = coordinator.getIndex('user1', directories, 'characters');

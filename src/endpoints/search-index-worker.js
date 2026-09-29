@@ -8,12 +8,13 @@ import { setConfigFilePath } from '../util.js';
  * a time, in order: startup, ticks, and requests from the coordinator.
  *
  * Messages to the coordinator:
- *   { type: 'ready', target, dir, seq?, tagNameSeq? }   target's index is openable at dir (dir null: it can't
- *                                         exist, the metadata store is unavailable); `error` instead when it failed.
+ *   { type: 'ready', target, dir, seq?, tagNameSeq?, version? }   target's index is openable at dir (dir null: it
+ *                                         can't exist, the metadata store is unavailable); `error` instead when it failed.
  *   { type: 'committed', target, changed: true, seq, tagNameSeq, deletes, upserts, ms }   a tick committed changes.
- *   { type: 'swapped', target, dir, seq?, tagNameSeq? }   target's index was rebuilt and swapped in at dir.
- * For characters, seq and tagNameSeq are the change-log and tag-rename-log seqs the index covers as of the dir
- * or commit the message announces: what the coordinator uses as its reader's position.
+ *   { type: 'swapped', target, dir, seq?, tagNameSeq?, version? }   target's index was rebuilt and swapped in at dir.
+ * These carry the index's position as of the dir or commit the message announces, which the coordinator uses as its
+ * reader's position. For characters, seq and tagNameSeq are the change-log and tag-rename-log seqs the index covers;
+ * for groups, version is the groups version the index was built from.
  *   { type: 'reply', id, ok, error? }     answer to a request; ok false without error: metadata store unavailable.
  *   { type: 'error', message }
  * Requests from the coordinator: { type: 'rebuild', id } (characters), { type: 'close', id }.
@@ -67,7 +68,7 @@ async function startup() {
 
     const notReady = new Set(['characters', 'groups']);
     const ready = (target, dir) => {
-        post({ type: 'ready', target, dir, ...(target === 'characters' ? charactersPosition() : {}) });
+        post({ type: 'ready', target, dir, ...(target === 'characters' ? charactersPosition() : groupsPosition()) });
         notReady.delete(target);
     };
     try {
@@ -93,6 +94,11 @@ function charactersPosition() {
     return { seq: characters?.seq(), tagNameSeq: characters?.tagNameSeq() };
 }
 
+/** The groups index's position, as the coordinator's messages carry it. */
+function groupsPosition() {
+    return { version: groups?.version() };
+}
+
 async function tick() {
     if (characters?.isOpen()) {
         try {
@@ -111,7 +117,7 @@ async function tick() {
     }
     try {
         const dir = await groups?.tick();
-        if (dir) post({ type: 'swapped', target: 'groups', dir });
+        if (dir) post({ type: 'swapped', target: 'groups', dir, ...groupsPosition() });
     } catch (err) {
         post({ type: 'error', message: `group search index rebuild failed: ${errorText(err)}` });
     }

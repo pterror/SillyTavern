@@ -264,6 +264,14 @@ describe('read-only mode: POST /api/characters/query against an existing library
         expect(again.body).toEqual({ seq: first.body.seq, token: first.body.token, unchanged: true });
     });
 
+    test('the groups reader\'s position is the groups version the normal code persisted for the index', async () => {
+        const version = await metadataDb.getMetaValue(directories, 'tantivy_group_index_version');
+        expect(Number(version)).toBeGreaterThan(0);
+        expect(Number(version)).toBe(await metadataDb.getGroupsVersion(directories));
+        const reader = await searchCoordinator.getSearchIndex('read-only-test-user', directories, 'groups');
+        expect(reader.position).toEqual({ version: Number(version) });
+    });
+
     // A group file that fails to parse leaves the pass's done flag unwritten, so the pass writes nothing and
     // reaches its closing checkpoint. Another connection's write sits in the -wal, which a read-only connection
     // can't checkpoint (SQLITE_IOERR_WRITE). Last in this block: that write changes the db.

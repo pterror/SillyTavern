@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getTagDefinitions, getEntityTagIdsForMany, getTagDeletions, getTagsHash, getGroupFavsByIds, getMetaValue, GROUP_FAV_NORMALIZED_FLAG } from '../character-metadata-db.js';
+import { getTagDefinitions, getEntityTagIdsForMany, getTagDeletions, getTagsHash, getGroupFavsByIds, getMetaValue, getGroupsVersion, trySetMetaValues, GROUP_FAV_NORMALIZED_FLAG } from '../character-metadata-db.js';
 import { getGroupsData } from './groups.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery, fastFieldOrderValue } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
-import { getSearchIndex } from './search-index-coordinator.js';
+import { getSearchIndex, GROUPS_INDEX_VERSION_META_KEY } from './search-index-coordinator.js';
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { timePhase } from '../search-timing.js';
 import { expandTagFilter } from '../tag-deletions.js';
@@ -71,6 +71,8 @@ async function makeTagNamesResolver(directories, groupIds) {
 const INDEX_BUILD_BATCH_SIZE = 500;
 const CHECKPOINT_EVERY_N_BATCHES = 20;
 
+const PERSIST_VERSION_RETRY_MS = 100;
+
 /** Builds a user's groups index into a temp dir and swaps it into place, so a reader open on the old one never
  * sits under a removed dir. @returns {Promise<string>} The index dir. */
 async function buildTantivyIndex(directories, tantivy) {
@@ -131,24 +133,41 @@ async function buildTantivyIndex(directories, tantivy) {
 /**
  * Keeps a user's groups index current by a full rebuild whenever the groups signature moves. Runs in
  * search-index-worker.js, never in the request process. Groups are few, so a full rebuild is cheap.
+ * Each build records the groups version (getGroupsVersion()) it was built from, and persists it under
+ * GROUPS_INDEX_VERSION_META_KEY once the new index is in place, so read-only mode can read it.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  */
 export function createGroupIndexMaintainer(directories, tantivy) {
     /** @type {string | null} */
     let builtSignature = null;
+    /** @type {number | null} */
+    let builtVersion = null;
 
     /** @returns {Promise<string>} The index dir. */
     async function build() {
-        // Read before the build, so a change made during it moves the signature again.
+        // Read before the build, so a change made during it moves the signature and the version again.
         const signature = await getGroupsSignature(directories);
+        const version = await getGroupsVersion(directories);
         const dir = await buildTantivyIndex(directories, tantivy);
         builtSignature = signature;
+        builtVersion = version;
+        // null: the metadata store is unavailable, so there is no version and nowhere to persist one.
+        if (version !== null) {
+            // Not skipped on a lock: the new index is already in place, and the version persisted for the old
+            // one would say it shows less than it does.
+            while (!await trySetMetaValues(directories, { [GROUPS_INDEX_VERSION_META_KEY]: String(version) })) {
+                await new Promise(resolve => setTimeout(resolve, PERSIST_VERSION_RETRY_MS));
+            }
+        }
         return dir;
     }
 
     return {
         build,
+        /** @returns {number | null} The groups version the current index was built from; null before the first
+         * build or when the metadata store was unavailable. */
+        version: () => builtVersion,
         /** @returns {Promise<string | null>} The index dir when it was rebuilt, else null. */
         async tick() {
             if (await getGroupsSignature(directories) === builtSignature) {

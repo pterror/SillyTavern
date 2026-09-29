@@ -17,14 +17,20 @@ const DISPOSE_TIMEOUT_MS = 10000;
 /** The meta keys the characters index persists its cursors under (characters-search-index.js writes them). */
 export const CHARACTERS_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
 export const CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
+/** The meta key the groups index persists the groups version it was built from under (groups-search-index.js
+ * writes it). */
+export const GROUPS_INDEX_VERSION_META_KEY = 'tantivy_group_index_version';
 const SEARCH_INDEX_UPDATED_INTERVAL_MS = 1000;
 
 /**
  * @typedef {'characters' | 'groups'} SearchIndexTarget
  * @typedef {{ seq: number, tagNameSeq: number }} SearchIndexPosition How far the characters index has applied
  * the change log (`seq`) and the tag-rename log (`tagNameSeq`).
- * @typedef {{ index: any, schema: any, position?: SearchIndexPosition | null }} SearchIndexReader `position` is
- * the characters index's position as of what this reader shows; null or absent when it isn't known.
+ * @typedef {{ version: number }} GroupsIndexPosition The groups version (getGroupsVersion()) the groups index was
+ * built from.
+ * @typedef {{ index: any, schema: any, position?: SearchIndexPosition | GroupsIndexPosition | null }} SearchIndexReader
+ * `position` is the index's position as of what this reader shows: a SearchIndexPosition for the characters
+ * reader, a GroupsIndexPosition for the groups reader; null or absent when it isn't known.
  * @typedef {{ postMessage(msg: object): void, on(event: string, listener: (...args: any[]) => void): any, terminate(): Promise<number> | void, unref?(): void }} SearchIndexWorker
  * @typedef {{ promise: Promise<any>, resolve: (value?: any) => void, reject: (reason?: any) => void }} Deferred
  * @typedef {{
@@ -51,9 +57,9 @@ function spawnSearchIndexWorker(workerData) {
  * on its first request and kept per handle, start() starts nothing, and rebuild() throws.
  *
  * A reader shows a new commit only when reload() is called on it (tantivy's Manual reload policy), which happens
- * here in the same step that sets its `position`, so a reader never shows more than its position says. For the
- * characters reader the position comes from the worker's messages; in read-only mode it's the persisted cursors,
- * read before the index is opened (null when they can't be read).
+ * here in the same step that sets its `position`, so a reader never shows more than its position says. The
+ * position comes from the worker's messages; in read-only mode it's the persisted cursors (characters) or version
+ * (groups), read before the index is opened (null when they can't be read).
  * @param {object} [options]
  * @param {(workerData: object) => SearchIndexWorker} [options.spawnWorker]
  * @param {(dir: string) => SearchIndexReader} [options.openIndex] Defaults to tantivy's Index.open().
@@ -129,17 +135,20 @@ export function createSearchIndexCoordinator({
     }
 
     /**
-     * The characters index position a worker message carries, or null when it carries none.
+     * The index position a worker message carries, or null when it carries none.
      * @param {any} msg
-     * @returns {SearchIndexPosition | null}
+     * @returns {SearchIndexPosition | GroupsIndexPosition | null}
      */
     function positionOf(msg) {
+        if (msg?.target === 'groups') {
+            return Number.isFinite(msg?.version) ? { version: msg.version } : null;
+        }
         return Number.isFinite(msg?.seq) && Number.isFinite(msg?.tagNameSeq) ? { seq: msg.seq, tagNameSeq: msg.tagNameSeq } : null;
     }
 
     /**
      * @param {string} dir
-     * @param {SearchIndexPosition | null} position
+     * @param {SearchIndexPosition | GroupsIndexPosition | null} position
      * @returns {SearchIndexReader}
      */
     function openAt(dir, position) {
@@ -285,13 +294,23 @@ export function createSearchIndexCoordinator({
     }
 
     /**
-     * Read-only mode: the characters index's persisted cursors, or null when they can't be read. Groups have none.
+     * Read-only mode: the index's persisted position, or null when it can't be read.
      * @param {import('../users.js').UserDirectoryList} directories
      * @param {SearchIndexTarget} target
-     * @returns {Promise<SearchIndexPosition | null>}
+     * @returns {Promise<SearchIndexPosition | GroupsIndexPosition | null>}
      */
     async function readPersistedPosition(directories, target) {
-        if (target !== 'characters') return null;
+        if (target === 'groups') {
+            try {
+                const version = await getMetaValue(directories, GROUPS_INDEX_VERSION_META_KEY);
+                if (version === null) return null;
+                const position = { version: Number(version) };
+                return Number.isFinite(position.version) ? position : null;
+            } catch (err) {
+                console.error(color.red(`[search] reading the groups index's persisted version failed: ${err.message}`));
+                return null;
+            }
+        }
         try {
             const seq = await getMetaValue(directories, CHARACTERS_INDEX_SEQ_META_KEY);
             if (seq === null) return null;
@@ -307,8 +326,8 @@ export function createSearchIndexCoordinator({
 
     /**
      * Read-only mode: the handle's existing index for `target`, opened for reading on the first request. A
-     * missing index dir throws, since nothing can build it read-only. The characters index's position is read
-     * before it's opened, so the reader shows at least what the position says.
+     * missing index dir throws, since nothing can build it read-only. The index's position is read before it's
+     * opened, so the reader shows at least what the position says.
      * @param {string} handle
      * @param {import('../users.js').UserDirectoryList} directories
      * @param {SearchIndexTarget} target

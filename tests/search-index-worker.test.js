@@ -31,6 +31,7 @@ const onSearchIndexUpdated = (handle, seq) => {
 };
 
 const TANTIVY_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
+const GROUPS_INDEX_VERSION_META_KEY = 'tantivy_group_index_version';
 
 function cardJson(name) {
     return JSON.stringify({
@@ -51,6 +52,13 @@ async function seedCharacter(name) {
     const baseImage = await fs.promises.readFile(path.join(REPO_ROOT, 'public', 'img', 'ai4.png'));
     await fs.promises.writeFile(path.join(directories.characters, `${name}.png`), cardParser.write(baseImage, cardJson(name)));
     await metadataDb.upsertCharacterFromWrite(directories, `${name}.png`, cardJson(name));
+}
+
+/** A group file and its row, written the way the groups endpoints write them. */
+async function writeGroup(group) {
+    await metadataDb.writeGroupFileAndRow(directories, group, () => {
+        fs.writeFileSync(path.join(directories.groups, `${group.id}.json`), JSON.stringify(group));
+    });
 }
 
 /** @param {object} [workerOptions] */
@@ -227,6 +235,27 @@ describe('search-index-worker.js (real worker thread)', () => {
         await expect(coordinator.rebuild(HANDLE, directories)).resolves.toBe(true);
         await waitFor(() => indexUpdates.length > 0, 2000);
         expect(indexUpdates.map(update => update.seq)).toEqual([seq]);
+    }, 30000);
+
+    test('the groups index records the groups version it was built from, as its reader\'s position and in its meta key', async () => {
+        if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+
+        await writeGroup({ id: 'g1', name: 'First Coven', members: [] });
+        const builtVersion = await metadataDb.getGroupsVersion(directories);
+        expect(builtVersion).toBeGreaterThan(0);
+        const coordinator = makeCoordinator();
+        const reader = await coordinator.getIndex(HANDLE, directories, 'groups');
+        expect(reader.position).toEqual({ version: builtVersion });
+        expect(await metadataDb.getMetaValue(directories, GROUPS_INDEX_VERSION_META_KEY)).toBe(String(builtVersion));
+
+        await writeGroup({ id: 'g2', name: 'Second Coven', members: [] });
+        const rebuiltVersion = await metadataDb.getGroupsVersion(directories);
+        expect(rebuiltVersion).toBeGreaterThan(builtVersion);
+        await waitFor(async () => (await coordinator.getIndex(HANDLE, directories, 'groups')) !== reader);
+        const rebuilt = await coordinator.getIndex(HANDLE, directories, 'groups');
+        expect(rebuilt.position).toEqual({ version: rebuiltVersion });
+        expect(searchNames(rebuilt, 'Second').length).toBe(1);
+        expect(await metadataDb.getMetaValue(directories, GROUPS_INDEX_VERSION_META_KEY)).toBe(String(rebuiltVersion));
     }, 30000);
 
     test('dispose releases the writer, so a new worker on the same index can take it', async () => {
