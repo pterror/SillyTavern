@@ -39,3 +39,7 @@ Each character's or group's messages form a tree: a message can have several rep
 ## Boot and batches
 
 Server startup must never wait on heavy work. Large passes over the data run after the server is listening, either in background worker threads or on the main thread in small batches with a pause between each, so requests are never held up. They never keep a database read open while writing.
+
+## Multi-user
+
+Several users can be in the same chat at once (multiplayer roleplay). Nothing may assume a single user or a single tab. Show who is present. When someone is editing something, others see it locked and by whom: a lock, not live merging. Live co-editing of text (Yjs) is a later addition, so designs should leave room for it without building it now.
