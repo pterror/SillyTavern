@@ -254,6 +254,16 @@ describe('read-only mode: POST /api/characters/query against an existing library
         expect(fs.statSync(path.join(directories.root, `${DB_FILE}-wal`)).size).toBe(0);
     });
 
+    test('a characters-only search has a token, from the index\'s persisted cursors, that a repeat answers unchanged', async () => {
+        const request = { ...SEARCH_QUERY, filter: { search: 'vampire' } };
+        const first = await postQuery(request);
+        expect(first.status).toBe(200);
+        expect(first.body.rows.map(row => row.name)).toEqual(['Vlad']);
+        expect(typeof first.body.token).toBe('string');
+        const again = await postQuery({ ...request, ifToken: first.body.token });
+        expect(again.body).toEqual({ seq: first.body.seq, token: first.body.token, unchanged: true });
+    });
+
     // A group file that fails to parse leaves the pass's done flag unwritten, so the pass writes nothing and
     // reaches its closing checkpoint. Another connection's write sits in the -wal, which a read-only connection
     // can't checkpoint (SQLITE_IOERR_WRITE). Last in this block: that write changes the db.

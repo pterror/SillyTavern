@@ -31,7 +31,7 @@ import { migrateOwnerOnTouch } from '../message-tree-migration.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, tantivySortOrder } from './characters-search-index.js';
+import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, tantivySortOrder, getCharacterIndexPosition } from './characters-search-index.js';
 import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
@@ -2137,19 +2137,23 @@ const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavai
  * tagIdsHash(4) + contentHash(4) + date_added(8, float64) + create_date(8, float64, 0 if !hasCreateDate) +
  * date_last_chat(8, float64) + chat_size(8, float64) + data_size(8, float64) + chatLen(2) +
  * chat(chatLen, utf8, omitted if chatLen is 0).
- * @param {{seq:number, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ *
+ * Trailer, after the last row: tokenLen(2, uint16) + token(tokenLen, utf8); tokenLen 0 when the token is null.
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
  * @returns {Buffer}
  */
-function serializeQueryHashesBinary({ seq, total, approxTotal, hashRows, searchBackend }) {
+function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend }) {
     const hasTotal = typeof total === 'number';
     const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
+    const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
     let totalSize = 1 + 1 + 8 + 8 + 2; // header
     for (const row of hashRows) {
         const idBytes = Buffer.byteLength(row.id, 'utf8');
         const chatBytes = row.chat ? Buffer.byteLength(row.chat, 'utf8') : 0;
         totalSize += 1 + 2 + idBytes + 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
+    totalSize += 2 + tokenBytes; // trailer
 
     const buf = Buffer.allocUnsafe(totalSize);
     let offset = 0;
@@ -2187,17 +2191,46 @@ function serializeQueryHashesBinary({ seq, total, approxTotal, hashRows, searchB
         }
     }
 
+    buf.writeUInt16LE(tokenBytes, offset); offset += 2;
+    if (tokenBytes > 0) {
+        buf.write(token, offset, tokenBytes, 'utf8'); offset += tokenBytes;
+    }
+
     return buf;
 }
 
 /**
  * Sends a hash-mode `/query` response as `application/octet-stream`.
  * @param {import("express").Response} response
- * @param {{seq:number, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
  */
 function sendHashQueryResponse(response, params) {
     response.set('Content-Type', 'application/octet-stream');
     return response.send(timePhase('serialize', () => serializeQueryHashesBinary(params)));
+}
+
+/**
+ * `/query`'s freshness token: an opaque hash of exactly the components a response was built from. A request's
+ * `ifToken` is answered `unchanged` only when the token rebuilt from those components now is equal.
+ *   - no search, no groups: the change log's seq (MAX(changes.seq)).
+ *   - search, no groups: that seq, plus the characters index's position (its change-log and tag-rename-log
+ *     cursors) as of the search read.
+ *   - with groups: null, so it's never answered `unchanged`: no component here covers what groups are read from.
+ * null also when a component can't be read.
+ * @param {number | null | undefined} seq
+ * @param {{ search: boolean, includeGroups: boolean, position?: import('./search-index-coordinator.js').SearchIndexPosition | null }} path
+ * @returns {string | null}
+ */
+function queryToken(seq, { search, includeGroups, position }) {
+    if (includeGroups || !Number.isFinite(seq)) return null;
+    let components;
+    if (search) {
+        if (!position) return null;
+        components = [seq, position.seq, position.tagNameSeq];
+    } else {
+        components = [seq];
+    }
+    return crypto.createHash('sha256').update(JSON.stringify(components)).digest('base64url').slice(0, 22);
 }
 
 /**
@@ -2215,8 +2248,9 @@ function pageOverFetch(pageSize) {
  * @param {string} handle
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{ searchTerm: string, sortField: string, sortOrder: string, filter: object, includeGroups: boolean, offset: number, count: number }} params
- * @returns {Promise<{ entities: { type: 'character'|'group', id: string }[], total: number, backend: string } | null>}
- * null when the sort field has no fast field.
+ * @returns {Promise<{ entities: { type: 'character'|'group', id: string }[], total: number, backend: string, position: import('./search-index-coordinator.js').SearchIndexPosition | null } | null>}
+ * null when the sort field has no fast field. `position` is the characters index's as of its search, null when
+ * unknown or when two searches read different ones.
  */
 async function searchSortedPage(handle, directories, { searchTerm, sortField, sortOrder, filter, includeGroups, offset, count }) {
     const order = tantivySortOrder(sortField, sortOrder);
@@ -2238,11 +2272,13 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
     if (chars === null) return null;
 
     let window = { chars: chars.hits, charStart, charsExhausted: chars.hits.length < charLimit };
+    let position = chars.position;
     if (chars.hits.length === 0 && charStart > 0) {
         // The page lies past the last character, among trailing groups: anchor the merge on that last character.
         const last = chars.total > 0
             ? await searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, chars.total - 1, 1, filterOptions)
             : null;
+        if (last && last.position !== position) position = null;
         window = last && last.hits.length > 0
             ? { chars: last.hits, charStart: chars.total - 1, charsExhausted: true }
             : { chars: [], charStart: 0, charsExhausted: true };
@@ -2250,7 +2286,7 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
 
     const entities = timePhase('merge_ids', () => mergeSortedWindow({ ...window, groups, offset, count }));
     const backend = chars.backend === 'unavailable' || groupsBackend === 'unavailable' ? 'unavailable' : chars.backend;
-    return { entities, total: chars.total + groups.length, backend };
+    return { entities, total: chars.total + groups.length, backend, position };
 }
 
 async function handleQuery(request, response) {
@@ -2293,12 +2329,15 @@ async function handleQuery(request, response) {
             return response.status(400).send({ error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
         }
 
-        // Cheap re-fetch guard: skip row hydration/search if `ifSeq` matches the current seq. Coarser than
-        // per-bucket digests - invalidates on any character/group write, not just ones affecting this page.
-        if (Number.isFinite(Number(body.ifSeq))) {
+        // Cheap re-fetch guard: skip the search and row reads when the token rebuilt from the components this
+        // request's response would be built from (queryToken()) equals `ifToken`. Coarser than per-bucket digests.
+        // The position is read first, as the search reads the index before the rows.
+        if (typeof body.ifToken === 'string' && body.ifToken.length > 0 && !includeGroups) {
+            const position = hasSearch ? await getCharacterIndexPosition(request.user.profile.handle, request.user.directories) : null;
             const currentSeq = await getCurrentSeq(request.user.directories);
-            if (currentSeq !== null && currentSeq === Math.trunc(Number(body.ifSeq))) {
-                return response.send({ seq: currentSeq, unchanged: true });
+            const token = queryToken(currentSeq, { search: hasSearch, includeGroups, position });
+            if (token !== null && token === body.ifToken) {
+                return response.send({ seq: currentSeq, token, unchanged: true });
             }
         }
 
@@ -2326,6 +2365,10 @@ async function handleQuery(request, response) {
         // when sort.field === 'search' (no SQL column exists for text relevance).
         let combinedScoresById = null;
 
+        // The characters index's position as of the search read, for the token.
+        let searchPosition = null;
+        const tokenFor = (seq) => queryToken(seq, { search: hasSearch, includeGroups, position: searchPosition });
+
         markSinceStart('prologue');
         if (hasSearch) {
             const handle = request.user.profile.handle;
@@ -2339,6 +2382,7 @@ async function handleQuery(request, response) {
                 });
                 if (sortedPage !== null) {
                     searchBackend = sortedPage.backend;
+                    searchPosition = sortedPage.position;
                     const total = wantTotal ? sortedPage.total : undefined;
                     if (includeGroups) {
                         const result = await timePhase('page_rows', () => getEntityRowsByIds(request.user.directories, sortedPage.entities, { wantRows, wantHashes }));
@@ -2346,9 +2390,9 @@ async function handleQuery(request, response) {
                             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
                         }
                         if (wantHashes) {
-                            return sendHashQueryResponse(response, { seq: result.seq, total, approxTotal: false, hashRows: result.hashRows.slice(0, pageSize), searchBackend });
+                            return sendHashQueryResponse(response, { seq: result.seq, token: tokenFor(result.seq), total, approxTotal: false, hashRows: result.hashRows.slice(0, pageSize), searchBackend });
                         }
-                        const payload = { seq: result.seq, searchBackend };
+                        const payload = { seq: result.seq, token: tokenFor(result.seq), searchBackend };
                         if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows.slice(0, pageSize)));
                         if (wantTotal) payload.total = total;
                         return response.send(payload);
@@ -2362,9 +2406,9 @@ async function handleQuery(request, response) {
                         // queryCharacters returns hashRows in id order; re-order to match tantivy's sort.
                         const idToHashRow = new Map(result.hashRows.map(r => [r.id, r]));
                         const orderedHashRows = ids.map(id => idToHashRow.get(id)).filter(Boolean).slice(0, pageSize);
-                        return sendHashQueryResponse(response, { seq: result.seq, total, approxTotal: false, hashRows: orderedHashRows, searchBackend });
+                        return sendHashQueryResponse(response, { seq: result.seq, token: tokenFor(result.seq), total, approxTotal: false, hashRows: orderedHashRows, searchBackend });
                     }
-                    const payload = { seq: result.seq, searchBackend };
+                    const payload = { seq: result.seq, token: tokenFor(result.seq), searchBackend };
                     if (wantTotal) payload.total = total;
                     if (wantRows) {
                         // Rows here are always plain toShallow() projections, so the id lives at `.avatar`.
@@ -2385,6 +2429,7 @@ async function handleQuery(request, response) {
             // below still checks fav, tags and excludeIds, and explicitIds still intersects, because the index can
             // lag the db by about a second.
             const searchResult = await searchCharacterIds(handle, request.user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags, ids: Array.isArray(filter.ids) ? filter.ids : undefined, excludeIds: filter.excludeIds });
+            searchPosition = searchResult.position;
 
             // filter.ids and filter.search both restrict the candidate set - when both are present they
             // intersect, not override each other, for both types when includeGroups is active.
@@ -2411,9 +2456,9 @@ async function handleQuery(request, response) {
             if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
                 const seq = (await timePhase('query_characters', () => queryCharacters(request.user.directories, { ids: [], wantRows: false, wantTotal: false })))?.seq ?? 0;
                 if (wantHashes) {
-                    return sendHashQueryResponse(response, { seq, total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
+                    return sendHashQueryResponse(response, { seq, token: tokenFor(seq), total: wantTotal ? 0 : undefined, approxTotal: false, hashRows: [], searchBackend });
                 }
-                const payload = { seq, searchBackend };
+                const payload = { seq, token: tokenFor(seq), searchBackend };
                 if (wantRows) payload.rows = [];
                 if (wantTotal) payload.total = 0;
                 return response.send(payload);
@@ -2457,13 +2502,14 @@ async function handleQuery(request, response) {
                 if (wantHashes) {
                     return sendHashQueryResponse(response, {
                         seq: result.seq,
+                        token: tokenFor(result.seq),
                         total: wantTotal ? result.total : undefined,
                         approxTotal: totalApprox,
                         hashRows,
                         searchBackend,
                     });
                 }
-                const payload = { seq: result.seq };
+                const payload = { seq: result.seq, token: tokenFor(result.seq) };
                 if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
                 if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, rows));
                 if (searchBackend !== undefined) payload.searchBackend = searchBackend;
@@ -2488,13 +2534,14 @@ async function handleQuery(request, response) {
             if (wantHashes) {
                 return sendHashQueryResponse(response, {
                     seq: result.seq,
+                    token: tokenFor(result.seq),
                     total: wantTotal ? result.total : undefined,
                     approxTotal: result.approxTotal,
                     hashRows: result.hashRows,
                     searchBackend: undefined,
                 });
             }
-            const payload = { seq: result.seq };
+            const payload = { seq: result.seq, token: tokenFor(result.seq) };
             if (wantTotal) payload.total = result.approxTotal ? `~${result.total}` : result.total;
             if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(request.user.directories, result.rows));
             return response.send(payload);
@@ -2516,13 +2563,14 @@ async function handleQuery(request, response) {
         if (wantHashes) {
             return sendHashQueryResponse(response, {
                 seq: result.seq,
+                token: tokenFor(result.seq),
                 total: wantTotal ? result.total : undefined,
                 approxTotal: totalApprox,
                 hashRows: result.hashRows,
                 searchBackend,
             });
         }
-        const payload = { seq: result.seq };
+        const payload = { seq: result.seq, token: tokenFor(result.seq) };
         if (wantRows) payload.rows = result.rows;
         if (wantTotal) payload.total = totalApprox ? `~${result.total}` : result.total;
         if (searchBackend !== undefined) payload.searchBackend = searchBackend;

@@ -8,11 +8,12 @@ import { setConfigFilePath } from '../util.js';
  * a time, in order: startup, ticks, and requests from the coordinator.
  *
  * Messages to the coordinator:
- *   { type: 'ready', target, dir }        target's index is openable at dir (dir null: it can't exist, the
- *                                         metadata store is unavailable); `error` instead when it failed.
- *   { type: 'committed', target, changed: true, seq, deletes, upserts, ms }   a tick committed changes.
- *   { type: 'swapped', target, dir, seq? } target's index was rebuilt and swapped in at dir; for characters, seq
- *                                         is the change-log seq it covers.
+ *   { type: 'ready', target, dir, seq?, tagNameSeq? }   target's index is openable at dir (dir null: it can't
+ *                                         exist, the metadata store is unavailable); `error` instead when it failed.
+ *   { type: 'committed', target, changed: true, seq, tagNameSeq, deletes, upserts, ms }   a tick committed changes.
+ *   { type: 'swapped', target, dir, seq?, tagNameSeq? }   target's index was rebuilt and swapped in at dir.
+ * For characters, seq and tagNameSeq are the change-log and tag-rename-log seqs the index covers as of the dir
+ * or commit the message announces: what the coordinator uses as its reader's position.
  *   { type: 'reply', id, ok, error? }     answer to a request; ok false without error: metadata store unavailable.
  *   { type: 'error', message }
  * Requests from the coordinator: { type: 'rebuild', id } (characters), { type: 'close', id }.
@@ -66,7 +67,7 @@ async function startup() {
 
     const notReady = new Set(['characters', 'groups']);
     const ready = (target, dir) => {
-        post({ type: 'ready', target, dir });
+        post({ type: 'ready', target, dir, ...(target === 'characters' ? charactersPosition() : {}) });
         notReady.delete(target);
     };
     try {
@@ -87,6 +88,11 @@ async function startup() {
     }
 }
 
+/** The characters index's cursors, as the coordinator's messages carry them. */
+function charactersPosition() {
+    return { seq: characters?.seq(), tagNameSeq: characters?.tagNameSeq() };
+}
+
 async function tick() {
     if (characters?.isOpen()) {
         try {
@@ -94,10 +100,10 @@ async function tick() {
             if (!result) {
                 // The metadata store is unavailable.
             } else if ('swapped' in result) {
-                if (result.swapped) post({ type: 'swapped', target: 'characters', dir: result.swapped, seq: characters.seq() });
+                if (result.swapped) post({ type: 'swapped', target: 'characters', dir: result.swapped, ...charactersPosition() });
             } else if (result.changed) {
                 console.log(formatCatchUpLine(result));
-                post({ type: 'committed', target: 'characters', changed: true, seq: result.seq, deletes: result.deletes, upserts: result.upserts, ms: result.ms });
+                post({ type: 'committed', target: 'characters', changed: true, seq: result.seq, tagNameSeq: result.tagNameSeq, deletes: result.deletes, upserts: result.upserts, ms: result.ms });
             }
         } catch (err) {
             post({ type: 'error', message: `character search index catch-up failed: ${errorText(err)}` });
@@ -138,7 +144,7 @@ parentPort.on('message', (msg) => {
             }
             try {
                 const dir = await characters.rebuild();
-                if (dir) post({ type: 'swapped', target: 'characters', dir, seq: characters.seq() });
+                if (dir) post({ type: 'swapped', target: 'characters', dir, ...charactersPosition() });
                 post({ type: 'reply', id: msg.id, ok: Boolean(dir) });
             } catch (err) {
                 post({ type: 'reply', id: msg.id, ok: false, error: errorText(err) });

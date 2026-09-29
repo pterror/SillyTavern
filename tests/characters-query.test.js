@@ -638,6 +638,123 @@ describe('POST /api/characters/query', () => {
     });
 });
 
+/**
+ * The token of a hash-mode (`want: ['hashes']`) response: its trailer, after the last row.
+ * @param {ArrayBuffer} buffer
+ * @returns {string | null}
+ */
+function hashResponseToken(buffer) {
+    const view = new DataView(buffer);
+    let offset = 1 + 1 + 8 + 8;
+    const rowCount = view.getUint16(offset, true); offset += 2;
+    for (let i = 0; i < rowCount; i++) {
+        offset += 1;
+        offset += 2 + view.getUint16(offset, true);
+        offset += 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8;
+        offset += 2 + view.getUint16(offset, true);
+    }
+    const tokenLen = view.getUint16(offset, true); offset += 2;
+    expect(offset + tokenLen).toBe(buffer.byteLength);
+    return tokenLen > 0 ? new TextDecoder().decode(new Uint8Array(buffer, offset, tokenLen)) : null;
+}
+
+describe('POST /api/characters/query - the freshness token (token / ifToken)', () => {
+    /** @param {string} name */
+    const cardFor = (name) => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+    test('without search: the same token answers unchanged until a write, and a write gets a new token and the new rows', async () => {
+        await seedCharacter('Alice.png');
+        const request = { page: 1, pageSize: 10 };
+
+        const first = await (await postJson('/api/characters/query', request)).json();
+        expect(typeof first.token).toBe('string');
+        expect(typeof first.seq).toBe('number');
+
+        const again = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
+        expect(again).toEqual({ seq: first.seq, token: first.token, unchanged: true });
+
+        await seedCharacter('Bob.png');
+        const afterWrite = await (await postJson('/api/characters/query', { ...request, ifToken: first.token })).json();
+        expect(afterWrite.unchanged).toBeUndefined();
+        expect(afterWrite.token).not.toBe(first.token);
+        expect(afterWrite.rows.map(r => r.avatar).sort()).toEqual(['Alice.png', 'Bob.png']);
+    });
+
+    test('a search that lands between a write and the index catching up is not answered unchanged once the index has caught up', async () => {
+        await seedCharacterWithFile('Vampire0.png', cardFor('Vampire 0'));
+        const request = { filter: { search: 'vampire' }, sort: { field: 'search' }, page: 1, pageSize: 50 };
+        // Builds the index.
+        await postJson('/api/characters/query', request);
+
+        // The index catches up about once a second, so a search right after a write usually doesn't have it yet.
+        let behind = null;
+        let avatar = null;
+        for (let i = 1; i <= 20 && !behind; i++) {
+            avatar = `Vampire${i}.png`;
+            await seedCharacterWithFile(avatar, cardFor(`Vampire ${i}`));
+            const body = await (await postJson('/api/characters/query', request)).json();
+            if (!body.rows.some(r => r.avatar === avatar)) behind = body;
+        }
+        expect(behind).not.toBeNull();
+
+        let caughtUp;
+        const deadline = Date.now() + 5000;
+        do {
+            await new Promise(resolve => setTimeout(resolve, 50));
+            caughtUp = await (await postJson('/api/characters/query', request)).json();
+        } while (!caughtUp.rows.some(r => r.avatar === avatar) && Date.now() < deadline);
+        expect(caughtUp.rows.map(r => r.avatar)).toContain(avatar);
+        // The db's seq didn't move while the index caught up; that alone used to be the whole check.
+        expect(caughtUp.seq).toBe(behind.seq);
+
+        // ifSeq, the old check, isn't a freshness check any more: it would call this unchanged.
+        const withSeq = await (await postJson('/api/characters/query', { ...request, ifSeq: behind.seq })).json();
+        expect(withSeq.unchanged).toBeUndefined();
+        expect(withSeq.rows.map(r => r.avatar)).toContain(avatar);
+
+        expect(typeof behind.token).toBe('string');
+
+        const withToken = await (await postJson('/api/characters/query', { ...request, ifToken: behind.token })).json();
+        expect(withToken.unchanged).toBeUndefined();
+        expect(withToken.rows.map(r => r.avatar)).toContain(avatar);
+        expect(withToken.token).toBe(caughtUp.token);
+        expect(withToken.token).not.toBe(behind.token);
+
+
+        const current = await (await postJson('/api/characters/query', { ...request, ifToken: caughtUp.token })).json();
+        expect(current).toEqual({ seq: caughtUp.seq, token: caughtUp.token, unchanged: true });
+    }, 30000);
+
+    test('with includeGroups there is no token and ifToken is never answered unchanged, on either path', async () => {
+        await seedCharacterWithFile('Vampire.png', cardFor('Vampire Lord'));
+        await seedGroup('g1', { name: 'Vampire Coven' });
+        for (const filter of [{ includeGroups: true }, { includeGroups: true, search: 'vampire' }]) {
+            const request = { filter, page: 1, pageSize: 10 };
+            const first = await (await postJson('/api/characters/query', request)).json();
+            expect(first.token).toBeNull();
+            const withoutGroups = await (await postJson('/api/characters/query', { ...request, filter: { ...filter, includeGroups: false } })).json();
+            const again = await (await postJson('/api/characters/query', { ...request, ifToken: withoutGroups.token })).json();
+            expect(again.unchanged).toBeUndefined();
+            expect(again.rows.length).toBe(2);
+        }
+    }, 20000);
+
+    test('hash mode carries the token in its trailer and answers a matching ifToken with the JSON unchanged stub', async () => {
+        await seedCharacterWithFile('Vampire.png', cardFor('Vampire Lord'));
+        for (const filter of [{}, { search: 'vampire' }]) {
+            const request = { filter, page: 1, pageSize: 10, want: ['hashes', 'total'] };
+            const json = await (await postJson('/api/characters/query', { ...request, want: ['rows', 'total'] })).json();
+            const response = await postJson('/api/characters/query', request);
+            expect(response.headers.get('content-type')).toContain('application/octet-stream');
+            const token = hashResponseToken(await response.arrayBuffer());
+            expect(token).toBe(json.token);
+
+            const again = await postJson('/api/characters/query', { ...request, ifToken: token });
+            expect(await again.json()).toEqual({ seq: json.seq, token, unchanged: true });
+        }
+    }, 20000);
+});
+
 describe('POST /api/characters/query - sort.field "random" (design doc §5.3, decisions 8/10/13)', () => {
     test('with a seed, orders deterministically and consistently across repeated calls', async () => {
         for (let i = 0; i < 8; i++) {

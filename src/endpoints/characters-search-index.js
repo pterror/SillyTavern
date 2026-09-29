@@ -9,7 +9,7 @@ import {
 import { processCharacter } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter, stringToSortKey } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
-import { getSearchIndex, rebuildSearchIndex, startSearchWorker } from './search-index-coordinator.js';
+import { getSearchIndex, rebuildSearchIndex, startSearchWorker, CHARACTERS_INDEX_SEQ_META_KEY, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY } from './search-index-coordinator.js';
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 import { timePhase } from '../search-timing.js';
@@ -73,8 +73,8 @@ const TANTIVY_FIELD_LABELS = {
 // Bounds peak memory during (re)build regardless of library size.
 const INDEX_BUILD_BATCH_SIZE = 500;
 
-const TANTIVY_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
-const TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
+const TANTIVY_INDEX_SEQ_META_KEY = CHARACTERS_INDEX_SEQ_META_KEY;
+const TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY;
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
 
 const CHECKPOINT_EVERY_N_BATCHES = 20;
@@ -554,6 +554,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         isOpen: () => index !== null,
         /** The change-log seq the index covers. */
         seq: () => seqCursor,
+        /** The tag-rename-log seq the index covers. */
+        tagNameSeq: () => tagNameCursor,
         /** Releases the writer's on-disk lock. */
         close() {
             if (writer) {
@@ -570,21 +572,24 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
 // narrow the matches before `maxRows` caps them: a hit they rule out never takes a place in the capped list.
 // `world` has no equivalent: no field for it exists in the tantivy schema (buildSchema()'s fast/filter field
 // lists), so it isn't applied here and a caller has to check it itself.
+// `position` is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
 async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}) {
     const { fav, tags, excludeIds, ids } = filter;
     const engine = await timePhase('chars_index_get', () => resolveSearchEngine());
 
     if (engine.tier === 'unavailable') {
-        return { hits: [], total: 0, backend: 'unavailable' };
+        return { hits: [], total: 0, backend: 'unavailable', position: null };
     }
 
     const tantivyIndex = await timePhase('chars_index_get', () => getSearchIndex(handle, directories, 'characters'));
     if (!tantivyIndex) {
-        return { hits: [], total: 0, backend: 'unavailable' };
+        return { hits: [], total: 0, backend: 'unavailable', position: null };
     }
     const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+    // Nothing below awaits, so the reader can't move between here and the search.
+    const position = tantivyIndex.position ?? null;
     if (expandedTags?.none) {
-        return { hits: [], total: 0, backend: 'tantivy' };
+        return { hits: [], total: 0, backend: 'tantivy', position };
     }
     const query = timePhase('chars_query_build', () => {
         const { tantivy } = engine;
@@ -614,11 +619,11 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}
         return q;
     });
     if (!query) {
-        return { hits: [], total: 0, backend: 'tantivy' };
+        return { hits: [], total: 0, backend: 'tantivy', position };
     }
     const boundedMaxRows = Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
     const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'chars' });
-    return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, score: r.score }))), total, backend: 'tantivy' };
+    return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, score: r.score }))), total, backend: 'tantivy', position };
 }
 
 // A matched id that can no longer be resolved (deleted, or corrupt) is silently dropped.
@@ -642,8 +647,8 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
 
 // Id-only counterpart to searchCharacters() - no per-hit disk read, for a caller that resolves rows itself.
 export async function searchCharacterIds(handle, directories, searchTerm, maxRows, filter = {}) {
-    const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, filter);
-    return timePhase('chars_ids', () => ({ ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend }));
+    const { hits, total, backend, position } = await runIdSearch(handle, directories, searchTerm, maxRows, filter);
+    return timePhase('chars_ids', () => ({ ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend, position }));
 }
 
 // fav_name_sort_key is encoded so ascending order gives favorites-first-then-alpha, whatever order was asked for.
@@ -653,9 +658,10 @@ export function tantivySortOrder(sortField, sortOrder) {
 
 /**
  * One window of the matches in fast-field order. `hits[].order` is tantivy's sort value (see fastFieldOrderValue()).
- * Returns null when sortField has no fast-field equivalent; caller uses the SQL sort path for those.
+ * Returns null when sortField has no fast-field equivalent; caller uses the SQL sort path for those. `position`
+ * is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
  * @param {{ fav?: boolean, tags?: object, excludeIds?: string[], ids?: string[] }} [filter]
- * @returns {Promise<{ hits: { id: string, order: number }[], total: number, backend: string } | null>}
+ * @returns {Promise<{ hits: { id: string, order: number }[], total: number, backend: string, position: import('./search-index-coordinator.js').SearchIndexPosition | null } | null>}
  */
 export async function searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, offset, limit, filter = {}) {
     const { fav, tags, excludeIds, ids } = filter;
@@ -663,12 +669,14 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
     if (!tantivySortField) return null;
 
     const engine = await timePhase('chars_index_get', () => resolveSearchEngine());
-    if (engine.tier === 'unavailable') return { hits: [], total: 0, backend: 'unavailable' };
+    if (engine.tier === 'unavailable') return { hits: [], total: 0, backend: 'unavailable', position: null };
 
     const tantivyIndex = await timePhase('chars_index_get', () => getSearchIndex(handle, directories, 'characters'));
-    if (!tantivyIndex) return { hits: [], total: 0, backend: 'unavailable' };
+    if (!tantivyIndex) return { hits: [], total: 0, backend: 'unavailable', position: null };
     const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
-    if (expandedTags?.none) return { hits: [], total: 0, backend: 'tantivy' };
+    // Nothing below awaits, so the reader can't move between here and the search.
+    const position = tantivyIndex.position ?? null;
+    if (expandedTags?.none) return { hits: [], total: 0, backend: 'tantivy', position };
 
     const query = timePhase('chars_query_build', () => {
         const { tantivy } = engine;
@@ -697,7 +705,7 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
         }
         return q;
     });
-    if (!query) return { hits: [], total: 0, backend: 'tantivy' };
+    if (!query) return { hits: [], total: 0, backend: 'tantivy', position };
 
     // The exact count costs about 1 ms on top of the sorted window; the binding offers no cheaper estimate.
     const { results, total } = runTantivySearch(tantivyIndex.index, query, limit, {
@@ -707,7 +715,21 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
         count: true,
         timingLabel: 'chars',
     });
-    return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, order: /** @type {number} */ (r.order) }))), total, backend: 'tantivy' };
+    return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, order: /** @type {number} */ (r.order) }))), total, backend: 'tantivy', position };
+}
+
+/**
+ * The characters index's position as searches read it now (search-index-coordinator.js), or null when it isn't
+ * known or there is no index.
+ * @param {string} handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {Promise<import('./search-index-coordinator.js').SearchIndexPosition | null>}
+ */
+export async function getCharacterIndexPosition(handle, directories) {
+    const engine = await resolveSearchEngine();
+    if (engine.tier === 'unavailable') return null;
+    const tantivyIndex = await getSearchIndex(handle, directories, 'characters');
+    return tantivyIndex?.position ?? null;
 }
 
 /**
