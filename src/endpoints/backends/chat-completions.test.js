@@ -135,6 +135,8 @@ const { registerServerTool, unregisterServerTool } = await import('../../server-
 const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
 const { encodeTextByLocalTokenizerType, getTiktokenTokenizer } = await import('../tokenizers.js');
 const { tokenKeyHash, TOKEN_KEY_KINDS } = await import('../../token-count-store.js');
+const { getMessageTreeDb } = await import('../../message-tree-db.js');
+const { resolveTokenizer, tokenizerIdentity } = await import('../../tokenizer-resolve.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-chat-completions-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -1036,6 +1038,197 @@ async function run() {
             [{ identity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'hi'), ids: [1104, 1105] }],
             'the bias entry\'s ids are in the same tokenCountRows',
         );
+    }
+
+    // --- write-back: /generate stores its counts and ids once the backend has the request ---
+    /** Rows stored under `identity` in token_counts and token_ids together, and their newest `last_used`. */
+    async function storedRowsUnder(identity) {
+        const db = await getMessageTreeDb(directories);
+        const counts = /** @type {{ n: number, newest: number | null }} */ (db.get('SELECT COUNT(*) AS n, MAX(last_used) AS newest FROM token_counts WHERE identity = @identity', { identity }));
+        const ids = /** @type {{ n: number, newest: number | null }} */ (db.get('SELECT COUNT(*) AS n, MAX(last_used) AS newest FROM token_ids WHERE identity = @identity', { identity }));
+        return { rows: Number(counts.n) + Number(ids.n), newest: Math.max(Number(counts.newest ?? 0), Number(ids.newest ?? 0)) };
+    }
+
+    let writeBackChats = 0;
+    /**
+     * A new chat and a custom llama.cpp URL whose `/props` names a model file of its own, so its identity has no
+     * rows yet. `onChat(req, res, body)` answers `/chat/completions`. Returns the backend, the identity and the
+     * request body.
+     */
+    async function setUpLlamaCppWriteBack(onChat, { tools = false } = {}) {
+        const n = ++writeBackChats;
+        const modelPath = `/models/write-back-${n}.gguf`;
+        const chat = `write-back-chat-${n}`;
+        await saveChatToTree(directories, ownerId, chat, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: `Welcome to the orchard, visitor ${n}.`, send_date: 1, extra: {} },
+        ]);
+        const leafId = (await loadBranch(directories, ownerId, chat)).branch.leaf_id;
+        const backend = await startFakeBackend((req, res, body) => {
+            if (req.url === '/chat/completions') return onChat(req, res, body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (req.url.split('?')[0] === '/props') {
+                return res.end(JSON.stringify({ default_generation_settings: { n_ctx: 4096 }, total_slots: 1, build_info: 'b1-abc', model_path: modelPath }));
+            }
+            if (req.url === '/tokenize') {
+                return res.end(JSON.stringify({ tokens: Array.from(Buffer.from(String(JSON.parse(body).content))).map(byte => 1000 + byte) }));
+            }
+            res.end('{}');
+        }, { answersProps: true });
+        const settings = buildSettingsFixture();
+        settings.oai_settings.custom_url = backend.url;
+        settings.oai_settings.bias_preset_selected = 'Bias';
+        settings.oai_settings.bias_presets = { Bias: [{ id: 'a', text: 'pear', value: -5 }] };
+        if (tools) {
+            settings.oai_settings.function_calling = true;
+            settings.oai_settings.custom_prompt_post_processing = '';
+        }
+        writeAllSettings(directories, settings);
+        return {
+            backend,
+            identity: `llamacpp:${JSON.stringify([modelPath, 'b1-abc'])}`,
+            body: { owner_id: ownerId, character_avatar: avatar, node_id: leafId, type: 'normal', user_message: `Any pears, Rex? (${n})`, stream: false },
+        };
+    }
+
+    // (a-7) the shared dispatch block: nothing is stored when the backend receives the request, and the counts
+    // and the bias ids are stored after.
+    {
+        let whenReceived = null;
+        let identityForCase = null;
+        const { backend, identity, body } = await setUpLlamaCppWriteBack(async (_req, res) => {
+            whenReceived = await storedRowsUnder(identityForCase);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Soon.' } }] }));
+        });
+        identityForCase = identity;
+        try {
+            const { status } = await postGenerate(buildTestApp(), body);
+            assert.equal(status, 200);
+            assert.ok(whenReceived, 'the backend received the generation');
+            assert.equal(whenReceived.rows, 0, 'nothing stored when the backend received its request');
+            await waitFor(async () => (await storedRowsUnder(identity)).rows > 0);
+            const db = await getMessageTreeDb(directories);
+            assert.ok(db.get('SELECT 1 AS found FROM token_ids WHERE identity = @identity AND text_hash = @hash', { identity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'pear') }), 'the bias entry\'s ids are stored');
+        } finally {
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
+    // (a-8) the backend request throws before it is sent: the generation fails and nothing is stored.
+    {
+        let received = 0;
+        const { backend, identity, body } = await setUpLlamaCppWriteBack((_req, res) => {
+            received++;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Soon.' } }] }));
+        });
+        const request = http.request;
+        let refused = 0;
+        http.request = function (url, ...rest) {
+            if (String(url).endsWith('/chat/completions')) {
+                refused++;
+                throw new Error('refused before sending');
+            }
+            return request.call(this, url, ...rest);
+        };
+        try {
+            const { status } = await postGenerate(buildTestApp(), body);
+            assert.equal(status, 502, 'the generation failed');
+            assert.equal(refused, 1, 'the backend request threw');
+            assert.equal(received, 0, 'the backend never received the generation');
+            await new Promise(resolve => setTimeout(resolve, 200));
+            assert.equal((await storedRowsUnder(identity)).rows, 0, 'nothing stored');
+        } finally {
+            http.request = request;
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
+    // (a-9) a server tool round: the rebuilt request's rows are stored after its backend request too. The tool
+    // waits for the first request's rows, then clears their `last_used`; the second request finds them still
+    // cleared and they are marked used after it.
+    {
+        let chats = 0;
+        let whenSecondReceived = null;
+        let identityForCase = null;
+        registerServerTool({
+            id: 'test-tool:write_back_probe',
+            name: 'write_back_probe',
+            description: 'Probes the token tables.',
+            parameters: { type: 'object', properties: {} },
+            invoke: async () => {
+                await waitFor(async () => (await storedRowsUnder(identityForCase)).rows > 0);
+                const db = await getMessageTreeDb(directories);
+                db.run('UPDATE token_counts SET last_used = 0 WHERE identity = @identity', { identity: identityForCase });
+                db.run('UPDATE token_ids SET last_used = 0 WHERE identity = @identity', { identity: identityForCase });
+                return 'probed';
+            },
+        });
+        const { backend, identity, body } = await setUpLlamaCppWriteBack(async (_req, res) => {
+            chats++;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (chats === 1) {
+                return res.end(JSON.stringify({ choices: [{ message: {
+                    role: 'assistant', content: null,
+                    tool_calls: [{ id: 'call_probe', type: 'function', function: { name: 'write_back_probe', arguments: '{}' } }],
+                } }] }));
+            }
+            whenSecondReceived = await storedRowsUnder(identityForCase);
+            res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Probed.' } }] }));
+        }, { tools: true });
+        identityForCase = identity;
+        try {
+            const { status, data } = await postGenerate(buildTestApp(), body);
+            assert.equal(status, 200);
+            assert.equal(data.choices?.[0]?.message?.content, 'Probed.');
+            assert.equal(chats, 2, 'the tool round sent a second request');
+            assert.equal(whenSecondReceived.newest, 0, 'the rebuilt request\'s rows weren\'t marked used before its backend request');
+            await waitFor(async () => (await storedRowsUnder(identity)).newest > 0);
+        } finally {
+            backend.server.close();
+            unregisterServerTool('test-tool:write_back_probe');
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
+    // (a-10) a provider function (Claude, through its reverse proxy): nothing stored when the backend receives
+    // the request, the counts stored after. The model is gpt-4o because it maps to a local tokenizer (tiktoken)
+    // without a tokenizer map in the test data; a Claude model counts by the estimate and stores nothing.
+    {
+        const claudeChat = 'write-back-claude-chat';
+        await saveChatToTree(directories, ownerId, claudeChat, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: 'The Claude orchard is open.', send_date: 1, extra: {} },
+        ]);
+        const leafId = (await loadBranch(directories, ownerId, claudeChat)).branch.leaf_id;
+        const identity = await tokenizerIdentity(await resolveTokenizer({ api: 'openai', source: 'claude', model: 'gpt-4o' }, { directories }));
+        assert.ok(identity, 'gpt-4o has a tokenizer identity');
+        let whenReceived = null;
+        const backend = await startFakeBackend(async (_req, res) => {
+            whenReceived = await storedRowsUnder(identity);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ content: [{ type: 'text', text: 'Open all day.' }] }));
+        });
+        const settings = buildSettingsFixture();
+        Object.assign(settings.oai_settings, { chat_completion_source: 'claude', claude_model: 'gpt-4o', reverse_proxy: backend.url, proxy_password: 'test-claude-proxy-password' });
+        writeAllSettings(directories, settings);
+        try {
+            const before = await storedRowsUnder(identity);
+            const { status } = await postGenerate(buildTestApp(), {
+                owner_id: ownerId, character_avatar: avatar, node_id: leafId,
+                type: 'normal', user_message: 'When does the Claude orchard close?', stream: false,
+            });
+            assert.equal(status, 200);
+            assert.ok(whenReceived, 'the backend received the generation');
+            assert.equal(whenReceived.rows, before.rows, 'nothing stored when the backend received its request');
+            await waitFor(async () => (await storedRowsUnder(identity)).rows > before.rows);
+        } finally {
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
     }
 
     // (b) a failed backend response (non-2xx) does NOT append an assistant reply (the user message,
