@@ -270,6 +270,19 @@ function readOwnerLastCreatedAtSync(db, ownerId) {
 }
 
 /**
+ * Nothing reads `idx_messages_owner_created_at`; it only slows every message write.
+ * @param {Directories} directories
+ * @returns {Promise<boolean>} Whether this call dropped it.
+ */
+export async function dropOwnerCreatedAtIndex(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    if (!entry.db.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'index\' AND name = \'idx_messages_owner_created_at\'')) return false;
+    entry.db.exec('DROP INDEX IF EXISTS idx_messages_owner_created_at');
+    return true;
+}
+
+/**
  * One page of owner ids with no recorded kind, in id order, after `after` (from the start when null).
  * @param {Directories} directories
  * @param {string | null} after

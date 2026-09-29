@@ -319,6 +319,19 @@ describe('date_last_chat on a write that only adds rows', () => {
         const { MIGRATION_PASSES } = await import('../src/metadata-migration-coordinator.js');
         expect(MIGRATION_PASSES).not.toContain('buildTreeOwnerCreatedAtIndex');
     });
+
+    test('a migration pass drops a leftover (owner, created_at) index, and does nothing once it\'s gone', async () => {
+        const db = await tree.getDbHandle(directories);
+        db.exec('CREATE INDEX IF NOT EXISTS idx_messages_owner_created_at ON messages(owner_id, created_at)');
+        const hasIndex = () => !!db.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'index\' AND name = \'idx_messages_owner_created_at\'');
+        expect(hasIndex()).toBe(true);
+
+        const { MIGRATION_PASSES } = await import('../src/metadata-migration-coordinator.js');
+        expect(MIGRATION_PASSES).toContain('dropTreeOwnerCreatedAtIndex');
+        expect(await metadataDb.dropTreeOwnerCreatedAtIndex(directories)).toEqual({ batches: 1, rowsChanged: 0 });
+        expect(hasIndex()).toBe(false);
+        expect(await metadataDb.dropTreeOwnerCreatedAtIndex(directories)).toEqual({ batches: 0, rowsChanged: 0 });
+    });
 });
 
 describe('a group\'s chat stats follow every write to its messages', () => {
