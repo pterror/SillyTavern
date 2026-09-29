@@ -1634,9 +1634,10 @@ export async function listRecentBranches(directories, max) {
     // Bounded independently of `limit` since callers may pass MAX_SAFE_INTEGER.
     const shortlist = Math.min(limit, 500);
 
-    const owners = /** @type {{ owner_id: string, t: number }[]} */ (entry.db.all(
+    const owners = /** @type {{ owner_id: string, t: number }[]} */ (entry.db.readBounded(
         'SELECT owner_id, MAX(created_at) AS t FROM messages GROUP BY owner_id ORDER BY t DESC LIMIT @shortlist',
         { shortlist },
+        shortlist,
     ));
 
     /** @type {BranchView[]} */
