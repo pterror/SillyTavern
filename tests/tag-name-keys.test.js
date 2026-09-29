@@ -43,11 +43,12 @@ afterEach(() => {
 /**
  * @param {string} avatar
  * @param {string[]} tags
+ * @param {{ fromImport?: boolean }} [options] As for upsertCharacterFromWrite().
  */
-async function writeCharacter(avatar, tags) {
+async function writeCharacter(avatar, tags, options = {}) {
     const name = path.parse(avatar).name;
     const card = { name, spec: 'chara_card_v2', spec_version: '2.0', data: { name, tags, creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } };
-    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card));
+    await metadataDb.upsertCharacterFromWrite(directories, avatar, JSON.stringify(card), null, null, options);
 }
 
 /**
@@ -235,7 +236,7 @@ describe('while name keys are unfilled', () => {
     test('a card still in the batch-import buffer is written to the table with its held names', async () => {
         await makeTagsLegacy();
         await metadataDb.beginBatchImport(directories);
-        await writeCharacter('Bob.png', ['Pending']);
+        await writeCharacter('Bob.png', ['Pending'], { fromImport: true });
         expect(withRawDb(db => db.prepare('SELECT 1 FROM characters WHERE id = ?').get('Bob.png'))).toBeUndefined();
 
         const { heldTagNames } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');

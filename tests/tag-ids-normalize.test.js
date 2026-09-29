@@ -200,7 +200,7 @@ describe('server: shallow_json.tag_ids is written sorted', () => {
 
     test('a batch-import row tagged while still buffered', async () => {
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'), null, null, { fromImport: true });
         await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['tb', 'ta'] });
         await metadataDb.endBatchImport(directories);
         expect(readShallow('Bob.png').shallow.tag_ids).toEqual(['ta', 'tb']);
@@ -305,7 +305,7 @@ describe('server: one-time sort of existing shallow_json.tag_ids (normalizeChara
     test('streams the characters table in bounded batches, never an unbounded read', async () => {
         await metadataDb.beginBatchImport(directories);
         for (let i = 0; i < 1001; i++) {
-            await metadataDb.upsertCharacterFromWrite(directories, `c${String(i).padStart(5, '0')}.png`, card(`c${i}`));
+            await metadataDb.upsertCharacterFromWrite(directories, `c${String(i).padStart(5, '0')}.png`, card(`c${i}`), null, null, { fromImport: true });
         }
         await metadataDb.endBatchImport(directories);
         withRawDb(db => db.prepare('UPDATE characters SET shallow_json = json_set(shallow_json, \'$.tag_ids\', json(\'["tb","ta"]\'))').run());

@@ -241,7 +241,7 @@ describe('existence follows the row', () => {
 
             await metadataDb.beginBatchImport(directories);
             try {
-                await metadataDb.upsertCharacterFromWrite(directories, `${first}.png`, JSON.stringify({ name: 'Ghost', spec: 'chara_card_v2', data: { name: 'Ghost' } }));
+                await metadataDb.upsertCharacterFromWrite(directories, `${first}.png`, JSON.stringify({ name: 'Ghost', spec: 'chara_card_v2', data: { name: 'Ghost' } }), null, null, { fromImport: true });
                 expect(await metadataDb.characterRowExists(directories, `${first}.png`)).toBe(false);
 
                 expect(characters.mintCharacterId(directories)).toBe(second);

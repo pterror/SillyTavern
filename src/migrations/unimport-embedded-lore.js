@@ -597,7 +597,8 @@ async function retryPending(directories, { log, writeCard }) {
         value = serializeNotice(previous, merged);
     }
     if (anySettled || value !== undefined) {
-        // A settled row is deleted here; the card write it stands for may still sit in an open batch import's buffer.
+        // The pass's own card writes are already in the table (only imports wait in the batch buffer); this commits
+        // an open import's buffered rows before the settled rows are deleted.
         await flushBatchImport(directories);
         await commitMigrationSettled(directories, NOTICE_ID, noticeKey(NOTICE_ID), value);
     }
@@ -702,8 +703,8 @@ export async function runOnceAtBoot(directories, options = {}) {
             onFailed: avatar => addMigrationPending(directories, NOTICE_ID, avatar),
             writeCard,
         });
-        // The pass's card writes may still sit in an open batch import's buffer; the markers below must not
-        // outlive them.
+        // The pass's own card writes are already in the table (only imports wait in the batch buffer); this commits
+        // an open import's buffered rows before the markers below are written.
         await flushBatchImport(directories);
     } catch (err) {
         log(color.red(`[unimport-embedded-lore] (${directories.root}) Boot migration run failed, will retry next boot: ${err.message}`));

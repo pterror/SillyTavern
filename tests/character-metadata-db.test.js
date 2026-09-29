@@ -226,7 +226,7 @@ describe('setCharacterDateAdded', () => {
 
     test('patches a row still sitting in the batch-import pending buffer, not yet flushed to the table', async () => {
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Carol.png', cardJson({ name: 'Carol', data: { name: 'Carol', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
+        await metadataDb.upsertCharacterFromWrite(directories, 'Carol.png', cardJson({ name: 'Carol', data: { name: 'Carol', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), null, null, { fromImport: true });
 
         await metadataDb.setCharacterDateAdded(directories, 'Carol.png', 7000);
         await metadataDb.endBatchImport(directories);
@@ -415,7 +415,7 @@ describe('batch import mode', () => {
         await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
 
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null, null, { fromImport: true });
 
         // Not written yet - still buffered.
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
@@ -433,7 +433,7 @@ describe('batch import mode', () => {
 
         const total = 520;
         for (let i = 0; i < total; i++) {
-            await metadataDb.upsertCharacterFromWrite(directories, `Bulk${i}.png`, cardJson({ name: `Bulk${i}`, data: { name: `Bulk${i}`, tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }));
+            await metadataDb.upsertCharacterFromWrite(directories, `Bulk${i}.png`, cardJson({ name: `Bulk${i}`, data: { name: `Bulk${i}`, tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } }), null, null, { fromImport: true });
         }
 
         // Never called endBatchImport() yet - if flushing only ever happened there, none of this would be
@@ -459,7 +459,7 @@ describe('batch import mode', () => {
         await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
 
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), null, null, { fromImport: true });
 
         // Still buffered, not in the table yet - the exact moment the client's post-import tag assign lands.
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
@@ -479,7 +479,7 @@ describe('batch import mode', () => {
         expect(JSON.parse(row.shallow_json).tag_ids).toEqual(['tag1']);
     });
 
-    // Regression: an edit of a character that already has a row is buffered too, and at flush writeRowSync() keeps
+    // Regression: a re-import of a character that already has a row is buffered too, and at flush writeRowSync() keeps
     // the table's tags for an existing row, so a tag change made into the buffer was dropped after returning 'ok'.
     describe('a tag change on a character that already has a row lands, with its buffered edit', () => {
         const editedCardJson = (/** @type {string} */ name, /** @type {string[]} */ tags = []) => storedCardJson({ name, data: { name, tags, creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
@@ -504,7 +504,7 @@ describe('batch import mode', () => {
             await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
             await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
             await metadataDb.beginBatchImport(directories);
-            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'));
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'), null, null, { fromImport: true });
 
             expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
 
@@ -516,7 +516,7 @@ describe('batch import mode', () => {
             await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
             await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
             await metadataDb.beginBatchImport(directories);
-            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'));
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'), null, null, { fromImport: true });
 
             expect(await metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1')).toBe('ok');
 
@@ -527,7 +527,7 @@ describe('batch import mode', () => {
             await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
             await metadataDb.assignEntityTag(directories, 'Bob.png', 'old');
             await metadataDb.beginBatchImport(directories);
-            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'));
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby'), null, null, { fromImport: true });
 
             expect(await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['a', 'b'] })).toEqual({ 'Bob.png': 'ok' });
 
@@ -540,7 +540,7 @@ describe('batch import mode', () => {
             await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
             await metadataDb.assignEntityTag(directories, 'Bob.png', 'keep');
             await metadataDb.beginBatchImport(directories);
-            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby', ['elan']));
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', editedCardJson('Bobby', ['elan']), null, null, { fromImport: true });
 
             const { tagIds, heldTagNames } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
             expect(tagIds).toEqual(['elan']);
@@ -555,13 +555,185 @@ describe('batch import mode', () => {
             await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', editedCardJson('Robert'));
             await metadataDb.assignEntityTag(directories, 'Robert.png', 'keep');
             await metadataDb.beginBatchImport(directories);
-            await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', editedCardJson('Rob'));
+            await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', editedCardJson('Rob'), null, null, { fromImport: true });
 
             await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
 
             await expectLanded('Robert.png', 'Rob', ['keep', 'tag1']);
             expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
             expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual([]);
+        });
+    });
+});
+
+describe('a user write during an open batch import lands in the table right away, with the character\'s buffered import', () => {
+    const named = (/** @type {string} */ name, /** @type {string[]} */ tags = []) => storedCardJson({ name, data: { name, tags, creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
+
+    /**
+     * Opens a batch import and buffers an import of `avatar`, with date_added 7000 and `tags` assigned the way the
+     * import path assigns a card's own tags.
+     * @param {string} avatar
+     * @param {string} name
+     * @param {string[]} [tags] Tag ids, each defined with its id as its name.
+     */
+    async function bufferImport(avatar, name, tags = []) {
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
+        if (tags.length > 0) await metadataDb.saveTagDefinitions(directories, tags.map(id => ({ id, name: id })));
+        await metadataDb.beginBatchImport(directories);
+        await metadataDb.upsertCharacterFromWrite(directories, avatar, named(name, tags), null, null, { fromImport: true });
+        await metadataDb.setCharacterDateAdded(directories, avatar, 7000);
+        if (tags.length > 0) expect((await metadataDb.seedCardTagsForSingleCharacter(directories, avatar)).tagIds.sort()).toEqual(tags);
+        expect(await metadataDb.getCharacterMetadataRow(directories, avatar)).toBeUndefined();
+    }
+
+    /**
+     * `check` holds before the batch import ends and after it.
+     * @param {() => Promise<void>} check
+     */
+    async function expectBeforeAndAfterEnd(check) {
+        await check();
+        await metadataDb.endBatchImport(directories);
+        await check();
+    }
+
+    test('upsertCharacterFromWrite', async () => {
+        await bufferImport('Bob.png', 'Bob');
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', named('Bobby'));
+
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+            expect(row.name).toBe('Bobby');
+            expect(row.date_added).toBe(7000);
+        });
+    });
+
+    test('upsertCharacterFromWrite keeps the buffered import\'s tags', async () => {
+        await bufferImport('Bob.png', 'Bob', ['tag1']);
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', named('Bobby'));
+
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+            expect(row.name).toBe('Bobby');
+            expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
+            expect(JSON.parse(row.shallow_json).tag_ids).toEqual(['tag1']);
+        });
+    });
+
+    test('upsertCharacterFromWrite on a character with no buffered import', async () => {
+        await metadataDb.beginBatchImport(directories);
+
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', named('Bob'));
+
+        await expectBeforeAndAfterEnd(async () => {
+            expect((await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).name).toBe('Bob');
+        });
+    });
+
+    test('setCharacterFav', async () => {
+        await bufferImport('Bob.png', 'Bob');
+
+        expect(await metadataDb.setCharacterFav(directories, 'Bob.png', true)).toBe(true);
+
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+            expect(row.fav).toBe(1);
+            expect(row.date_added).toBe(7000);
+        });
+    });
+
+    test('setCharacterAllowGlobalStyles', async () => {
+        await bufferImport('Bob.png', 'Bob');
+
+        expect(await metadataDb.setCharacterAllowGlobalStyles(directories, 'Bob.png', true)).toBe(true);
+
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+            expect(row.allow_global_styles).toBe(1);
+            expect(row.date_added).toBe(7000);
+        });
+    });
+
+    test('setCharacterActiveChat', async () => {
+        await bufferImport('Bob.png', 'Bob');
+
+        expect(await metadataDb.setCharacterActiveChat(directories, 'Bob.png', 'node-1')).toBe(true);
+
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+            expect(row.active_chat).toBe('node-1');
+            expect(row.date_added).toBe(7000);
+        });
+    });
+
+    test('bumpCharacterDateLastChat', async () => {
+        await bufferImport('Bob.png', 'Bob');
+        const before = Date.now();
+
+        await metadataDb.bumpCharacterDateLastChat(directories, 'Bob.png');
+
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+            expect(row.date_last_chat).toBeGreaterThanOrEqual(before);
+            expect(row.date_added).toBe(7000);
+        });
+    });
+
+    test.each([
+        ['assignEntityTag', () => metadataDb.assignEntityTag(directories, 'Bob.png', 'tag3'), ['tag1', 'tag2', 'tag3']],
+        ['unassignEntityTag', () => metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1'), ['tag2']],
+        ['setEntityTagIdsMany', () => metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['tag3'] }), ['tag3']],
+    ])('%s', async (_label, write, expected) => {
+        await bufferImport('Bob.png', 'Bob', ['tag1', 'tag2']);
+
+        await write();
+
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
+            expect(row.date_added).toBe(7000);
+            expect((await metadataDb.getCharacterTagIds(directories, 'Bob.png')).sort()).toEqual(expected);
+            expect([...JSON.parse(row.shallow_json).tag_ids].sort()).toEqual(expected);
+        });
+    });
+
+    test('setEntityTagIdsMany reports a buffered-only character as found', async () => {
+        await bufferImport('Bob.png', 'Bob');
+
+        expect(await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['tag1'] })).toEqual({ 'Bob.png': 'ok' });
+    });
+
+    test('renameCharacterRow to a buffered-only new id', async () => {
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', named('Bob'));
+        await metadataDb.setCharacterDateAdded(directories, 'Bob.png', 5000);
+        await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
+        await metadataDb.beginBatchImport(directories);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', named('Robert'), null, null, { fromImport: true });
+
+        await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
+
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Robert.png');
+            expect(row.name).toBe('Robert');
+            expect(row.date_added).toBe(5000);
+            expect(JSON.parse(row.shallow_json).date_added).toBe(5000);
+            expect(await metadataDb.getCharacterTagIds(directories, 'Robert.png')).toEqual(['tag1']);
+            expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
+        });
+    });
+
+    test('renameCharacterRow from a buffered-only old id carries its date_added and tags, and it doesn\'t come back', async () => {
+        await bufferImport('Bob.png', 'Bob', ['tag1']);
+        await metadataDb.upsertCharacterFromWrite(directories, 'Robert.png', named('Robert'));
+
+        const result = await metadataDb.renameCharacterRow(directories, 'Bob.png', 'Robert.png');
+
+        expect(result).toEqual({ copiedOrphanTagIds: [] });
+        await expectBeforeAndAfterEnd(async () => {
+            const row = await metadataDb.getCharacterMetadataRow(directories, 'Robert.png');
+            expect(row.date_added).toBe(7000);
+            expect(await metadataDb.getCharacterTagIds(directories, 'Robert.png')).toEqual(['tag1']);
+            expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
         });
     });
 });
@@ -612,7 +784,7 @@ describe('content_hash / findCharacterIdByContentHash (bulk-import exact-duplica
         await writeCardFile('Bob.png', { name: 'Bob', data: { name: 'Bob', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: 'tester', character_version: '1.0', creator_notes: '', extensions: { fav: false, world: '' } } });
 
         await metadataDb.beginBatchImport(directories);
-        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef');
+        await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson(), 'deadbeef', null, { fromImport: true });
 
         // Not flushed to the SQL table yet - a lookup that only checked `characters` would miss this.
         expect(await metadataDb.getCharacterMetadataRow(directories, 'Bob.png')).toBeUndefined();
