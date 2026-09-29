@@ -9689,18 +9689,43 @@ function applyGreetingsModelToCharacter(character, model) {
 }
 
 /**
+ * Applies a confirmed greeting op to the character and the pager. Call it only from inside {@link queueGreetingSave}:
+ * the save's CHARACTER_EDITED fires once the save has released its queue slot.
  * `hashes` must be the op response's `hashes`, never recomputed locally.
  * @param {object} character
  * @param {string[]} greetings
  * @param {number|null} defaultIndex
  * @param {number[]} hashes
  */
-async function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes) {
+function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes) {
+    const run = greetingSaveRuns.get(character?.avatar);
+    if (!run) {
+        throw new Error(`applyGreetingOpSuccess: no queued greeting save for ${character?.avatar} is running`);
+    }
     const before = cardToGreetingsModel(character).greetings;
     applyGreetingsModelToCharacter(character, { greetings, defaultIndex });
     setGreetingPagerGreetings(greetings, defaultIndex, hashes);
-    const greetingEdit = findGreetingEdit(before, cardToGreetingsModel(character).greetings);
-    await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(character?.avatar), character: character, greetingEdit } });
+    const after = cardToGreetingsModel(character).greetings;
+    if (!run.character) {
+        run.character = character;
+        run.before = before;
+    }
+    run.after = after;
+    const edit = findGreetingEdit(before, after);
+    if (edit) run.edits.push(edit);
+}
+
+/**
+ * Fires the one CHARACTER_EDITED for a greeting save that applied anything. `greetingEdit` is the save's one
+ * in-place greeting change, null when it made any other kind or more than one; `greetingEdits` lists each op's
+ * in-place change, in order.
+ * @param {GreetingSaveRun} run
+ * @returns {Promise<void>}
+ */
+function emitGreetingSaveEdited(run) {
+    if (!run.character) return Promise.resolve();
+    const greetingEdit = findGreetingEdit(run.before, run.after);
+    return eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(run.character.avatar), character: run.character, greetingEdit, greetingEdits: run.edits } });
 }
 
 /**
@@ -9732,12 +9757,45 @@ function confirmedGreetingsAfterOp(character, op, position, text) {
     return greetings;
 }
 
+/**
+ * @typedef {object} GreetingSaveRun What one queued greeting save applied.
+ * @property {object|null} character Null until the save applies an op.
+ * @property {string[]} before The character's greetings before the save's first applied op.
+ * @property {string[]} after The character's greetings after its last applied op.
+ * @property {{from: string, to: string, index: number}[]} edits Each applied op's in-place greeting change, in order.
+ */
+
 /** @type {Map<string, Promise<void>>} Per character avatar, the tail of its queue of greeting saves; only held while one is queued or in flight. */
 const greetingSaveQueues = new Map();
+
+/** @type {Map<string, GreetingSaveRun>} Per character avatar, the greeting save holding its queue slot. */
+const greetingSaveRuns = new Map();
+
+/** @type {Map<string, Promise<void>>} Per character avatar, settles once the newest queued save's CHARACTER_EDITED has started, or it had none to fire. */
+const greetingEventStarts = new Map();
+
+/**
+ * Keeps `promise` under `key` until it settles, unless something newer has replaced it by then.
+ * @param {Map<string, Promise<void>>} map
+ * @param {string} key
+ * @param {Promise<void>} promise
+ */
+function holdUntilSettled(map, key, promise) {
+    map.set(key, promise);
+    void promise.then(() => {
+        if (map.get(key) === promise) {
+            map.delete(key);
+        }
+    });
+}
 
 /**
  * Runs a greeting save once every earlier greeting save for the same character has finished (and had its result
  * applied), so it reads the preconditions and the confirmed list those left behind rather than the ones before them.
+ * The slot covers only the server writes and the local state update. The save's CHARACTER_EDITED fires after the
+ * slot is released, and starts after the earlier saves' ones have started, so a listener that starts a greeting
+ * save of its own and waits for it queues behind rather than waiting on itself. The returned promise settles once
+ * that event's listeners have finished.
  * @template T
  * @param {string} avatar
  * @param {() => Promise<T>} save
@@ -9745,15 +9803,26 @@ const greetingSaveQueues = new Map();
  */
 function queueGreetingSave(avatar, save) {
     const previous = greetingSaveQueues.get(avatar) ?? Promise.resolve();
-    const run = previous.then(save);
-    const tail = run.then(() => { }, () => { });
-    greetingSaveQueues.set(avatar, tail);
-    void tail.then(() => {
-        if (greetingSaveQueues.get(avatar) === tail) {
-            greetingSaveQueues.delete(avatar);
+    /** @type {GreetingSaveRun} */
+    const record = { character: null, before: [], after: [], edits: [] };
+    const run = previous.then(async () => {
+        greetingSaveRuns.set(avatar, record);
+        try {
+            return await save();
+        } finally {
+            greetingSaveRuns.delete(avatar);
         }
     });
-    return run;
+    const tail = run.then(() => { }, () => { });
+    holdUntilSettled(greetingSaveQueues, avatar, tail);
+
+    const earlierEventsStarted = greetingEventStarts.get(avatar) ?? Promise.resolve();
+    /** @type {Promise<void>} */
+    let emitted = Promise.resolve();
+    const started = Promise.all([tail, earlierEventsStarted]).then(() => { emitted = emitGreetingSaveEdited(record); });
+    holdUntilSettled(greetingEventStarts, avatar, started.then(() => { }, () => { }));
+    const fired = started.then(() => emitted);
+    return run.then(result => fired.then(() => result), error => fired.then(() => { throw error; }));
 }
 
 // In-memory state for the sidebar greeting pager; `hashes` is the post-op per-position precondition hash list.
@@ -9864,7 +9933,7 @@ async function saveGreetingPagerEdit(avatar, character, position, expectedHash, 
     const result = await postGreetingOp('edit', { avatar_url: avatar, position, expected_hash: expectedHash, text });
     if (result.ok) {
         const landed = Number.isInteger(result.position) ? result.position : position;
-        await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', landed, text), result.defaultPosition, result.hashes);
+        applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', landed, text), result.defaultPosition, result.hashes);
         return { position: landed, hash: result.hashes[landed] };
     }
     console.error('Greeting save failed', { avatar, position, status: result.status, reason: result.reason });
@@ -9912,7 +9981,7 @@ async function commitGreetingFieldValue(value) {
         if (value === '') return false;
         const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: greetingPagerState.hashes.length, text: value });
         if (result.ok) {
-            await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', target.position, value), result.defaultPosition, result.hashes);
+            applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', target.position, value), result.defaultPosition, result.hashes);
             if (edit && greetingPagerEdit === edit) {
                 edit.committed = true;
                 edit.hash = result.hashes[target.position];
@@ -10083,7 +10152,7 @@ function openAlternateGreetings() {
                 const newGreetings = array.slice();
                 const [moved] = newGreetings.splice(sourceIndex, 1);
                 newGreetings.splice(insertIndex, 0, moved);
-                await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
+                applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
 
                 await popup.complete(POPUP_RESULT.AFFIRMATIVE);
                 openAlternateGreetings();
@@ -10162,7 +10231,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
 
             const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
             if (result.ok) {
-                await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', rowIndex, text), result.defaultPosition, result.hashes);
+                applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', rowIndex, text), result.defaultPosition, result.hashes);
                 return;
             }
             console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
@@ -10203,7 +10272,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 const result = await queueGreetingSave(avatar, async () => {
                     const added = await postGreetingOp('add', { avatar_url: avatar, position: addedIndex, expected_length: greetingPagerState.hashes.length, text: value });
                     if (added.ok) {
-                        await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', addedIndex, value), added.defaultPosition, added.hashes);
+                        applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', addedIndex, value), added.defaultPosition, added.hashes);
                     }
                     return added;
                 });
@@ -10276,7 +10345,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
             }
             const newGreetings = array.slice();
             newGreetings.splice(index, 1);
-            await applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
+            applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
 
             // Sync and reopen
             await popup.complete(POPUP_RESULT.AFFIRMATIVE);
@@ -10333,7 +10402,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                     : t`Failed to set the default greeting.`, t`Default not changed`);
                 return;
             }
-            await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
+            applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
 
             await popup.complete(POPUP_RESULT.AFFIRMATIVE);
             openAlternateGreetings();
@@ -10362,7 +10431,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
                 return;
             }
-            await applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
+            applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
 
             await popup.complete(POPUP_RESULT.AFFIRMATIVE);
             openAlternateGreetings();
@@ -10889,7 +10958,7 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
             defaultIndex = result.defaultPosition;
             const character = charactersStore.get(avatar);
             if (character) {
-                await applyGreetingOpSuccess(character, greetings.slice(), defaultIndex, hashes);
+                applyGreetingOpSuccess(character, greetings.slice(), defaultIndex, hashes);
             }
             return true;
         };
@@ -12387,7 +12456,7 @@ jQuery(async function () {
     eventSource.on(event_types.CHARACTER_EDITED, async (event) => {
         const edited = event?.detail?.character?.avatar;
         if (!edited || edited !== getCurrentCharacter()?.avatar) return;
-        await _mergeCardGreetingsIntoOpening({ greetingEdit: event.detail.greetingEdit });
+        await _mergeCardGreetingsIntoOpening({ greetingEdit: event.detail.greetingEdit, greetingEdits: event.detail.greetingEdits });
     });
 
     // Restores the draft for whatever chat just became current; no-op when none exists for this exact context.
