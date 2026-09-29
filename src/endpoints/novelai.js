@@ -7,7 +7,8 @@ import express from 'express';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { readAllChunks, extractFileFromZipBuffer } from '../util.js';
 import { readSettingsAtPaths } from '../settings-store.js';
-import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, createTokenizerOutcome, sendTokenizerWarnings } from '../tokenizer-resolve.js';
+import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../tokenizer-resolve.js';
+import { createStoredCounter } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
 import { resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt } from '../text-completion-prompt-orchestrator.js';
@@ -211,7 +212,9 @@ router.post('/status', async function (req, res) {
  * identical contract to buildRawActionTextCompletionRequest()'s own equivalent param. NovelAI has no
  * media/image inlining wired here - only `.files` is meaningfully consumed downstream
  * (file-attachment-inline.js, via resolveTextCompletionGenerationInput()).
- * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, warnings: object[] }>}
+ * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, tokenCountRows: import('../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[] }>}
+ * `tokenCountRows` are the counts and ids this build read from or added to the token tables, for
+ * writeBack() once the request is sent.
  */
 export async function buildRawActionNovelRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
@@ -263,10 +266,12 @@ export async function buildRawActionNovelRequest(directories, {
     const { nai_settings: naiSettings = {}, power_user: powerUser = {} } = readSettingsAtPaths(directories, ['nai_settings', 'power_user']);
     const tokenizerState = { api: 'novel', model: naiSettings.model_novel ?? '', tokenizerSetting: powerUser.tokenizer };
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    const identity = await tokenizerIdentity(resolvedTokenizer);
     const tokenizerOutcome = createTokenizerOutcome();
     const encodeOptions = { request, ...tokenizerOptions, outcome: tokenizerOutcome };
-    const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
-    const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
+    const storedCounter = createStoredCounter({ resolved: resolvedTokenizer, identity, directories, encodeOptions });
+    const encodeTokens = storedCounter.encodeText;
+    const countTokens = storedCounter.countText;
     // createNovelGenerationData() hands back the type it was given, which is this resolution's.
     const encodeTokensByType = (_tokenizerType, text) => encodeTokens(text);
     const novelTokenizerType = resolvedTokenizer.kind === 'estimate' ? tokenizers.NONE : resolvedTokenizer.id;
@@ -295,7 +300,8 @@ export async function buildRawActionNovelRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, anchorNodeId, anchorContent, name1: orchestratorInput.name1, name2: orchestratorInput.name2,
+        params: assembled.generate_data, anchorNodeId, anchorContent, tokenCountRows: storedCounter.pending,
+        name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
     };
 }

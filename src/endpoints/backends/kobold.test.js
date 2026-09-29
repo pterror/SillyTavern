@@ -89,6 +89,8 @@ const { CompactStreamDecoder } = await import('../../../public/scripts/llamacpp-
 const { writeAllSettings } = await import('../../settings-store.js');
 const { saveChatToTree, loadBranch, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 const { upsertCharacterFromWrite } = await import('../../character-metadata-db.js');
+const { writeBack } = await import('../../token-count-store.js');
+const { tokenizers } = await import('../../tokenizer-ids.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-kobold-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -800,6 +802,45 @@ async function run() {
         assert.ok(tokenCountCalls > 1, `${model}: every count tried the backend again`);
         assert.deepEqual([...localKeys], expectedLocalKeys, `${model}: local encodes`);
         assert.deepEqual(built.warnings.map(w => w.kind), expectedKinds, `${model}: warnings`);
+    }
+
+    // --- tokenizer: a second build after write-back encodes nothing the first encoded ---
+    {
+        const storeAvatar = await writeCharacter('KoboldStore.png', {
+            name: 'KoboldStore',
+            data: { name: 'KoboldStore', description: 'KoboldStore guards the bridge.', first_mes: 'Halt.' },
+        });
+        await saveChatToTree(directories, storeAvatar, 'store-chat', [
+            { chat_metadata: {} },
+            { name: 'KoboldStore', is_user: false, mes: 'Halt.', send_date: 1, extra: {} },
+            { name: 'Tester', is_user: true, mes: 'May I cross the bridge?', send_date: 2, extra: {} },
+            { name: 'KoboldStore', is_user: false, mes: 'Only with the password.', send_date: 3, extra: {} },
+        ]);
+        const storeLeafId = (await loadBranch(directories, storeAvatar, 'store-chat')).branch.leaf_id;
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = tokenizers.LLAMA;
+        settings.kai_settings.api_server = 'http://127.0.0.1:9/api';
+        writeAllSettings(directories, settings);
+
+        const build = async () => {
+            const encoded = [];
+            const built = await buildRawActionKoboldRequest(directories, {
+                characterAvatar: storeAvatar, ownerId: storeAvatar, nodeId: storeLeafId, type: 'normal',
+                tokenizerOptions: { encodeLocal: async (key, text) => { encoded.push(text); return fakeTokenizerOptions.encodeLocal(key, text); } },
+            });
+            return { built, encoded };
+        };
+        try {
+            const first = await build();
+            assert.ok(first.encoded.length > 0, 'the first build encodes with the local tokenizer');
+            await writeBack(directories, first.built.tokenCountRows);
+            const second = await build();
+            const firstTexts = new Set(first.encoded);
+            assert.deepEqual(second.encoded.filter(text => firstTexts.has(text)), [], 'no text encoded in the first build is encoded again');
+            assert.deepEqual(second.built.params, first.built.params);
+        } finally {
+            writeAllSettings(directories, buildSettingsFixture());
+        }
     }
 
     console.log('kobold.test.js: all assertions passed');

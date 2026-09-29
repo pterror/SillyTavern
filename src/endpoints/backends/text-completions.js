@@ -23,8 +23,9 @@ import { createTextGenGenerationData } from '../../textgen-generation-data.js';
 import { constructPrompt, getInstructStoppingSequences } from '../../instruct-template-format.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
-import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, encodeWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
+import { createStoredCounter } from '../../token-count-store.js';
 import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
@@ -522,9 +523,10 @@ router.post('/props', async function (request, response) {
  * forwarded verbatim to `resolveTextCompletionGenerationInput()` and reused as-is for the real
  * persisted append below (the route handler is responsible for having already sanitized whatever the
  * client sent; this function does not re-validate it). Ignored when `userMessageText` is omitted.
- * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, tokenizerIdentity: string|null, name1: string, name2: string, warnings: object[] }>}
+ * @returns {Promise<{ params: object, backend: {type: string, serverUrl: string, model: string|undefined}, anchorNodeId: string|null, anchorContent: object|null, tokenizerIdentity: string|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[] }>}
  * `tokenizerIdentity` is the resolved tokenizer's tokenizerIdentity(), for llama.cpp from this
- * generation's own `/props` answer.
+ * generation's own `/props` answer. `tokenCountRows` are the counts and ids this build read from or
+ * added to the token tables, for writeBack() once the request is sent.
  */
 export async function buildRawActionTextCompletionRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
@@ -605,9 +607,13 @@ export async function buildRawActionTextCompletionRequest(directories, {
         request, textgenBaseUrl: backend.serverUrl, textgenModel: backend.model, textgenApiType: backend.type,
         ...tokenizerOptions, outcome: tokenizerOutcome,
     };
-    const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
-    const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
-    const countPromptTokens = (text) => countWithTokenizer(resolvedTokenizer, text, { ...encodeOptions, promptStart: true });
+    const storedCounter = createStoredCounter({
+        resolved: resolvedTokenizer, identity, directories, encodeOptions,
+        identityFacts: { textgenApiType: backend.type, llamaCppProps: llamaCppProps.props },
+    });
+    const encodeTokens = storedCounter.encodeText;
+    const countTokens = storedCounter.countText;
+    const countPromptTokens = storedCounter.countPromptText;
 
     // Step 4
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
@@ -653,6 +659,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
 
     return {
         params: assembled.generate_data, backend, anchorNodeId, anchorContent, tokenizerIdentity: identity,
+        tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         // Prompt-itemization breakdown for the client's itemizedPrompts entry - see

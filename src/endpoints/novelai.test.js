@@ -69,6 +69,7 @@ const { forwardAndPersistCompactStream } = await import('./backends/text-complet
 const { CompactStreamDecoder } = await import('../../public/scripts/llamacpp-compact-stream.js');
 const { upsertCharacterFromWrite } = await import('../character-metadata-db.js');
 const { tokenizers } = await import('../tokenizer-ids.js');
+const { writeBack } = await import('../token-count-store.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'st-novelai-raw-action-test-'));
 const charactersDir = path.join(root, 'characters');
@@ -450,6 +451,43 @@ async function run() {
         const dropped = built.warnings[1];
         assert.ok(dropped.entries.includes('\nNarrator:') && dropped.entries.includes('dragon') && dropped.entries.includes('sword'), 'the entries needing ids are listed');
         assert.ok(dropped.message.includes('NerdStash'), dropped.message);
+    }
+
+    // A second build after write-back encodes nothing the first encoded.
+    {
+        const storeAvatar = await writeCharacter('NovelStore.png', {
+            name: 'NovelStore',
+            data: { name: 'NovelStore', description: 'NovelStore sells maps.', first_mes: 'Looking for a map?' },
+        });
+        await saveChatToTree(directories, storeAvatar, 'store-chat', [
+            { chat_metadata: {} },
+            { name: 'NovelStore', is_user: false, mes: 'Looking for a map?', send_date: 1, extra: {} },
+            { name: 'Tester', is_user: true, mes: 'One of the northern coast.', send_date: 2, extra: {} },
+            { name: 'NovelStore', is_user: false, mes: 'That one is rare.', send_date: 3, extra: {} },
+        ]);
+        const storeLeafId = (await loadBranch(directories, storeAvatar, 'store-chat')).branch.leaf_id;
+        writeAllSettings(directories, tokenizerSettings('clio-v1', undefined));
+
+        const build = async () => {
+            const encoded = [];
+            const built = await buildRawActionNovelRequest(directories, {
+                characterAvatar: storeAvatar, ownerId: storeAvatar, nodeId: storeLeafId, type: 'normal',
+                tokenizerOptions: { encodeLocal: async (key, text) => { encoded.push(text); return fakeTokenizerOptions.encodeLocal(key, text); } },
+            });
+            return { built, encoded };
+        };
+        try {
+            const first = await build();
+            assert.ok(first.encoded.length > 0, 'the first build encodes with the local tokenizer');
+            assert.ok(first.encoded.includes('dragon') && first.encoded.includes('\nNarrator:'), 'the bad word and stop string were encoded');
+            await writeBack(directories, first.built.tokenCountRows);
+            const second = await build();
+            const firstTexts = new Set(first.encoded);
+            assert.deepEqual(second.encoded.filter(text => firstTexts.has(text)), [], 'no text encoded in the first build is encoded again');
+            assert.deepEqual(second.built.params, first.built.params);
+        } finally {
+            writeAllSettings(directories, buildSettingsFixture());
+        }
     }
 
     if (!canMockNovelBackend) {
