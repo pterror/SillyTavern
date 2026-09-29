@@ -4,12 +4,13 @@ import path from 'node:path';
 import {
     getTagDefinitionsByIds, getEntityTagIdsForMany, getTagDeletions,
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
-    streamDeletedIdsBetween, getMetaValue, trySetMetaValues, getCharacterFavsByIds, getCharacterIndexRowsByIds,
+    streamDeletedIdsBetween, getMetaValue, trySetMetaValuesAndRetryMarks, getCharacterFavsByIds, getCharacterIndexRowsByIds,
+    getCharacterIndexRetryMarksByIds, getDueCharacterIndexRetries,
 } from '../character-metadata-db.js';
-import { processCharacterOrPlaceholder } from './characters.js';
+import { processCharacter, processCharacterOrPlaceholder, logProcessCharacterFailure } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter, stringToSortKey } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
-import { getSearchIndex, rebuildSearchIndex, startSearchWorker, CHARACTERS_INDEX_SEQ_META_KEY, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY } from './search-index-coordinator.js';
+import { getSearchIndex, rebuildSearchIndex, startSearchWorker, CHARACTERS_INDEX_SEQ_META_KEY, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, CHARACTERS_INDEX_RETRY_SEQ_META_KEY } from './search-index-coordinator.js';
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 import { timePhase } from '../search-timing.js';
@@ -75,6 +76,7 @@ const INDEX_BUILD_BATCH_SIZE = 500;
 
 const TANTIVY_INDEX_SEQ_META_KEY = CHARACTERS_INDEX_SEQ_META_KEY;
 const TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY;
+const TANTIVY_INDEX_RETRY_SEQ_META_KEY = CHARACTERS_INDEX_RETRY_SEQ_META_KEY;
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
 
 const CHECKPOINT_EVERY_N_BATCHES = 20;
@@ -83,6 +85,13 @@ const REBUILD_PERSIST_RETRY_MS = 100;
 
 // The share of a tick's budget the tag-rename loop always gets, so a change backlog can't starve renames.
 const TAG_RENAME_BUDGET_SHARE = 0.25;
+
+// A card that fails to re-index is retried after RETRY_INITIAL_DELAY_MS, then after twice the previous wait on each
+// failed attempt, up to RETRY_MAX_DELAY_MS.
+const RETRY_INITIAL_DELAY_MS = 1000;
+const RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
+/** The most due retries one tick attempts. */
+export const CHARACTER_INDEX_RETRY_BATCH_SIZE = 100;
 
 const INDEX_BUILD_READ_CONCURRENCY = getConfigValue('performance.characterIndexBuildConcurrency', 64, 'number');
 
@@ -199,14 +208,30 @@ async function timeAsync(phases, phase, fn) {
     }
 }
 
+/**
+ * What adding docs for a set of ids did. indexed: got a new doc. missing: no row, so not indexed. failures: the card
+ * couldn't be processed, so it got no new doc.
+ * @typedef {{ indexed: string[], missing: string[], failures: { id: string, err: unknown }[] }} AddOutcome
+ */
+
 // Adds a doc per id, INDEX_BUILD_BATCH_SIZE ids at a time, reading each batch's rows by id.
-/** @param {TickPhases} [phases] */
-async function addCharacterDocs(directories, tantivy, schema, writer, ids, phases) {
+/**
+ * @param {TickPhases} [phases]
+ * @param {{ replace?: boolean }} [options] See addCharacterBatch().
+ * @returns {Promise<AddOutcome>}
+ */
+async function addCharacterDocs(directories, tantivy, schema, writer, ids, phases, options) {
+    /** @type {AddOutcome} */
+    const outcome = { indexed: [], missing: [], failures: [] };
     for (let i = 0; i < ids.length; i += INDEX_BUILD_BATCH_SIZE) {
         const batchIds = ids.slice(i, i + INDEX_BUILD_BATCH_SIZE);
         const rowById = await timeAsync(phases, 'load', () => getCharacterIndexRowsByIds(directories, batchIds));
-        await addCharacterBatch(directories, tantivy, schema, writer, batchIds, rowById, phases);
+        const batch = await addCharacterBatch(directories, tantivy, schema, writer, batchIds, rowById, phases, options);
+        outcome.indexed.push(...batch.indexed);
+        outcome.missing.push(...batch.missing);
+        outcome.failures.push(...batch.failures);
     }
+    return outcome;
 }
 
 // Adds a doc per id as one unit: tag/fav lookups cover exactly these ids. An id with no row was deleted after the
@@ -214,26 +239,51 @@ async function addCharacterDocs(directories, tantivy, schema, writer, ids, phase
 /**
  * @param {Map<string, import('../character-metadata-db.js').CharacterIndexRow>} rowById
  * @param {TickPhases} [phases]
+ * @param {{ replace?: boolean }} [options] replace: the writer's index may already hold docs for these ids. Each id
+ * that gets a new doc or has no row loses its old docs; one whose card fails to process keeps them.
+ * @returns {Promise<AddOutcome>}
  */
-async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, rowById, phases) {
+async function addCharacterBatch(directories, tantivy, schema, writer, batchIds, rowById, phases, { replace = false } = {}) {
     const ids = batchIds.filter(id => rowById.has(id));
-    if (ids.length === 0) return;
+    const missing = batchIds.filter(id => !rowById.has(id));
+    /** @type {AddOutcome} */
+    const outcome = { indexed: [], missing, failures: [] };
+    if (replace) {
+        timeSync(phases, 'add', () => {
+            for (const id of missing) writer.deleteDocumentsByTerm(DATA_FIELD, id);
+        });
+    }
+    if (ids.length === 0) return outcome;
     const { tagNamesFor, tagIdsFor } = await makeTagResolvers(directories, ids, phases);
     const favFor = await timeAsync(phases, 'load', () => makeFavResolver(directories, ids));
-    const characters = await timeAsync(phases, 'build', () => mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
+    const results = await timeAsync(phases, 'build', () => mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
         const row = rowById.get(id);
-        return await processCharacterOrPlaceholder(id, directories, {
-            shallow: false,
-            cardJson: row.card_json,
-            chatStats: { chatSize: row.chat_size, dateLastChat: row.date_last_chat },
-        });
+        try {
+            return {
+                id,
+                character: await processCharacter(id, directories, {
+                    shallow: false,
+                    cardJson: row.card_json,
+                    chatStats: { chatSize: row.chat_size, dateLastChat: row.date_last_chat },
+                }),
+            };
+        } catch (err) {
+            return { id, err };
+        }
     }));
-    for (const character of characters) {
-        // The placeholder of a card that couldn't be processed has no `name`; a card whose name is empty has one.
-        if (!('name' in character)) continue;
-        const doc = timeSync(phases, 'build', () => characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
-        timeSync(phases, 'add', () => writer.addDocument(doc));
+    for (const result of results) {
+        if (!('character' in result)) {
+            outcome.failures.push({ id: result.id, err: result.err });
+            continue;
+        }
+        const doc = timeSync(phases, 'build', () => characterToTantivyDoc(tantivy, schema, result.character, tagNamesFor, favFor, tagIdsFor));
+        timeSync(phases, 'add', () => {
+            if (replace) writer.deleteDocumentsByTerm(DATA_FIELD, result.id);
+            writer.addDocument(doc);
+        });
+        outcome.indexed.push(result.id);
     }
+    return outcome;
 }
 
 /**
@@ -241,10 +291,13 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
  * before and after. backlog: the change-log seq read at the tick's end minus the new cursor. writers: upserted
  * ids per changed field name (`null` for a whole-record change); an id with several fields counts under each.
  * tagRenames: distinct renamed tag ids applied. lockWaitMs: time this tick's writes spent on a database lock.
- * persistSkipped: the cursors couldn't be persisted because the database was locked, so they stayed at their
- * values from before the tick (seq === seqFrom) and the next tick redoes this one's work.
+ * persistSkipped: the cursors, retry counter and retry marks couldn't be persisted because the database was locked,
+ * so they stayed at their values from before the tick (seq === seqFrom) and the next tick redoes this one's work.
+ * retrySeq: the retry counter after the tick. retried: due retries attempted. failed: cards that failed to process,
+ * retries included.
  * @typedef {{ changed: boolean, deletes: number, upserts: number, ms: number, seq: number, seqFrom: number,
- *   tagNameSeqFrom: number, tagNameSeq: number, backlog: number, writers: Record<string, number>, tagRenames: number,
+ *   tagNameSeqFrom: number, tagNameSeq: number, retrySeq: number, retried: number, failed: number, backlog: number,
+ *   writers: Record<string, number>, tagRenames: number,
  *   phases: TickPhases, lockWaitMs: number, persistSkipped?: boolean }} TickResult
  */
 
@@ -256,12 +309,13 @@ export function formatCatchUpLine(r) {
     return `[search] catch-up: seq=${r.seqFrom}..${r.seq}${tagSeq} backlog=${r.backlog} writers=${writers} tagrenames=${r.tagRenames}`
         + ` deletes=${r.deletes} upserts=${r.upserts} total_ms=${r.ms} read_ms=${p.read} deletes_ms=${p.deletes} tags_ms=${p.tags}`
         + ` load_ms=${p.load} build_ms=${p.build} add_ms=${p.add} commit_ms=${p.commit} persist_ms=${p.persist}`
+        + `${r.retried || r.failed ? ` retried=${r.retried} failed=${r.failed}` : ''}`
         + `${r.persistSkipped ? ' persist=skipped' : ''} lockwait_ms=${r.lockWaitMs}`;
 }
 
 /**
  * The only writer of a user's characters index. Runs in search-index-worker.js, never in the request process:
- * every call here is synchronous work (better-sqlite3, processCharacterOrPlaceholder()'s fs reads, tantivy's napi calls) that
+ * every call here is synchronous work (better-sqlite3, processCharacter()'s fs reads, tantivy's napi calls) that
  * would otherwise hold the event loop.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
@@ -281,6 +335,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
     let seqCursor = 0;
     let tagNameCursor = 0;
     let deleteCursor = 0;
+    // Bumped by each catch-up whose retries changed the index, which moves neither cursor.
+    let retrySeq = 0;
 
     function getWriter() {
         return writer ?? (writer = index.writer());
@@ -292,13 +348,18 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         deleteCursor = Math.max(deleteCursor, seq);
     }
 
-    /** @returns {Promise<boolean>} false: the database was locked and nothing was persisted. */
-    function persistCursors() {
-        return trySetMetaValues(directories, {
+    function positionMetaValues() {
+        return {
             [TANTIVY_INDEX_SEQ_META_KEY]: String(seqCursor),
             [TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY]: String(tagNameCursor),
+            [TANTIVY_INDEX_RETRY_SEQ_META_KEY]: String(retrySeq),
             [TANTIVY_INDEX_SCHEMA_VERSION_META_KEY]: String(TANTIVY_SCHEMA_VERSION),
-        });
+        };
+    }
+
+    /** @returns {Promise<boolean>} false: the database was locked and nothing was persisted. */
+    function persistCursors() {
+        return trySetMetaValuesAndRetryMarks(directories, positionMetaValues(), []);
     }
 
     /**
@@ -327,11 +388,13 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             return null;
         }
         const persistedTagNameChangeSeq = await getMetaValue(directories, TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY);
+        const persistedRetrySeq = await getMetaValue(directories, TANTIVY_INDEX_RETRY_SEQ_META_KEY);
         index = opened;
         schema = opened.schema;
         getWriter();
         deleteCursor = 0;
         setCursors(Number(persistedSeq), persistedTagNameChangeSeq !== null ? Number(persistedTagNameChangeSeq) : 0);
+        retrySeq = persistedRetrySeq !== null ? Number(persistedRetrySeq) : 0;
         return indexDir;
     }
 
@@ -361,7 +424,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             let batchIndex = 0;
             // Each streamed batch is one unit: its rows came with it, and its tag/fav lookups cover exactly it.
             for await (const rows of streamCharacterCardJsonBatches(directories)) {
-                await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row])));
+                const { failures } = await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row])));
+                for (const { id, err } of failures) logProcessCharacterFailure(id, err);
                 batchIndex++;
                 if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
                     tempWriter.commit();
@@ -396,8 +460,13 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
     /**
      * One catch-up pass, committed at most once. Every delete in the log up to its current end is applied first,
      * whatever upsert backlog is in front of it; then upsert pages, then tag-rename pages, each until its log is
-     * drained or its part of tickBudgetMs has passed. An upsert page never undoes an applied delete: it reads the row's current
-     * card_json, and a deleted row has none.
+     * drained or its part of tickBudgetMs has passed; then up to CHARACTER_INDEX_RETRY_BATCH_SIZE due retries. An
+     * upsert page or retry never undoes an applied delete: it reads the row's current card_json, and a deleted row
+     * has none.
+     * A card that fails to process keeps the doc it had and is marked for retry (character_index_retries). Any
+     * failed attempt doubles its delay, capped at RETRY_MAX_DELAY_MS; a new doc or a deleted card clears the mark.
+     * The marks are persisted in the same transaction as the cursors, and a failure is logged, once that
+     * transaction lands, only when its error differs from the last one logged for that card.
      * @returns {Promise<TickResult | { swapped: string | null } | null>}
      * null when the metadata store is unavailable; `swapped` when a truncated change log forced a full rebuild.
      */
@@ -416,15 +485,59 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const w = getWriter();
         let deletes = 0;
         let upserts = 0;
+        let retried = 0;
+        let failed = 0;
+        let retriesChanged = false;
         const seqFrom = seqCursor;
         const tagNameSeqFrom = tagNameCursor;
         const deleteCursorFrom = deleteCursor;
+        const retrySeqFrom = retrySeq;
         let lastSeq = seqCursor;
         let lastTagNameChangeSeq = tagNameCursor;
         /** @type {Map<string, number>} */
         const writers = new Map();
         /** @type {Set<string>} */
         const renamedTagIds = new Set();
+        /**
+         * This tick's retry mark writes (mark null: delete). stored: the card had a mark in the db before the tick.
+         * @type {Map<string, { mark: import('../character-metadata-db.js').CharacterIndexRetryMark | null, stored: boolean }>}
+         */
+        const markWrites = new Map();
+        /** @type {string[]} */
+        const failureLogs = [];
+
+        /**
+         * @param {string[]} cleared Ids that got a new doc or are deleted.
+         * @param {{ id: string, err: unknown }[]} [failures]
+         */
+        async function noteOutcomes(cleared, failures = []) {
+            const unseen = [...cleared, ...failures.map(f => f.id)].filter(id => !markWrites.has(id));
+            const stored = unseen.length > 0
+                ? await timeAsync(phases, 'load', () => getCharacterIndexRetryMarksByIds(directories, unseen))
+                : new Map();
+            const current = (id) => markWrites.has(id)
+                ? { mark: markWrites.get(id).mark, stored: markWrites.get(id).stored }
+                : { mark: stored.get(id) ?? null, stored: stored.has(id) };
+            for (const id of cleared) {
+                const { mark, stored: inDb } = current(id);
+                if (inDb) {
+                    markWrites.set(id, { mark: null, stored: true });
+                } else if (mark) {
+                    markWrites.delete(id);
+                }
+            }
+            for (const { id, err } of failures) {
+                failed++;
+                const { mark, stored: inDb } = current(id);
+                const error = String(err);
+                const delayMs = mark ? Math.min(mark.delayMs * 2, RETRY_MAX_DELAY_MS) : RETRY_INITIAL_DELAY_MS;
+                if (mark?.lastError !== error) {
+                    failureLogs.push(`[search] couldn't index character ${id}, so its previous search entry is kept and it's retried in ${delayMs} ms: ${error}`);
+                }
+                markWrites.set(id, { mark: { nextAttemptAt: Date.now() + delayMs, delayMs, lastError: error }, stored: inDb });
+            }
+        }
+
         try {
             // Starts past seqCursor too: upsert pages aren't capped at a tick's maxSeq, so rows up to seqCursor are
             // already applied, and re-applying a delete there could remove a doc an upsert page has since re-created.
@@ -434,6 +547,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                         w.deleteDocumentsByTerm(DATA_FIELD, id);
                     }
                     deletes += ids.length;
+                    await noteOutcomes(ids);
                 }
             });
 
@@ -452,23 +566,28 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                     return { swapped: await rebuild() };
                 }
                 if (page.changes.length > 0) {
-                    // Delete-by-term for every touched id; tantivy has no update-in-place.
-                    timeSync(phases, 'add', () => {
-                        for (const { id } of page.changes) {
-                            w.deleteDocumentsByTerm(DATA_FIELD, id);
-                        }
-                    });
+                    const deletedIds = [];
                     const upsertIds = [];
                     for (const change of page.changes) {
-                        if (change.op === 'delete') continue;
+                        if (change.op === 'delete') {
+                            deletedIds.push(change.id);
+                            continue;
+                        }
                         upsertIds.push(change.id);
                         for (const field of change.fields ?? ['null']) {
                             writers.set(field, (writers.get(field) ?? 0) + 1);
                         }
                     }
-                    deletes += page.changes.length - upsertIds.length;
+                    timeSync(phases, 'add', () => {
+                        for (const id of deletedIds) {
+                            w.deleteDocumentsByTerm(DATA_FIELD, id);
+                        }
+                    });
+                    await noteOutcomes(deletedIds);
+                    deletes += deletedIds.length;
                     upserts += upsertIds.length;
-                    await addCharacterDocs(directories, tantivy, schema, w, upsertIds, phases);
+                    const outcome = await addCharacterDocs(directories, tantivy, schema, w, upsertIds, phases, { replace: true });
+                    await noteOutcomes([...outcome.indexed, ...outcome.missing], outcome.failures);
                 }
                 lastSeq = page.seq;
                 if (!page.hasMore || Date.now() >= changesDeadline) break;
@@ -497,13 +616,9 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                             const next = await timeAsync(phases, 'read', () => affected.next());
                             if (next.done) break;
                             const affectedIds = next.value;
-                            timeSync(phases, 'add', () => {
-                                for (const id of affectedIds) {
-                                    w.deleteDocumentsByTerm(DATA_FIELD, id);
-                                }
-                            });
                             upserts += affectedIds.length;
-                            await addCharacterDocs(directories, tantivy, schema, w, affectedIds, phases);
+                            const outcome = await addCharacterDocs(directories, tantivy, schema, w, affectedIds, phases, { replace: true });
+                            await noteOutcomes([...outcome.indexed, ...outcome.missing], outcome.failures);
                         }
                     } finally {
                         await affected.return?.();
@@ -511,6 +626,16 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                 }
                 lastTagNameChangeSeq = page.seq;
                 if (!page.hasMore || Date.now() >= renamesDeadline) break;
+            }
+
+            // Cards this tick already re-indexed or failed on aren't attempted again in it.
+            const due = await timeAsync(phases, 'read', () => getDueCharacterIndexRetries(directories, Date.now(), CHARACTER_INDEX_RETRY_BATCH_SIZE));
+            const retryIds = due.map(mark => mark.id).filter(id => !markWrites.has(id));
+            if (retryIds.length > 0) {
+                retried = retryIds.length;
+                const outcome = await addCharacterDocs(directories, tantivy, schema, w, retryIds, phases, { replace: true });
+                retriesChanged = outcome.indexed.length > 0 || outcome.missing.length > 0;
+                await noteOutcomes([...outcome.indexed, ...outcome.missing], outcome.failures);
             }
         } catch (err) {
             try {
@@ -522,16 +647,18 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         }
 
         // The watermarks are persisted only for what a commit made durable.
-        const changed = deletes > 0 || upserts > 0;
+        const changed = deletes > 0 || upserts > 0 || retriesChanged;
         if (changed) {
             timeSync(phases, 'commit', () => w.commit());
         }
-        const moved = lastSeq !== seqCursor || lastTagNameChangeSeq !== tagNameCursor;
+        const moved = lastSeq !== seqCursor || lastTagNameChangeSeq !== tagNameCursor || retriesChanged;
         setCursors(lastSeq, lastTagNameChangeSeq);
         deleteCursor = Math.max(deleteCursor, maxSeq);
+        if (retriesChanged) retrySeq++;
         let persistSkipped = false;
-        if (moved) {
-            persistSkipped = !await timeAsync(phases, 'persist', () => persistCursors());
+        if (moved || markWrites.size > 0) {
+            const retryMarks = [...markWrites].map(([id, { mark }]) => ({ id, mark }));
+            persistSkipped = !await timeAsync(phases, 'persist', () => trySetMetaValuesAndRetryMarks(directories, moved ? positionMetaValues() : {}, retryMarks));
         }
         // Rather than wait on the lock, the next tick redoes this one's work: every doc it touched is deleted and
         // re-added by id, so applying it twice changes nothing.
@@ -539,6 +666,9 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             seqCursor = seqFrom;
             tagNameCursor = tagNameSeqFrom;
             deleteCursor = deleteCursorFrom;
+            retrySeq = retrySeqFrom;
+        } else {
+            for (const line of failureLogs) console.error(color.red(line));
         }
         // Not maxSeq: upsert pages aren't capped at it, so a change written during the tick puts seqCursor past it.
         const endSeq = await timeAsync(phases, 'read', () => getCurrentSeq(directories));
@@ -551,6 +681,9 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             seqFrom,
             tagNameSeqFrom,
             tagNameSeq: tagNameCursor,
+            retrySeq,
+            retried,
+            failed,
             backlog: endSeq !== null ? endSeq - seqCursor : Math.max(0, maxSeq - seqCursor),
             writers: Object.fromEntries(writers),
             tagRenames: renamedTagIds.size,
@@ -569,6 +702,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         seq: () => seqCursor,
         /** The tag-rename-log seq the index covers. */
         tagNameSeq: () => tagNameCursor,
+        /** How many catch-ups changed the index through retries alone. */
+        retrySeq: () => retrySeq,
         /** Releases the writer's on-disk lock. */
         close() {
             if (writer) {

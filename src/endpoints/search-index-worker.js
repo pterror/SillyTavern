@@ -8,12 +8,13 @@ import { setConfigFilePath } from '../util.js';
  * a time, in order: startup, ticks, and requests from the coordinator.
  *
  * Messages to the coordinator:
- *   { type: 'ready', target, dir, seq?, tagNameSeq?, version? }   target's index is openable at dir (dir null: it
+ *   { type: 'ready', target, dir, seq?, tagNameSeq?, retrySeq?, version? }   target's index is openable at dir (dir null: it
  *                                         can't exist, the metadata store is unavailable); `error` instead when it failed.
- *   { type: 'committed', target, changed: true, seq, tagNameSeq, deletes, upserts, ms }   a tick committed changes.
- *   { type: 'swapped', target, dir, seq?, tagNameSeq?, version? }   target's index was rebuilt and swapped in at dir.
+ *   { type: 'committed', target, changed: true, seq, tagNameSeq, retrySeq, deletes, upserts, ms }   a tick committed changes.
+ *   { type: 'swapped', target, dir, seq?, tagNameSeq?, retrySeq?, version? }   target's index was rebuilt and swapped in at dir.
  * These carry the index's position as of the dir or commit the message announces, which the coordinator uses as its
- * reader's position. For characters, seq and tagNameSeq are the change-log and tag-rename-log seqs the index covers;
+ * reader's position. For characters, seq and tagNameSeq are the change-log and tag-rename-log seqs the index covers,
+ * and retrySeq its retry counter (SearchIndexPosition);
  * for groups, version is the groups version the index was built from.
  *   { type: 'reply', id, ok, error? }     answer to a request; ok false without error: metadata store unavailable.
  *   { type: 'error', message }
@@ -91,7 +92,7 @@ async function startup() {
 
 /** The characters index's cursors, as the coordinator's messages carry them. */
 function charactersPosition() {
-    return { seq: characters?.seq(), tagNameSeq: characters?.tagNameSeq() };
+    return { seq: characters?.seq(), tagNameSeq: characters?.tagNameSeq(), retrySeq: characters?.retrySeq() };
 }
 
 /** The groups index's position, as the coordinator's messages carry it. */
@@ -109,7 +110,7 @@ async function tick() {
                 if (result.swapped) post({ type: 'swapped', target: 'characters', dir: result.swapped, ...charactersPosition() });
             } else if (result.changed) {
                 console.log(formatCatchUpLine(result));
-                post({ type: 'committed', target: 'characters', changed: true, seq: result.seq, tagNameSeq: result.tagNameSeq, deletes: result.deletes, upserts: result.upserts, ms: result.ms });
+                post({ type: 'committed', target: 'characters', changed: true, seq: result.seq, tagNameSeq: result.tagNameSeq, retrySeq: result.retrySeq, deletes: result.deletes, upserts: result.upserts, ms: result.ms });
             }
         } catch (err) {
             post({ type: 'error', message: `character search index catch-up failed: ${errorText(err)}` });

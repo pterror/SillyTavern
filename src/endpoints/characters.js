@@ -619,6 +619,20 @@ export const processCharacter = async (item, directories, { shallow, cardJson = 
 };
 
 /**
+ * @param {string} item
+ * @param {unknown} err
+ */
+export function logProcessCharacterFailure(item, err) {
+    console.error(`Could not process character: ${item}`);
+
+    if (err instanceof SyntaxError) {
+        console.error(`${item} does not contain a valid JSON object.`);
+    } else {
+        console.error('An unexpected error occurred: ', err);
+    }
+}
+
+/**
  * processCharacter() for the upstream routes: a character that fails is logged and comes back as the nameless
  * placeholder those routes have always returned.
  * @param {string} item
@@ -630,14 +644,7 @@ export const processCharacterOrPlaceholder = async (item, directories, options) 
     try {
         return await processCharacter(item, directories, options);
     } catch (err) {
-        console.error(`Could not process character: ${item}`);
-
-        if (err instanceof SyntaxError) {
-            console.error(`${item} does not contain a valid JSON object.`);
-        } else {
-            console.error('An unexpected error occurred: ', err);
-        }
-
+        logProcessCharacterFailure(item, err);
         return {
             date_added: 0,
             date_last_chat: 0,
@@ -2237,8 +2244,9 @@ function sendHashQueryResponse(response, params) {
  * `ifToken` is answered `unchanged` only when the token rebuilt from those components now is equal.
  *   - no search: the change log's seq (MAX(changes.seq)); with groups, plus the groups version (the groups
  *     version log's latest value).
- *   - search: the same, plus the characters index's position (its change-log and tag-rename-log cursors) as of the
- *     search read; with groups, plus the groups version the groups index was built from, as of its search read.
+ *   - search: the same, plus the characters index's position (its change-log and tag-rename-log cursors and its
+ *     retry counter) as of the search read; with groups, plus the groups version the groups index was built from,
+ *     as of its search read.
  * null when a component can't be read.
  * @param {{ seq: number | null | undefined, groupsVersion?: number | null, search: boolean, includeGroups: boolean, position?: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition?: import('./search-index-coordinator.js').GroupsIndexPosition | null }} components
  * @returns {string | null}
@@ -2252,7 +2260,7 @@ function queryToken({ seq, groupsVersion, search, includeGroups, position, group
     }
     if (search) {
         if (!position) return null;
-        components.push(position.seq, position.tagNameSeq);
+        components.push(position.seq, position.tagNameSeq, position.retrySeq);
         if (includeGroups) {
             if (!Number.isFinite(groupsPosition?.version)) return null;
             components.push(groupsPosition.version);

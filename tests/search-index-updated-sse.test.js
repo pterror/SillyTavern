@@ -82,8 +82,8 @@ async function coordinatorWithWorkers() {
     /** @param {string} handle @param {number} seq */
     const commit = async (handle, seq) => {
         const worker = await workerFor(handle);
-        worker.send({ type: 'ready', target: 'characters', dir: '/chars', seq: 0, tagNameSeq: 0 });
-        worker.send({ type: 'committed', target: 'characters', changed: true, seq, tagNameSeq: 0 });
+        worker.send({ type: 'ready', target: 'characters', dir: '/chars', seq: 0, tagNameSeq: 0, retrySeq: 0 });
+        worker.send({ type: 'committed', target: 'characters', changed: true, seq, tagNameSeq: 0, retrySeq: 0 });
     };
     /** @param {string} handle @param {number} version */
     const swapGroups = async (handle, version) => {

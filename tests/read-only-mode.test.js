@@ -272,6 +272,15 @@ describe('read-only mode: POST /api/characters/query against an existing library
         expect(again.body).toEqual({ seq: first.body.seq, token: first.body.token, unchanged: true });
     });
 
+    test('the characters reader\'s position is the cursors and retry counter the normal code persisted for the index', async () => {
+        const seq = await metadataDb.getMetaValue(directories, 'tantivy_char_index_seq');
+        const tagNameSeq = await metadataDb.getMetaValue(directories, 'tantivy_char_index_tag_name_change_seq');
+        const retrySeq = await metadataDb.getMetaValue(directories, 'tantivy_char_index_retry_seq');
+        expect(retrySeq).not.toBeNull();
+        const reader = await searchCoordinator.getSearchIndex('read-only-test-user', directories, 'characters');
+        expect(reader.position).toEqual({ seq: Number(seq), tagNameSeq: Number(tagNameSeq), retrySeq: Number(retrySeq) });
+    });
+
     test('the groups reader\'s position is the groups version the normal code persisted for the index', async () => {
         const version = await metadataDb.getMetaValue(directories, 'tantivy_group_index_version');
         expect(Number(version)).toBeGreaterThan(0);
