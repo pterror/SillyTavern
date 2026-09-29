@@ -29,6 +29,8 @@ beforeEach(() => {
     for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats]) {
         fs.mkdirSync(dir, { recursive: true });
     }
+    // An existing store, which never gets the default tags (tags-default-seed.test.js).
+    new Database(path.join(root, 'character-metadata.sqlite')).close();
 });
 
 afterEach(() => {

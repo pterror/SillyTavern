@@ -302,16 +302,6 @@ function getTagIdToFilterType() {
 const InListActionable = {
 };
 
-/** @type {Tag[]} A list of default tags */
-const DEFAULT_TAGS = [
-    { id: uuidv4(), name: 'Plain Text', create_date: Date.now() },
-    { id: uuidv4(), name: 'OpenAI', create_date: Date.now() },
-    { id: uuidv4(), name: 'W++', create_date: Date.now() },
-    { id: uuidv4(), name: 'Boostyle', create_date: Date.now() },
-    { id: uuidv4(), name: 'PList', create_date: Date.now() },
-    { id: uuidv4(), name: 'AliChat', create_date: Date.now() },
-];
-
 /**
  * @typedef FolderType Bogus folder type
  * @property {string} icon - The icon as a string representation / character
@@ -1362,8 +1352,7 @@ function filterByFolder(filterHelper) {
 
 /**
  * Loads tag *definitions* from the server (POST /api/tags/get). A fetch failure reuses the last-known-good
- * cache instead of falling back to DEFAULT_TAGS, so a transient network error can't overwrite real definitions
- * with the built-in defaults on next save. Assignments aren't loaded separately - they live on each character/
+ * cache. The server adds upstream's default tags to a new store, so the page never makes up tags. Assignments aren't loaded separately - they live on each character/
  * group's own `tag_ids` field, already resident by the time `characters`/`groups` are populated.
  */
 /**
@@ -1519,20 +1508,16 @@ async function loadTagsSettings() {
         fetchFailed = true;
     }
 
-    let seedSave = false;
     if (tagsFile) {
         tags = tagsFile.tags;
     } else if (fetchFailed) {
-        // Don't know the server's actual state - reuse the cache rather than guessing, and never seed-save it back.
+        // Don't know the server's actual state - reuse the cache rather than guessing.
         const cached = await getCachedTags();
-        tags = cached ? cached.tags : DEFAULT_TAGS;
-        if (!cached) {
-            console.warn('Could not load tag definitions and no cached copy exists - showing built-in defaults locally without saving them.');
+        if (cached) {
+            tags = cached.tags;
+        } else {
+            console.warn('Could not load tag definitions and no cached copy exists - showing no tags.');
         }
-    } else {
-        // Server explicitly has no definitions (fresh install) - seeding defaults back is correct here.
-        tags = DEFAULT_TAGS;
-        seedSave = true;
     }
 
     rebuildTagStores();
@@ -1545,11 +1530,6 @@ async function loadTagsSettings() {
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     await usageCountsPromise;
-
-    if (seedSave) {
-        // Without this, defaults could end up living only in memory until some unrelated mutation saves them.
-        await saveTagsNow();
-    }
 }
 
 /**
