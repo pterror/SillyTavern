@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach } from '@jest/
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import Database from 'better-sqlite3';
 
 /** @type {typeof import('../src/endpoints/characters-search-index.js')} */
 let searchIndex;
@@ -125,12 +126,16 @@ describe('characters-search-index.js: tag-rename incremental catch-up is scoped 
         expect((await searchIndex.searchCharacterIds(handle, directories, 'TouchedChar')).ids).toEqual(['TouchedChar.png']);
         expect((await searchIndex.searchCharacterIds(handle, directories, 'UntouchedChar')).ids).toEqual(['UntouchedChar.png']);
 
-        // UntouchedChar's own card file is now gone. A character that genuinely needs re-indexing tolerates
-        // this (processCharacter() throwing is caught and treated as "leave it deleted" - see
-        // addCharacterBatch()), so if the scoped rename below wrongly swept
-        // UntouchedChar in anyway, it would vanish from the index; if it's correctly left untouched, deleting a
-        // file nothing is about to re-read has no effect on it at all.
-        fs.unlinkSync(path.join(charactersDir, 'UntouchedChar.png'));
+        // UntouchedChar's stored card_json is now unparseable, written straight to the db with no change row, so
+        // only a tag rename that wrongly swept it in would re-read it. That re-read would fail, and a card that
+        // fails to re-index keeps its old doc and gets a retry mark (see addCharacterBatch() and tick()), so the
+        // mark is what shows whether it was swept in.
+        const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        try {
+            db.prepare('UPDATE characters SET card_json = ? WHERE id = ?').run('not json', 'UntouchedChar.png');
+        } finally {
+            db.close();
+        }
 
         // Only tag-alpha (TouchedChar's tag) is renamed - tag-bravo (UntouchedChar's tag) is resaved unchanged.
         await metadataDb.saveTagDefinitions(directories, [
@@ -143,8 +148,18 @@ describe('characters-search-index.js: tag-rename incremental catch-up is scoped 
         const renamedHit = await pollSearch(handle, 'AlphaRenamed', ids => ids.length > 0);
         expect(renamedHit).toEqual(['TouchedChar.png']);
 
-        // UntouchedChar is still fully searchable by name even though its own card file no longer exists on
-        // disk - proof the rename's catch-up never tried to re-read it.
+        // The rename's retry marks are persisted in the same transaction as the tag-rename cursor, which can land
+        // after its commit is searchable, so wait for the cursor to cover the rename.
+        const renameSeq = await metadataDb.getCurrentTagNameChangeSeq(directories);
+        const deadline = Date.now() + 5000;
+        while (Number(await metadataDb.getMetaValue(directories, searchCoordinator.CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY)) < renameSeq
+            && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        expect(Number(await metadataDb.getMetaValue(directories, searchCoordinator.CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY))).toBeGreaterThanOrEqual(renameSeq);
+
+        // The rename's catch-up never tried to re-read UntouchedChar: it has no retry mark.
+        expect([...await metadataDb.getCharacterIndexRetryMarksByIds(directories, ['UntouchedChar.png'])]).toEqual([]);
         expect((await searchIndex.searchCharacterIds(handle, directories, 'UntouchedChar')).ids).toEqual(['UntouchedChar.png']);
     }, 20000);
 });
