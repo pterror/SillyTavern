@@ -12,11 +12,11 @@
     flex-direction: column;
     box-shadow: 0 0 10px var(--black70a);
     z-index: 3000;
-    left: 0;
+    left: var(--drawerBarLeft);
     top: 0;
     margin: 0;
     right: unset;
-    width: calc(((100dvw - var(--sheldWidth)) / 2) - 1px);
+    width: calc(((var(--besideDrawerBarWidth) - var(--sheldWidth)) / 2) - 1px);
 }
 
 .logprobs_panel_header {

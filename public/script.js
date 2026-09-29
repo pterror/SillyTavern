@@ -8383,6 +8383,15 @@ function getDrawerZones(id) {
 }
 
 /**
+ * @param {'left'|'right'} edge
+ * @returns {number} How much of that screen edge the drawer bar takes, in px (--drawerBarLeft / --drawerBarRight).
+ */
+function getDrawerBarInset(edge) {
+    const name = edge === 'left' ? '--drawerBarLeft' : '--drawerBarRight';
+    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name)) || 0;
+}
+
+/**
  * Fullscreen character info is capped at Chat Width Max, so depending on the window, Chat Width and Chat Width Max
  * it may be no wider than #sheld and leave both sidebars uncovered.
  * @param {HTMLElement} panel
@@ -8392,10 +8401,11 @@ function getCharInfoFullscreenZones(panel) {
     const box = panel.getBoundingClientRect();
     const sheld = document.getElementById('sheld')?.getBoundingClientRect();
     if (!box.width || !sheld) return ['center'];
-    // Each sidebar ends 1px short of #sheld (.fillLeft / .fillRight in style.css) unless held wider by its min-width.
+    // Each sidebar spans from the drawer bar (or the screen edge) to 1px short of #sheld (.fillLeft / .fillRight in
+    // style.css), unless held wider by its min-width.
     const minWidth = id => parseFloat(getComputedStyle(document.getElementById(id)).minWidth) || 0;
-    const leftEnd = Math.max(sheld.left - 1, minWidth('left-nav-panel'));
-    const rightStart = Math.min(sheld.right + 1, document.documentElement.clientWidth - minWidth('right-nav-panel'));
+    const leftEnd = Math.max(sheld.left - 1, getDrawerBarInset('left') + minWidth('left-nav-panel'));
+    const rightStart = Math.min(sheld.right + 1, document.documentElement.clientWidth - getDrawerBarInset('right') - minWidth('right-nav-panel'));
     return [
         ...(box.left < leftEnd ? ['left'] : []),
         'center',
@@ -14403,12 +14413,14 @@ jQuery(async function () {
         }
     });
 
-    // Which sidebars fullscreen character info reaches depends on its width and #sheld's.
+    // Which sidebars fullscreen character info reaches depends on its width and #sheld's, and on whether the drawer
+    // bar is at a side (the holder's size changes whenever it moves to or from one).
     const drawerZonesObserver = new ResizeObserver(() => {
         if (drawerZonesKey() !== lastDrawerZonesKey) recomputeDrawerFronts();
     });
     drawerZonesObserver.observe(document.getElementById('sheld'));
     drawerZonesObserver.observe(document.getElementById('char-info-panel'));
+    drawerZonesObserver.observe(document.getElementById('top-settings-holder'));
 
     $('#charInfoFullscreenToggle').on('click', () => {
         const panel = document.getElementById('char-info-panel');

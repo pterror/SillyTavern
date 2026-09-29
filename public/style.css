@@ -25,6 +25,31 @@
     initial-value: 0px;
 }
 
+@property --drawerContainerLeft {
+    syntax: '<length>';
+    inherits: false;
+    initial-value: 0px;
+}
+
+@property --drawerContainerRight {
+    syntax: '<length>';
+    inherits: false;
+    initial-value: 0px;
+}
+
+/* Registered so that scripts read them in px (getDrawerBarInset in script.js). */
+@property --drawerBarLeft {
+    syntax: '<length>';
+    inherits: true;
+    initial-value: 0px;
+}
+
+@property --drawerBarRight {
+    syntax: '<length>';
+    inherits: true;
+    initial-value: 0px;
+}
+
 :root {
     interpolate-size: allow-keywords;
     --doc-height: 100%;
@@ -129,6 +154,9 @@
     --drawerBarBottom: 0px;
     --drawerBarLeft: 0px;
     --drawerBarRight: 0px;
+    /* The width of the screen beside the bar. The desktop layout (the chat column, the sidebars, the fullscreen
+       panels) is laid out in it as it would be in the whole window. */
+    --besideDrawerBarWidth: calc(100dvw - var(--drawerBarLeft) - var(--drawerBarRight));
 
     /*styles for the color picker*/
     --tool-cool-color-picker-btn-bg: transparent;
@@ -807,8 +835,8 @@ hr {
     left: calc((100dvw - var(--sheldWidth))/2);
     top: var(--drawerBarTop);
     margin: 0 auto;
-    left: 0;
-    right: 0;
+    left: var(--drawerBarLeft);
+    right: var(--drawerBarRight);
     z-index: 30;
     min-height: 100px;
     min-width: 100px;
@@ -3033,11 +3061,11 @@ input[type="file"] {
     flex-direction: column;
     box-shadow: 0 0 10px var(--black70a);
     z-index: 4000;
-    left: 0;
+    left: var(--drawerBarLeft);
     top: 0;
     margin: 0;
     right: unset;
-    width: calc(((100dvw - var(--sheldWidth)) / 2) - 1px);
+    width: calc(((var(--besideDrawerBarWidth) - var(--sheldWidth)) / 2) - 1px);
     height: unset;
 
 }
@@ -4163,6 +4191,14 @@ grammarly-extension {
 body #toast-container {
     margin-top: var(--drawerBarTop);
     margin-bottom: var(--drawerBarBottom);
+    margin-left: var(--drawerBarLeft);
+    margin-right: var(--drawerBarRight);
+}
+
+/* toastr makes these 100% wide, which the margins above can't narrow. */
+body #toast-container:is(.toast-top-center, .toast-bottom-center, .toast-top-full-width, .toast-bottom-full-width) {
+    left: 0;
+    width: auto;
 }
 
 body #toast-container>div {
@@ -5764,11 +5800,11 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     max-height: calc(100dvh - calc(var(--drawerBarTop) + var(--drawerBarBottom) + var(--bottomFormBlockSize)));
     display: none;
     position: absolute;
-    /* --drawerContainerTop: where this drawer's containing block starts on screen, when the drawer bar isn't at the
-       top (toggle-dependent.css) */
+    /* --drawerContainerTop / Left / Right: how far this drawer's containing block is from the top, left and right
+       screen edges, when the drawer bar isn't at the top (toggle-dependent.css) */
     top: calc(var(--drawerBarTop) - var(--drawerContainerTop));
-    left: 0;
-    right: 0;
+    left: calc(var(--drawerBarLeft) - var(--drawerContainerLeft));
+    right: calc(var(--drawerBarRight) - var(--drawerContainerRight));
     margin: 0 auto;
     height: 0;
     backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
@@ -5807,7 +5843,7 @@ body:not(.movingUI) .drawer-content.maximized {
     width: var(--sheldWidth) !important;
     top: var(--drawerBarTop) !important;
     margin: 0 auto !important;
-    right: 0 !important;
+    right: var(--drawerBarRight) !important;
 }
 
 /*to prevent draggables from being made too small to see*/
@@ -5828,8 +5864,7 @@ body:not(.movingUI) .drawer-content.maximized {
 
 .fillLeft,
 .fillRight {
-    width: calc((100vw - var(--sheldWidth) - 2px) /2);
-    width: calc((100dvw - var(--sheldWidth) - 2px) /2);
+    width: calc((var(--besideDrawerBarWidth) - var(--sheldWidth) - 2px) /2);
     max-height: calc(100vh - var(--topBarBlockSize));
     max-height: calc(100dvh - var(--topBarBlockSize));
     height: 0;
@@ -5843,12 +5878,12 @@ body:not(.movingUI) .drawer-content.maximized {
 }
 
 .fillLeft {
-    left: 0;
+    left: var(--drawerBarLeft);
     right: auto;
 }
 
 .fillRight {
-    right: 0;
+    right: var(--drawerBarRight);
     left: calc(100% - var(--sheldWidth) /2 + var(--sheldWidth) +1px);
     z-index: 3000;
 }
@@ -6069,7 +6104,7 @@ body:not(.movingUI) .drawer-content.maximized {
     min-height: 100px;
     max-height: 90vh;
     max-width: 90vw;
-    width: calc((100vw - var(--sheldWidth)) /2);
+    width: calc((var(--besideDrawerBarWidth) - var(--sheldWidth)) /2);
     position: absolute;
     padding: 0;
     filter: drop-shadow(1px 1px 2px var(--black50a));
@@ -6088,10 +6123,10 @@ body:not(.movingUI) .drawer-content.maximized {
 .zoomed_avatar {
     /* Max height with 2/3 aspect ratio */
     --maxWidth: calc(90vh * 0.666);
-    /* Left gap between the left corner and chat */
-    --leftGapWidth: calc((100vw - var(--sheldWidth)) / 2);
+    /* Left gap between the left screen edge (or the drawer bar there) and chat */
+    --leftGapWidth: calc((var(--besideDrawerBarWidth) - var(--sheldWidth)) / 2);
     /* Left position of the avatar (half of the gap minus half of the avatar width) */
-    --leftPosition: max(0px, calc((var(--leftGapWidth) - var(--maxWidth)) / 2));
+    --leftPosition: calc(var(--drawerBarLeft) + max(0px, calc((var(--leftGapWidth) - var(--maxWidth)) / 2)));
     padding: 0;
     border: 0;
     background-color: transparent;
