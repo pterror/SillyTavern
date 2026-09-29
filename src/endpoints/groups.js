@@ -8,7 +8,7 @@ import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-f
 
 import { color, tryParse } from '../util.js';
 import { forbiddenRegExp } from '../middleware/validateFileName.js';
-import { writeGroupFileAndRow, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany, groupRowExists } from '../character-metadata-db.js';
+import { writeGroupFileAndRow, writeGroupFileAtOtherPath, deleteGroupRow, getGroupFavsByIds, getEntityTagIdsForMany, groupRowExists } from '../character-metadata-db.js';
 import { calculateGroupChatStats } from '../character-shallow.js';
 import { normalizeFav } from '../../public/scripts/hash-utils.js';
 import { isValidGroupId, normalizeGroupId, normalizeGroupRecord } from '../group-id.js';
@@ -491,7 +491,7 @@ export async function writeGroupFile(directories, group, { filePath, createRow =
     const pathToFile = filePath ?? ownPath;
     const writeFile = () => writeFileAtomicSync(pathToFile, JSON.stringify(group, null, 4));
     if (path.resolve(pathToFile) !== path.resolve(ownPath)) {
-        writeFile();
+        await writeGroupFileAtOtherPath(directories, group, pathToFile, writeFile);
         return;
     }
     await writeGroupFileAndRow(directories, group, writeFile, { createIfMissing: createRow });
@@ -588,11 +588,13 @@ router.post('/delete', validateGroupIdBody, async (request, response) => {
             console.error('Could not delete group chats. Clean them up manually.', error);
         }
 
+        let fileDeleted = false;
         if (fs.existsSync(pathToGroup)) {
             fs.unlinkSync(pathToGroup);
+            fileDeleted = true;
         }
 
-        await deleteGroupRow(request.user.directories, id).catch(err =>
+        await deleteGroupRow(request.user.directories, id, { fileDeleted }).catch(err =>
             console.error(`Could not remove group metadata store row for ${id}:`, err));
     });
 
