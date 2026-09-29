@@ -1942,33 +1942,25 @@ export async function getCharacterCardJson(directories, avatar) {
     return row?.card_json ?? null;
 }
 
-/** card_json for the given ids via WHERE id IN (...), never scanning every row - callers pass a bounded
- * subset (one request's ids, one batch of a stream), so only that subset's card_json is ever in memory.
+/**
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
- * @returns {Promise<Map<string, string>>}
+ * @param {string} avatar
+ * @returns {Promise<{ chatSize: number, dateLastChat: number } | null>} The row's chat_size and date_last_chat, or
+ *   null when it has no row (or the metadata store is unavailable).
  */
-export async function getCardJsonByIds(directories, ids) {
+export async function getCharacterChatStats(directories, avatar) {
     const entry = await getEntry(directories);
-    if (!entry || !Array.isArray(ids) || ids.length === 0) return new Map();
-
-    /** @type {Map<string, string>} */
-    const result = new Map();
-    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
-        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
-        const placeholders = batch.map(() => '?').join(',');
-        for (const row of /** @type {Generator<{ id: string, card_json: string }>} */ (entry.db.iterate(`SELECT id, card_json FROM characters WHERE id IN (${placeholders})`, batch))) {
-            result.set(row.id, row.card_json);
-        }
-    }
-    return result;
+    if (!entry) return null;
+    const row = (/** @type {{ chat_size: number, date_last_chat: number } | undefined} */ (entry.db.get('SELECT chat_size, date_last_chat FROM characters WHERE id = @id', { id: avatar })));
+    return row ? { chatSize: row.chat_size, dateLastChat: row.date_last_chat } : null;
 }
 
 /**
  * @typedef {{ id: string, card_json: string, chat_size: number, date_last_chat: number }} CharacterIndexRow
  */
 
-/** The rows of `ids`, which the caller keeps bounded (one batch), the same as getCardJsonByIds().
+/** The rows of `ids` via WHERE id IN (...), never scanning every row. The caller keeps `ids` bounded (one request's
+ * ids, one batch of a stream), so only those rows' card_json is ever in memory.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} ids
  * @returns {Promise<Map<string, CharacterIndexRow>>}
