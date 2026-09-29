@@ -138,18 +138,22 @@ async function showSwipe(page, swipeId, text) {
 }
 
 /**
- * Collects every request that could write chat rows: any POST under /api/chats/ other than the openings read.
+ * Collects every request that could write chat rows: any POST under /api/chats/ other than the openings reads.
  * @param {import('@playwright/test').Page} page
- * @returns {{writes: string[], openingBodies: any[]}}
+ * @returns {{writes: string[], openingBodies: any[], landingBodies: any[]}}
  */
 function recordChatRequests(page) {
-    const record = { writes: [], openingBodies: [] };
+    const record = { writes: [], openingBodies: [], landingBodies: [] };
     page.on('request', (request) => {
         if (request.method() !== 'POST') return;
         const path = new URL(request.url()).pathname;
         if (!path.startsWith('/api/chats/')) return;
         if (path === '/api/chats/openings') {
             record.openingBodies.push(request.postDataJSON());
+            return;
+        }
+        if (path === '/api/chats/openings/land') {
+            record.landingBodies.push(request.postDataJSON());
             return;
         }
         record.writes.push(path);
@@ -489,7 +493,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         expect(storedAfter.alternatives.filter(x => x.node_id)).toEqual(storedBefore.alternatives.filter(x => x.node_id));
     });
 
-    test('editing the showing greeting into a stored opening\'s text outside the loaded window finds it with around and swaps in memory', async ({ page }) => {
+    test('editing the showing greeting into a stored opening\'s text outside the loaded window finds it through the server and swaps in memory', async ({ page }) => {
         const s = stamp();
         const name = `ProvCollideOut-${s}`;
         const [g0, a] = [`Zero ${s}`, `Alpha ${s}`];
@@ -524,7 +528,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         expect(after.swipes[60]).toBe(g0);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(target);
 
-        expect(requests.openingBodies.some(body => body?.around?.mes === target)).toBe(true);
+        expect(requests.landingBodies.some(body => body?.edits?.some(edit => edit.to === target))).toBe(true);
         expect(requests.writes).toEqual([]);
         const storedAfter = await fetchOpenings(page, avatar);
         expect(storedAfter.alternatives.filter(x => x.node_id)).toEqual(storedBefore.alternatives.filter(x => x.node_id));
