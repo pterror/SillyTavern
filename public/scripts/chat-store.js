@@ -402,43 +402,55 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
     };
 
     /**
-     * The card-only opening the shown slot's greeting became when its text changed without an edit of this page's
-     * saying so (another session edited it): the card-only openings before and after the slot are matched, in order,
-     * against the new card-only openings, and the one new text they leave between them is it. -1 when they don't
-     * leave exactly one, or it is text that was already among the openings.
+     * The shown greeting's slot among the new openings, from the openings shown before and the new ones alone: the
+     * openings before and after the slot are matched, in order, against the new ones. What they leave between them is
+     * the slot: the opening at its old offset from the matched one before it, clamped to what they leave; when they
+     * leave nothing, the opening after the matched one before it, or the one before that if none follows. -1 when
+     * there are no openings.
      */
     const placeShownSlot = () => {
         /** @type {string[]} */
-        const oldCardOnly = [];
+        const oldList = [];
         let slot = -1;
         for (let k = 0; k < swipes.length; k++) {
-            if (typeof swipes[k] !== 'string' || isStoredNodeId(swipeInfo[k]?.node_id)) continue;
-            if (k === shownWas) slot = oldCardOnly.length;
-            oldCardOnly.push(swipes[k]);
+            if (typeof swipes[k] !== 'string') continue;
+            if (k === shownWas) slot = oldList.length;
+            oldList.push(swipes[k]);
         }
-        if (slot < 0) return -1;
-        const fresh = extras.map(e => e.mes);
+        /** @type {number[]} */
+        const newAt = [];
+        for (let k = 0; k < keptSwipes.length; k++) {
+            if (typeof keptSwipes[k] === 'string') newAt.push(k);
+        }
+        if (slot < 0 || newAt.length === 0) return -1;
+        const newList = newAt.map(k => keptSwipes[k]);
         let before = 0;
-        for (let j = 0; j < slot && before < fresh.length; j++) {
-            if (oldCardOnly[j] === fresh[before]) before++;
+        let leftOld = -1;
+        for (let j = 0; j < slot && before < newList.length; j++) {
+            if (oldList[j] === newList[before]) {
+                before++;
+                leftOld = j;
+            }
         }
         let after = 0;
-        for (let j = oldCardOnly.length - 1; j > slot && before + after < fresh.length; j--) {
-            if (oldCardOnly[j] === fresh[fresh.length - 1 - after]) after++;
+        for (let j = oldList.length - 1; j > slot && before + after < newList.length; j--) {
+            if (oldList[j] === newList[newList.length - 1 - after]) after++;
         }
-        if (before + after + 1 !== fresh.length) return -1;
-        const text = fresh[before];
-        if (swipes.includes(text)) return -1;
-        return keptSwipes.indexOf(text);
+        const end = newList.length - after;
+        if (before < end) {
+            return newAt[Math.min(Math.max(before - 1 + (slot - leftOld), before), end - 1)];
+        }
+        return newAt[before < newList.length ? before : before - 1];
     };
 
     let landAt = shownAt;
     if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
-        // The card greeting on screen is gone: follow it to its new text if this page edited it (by position on the
-        // card when its new text isn't among the openings), else by its slot among the card's openings if another
-        // session changed its text, otherwise show the default.
+        // The card greeting on screen isn't among the loaded openings: show a stored opening with its text if there is
+        // one, else follow it to its new text if this page edited it (by position on the card when its new text isn't
+        // among the openings), else keep to its slot among the openings.
+        landAt = await placeText(shownText);
         // With several greetings changed from the shown text, the shown text was left only once the last of them was.
-        const edit = edits.findLast(e => e.from === shownText);
+        const edit = landAt < 0 ? edits.findLast(e => e.from === shownText) : undefined;
         if (edit) {
             landAt = await placeText(edit.to);
             if (landAt < 0 && edit.index !== undefined) landAt = placeCardPosition(edit.index);

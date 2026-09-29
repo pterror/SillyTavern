@@ -558,6 +558,99 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(opening).toEqual({ mes: elsewhere, swipes: [g[0], elsewhere, g[3]] });
     });
 
+    /**
+     * Opens a character with greetings `g`, shows greeting `shown` in the chat and opens the popup, runs `otherSession`
+     * (another session's changes), then sets the greeting in popup row `defaultRow` as the default from this page.
+     * Resolves to the chat's opening afterwards.
+     * @param {import('@playwright/test').Page} page
+     * @param {object} args
+     * @param {string} args.name
+     * @param {string[]} args.g
+     * @param {number} args.shown
+     * @param {(avatar: string) => Promise<void>} args.otherSession
+     * @param {number} args.defaultRow
+     * @param {string} args.expected The text the chat should end up showing.
+     */
+    async function chatAfterOtherSession(page, { name, g, shown, otherSession, defaultRow, expected }) {
+        const avatar = await createCharacter(page, name, g);
+        await openCharacter(page, avatar);
+        await page.evaluate(async (shown) => {
+            const { swipe } = await import('/script.js');
+            const { SWIPE_DIRECTION, SWIPE_SOURCE } = await import('/scripts/constants.js');
+            await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: shown });
+        }, shown);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[shown], { timeout: 10000 });
+        await openGreetingsPopup(page, g.length);
+        await otherSession(avatar);
+
+        const response = greetingOpResponse(page, 'default/set');
+        await popupRow(page, defaultRow).locator('.set_default_greeting').click();
+        expect((await response).ok()).toBe(true);
+        await expectPageHoldsServerList(page, avatar);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(expected, { timeout: 10000 });
+        return page.evaluate(() => {
+            // @ts-ignore
+            const m = SillyTavern.getContext().chat[0];
+            return { mes: m.mes, swipe_id: m.swipe_id, swipes: [...m.swipes] };
+        });
+    }
+
+    test('the shown text is still an opening after another session\'s changes: the chat shows that opening', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const opening = await chatAfterOtherSession(page, {
+            name: `SlotStillThere-${s}`, g, shown: 2, defaultRow: 1, expected: g[2],
+            otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) }),
+        });
+        // Zero stays: the chat opened on it, so it is a stored opening.
+        expect(opening).toEqual({ mes: g[2], swipe_id: 2, swipes: [g[0], g[1], g[2]] });
+    });
+
+    test('the shown greeting is gone and nothing is left between its neighbours: the chat shows the next opening', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
+        const opening = await chatAfterOtherSession(page, {
+            name: `SlotEmptyNext-${s}`, g, shown: 1, defaultRow: 3, expected: g[2],
+            otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]) }),
+        });
+        expect(opening).toEqual({ mes: g[2], swipe_id: 1, swipes: [g[0], g[2], g[3]] });
+    });
+
+    test('the shown greeting was last and is gone: the chat shows the opening before it', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
+        const opening = await chatAfterOtherSession(page, {
+            name: `SlotEmptyPrevious-${s}`, g, shown: 3, defaultRow: 1, expected: g[2],
+            otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 3, expected_hash: hashGreetingText(g[3]) }),
+        });
+        expect(opening).toEqual({ mes: g[2], swipe_id: 2, swipes: [g[0], g[1], g[2]] });
+    });
+
+    test('the shown greeting now has another opening\'s text: nothing is left between its neighbours, so the chat shows the next opening', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
+        const opening = await chatAfterOtherSession(page, {
+            name: `SlotCopy-${s}`, g, shown: 2, defaultRow: 1, expected: g[3],
+            otherSession: avatar => otherSessionOp(page, 'edit', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g[2]), text: g[0] }),
+        });
+        expect(opening).toEqual({ mes: g[3], swipe_id: 2, swipes: [g[0], g[1], g[3]] });
+    });
+
+    test('several openings changed between the shown greeting\'s neighbours: the chat keeps its offset from the left neighbour, clamped', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`, `Four ${s}`];
+        const [x2, x3] = [`Two changed elsewhere ${s}`, `Three changed elsewhere ${s}`];
+        const opening = await chatAfterOtherSession(page, {
+            name: `SlotSeveral-${s}`, g, shown: 3, defaultRow: 4, expected: x3,
+            otherSession: async (avatar) => {
+                await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g[2]), text: x2 });
+                await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 3, expected_hash: hashGreetingText(g[3]), text: x3 });
+                await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]) });
+            },
+        });
+        expect(opening).toEqual({ mes: x3, swipe_id: 2, swipes: [g[0], x2, x3, g[4]] });
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
