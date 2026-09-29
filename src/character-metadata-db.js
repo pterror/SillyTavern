@@ -4264,7 +4264,105 @@ function queueChatStatsReconcileSync(db, kind, id) {
  */
 export function startChatStatsReconcile(directoriesList) {
     chatStatsReconcileStarted = true;
-    for (const directories of directoriesList) kickChatStatsReconcile(directories);
+    for (const directories of directoriesList) {
+        kickChatStatsReconcile(directories);
+        startChatStatsFullPass(directories);
+    }
+}
+
+/** The meta key holding the one-time full pass's progress: the last row it counted, as JSON, or 'done'. */
+const CHAT_STATS_FULL_PASS_META_KEY = 'chat_stats_full_pass';
+/** The row kinds the full pass walks, in the order it walks them. */
+const CHAT_STATS_FULL_PASS_KINDS = /** @type {const} */ ([
+    { kind: 'character', table: 'characters' },
+    { kind: 'group', table: 'groups' },
+]);
+
+/**
+ * Each store's running one-time full pass, by store root.
+ * @type {Map<string, Promise<void>>}
+ */
+const chatStatsFullPasses = new Map();
+
+/**
+ * Starts the store's one-time full pass (runChatStatsFullPass()) unless it's done or already running.
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+function startChatStatsFullPass(directories) {
+    if (!chatStatsReconcileStarted || !isMainThread || isReadOnlyMode()) return;
+    if (chatStatsFullPasses.has(directories.root)) return;
+    const done = runChatStatsFullPass(directories)
+        .catch(err => console.error(color.red(`[character-metadata] The one-time chat stats pass for ${directories.root} failed; it resumes on the next boot:`), err))
+        .finally(() => {
+            if (chatStatsFullPasses.get(directories.root) === done) chatStatsFullPasses.delete(directories.root);
+        });
+    chatStatsFullPasses.set(directories.root, done);
+}
+
+/**
+ * Counts every character and group row's chat stats from its owner's messages once, to fix values that drifted before
+ * every writer kept them current; after it, chat_stats_pending alone keeps them right. On this thread for the same
+ * reason as the drain (kickChatStatsReconcile()). A row whose owner has a stats change in flight, or whose count
+ * fails, goes into chat_stats_pending, where the drain retries it.
+ * @param {import('./users.js').UserDirectoryList} directories
+ */
+async function runChatStatsFullPass(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const saved = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = @key', { key: CHAT_STATS_FULL_PASS_META_KEY })))?.value;
+    if (saved === 'done') return;
+    /** @type {QueuedChatStats | null} */
+    let after = saved === undefined ? null : JSON.parse(saved);
+    console.log(color.cyan(`[character-metadata] Counting every character's and group's chat stats once, for ${directories.root}${after ? `, resuming after ${after.kind} ${after.id}` : ''}.`));
+
+    for (;;) {
+        // Stopped by disposeMetadataStores(); it resumes from the saved row on the next start.
+        if (!chatStatsReconcileStarted) return;
+        const current = await getEntry(directories);
+        if (!current) return;
+        const { db } = current;
+        const view = await openOwnerStatsView(directories);
+        const page = readChatStatsFullPassPage(db, after);
+        if (page.length === 0) {
+            db.run(UPSERT_META_SQL, { key: CHAT_STATS_FULL_PASS_META_KEY, value: 'done' });
+            console.log(color.green(`[character-metadata] Counted every character's and group's chat stats for ${directories.root}.`));
+            return;
+        }
+        const started = performance.now();
+        for (const row of page) {
+            after = row;
+            try {
+                if (!reconcileQueuedChatStatsSync(db, view, row)) queueChatStatsReconcileSync(db, row.kind, row.id);
+            } catch (err) {
+                console.error(color.red(`[character-metadata] Counting the chat stats of ${row.kind} ${row.id} failed; it is queued to be retried:`), err);
+                queueChatStatsReconcileSync(db, row.kind, row.id);
+            }
+            if (performance.now() - started >= CHAT_STATS_QUEUE_BUDGET_MS) break;
+        }
+        db.run(UPSERT_META_SQL, { key: CHAT_STATS_FULL_PASS_META_KEY, value: JSON.stringify(after) });
+        await delay(CHAT_STATS_QUEUE_PAUSE_MS);
+    }
+}
+
+/**
+ * The next page of character and group rows after `after`, characters first, each kind by id.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {QueuedChatStats | null} after
+ * @returns {QueuedChatStats[]}
+ */
+function readChatStatsFullPassPage(db, after) {
+    /** @type {QueuedChatStats[]} */
+    const page = [];
+    const start = after === null ? 0 : CHAT_STATS_FULL_PASS_KINDS.findIndex(k => k.kind === after.kind);
+    for (let i = start; i < CHAT_STATS_FULL_PASS_KINDS.length && page.length < CHAT_STATS_QUEUE_PAGE_SIZE; i++) {
+        const { kind, table } = CHAT_STATS_FULL_PASS_KINDS[i];
+        const limit = CHAT_STATS_QUEUE_PAGE_SIZE - page.length;
+        const rows = after !== null && i === start
+            ? db.iterate(`SELECT id FROM ${table} WHERE id > @id ORDER BY id LIMIT @limit`, { id: after.id, limit })
+            : db.iterate(`SELECT id FROM ${table} ORDER BY id LIMIT @limit`, { limit });
+        for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) page.push({ kind, id: row.id });
+    }
+    return page;
 }
 
 /**
@@ -4291,12 +4389,16 @@ export function kickChatStatsReconcile(directories) {
 }
 
 /**
- * Settles once the store has no drain running.
+ * Settles once the store has no drain and no one-time full pass running.
  * @param {import('./users.js').UserDirectoryList} directories
  */
 export async function chatStatsReconcileIdle(directories) {
-    for (let drain = chatStatsDrains.get(directories.root); drain; drain = chatStatsDrains.get(directories.root)) {
-        await drain.done;
+    for (;;) {
+        const running = chatStatsFullPasses.get(directories.root) ?? chatStatsDrains.get(directories.root)?.done;
+        if (!running) return;
+        await running;
+        // A row the full pass queued kicks the drain on the next turn.
+        await new Promise(resolve => setImmediate(resolve));
     }
 }
 

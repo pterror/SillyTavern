@@ -255,3 +255,121 @@ describe('a new row starts at 0/0 and its owner\'s messages are counted in the b
         expect(await storedGroup('g2')).toEqual(await recompute('g2'));
     });
 });
+
+describe('a one-time pass counts every row\'s chat stats', () => {
+    /**
+     * @param {string} sql
+     * @param {unknown[]} params
+     */
+    async function writeMetadata(sql, ...params) {
+        const { default: Database } = await import('better-sqlite3');
+        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        try {
+            raw.prepare(sql).run(...params);
+        } finally {
+            raw.close();
+        }
+    }
+
+    async function fullPassProgress() {
+        const [row] = await readMetadata('SELECT value FROM meta WHERE key = ?', 'chat_stats_full_pass');
+        return row?.value ?? null;
+    }
+
+    /**
+     * Rows seeded before the start, with nothing queued, so only the pass can count them.
+     * @param {string[]} avatars
+     * @param {string[]} groupIds
+     */
+    async function seedUnqueued(avatars, groupIds) {
+        for (const avatar of avatars) await seedCharacter(avatar);
+        for (const id of groupIds) await seedGroup(id);
+        await writeMetadata('DELETE FROM chat_stats_pending');
+    }
+
+    test('drifted character and group rows are fixed with a change row or groups version row, each logged, and the pass is marked done', async () => {
+        await seedMessages('Alice', { kind: 'character', rowId: 'Alice.png' }, ['hello', 'there é']);
+        await seedMessages('g1', { kind: 'group', rowId: 'g1' }, ['one']);
+        await seedUnqueued(['Alice.png', 'Empty.png'], ['g1']);
+        await writeMetadata('UPDATE characters SET chat_size = 7, date_last_chat = 3 WHERE id = ?', 'Empty.png');
+        const seqBefore = await metadataDb.getCurrentSeq(directories);
+        const versionBefore = await metadataDb.getGroupsVersion(directories);
+        const log = /** @type {any} */ (console.log);
+        log.mockClear();
+
+        metadataDb.startChatStatsReconcile([directories]);
+        await drained();
+
+        expect(await storedCharacter('Alice.png')).toEqual(await recompute('Alice'));
+        expect(await storedCharacter('Empty.png')).toEqual({ chatSize: 0, dateLastChat: 0 });
+        expect(await storedGroup('g1')).toEqual(await recompute('g1'));
+        const { changes } = await metadataDb.getChangesSince(directories, seqBefore, { limit: 100 });
+        expect(changes.map(c => c.id).sort()).toEqual(['Alice.png', 'Empty.png']);
+        expect(await metadataDb.getGroupsVersion(directories)).toBeGreaterThan(versionBefore);
+        const logged = log.mock.calls.map(args => String(args[0]));
+        for (const what of ['character Alice.png', 'character Empty.png', 'group g1']) {
+            expect(logged.some(line => line.includes(`Chat stats of ${what} counted`))).toBe(true);
+        }
+        expect(await fullPassProgress()).toBe('done');
+        expect(await queued()).toEqual([]);
+    });
+
+    test('once done, later starts leave the rows alone', async () => {
+        await seedMessages('Alice', { kind: 'character', rowId: 'Alice.png' }, ['hello']);
+        await seedUnqueued(['Alice.png'], []);
+        metadataDb.startChatStatsReconcile([directories]);
+        await drained();
+        expect(await fullPassProgress()).toBe('done');
+
+        metadataDb.disposeMetadataStores();
+        await writeMetadata('UPDATE characters SET chat_size = 1 WHERE id = ?', 'Alice.png');
+        metadataDb.startChatStatsReconcile([directories]);
+        await drained();
+
+        expect(await readMetadata('SELECT chat_size FROM characters WHERE id = ?', 'Alice.png')).toEqual([{ chat_size: 1 }]);
+    });
+
+    test('a pass stopped part way resumes after the last row it saved', async () => {
+        await seedMessages('A', { kind: 'character', rowId: 'A.png' }, ['a']);
+        await seedMessages('C', { kind: 'character', rowId: 'C.png' }, ['c']);
+        await seedMessages('g1', { kind: 'group', rowId: 'g1' }, ['g']);
+        await seedUnqueued(['A.png', 'B.png', 'C.png'], ['g1']);
+        await writeMetadata('INSERT INTO meta (key, value) VALUES (?, ?)', 'chat_stats_full_pass', JSON.stringify({ kind: 'character', id: 'B.png' }));
+
+        metadataDb.startChatStatsReconcile([directories]);
+        await drained();
+
+        expect(await storedCharacter('A.png')).toEqual({ chatSize: 0, dateLastChat: 0 });
+        expect(await storedCharacter('C.png')).toEqual(await recompute('C'));
+        expect(await storedGroup('g1')).toEqual(await recompute('g1'));
+        expect(await fullPassProgress()).toBe('done');
+    });
+
+    test('a row whose owner has a stats change in flight goes into chat_stats_pending and is counted once it lands', async () => {
+        await seedMessages('Alice', { kind: 'character', rowId: 'Alice.png' }, ['already stored']);
+        await seedUnqueued(['Alice.png'], []);
+        /** @type {() => void} */
+        let release = () => {};
+        const gate = new Promise(resolve => { release = () => resolve(undefined); });
+        tree.setOwnerWriteHandler(async (write) => {
+            await gate;
+            if (write.kind === 'character') await metadataDb.applyCharacterChatStats(directories, write.rowId, write);
+        });
+        const write = tree.addOpeningAlternatives(directories, 'Alice', msg('in flight'));
+        await new Promise(resolve => setImmediate(resolve));
+
+        metadataDb.startChatStatsReconcile([directories]);
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(await fullPassProgress()).toBe('done');
+        expect(await queued()).toEqual([{ kind: 'character', id: 'Alice.png' }]);
+        expect(await storedCharacter('Alice.png')).toEqual({ chatSize: 0, dateLastChat: 0 });
+
+        release();
+        await write;
+        await drained();
+
+        expect(await storedCharacter('Alice.png')).toEqual(await recompute('Alice'));
+        expect(await queued()).toEqual([]);
+    });
+});
