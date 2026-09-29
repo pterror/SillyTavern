@@ -119,6 +119,9 @@ export const ANCHOR_CONTENT = '{"__anchor":true}';
 /** How many alternatives either side of the selected one are sent inline with a chat load. */
 const ALTERNATIVE_WINDOW = 5;
 
+// Rows per keyset read (WHERE id > ? ORDER BY id LIMIT ?) in the read-then-write migrations and writers.
+const KEYSET_CHUNK = 1000;
+
 /** @param {Pick<MessageRow, 'parent_id'> | undefined | null} row */
 function isAnchorRow(row) {
     return !!row && row.parent_id === null;
@@ -486,15 +489,30 @@ function migrateIdentityHashSync(db) {
         db.exec('ALTER TABLE messages ADD COLUMN identity_hash TEXT');
     }
 
-    const pending = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'content'>[]} */ (
-        db.all('SELECT id, parent_id, content FROM messages WHERE parent_id IS NOT NULL AND identity_hash IS NULL')
-    );
-    if (pending.length) {
+    const readPendingChunk = (/** @type {string} */ afterId) => (/** @type {Pick<MessageRow, 'id' | 'parent_id' | 'content'>[]} */ (db.readBounded(
+        'SELECT id, parent_id, content FROM messages WHERE parent_id IS NOT NULL AND identity_hash IS NULL AND id > ? ORDER BY id LIMIT ?',
+        [afterId, KEYSET_CHUNK],
+        KEYSET_CHUNK,
+    )));
+
+    const firstChunk = readPendingChunk('');
+    let lastId = '';
+    if (firstChunk.length) {
         db.transaction(() => {
-            for (const row of pending) {
-                // Filtered by `parent_id IS NOT NULL` in the SELECT above.
-                db.run('UPDATE messages SET identity_hash = @hash WHERE id = @id',
-                    { id: row.id, hash: identityHashOf(/** @type {string} */ (row.parent_id), row.content) });
+            // transaction() reruns this callback on busy; a rerun starts over from the first chunk.
+            lastId = '';
+            let chunk = firstChunk;
+            for (;;) {
+                for (const row of chunk) {
+                    // Filtered by `parent_id IS NOT NULL` in the SELECT above.
+                    db.run('UPDATE messages SET identity_hash = @hash WHERE id = @id',
+                        { id: row.id, hash: identityHashOf(/** @type {string} */ (row.parent_id), row.content) });
+                }
+
+                if (chunk.length < KEYSET_CHUNK) break;
+                lastId = chunk[chunk.length - 1].id;
+                chunk = readPendingChunk(lastId);
+                if (chunk.length === 0) break;
             }
         });
     }
