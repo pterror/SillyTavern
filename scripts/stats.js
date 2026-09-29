@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Read-only corpus stats CLI. Safe to run against a live server: opened with `{ readonly: true }`,
- * which can read a WAL-mode database without blocking the live read-write connection.
+ * Read-only corpus stats CLI. Safe to run against a live server: opened through the engine's
+ * `{ readonly: true }` mode, which can read a WAL-mode database without blocking the live read-write
+ * connection.
  *
  * Usage:
  *   node scripts/stats.js
@@ -12,6 +13,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
+
+import { openNativeDatabase } from '../src/endpoints/sqlite-engine.js';
+
+// better-sqlite3's own default; the engine's longer default is sized for the server's bulk write passes.
+const BUSY_TIMEOUT_MS = 5000;
+const TOP_N = 10;
 
 function getArg(args, name, fallback) {
     const index = args.indexOf(`--${name}`);
@@ -61,7 +68,7 @@ function tryOpen(dbPath, label) {
         return null;
     }
     try {
-        return new Database(dbPath, { readonly: true, fileMustExist: true });
+        return openNativeDatabase(Database, dbPath, { readonly: true, busyTimeoutMs: BUSY_TIMEOUT_MS });
     } catch (error) {
         console.warn(`warning: couldn't open ${label} (${dbPath}): ${error.message} - skipping its section(s)`);
         return null;
@@ -83,17 +90,17 @@ function main() {
     heading('Overview');
 
     if (charDb) {
-        const { count: totalCharacters } = charDb.prepare('SELECT COUNT(*) AS count FROM characters').get();
-        const { count: totalGroups } = charDb.prepare('SELECT COUNT(*) AS count FROM groups').get();
-        const { count: totalFavCharacters } = charDb.prepare('SELECT COUNT(*) AS count FROM characters WHERE fav = 1').get();
-        const { count: totalFavGroups } = charDb.prepare('SELECT COUNT(*) AS count FROM groups WHERE fav = 1').get();
-        const { count: totalTags } = charDb.prepare('SELECT COUNT(*) AS count FROM tags').get();
-        const { count: characterTagAssignments } = charDb.prepare('SELECT COUNT(*) AS count FROM character_tags').get();
-        const { count: groupTagAssignments } = charDb.prepare('SELECT COUNT(*) AS count FROM group_tags').get();
+        const { count: totalCharacters } = charDb.get('SELECT COUNT(*) AS count FROM characters');
+        const { count: totalGroups } = charDb.get('SELECT COUNT(*) AS count FROM groups');
+        const { count: totalFavCharacters } = charDb.get('SELECT COUNT(*) AS count FROM characters WHERE fav = 1');
+        const { count: totalFavGroups } = charDb.get('SELECT COUNT(*) AS count FROM groups WHERE fav = 1');
+        const { count: totalTags } = charDb.get('SELECT COUNT(*) AS count FROM tags');
+        const { count: characterTagAssignments } = charDb.get('SELECT COUNT(*) AS count FROM character_tags');
+        const { count: groupTagAssignments } = charDb.get('SELECT COUNT(*) AS count FROM group_tags');
         const totalTagAssignments = characterTagAssignments + groupTagAssignments;
-        const { total: totalDataSize } = charDb.prepare('SELECT COALESCE(SUM(data_size), 0) AS total FROM characters').get();
-        const { total: totalChatSizeChars } = charDb.prepare('SELECT COALESCE(SUM(chat_size), 0) AS total FROM characters').get();
-        const { total: totalChatSizeGroups } = charDb.prepare('SELECT COALESCE(SUM(chat_size), 0) AS total FROM groups').get();
+        const { total: totalDataSize } = charDb.get('SELECT COALESCE(SUM(data_size), 0) AS total FROM characters');
+        const { total: totalChatSizeChars } = charDb.get('SELECT COALESCE(SUM(chat_size), 0) AS total FROM characters');
+        const { total: totalChatSizeGroups } = charDb.get('SELECT COALESCE(SUM(chat_size), 0) AS total FROM groups');
 
         console.log(line('Total characters:', totalCharacters));
         console.log(line('Total groups:', totalGroups));
@@ -106,8 +113,8 @@ function main() {
     }
 
     if (treeDb) {
-        const { count: totalBranches } = treeDb.prepare('SELECT COUNT(*) AS count FROM branches').get();
-        const { count: totalMessages } = treeDb.prepare('SELECT COUNT(*) AS count FROM messages').get();
+        const { count: totalBranches } = treeDb.get('SELECT COUNT(*) AS count FROM branches');
+        const { count: totalMessages } = treeDb.get('SELECT COUNT(*) AS count FROM messages');
         console.log(line('Total branches (chats):', totalBranches));
         console.log(line('Total messages:', totalMessages));
     }
@@ -116,15 +123,15 @@ function main() {
     // Top tags by usage
     // ---------------------------------------------------------------------
     if (charDb) {
-        heading('Top 10 tags by usage');
-        const topTags = charDb.prepare(`
+        heading(`Top ${TOP_N} tags by usage`);
+        const topTags = charDb.readBounded(`
             SELECT t.id, t.data, u.count
             FROM tag_usage u
             JOIN tags t ON t.id = u.tag_id
             WHERE u.count > 0
             ORDER BY u.count DESC
-            LIMIT 10
-        `).all();
+            LIMIT @limit
+        `, { limit: TOP_N }, TOP_N);
         if (topTags.length === 0) {
             console.log('  (no tag usage recorded)');
         } else {
@@ -147,24 +154,24 @@ function main() {
     // Recent activity
     // ---------------------------------------------------------------------
     if (charDb) {
-        heading('10 most recently added characters');
-        const recentlyAdded = charDb.prepare(`
+        heading(`${TOP_N} most recently added characters`);
+        const recentlyAdded = charDb.readBounded(`
             SELECT name_fold, date_added FROM characters
             ORDER BY date_added DESC
-            LIMIT 10
-        `).all();
+            LIMIT @limit
+        `, { limit: TOP_N }, TOP_N);
         table(
             ['Name', 'Date added'],
             recentlyAdded.map(r => [r.name_fold, formatDate(r.date_added)]),
         );
 
-        heading('10 most recently chatted characters');
-        const recentlyChatted = charDb.prepare(`
+        heading(`${TOP_N} most recently chatted characters`);
+        const recentlyChatted = charDb.readBounded(`
             SELECT name_fold, date_last_chat FROM characters
             WHERE date_last_chat IS NOT NULL AND date_last_chat > 0
             ORDER BY date_last_chat DESC
-            LIMIT 10
-        `).all();
+            LIMIT @limit
+        `, { limit: TOP_N }, TOP_N);
         if (recentlyChatted.length === 0) {
             console.log('  (no chat activity recorded)');
         } else {
@@ -179,23 +186,23 @@ function main() {
     // Storage
     // ---------------------------------------------------------------------
     if (charDb) {
-        heading('Top 10 characters by data size');
-        const byDataSize = charDb.prepare(`
+        heading(`Top ${TOP_N} characters by data size`);
+        const byDataSize = charDb.readBounded(`
             SELECT name_fold, data_size FROM characters
             ORDER BY data_size DESC
-            LIMIT 10
-        `).all();
+            LIMIT @limit
+        `, { limit: TOP_N }, TOP_N);
         table(
             ['Name', 'Data size'],
             byDataSize.map(r => [r.name_fold, formatBytes(r.data_size)]),
         );
 
-        heading('Top 10 characters by chat size');
-        const byChatSize = charDb.prepare(`
+        heading(`Top ${TOP_N} characters by chat size`);
+        const byChatSize = charDb.readBounded(`
             SELECT name_fold, chat_size FROM characters
             ORDER BY chat_size DESC
-            LIMIT 10
-        `).all();
+            LIMIT @limit
+        `, { limit: TOP_N }, TOP_N);
         table(
             ['Name', 'Chat size'],
             byChatSize.map(r => [r.name_fold, formatBytes(r.chat_size)]),
