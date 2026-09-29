@@ -12,12 +12,17 @@ let directories;
 
 /** While set, every insert into group_changes through the store's handle throws. */
 let failLogInsert = false;
+/** @type {Set<string>} Group ids whose inserts into group_changes throw. */
+let failLogInsertFor = new Set();
+/** @type {RegExp | null} While set, every write through the store's handle whose SQL matches it throws. */
+let failWriteMatching = null;
 
 /** @param {any} handle */
 function instrumentedHandle(handle) {
     const wrapped = { ...handle };
     wrapped.run = (sql, params) => {
-        if (failLogInsert && /INTO group_changes/.test(sql)) throw new Error('simulated log insert failure');
+        if (/INTO group_changes/.test(sql) && (failLogInsert || failLogInsertFor.has(params?.groupId))) throw new Error('simulated log insert failure');
+        if (failWriteMatching?.test(sql)) throw new Error('simulated write failure');
         return handle.run(sql, params);
     };
     return wrapped;
@@ -49,6 +54,8 @@ beforeEach(() => {
         fs.mkdirSync(dir, { recursive: true });
     }
     failLogInsert = false;
+    failLogInsertFor = new Set();
+    failWriteMatching = null;
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -56,6 +63,8 @@ beforeEach(() => {
 
 afterEach(() => {
     failLogInsert = false;
+    failLogInsertFor = new Set();
+    failWriteMatching = null;
     jest.restoreAllMocks();
     metadataDb.disposeMetadataStores();
     fs.rmSync(directories.root, { recursive: true, force: true });
@@ -346,6 +355,30 @@ describe('the groups version log', () => {
         const row = withRawDb(db => /** @type {any} */ (db.prepare('SELECT name, digest_content FROM groups WHERE id = \'1001\'').get()));
         expect(row).toEqual({ name: 'group 1001', digest_content: null });
     });
+
+    test('writeGroupFileAndRow: when the upsert fails no log row lands either', async () => {
+        await seedGroup('1001');
+
+        failWriteMatching = /INSERT INTO groups/;
+        const added = await addedBy(() => writeThroughStore({ id: '1001', name: 'renamed', members: [], chats: [] }));
+        failWriteMatching = null;
+
+        expect(added).toEqual([]);
+        expect(withRawDb(db => db.prepare('SELECT name FROM groups WHERE id = \'1001\'').pluck().get())).toBe('group 1001');
+    });
+
+    test('bootstrapGroupsIfNeeded: a group whose log insert fails is skipped with its row, and the others land', async () => {
+        await openStore();
+        writeGroupFileRaw('1001');
+        writeGroupFileRaw('1002');
+
+        failLogInsertFor = new Set(['1001']);
+        await metadataDb.bootstrapGroupsIfNeeded(directories);
+        failLogInsertFor = new Set();
+
+        expect(withRawDb(db => db.prepare('SELECT id FROM groups ORDER BY id').pluck().all())).toEqual(['1002']);
+        expect(logRows().map(row => row.group_id)).toEqual(['1002']);
+    });
 });
 
 describe('migrations run when the store opens', () => {
@@ -376,19 +409,43 @@ describe('migrations run when the store opens', () => {
         expect(logRows().map(row => row.group_id)).toEqual(['1001']);
     });
 
-    test('a migration whose log insert fails leaves the group row as it was', async () => {
+    test('migrateGroupsColumns: a group whose log insert fails is left as it was, and the others land', async () => {
+        writeGroupFileRaw('1001', { name: 'from file' });
+        writeGroupFileRaw('1002', { name: 'from file' });
+        withRawDb(db => {
+            db.exec('CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
+            db.prepare('INSERT INTO groups (id, name) VALUES (\'1001\', \'old\'), (\'1002\', \'old\')').run();
+        });
+
+        failLogInsertFor = new Set(['1001']);
+        await metadataDb.getGroupsVersion(directories);
+        failLogInsertFor = new Set();
+
+        expect(withRawDb(db => db.prepare('SELECT id, name, digest_content IS NULL AS noDigest FROM groups ORDER BY id').all())).toEqual([
+            { id: '1001', name: 'old', noDigest: 1 },
+            { id: '1002', name: 'from file', noDigest: 0 },
+        ]);
+        expect(logRows().map(row => row.group_id)).toEqual(['1002', '1002']);
+    });
+
+    test('migrateGroupDigestColumns: a group whose log insert fails is left as it was, and the others land', async () => {
         writeGroupFileRaw('1001');
+        writeGroupFileRaw('1002');
         withRawDb(db => {
             db.exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_fold TEXT NOT NULL DEFAULT '', fav INTEGER NOT NULL DEFAULT 0,
                 date_added INTEGER NOT NULL DEFAULT 0, date_last_chat INTEGER NOT NULL DEFAULT 0, chat_size INTEGER NOT NULL DEFAULT 0)`);
-            db.prepare('INSERT INTO groups (id, name) VALUES (\'1001\', \'group 1001\')').run();
+            db.prepare('INSERT INTO groups (id, name) VALUES (\'1001\', \'group 1001\'), (\'1002\', \'group 1002\')').run();
         });
 
-        failLogInsert = true;
-        await expect(metadataDb.getGroupsVersion(directories)).rejects.toThrow('simulated log insert failure');
-        failLogInsert = false;
+        failLogInsertFor = new Set(['1001']);
+        await metadataDb.getGroupsVersion(directories);
+        failLogInsertFor = new Set();
 
-        expect(withRawDb(db => db.prepare('SELECT digest_content FROM groups').pluck().get())).toBeNull();
+        expect(withRawDb(db => db.prepare('SELECT id, digest_content IS NULL AS noDigest FROM groups ORDER BY id').all())).toEqual([
+            { id: '1001', noDigest: 1 },
+            { id: '1002', noDigest: 0 },
+        ]);
+        expect(logRows().map(row => row.group_id)).toEqual(['1002']);
     });
 });
 

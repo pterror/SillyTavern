@@ -78,6 +78,27 @@ function insertGroupChange(db, groupId) {
     db.run('INSERT INTO group_changes (group_id) VALUES (@groupId)', { groupId });
 }
 
+/**
+ * Runs `fn` inside the caller's open transaction as one item that lands whole or not at all: if it throws, only its
+ * own writes are rolled back, and the error is rethrown for the caller to skip the item.
+ * @template T
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {() => T} fn
+ * @returns {T}
+ */
+function inItemSavepoint(db, fn) {
+    db.exec('SAVEPOINT group_item');
+    try {
+        const result = fn();
+        db.exec('RELEASE group_item');
+        return result;
+    } catch (err) {
+        db.exec('ROLLBACK TO group_item');
+        db.exec('RELEASE group_item');
+        throw err;
+    }
+}
+
 // Per-user SQLite index for character metadata. FTS lives in characters-search-index.js, not here.
 // Import direction is one-way: characters.js/tags.js import this module, never the reverse.
 // date_added is write-once: every upsert's ON CONFLICT omits it from the SET list.
@@ -784,22 +805,23 @@ function migrateGroupsColumns(db, directories) {
 
     db.transaction(() => {
         for (const id of existingIds) {
-            let changed = false;
             try {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
                 const group = JSON.parse(raw);
                 const stat = fs.statSync(filePath);
                 const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
-                changed = db.run(
-                    `UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded, date_last_chat = @dateLastChat, chat_size = @chatSize
-                        WHERE id = @id AND (name IS NOT @name OR name_fold IS NOT @nameFold OR fav IS NOT @fav OR date_added IS NOT @dateAdded OR date_last_chat IS NOT @dateLastChat OR chat_size IS NOT @chatSize)`,
-                    { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs), dateLastChat, chatSize },
-                ).changes > 0;
+                inItemSavepoint(db, () => {
+                    const { changes } = db.run(
+                        `UPDATE groups SET name = @name, name_fold = @nameFold, fav = @fav, date_added = @dateAdded, date_last_chat = @dateLastChat, chat_size = @chatSize
+                            WHERE id = @id AND (name IS NOT @name OR name_fold IS NOT @nameFold OR fav IS NOT @fav OR date_added IS NOT @dateAdded OR date_last_chat IS NOT @dateLastChat OR chat_size IS NOT @chatSize)`,
+                        { id, name: group.name ?? '', nameFold: foldName(group.name), fav: normalizeFav(group.fav) ? 1 : 0, dateAdded: Math.round(stat.birthtimeMs), dateLastChat, chatSize },
+                    );
+                    if (changes > 0) insertGroupChange(db, id);
+                });
             } catch (err) {
                 console.error(`[character-metadata] Column-migration backfill failed to process group ${id}, leaving it at its zeroed defaults:`, /** @type {any} */ (err).message);
             }
-            if (changed) insertGroupChange(db, id);
         }
     });
 }
@@ -826,27 +848,28 @@ function migrateGroupDigestColumns(db, directories) {
 
     db.transaction(() => {
         for (const id of existingIds) {
-            let changed = false;
             try {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
                 const group = normalizeGroupRecord(JSON.parse(raw));
                 const tagIds = tagEntityTypeOf(id) === 'group' ? (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) : [];
                 const fingerprintSource = { ...group, tag_ids: tagIds };
-                changed = db.run(
-                    `UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash
-                        WHERE id = @id AND (digest_fav IS NOT @favHash OR digest_tag_ids IS NOT @tagIdsHash OR digest_content IS NOT @contentHash)`,
-                    {
-                        id,
-                        favHash: groupDigestFavHash(fingerprintSource),
-                        tagIdsHash: groupDigestTagIdsHash(fingerprintSource),
-                        contentHash: groupDigestContentHash(fingerprintSource),
-                    },
-                ).changes > 0;
+                inItemSavepoint(db, () => {
+                    const { changes } = db.run(
+                        `UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash
+                            WHERE id = @id AND (digest_fav IS NOT @favHash OR digest_tag_ids IS NOT @tagIdsHash OR digest_content IS NOT @contentHash)`,
+                        {
+                            id,
+                            favHash: groupDigestFavHash(fingerprintSource),
+                            tagIdsHash: groupDigestTagIdsHash(fingerprintSource),
+                            contentHash: groupDigestContentHash(fingerprintSource),
+                        },
+                    );
+                    if (changes > 0) insertGroupChange(db, id);
+                });
             } catch (err) {
                 console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, /** @type {any} */ (err).message);
             }
-            if (changed) insertGroupChange(db, id);
         }
     });
 }
@@ -3947,7 +3970,8 @@ export async function upsertGroupRow(directories, id, name, { fav, group } = {})
  * 1. digest_content is set to NULL - if this throws, the file is not written.
  * 2. `writeFile()` - if this throws, the digest stays NULL.
  * 3. The row is upserted - if this throws, the digest stays NULL. Its groups version log row, when the file or the
- *    row changed, is added here and not before the file is written, so no reader sees the new version with the old file.
+ *    row changed, is added in the same transaction (so neither lands without the other) and not before the file is
+ *    written, so no reader sees the new version with the old file.
  * NULL rather than a sentinel: every uint32 is a possible client hash, and hash mode recomputes a NULL digest from
  * the file itself, so a hit against it is a hit on the file's current content. Once the store is open the three
  * steps run synchronously, so no other write to the group can interleave.
@@ -3972,23 +3996,15 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
     writeFile();
     // The file is read too (the groups search index builds from it), so a change to it alone is a group change.
     const fileChanged = !sameFileContents(fileBefore, readFileForComparison(filePath));
-    const logIfChanged = () => {
-        if (fileChanged || groupRowSnapshot(entry.db, id) !== rowBefore) insertGroupChange(entry.db, id);
-    };
     try {
         entry.db.transaction(() => {
             if (createIfMissing || entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
                 upsertGroupRowSync(entry.db, { id, name: group.name, fav: group.fav, group, dateAdded: Date.now(), dateLastChat: 0, chatSize: 0 });
             }
-            logIfChanged();
+            if (fileChanged || groupRowSnapshot(entry.db, id) !== rowBefore) insertGroupChange(entry.db, id);
         });
     } catch (err) {
         console.error(`[character-metadata] Could not update the row for group ${id} after writing its file; its digest stays NULL and is recomputed from the file:`, /** @type {any} */ (err).message);
-        try {
-            entry.db.transaction(logIfChanged);
-        } catch (logErr) {
-            console.error(`[character-metadata] Could not add the groups version log row for group ${id} after writing its file; results that include groups may stay stale until its next write:`, /** @type {any} */ (logErr).message);
-        }
     }
 }
 
@@ -4092,8 +4108,6 @@ export async function bootstrapGroupsIfNeeded(directories) {
         const files = fs.readdirSync(directories.groups).filter(f => f.endsWith('.json'));
         entry.db.transaction(() => {
             for (const file of files) {
-                /** @type {string | null} */
-                let changedId = null;
                 try {
                     const filePath = path.join(directories.groups, file);
                     const raw = fs.readFileSync(filePath, 'utf8');
@@ -4101,21 +4115,22 @@ export async function bootstrapGroupsIfNeeded(directories) {
                     if (hasGroupIdForRow(group)) {
                         const stat = fs.statSync(filePath);
                         const { chatSize, dateLastChat } = calculateGroupChatStats(directories.groupChats, group.chats);
-                        const changed = upsertGroupRowSync(entry.db, {
-                            id: group.id,
-                            name: group.name,
-                            fav: normalizeFav(group.fav),
-                            group,
-                            dateAdded: Math.round(stat.birthtimeMs),
-                            dateLastChat,
-                            chatSize,
+                        inItemSavepoint(entry.db, () => {
+                            const changed = upsertGroupRowSync(entry.db, {
+                                id: group.id,
+                                name: group.name,
+                                fav: normalizeFav(group.fav),
+                                group,
+                                dateAdded: Math.round(stat.birthtimeMs),
+                                dateLastChat,
+                                chatSize,
+                            });
+                            if (changed) insertGroupChange(entry.db, group.id);
                         });
-                        if (changed) changedId = group.id;
                     }
                 } catch (err) {
                     console.error(`[character-metadata] Bootstrap failed to process group file ${file}, skipping it (group tags for it won't resolve until it's next created/edited):`, /** @type {any} */ (err).message);
                 }
-                if (changedId !== null) insertGroupChange(entry.db, changedId);
             }
         });
     }
