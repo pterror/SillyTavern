@@ -1345,6 +1345,8 @@ async function firstLoadInit() {
         saveGreetingField,
         saveSystemPromptField,
         savePostHistoryInstructionsField,
+        onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
+        onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
     });
     initDefaultSlashCommands();
     initTextGenModels();
@@ -9643,7 +9645,7 @@ function hashGreetingText(text) {
  * Posts one named greeting-list operation; resolves to a result object rather than throwing, even for a refused op (409) or network failure.
  * @param {string} opName The path segment after `/greetings/`, e.g. `'add'`, `'default/set'`.
  * @param {object} body
- * @returns {Promise<{ok: true, hashes: number[], defaultPosition: number|null}|{ok: false, status?: number, reason?: string}>}
+ * @returns {Promise<{ok: true, hashes: number[], defaultPosition: number|null, position?: number}|{ok: false, status?: number, reason?: string}>} `position` is where an edit landed.
  */
 async function postGreetingOp(opName, body) {
     try {
@@ -9655,7 +9657,7 @@ async function postGreetingOp(opName, body) {
         let payload = null;
         try { payload = await response.json(); } catch { /* no body, or not JSON */ }
         if (response.ok && payload?.ok) {
-            return { ok: true, hashes: payload.hashes, defaultPosition: payload.default_position };
+            return { ok: true, hashes: payload.hashes, defaultPosition: payload.default_position, position: payload.position };
         }
         return { ok: false, status: response.status, reason: payload?.reason };
     } catch (error) {
@@ -9766,13 +9768,56 @@ const greetingPagerState = {
 };
 
 /**
+ * @typedef {object} GreetingPagerEdit The greeting `greeting_field` is editing, from the moment its edit starts until it ends.
+ * @property {number} position Where the greeting is: the pager position when the edit started, then wherever the edit's own saves landed.
+ * @property {boolean} committed False while the greeting is a still-pending New Greeting slot that no add has saved yet.
+ * @property {number|undefined} hash Precondition hash of the greeting: the one the pager held when the edit started, then the one the server returned for the edit's last save.
+ * @property {{greetings: string[], defaultIndex: number|null, hashes: number[]}|null} pending The newest pager state that arrived during the edit, applied when it ends.
+ */
+
+/** @type {GreetingPagerEdit|null} */
+let greetingPagerEdit = null;
+
+/** Starts tracking the greeting `greeting_field` now edits; the pager state stays as it is until the edit ends. */
+function beginGreetingPagerEdit() {
+    const { index, committed, hashes } = greetingPagerState;
+    greetingPagerEdit = { position: index, committed: committed[index] !== false, hash: hashes[index], pending: null };
+}
+
+/**
+ * Applies the newest pager state that arrived during the edit, if any, showing the edited greeting where it now is:
+ * at its position if the hash there matches, else at the one position holding its hash; otherwise the index is clamped.
+ */
+function endGreetingPagerEdit() {
+    const edit = greetingPagerEdit;
+    greetingPagerEdit = null;
+    if (!edit?.pending) return;
+    const { greetings, defaultIndex, hashes } = edit.pending;
+    if (edit.committed && Number.isFinite(edit.hash)) {
+        if (hashes[edit.position] === edit.hash) {
+            greetingPagerState.index = edit.position;
+        } else {
+            const matches = hashes.flatMap((hash, i) => (hash === edit.hash ? [i] : []));
+            if (matches.length === 1) greetingPagerState.index = matches[0];
+        }
+    }
+    setGreetingPagerGreetings(greetings, defaultIndex, hashes);
+}
+
+/**
  * Replaces the pager's greetings, default pointer, and precondition hashes, and clamps the current index in case the list shrank.
  * Every position here is confirmed by the server (or is the pre-load placeholder), so all are marked committed.
+ * While `greeting_field` is being edited nothing is replaced: the state is kept and applied when the edit ends, so
+ * the edit's saves keep targeting the greeting it started on.
  * @param {string[]} greetings Stable-order greeting list.
  * @param {number|null} defaultIndex
  * @param {number[]} hashes Position-aligned with `greetings`.
  */
 function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
+    if (greetingPagerEdit) {
+        greetingPagerEdit.pending = { greetings: greetings.slice(), defaultIndex, hashes: hashes.slice() };
+        return;
+    }
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
     greetingPagerState.defaultIndex = greetings.length > 0 ? defaultIndex : 0;
     greetingPagerState.hashes = greetings.length > 0 ? hashes.slice() : [];
@@ -9805,28 +9850,30 @@ function navigateGreetingPager(newIndex) {
 
 /**
  * Saves an edit to an already-committed pager greeting. Call it only from inside {@link queueGreetingSave}.
+ * The server edits the greeting at `position` if it still has `expectedHash`, else the one greeting that has it.
  * @param {string} avatar
  * @param {object} character
  * @param {number} position
+ * @param {number|undefined} expectedHash
  * @param {string} text
- * @returns {Promise<boolean>} Whether the edit was saved.
+ * @returns {Promise<{position: number, hash: number}|null>} Where the edit landed and the greeting's new hash there; null if it wasn't saved.
  */
-async function saveGreetingPagerEdit(avatar, character, position, text) {
-    const expectedHash = greetingPagerState.hashes[position];
-    if (!Number.isFinite(expectedHash)) return false; // Position out of range of what the server last confirmed.
+async function saveGreetingPagerEdit(avatar, character, position, expectedHash, text) {
+    if (!Number.isFinite(expectedHash)) return null; // Position out of range of what the server last confirmed.
 
     const result = await postGreetingOp('edit', { avatar_url: avatar, position, expected_hash: expectedHash, text });
     if (result.ok) {
-        await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', position, text), result.defaultPosition, result.hashes);
-        return true;
+        const landed = Number.isInteger(result.position) ? result.position : position;
+        await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', landed, text), result.defaultPosition, result.hashes);
+        return { position: landed, hash: result.hashes[landed] };
     }
     console.error('Greeting save failed', { avatar, position, status: result.status, reason: result.reason });
     if (result.status === 409) {
         toastr.error(t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`, t`Greeting not saved`);
-        return false;
+        return null;
     }
     toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-    return false;
+    return null;
 }
 
 /**
@@ -9847,18 +9894,32 @@ async function commitGreetingFieldValue(value) {
     const avatar = $('.open_alternate_greetings').data('avatar');
     const character = avatar ? charactersStore.get(avatar) : null;
     if (!character) return false;
-    // Whether the slot is still pending is read once the earlier saves are done: an add still in flight commits it.
+    // The target is read once the earlier saves are done: an add still in flight commits the slot, and an edit's
+    // earlier saves move its target to where they landed. While `greeting_field` is being edited the target is the
+    // greeting the edit started on; otherwise it is the pager's current greeting.
     return await queueGreetingSave(avatar, async () => {
-        if (greetingPagerState.committed[index] !== false) {
-            return await saveGreetingPagerEdit(avatar, character, index, value);
-        }
-        if (value === '') return false;
-        const result = await postGreetingOp('add', { avatar_url: avatar, position: index, expected_length: greetingPagerState.hashes.length, text: value });
-        if (result.ok) {
-            await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', index, value), result.defaultPosition, result.hashes);
+        const edit = greetingPagerEdit;
+        const target = edit ?? { position: index, committed: greetingPagerState.committed[index] !== false, hash: greetingPagerState.hashes[index] };
+        if (target.committed) {
+            const landed = await saveGreetingPagerEdit(avatar, character, target.position, target.hash, value);
+            if (!landed) return false;
+            if (edit && greetingPagerEdit === edit) {
+                edit.position = landed.position;
+                edit.hash = landed.hash;
+            }
             return true;
         }
-        console.error('Greeting add failed', { avatar, position: index, status: result.status, reason: result.reason });
+        if (value === '') return false;
+        const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: greetingPagerState.hashes.length, text: value });
+        if (result.ok) {
+            await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', target.position, value), result.defaultPosition, result.hashes);
+            if (edit && greetingPagerEdit === edit) {
+                edit.committed = true;
+                edit.hash = result.hashes[target.position];
+            }
+            return true;
+        }
+        console.error('Greeting add failed', { avatar, position: target.position, status: result.status, reason: result.reason });
         toastr.error(t`Failed to save the new greeting. It's still shown here - confirm it again to retry.`, t`Greeting not saved`);
         return false;
     });

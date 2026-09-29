@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { hashGreetingText, opMove } from '../src/greeting-ops.js';
+import { hashGreetingText, opEdit, opMove } from '../src/greeting-ops.js';
 
 const h = hashGreetingText;
 const modelOf = (greetings, defaultIndex = 0) => ({ greetings, defaultIndex });
@@ -85,5 +85,49 @@ describe('opMove', () => {
         expect(move(model, 3, 'before', 2)).toEqual({ ok: true, model: modelOf(['x', 'same', 'y', 'same'], null) });
         expect(move(model, 0, 'after', 1)).toEqual({ ok: true, model: modelOf(['same', 'x', 'same', 'y'], null) });
         expect(move(model, 0, 'before', 2)).toEqual({ ok: true, model: modelOf(['same', 'x', 'same', 'y'], null) });
+    });
+});
+
+describe('opEdit', () => {
+    const abc = () => modelOf(['a', 'b', 'c'], 0);
+
+    test('edits the greeting at the position when its hash matches', () => {
+        expect(opEdit(abc(), 1, h('b'), 'B')).toEqual({ ok: true, model: modelOf(['a', 'B', 'c'], 0), position: 1 });
+    });
+
+    test('the position wins over another greeting with the same hash', () => {
+        expect(opEdit(modelOf(['b', 'b'], 0), 1, h('b'), 'B')).toEqual({ ok: true, model: modelOf(['b', 'B'], 0), position: 1 });
+    });
+
+    test('a hash that moved to another position edits the one greeting that has it', () => {
+        expect(opEdit(abc(), 0, h('c'), 'C')).toEqual({ ok: true, model: modelOf(['a', 'b', 'C'], 0), position: 2 });
+    });
+
+    test('a position past the end edits the one greeting that has the hash', () => {
+        expect(opEdit(modelOf(['b', 'c'], 0), 2, h('c'), 'C')).toEqual({ ok: true, model: modelOf(['b', 'C'], 0), position: 1 });
+    });
+
+    test('the default stays where it was', () => {
+        expect(opEdit(modelOf(['a', 'b', 'c'], 2), 0, h('b'), 'B')).toEqual({ ok: true, model: modelOf(['a', 'B', 'c'], 2), position: 1 });
+    });
+
+    test('refuses when no greeting has the hash', () => {
+        expect(opEdit(abc(), 1, h('x'), 'X')).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
+        expect(opEdit(abc(), 3, h('x'), 'X')).toEqual({ ok: false, reason: 'position out of range' });
+    });
+
+    test('refuses when more than one other greeting has the hash', () => {
+        expect(opEdit(modelOf(['a', 'b', 'b'], 0), 0, h('b'), 'B')).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
+        expect(opEdit(modelOf(['b', 'b'], 0), 5, h('b'), 'B')).toEqual({ ok: false, reason: 'position out of range' });
+    });
+
+    test('refuses empty text even when the hash matches', () => {
+        expect(opEdit(abc(), 1, h('b'), '')).toEqual({ ok: false, reason: 'refused to blank stored greeting text' });
+    });
+
+    test('never mutates the input model', () => {
+        const model = abc();
+        opEdit(model, 0, h('c'), 'C');
+        expect(model).toEqual(abc());
     });
 });

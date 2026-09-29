@@ -53,25 +53,40 @@ export function opAdd(model, position, expectedLength, text) {
 }
 
 /**
- * Replaces the text at `position`. Refuses empty text and a stale `expectedHash`.
+ * Replaces the text of the greeting whose hash is `expectedHash`. That is the greeting at `position` when its
+ * hash matches; otherwise (the position is out of range, or holds something else) the greeting is looked up by
+ * `expectedHash` alone, so an edit still lands on its greeting after other greetings were added, removed or
+ * moved. Refuses empty text, and refuses when no greeting or more than one greeting has that hash.
+ * `position` in the result is where the edit landed.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
  * @param {string} text
+ * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
  */
 export function opEdit(model, position, expectedHash, text) {
     if (typeof text !== 'string' || text === '') {
         return { ok: false, reason: 'refused to blank stored greeting text' };
     }
-    if (!positionInBounds(position, model.greetings.length)) {
-        return { ok: false, reason: 'position out of range' };
-    }
-    if (!hashMatches(model, position, expectedHash)) {
-        return { ok: false, reason: 'greeting at position changed since it was loaded' };
+    let target = position;
+    if (!positionInBounds(position, model.greetings.length) || !hashMatches(model, position, expectedHash)) {
+        const matches = [];
+        for (let i = 0; i < model.greetings.length && matches.length < 2; i++) {
+            if (hashMatches(model, i, expectedHash)) matches.push(i);
+        }
+        if (matches.length !== 1) {
+            return {
+                ok: false,
+                reason: !positionInBounds(position, model.greetings.length)
+                    ? 'position out of range'
+                    : 'greeting at position changed since it was loaded',
+            };
+        }
+        target = matches[0];
     }
     const greetings = model.greetings.slice();
-    greetings[position] = text;
-    return { ok: true, model: { greetings, defaultIndex: model.defaultIndex } };
+    greetings[target] = text;
+    return { ok: true, model: { greetings, defaultIndex: model.defaultIndex }, position: target };
 }
 
 /**

@@ -1505,8 +1505,8 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
  * unless the operation left the greetings and default unchanged, in which case nothing is written.
  * @param {import('express').Request} request
  * @param {string} avatar avatar filename (e.g. "char.png")
- * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel}} op
- * @returns {Promise<{ok: boolean, reason?: string, status?: number, hashes?: number[], defaultPosition?: number|null}>}
+ * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel, position?: number}} op
+ * @returns {Promise<{ok: boolean, reason?: string, status?: number, hashes?: number[], defaultPosition?: number|null, position?: number}>}
  */
 async function applyGreetingOperation(request, avatar, op) {
     const avatarPath = path.join(request.user.directories.characters, avatar);
@@ -1530,6 +1530,7 @@ async function applyGreetingOperation(request, avatar, op) {
             ok: true,
             hashes: model.greetings.map(hashGreetingText),
             defaultPosition: model.defaultIndex,
+            position: result.position,
         };
     }
 
@@ -1547,11 +1548,13 @@ async function applyGreetingOperation(request, avatar, op) {
         ok: true,
         hashes: result.model.greetings.map(hashGreetingText),
         defaultPosition: result.model.defaultIndex,
+        position: result.position,
     };
 }
 
 /**
- * On success, echoes back the post-op hash-per-position list and default position so a caller can chain further operations without re-fetching the card.
+ * On success, echoes back the post-op hash-per-position list and default position so a caller can chain further operations without re-fetching the card,
+ * and, for an op that reports one (edit), the position it acted on.
  * @param {import('express').Response} response
  * @param {Awaited<ReturnType<typeof applyGreetingOperation>>} result
  */
@@ -1559,7 +1562,9 @@ function sendGreetingOpResult(response, result) {
     if (!result.ok) {
         return response.status(result.status ?? 409).send({ ok: false, reason: result.reason });
     }
-    return response.status(200).send({ ok: true, hashes: result.hashes, default_position: result.defaultPosition });
+    const body = { ok: true, hashes: result.hashes, default_position: result.defaultPosition };
+    if (result.position !== undefined) body.position = result.position;
+    return response.status(200).send(body);
 }
 
 /**
@@ -1584,7 +1589,11 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
     }
 });
 
-/** Replaces the text of the greeting at `position`. Refuses empty text and a stale `expected_hash`. */
+/**
+ * Replaces the text of the greeting at `position`, or, when the greeting there no longer has `expected_hash`, of the
+ * one greeting anywhere in the list that has it. Refuses empty text, and an `expected_hash` no greeting (or more than
+ * one) has. The response's `position` is where the edit landed.
+ */
 router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');

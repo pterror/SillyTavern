@@ -216,7 +216,9 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
             await executeSlashCommandsWithOptions(`/char-update personality="${personality}"`);
         }, `Personality ${name}`);
         expect((await refetched).ok()).toBe(true);
-        await expect(page.locator('.greeting-pager-total')).toHaveText(`/${remaining.length}`);
+        // The refreshed greetings wait for the edit to end: the pager still holds the list the edit started on.
+        await expect(page.locator('.greeting-pager-total')).toHaveText(`/${greetings.length}`);
+        await expect(page.locator('.greeting-pager-input')).toHaveValue(String(index + 1));
         await expect(textarea).toBeVisible();
         await expect(textarea).toHaveValue(text);
         expect(editRequests).toEqual([]);
@@ -225,7 +227,15 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
         await page.locator('.field_edit_done[data-for="greeting_field"]').click();
         const response = await editResponse;
         expect(editRequests).toEqual([text]);
-        return { status: response.status(), stored: await storedGreetings(other, avatar), remaining };
+        const stored = await storedGreetings(other, avatar);
+        if (response.ok()) {
+            // Once the edit ends the pager takes the current list and stays on the edited greeting, wherever it is now.
+            await expect(textarea).toBeHidden();
+            await expect(page.locator('.greeting-pager-total')).toHaveText(`/${stored.length}`);
+            await expect(page.locator('.greeting-pager-input')).toHaveValue(String(stored.indexOf(text) + 1));
+            await expect(textarea).toHaveValue(text);
+        }
+        return { status: response.status(), stored, remaining };
     });
 }
 
@@ -415,6 +425,23 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
                 power_user.auto_save_msg_edits = previous;
             }, previousAutoSave);
         }
+    });
+
+    test('sidebar pager: editing g2 while g0 is deleted elsewhere and /char-update refreshes the card lands the edit on g2 at position 1', async ({ page, browser }) => {
+        const s = stamp();
+        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const text = `Two edited ${s}`;
+        const { stored } = await editAcrossRemoteDeletes(page, browser, { name: `ProvRemoteDel1-${s}`, greetings: [g0, g1, g2], index: 2, text, deleted: [g0] });
+        expect(stored).toEqual([g1, text]);
+    });
+
+    test('sidebar pager: editing g2 while g2 itself is deleted elsewhere and /char-update refreshes the card is a 409 and changes nothing', async ({ page, browser }) => {
+        const s = stamp();
+        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const text = `Two edited ${s}`;
+        const { status, stored } = await editAcrossRemoteDeletes(page, browser, { name: `ProvRemoteDel2-${s}`, greetings: [g0, g1, g2], index: 2, text, deleted: [g2] });
+        expect(status).toBe(409);
+        expect(stored).toEqual([g0, g1]);
     });
 
     test('sidebar pager: editing g2 while g0 and g1 are deleted elsewhere and /char-update refreshes the card lands the edit at position 0 and leaves g3 untouched', async ({ page, browser }) => {
