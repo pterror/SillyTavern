@@ -8,6 +8,7 @@ import { getUserDirectoriesList } from './users.js';
 import { migrateGroupFileMetadataFormat, logGroupMetadataMigrationDone } from './endpoints/groups.js';
 import { groupLockName, withGroupFilesLock } from './group-lock.js';
 import { normalizeGroupRecord } from './group-id.js';
+import { openOwnerChatStatsQueue } from './character-metadata-db.js';
 import {
     getDbHandle, insertMessageSync, createBranchSync, hasBranchesSync, newId,
     ensureAnchorSync, setDefaultChildSync, alternativesFromMessage, identityHashOf,
@@ -94,7 +95,16 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
     /** @type {string[]} */
     let migratedFileNames = [];
     let alreadyMigrated = false;
+    const knownOwner = owner ?? (isGroup ? /** @type {const} */ ({ kind: 'group', rowId: ownerId }) : undefined);
 
+    // These writes don't go through the owner write hook. Queued before the transaction, in the same synchronous step,
+    // so neither a crash after the commit nor a drain before it can leave the owner's chat stats uncounted.
+    try {
+        const queueChatStats = await openOwnerChatStatsQueue(directories);
+        queueChatStats?.(ownerId, knownOwner);
+    } catch (err) {
+        console.error(color.red(`[message-tree] ${ownerId}: queueing its chat stats to be counted again failed, so they may not match its migrated messages:`), err);
+    }
     db.transaction(() => {
         // A busy retry re-runs this callback after a rollback, so nothing from a previous attempt may
         // survive into the next one - above all `index`, whose ids would name rolled-back rows.
@@ -107,7 +117,7 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
         const usedLabels = new Set();
 
         const now = Date.now();
-        const anchor = ensureAnchorSync(db, ownerId, now, owner ?? (isGroup ? { kind: 'group', rowId: ownerId } : undefined));
+        const anchor = ensureAnchorSync(db, ownerId, now, knownOwner);
 
         for (const fileName of allFiles) {
             const filePath = path.join(chatDir, fileName);

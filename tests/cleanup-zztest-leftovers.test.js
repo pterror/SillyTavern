@@ -283,6 +283,20 @@ describe('cleanup-zztest-leftovers', () => {
         expect(Number(backedUpRow.digest_content)).toBe(Number(groupRowBefore.digest_content));
     });
 
+    test('a row holding the stray owner\'s chat stats is queued to be counted again', async () => {
+        const scratch = await makeScratch();
+        await metaDb.upsertGroupRow(scratch.dirs, cleanup.STRAY_OWNER, 'stray', { group: { id: cleanup.STRAY_OWNER } });
+        metaDb.disposeMetadataStores();
+        const metaPath = path.join(scratch.root, 'character-metadata.sqlite');
+        withDb(metaPath, db => db.run('DELETE FROM chat_stats_pending'));
+
+        const out = await run(scratch, APPLY);
+
+        expect(out.code).toBe(0);
+        expect(treeRow(scratch.root, cleanup.STRAY_CHILD_ID)).toBeNull();
+        expect(withDb(metaPath, db => db.all('SELECT kind, id FROM chat_stats_pending ORDER BY kind, id'))).toEqual([{ kind: 'group', id: cleanup.STRAY_OWNER }]);
+    });
+
     test('second real run is a no-op', async () => {
         const scratch = await makeScratch();
         expect((await run(scratch, APPLY)).code).toBe(0);

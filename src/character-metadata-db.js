@@ -4258,6 +4258,40 @@ function queueChatStatsReconcileSync(db, kind, id) {
 }
 
 /**
+ * For writers that change a message tree owner's messages without going through the owner write hook
+ * (message-tree-db.js reportOwnerWrite()): gets a function that queues the rows holding an owner's chat stats. It is
+ * synchronous, so a caller on the main thread can queue in the same synchronous step as its tree transaction, and no
+ * drain runs in between. Only rows that exist are queued. With `owner` unknown, that is every row the owner id could
+ * belong to; the reconcile gives the stats to the one the owner is recorded as (reconcileQueuedChatStatsSync()).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {object} [options]
+ * @param {boolean} [options.existingOnly] Don't create a store that doesn't exist yet. For callers that can run
+ *   without one, where a new store's bootstrap queues every row anyway.
+ * @returns {Promise<((ownerId: string, owner?: import('./message-tree-db.js').OwnerDescriptor) => void) | null>} null
+ *   when the metadata store is unavailable, read-only, or (with `existingOnly`) doesn't exist.
+ */
+export async function openOwnerChatStatsQueue(directories, { existingOnly = false } = {}) {
+    if (isReadOnlyMode()) return null;
+    if (existingOnly && !entries.has(directories.root) && !fs.existsSync(getDbPath(directories))) return null;
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const { db } = entry;
+    return (ownerId, owner) => {
+        const rows = owner
+            ? [{ kind: owner.kind, table: owner.kind === 'group' ? 'groups' : 'characters', ids: [owner.rowId] }]
+            : [
+                { kind: /** @type {const} */ ('character'), table: 'characters', ids: characterAvatarsForOwnerId(ownerId) },
+                { kind: /** @type {const} */ ('group'), table: 'groups', ids: [ownerId] },
+            ];
+        db.transaction(() => {
+            for (const { kind, table, ids } of rows) {
+                for (const id of existingRowIds(db, table, ids)) queueChatStatsReconcileSync(db, kind, id);
+            }
+        });
+    };
+}
+
+/**
  * Starts draining every store's chat_stats_pending, and lets rows queued from now on start a drain. Called once the
  * server listens.
  * @param {import('./users.js').UserDirectoryList[]} directoriesList
