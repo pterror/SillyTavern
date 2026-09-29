@@ -40,11 +40,12 @@ import {
  * @param {string[]|null} [params.fileNames] Required for groups, whose files cannot be identified
  * by scanning `chatDir`
  * @param {boolean} [params.retryUnmigrated] See migrateCharacterChats()
+ * @param {import('./message-tree-db.js').OwnerDescriptor} [params.owner] See migrateCharacterChats()
  * @returns {Promise<{ migrated: number, skipped: number, errors: string[] }>} For the boot group pass, which
  * tracks files left un-migrated; route callers ignore it
  */
-export async function migrateOwnerOnTouch(directories, { ownerId, chatDir, isGroup = false, fileNames = null, retryUnmigrated = false }) {
-    return await migrateCharacterChats(directories, ownerId, chatDir, isGroup, fileNames, { retryUnmigrated });
+export async function migrateOwnerOnTouch(directories, { ownerId, chatDir, isGroup = false, fileNames = null, retryUnmigrated = false, owner = undefined }) {
+    return await migrateCharacterChats(directories, ownerId, chatDir, isGroup, fileNames, { retryUnmigrated, owner });
 }
 
 /**
@@ -60,9 +61,11 @@ export async function migrateOwnerOnTouch(directories, { ownerId, chatDir, isGro
  * owner already has chats in the tree, instead of skipping such an owner. The boot group pass sets it, so a file an
  * earlier run refused is retried (and reported again if still refused) every boot until it migrates. Existing rows
  * are reused and never changed, except to set a `default_child_id` that was unset.
+ * @param {import('./message-tree-db.js').OwnerDescriptor} [options.owner] The owner's kind, recorded if this migration
+ * creates its anchor. A group's is known from `isGroup`.
  * @returns {Promise<{ migrated: number, skipped: number, errors: string[] }>}
  */
-export async function migrateCharacterChats(directories, ownerId, chatDir, isGroup = false, fileNames = null, { retryUnmigrated = false } = {}) {
+export async function migrateCharacterChats(directories, ownerId, chatDir, isGroup = false, fileNames = null, { retryUnmigrated = false, owner = undefined } = {}) {
     const db = await getDbHandle(directories);
     if (!db) return { migrated: 0, skipped: 0, errors: ['No SQLite backend available'] };
 
@@ -104,7 +107,7 @@ export async function migrateCharacterChats(directories, ownerId, chatDir, isGro
         const usedLabels = new Set();
 
         const now = Date.now();
-        const anchor = ensureAnchorSync(db, ownerId, now);
+        const anchor = ensureAnchorSync(db, ownerId, now, owner ?? (isGroup ? { kind: 'group', rowId: ownerId } : undefined));
 
         for (const fileName of allFiles) {
             const filePath = path.join(chatDir, fileName);

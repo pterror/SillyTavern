@@ -20,6 +20,7 @@ import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
+import { characterAvatarsForOwnerId, listOwnersWithoutKind, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
@@ -613,10 +614,9 @@ const UPSERT_SQL = `
         name_fold = excluded.name_fold,
         fav = excluded.fav,
         create_date = excluded.create_date,
-        -- date_last_chat absent deliberately: owned by bumpCharacterDateLastChat(), not this function's callers.
-        -- Their candidate comes from the chats directory's mtime, which no longer moves once messages live in
-        -- the tree, so including it here would reset a freshly bumped row back to a stale timestamp on rescan.
-        chat_size = excluded.chat_size,
+        -- date_last_chat and chat_size absent deliberately: owned by applyCharacterChatStats(), which follows every
+        -- write to the character's messages. This function's callers get theirs from the chats directory, which no
+        -- longer changes once messages live in the tree, so including them would reset the row to stale values.
         data_size = excluded.data_size,
         world = excluded.world,
         creator = excluded.creator,
@@ -1522,7 +1522,7 @@ function buildRow(id, character, { dateAddedCandidate, chatSize, dateLastChat, c
  * @param {string[]} tagIds
  */
 function writeRowSync(db, row, tagIds) {
-    const existingRow = (/** @type {{ fav: number, active_chat: NodeId, shallow_json: string } | undefined} */ (db.get('SELECT fav, active_chat, shallow_json FROM characters WHERE id = @id', { id: row.id })));
+    const existingRow = (/** @type {{ fav: number, active_chat: NodeId, shallow_json: string, chat_size: number, date_last_chat: number } | undefined} */ (db.get('SELECT fav, active_chat, shallow_json, chat_size, date_last_chat FROM characters WHERE id = @id', { id: row.id })));
     const existed = !!existingRow;
 
     if (existed) {
@@ -1535,6 +1535,9 @@ function writeRowSync(db, row, tagIds) {
 
         const shallow = JSON.parse(row.shallow_json);
         shallow.tag_ids = normalizeTagIds(currentTagIds);
+        // The UPSERT keeps the row's chat stats, so the saved copy shows those too.
+        shallow.chat_size = existingRow.chat_size;
+        shallow.date_last_chat = existingRow.date_last_chat;
         if (favChanged) {
             setShallowFav(shallow, !!currentFav);
         }
@@ -4083,16 +4086,48 @@ function sameFileContents(a, b) {
 }
 
 /**
+ * Applies one committed write's change to a character's chat stats: `chat_size` by the write's size change, and
+ * `date_last_chat` to its newest message's `created_at`. Writes nothing when neither changes.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
+ * @param {object} change
+ * @param {number} change.sizeChange
+ * @param {number | null} change.addedCreatedAt The newest `created_at` the write inserted, if it inserted any.
+ * @param {(() => number) | null} change.readLastCreatedAt Set when the write deleted a row: reads the character's
+ *   newest message `created_at` (0 with none left) at the moment of this write.
  */
-export async function bumpCharacterDateLastChat(directories, avatar) {
+export async function applyCharacterChatStats(directories, avatar, { sizeChange, addedCreatedAt, readLastCreatedAt }) {
     const entry = await getEntry(directories);
     if (!entry) return;
 
     flushBufferedRow(entry, avatar);
-    const now = Date.now();
-    entry.db.run('UPDATE characters SET date_last_chat = @now WHERE id = @id', { now, id: avatar });
+    entry.db.transaction(() => {
+        const row = (/** @type {{ chat_size: number, date_last_chat: number, shallow_json: string } | undefined} */ (entry.db.get(
+            'SELECT chat_size, date_last_chat, shallow_json FROM characters WHERE id = @id', { id: avatar })));
+        if (!row) {
+            console.warn(color.yellow(`[character-metadata] Chat stats change for ${avatar} (${sizeChange} bytes) not applied: it has no character row.`));
+            return;
+        }
+        let dateLastChat = Number(row.date_last_chat);
+        if (readLastCreatedAt) {
+            dateLastChat = readLastCreatedAt();
+        } else if (addedCreatedAt !== null) {
+            dateLastChat = Math.max(dateLastChat, addedCreatedAt);
+        }
+        /** @type {string[]} */
+        const fields = [];
+        if (sizeChange !== 0) fields.push('chat_size');
+        if (dateLastChat !== Number(row.date_last_chat)) fields.push('date_last_chat');
+        if (fields.length === 0) return;
+
+        entry.db.run('UPDATE characters SET chat_size = chat_size + @sizeChange, date_last_chat = @dateLastChat WHERE id = @id',
+            { sizeChange, dateLastChat, id: avatar });
+        const chatSize = (/** @type {{ chat_size: number }} */ (entry.db.get('SELECT chat_size FROM characters WHERE id = @id', { id: avatar }))).chat_size;
+        const shallow = JSON.parse(row.shallow_json);
+        shallow.chat_size = chatSize;
+        shallow.date_last_chat = dateLastChat;
+        writeShallowJson(entry.db, avatar, shallow, fields);
+    });
 }
 
 /** `stats`, when supplied, is used verbatim instead of statting the group's chat files, which get renamed away. */
@@ -5202,6 +5237,69 @@ export async function refreshGroupDigestTagIdsIfNeeded(directories) {
 }
 
 const ENTITY_COUNT_FILL_BATCH_SIZE = 1000;
+
+const TREE_OWNER_KIND_BATCH_SIZE = 100;
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {'characters' | 'groups'} table
+ * @param {string[]} ids
+ * @returns {string[]} The ids that have a row in `table`.
+ */
+function existingRowIds(db, table, ids) {
+    /** @type {string[]} */
+    const found = [];
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const rows = db.iterate(`SELECT id FROM ${table} WHERE id IN (${batch.map(() => '?').join(',')})`, batch);
+        for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) found.push(row.id);
+    }
+    return found;
+}
+
+/**
+ * Records the kind of every message tree owner that has none yet: `character` when exactly one characters row's
+ * chats live under the owner id, `group` when the groups row with that id is the only match. An owner with no match,
+ * or more than one, stays unknown and is logged. Runs every boot, since owners the boot chat migration creates have
+ * no kind until this pass.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `batches` counts the pages of owners examined, `rowsChanged`
+ *   the kinds recorded.
+ */
+export async function fillTreeOwnerKinds(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+
+    let batches = 0;
+    let rowsChanged = 0;
+    /** @type {string | null} */
+    let after = null;
+    for (;;) {
+        const ownerIds = await listOwnersWithoutKind(directories, after, TREE_OWNER_KIND_BATCH_SIZE);
+        if (ownerIds.length === 0) break;
+        after = ownerIds[ownerIds.length - 1];
+
+        /** @type {{ ownerId: string, owner: import('./message-tree-db.js').OwnerDescriptor }[]} */
+        const found = [];
+        for (const ownerId of ownerIds) {
+            /** @type {import('./message-tree-db.js').OwnerDescriptor[]} */
+            const matches = [
+                ...existingRowIds(entry.db, 'characters', characterAvatarsForOwnerId(ownerId)).map(rowId => ({ kind: /** @type {const} */ ('character'), rowId })),
+                ...existingRowIds(entry.db, 'groups', [ownerId]).map(rowId => ({ kind: /** @type {const} */ ('group'), rowId })),
+            ];
+            if (matches.length === 1) {
+                found.push({ ownerId, owner: matches[0] });
+            } else if (matches.length === 0) {
+                console.warn(color.yellow(`[character-metadata] Message tree owner ${ownerId} matches no character or group, so its chat stats aren't kept.`));
+            } else {
+                console.warn(color.yellow(`[character-metadata] Message tree owner ${ownerId} matches more than one entity (${matches.map(m => `${m.kind} ${m.rowId}`).join(', ')}), so its chat stats aren't kept.`));
+            }
+        }
+        rowsChanged += await recordOwnerKinds(directories, found);
+        batches++;
+    }
+    return { batches, rowsChanged };
+}
 
 /**
  * Fills entity_counts and entity_tag_counts (see SCHEMA_SQL) for every entity past each kind's frontier in

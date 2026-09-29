@@ -383,7 +383,7 @@ export function applyChatRestore(db, plan, input, now) {
         return;
     }
 
-    const anchor = ensureAnchorSync(db, ownerId, now);
+    const anchor = ensureAnchorSync(db, ownerId, now, { kind: 'group', rowId: ownerId });
     let parent = anchor.id;
     for (const message of messages) {
         const alts = alternativesFromMessage(/** @type {any} */ (message));

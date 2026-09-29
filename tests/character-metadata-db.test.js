@@ -667,11 +667,11 @@ describe('a user write during an open batch import lands in the table right away
         });
     });
 
-    test('bumpCharacterDateLastChat', async () => {
+    test('applyCharacterChatStats', async () => {
         await bufferImport('Bob.png', 'Bob');
         const before = Date.now();
 
-        await metadataDb.bumpCharacterDateLastChat(directories, 'Bob.png');
+        await metadataDb.applyCharacterChatStats(directories, 'Bob.png', { sizeChange: 10, addedCreatedAt: before, readLastCreatedAt: null });
 
         await expectBeforeAndAfterEnd(async () => {
             const row = await metadataDb.getCharacterMetadataRow(directories, 'Bob.png');
