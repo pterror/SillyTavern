@@ -213,6 +213,7 @@ import {
     getInstructStoppingSequences,
 } from './scripts/instruct-mode.js';
 import { initLocales, t } from './scripts/i18n.js';
+import { changeStreamRetryDelayMs } from './scripts/change-stream-backoff.js';
 import { getTokenCount, getTokenCountAsync, initTokenizers } from './scripts/tokenizers.js';
 import {
     user_avatar,
@@ -920,19 +921,7 @@ function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, re
     }
 }
 
-// The browser never reconnects an EventSource that reached CLOSED (non-200 status, wrong content type), so it's rebuilt.
-const CHANGE_STREAM_RETRY_FIRST_MS = 1000;
-const CHANGE_STREAM_RETRY_MAX_MS = 60000;
-const CHANGE_STREAM_NOTICE_AFTER_FAILED_TRIES = 3;
-
-/**
- * The wait before the next rebuild of a closed /changes/stream EventSource.
- * @param {number} failedTries Rebuilds that closed without opening since the stream was last open.
- * @returns {number} Milliseconds.
- */
-export function changeStreamRetryDelayMs(failedTries) {
-    return Math.min(CHANGE_STREAM_RETRY_FIRST_MS * 2 ** failedTries, CHANGE_STREAM_RETRY_MAX_MS);
-}
+const CHANGE_STREAM_NOTICE_AFTER_MS = 10000;
 
 function onCharacterChangeMessage() {
     if (isCharacterListShowing()) {
@@ -949,6 +938,14 @@ function setupCharacterChangeStream() {
     let hadError = false;
     let failedTries = 0;
     let notice = null;
+    let noticeTimer = null;
+    const startNoticeTimer = () => {
+        if (noticeTimer !== null || notice) return;
+        noticeTimer = setTimeout(() => {
+            noticeTimer = null;
+            notice = toastr.warning(t`Live updates are disconnected. Retrying...`, '', { timeOut: 0, extendedTimeOut: 0 });
+        }, CHANGE_STREAM_NOTICE_AFTER_MS);
+    };
 
     const connect = (isRebuild) => {
         const source = new EventSource('/api/characters/changes/stream');
@@ -973,6 +970,8 @@ function setupCharacterChangeStream() {
         source.onopen = () => {
             opened = true;
             failedTries = 0;
+            clearTimeout(noticeTimer);
+            noticeTimer = null;
             if (notice) {
                 toastr.clear(notice);
                 notice = null;
@@ -984,15 +983,14 @@ function setupCharacterChangeStream() {
         };
         source.onerror = () => {
             hadError = true;
-            // Any other state is the browser reconnecting on its own.
+            startNoticeTimer();
+            // Any other state is the browser reconnecting on its own. It never reconnects a CLOSED one, so that's rebuilt.
             if (source.readyState !== EventSource.CLOSED) return;
             if (isRebuild && !opened) failedTries++;
-            if (failedTries >= CHANGE_STREAM_NOTICE_AFTER_FAILED_TRIES && !notice) {
-                notice = toastr.warning(t`Live updates are disconnected. Retrying...`, '', { timeOut: 0, extendedTimeOut: 0 });
-            }
             setTimeout(() => connect(true), changeStreamRetryDelayMs(failedTries));
         };
     };
+    startNoticeTimer();
     connect(false);
 }
 

@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { changeStreamRetryDelayMs } from '../../public/scripts/change-stream-backoff.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -10,6 +11,9 @@ const TOP_SEARCH_PAGE_SIZE = 500;
 // Over getCharactersDebounced()'s 2s delay.
 const CHANGE_DEBOUNCE_TIMEOUT_MS = 6000;
 const QUIET_MS = 800;
+const EVENT_SOURCE_CONNECTING = 0;
+const EVENT_SOURCE_OPEN = 1;
+const EVENT_SOURCE_CLOSED = 2;
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
@@ -29,13 +33,28 @@ async function instrument(page) {
     await page.addInitScript(() => {
         const NativeEventSource = window.EventSource;
         window['__changeStreams'] = [];
+        // Every stream's creation, errors and opens, with its readyState at the time, on performance.now()'s clock.
+        window['__streamEvents'] = [];
         window.EventSource = class extends NativeEventSource {
             constructor(...args) {
                 // @ts-ignore
                 super(...args);
                 window['__changeStreams'].push(this);
+                const record = type => window['__streamEvents'].push({ type, at: performance.now(), readyState: this.readyState });
+                record('create');
+                this.addEventListener('error', () => record('error'));
+                this.addEventListener('open', () => record('open'));
             }
         };
+        // When the disconnected notice was first added to and removed from the page, on the same clock.
+        window['__notice'] = { shownAt: null, removedAt: null };
+        const isNotice = node => node instanceof Element && node.matches('.toast-warning') && node.textContent.includes('Live updates are disconnected');
+        new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                if (window['__notice'].shownAt === null && [...mutation.addedNodes].some(isNotice)) window['__notice'].shownAt = performance.now();
+                if (window['__notice'].removedAt === null && [...mutation.removedNodes].some(isNotice)) window['__notice'].removedAt = performance.now();
+            }
+        }).observe(document, { childList: true, subtree: true });
     });
     await page.route('**/api/characters/changes/stream', async route => {
         // Counted before answering, so a notice a failed answer leads to can't be among them yet.
@@ -621,15 +640,15 @@ test.describe('the change stream reopening', () => {
         expect(log.changes).toBe(changesBefore);
     });
 
-    test('a closed stream is rebuilt with backoff, a notice shows after 3 failed rebuilds, and the reopen clears it and syncs', async ({ page }) => {
+    test('a closed stream is rebuilt with backoff, a notice shows once it has been closed 10s, and the reopen clears it and syncs', async ({ page }) => {
         test.setTimeout(90000);
         log = await instrument(page);
         log.streamStatus = 500;
         await bootWithListShowing(page);
 
-        // The first connection and 3 rebuilds, all failed.
+        // The first connection and 3 rebuilds (after 1s, 2s, 4s) fail; the notice shows before the 4th (after 8s).
         await expect.poll(() => log.streamRequests.length, { timeout: 30000 }).toBe(4);
-        await expect(disconnectedNotice(page)).toHaveCount(1);
+        await expect(disconnectedNotice(page)).toHaveCount(1, { timeout: 30000 });
         const changesBefore = log.changes;
         log.streamStatus = 200;
 
@@ -642,14 +661,34 @@ test.describe('the change stream reopening', () => {
         expect(requests.map(r => r.notices)).toEqual([0, 0, 0, 0, 1]);
         const gaps = requests.slice(1).map((r, i) => r.at - requests[i].at);
         [1000, 2000, 4000, 8000].forEach((least, i) => expect(gaps[i]).toBeGreaterThanOrEqual(least));
+
+        const { events, notice } = await page.evaluate(() => ({ events: window['__streamEvents'], notice: window['__notice'] }));
+        const firstOpen = events.find(e => e.type === 'open');
+        const failures = events.filter(e => e.type === 'error' && e.at < firstOpen.at);
+        expect(failures.map(e => e.readyState)).toEqual([EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED]);
+        // Never open until then, so not open since the first stream was created.
+        expect(notice.shownAt - events[0].at).toBeGreaterThanOrEqual(10000);
+        expect(notice.shownAt).toBeLessThan(firstOpen.at);
+        expect(notice.removedAt).toBeGreaterThanOrEqual(firstOpen.at);
     });
 
-    test('the rebuild delay doubles from 1s and stops at 60s', async ({ page }) => {
-        await testSetup.awaitST({ page });
-        const delays = await page.evaluate(async () => {
-            const { changeStreamRetryDelayMs } = await import('/script.js');
-            return [0, 1, 2, 3, 4, 5, 6, 7, 20].map(changeStreamRetryDelayMs);
-        });
-        expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
+    test('a stream the browser is reconnecting shows the notice once it has been down 10s, and an open clears it', async ({ page }) => {
+        test.setTimeout(90000);
+        log = await instrument(page);
+        await bootWithListShowing(page);
+
+        await expect(disconnectedNotice(page)).toHaveCount(1, { timeout: 30000 });
+        const { events, notice } = await page.evaluate(() => ({ events: window['__streamEvents'], notice: window['__notice'] }));
+        // The mocked stream opens, then its body ends: the browser keeps it CONNECTING and doesn't rebuild it.
+        expect(events.map(e => [e.type, e.readyState])).toEqual([['create', EVENT_SOURCE_CONNECTING], ['open', EVENT_SOURCE_OPEN], ['error', EVENT_SOURCE_CONNECTING]]);
+        expect(notice.shownAt - events[2].at).toBeGreaterThanOrEqual(10000);
+
+        await fireStreamEvents(page, ['open']);
+        await expect(disconnectedNotice(page)).toHaveCount(0);
+        expect(log.streamRequests).toHaveLength(1);
+    });
+
+    test('the rebuild delay doubles from 1s and stops at 60s', () => {
+        expect([0, 1, 2, 3, 4, 5, 6, 7, 20].map(changeStreamRetryDelayMs)).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
     });
 });
