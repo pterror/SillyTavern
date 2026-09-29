@@ -242,8 +242,9 @@ function countReplace(stats, before, after) {
  * @property {string} rowId
  * @property {number} sizeChange
  * @property {number | null} addedCreatedAt
- * @property {(() => number) | null} readLastCreatedAt Set when a row was deleted: reads the owner's newest message
- *   `created_at` (0 with none left). Synchronous, so the caller can read it in the same step as its own write.
+ * @property {(() => number) | null} readLastCreatedAt Set when a row was deleted or the `(owner, created_at)` index
+ *   exists: reads the owner's newest message `created_at` (0 with none left). Synchronous, so the caller can read it
+ *   in the same step as its own write.
  */
 
 /** @type {((write: OwnerWrite) => Promise<void>) | null} */
@@ -258,15 +259,47 @@ export function setOwnerWriteHandler(handler) {
 }
 
 /**
- * The owner's newest message `created_at`, 0 when it has none.
+ * The owner's newest message `created_at`, 0 when it has none. Not MAX(): with `parent_id` in the WHERE, only
+ * ORDER BY ... LIMIT 1 stops at the newest end of {@link OWNER_CREATED_AT_INDEX}.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} ownerId
  * @returns {number}
  */
 function readOwnerLastCreatedAtSync(db, ownerId) {
-    const row = /** @type {{ t: number | null } | undefined} */ (db.get(
-        'SELECT MAX(created_at) AS t FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL', { ownerId }));
-    return Number(row?.t ?? 0);
+    const row = /** @type {{ created_at: number } | undefined} */ (db.get(
+        'SELECT created_at FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL ORDER BY created_at DESC LIMIT 1', { ownerId }));
+    return Number(row?.created_at ?? 0);
+}
+
+/**
+ * The index `date_last_chat` is read through. Not in SCHEMA_SQL: building it over a large tree takes a while, so the
+ * metadata migration worker builds it after the server listens ({@link buildOwnerCreatedAtIndex}).
+ */
+export const OWNER_CREATED_AT_INDEX = 'idx_messages_owner_created_at';
+
+/**
+ * Whether {@link OWNER_CREATED_AT_INDEX} exists. Remembered on the entry once it does, since nothing drops it.
+ * @param {TreeEntry} entry
+ * @returns {boolean}
+ */
+function hasOwnerCreatedAtIndexSync(entry) {
+    if (entry.ownerCreatedAtIndex === true) return true;
+    entry.ownerCreatedAtIndex = !!entry.db.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'index\' AND name = @name',
+        { name: OWNER_CREATED_AT_INDEX });
+    return entry.ownerCreatedAtIndex;
+}
+
+/**
+ * Builds {@link OWNER_CREATED_AT_INDEX} when it's missing.
+ * @param {Directories} directories
+ * @returns {Promise<boolean>} Whether it was built by this call.
+ */
+export async function buildOwnerCreatedAtIndex(directories) {
+    const entry = await getEntry(directories);
+    if (!entry || hasOwnerCreatedAtIndexSync(entry)) return false;
+    entry.db.exec(`CREATE INDEX IF NOT EXISTS ${OWNER_CREATED_AT_INDEX} ON messages(owner_id, created_at)`);
+    entry.ownerCreatedAtIndex = true;
+    return true;
 }
 
 /**
@@ -311,14 +344,17 @@ export async function recordOwnerKinds(directories, owners) {
 /**
  * Reports a committed write's stats change to the hook, for an owner whose kind is known. A failure is logged, not
  * thrown: the messages are already stored.
+ * `date_last_chat` is read back from the owner's messages whenever {@link OWNER_CREATED_AT_INDEX} exists; before it
+ * does, only after a row delete.
  * @param {Directories} directories
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {TreeEntry} entry
  * @param {string} ownerId
  * @param {OwnerWriteStats} stats
  */
-async function reportOwnerWrite(directories, db, ownerId, stats) {
+async function reportOwnerWrite(directories, entry, ownerId, stats) {
     if (stats.sizeChange === 0 && stats.addedCreatedAt === null && !stats.deleted) return;
     if (!ownerWriteHandler) return;
+    const { db } = entry;
     const owner = /** @type {{ kind: 'character' | 'group', row_id: string } | undefined} */ (db.get(
         'SELECT kind, row_id FROM owners WHERE owner_id = @ownerId', { ownerId }));
     if (!owner) return;
@@ -330,7 +366,7 @@ async function reportOwnerWrite(directories, db, ownerId, stats) {
             rowId: owner.row_id,
             sizeChange: stats.sizeChange,
             addedCreatedAt: stats.addedCreatedAt,
-            readLastCreatedAt: stats.deleted ? () => readOwnerLastCreatedAtSync(db, ownerId) : null,
+            readLastCreatedAt: stats.deleted || hasOwnerCreatedAtIndexSync(entry) ? () => readOwnerLastCreatedAtSync(db, ownerId) : null,
         });
     } catch (err) {
         console.error(color.red(`[message-tree] Could not update the chat stats of ${owner.kind} ${owner.row_id} after a write of ${stats.sizeChange} bytes:`), err);
@@ -341,7 +377,13 @@ async function reportOwnerWrite(directories, db, ownerId, stats) {
 //  Per-user DB handles (same pattern as chat-metadata-db.js)
 // ---------------------------------------------------------------------------
 
-/** @type {Map<string, { db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle }>} */
+/**
+ * @typedef {object} TreeEntry
+ * @property {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @property {boolean} [ownerCreatedAtIndex] Set once {@link OWNER_CREATED_AT_INDEX} is known to exist.
+ */
+
+/** @type {Map<string, TreeEntry>} */
 const entries = new Map();
 let warnedNoEngine = false;
 
@@ -352,7 +394,7 @@ function getDbPath(directories) {
 
 /**
  * @param {Directories} directories
- * @returns {Promise<{ db: import('./endpoints/sqlite-engine.js').SqliteEngineHandle } | null>}
+ * @returns {Promise<TreeEntry | null>}
  */
 async function getEntry(directories) {
     const key = directories.root;
@@ -1473,7 +1515,7 @@ export async function saveChatToTree(directories, ownerId, chatName, chatData, i
         }
     });
 
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     return { integrity: nextIntegrity, assignedNodeIds };
 }
 
@@ -1841,7 +1883,7 @@ export async function editMessage(directories, ownerId, nodeId, content) {
     if (!entry) return { ok: false, reason: 'unavailable' };
     const stats = newWriteStats();
     const result = editMessageSync(entry.db, ownerId, nodeId, content, stats);
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     return result;
 }
 
@@ -1876,7 +1918,7 @@ export async function editMessages(directories, ownerId, edits) {
         }
     });
 
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     return { ok: true, applied, refused };
 }
 
@@ -1956,7 +1998,7 @@ export async function appendMessages(directories, ownerId, afterNodeId, contents
             cursor = id;
         }
     });
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     return { ok: true, node_ids: nodeIds };
 }
 
@@ -2022,7 +2064,7 @@ export async function graftMessage(directories, ownerId, afterNodeId, beforeNode
         setDefaultChildSync(entry.db, newNodeId, beforeNodeId);
     });
 
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     return { ok: true, node_id: newNodeId };
 }
 
@@ -2273,7 +2315,7 @@ export async function deleteAlternative(directories, ownerId, nodeId) {
         result = { ok: true };
     });
 
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     return result;
 }
 
@@ -2330,7 +2372,7 @@ export async function addAlternatives(directories, ownerId, siblingNodeId, conte
         }
     });
 
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     const total = getSiblingsSync(entry.db, parentId, '').length;
     return { ok: true, node_ids: nodeIds, added, total };
 }
@@ -2528,7 +2570,7 @@ export async function addOpeningAlternatives(directories, ownerId, contents, own
         total = getSiblingsSync(entry.db, anchor.id, '').length;
     });
 
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     return { ok: true, node_ids: nodeIds, added, total };
 }
 
@@ -2693,7 +2735,7 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
             } catch { /* skip malformed */ }
         }
     });
-    await reportOwnerWrite(directories, entry.db, ownerId, stats);
+    await reportOwnerWrite(directories, entry, ownerId, stats);
     return updated;
 }
 
@@ -2742,7 +2784,7 @@ export async function renameGroupMemberInMessages(directories, groupOwnerId, old
             } catch { /* skip malformed */ }
         }
     });
-    await reportOwnerWrite(directories, entry.db, groupOwnerId, stats);
+    await reportOwnerWrite(directories, entry, groupOwnerId, stats);
     return updated;
 }
 
