@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getTagDefinitions, getEntityTagIdsForMany, getTagDeletions, getTagsHash, getGroupFavsByIds, getMetaValue, getGroupsVersion, trySetMetaValues, GROUP_FAV_NORMALIZED_FLAG } from '../character-metadata-db.js';
+import { getTagDefinitions, getEntityTagIdsForMany, getTagDeletions, getGroupFavsByIds, getGroupsVersion, trySetMetaValues } from '../character-metadata-db.js';
 import { getGroupsData } from './groups.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery, fastFieldOrderValue } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
@@ -38,16 +38,6 @@ const TANTIVY_FIELD_LABELS = {
 const DEFAULT_TANTIVY_MAX_ROWS = 500;
 
 const INDEX_DIR_NAME = 'groups-tantivy';
-
-/** @returns {Promise<string>} A cheap fingerprint that changes whenever a group is added/removed/edited, a
- * tag definition/assignment changes, or the one-time group fav normalization (which rewrites only fav columns)
- * completes. */
-async function getGroupsSignature(directories) {
-    const groupsDirMtime = fs.existsSync(directories.groups) ? fs.statSync(directories.groups).mtimeMs : 0;
-    const tagsHash = await getTagsHash(directories);
-    const favNormalized = await getMetaValue(directories, GROUP_FAV_NORMALIZED_FLAG);
-    return `${groupsDirMtime}:${tagsHash}:${favNormalized}`;
-}
 
 /** Fetches tag definitions/assignments once up front (two batched reads total) instead of one call per group.
  * @returns {Promise<{ tagNamesFor: (groupId: string) => string, tagIdsFor: (groupId: string) => string }>} */
@@ -131,26 +121,23 @@ async function buildTantivyIndex(directories, tantivy) {
 }
 
 /**
- * Keeps a user's groups index current by a full rebuild whenever the groups signature moves. Runs in
- * search-index-worker.js, never in the request process. Groups are few, so a full rebuild is cheap.
+ * Keeps a user's groups index current by a full rebuild whenever the groups version log (group_changes) has
+ * moved past the version the index was built from. Runs in search-index-worker.js, never in the request process.
  * Each build records the groups version (getGroupsVersion()) it was built from, and persists it under
  * GROUPS_INDEX_VERSION_META_KEY once the new index is in place, so read-only mode can read it.
+ * Without a metadata store there is no log, so only the startup build runs, as with the characters index.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  */
 export function createGroupIndexMaintainer(directories, tantivy) {
-    /** @type {string | null} */
-    let builtSignature = null;
     /** @type {number | null} */
     let builtVersion = null;
 
     /** @returns {Promise<string>} The index dir. */
     async function build() {
-        // Read before the build, so a change made during it moves the signature and the version again.
-        const signature = await getGroupsSignature(directories);
+        // Read before the build, so a change made during it moves the version again.
         const version = await getGroupsVersion(directories);
         const dir = await buildTantivyIndex(directories, tantivy);
-        builtSignature = signature;
         builtVersion = version;
         // null: the metadata store is unavailable, so there is no version and nowhere to persist one.
         if (version !== null) {
@@ -170,7 +157,8 @@ export function createGroupIndexMaintainer(directories, tantivy) {
         version: () => builtVersion,
         /** @returns {Promise<string | null>} The index dir when it was rebuilt, else null. */
         async tick() {
-            if (await getGroupsSignature(directories) === builtSignature) {
+            const version = await getGroupsVersion(directories);
+            if (version === null || version === builtVersion) {
                 return null;
             }
             return build();
