@@ -6,7 +6,8 @@ import { delay } from '../../util.js';
 import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
 import { TEXTGEN_TYPES } from '../../constants.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
-import { resolveTokenizer, encodeWithTokenizer, countWithTokenizer, createTokenizerOutcome, sendTokenizerWarnings } from '../../tokenizer-resolve.js';
+import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
+import { createStoredCounter } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
@@ -70,7 +71,9 @@ export const router = express.Router();
  * real `isHorde` flag (src/kobold-generation-data.js) already produces the correct payload shape for
  * Horde too, it was just never threaded through here. Defaults to `{}` - existing callers/tests
  * (which never pass this) keep their exact prior behavior.
- * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, name1: string, name2: string, warnings: object[], itemization: object }>}
+ * @returns {Promise<{ params: object, anchorNodeId: string|null, anchorContent: object|null, tokenCountRows: import('../../token-count-store.js').PendingTokenRows, name1: string, name2: string, warnings: object[], itemization: object }>}
+ * `tokenCountRows` are the counts and ids this build read from or added to the token tables, for
+ * writeBack() once the request is sent.
  */
 export async function buildRawActionKoboldRequest(directories, {
     request, characterAvatar, groupId, ownerId, nodeId,
@@ -127,10 +130,12 @@ export async function buildRawActionKoboldRequest(directories, {
         ? { api: 'koboldhorde', hordeModels: Array.isArray(hordeSettings.models) ? hordeSettings.models : [], tokenizerSetting: powerUser.tokenizer }
         : { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer };
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
+    const identity = await tokenizerIdentity(resolvedTokenizer);
     const tokenizerOutcome = createTokenizerOutcome();
     const encodeOptions = { request, koboldBaseUrl: url, ...tokenizerOptions, outcome: tokenizerOutcome };
-    const encodeTokens = (text) => encodeWithTokenizer(resolvedTokenizer, text, encodeOptions);
-    const countTokens = (text) => countWithTokenizer(resolvedTokenizer, text, encodeOptions);
+    const storedCounter = createStoredCounter({ resolved: resolvedTokenizer, identity, directories, encodeOptions });
+    const encodeTokens = storedCounter.encodeText;
+    const countTokens = storedCounter.countText;
 
     const orchestratorInput = await resolveTextCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, mainApi: 'kobold', ownerId, nodeId,
@@ -155,7 +160,7 @@ export async function buildRawActionKoboldRequest(directories, {
     const anchorContent = orchestratorInput.chat.length > 0 ? orchestratorInput.chat[orchestratorInput.chat.length - 1] : null;
 
     return {
-        params: assembled.generate_data, anchorNodeId, anchorContent,
+        params: assembled.generate_data, anchorNodeId, anchorContent, tokenCountRows: storedCounter.pending,
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: sendTokenizerWarnings(tokenizerState, resolvedTokenizer, tokenizerOutcome, assembled.droppedEntries),
         // Prompt-itemization breakdown for the client's itemizedPrompts entry - see

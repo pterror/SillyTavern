@@ -37,7 +37,8 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
-const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
+const { saveChatToTree, loadBranch, appendMessages, editMessage, getAncestorPath, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
+const { writeBack } = await import('../../token-count-store.js');
 // The client-side compact-stream decoder (public/scripts/llamacpp-compact-stream.js) has no browser-
 // only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
 // here rather than re-implementing a second copy of the decode logic for this test file.
@@ -1836,13 +1837,13 @@ async function run() {
     });
 
     /**
-     * A llama.cpp backend recording each request's URL: `/props` answers `props` (500 when null),
+     * A llama.cpp backend recording each request's URL, headers and body: `/props` answers `props` (500 when null),
      * `/v1/models` lists `modelsId`, and `/tokenize` one token per UTF-8 byte (500 when `failTokenize`).
      */
     async function startPropsLlamaCpp({ props, modelsId = 'from-v1-models', failTokenize = false }) {
         const requests = [];
         const backend = await startFakeBackend((req, res, body) => {
-            requests.push({ url: req.url, headers: req.headers });
+            requests.push({ url: req.url, headers: req.headers, body });
             if (req.url.startsWith('/props')) {
                 res.writeHead(props ? 200 : 500, { 'Content-Type': 'application/json' });
                 return res.end(props ? JSON.stringify(props) : '{}');
@@ -1937,6 +1938,107 @@ async function run() {
         assert.deepEqual(backend.urls().filter(url => url.startsWith('/props')), ['/props?model=gemma-2-9b-it']);
         assert.equal(built.tokenizerIdentity, null);
         assert.ok(backend.urls().includes('/tokenize'), 'counts still go to /tokenize');
+    });
+
+    await tokenizerCase('raw-action on llama.cpp: stored counts and ids answer an unchanged chat, an edit recounts only its text, a new build_info recounts everything', async () => {
+        const name = 'StoreCheck';
+        const avatar = await writeCharacter(`${name}.png`, {
+            name,
+            data: {
+                name, description: 'StoreCheck keeps the old lighthouse.', first_mes: 'Welcome.',
+                mes_example: '<START>\n{{user}}: What do you keep?\n{{char}}: The light, always.',
+            },
+        });
+        fs.writeFileSync(path.join(worldsDir, 'StoreLore.json'), JSON.stringify({
+            entries: {
+                1: { uid: 1, key: ['lighthouse'], keysecondary: [], comment: '', content: 'The lighthouse stands on a black rock.', constant: false, selective: false, order: 10, position: 0, disable: false },
+            },
+        }));
+        const lines = [
+            [name, 'Welcome.'],
+            ['Tester', 'Is this the lighthouse?'],
+            [name, 'It is, and it has stood for a century.'],
+            ['Tester', 'Who built it?'],
+            [name, 'My grandfather, stone by stone.'],
+            ['Tester', 'Does the lamp still turn?'],
+            [name, 'Every night, without fail.'],
+            ['Tester', 'May I climb the stairs?'],
+            [name, 'Mind the loose step near the top.'],
+            ['Tester', 'I will be careful.'],
+        ];
+        await saveChatToTree(directories, avatar, 'store-chat', [
+            { chat_metadata: {} },
+            ...lines.map(([speaker, mes], i) => ({ name: speaker, is_user: speaker === 'Tester', mes, send_date: i + 1, extra: {} })),
+        ]);
+        const branch = await loadBranch(directories, avatar, 'store-chat');
+        assert.equal(branch.messages.length, 10);
+
+        const props = { model_alias: 'tokenstore-model', model_path: '/models/tokenstore-model.gguf', build_info: 'b1-store' };
+        const backend = await startPropsLlamaCpp({ props });
+        const tokenizeBodies = () => backend.requests.filter(r => r.url === '/tokenize').map(r => JSON.parse(r.body));
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        settings.power_user.context = { story_string: '{{wiBefore}}\n{{description}}\n{{wiAfter}}' };
+        settings.world_info_settings = {
+            world_info: { globalSelect: ['StoreLore'], charLore: [] },
+            world_info_depth: 10,
+            world_info_budget: 100,
+        };
+        Object.assign(settings.textgenerationwebui_settings, {
+            type: 'llamacpp',
+            llamacpp_model: '',
+            server_urls: { llamacpp: backend.url },
+            send_banned_tokens: true,
+            banned_tokens: 'forbidden\nbanished',
+            logit_bias: [{ id: 'a', text: 'hello', value: -5 }],
+        });
+        writeAllSettings(directories, settings);
+
+        const keyOf = body => JSON.stringify([body.content, body.add_special ?? null]);
+        /** One generation; returns it and the /tokenize bodies it sent. */
+        const generate = async () => {
+            const start = tokenizeBodies().length;
+            const leaf = (await loadBranch(directories, avatar, 'store-chat')).branch.leaf_id;
+            const built = await buildRawActionTextCompletionRequest(directories, {
+                request: /** @type {any} */ ({ body: { api_type: 'llamacpp' }, user: { directories } }),
+                characterAvatar: avatar, ownerId: avatar, nodeId: leaf, type: 'normal',
+            });
+            return { built, sent: tokenizeBodies().slice(start) };
+        };
+
+        try {
+            const first = await generate();
+            assert.ok(first.sent.length > 0, 'the first generation tokenizes');
+            assert.ok(first.built.params.prompt.includes('The lighthouse stands on a black rock.'), 'the world info entry activated');
+            assert.ok(first.built.params.prompt.includes('The light, always.'), 'the example messages are in the prompt');
+            assert.ok(first.sent.some(body => body.content.includes('forbidden')), 'a banned string was encoded');
+            assert.ok(first.sent.some(body => body.content.includes('hello')), 'the bias entry was encoded');
+            await writeBack(directories, first.built.tokenCountRows);
+
+            const firstKeys = new Set(first.sent.map(keyOf));
+            const second = await generate();
+            assert.deepEqual(second.sent.filter(body => firstKeys.has(keyOf(body))), [], 'no text tokenized in the first generation is tokenized again');
+            assert.deepEqual(second.built.params, first.built.params, 'the same prompt, banned token ids and logit bias');
+
+            props.build_info = 'b2-store';
+            const rebuilt = await generate();
+            assert.deepEqual(new Set(rebuilt.sent.map(keyOf)), firstKeys, 'the same (content, add_special) as the first generation');
+            assert.deepEqual(rebuilt.built.params, first.built.params);
+            props.build_info = 'b1-store';
+
+            await writeBack(directories, second.built.tokenCountRows);
+            const edited = branch.messages[4];
+            const newText = 'My grandmother, stone by patient stone.';
+            const editResult = await editMessage(directories, avatar, edited.node_id, { ...edited, mes: newText });
+            assert.equal(editResult.ok, true, editResult.reason);
+            const afterEdit = await generate();
+            assert.ok(afterEdit.sent.length > 0, 'the edited text is tokenized');
+            assert.deepEqual(afterEdit.sent.filter(body => !body.content.includes(newText)).map(body => body.content), [],
+                'every /tokenize holds the edited message\'s new text');
+        } finally {
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
     });
 
     assert.deepEqual(tokenizerCaseFailures, [], 'tokenizer resolution cases');
