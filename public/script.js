@@ -921,6 +921,17 @@ function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, re
     }
 }
 
+/**
+ * The warning for a card the server couldn't put in its search index (src/endpoints/characters-search-index.js's
+ * CharacterIndexFailure). A card whose name is empty is named by its id alone.
+ * @param {{ id: string, name: string, error: string, retryInMs: number, keptEntry: boolean }} message
+ */
+function characterIndexFailedText({ id, name, error, retryInMs, keptEntry }) {
+    const card = name ? `"${name}" (${id})` : id;
+    const entry = keptEntry ? 'It keeps its previous search entry, if it had one,' : 'It has no search entry';
+    return `Couldn't update the search entry of character ${card}: ${error}. ${entry} until a retry in ${Math.ceil(retryInMs / 1000)}s succeeds.`;
+}
+
 const CHANGE_STREAM_NOTICE_AFTER_MS = 10000;
 
 function onCharacterChangeMessage() {
@@ -963,6 +974,10 @@ function setupCharacterChangeStream() {
             }
             if (message?.type === 'tag-move-failed') {
                 toastr.warning(tagMoveFailedText(message));
+                return;
+            }
+            if (message?.type === 'character-index-failed') {
+                toastr.warning(characterIndexFailedText(message));
                 return;
             }
             onCharacterChangeMessage();

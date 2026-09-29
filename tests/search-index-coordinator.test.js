@@ -239,6 +239,33 @@ describe('createSearchIndexCoordinator()', () => {
         expect(onSearchIndexUpdated).not.toHaveBeenCalled();
     });
 
+    test('a "character-index-failed" message is handed to onCharacterIndexFailed with the handle and its warning', async () => {
+        const onCharacterIndexFailed = jest.fn();
+        const { coordinator, workers, onSearchIndexUpdated } = setup({ onSearchIndexUpdated: jest.fn(), onCharacterIndexFailed });
+        const worker = await spawnReady(coordinator, workers, 'user1');
+        const warning = { id: 'Flaky.png', name: 'Flaky', error: 'SyntaxError: x', retryInMs: 1000, keptEntry: true };
+        worker.send({ type: 'character-index-failed', warning });
+        expect(onCharacterIndexFailed).toHaveBeenCalledTimes(1);
+        expect(onCharacterIndexFailed).toHaveBeenLastCalledWith('user1', warning);
+        expect(onSearchIndexUpdated).not.toHaveBeenCalled();
+    });
+
+    test('by default a "character-index-failed" message emits CHARACTER_INDEX_FAILED_EVENT (handle, warning)', async () => {
+        const { CHARACTER_INDEX_FAILED_EVENT } = await import('../src/endpoints/search-index-coordinator.js');
+        const { coordinator, workers } = setup({});
+        const worker = await spawnReady(coordinator, workers, 'user1');
+        const failed = jest.fn();
+        characterChangeEmitter.on(CHARACTER_INDEX_FAILED_EVENT, failed);
+        try {
+            const warning = { id: 'Flaky.png', name: 'Flaky', error: 'SyntaxError: x', retryInMs: 1000, keptEntry: true };
+            worker.send({ type: 'character-index-failed', warning });
+            expect(failed).toHaveBeenCalledTimes(1);
+            expect(failed).toHaveBeenLastCalledWith('user1', warning);
+        } finally {
+            characterChangeEmitter.off(CHARACTER_INDEX_FAILED_EVENT, failed);
+        }
+    });
+
     test('at most once per second per handle: the first at once, the rest coalesced into one at the window\'s end with the latest seq', async () => {
         jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick'] });
         const { coordinator, workers, onSearchIndexUpdated } = setup();

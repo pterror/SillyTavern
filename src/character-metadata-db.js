@@ -2002,7 +2002,7 @@ export async function getCharacterChatStats(directories, avatar) {
 }
 
 /**
- * @typedef {{ id: string, card_json: string, chat_size: number, date_last_chat: number }} CharacterIndexRow
+ * @typedef {{ id: string, name: string, card_json: string, chat_size: number, date_last_chat: number }} CharacterIndexRow
  */
 
 /** The rows of `ids` via WHERE id IN (...), never scanning every row. The caller keeps `ids` bounded (one request's
@@ -2020,7 +2020,7 @@ export async function getCharacterIndexRowsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        for (const row of /** @type {Generator<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, card_json, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch))) {
+        for (const row of /** @type {Generator<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, name, card_json, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch))) {
             result.set(row.id, row);
         }
     }
@@ -10519,9 +10519,9 @@ export async function* streamCharacterCardJsonBatches(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
     yield* /** @type {AsyncGenerator<CharacterIndexRow[], void, undefined>} */ (streamRows(entry.db, {
-        firstPageSql: 'SELECT id, card_json, chat_size, date_last_chat FROM characters ORDER BY id LIMIT @limit',
+        firstPageSql: 'SELECT id, name, card_json, chat_size, date_last_chat FROM characters ORDER BY id LIMIT @limit',
         firstPageParams: {},
-        nextPageSql: 'SELECT id, card_json, chat_size, date_last_chat FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
+        nextPageSql: 'SELECT id, name, card_json, chat_size, date_last_chat FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
         nextPageParams: {},
         keyColumn: 'id',
     }));

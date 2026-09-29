@@ -23,6 +23,10 @@ export const CHARACTERS_INDEX_RETRY_SEQ_META_KEY = 'tantivy_char_index_retry_seq
 export const GROUPS_INDEX_VERSION_META_KEY = 'tantivy_group_index_version';
 const SEARCH_INDEX_UPDATED_INTERVAL_MS = 1000;
 
+// Emitted on characterChangeEmitter as (handle, warning) when a card couldn't be indexed; warning is a
+// CharacterIndexFailure (characters-search-index.js). The worker has already logged it.
+export const CHARACTER_INDEX_FAILED_EVENT = 'character-index-failed';
+
 /**
  * @typedef {'characters' | 'groups'} SearchIndexTarget
  * @typedef {{ seq: number, tagNameSeq: number, retrySeq: number }} SearchIndexPosition How far the characters index
@@ -73,12 +77,16 @@ function spawnSearchIndexWorker(workerData) {
  * and groups together: the first change in a quiet period is passed on at once, later ones in the interval are
  * coalesced into one call at its end. Defaults to emitting characterChangeEmitter's 'search-index-updated'
  * (handle, seq, groupsVersion).
+ * @param {(handle: string, warning: import('./characters-search-index.js').CharacterIndexFailure) => void} [options.onCharacterIndexFailed]
+ * Called with each warning for a card of the handle's that couldn't be indexed. Defaults to emitting
+ * characterChangeEmitter's CHARACTER_INDEX_FAILED_EVENT (handle, warning).
  * @param {object} [options.workerOptions] Extra workerData (tickIntervalMs, tickBudgetMs).
  */
 export function createSearchIndexCoordinator({
     spawnWorker = spawnSearchIndexWorker,
     openIndex = undefined,
     onSearchIndexUpdated = (handle, seq, groupsVersion) => characterChangeEmitter.emit('search-index-updated', handle, seq, groupsVersion),
+    onCharacterIndexFailed = (handle, warning) => characterChangeEmitter.emit(CHARACTER_INDEX_FAILED_EVENT, handle, warning),
     workerOptions = {},
 } = {}) {
     /** @type {Map<string, WorkerEntry>} */
@@ -273,6 +281,10 @@ export function createSearchIndexCoordinator({
             case 'swapped': {
                 entry.targets[msg.target].reader = openAt(msg.dir, positionOf(msg));
                 searchIndexUpdated(handle);
+                return;
+            }
+            case 'character-index-failed': {
+                onCharacterIndexFailed(handle, msg.warning);
                 return;
             }
             case 'reply': {
