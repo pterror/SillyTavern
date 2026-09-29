@@ -23,7 +23,7 @@ import {
     settingsReady,
     getMessageDeletionStartId,
 } from '../script.js';
-import { printCharactersDebounced, printCharacters, entitiesFilter } from './character-list.js';
+import { printCharactersDebounced, printCharacters, entitiesFilter, resetCharacterListPositionOnNextPrint } from './character-list.js';
 import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
@@ -1601,8 +1601,9 @@ function applyTheme(name) {
         },
         {
             key: 'bogus_folders',
-            action: () => {
+            action: (oldValue, newValue) => {
                 $('#bogus_folders').prop('checked', power_user.bogus_folders);
+                if (oldValue !== newValue) resetCharacterListPositionOnNextPrint();
                 printCharactersDebounced();
             },
         },
@@ -4040,6 +4041,7 @@ jQuery(() => {
             power_user.sort_rule = $(this).find(':selected').data('rule');
         }
         updateRandomSortRerollVisibility();
+        resetCharacterListPositionOnNextPrint();
         printCharactersDebounced();
         saveSettingsDebounced('power_user.sort_field', 'power_user.sort_order', 'power_user.sort_rule');
     });
@@ -4401,6 +4403,7 @@ jQuery(() => {
 
     $('#bogus_folders').on('input', function () {
         power_user.bogus_folders = !!$(this).prop('checked');
+        resetCharacterListPositionOnNextPrint();
         printCharactersDebounced();
         saveSettingsDebounced('power_user.bogus_folders');
     });
