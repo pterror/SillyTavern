@@ -1606,6 +1606,108 @@ await check('textgen llamacpp /tokenize failing: a count that begins the prompt 
     assert.equal(tokenizerOutcomeBasis(resolved, fieldOutcome), 'fallback');
 });
 
+// --- tokenizerIdentity: which stored counts a tokenizer may reuse ---
+
+const { tokenizerIdentity } = await import('./tokenizer-resolve.js');
+const crypto = await import('node:crypto');
+const { createRequire } = await import('node:module');
+const fileSha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const tiktokenVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(createRequire(import.meta.url).resolve('tiktoken')), 'package.json'), 'utf8')).version;
+const bundled = (file) => path.join(__dirname, 'tokenizers', file);
+const llamaCppFacts = (props) => ({ textgenApiType: TEXTGEN_TYPES.LLAMACPP, llamaCppProps: props });
+const remoteTextgen = { kind: 'remote', id: tokenizers.API_TEXTGENERATIONWEBUI, name: 'API (Text Completion)', basis: 'remote', localCopy: { id: tokenizers.GEMMA, name: 'Gemma / Gemini' } };
+
+await check('tokenizerIdentity: a bundled file gives its sha256, with the reader that reads it', async () => {
+    const local = (id, name) => ({ kind: 'local', id, name, basis: 'local', localCopy: null });
+    assert.equal(await tokenizerIdentity(local(tokenizers.LLAMA, 'Llama 1/2')), `file:sentencepiece:${fileSha256(bundled('llama.model'))}`);
+    assert.equal(await tokenizerIdentity(local(tokenizers.LLAMA3, 'Llama 3')), `file:hf-json:${fileSha256(bundled('llama3.json'))}`);
+    assert.equal(await tokenizerIdentity(local(tokenizers.CLAUDE, 'Claude 1/2')), `file:web-tokenizers:${fileSha256(bundled('claude.json'))}`);
+    assert.equal(await tokenizerIdentity({ id: tokenizers.GEMMA, name: 'Gemma / Gemini' }), `file:sentencepiece:${fileSha256(bundled('gemma.model'))}`, 'a local copy is a local file too');
+});
+
+await check('tokenizerIdentity: a registry entry gives its pinned sha256; entries that share a file and read it differently differ', async () => {
+    const kimiConfig = (allowedSpecial) => ({ patStr: '\\s+', specialTokens: {}, reservedSpecialTokens: { start: 1, count: 0 }, allowedSpecial, split: null });
+    const registry = [
+        ...testRegistry,
+        { id: 'kimi-k2-base', family: 'Test Kimi Base', format: 'tiktoken', sha256: 'C'.repeat(64), bytes: 1, license: 'x', licenseUrl: 'x', sources: [], tiktoken: kimiConfig('none') },
+        { id: 'kimi-k2-thinking', family: 'Test Kimi Thinking', format: 'tiktoken', sha256: 'c'.repeat(64), bytes: 1, license: 'x', licenseUrl: 'x', sources: [], tiktoken: kimiConfig('all') },
+    ];
+    const qwen = await tokenizerIdentity({ kind: 'local', id: tokenizers.QWEN3, source: 'qwen3', name: 'Test Qwen (official)', basis: 'local', localCopy: null }, { registry });
+    assert.equal(qwen, `file:hf-json:${'a'.repeat(64)}`);
+    const base = await tokenizerIdentity({ id: tokenizers.KIMI_K2_BASE, source: 'kimi-k2-base', name: 'Test Kimi Base' }, { registry });
+    const thinking = await tokenizerIdentity({ id: tokenizers.KIMI_K2_THINKING, source: 'kimi-k2-thinking', name: 'Test Kimi Thinking' }, { registry });
+    assert.ok(base?.startsWith(`file:tiktoken:${'c'.repeat(64)}:`), String(base));
+    assert.ok(thinking?.startsWith(`file:tiktoken:${'c'.repeat(64)}:`), String(thinking));
+    assert.notEqual(base, thinking);
+});
+
+await check('tokenizerIdentity: tiktoken gives its encoding name and the tiktoken package version', async () => {
+    assert.equal(await tokenizerIdentity({ kind: 'local', id: tokenizers.OPENAI, name: 'gpt-4', model: 'gpt-4', basis: 'local', localCopy: null }), `tiktoken:cl100k_base@${tiktokenVersion}`);
+    assert.equal(await tokenizerIdentity({ kind: 'local', id: tokenizers.OPENAI, name: 'gpt-4o', model: 'gpt-4o', basis: 'local', localCopy: null }), `tiktoken:o200k_base@${tiktokenVersion}`);
+    assert.equal(await tokenizerIdentity({ kind: 'local', id: tokenizers.GPT2, name: 'GPT-2', basis: 'local', localCopy: null }), `tiktoken:gpt2@${tiktokenVersion}`);
+});
+
+await check('tokenizerIdentity: an estimate, and a remote tokenizer other than llama.cpp, give null', async () => {
+    assert.equal(await tokenizerIdentity({ kind: 'estimate', id: tokenizers.NONE, name: 'None / Estimated', basis: 'unknown', localCopy: null }), null);
+    assert.equal(await tokenizerIdentity({ kind: 'estimate', id: tokenizers.NONE, name: 'None / Estimated', basis: 'none', localCopy: null }), null);
+    assert.equal(await tokenizerIdentity(null), null, 'no tokenizer answered');
+    const props = { model_path: '/m/gemma-2-9b-it.gguf', build_info: 'b4567-abcdef0' };
+    for (const type of [TEXTGEN_TYPES.OOBA, TEXTGEN_TYPES.TABBY, TEXTGEN_TYPES.VLLM, TEXTGEN_TYPES.APHRODITE, TEXTGEN_TYPES.KOBOLDCPP]) {
+        assert.equal(await tokenizerIdentity(remoteTextgen, { textgenApiType: type, llamaCppProps: props }), null, type);
+    }
+    assert.equal(await tokenizerIdentity({ ...remoteTextgen, id: tokenizers.API_KOBOLD }, { llamaCppProps: props }), null, 'KoboldAI Classic');
+});
+
+await check('tokenizerIdentity: llama.cpp is its /props model_path and build_info; a reply missing either gives null', async () => {
+    const props = { model_path: '/m/gemma-2-9b-it.gguf', build_info: 'b4567-abcdef0' };
+    const identity = await tokenizerIdentity(remoteTextgen, llamaCppFacts(props));
+    assert.equal(identity, `llamacpp:${JSON.stringify(['/m/gemma-2-9b-it.gguf', 'b4567-abcdef0'])}`);
+    assert.notEqual(await tokenizerIdentity(remoteTextgen, llamaCppFacts({ ...props, build_info: 'b4568-1234567' })), identity, 'a new build');
+    assert.notEqual(await tokenizerIdentity(remoteTextgen, llamaCppFacts({ ...props, model_path: '/m/other.gguf' })), identity, 'another model');
+    assert.equal(await tokenizerIdentity(remoteTextgen, llamaCppFacts({ model_path: props.model_path })), null, 'no build_info');
+    assert.equal(await tokenizerIdentity(remoteTextgen, llamaCppFacts({ build_info: props.build_info })), null, 'no model_path');
+    assert.equal(await tokenizerIdentity(remoteTextgen, llamaCppFacts(null)), null, 'no /props reply');
+    assert.equal(await tokenizerIdentity(remoteTextgen, { textgenApiType: TEXTGEN_TYPES.LLAMACPP }), null, 'no /props asked');
+    assert.notEqual(
+        await tokenizerIdentity(remoteTextgen, llamaCppFacts({ model_path: 'a:b', build_info: 'c' })),
+        await tokenizerIdentity(remoteTextgen, llamaCppFacts({ model_path: 'a', build_info: 'b:c' })),
+        'the two fields can\'t run into each other',
+    );
+
+    const customUrl = { ...remoteTextgen };
+    Object.defineProperty(customUrl, 'llamaCpp', { value: { url: 'http://127.0.0.1:1', model: '', headers: {} }, enumerable: false });
+    assert.equal(await tokenizerIdentity(customUrl, { llamaCppProps: props }), identity, 'a chat-completion custom URL that is llama.cpp');
+    assert.equal(await tokenizerIdentity(customUrl, {}), null);
+});
+
+await check('the tokenizer that answered each call: the resolution, its local copy after a remote failure, or none', async () => {
+    const remote = { kind: 'remote', id: tokenizers.API_TEXTGENERATIONWEBUI, name: 'API (Text Completion)', basis: 'remote', localCopy: { id: tokenizers.GEMMA, name: 'Gemma / Gemini' } };
+    const options = { textgenApiType: TEXTGEN_TYPES.LLAMACPP };
+
+    const answered = {};
+    assert.deepEqual(await encodeWithTokenizer(remote, 'hi', { ...options, encodeTextgenRemote: async () => ({ count: 2, ids: [7, 8] }), answeredOut: answered }), [7, 8]);
+    assert.equal(answered.tokenizer, remote, 'the remote answered');
+
+    const byCopy = {};
+    const encodeLocal = async (key, text) => encodeTextByLocalTokenizerType(key, text);
+    await countWithTokenizer(remote, 'Hello world', { ...options, encodeTextgenRemote: failingRemote, encodeLocal, answeredOut: byCopy });
+    assert.equal(byCopy.tokenizer, remote.localCopy, 'the copy answered');
+    assert.equal(await tokenizerIdentity(byCopy.tokenizer), `file:sentencepiece:${fileSha256(bundled('gemma.model'))}`, 'its count is the copy\'s');
+
+    // The same request's next call can be answered by the remote again: each call reports its own.
+    const next = {};
+    await countWithTokenizer(remote, 'Hello world', { ...options, encodeTextgenRemote: async () => ({ count: 1, ids: [1] }), answeredOut: next });
+    assert.equal(next.tokenizer, remote);
+
+    const none = {};
+    await countWithTokenizer({ ...remote, localCopy: null }, 'Hello world', { ...options, encodeTextgenRemote: failingRemote, answeredOut: none });
+    assert.equal(none.tokenizer, null, 'no tokenizer answered: the estimate');
+
+    const estimate = { tokenizer: 'unset' };
+    await countWithTokenizer({ kind: 'estimate', id: tokenizers.NONE, name: 'None / Estimated', basis: 'unknown', localCopy: null }, 'Hello', { answeredOut: estimate });
+    assert.equal(estimate.tokenizer, null);
+});
+
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 
 if (failures.length > 0) {

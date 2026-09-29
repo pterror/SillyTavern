@@ -1,6 +1,8 @@
+import crypto from 'node:crypto';
+
 import { TEXTGEN_TYPES } from './constants.js';
 import { tokenizers, TOKENIZER_TYPE_KEYS } from './tokenizer-ids.js';
-import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getBytePieceChunks, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
+import { encodeTextByLocalTokenizerType, encodeViaTextgenAPI, getBytePieceChunks, getLocalTokenizerFileIdentity, getTiktokenIdentity, getTiktokenTokenizer, guesstimate } from './endpoints/tokenizers.js';
 import { lookupModelTokenizer, mapResultKey } from './tokenizer-model-map.js';
 import { hasRemoteTokenizer, lookupBackendModel } from './backend-status.js';
 import { TOKENIZER_NAMES, describeMapEntry, describeTokenizerId, localResolution, estimateResolution, resolveChatCompletionTokenizer, selectBackendResult, selectModelResult } from './tokenizer-map-resolution.js';
@@ -165,6 +167,10 @@ export { TOKENIZER_TYPE_KEYS };
  * depends on the loaded gguf, so when it fails no local copy answers for it.
  * @property {{ pieces?: Array<string|number[]> }} [piecesOut] Asks llama.cpp's `/tokenize` for each
  * token's piece, and receives them when it answers.
+ * @property {{ tokenizer?: ResolvedTokenizer|LocalTokenizer|null }} [answeredOut] Receives the tokenizer
+ * that gave this call's ids or count: the resolution, its local copy when that answered for a failed
+ * remote one, or null for the estimate. Per call, because a request's outcome only says a copy answered
+ * some call.
  */
 
 /** A remote tokenizer answered with an HTTP error, a network error or a reply without token ids. */
@@ -456,6 +462,96 @@ export function tokenizerOutcomeBasis(resolved, outcome) {
 }
 
 /**
+ * What tokenizerIdentity() knows besides the tokenizer.
+ * @typedef {object} TokenizerIdentityFacts
+ * @property {string} [textgenApiType] One of TEXTGEN_TYPES, for a text-completion remote tokenizer.
+ * @property {any} [llamaCppProps] The llama.cpp backend's parsed `GET /props` reply, asked for the
+ * counts this identity is for.
+ * @property {import('./tokenizer-map-resolution.js').MapDeps['registry']} [registry] Replaces the
+ * tokenizer registry, for tests.
+ */
+
+/**
+ * The name of the tokenizer a count or ids came from, for storing them: two tokenizers with the same
+ * identity give the same ids for every text. null when there's none to trust, so nothing is stored:
+ * - a registry entry: `file:<format>:<pinned sha256>`, and for the `tiktoken` format the sha256 of its
+ *   config too, because entries that share a file read it differently;
+ * - a bundled or downloaded file: getLocalTokenizerFileIdentity();
+ * - tiktoken: getTiktokenIdentity();
+ * - llama.cpp's `/tokenize`: `llamacpp:` and the JSON of `/props`' `[model_path, build_info]`, null
+ *   when the reply is missing either, because llama.cpp says nothing else about the file it loaded
+ *   and a new build can tokenize differently;
+ * - every other remote tokenizer: null, because none reports anything tied to the file it loaded;
+ * - the estimate, or no tokenizer: null.
+ * For the tokenizer that answered a call, pass encodeWithTokenizer()'s `answeredOut.tokenizer`.
+ * @param {ResolvedTokenizer|LocalTokenizer|null|undefined} tokenizer
+ * @param {TokenizerIdentityFacts} [facts]
+ * @returns {Promise<string|null>}
+ */
+export async function tokenizerIdentity(tokenizer, facts = {}) {
+    if (!tokenizer || ('kind' in tokenizer && tokenizer.kind === 'estimate')) {
+        return null;
+    }
+    const { id } = tokenizer;
+    const isTextgenRemote = id === tokenizers.API_TEXTGENERATIONWEBUI || id === tokenizers.API_CURRENT;
+    if (('llamaCpp' in tokenizer && tokenizer.llamaCpp) || (isTextgenRemote && facts.textgenApiType === TEXTGEN_TYPES.LLAMACPP)) {
+        return llamaCppIdentity(facts.llamaCppProps);
+    }
+    if (isTextgenRemote || id === tokenizers.API_KOBOLD || id === tokenizers.NONE || ('kind' in tokenizer && tokenizer.kind === 'remote')) {
+        return null;
+    }
+    try {
+        if (tokenizer.source) {
+            return registryIdentity(tokenizer.source, facts.registry);
+        }
+        if (id === tokenizers.OPENAI) {
+            return getTiktokenIdentity(String(tokenizer.model));
+        }
+        if (id === tokenizers.GPT2) {
+            return getTiktokenIdentity('gpt2');
+        }
+        const key = TOKENIZER_TYPE_KEYS[id];
+        if (key && findTokenizerSource(key, facts.registry)) {
+            return registryIdentity(key, facts.registry);
+        }
+        return key ? await getLocalTokenizerFileIdentity(key) : null;
+    } catch (error) {
+        console.warn(`No identity for the ${tokenizer.name} tokenizer:`, error.message);
+        return null;
+    }
+}
+
+/**
+ * @param {any} props
+ * @returns {string|null}
+ */
+function llamaCppIdentity(props) {
+    const modelPath = props?.model_path;
+    const buildInfo = props?.build_info;
+    if (typeof modelPath !== 'string' || !modelPath || typeof buildInfo !== 'string' || !buildInfo) {
+        return null;
+    }
+    return `llamacpp:${JSON.stringify([modelPath, buildInfo])}`;
+}
+
+/**
+ * @param {string} source A registry entry id
+ * @param {TokenizerIdentityFacts['registry']} registry
+ * @returns {string|null}
+ */
+function registryIdentity(source, registry) {
+    const entry = findTokenizerSource(source, registry);
+    if (!entry) {
+        return null;
+    }
+    const identity = `file:${entry.format}:${entry.sha256.toLowerCase()}`;
+    if (!entry.tiktoken) {
+        return identity;
+    }
+    return `${identity}:${crypto.createHash('sha256').update(JSON.stringify(entry.tiktoken)).digest('hex')}`;
+}
+
+/**
  * Counts `text` with a resolveTokenizer() answer; an estimate resolution gives the estimate, as
  * does a tokenizer that fails with no local copy to answer for it.
  * @param {ResolvedTokenizer} resolved
@@ -466,6 +562,7 @@ export function tokenizerOutcomeBasis(resolved, outcome) {
  */
 export async function countWithTokenizer(resolved, text, options = {}) {
     if (resolved.kind === 'estimate') {
+        if (options.answeredOut) options.answeredOut.tokenizer = null;
         return estimateTokenCount(text);
     }
     const ids = await encodeWithTokenizer(resolved, text, options);
@@ -487,12 +584,15 @@ export async function countWithTokenizer(resolved, text, options = {}) {
  */
 export async function encodeWithTokenizer(resolved, text, options = {}) {
     const str = String(text ?? '');
+    const { outcome, answeredOut } = options;
+    if (answeredOut) answeredOut.tokenizer = null;
     if (resolved.kind === 'estimate') {
         return null;
     }
-    const { outcome } = options;
     try {
-        return await encodeWithLocalOrType(resolved, str, options);
+        const ids = await encodeWithLocalOrType(resolved, str, options);
+        if (answeredOut) answeredOut.tokenizer = resolved;
+        return ids;
     } catch (error) {
         console.warn(`Tokenizer ${resolved.name} failed:`, error.message);
     }
@@ -501,6 +601,7 @@ export async function encodeWithTokenizer(resolved, text, options = {}) {
         try {
             const ids = await encodeWithLocalOrType(resolved.localCopy, str, options);
             if (outcome) outcome.usedCopy = resolved.localCopy;
+            if (answeredOut) answeredOut.tokenizer = resolved.localCopy;
             return ids;
         } catch (error) {
             console.warn(`Tokenizer ${resolved.localCopy.name} failed:`, error.message);
