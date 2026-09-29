@@ -11,6 +11,25 @@ import { escapeRegex, escapeHtml, canUseNegativeLookbehind } from './utils.js';
 import { DOMPurify } from '../lib.js';
 import { renderMarkdown } from './marked-processor.js';
 
+const TITLE = String.raw`"(?:\\[\s\S]|[^"\\])*"`;
+const IMAGE_SIZE = String.raw` =[^\s"'()]*`;
+/** A link or image's `](url "title")`, as marked reads it (the size is an image's `=WxH`). */
+const TITLED_LINK = String.raw`\]\(\s*(?:<(?:\\.|[^\n<>\\])*>|(?:\\.|[^\s()\\]|\((?:\\.|[^\s()\\])*\))+)`
+    + String.raw`(?:${IMAGE_SIZE}[ \t]*(?:\n[ \t]*)?|[ \t]+(?:\n[ \t]*)?|\n[ \t]*)${TITLE}\s*\)`;
+/** A reference definition's `[id]: url "title"` line, as marked reads it. */
+const TITLED_DEFINITION = String.raw`^ {0,3}\[(?:\\[\s\S]|[^\[\]\\])+\]:[ \t]*(?:\n[ \t]*)?(?:<[^\n]*?>|[^<\s]\S*?)`
+    + String.raw`(?:${IMAGE_SIZE}[ \t]*(?:\n[ \t]*)?| +(?:\n[ \t]*)?| *\n[ \t]*)${TITLE}[ \t]*$`;
+/**
+ * Quoted dialogue to wrap in `<q>`, captured per quote style. Code, `<style>` and a double-quoted title in link, image
+ * or reference-definition syntax match uncaptured, so they're left as written.
+ */
+const quoteRegex = new RegExp(
+    String.raw`<style>[\s\S]*?<\/style>|${'```'}[\s\S]*?${'```'}|~~~[\s\S]*?~~~|${'``'}[\s\S]*?${'``'}|${'`'}[\s\S]*?${'`'}`
+    + `|${TITLED_LINK}|${TITLED_DEFINITION}`
+    + String.raw`|(".*?")|(“.*?”)|(«.*?»)|(「.*?」)|(『.*?』)|(＂.*?＂)`,
+    'gim',
+);
+
 /**
  * @param {number} messageId - Index in the chat array, or -1 for transient messages (e.g. streaming previews).
  */
@@ -107,7 +126,7 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         }
 
         mes = mes.replace(
-            /<style>[\s\S]*?<\/style>|```[\s\S]*?```|~~~[\s\S]*?~~~|``[\s\S]*?``|`[\s\S]*?`|(".*?")|(\u201C.*?\u201D)|(\u00AB.*?\u00BB)|(\u300C.*?\u300D)|(\u300E.*?\u300F)|(\uFF02.*?\uFF02)/gim,
+            quoteRegex,
             function (match, p1, p2, p3, p4, p5, p6) {
                 if (p1) {
                     // English double quotes
