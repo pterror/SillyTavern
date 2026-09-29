@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getTagDefinitions, getEntityTagIdsForMany, getTagDeletions, getGroupFavsByIds, getGroupsVersion, trySetMetaValues } from '../character-metadata-db.js';
-import { getGroupsData } from './groups.js';
+import { getTagDefinitionsForIds, getEntityTagIdsForMany, getTagDeletions, getGroupFavsByIds, getGroupsVersion, trySetMetaValues } from '../character-metadata-db.js';
+import { streamGroupsDataBatches } from './groups.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery, fastFieldOrderValue } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { getSearchIndex, GROUPS_INDEX_VERSION_META_KEY } from './search-index-coordinator.js';
@@ -24,7 +24,15 @@ const TANTIVY_FAST_FIELDS = ['date_added', 'date_last_chat', 'chat_size'];
 const TANTIVY_COLLATION_FIELDS = ['name_sort_key', 'fav_name_sort_key'];
 const ALL_FAST_FIELDS = [...TANTIVY_FAST_FIELDS, ...TANTIVY_COLLATION_FIELDS];
 const TAG_IDS_FIELD = 'tag_ids';
-const TANTIVY_FILTER_TEXT_FIELDS = [{ name: TAG_IDS_FIELD, tokenizerName: 'whitespace' }];
+// The group file's name, the key its doc is replaced and deleted by.
+const FILE_NAME_FIELD = 'file_name';
+// The id inside the group file, absent when it has none (group_changes logs the same id).
+const GROUP_ID_FIELD = 'group_id';
+const TANTIVY_FILTER_TEXT_FIELDS = [
+    { name: TAG_IDS_FIELD, tokenizerName: 'whitespace' },
+    { name: FILE_NAME_FIELD, tokenizerName: 'raw' },
+    { name: GROUP_ID_FIELD, tokenizerName: 'raw' },
+];
 
 const TANTIVY_FIELD_LABELS = {
     name: ['name'],
@@ -39,13 +47,10 @@ const DEFAULT_TANTIVY_MAX_ROWS = 500;
 
 const INDEX_DIR_NAME = 'groups-tantivy';
 
-/** Fetches tag definitions/assignments once up front (two batched reads total) instead of one call per group.
- * @returns {Promise<{ tagNamesFor: (groupId: string) => string, tagIdsFor: (groupId: string) => string }>} */
+/** @returns {Promise<{ tagNamesFor: (groupId: string) => string, tagIdsFor: (groupId: string) => string }>} */
 async function makeTagNamesResolver(directories, groupIds) {
-    const [definitions, assignments] = await Promise.all([
-        getTagDefinitions(directories),
-        getEntityTagIdsForMany(directories, groupIds, { type: 'group' }),
-    ]);
+    const assignments = await getEntityTagIdsForMany(directories, groupIds, { type: 'group' });
+    const definitions = await getTagDefinitionsForIds(directories, Object.values(assignments ?? {}).flat());
     const tagsById = new Map((definitions ?? []).map(tag => [tag.id, tag]));
     const tagNamesFor = (groupId) => (assignments?.[groupId] ?? [])
         .map(id => tagsById.get(id)?.name)
@@ -55,9 +60,6 @@ async function makeTagNamesResolver(directories, groupIds) {
     return { tagNamesFor, tagIdsFor };
 }
 
-// Groups come from getGroupsData() as one already-in-memory array, but the insert side is still batched to
-// avoid holding a full stringified duplicate of `groups` in memory at once (this doubling OOM'd the characters
-// index build on a real install).
 const INDEX_BUILD_BATCH_SIZE = 500;
 const CHECKPOINT_EVERY_N_BATCHES = 20;
 
@@ -79,14 +81,12 @@ async function buildTantivyIndex(directories, tantivy) {
     const index = new tantivy.Index(schema, tempDir, false);
     const writer = index.writer();
 
-    const groups = await getGroupsData(directories);
-    const { tagNamesFor, tagIdsFor } = await makeTagNamesResolver(directories, groups.map(group => group.id));
-
     let batchIndex = 0;
-    for (let i = 0; i < groups.length; i += INDEX_BUILD_BATCH_SIZE) {
-        const batch = groups.slice(i, i + INDEX_BUILD_BATCH_SIZE);
-        const favById = await getGroupFavsByIds(directories, batch.map(group => group.id));
-        for (const group of batch) {
+    for await (const batch of streamGroupsDataBatches(directories, INDEX_BUILD_BATCH_SIZE)) {
+        const groupIds = batch.map(({ group }) => group.id);
+        const { tagNamesFor, tagIdsFor } = await makeTagNamesResolver(directories, groupIds);
+        const favById = await getGroupFavsByIds(directories, groupIds);
+        for (const { fileName, group } of batch) {
             group.fav = !!favById[group.id];
             const doc = tantivy.Document.fromDict({
                 name: group.name ?? '',
@@ -100,6 +100,8 @@ async function buildTantivyIndex(directories, tantivy) {
                 name_sort_key: stringToSortKey(group.name ?? ''),
                 fav_name_sort_key: (group.fav ? 0 : 1) * (2 ** 48) + stringToSortKey(group.name ?? '', 6),
                 tag_ids: tagIdsFor(group.id),
+                [FILE_NAME_FIELD]: fileName,
+                ...(typeof group.id === 'string' && group.id !== '' ? { [GROUP_ID_FIELD]: group.id } : {}),
                 [DATA_FIELD]: JSON.stringify(group),
                 [FAV_FIELD]: Boolean(group.fav),
             }, schema);

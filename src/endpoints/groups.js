@@ -266,15 +266,53 @@ export async function migrateGroupFileMetadataFormat(userDirs, fileName) {
  * @returns {Promise<object[]>}
  */
 export async function getGroupsData(directories) {
-    const groups = [];
-
     if (!fs.existsSync(directories.groups)) {
         fs.mkdirSync(directories.groups);
     }
 
     const files = fs.readdirSync(directories.groups).filter(x => path.extname(x) === '.json');
 
-    files.forEach(function (file) {
+    return (await readGroupsDataFiles(directories, files)).map(({ group }) => group);
+}
+
+/**
+ * The groups getGroupsData() returns, in batches of at most `batchSize` `.json` files, without holding the file list
+ * or the groups whole.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {number} batchSize
+ * @returns {AsyncGenerator<{ fileName: string, group: any }[], void, undefined>}
+ */
+export async function* streamGroupsDataBatches(directories, batchSize) {
+    if (!fs.existsSync(directories.groups)) {
+        fs.mkdirSync(directories.groups);
+    }
+
+    /** @type {string[]} */
+    let files = [];
+    for await (const dirent of await fsPromises.opendir(directories.groups)) {
+        if (path.extname(dirent.name) !== '.json') continue;
+        files.push(dirent.name);
+        if (files.length >= batchSize) {
+            yield await readGroupsDataFiles(directories, files);
+            files = [];
+        }
+    }
+    if (files.length > 0) {
+        yield await readGroupsDataFiles(directories, files);
+    }
+}
+
+/**
+ * A file that can't be read or parsed is logged and left out.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string[]} files
+ * @returns {Promise<{ fileName: string, group: any }[]>} In the order of `files`.
+ */
+async function readGroupsDataFiles(directories, files) {
+    /** @type {{ fileName: string, group: any }[]} */
+    const entries = [];
+
+    for (const file of files) {
         try {
             const filePath = path.join(directories.groups, file);
             const fileContents = fs.readFileSync(filePath, 'utf8');
@@ -282,20 +320,20 @@ export async function getGroupsData(directories) {
             const groupStat = fs.statSync(filePath);
             group.date_added = groupStat.birthtimeMs;
             group.create_date = new Date(groupStat.birthtimeMs).toISOString();
-            groups.push(group);
+            entries.push({ fileName: file, group });
         } catch (error) {
             console.error(error);
         }
-    });
+    }
 
-    const statsById = await getGroupChatStatsByIds(directories, groups.map(group => group.id).filter(id => typeof id === 'string' && id !== ''));
-    for (const group of groups) {
+    const statsById = await getGroupChatStatsByIds(directories, entries.map(({ group }) => group.id).filter(id => typeof id === 'string' && id !== ''));
+    for (const { group } of entries) {
         const stats = statsById.get(group.id);
         group.date_last_chat = stats?.dateLastChat ?? 0;
         group.chat_size = stats?.chatSize ?? 0;
     }
 
-    return groups;
+    return entries;
 }
 
 /**
