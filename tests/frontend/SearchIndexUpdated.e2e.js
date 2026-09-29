@@ -21,7 +21,8 @@ async function awaitAppReady(page) {
 /**
  * Records /api/characters/query and /api/characters/changes requests, and can hold /query responses.
  * The real /changes/stream is replaced by one that never sends anything, so the only stream messages are
- * the ones a test sends with sendStreamMessage().
+ * the ones a test sends with sendStreamMessage(). It answers with `log.streamStatus`. A 200 ends at once, and its
+ * `retry` keeps the browser from reconnecting within a test, so the stream never reopens by itself.
  * @param {import('@playwright/test').Page} page
  */
 async function instrument(page) {
@@ -36,13 +37,21 @@ async function instrument(page) {
             }
         };
     });
-    await page.route('**/api/characters/changes/stream', route => route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: ': quiet\n\n',
-    }));
+    await page.route('**/api/characters/changes/stream', async route => {
+        // Counted before answering, so a notice a failed answer leads to can't be among them yet.
+        const notices = await disconnectedNotice(page).count();
+        log.streamRequests.push({ at: Date.now(), status: log.streamStatus, notices });
+        await route.fulfill({
+            status: log.streamStatus,
+            headers: { 'Content-Type': 'text/event-stream' },
+            body: 'retry: 86400000\n: quiet\n\n',
+        });
+    });
 
     const log = {
+        streamStatus: 200,
+        /** @type {{ at: number, status: number, notices: number }[]} */
+        streamRequests: [],
         /** @type {{ search: string|undefined, pageSize: number, page: number, fav: boolean|undefined }[]} */
         queries: [],
         changes: 0,
@@ -85,10 +94,10 @@ async function instrument(page) {
     return log;
 }
 
-/** Waits until no /query or change-sync activity for QUIET_MS, counting from this call. */
-async function waitForQuiet(log) {
+/** Waits until no /query or change-sync activity for `quietMs`, counting from this call. */
+async function waitForQuiet(log, quietMs = QUIET_MS) {
     const since = Date.now();
-    await expect.poll(() => log.inFlight === 0 && Date.now() - Math.max(since, log.lastActivity) >= QUIET_MS, { timeout: 30000 }).toBe(true);
+    await expect.poll(() => log.inFlight === 0 && Date.now() - Math.max(since, log.lastActivity) >= quietMs, { timeout: 30000 }).toBe(true);
 }
 
 /**
@@ -507,5 +516,140 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
 
         expect(pageQueries(log, from)).toHaveLength(1);
         expect(await listScrollTop(page)).toBe(SCROLLED_TO);
+    });
+});
+
+function disconnectedNotice(page) {
+    return page.locator('#toast-container .toast-warning .toast-message', { hasText: 'Live updates are disconnected' });
+}
+
+/**
+ * Fires the page's /changes/stream handlers for the given events, in order.
+ * @param {import('@playwright/test').Page} page
+ * @param {('error'|'open')[]} types
+ */
+async function fireStreamEvents(page, types) {
+    await page.evaluate((types) => {
+        const streams = window['__changeStreams'].filter(s => s.url.endsWith('/api/characters/changes/stream'));
+        if (!streams.length) throw new Error('no /changes/stream EventSource');
+        const stream = streams.at(-1);
+        for (const type of types) {
+            const handler = stream[`on${type}`];
+            if (handler) handler.call(stream, new Event(type));
+        }
+    }, types);
+}
+
+test.describe('the change stream reopening', () => {
+    /** @type {Awaited<ReturnType<typeof instrument>>} */
+    let log;
+
+    async function bootWithListShowing(page) {
+        await testSetup.awaitST({ page });
+        await awaitAppReady(page);
+        await openCharacterManagementDrawer(page);
+        await expect.poll(() => listShowing(page)).toBe(true);
+        await waitForQuiet(log);
+    }
+
+    test.describe('after an error', () => {
+        test.beforeEach(async ({ page }) => {
+            log = await instrument(page);
+            await bootWithListShowing(page);
+        });
+
+        test('with the list showing, syncs and reprints the page', async ({ page }) => {
+            const from = log.queries.length;
+            const changesBefore = log.changes;
+
+            await fireStreamEvents(page, ['error', 'open']);
+            await expect.poll(() => pageQueries(log, from).length, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBe(1);
+            await waitForQuiet(log);
+
+            expect(log.changes).toBeGreaterThan(changesBefore);
+            expect(pageQueries(log, from)).toHaveLength(1);
+            expect(topSearchQueries(log, from)).toEqual([]);
+        });
+
+        test('with a search term, re-queries the visible page and syncs, without the top-500 search', async ({ page }) => {
+            await setSearchTerm(page, log, 'zq');
+            const from = log.queries.length;
+            const changesBefore = log.changes;
+
+            await fireStreamEvents(page, ['error', 'open']);
+            await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
+            await waitForQuiet(log);
+
+            expect(pageQueries(log, from)).toEqual([{ search: 'zq', pageSize: expect.any(Number), page: 1, fav: undefined }]);
+            expect(topSearchQueries(log, from)).toEqual([]);
+        });
+
+        test('with the list covered, sends nothing; uncovering it syncs and fetches the page once', async ({ page }) => {
+            await page.locator('#rm_button_create').click();
+            await expect.poll(() => listShowing(page)).toBe(false);
+            await waitForQuiet(log);
+            const from = log.queries.length;
+            const changesBefore = log.changes;
+
+            await fireStreamEvents(page, ['error', 'open']);
+            await waitForQuiet(log);
+            expect(log.queries.slice(from)).toEqual([]);
+            expect(log.changes).toBe(changesBefore);
+
+            await page.locator('#charInfoDrawerIcon').click();
+            await expect.poll(() => log.changes).toBeGreaterThan(changesBefore);
+            await expect.poll(() => pageQueries(log, from).length).toBe(1);
+            await waitForQuiet(log);
+
+            expect(pageQueries(log, from)).toHaveLength(1);
+            expect(topSearchQueries(log, from)).toEqual([]);
+        });
+    });
+
+    test('an open with no error before it sends nothing', async ({ page }) => {
+        log = await instrument(page);
+        // The mocked stream's body ends, which is an error, so this uses the server's own stream, which stays open.
+        await page.unroute('**/api/characters/changes/stream');
+        await bootWithListShowing(page);
+        const from = log.queries.length;
+        const changesBefore = log.changes;
+
+        await fireStreamEvents(page, ['open']);
+        await waitForQuiet(log, CHANGE_DEBOUNCE_TIMEOUT_MS);
+
+        expect(log.queries.slice(from)).toEqual([]);
+        expect(log.changes).toBe(changesBefore);
+    });
+
+    test('a closed stream is rebuilt with backoff, a notice shows after 3 failed rebuilds, and the reopen clears it and syncs', async ({ page }) => {
+        test.setTimeout(90000);
+        log = await instrument(page);
+        log.streamStatus = 500;
+        await bootWithListShowing(page);
+
+        // The first connection and 3 rebuilds, all failed.
+        await expect.poll(() => log.streamRequests.length, { timeout: 30000 }).toBe(4);
+        await expect(disconnectedNotice(page)).toHaveCount(1);
+        const changesBefore = log.changes;
+        log.streamStatus = 200;
+
+        await expect.poll(() => log.streamRequests.length, { timeout: 30000 }).toBe(5);
+        await expect(disconnectedNotice(page)).toHaveCount(0);
+        await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
+
+        const requests = log.streamRequests;
+        expect(requests.map(r => r.status)).toEqual([500, 500, 500, 500, 200]);
+        expect(requests.map(r => r.notices)).toEqual([0, 0, 0, 0, 1]);
+        const gaps = requests.slice(1).map((r, i) => r.at - requests[i].at);
+        [1000, 2000, 4000, 8000].forEach((least, i) => expect(gaps[i]).toBeGreaterThanOrEqual(least));
+    });
+
+    test('the rebuild delay doubles from 1s and stops at 60s', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        const delays = await page.evaluate(async () => {
+            const { changeStreamRetryDelayMs } = await import('/script.js');
+            return [0, 1, 2, 3, 4, 5, 6, 7, 20].map(changeStreamRetryDelayMs);
+        });
+        expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
     });
 });
