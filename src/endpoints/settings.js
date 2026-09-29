@@ -15,6 +15,7 @@ import {
     readSettingsAtPaths,
     writeSettingsKeys,
     writeAllSettings,
+    writeNamedSettings,
     settingsExist,
 } from '../settings-store.js';
 
@@ -243,7 +244,8 @@ router.post('/save', function (request, response) {
             });
         }
 
-        writeAllSettings(directories, request.body);
+        // Keeps the key files the body leaves out: the client's full save has no tags, tag_map or accountStorage.
+        writeNamedSettings(directories, request.body);
         triggerAutoSave(request.user.profile.handle);
         // Key order in the reconstructed store may differ from the client's payload, so the client can't just
         // hash its own JSON locally - it must use this returned hash.
