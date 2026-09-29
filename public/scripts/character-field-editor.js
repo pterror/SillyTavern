@@ -104,6 +104,9 @@ let activeEdit = null;
 /** @type {ReturnType<typeof setTimeout> | null} */
 let autoSaveTimer = null;
 
+/** @type {Promise<unknown> | null} The autosave that has been sent and not yet finished. */
+let autoSaveInFlight = null;
+
 /** @param {string} id @returns {JQuery<HTMLTextAreaElement>} */
 function getTextarea(id) {
     return /** @type {JQuery<HTMLTextAreaElement>} */ ($(`#${id}`));
@@ -230,7 +233,16 @@ function scheduleAutoSave(id, value) {
     cancelAutoSave();
     autoSaveTimer = setTimeout(() => {
         autoSaveTimer = null;
-        void FIELDS[id].save()(value);
+        const save = FIELDS[id].save()(value).catch((error) => {
+            console.error('Field autosave failed', { id, error });
+            return false;
+        });
+        autoSaveInFlight = save;
+        void save.then(() => {
+            if (autoSaveInFlight === save) {
+                autoSaveInFlight = null;
+            }
+        });
     }, deps.autoSaveTimeout);
 }
 
@@ -239,8 +251,12 @@ async function confirmEdit() {
         return;
     }
     const edit = activeEdit;
-    cancelAutoSave();
     edit.saving = true;
+    cancelAutoSave();
+    if (autoSaveInFlight) {
+        await autoSaveInFlight;
+        cancelAutoSave();
+    }
     const saved = await FIELDS[edit.id].save()(String(getTextarea(edit.id).val() ?? ''));
     edit.saving = false;
     if (saved && activeEdit === edit) {

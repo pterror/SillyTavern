@@ -9729,6 +9729,30 @@ function confirmedGreetingsAfterOp(character, op, position, text) {
     return greetings;
 }
 
+/** @type {Map<string, Promise<void>>} Per character avatar, the tail of its queue of greeting saves; only held while one is queued or in flight. */
+const greetingSaveQueues = new Map();
+
+/**
+ * Runs a greeting save once every earlier greeting save for the same character has finished (and had its result
+ * applied), so it reads the preconditions and the confirmed list those left behind rather than the ones before them.
+ * @template T
+ * @param {string} avatar
+ * @param {() => Promise<T>} save
+ * @returns {Promise<T>}
+ */
+function queueGreetingSave(avatar, save) {
+    const previous = greetingSaveQueues.get(avatar) ?? Promise.resolve();
+    const run = previous.then(save);
+    const tail = run.then(() => { }, () => { });
+    greetingSaveQueues.set(avatar, tail);
+    void tail.then(() => {
+        if (greetingSaveQueues.get(avatar) === tail) {
+            greetingSaveQueues.delete(avatar);
+        }
+    });
+    return run;
+}
+
 // In-memory state for the sidebar greeting pager; `hashes` is the post-op per-position precondition hash list.
 // `committed[i] === false` marks a just-added, still-blank slot from the New Greeting button - not yet a real
 // array entry server-side, mirroring the Alternate Greetings drawer's pending-row behavior (see addAlternateGreeting()).
@@ -9779,15 +9803,14 @@ function navigateGreetingPager(newIndex) {
 }
 
 /**
- * Saves an edit to an already-committed pager greeting.
+ * Saves an edit to an already-committed pager greeting. Call it only from inside {@link queueGreetingSave}.
+ * @param {string} avatar
+ * @param {object} character
  * @param {number} position
  * @param {string} text
  * @returns {Promise<boolean>} Whether the edit was saved.
  */
-async function saveGreetingPagerEdit(position, text) {
-    const avatar = $('.open_alternate_greetings').data('avatar');
-    const character = avatar ? charactersStore.get(avatar) : null;
-    if (!character) return false;
+async function saveGreetingPagerEdit(avatar, character, position, text) {
     const expectedHash = greetingPagerState.hashes[position];
     if (!Number.isFinite(expectedHash)) return false; // Position out of range of what the server last confirmed.
 
@@ -9820,11 +9843,15 @@ async function commitGreetingFieldValue(value) {
         create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager create-mode input');
         return true;
     }
-    if (greetingPagerState.committed[index] === false) {
+    const avatar = $('.open_alternate_greetings').data('avatar');
+    const character = avatar ? charactersStore.get(avatar) : null;
+    if (!character) return false;
+    // Whether the slot is still pending is read once the earlier saves are done: an add still in flight commits it.
+    return await queueGreetingSave(avatar, async () => {
+        if (greetingPagerState.committed[index] !== false) {
+            return await saveGreetingPagerEdit(avatar, character, index, value);
+        }
         if (value === '') return false;
-        const avatar = $('.open_alternate_greetings').data('avatar');
-        const character = avatar ? charactersStore.get(avatar) : null;
-        if (!character) return false;
         const result = await postGreetingOp('add', { avatar_url: avatar, position: index, expected_length: greetingPagerState.hashes.length, text: value });
         if (result.ok) {
             await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', index, value), result.defaultPosition, result.hashes);
@@ -9833,8 +9860,7 @@ async function commitGreetingFieldValue(value) {
         console.error('Greeting add failed', { avatar, position: index, status: result.status, reason: result.reason });
         toastr.error(t`Failed to save the new greeting. It's still shown here - confirm it again to retry.`, t`Greeting not saved`);
         return false;
-    }
-    return await saveGreetingPagerEdit(index, value);
+    });
 }
 
 /**
@@ -10066,20 +10092,22 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
         const avatar = $('.open_alternate_greetings').data('avatar');
         const character = avatar ? charactersStore.get(avatar) : null;
         if (!character) return;
-        const expectedHash = greetingPagerState.hashes[rowIndex];
-        if (!Number.isFinite(expectedHash)) return;
+        await queueGreetingSave(avatar, async () => {
+            const expectedHash = greetingPagerState.hashes[rowIndex];
+            if (!Number.isFinite(expectedHash)) return;
 
-        const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
-        if (result.ok) {
-            await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', rowIndex, text), result.defaultPosition, result.hashes);
-            return;
-        }
-        console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
-        if (result.status === 409) {
-            toastr.error(t`This greeting was changed in another session, so this edit was not saved. Close and reopen this popup to see the current version.`, t`Greeting not saved`);
-            return;
-        }
-        toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+            const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
+            if (result.ok) {
+                await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', rowIndex, text), result.defaultPosition, result.hashes);
+                return;
+            }
+            console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
+            if (result.status === 409) {
+                toastr.error(t`This greeting was changed in another session, so this edit was not saved. Close and reopen this popup to see the current version.`, t`Greeting not saved`);
+                return;
+            }
+            toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
+        });
     }, DEFAULT_SAVE_EDIT_TIMEOUT);
 
     greetingBlock.find('.alternate_greeting_text')
@@ -10108,9 +10136,14 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 const avatar = $('.open_alternate_greetings').data('avatar');
                 const character = avatar ? charactersStore.get(avatar) : null;
                 if (!character) return;
-                const result = await postGreetingOp('add', { avatar_url: avatar, position: addedIndex, expected_length: greetingPagerState.hashes.length, text: value });
+                const result = await queueGreetingSave(avatar, async () => {
+                    const added = await postGreetingOp('add', { avatar_url: avatar, position: addedIndex, expected_length: greetingPagerState.hashes.length, text: value });
+                    if (added.ok) {
+                        await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', addedIndex, value), added.defaultPosition, added.hashes);
+                    }
+                    return added;
+                });
                 if (result.ok) {
-                    await applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', addedIndex, value), result.defaultPosition, result.hashes);
                     return;
                 }
                 console.error('Greeting add failed', { avatar, position: addedIndex, status: result.status, reason: result.reason });

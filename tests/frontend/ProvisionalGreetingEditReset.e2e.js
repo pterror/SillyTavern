@@ -286,6 +286,81 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(finalText);
     });
 
+    test('sidebar pager with auto-save on: confirming while the autosave is in flight keeps the same greeting shown with its new text', async ({ page }) => {
+        const previousAutoSave = await page.evaluate(async () => {
+            const { power_user } = await import('/scripts/power-user.js');
+            const previous = power_user.auto_save_msg_edits;
+            power_user.auto_save_msg_edits = true;
+            return previous;
+        });
+        try {
+            const s = stamp();
+            const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+            const avatar = await createCharacter(page, `ProvPagerOverlap-${s}`, [g0, g1, g2]);
+            await openCharacter(page, avatar);
+            await showSwipe(page, 1, g1);
+            expect((await openingState(page)).node_id.startsWith('card:')).toBe(true);
+
+            // Let the first greeting edit reach the server, but hold its response so the autosave is still in flight
+            // when the edit is confirmed.
+            /** @type {string[]} */
+            const editTexts = [];
+            /** @type {() => void} */
+            let releaseFirst = () => {};
+            const firstHeld = new Promise((resolveHeld) => {
+                page.route('**/api/characters/greetings/edit', async (route) => {
+                    editTexts.push(route.request().postDataJSON().text);
+                    if (editTexts.length === 1) {
+                        const response = await route.fetch();
+                        const released = new Promise(resolve => { releaseFirst = () => resolve(undefined); });
+                        resolveHeld(undefined);
+                        await released;
+                        await route.fulfill({ response });
+                        return;
+                    }
+                    await route.continue();
+                });
+            });
+
+            await openInfoTab(page, 'greeting');
+            const textarea = page.locator('#greeting_field');
+            await page.locator('.greeting-pager-next').click();
+            await expect(page.locator('.greeting-pager-input')).toHaveValue('2');
+            await expect(textarea).toHaveValue(g1);
+            await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
+            await expect(textarea).toBeVisible();
+
+            const typed = `One edited ${s}`;
+            const more = ' and more';
+            const finalText = typed + more;
+
+            const firstResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/greetings/edit', { timeout: 15000 });
+            await textarea.fill(typed);
+            await firstHeld;
+            expect(editTexts).toEqual([typed]);
+
+            await textarea.press('End');
+            await textarea.pressSequentially(more);
+            await expect(textarea).toHaveValue(finalText);
+            await page.locator('.field_edit_done[data-for="greeting_field"]').click();
+
+            releaseFirst();
+            expect((await firstResponse).ok()).toBe(true);
+
+            await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(finalText);
+            const after = await openingState(page);
+            expect(after.length).toBe(1);
+            expect(after.swipe_id).toBe(1);
+            expect(after.swipes).toEqual([g0, finalText, g2]);
+            await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(finalText);
+        } finally {
+            await page.evaluate(async (previous) => {
+                const { power_user } = await import('/scripts/power-user.js');
+                power_user.auto_save_msg_edits = previous;
+            }, previousAutoSave);
+        }
+    });
+
     test('sidebar pager: editing g2 while g0 and g1 are deleted elsewhere and /char-update refreshes the card lands the edit at position 0 and leaves g3 untouched', async ({ page, browser }) => {
         const s = stamp();
         const [g0, g1, g2, g3] = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
