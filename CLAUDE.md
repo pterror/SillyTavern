@@ -30,7 +30,7 @@ The page's memory holds only what is currently on screen. Browser storage (Index
 
 ## Data safety
 
-Correctness comes before speed. Never lose data. Never leave anything out silently: if something has to be dropped, show a warning listing exactly what. Don't write anything unless something actually changed.
+Correctness comes before speed. Never lose data. Never leave anything out silently: if something has to be dropped, show a warning listing exactly what. Don't write anything unless something actually changed. Anything the user has typed or changed but not yet saved survives a page reload: it is kept as a draft and restored where it was.
 
 ## Tree model
 
