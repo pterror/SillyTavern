@@ -103,7 +103,7 @@ afterEach(() => {
 
 /** @param {import('better-sqlite3').Database} db */
 function fillState(db) {
-    return db.prepare('SELECT kind, upto, done FROM entity_count_fill ORDER BY kind').all();
+    return Array.from(db.prepare('SELECT kind, upto, done FROM entity_count_fill ORDER BY kind').iterate());
 }
 
 /**
@@ -112,20 +112,20 @@ function fillState(db) {
  */
 function counterMismatches(db) {
     const filled = (kind, column) => `EXISTS (SELECT 1 FROM entity_count_fill f WHERE f.kind = '${kind}' AND (f.done = 1 OR ${column} <= f.upto))`;
-    const expectedEntities = db.prepare(`
+    const expectedEntities = Array.from(db.prepare(`
         SELECT 'character' AS kind, fav, COUNT(*) AS n FROM characters WHERE ${filled('character', 'id')} GROUP BY fav
         UNION ALL
         SELECT 'group' AS kind, fav, COUNT(*) AS n FROM groups WHERE ${filled('group', 'id')} GROUP BY fav
-    `).all();
-    const expectedTags = db.prepare(`
+    `).iterate());
+    const expectedTags = Array.from(db.prepare(`
         SELECT t.tag_id, 'character' AS kind, c.fav, COUNT(*) AS n FROM character_tags t JOIN characters c ON c.id = t.character_id
             WHERE ${filled('character', 'c.id')} GROUP BY t.tag_id, c.fav
         UNION ALL
         SELECT t.tag_id, 'group' AS kind, g.fav, COUNT(*) AS n FROM group_tags t JOIN groups g ON g.id = t.group_id
             WHERE substr(t.group_id, -4) <> '.png' AND ${filled('group', 'g.id')} GROUP BY t.tag_id, g.fav
-    `).all();
-    const storedEntities = db.prepare('SELECT kind, fav, count AS n FROM entity_counts WHERE count <> 0').all();
-    const storedTags = db.prepare('SELECT tag_id, kind, fav, count AS n FROM entity_tag_counts WHERE count <> 0').all();
+    `).iterate());
+    const storedEntities = Array.from(db.prepare('SELECT kind, fav, count AS n FROM entity_counts WHERE count <> 0').iterate());
+    const storedTags = Array.from(db.prepare('SELECT tag_id, kind, fav, count AS n FROM entity_tag_counts WHERE count <> 0').iterate());
 
     const mismatches = [];
     const compare = (table, expected, stored, keyOf) => {

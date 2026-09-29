@@ -137,7 +137,7 @@ describe('unimport-embedded-lore - streamed linked-world reads', () => {
         for (const { method, sql, params, handle } of worldReads) {
             expect(method).not.toBe('all');
             expect(sql).toMatch(/\bLIMIT\b/);
-            const plan = handle.all(`EXPLAIN QUERY PLAN ${sql}`, params).map(row => row.detail);
+            const plan = Array.from(handle.iterate(`EXPLAIN QUERY PLAN ${sql}`, params), row => row.detail);
             expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
             expect(plan).toContainEqual(expect.stringMatching(/\bidx_characters_world\b/));
         }
@@ -146,7 +146,7 @@ describe('unimport-embedded-lore - streamed linked-world reads', () => {
         // last rowid read needs more than one page of linkers; character-metadata-db-page-plan.test.js checks it.
         const linkerPage = worldReads.find(c => /\browid\b/.test(c.sql));
         expect(linkerPage).toBeDefined();
-        expect(linkerPage.handle.all(`EXPLAIN QUERY PLAN ${linkerPage.sql}`, linkerPage.params).map(row => row.detail))
+        expect(Array.from(linkerPage.handle.iterate(`EXPLAIN QUERY PLAN ${linkerPage.sql}`, linkerPage.params), row => row.detail))
             .toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\bidx_characters_world \(world=\?\)/));
     });
 

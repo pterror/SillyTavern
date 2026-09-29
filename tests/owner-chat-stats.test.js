@@ -93,7 +93,7 @@ async function seedCharacter(avatar) {
  */
 async function recompute(ownerId) {
     const db = await tree.getDbHandle(directories);
-    const rows = db.all('SELECT content, created_at FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL', { ownerId });
+    const rows = Array.from(db.iterate('SELECT content, created_at FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL', { ownerId }));
     return {
         chatSize: rows.reduce((sum, r) => sum + Buffer.byteLength(r.content, 'utf8') + 1, 0),
         dateLastChat: rows.reduce((max, r) => Math.max(max, r.created_at), 0),
@@ -251,7 +251,7 @@ describe('fillTreeOwnerKinds', () => {
         await metadataDb.fillTreeOwnerKinds(directories);
 
         const db = await tree.getDbHandle(directories);
-        expect(db.all('SELECT owner_id, kind, row_id FROM owners ORDER BY owner_id')).toEqual([
+        expect(Array.from(db.iterate('SELECT owner_id, kind, row_id FROM owners ORDER BY owner_id'))).toEqual([
             { owner_id: 'Carol', kind: 'character', row_id: 'Carol.png' },
             { owner_id: 'g1', kind: 'group', row_id: 'g1' },
         ]);

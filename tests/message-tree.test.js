@@ -150,7 +150,7 @@ describe('forking', () => {
 
         // Verify children directly against the DB: m1 should now have two children.
         const db = await treeDb.getDbHandle(directories);
-        const children = db.all('SELECT id FROM messages WHERE parent_id = @parentId', { parentId: m1.node_id });
+        const children = Array.from(db.iterate('SELECT id FROM messages WHERE parent_id = @parentId', { parentId: m1.node_id }));
         expect(children).toHaveLength(2);
     });
 });

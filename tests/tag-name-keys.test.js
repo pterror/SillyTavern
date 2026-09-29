@@ -68,19 +68,19 @@ function withRawDb(fn) {
 
 /** @returns {{ id: string, name: string, name_key: string | null }[]} */
 function tagRows() {
-    return withRawDb(db => db.prepare('SELECT id, json_extract(data, \'$.name\') AS name, name_key FROM tags ORDER BY rowid').all());
+    return withRawDb(db => Array.from(db.prepare('SELECT id, json_extract(data, \'$.name\') AS name, name_key FROM tags ORDER BY rowid').iterate()));
 }
 
 /** @param {string} avatar */
 function assignedTagIds(avatar) {
-    return withRawDb(db => db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ? ORDER BY tag_id').all(avatar).map(r => r.tag_id));
+    return withRawDb(db => Array.from(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ? ORDER BY tag_id').iterate(avatar), r => r.tag_id));
 }
 
 /** @param {string} [avatar] */
 function heldNames(avatar) {
     return withRawDb(db => (avatar === undefined
-        ? db.prepare('SELECT character_id, name FROM tag_names_held ORDER BY character_id, name').all()
-        : db.prepare('SELECT name FROM tag_names_held WHERE character_id = ? ORDER BY name').all(avatar).map(r => r.name)));
+        ? Array.from(db.prepare('SELECT character_id, name FROM tag_names_held ORDER BY character_id, name').iterate())
+        : Array.from(db.prepare('SELECT name FROM tag_names_held WHERE character_id = ? ORDER BY name').iterate(avatar), r => r.name)));
 }
 
 /** A store whose tags rows predate name_key: every key NULL and no index. */

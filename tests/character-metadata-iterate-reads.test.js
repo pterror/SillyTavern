@@ -124,10 +124,10 @@ function expectReadThroughIterate(sql) {
 /** Every table's columns as `name type notnull`, sorted, so a table rebuilt in another column order compares equal. */
 function schemaColumns() {
     return withRawDb(db => {
-        const tables = db.prepare('SELECT name FROM sqlite_master WHERE type = \'table\' ORDER BY name').pluck().all();
+        const tables = Array.from(db.prepare('SELECT name FROM sqlite_master WHERE type = \'table\' ORDER BY name').pluck().iterate());
         return Object.fromEntries(tables.map(table => [
             table,
-            db.prepare('SELECT name, type, "notnull" FROM pragma_table_info(?)').all(table).map(c => `${c.name} ${c.type} ${c.notnull}`).sort(),
+            Array.from(db.prepare('SELECT name, type, "notnull" FROM pragma_table_info(?)').iterate(table), c => `${c.name} ${c.type} ${c.notnull}`).sort(),
         ]));
     });
 }
@@ -163,13 +163,13 @@ describe('the schema migrations read PRAGMA table_info through iterate()', () =>
 
         withRawDb(db => {
             // A column can't be dropped while an index or trigger names it; opening the store creates them again.
-            for (const { type, name } of db.prepare('SELECT type, name FROM sqlite_master WHERE type IN (\'index\', \'trigger\') AND sql IS NOT NULL').all()) {
+            for (const { type, name } of Array.from(db.prepare('SELECT type, name FROM sqlite_master WHERE type IN (\'index\', \'trigger\') AND sql IS NOT NULL').iterate())) {
                 db.exec(`DROP ${type.toUpperCase()} "${name}"`);
             }
             // Rebuilt rather than ALTERed: SQLite can't reparse the characters table's commented definition after a DROP COLUMN.
             const dropped = new Set(['content_hash', 'content_identity_hash', 'import_poisoned', 'avatar_identity_hash', 'active_chat_checked',
                 'digest_fav', 'digest_tag_ids', 'digest_content', 'allow_global_styles', 'card_json']);
-            const kept = db.prepare('SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(\'characters\')').all().filter(c => !dropped.has(c.name));
+            const kept = Array.from(db.prepare('SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(\'characters\')').iterate()).filter(c => !dropped.has(c.name));
             db.exec('CREATE TABLE characters_old (' + kept.map(c => [c.name, c.type, c.notnull ? 'NOT NULL' : '', c.dflt_value !== null ? `DEFAULT ${c.dflt_value}` : '', c.pk ? 'PRIMARY KEY' : ''].filter(Boolean).join(' ')).join(', ') + ')');
             db.exec(`INSERT INTO characters_old SELECT ${kept.map(c => c.name).join(', ')} FROM characters`);
             db.exec('DROP TABLE characters');
@@ -204,7 +204,7 @@ describe('the group digest backfill reads each group\'s tags through iterate()',
         await assign('g2', 'x');
         metadataDb.disposeMetadataStores();
 
-        const readDigests = () => withRawDb(db => db.prepare('SELECT id, digest_fav, digest_tag_ids, digest_content FROM groups ORDER BY id').all());
+        const readDigests = () => withRawDb(db => Array.from(db.prepare('SELECT id, digest_fav, digest_tag_ids, digest_content FROM groups ORDER BY id').iterate()));
         const written = readDigests();
         expect(written.map(r => r.id)).toEqual(['g1', 'g2']);
         for (const row of written) expect(row.digest_tag_ids).not.toBeNull();

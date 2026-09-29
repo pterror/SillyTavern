@@ -87,7 +87,7 @@ function setCardJson(id, json, { change }) {
 function retryMarks() {
     const db = new Database(dbPath(), { readonly: true });
     try {
-        return db.prepare('SELECT id, next_attempt_at, delay_ms, last_error FROM character_index_retries ORDER BY id').all();
+        return Array.from(db.prepare('SELECT id, next_attempt_at, delay_ms, last_error FROM character_index_retries ORDER BY id').iterate());
     } finally {
         db.close();
     }

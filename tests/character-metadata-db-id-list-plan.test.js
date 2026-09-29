@@ -114,7 +114,7 @@ describe('a query narrowed to a hit list starts from the hits and looks each one
         const narrowed = recorded.filter(r => Array.isArray(r.params) && r.params.includes(HIT_IDS_JSON));
         expect(narrowed.length).toBeGreaterThan(0);
         for (const { sql, params, handle } of narrowed) {
-            const details = handle.all(`EXPLAIN QUERY PLAN ${sql}`, params).map(row => /** @type {{ detail: string }} */ (row).detail);
+            const details = Array.from(handle.iterate(`EXPLAIN QUERY PLAN ${sql}`, params), row => /** @type {{ detail: string }} */ (row).detail);
             const reads = tableReads(details);
             expect({ sql, reads }).toEqual({ sql, reads: expect.arrayContaining([expect.any(String)]) });
             for (const read of reads) {
@@ -230,7 +230,7 @@ describe('a query narrowed to a hit list checks each hit\'s included tags by its
         const narrowed = recorded.filter(r => Array.isArray(r.params) && r.params.includes(HIT_IDS_JSON));
         expect(narrowed.length).toBeGreaterThan(0);
         for (const { sql, params, handle } of narrowed) {
-            const details = handle.all(`EXPLAIN QUERY PLAN ${sql}`, params).map(row => /** @type {{ detail: string }} */ (row).detail);
+            const details = Array.from(handle.iterate(`EXPLAIN QUERY PLAN ${sql}`, params), row => /** @type {{ detail: string }} */ (row).detail);
             // Newer SQLite (the wasm build) plans the EXISTS as a semi-join: `SEARCH character_tags EXISTS USING ...`.
             const tagReads = details.filter(detail => /\b(character_tags|group_tags)\b/.test(detail));
             expect({ sql, tagReads }).toEqual({ sql, tagReads: expect.arrayContaining([expect.any(String)]) });

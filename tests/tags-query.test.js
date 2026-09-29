@@ -235,7 +235,7 @@ const FILTERS = [
 function recordedPlans() {
     return iterated.map(({ sql, params }) => {
         const bound = Array.isArray(params) ? params : Object.fromEntries(Object.entries(params ?? {}));
-        const plan = live().prepare(`EXPLAIN QUERY PLAN ${sql}`).all(bound).map(row => row.detail).join(' | ');
+        const plan = Array.from(live().prepare(`EXPLAIN QUERY PLAN ${sql}`).iterate(bound), row => row.detail).join(' | ');
         return { sql, plan };
     });
 }

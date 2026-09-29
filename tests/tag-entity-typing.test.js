@@ -109,7 +109,7 @@ function runSql(sql, params = []) {
 function allSql(sql, params = []) {
     const db = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
     try {
-        return db.prepare(sql).all(...params);
+        return Array.from(db.prepare(sql).iterate(...params));
     } finally {
         db.close();
     }

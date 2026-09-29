@@ -344,7 +344,7 @@ const readsTags = sql => /\bFROM tags\b/.test(sql);
 function planOf({ sql, params }) {
     return withRawDb(db => {
         const explain = db.prepare(`EXPLAIN QUERY PLAN ${sql}`);
-        return (params === undefined ? explain.all() : explain.all(params)).map(row => row.detail).join(' | ');
+        return (params === undefined ? Array.from(explain.iterate()) : Array.from(explain.iterate(params))).map(row => row.detail).join(' | ');
     });
 }
 

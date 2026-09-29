@@ -82,7 +82,7 @@ async function addedBy(act) {
     await act();
     const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
     try {
-        return db.prepare('SELECT group_id FROM group_changes WHERE version > ? ORDER BY version').pluck().all(before);
+        return Array.from(db.prepare('SELECT group_id FROM group_changes WHERE version > ? ORDER BY version').pluck().iterate(before));
     } finally {
         db.close();
     }

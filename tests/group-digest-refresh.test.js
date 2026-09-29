@@ -106,7 +106,7 @@ async function setNoTagsDigest(id) {
 
 /** @returns {Record<string, number | null>} */
 function digests() {
-    return Object.fromEntries(withRawDb(db => db.prepare('SELECT id, digest_tag_ids FROM groups ORDER BY id').all().map(r => [r.id, r.digest_tag_ids])));
+    return Object.fromEntries(withRawDb(db => Array.from(db.prepare('SELECT id, digest_tag_ids FROM groups ORDER BY id').iterate(), r => [r.id, r.digest_tag_ids])));
 }
 
 /** @param {string[]} ids @param {number | null} value */
@@ -196,7 +196,7 @@ async function seedGroupCopies(count) {
     await seedGroup('seed');
     await setNoTagsDigest('seed');
     withRawDb(db => {
-        const columns = db.prepare('SELECT name FROM pragma_table_info(\'groups\')').pluck().all().filter(c => c !== 'id');
+        const columns = Array.from(db.prepare('SELECT name FROM pragma_table_info(\'groups\')').pluck().iterate()).filter(c => c !== 'id');
         db.prepare(`
             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
             INSERT INTO groups (id, ${columns.join(', ')})

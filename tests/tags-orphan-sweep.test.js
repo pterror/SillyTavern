@@ -121,19 +121,19 @@ function insertRaw(table, rows) {
 
 /** Every tag_usage row next to the counts the tag rows give, for rows whose counts differ. */
 function tagUsageMismatches(db) {
-    return db.prepare(`
+    return Array.from(db.prepare(`
         WITH actual AS (
             SELECT tag_id, COUNT(*) AS n FROM (SELECT tag_id FROM character_tags UNION ALL SELECT tag_id FROM group_tags) GROUP BY tag_id
         )
         SELECT u.tag_id, u.count, COALESCE(a.n, 0) AS actual FROM tag_usage u LEFT JOIN actual a ON a.tag_id = u.tag_id WHERE u.count <> COALESCE(a.n, 0)
         UNION ALL
         SELECT a.tag_id, NULL, a.n FROM actual a WHERE a.tag_id NOT IN (SELECT tag_id FROM tag_usage)
-    `).all();
+    `).iterate());
 }
 
 function allRows(table) {
     const column = table === 'character_tags' ? 'character_id' : 'group_id';
-    return withRawDb(db => db.prepare(`SELECT ${column} AS id, tag_id FROM ${table} ORDER BY ${column}, tag_id`).all().map(r => `${r.id}:${r.tag_id}`));
+    return withRawDb(db => Array.from(db.prepare(`SELECT ${column} AS id, tag_id FROM ${table} ORDER BY ${column}, tag_id`).iterate(), r => `${r.id}:${r.tag_id}`));
 }
 
 function metaOf(key) {
@@ -225,7 +225,7 @@ describe('removeOrphanTagRowsIfNeeded', () => {
         beforeTransaction = () => {
             beforeTransaction = null;
             withRawDb(db => {
-                const columns = db.prepare('SELECT name FROM pragma_table_info(\'characters\')').pluck().all().filter(c => c !== 'id');
+                const columns = Array.from(db.prepare('SELECT name FROM pragma_table_info(\'characters\')').pluck().iterate()).filter(c => c !== 'id');
                 db.prepare(`INSERT INTO characters (id, ${columns.join(', ')}) SELECT 'late.png', ${columns.join(', ')} FROM characters WHERE id = 'seed.png'`).run();
             });
         };
@@ -249,7 +249,7 @@ describe('removeOrphanTagRowsIfNeeded', () => {
 async function seedCharacterCopies(count) {
     await seedCharacter('seed.png');
     withRawDb(db => {
-        const columns = db.prepare('SELECT name FROM pragma_table_info(\'characters\')').pluck().all().filter(c => c !== 'id');
+        const columns = Array.from(db.prepare('SELECT name FROM pragma_table_info(\'characters\')').pluck().iterate()).filter(c => c !== 'id');
         db.prepare(`
             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
             INSERT INTO characters (id, ${columns.join(', ')})

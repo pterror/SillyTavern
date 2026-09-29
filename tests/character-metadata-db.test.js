@@ -913,7 +913,7 @@ describe('migrateCreateDateColumn (2026-08: create_date TEXT -> INTEGER epoch ms
         // comment) - and a fresh write through the ordinary path still works against the migrated table.
         const { default: Database2 } = await import('better-sqlite3');
         const checkDb = new Database2(dbPath, { readonly: true });
-        const col = checkDb.prepare('PRAGMA table_info(characters)').all().find(c => c.name === 'create_date');
+        const col = Array.from(checkDb.prepare('PRAGMA table_info(characters)').iterate()).find(c => c.name === 'create_date');
         expect(col.type).toBe('INTEGER');
         checkDb.close();
 
@@ -975,7 +975,7 @@ describe('migrateDropFileMtimeColumn', () => {
 
         const { default: Database2 } = await import('better-sqlite3');
         const checkDb = new Database2(dbPath, { readonly: true });
-        const columnNames = checkDb.prepare('PRAGMA table_info(characters)').all().map(c => c.name);
+        const columnNames = Array.from(checkDb.prepare('PRAGMA table_info(characters)').iterate(), c => c.name);
         expect(columnNames).not.toContain('file_mtime');
         checkDb.close();
 
@@ -2112,7 +2112,7 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
 
         const rawDb2 = new Database(dbPath);
         const migrated = rawDb2.prepare('SELECT * FROM groups WHERE id = ?').get('OldGroup');
-        const queued = rawDb2.prepare('SELECT kind, id FROM chat_stats_pending').all();
+        const queued = Array.from(rawDb2.prepare('SELECT kind, id FROM chat_stats_pending').iterate());
         rawDb2.close();
         expect(migrated.fav).toBe(1);
         // Counted from the group's messages by the chat stats queue, not from its chat files.
@@ -2201,7 +2201,7 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
         const { default: Database } = await import('better-sqlite3');
         const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
         const row = db.prepare('SELECT * FROM groups WHERE id = ?').get('g1');
-        const queued = db.prepare('SELECT kind, id FROM chat_stats_pending').all();
+        const queued = Array.from(db.prepare('SELECT kind, id FROM chat_stats_pending').iterate());
         db.close();
 
         expect(row.fav).toBe(1);

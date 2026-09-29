@@ -85,7 +85,7 @@ async function seedMessages(ownerId, owner, texts) {
 /** @param {string} ownerId */
 async function recompute(ownerId) {
     const db = await tree.getDbHandle(directories);
-    const rows = db.all('SELECT content, created_at FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL', { ownerId });
+    const rows = Array.from(db.iterate('SELECT content, created_at FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL', { ownerId }));
     return {
         chatSize: rows.reduce((sum, r) => sum + Buffer.byteLength(r.content, 'utf8') + 1, 0),
         dateLastChat: rows.reduce((max, r) => Math.max(max, r.created_at), 0),
@@ -108,7 +108,7 @@ async function readMetadata(sql, ...params) {
     const { default: Database } = await import('better-sqlite3');
     const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'), { readonly: true });
     try {
-        return raw.prepare(sql).all(...params);
+        return Array.from(raw.prepare(sql).iterate(...params));
     } finally {
         raw.close();
     }

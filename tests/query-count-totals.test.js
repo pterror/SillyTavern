@@ -170,7 +170,7 @@ async function seedLibrary() {
 
 async function fill() {
     await metadataDb.fillEntityCountsIfNeeded(directories);
-    withRawDb(db => expect(db.prepare('SELECT kind, done FROM entity_count_fill ORDER BY kind').all()).toEqual([
+    withRawDb(db => expect(Array.from(db.prepare('SELECT kind, done FROM entity_count_fill ORDER BY kind').iterate())).toEqual([
         { kind: 'character', done: 1 }, { kind: 'group', done: 1 },
     ]));
 }
@@ -439,7 +439,7 @@ const SEQ_CTE = 'WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM 
  * @param {import('better-sqlite3').Database} db
  */
 function copyRows(db, table, template, n, overrides) {
-    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+    const columns = Array.from(db.prepare(`PRAGMA table_info(${table})`).iterate(), c => c.name);
     const values = columns.map(c => overrides[c] ?? `t.${c}`);
     db.prepare(`${SEQ_CTE} INSERT INTO ${table} (${columns.join(', ')}) SELECT ${values.join(', ')} FROM seq, ${table} t WHERE t.id = @template`).run({ n, template });
 }
@@ -562,7 +562,7 @@ describe('/query sampled estimates', () => {
 
     test('with groups the budget is split between the kinds in proportion to their counters, and each share is read in full', async () => {
         await seedBigStore();
-        const sizes = withRawDb(db => Object.fromEntries(db.prepare('SELECT kind, SUM(count) AS n FROM entity_tag_counts WHERE tag_id = \'t3\' GROUP BY kind').all().map(r => [r.kind, r.n])));
+        const sizes = withRawDb(db => Object.fromEntries(Array.from(db.prepare('SELECT kind, SUM(count) AS n FROM entity_tag_counts WHERE tag_id = \'t3\' GROUP BY kind').iterate(), r => [r.kind, r.n])));
         const all = sizes.character + sizes.group;
         const characterShare = Math.floor(SAMPLE_BUDGET * sizes.character / all);
         const groupShare = Math.floor(SAMPLE_BUDGET * sizes.group / all);
