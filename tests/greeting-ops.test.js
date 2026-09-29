@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from '../src/greeting-ops.js';
+import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../src/greeting-ops.js';
 
 const h = hashGreetingText;
 const modelOf = (greetings, defaultIndex = 0) => ({ greetings, defaultIndex });
@@ -199,7 +199,7 @@ describe('opSetDefault', () => {
 
     test('refuses when more than one other greeting has the hash', () => {
         expect(opSetDefault(modelOf(['a', 'b', 'b'], 0), 0, h('b'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opSetDefault(modelOf(['b', 'b'], 0), 5, h('b'))).toEqual({ ok: false, reason: 'position out of range' });
+        expect(opSetDefault(modelOf(['a', 'b', 'b'], 0), 5, h('b'))).toEqual({ ok: false, reason: 'position out of range' });
     });
 });
 
@@ -284,13 +284,41 @@ describe('opUnsetDefaultByHash', () => {
         expect(opUnsetDefaultByHash(modelOf(['a', 'b', 'c'], 2), h('b'))).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
     });
 
-    test('refuses when there is no default any more', () => {
-        expect(opUnsetDefaultByHash(modelOf(['a', 'b'], null), h('b'))).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
-    });
 
     test('never mutates the input model', () => {
         const model = modelOf(['a', 'b'], 1);
         opUnsetDefaultByHash(model, h('b'));
         expect(model).toEqual(modelOf(['a', 'b'], 1));
+    });
+});
+
+describe('an op whose outcome is already in place succeeds', () => {
+    test('unset with no default any more, by position or by hash', () => {
+        expect(opUnsetDefault(modelOf(['a', 'b'], null), 0)).toEqual({ ok: true, model: modelOf(['a', 'b'], null) });
+        expect(opUnsetDefaultByHash(modelOf(['a', 'b'], null), h('b'))).toEqual({ ok: true, model: modelOf(['a', 'b'], null) });
+    });
+
+    test('unset by position still refuses when another greeting is the default', () => {
+        expect(opUnsetDefault(modelOf(['a', 'b'], 1), 0)).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
+    });
+
+    test('set default, when copies of the text make the greeting ambiguous but the default is one of them', () => {
+        expect(opSetDefault(modelOf(['b', 'a', 'b'], 2), 1, h('b'))).toEqual({ ok: true, model: modelOf(['b', 'a', 'b'], 2), position: 2 });
+    });
+
+    test('set default still refuses an ambiguous greeting when the default has other text', () => {
+        expect(opSetDefault(modelOf(['b', 'a', 'b'], 1), 1, h('b'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
+    });
+
+    test('edit, when the greeting at the position already has the new text', () => {
+        expect(opEdit(modelOf(['a', 'X', 'c'], 0), 1, h('b'), 'X')).toEqual({ ok: true, model: modelOf(['a', 'X', 'c'], 0), position: 1 });
+    });
+
+    test('edit still refuses when the new text is only at another position', () => {
+        expect(opEdit(modelOf(['X', 'a', 'c'], 0), 1, h('b'), 'X')).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
+    });
+
+    test('delete still refuses when no greeting has the hash', () => {
+        expect(opDelete(modelOf(['a', 'c'], 0), 1, h('b'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
     });
 });

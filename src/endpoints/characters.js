@@ -1610,7 +1610,8 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
 /**
  * Replaces the text of the greeting at `position`, or, when the greeting there no longer has `expected_hash`, of the
  * one greeting anywhere in the list that has it. Refuses empty text, and an `expected_hash` no greeting (or more than
- * one) has. The response's `position` is where the edit landed.
+ * one) has, unless the greeting at `position` already has `text` (the edit is already in place). The response's
+ * `position` is where the edit landed.
  */
 router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1688,8 +1689,8 @@ router.post('/greetings/move', validateAvatarUrlMiddleware, async function (requ
 
 /**
  * Makes the greeting at `position` the default, or, when the greeting there no longer has `expected_hash`, the one
- * greeting anywhere in the list that has it. Refuses an `expected_hash` no greeting (or more than one) has. Never
- * reorders anything. The response's `position` is where the new default is.
+ * greeting anywhere in the list that has it. Refuses an `expected_hash` no greeting (or more than one) has, unless the
+ * default already has that text. Never reorders anything. The response's `position` is where the default is.
  */
 router.post('/greetings/default/set', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1712,6 +1713,7 @@ router.post('/greetings/default/set', validateAvatarUrlMiddleware, async functio
  * Clears the default entirely - no default greeting at all. The list keeps its order and membership.
  * Refuses a stale `expected_default_position` (an integer, or `null` for "no default"). Given instead an
  * `expected_default_hash`, it refuses only when the default greeting isn't the one with that hash, wherever it sits.
+ * With no default already, either form succeeds without a change.
  */
 router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async function (request, response) {
     try {

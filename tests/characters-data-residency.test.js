@@ -314,7 +314,8 @@ describe('add and unset-default are conflict-checked too', () => {
 
     test('unset with a stale default position is a 409 and leaves the card unchanged', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
-        await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_position: 0 });
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
+        await post('greetings/default/set', { avatar_url: 'Alice.png', position: 1, expected_hash: (await add.json()).hashes[1] });
         const before = await storedCard();
 
         const unset = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_position: 0 });
@@ -539,6 +540,54 @@ describe('/greetings/default/unset with expected_default_hash checks the default
         const unset = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_hash: hashes[1], expected_default_position: 1 });
         expect(unset.status).toBe(400);
         expect((await unset.json()).reason).toBe('expected_default_hash and expected_default_position can\'t both be given');
+    });
+});
+
+describe('an op whose outcome is already in place answers 200 and writes nothing', () => {
+    const changeSeq = async () => (await metadataDb.getCharacterMetadataRow(directories, 'Alice.png')).change_seq;
+
+    test('unset when there is no default, by position or by hash', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        const first = await (await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_position: 0 })).json();
+        const seqBefore = await changeSeq();
+
+        const byPosition = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_position: 0 });
+        expect(byPosition.status).toBe(200);
+        expect((await byPosition.json()).default_position).toBeNull();
+        const byHash = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_hash: first.hashes[0] });
+        expect(byHash.status).toBe(200);
+        expect((await byHash.json()).default_position).toBeNull();
+        expect(await changeSeq()).toBe(seqBefore);
+    });
+
+    test('set default on text whose copies are ambiguous, when the default is one of them', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'twin', file_name: 'Alice' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'other' });
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'twin' });
+        const hashes = (await add.json()).hashes;
+        const seqBefore = await changeSeq();
+
+        const set = await post('greetings/default/set', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[0] });
+        expect(set.status).toBe(200);
+        const body = await set.json();
+        expect(body.default_position).toBe(0);
+        expect(body.position).toBe(0);
+        expect(await changeSeq()).toBe(seqBefore);
+    });
+
+    test('edit when the greeting at the position already has the new text', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
+        const hashes = (await add.json()).hashes;
+        await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[1], text: 'second-edited' });
+        const seqBefore = await changeSeq();
+
+        const again = await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[1], text: 'second-edited' });
+        expect(again.status).toBe(200);
+        const body = await again.json();
+        expect(body.position).toBe(1);
+        expect(body.greetings).toEqual(['hello', 'second-edited']);
+        expect(await changeSeq()).toBe(seqBefore);
     });
 });
 
