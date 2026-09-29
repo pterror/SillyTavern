@@ -227,20 +227,32 @@ describe('a group_changes row with a file name', () => {
         ]);
     }, 30000);
 
-    test('a file not named <id>.json is re-read on its own, and the <id>.json file with the same id is left alone', async () => {
+    test('with an id, it also re-reads every other file indexed under that id: two files, one id', async () => {
         if (!tantivy) return;
-        await writeGroup({ id: 'g1', name: 'Coven', members: [] });
+        await writeGroup({ id: 'g1', name: 'Coven', members: [], fav: false });
         await writeGroup({ id: 'g1', name: 'Copy', members: [] }, 'other.json');
+        await writeGroup({ id: 'g2', name: 'Circle', members: [] });
         const maintainer = await builtMaintainer();
 
-        await writeGroup({ id: 'g1', name: 'Moved Copy', members: [] }, 'other.json');
+        // The fav lives in g1's row, so other.json, which carries the same id, shows it too.
+        await writeGroup({ id: 'g1', name: 'Coven', members: [], fav: true });
         recordFileReads();
-        expect(await maintainer.tick()).toMatchObject({ changed: true, refreshed: 1 });
+        expect(await maintainer.tick()).toMatchObject({ changed: true, refreshed: 2 });
+        expect(filesRead()).toEqual(['g1.json', 'other.json']);
+        expect(indexedDocs().map(d => [d.fileName, d.groupId, d.group.name, d.group.fav])).toEqual([
+            ['g1.json', 'g1', 'Coven', true],
+            ['g2.json', 'g2', 'Circle', false],
+            ['other.json', 'g1', 'Copy', true],
+        ]);
 
-        expect(filesRead()).toEqual(['other.json']);
-        expect(indexedDocs().map(d => [d.fileName, d.groupId, d.group.name])).toEqual([
-            ['g1.json', 'g1', 'Coven'],
-            ['other.json', 'g1', 'Moved Copy'],
+        await writeGroup({ id: 'g1', name: 'Moved Copy', members: [] }, 'other.json');
+        events.length = 0;
+        expect(await maintainer.tick()).toMatchObject({ changed: true, refreshed: 2 });
+        expect(filesRead()).toEqual(['g1.json', 'other.json']);
+        expect(indexedDocs().map(d => [d.fileName, d.group.name])).toEqual([
+            ['g1.json', 'Coven'],
+            ['g2.json', 'Circle'],
+            ['other.json', 'Moved Copy'],
         ]);
     }, 30000);
 

@@ -335,14 +335,13 @@ export function createGroupIndexMaintainer(directories, tantivy, { tickBudgetMs 
                     return null;
                 }
                 for (const row of page.rows) {
-                    if (row.fileName !== null) {
-                        await refreshFile(row.fileName);
-                    } else if (row.groupId !== null) {
-                        await refreshGroup(row.groupId);
-                    } else {
+                    if (row.fileName === null && row.groupId === null) {
                         rollback();
                         return { swapped: await build() };
                     }
+                    if (row.fileName !== null) await refreshFile(row.fileName);
+                    // Fav and chat stats come from the group's row, keyed by id, so every file under it shows them.
+                    if (row.groupId !== null) await refreshGroup(row.groupId);
                 }
                 await flush();
                 lastVersion = page.version;
