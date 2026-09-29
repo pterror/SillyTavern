@@ -286,7 +286,7 @@ function remoteIds(result, apiType, options) {
  * @param {EncodeWithTokenizerTypeOptions} options
  * @returns {boolean}
  */
-function isLlamaCppTokenizer(resolved, options) {
+export function isLlamaCppTokenizer(resolved, options) {
     return resolved.kind === 'remote'
         && (!!resolved.llamaCpp || (resolved.id === tokenizers.API_TEXTGENERATIONWEBUI && options.textgenApiType === TEXTGEN_TYPES.LLAMACPP));
 }

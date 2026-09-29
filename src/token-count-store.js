@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 import { getMessageTreeDb } from './message-tree-db.js';
-import { countWithTokenizer, encodeWithTokenizer, tokenizerIdentity } from './tokenizer-resolve.js';
+import { countWithTokenizer, encodeWithTokenizer, encodeWithTokenizerAndChunks, isLlamaCppTokenizer, tokenizerIdentity } from './tokenizer-resolve.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
 
 /**
@@ -70,22 +70,35 @@ export async function readCount(directories, identity, hash) {
  * @returns {Promise<number[] | null>} null when nothing is stored under the key.
  */
 export async function readIds(directories, identity, hash) {
+    return (await readIdsRow(directories, identity, hash))?.ids ?? null;
+}
+
+/**
+ * @param {import('./message-tree-db.js').Directories} directories
+ * @param {string} identity
+ * @param {string} hash
+ * @returns {Promise<{ ids: number[], chunks: string[] | null } | null>} null when nothing is stored under the key;
+ * `chunks` null when the row was stored without them.
+ */
+export async function readIdsRow(directories, identity, hash) {
     const db = await getMessageTreeDb(directories);
     if (!db) return null;
-    const row = /** @type {{ ids: string } | undefined} */ (db.get(
-        'SELECT ids FROM token_ids WHERE identity = @identity AND text_hash = @hash', { identity, hash }));
-    return row === undefined ? null : JSON.parse(row.ids);
+    const row = /** @type {{ ids: string, chunks: string | null } | undefined} */ (db.get(
+        'SELECT ids, chunks FROM token_ids WHERE identity = @identity AND text_hash = @hash', { identity, hash }));
+    return row === undefined ? null : { ids: JSON.parse(row.ids), chunks: row.chunks === null ? null : JSON.parse(row.chunks) };
 }
 
 /**
  * @typedef {object} PendingTokenRows
  * @property {{ identity: string, hash: string, count: number }[]} [counts]
- * @property {{ identity: string, hash: string, ids: ArrayLike<number> }[]} [ids]
+ * @property {{ identity: string, hash: string, ids: ArrayLike<number>, chunks?: string[] | null }[]} [ids] `chunks`:
+ * llama.cpp's pieces for the ids, when the encode asked for them.
  */
 
 /**
  * Stores keys new to the tables and marks reused ones used, in one transaction, keeping each table's row count in
- * meta. A key already stored keeps its value; only its `last_used` is written.
+ * meta. A key already stored keeps its value; only its `last_used` is written, and its `chunks` when it was stored
+ * without them.
  * @param {import('./message-tree-db.js').Directories} directories
  * @param {PendingTokenRows} pending
  * @param {number} [now] The `last_used` to write.
@@ -106,13 +119,15 @@ export async function writeBack(directories, { counts = [], ids = [] }, now = Da
             }
         }
         let insertedIds = 0;
-        for (const { identity, hash, ids: tokenIds } of ids) {
+        for (const { identity, hash, ids: tokenIds, chunks = null } of ids) {
+            const storedChunks = chunks === null ? null : JSON.stringify(chunks);
             if (db.run(
-                'INSERT INTO token_ids (identity, text_hash, ids, last_used) VALUES (@identity, @hash, @ids, @now) ON CONFLICT DO NOTHING',
-                { identity, hash, ids: JSON.stringify(Array.from(tokenIds)), now }).changes > 0) {
+                'INSERT INTO token_ids (identity, text_hash, ids, chunks, last_used) VALUES (@identity, @hash, @ids, @chunks, @now) ON CONFLICT DO NOTHING',
+                { identity, hash, ids: JSON.stringify(Array.from(tokenIds)), chunks: storedChunks, now }).changes > 0) {
                 insertedIds++;
             } else {
-                db.run('UPDATE token_ids SET last_used = @now WHERE identity = @identity AND text_hash = @hash', { identity, hash, now });
+                db.run('UPDATE token_ids SET last_used = @now, chunks = COALESCE(chunks, @chunks) WHERE identity = @identity AND text_hash = @hash',
+                    { identity, hash, chunks: storedChunks, now });
             }
         }
         addToRowCount(db, ROW_COUNT_KEYS.token_counts, insertedCounts);
@@ -141,6 +156,9 @@ function addToRowCount(db, key, delta) {
  * @property {(messages: object[]) => Promise<number>} countChatMessage A chat-completion messages count.
  * @property {(text: string) => Promise<ArrayLike<number> | null>} encodeText Token ids, no BOS; null when
  * no tokenizer answered.
+ * @property {(text: string) => Promise<{ ids: ArrayLike<number> | null, chunks?: string[] | null }>} encodeTextWithChunks
+ * What encodeWithTokenizerAndChunks() gives: for llama.cpp, the ids and its pieces as chunks (null when it gave none),
+ * where a stored row without chunks is a miss; otherwise the ids alone.
  * @property {PendingTokenRows} pending The rows read or counted, for {@link writeBack}.
  */
 
@@ -197,6 +215,7 @@ export function createStoredCounter({
             countChatMessage: messages => (countMessages
                 ? countMessages(messages, {})
                 : countChatCompletionMessages(resolved, messages, encodeOptions.outcome, directories)),
+            encodeTextWithChunks: text => encodeWithTokenizerAndChunks(resolved, text, encodeOptions),
             pending,
         };
     }
@@ -205,6 +224,8 @@ export function createStoredCounter({
     pending.ids ??= [];
     /** @type {Map<string, number | number[] | ArrayLike<number>>} Values read or pending in this counter, by identity and hash. */
     const seen = new Map();
+    /** @type {Map<string, { ids: ArrayLike<number>, chunks: string[] | null }>} The ids of `seen` that have their chunks. */
+    const seenWithChunks = new Map();
 
     /**
      * @param {string} kind
@@ -267,10 +288,53 @@ export function createStoredCounter({
         return result;
     };
 
+    /**
+     * Like `stored(TOKEN_KEY_KINDS.IDS, text)`, for llama.cpp with its pieces: ids stored or seen without chunks
+     * are a miss, and the row pushed for them carries the chunks, so write-back adds them to it.
+     * @param {string} text
+     */
+    const storedWithChunks = async (text) => {
+        if (!isLlamaCppTokenizer(resolved, encodeOptions)) {
+            return { ids: await stored(TOKEN_KEY_KINDS.IDS, text) };
+        }
+        const hash = tokenKeyHash(TOKEN_KEY_KINDS.IDS, String(text ?? ''));
+        const readKey = `${identity}\n${hash}`;
+        if (seenWithChunks.has(readKey)) {
+            return seenWithChunks.get(readKey);
+        }
+        const read = await readIdsRow(directories, identity, hash);
+        if (read !== null && read.chunks !== null) {
+            push(TOKEN_KEY_KINDS.IDS, identity, hash, read.ids);
+            seenWithChunks.set(readKey, read);
+            return read;
+        }
+
+        /** @type {AnsweredOut} */
+        const answeredOut = { tokenizer: null };
+        const result = await encodeWithTokenizerAndChunks(resolved, text, { ...encodeOptions, answeredOut });
+        const answered = answeredOut.tokenizer;
+        if (answered === null || answered === undefined || result.ids === null) {
+            return result;
+        }
+        const answeredIdentity = answered === resolved ? identity : await tokenizerIdentity(answered, identityFacts);
+        if (answeredIdentity === null) {
+            return result;
+        }
+        const writeKey = `${answeredIdentity}\n${hash}`;
+        if (!seenWithChunks.has(writeKey)) {
+            const value = { ids: Array.from(result.ids), chunks: result.chunks ?? null };
+            pending.ids.push({ identity: answeredIdentity, hash, ...value });
+            seen.set(writeKey, value.ids);
+            seenWithChunks.set(writeKey, value);
+        }
+        return result;
+    };
+
     return {
         countText: text => stored(TOKEN_KEY_KINDS.TEXT, text),
         countPromptText: text => stored(TOKEN_KEY_KINDS.PROMPT, text),
         encodeText: text => stored(TOKEN_KEY_KINDS.IDS, text),
+        encodeTextWithChunks: storedWithChunks,
         countChatMessage: messages => stored(TOKEN_KEY_KINDS.CC_MESSAGE, messages),
         pending,
     };

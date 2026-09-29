@@ -934,6 +934,70 @@ await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder
     }
 });
 
+// --- /current/count and /current/encode store what they counted, after the response ---
+
+{
+    const { clearLlamaCppPropsMemory } = await import('../llamacpp-props.js');
+    const { TOKEN_KEY_KINDS, tokenKeyHash, readCount, readIdsRow, writeBack } = await import('../token-count-store.js');
+    const { getMessageTreeDb, disposeMessageTreeStores } = await import('../message-tree-db.js');
+    const directories = { root: dataRoot };
+    const identity = 'llamacpp:["/models/current.gguf","b1-abc"]';
+    const idsRowsRunning = async () => Number((await getMessageTreeDb(directories)).get('SELECT value FROM meta WHERE key = \'token_ids_rows\'')?.value ?? 0);
+    /** Waits for a write-back that runs after the response: `read()` until it gives something other than null. */
+    const stored = async (read) => {
+        for (let i = 0; i < 200; i++) {
+            const value = await read();
+            if (value !== null) return value;
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        return null;
+    };
+    const storedState = () => {
+        clearLlamaCppPropsMemory();
+        resetStepFake();
+        stepFake.props = { model_path: '/models/current.gguf' };
+    };
+
+    await testCase('/current/count on llama.cpp: a miss is stored after its response, without its padding', async () => {
+        storedState();
+        const missed = 'a /current/count miss';
+        const hash = tokenKeyHash(TOKEN_KEY_KINDS.TEXT, missed);
+        assert.equal(await readCount(directories, identity, hash), null, 'nothing stored before');
+        const counted = await postCurrent('count', { state: stepTextgenState, texts: [missed], padding: 3 });
+        assert.deepEqual(counted.counts, [Buffer.byteLength(missed) + 3]);
+        assert.equal(await stored(() => readCount(directories, identity, hash)), Buffer.byteLength(missed));
+
+        const promptText = 'a /current/count promptStart miss';
+        await postCurrent('count', { state: stepTextgenState, texts: [promptText], promptStart: true });
+        assert.equal(await stored(() => readCount(directories, identity, tokenKeyHash(TOKEN_KEY_KINDS.PROMPT, promptText))), Buffer.byteLength(promptText));
+    });
+
+    await testCase('/current/encode on llama.cpp: a miss is stored with its chunks after its response', async () => {
+        storedState();
+        const missed = 'né東';
+        const hash = tokenKeyHash(TOKEN_KEY_KINDS.IDS, missed);
+        const encoded = await postCurrent('encode', { state: stepTextgenState, texts: [missed] });
+        assert.deepEqual(encoded.chunks, [['n', 'é', '東']]);
+        assert.deepEqual(await stored(() => readIdsRow(directories, identity, hash)), { ids: encoded.ids[0], chunks: encoded.chunks[0] });
+    });
+
+    await testCase('/current/encode on llama.cpp: a row stored without chunks is a miss: /tokenize with pieces, the same answer, and the row gets its chunks', async () => {
+        storedState();
+        const unchunked = 'oé';
+        const hash = tokenKeyHash(TOKEN_KEY_KINDS.IDS, unchunked);
+        await writeBack(directories, { ids: [{ identity, hash, ids: [0, 1, 2] }] });
+        const rowsBefore = await idsRowsRunning();
+        const encoded = await postCurrent('encode', { state: stepTextgenState, texts: [unchunked] });
+        assert.deepEqual({ ids: encoded.ids, chunks: encoded.chunks }, { ids: [[0, 1, 2]], chunks: [['o', 'é']] });
+        assert.deepEqual(tokenizeBodies().map(body => [body.content, body.with_pieces]), [[unchunked, true]]);
+        assert.deepEqual(await stored(async () => (await readIdsRow(directories, identity, hash))?.chunks ?? null), ['o', 'é']);
+        assert.equal(await idsRowsRunning(), rowsBefore, 'no row added');
+    });
+
+    resetStepFake();
+    disposeMessageTreeStores();
+}
+
 fakeServer.close();
 server.close();
 stepServer.close();

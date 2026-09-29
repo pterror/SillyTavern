@@ -1,13 +1,14 @@
 import express from 'express';
 
-import { countChatCompletionMessages, decodeWithLocalTokenizer, getLocalEncodeChunks } from './tokenizers.js';
+import { decodeWithLocalTokenizer, getLocalEncodeChunks } from './tokenizers.js';
 import {
-    resolveTokenizer, createTokenizerOutcome, countWithTokenizer, encodeWithTokenizer, encodeWithTokenizerAndChunks,
-    estimateTokenCount, tokenizerAnswer, tokenizerResponseWarnings, isExplicitTokenizer,
+    resolveTokenizer, createTokenizerOutcome, encodeWithTokenizer,
+    estimateTokenCount, tokenizerAnswer, tokenizerResponseWarnings, isExplicitTokenizer, tokenizerIdentity,
 } from '../tokenizer-resolve.js';
 import { localResolution } from '../tokenizer-map-resolution.js';
 import { readTokenizerState } from '../connection-state-header.js';
 import { createLlamaCppPropsCheck } from '../llamacpp-props.js';
+import { createStoredCounter, writeBack } from '../token-count-store.js';
 
 // The `/api/tokenizers/current/*` routes. They live apart from ./tokenizers.js because the
 // resolver imports that module.
@@ -71,10 +72,12 @@ async function trimToTokenLimit(resolved, text, limit, direction, options) {
  * `explicitTokenizer` (a `tokenizers` value the caller named, as `getTextTokens(id, …)` does)
  * wins over the state's resolution on every api; the answer's `key` still comes from `state`.
  * One that isn't an explicit pick answers 400.
+ * `handle` gets a `storedCounter()` that counts and encodes through the token tables; what it counted is
+ * written back after the response.
  * @template T
  * @param {(body: any, state: import('../tokenizer-resolve.js').TokenizerState) => T|null} parse The
  * route's input; null answers 400.
- * @param {(input: T, resolved: import('../tokenizer-resolve.js').ResolvedTokenizer, options: import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions) => Promise<object>} handle
+ * @param {(input: T, resolved: import('../tokenizer-resolve.js').ResolvedTokenizer, options: import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions, storedCounter: () => Promise<import('../token-count-store.js').StoredCounter>) => Promise<object>} handle
  * @returns {(request: import('express').Request, response: import('express').Response) => Promise<any>}
  */
 function currentTokenizerRoute(parse, handle) {
@@ -100,13 +103,28 @@ function currentTokenizerRoute(parse, handle) {
                 directories: request.user?.directories,
                 outcome,
             };
-            const result = await handle(input, resolved, options);
+            /** @type {import('../token-count-store.js').StoredCounter | null} */
+            let counter = null;
+            const storedCounter = async () => {
+                if (!counter) {
+                    const identityFacts = { textgenApiType: state.type, llamaCppProps: llamaCppProps.props };
+                    const identity = await tokenizerIdentity(resolved, identityFacts);
+                    counter = createStoredCounter({ resolved, identity, directories: options.directories, encodeOptions: options, identityFacts });
+                }
+                return counter;
+            };
+            const result = await handle(input, resolved, options, storedCounter);
             const warnings = tokenizerResponseWarnings(state, resolved, outcome);
-            return response.send({
+            response.send({
                 ...result,
                 tokenizer: tokenizerAnswer(state, resolved, outcome),
                 ...(warnings.length > 0 ? { warnings } : {}),
             });
+            if (counter) {
+                writeBack(options.directories, counter.pending)
+                    .catch(error => console.error('Failed to store token counts:', error));
+            }
+            return;
         } catch (error) {
             console.error(error);
             return response.sendStatus(500);
@@ -132,13 +150,14 @@ router.post('/current/count', currentTokenizerRoute(
         // `promptStart`: every text begins the prompt a generation sends, so it is counted as that prompt is.
         return texts && { texts, padding: Number.isFinite(padding) ? padding : 0, promptStart: body.promptStart === true };
     },
-    async (input, resolved, options) => {
+    async (input, _resolved, _options, storedCounter) => {
+        const counter = await storedCounter();
         if ('messages' in input) {
-            return { count: await countChatCompletionMessages(resolved, input.messages, options.outcome, options.directories) };
+            return { count: await counter.countChatMessage(input.messages) };
         }
-        const countOptions = input.promptStart ? { ...options, promptStart: true } : options;
+        const count = input.promptStart ? counter.countPromptText : counter.countText;
         const counts = await Promise.all(input.texts.map(async text => text.length > 0
-            ? await countWithTokenizer(resolved, text, countOptions) + input.padding
+            ? await count(text) + input.padding
             : 0));
         return { counts };
     },
@@ -149,13 +168,14 @@ router.post('/current/encode', currentTokenizerRoute(
         const texts = readTexts(body);
         return texts && { texts };
     },
-    async ({ texts }, resolved, options) => {
+    async ({ texts }, resolved, options, storedCounter) => {
+        const counter = await storedCounter();
         if (resolved.kind === 'remote') {
-            const encoded = await Promise.all(texts.map(text => encodeWithTokenizerAndChunks(resolved, text, options)));
+            const encoded = await Promise.all(texts.map(text => counter.encodeTextWithChunks(text)));
             const ids = encoded.map(result => result.ids);
             return encoded.some(result => result.chunks !== undefined) ? { ids, chunks: encoded.map(result => result.chunks ?? null) } : { ids };
         }
-        const ids = await Promise.all(texts.map(text => encodeWithTokenizer(resolved, text, options)));
+        const ids = await Promise.all(texts.map(text => counter.encodeText(text)));
         if (resolved.kind !== 'local') {
             return { ids };
         }
