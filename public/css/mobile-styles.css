@@ -1176,23 +1176,8 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
         margin: 0 auto;
     }
 
-    #top-bar {
-        width: 100vw;
-    }
-
     #sheld {
-        margin: unset;
         padding: unset;
-        width: unset;
-        height: unset;
-        min-width: unset;
-        max-width: unset;
-        min-height: unset;
-        max-height: unset;
-        width: 100vw;
-        width: 100dvw;
-        height: calc(100vh - 36px);
-        height: calc(100dvh - 36px);
         padding-right: max(env(safe-area-inset-right), 0px);
         padding-left: max(env(safe-area-inset-left), 0px);
         padding-bottom: 0;
@@ -1209,29 +1194,103 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
     #left-nav-panel,
     #right-nav-panel,
     .drawer-content {
-        width: unset;
-        height: unset;
-        min-width: unset;
-        max-width: unset;
-        min-height: unset;
-        max-height: unset;
         backdrop-filter: blur(calc(var(--SmartThemeBlurStrength) * 2));
-        left: 0;
-        right: 0;
-        top: 0;
-        margin: 0 auto;
-        height: calc(100vh - 70px);
-        height: calc(100dvh - 70px);
-        width: calc(100dvw - 5px);
-        max-height: calc(100vh - 70px);
-        max-height: calc(100dvh - 70px);
-        max-width: calc(100dvw - 5px);
-
     }
 
-    #world_popup,
-    .drawer-content {
-        margin-top: 36px;
+    /* Sizes for a drawer bar at the top. On desktop with the Drawer Bar at the bottom, left or right they don't apply,
+       and the bar, the chat and the drawers are placed as outside iOS. */
+    @media screen and (max-width: 1000px) {
+        #top-bar {
+            width: 100vw;
+        }
+
+        #sheld {
+            margin: unset;
+            width: unset;
+            height: unset;
+            min-width: unset;
+            max-width: unset;
+            min-height: unset;
+            max-height: unset;
+            width: 100vw;
+            width: 100dvw;
+            height: calc(100vh - 36px);
+            height: calc(100dvh - 36px);
+        }
+
+        #world_popup,
+        #left-nav-panel,
+        #right-nav-panel,
+        .drawer-content {
+            width: unset;
+            height: unset;
+            min-width: unset;
+            max-width: unset;
+            min-height: unset;
+            max-height: unset;
+            left: 0;
+            right: 0;
+            top: 0;
+            margin: 0 auto;
+            height: calc(100vh - 70px);
+            height: calc(100dvh - 70px);
+            width: calc(100dvw - 5px);
+            max-height: calc(100vh - 70px);
+            max-height: calc(100dvh - 70px);
+            max-width: calc(100dvw - 5px);
+        }
+
+        #world_popup,
+        .drawer-content {
+            margin-top: 36px;
+        }
+    }
+
+    @media not screen and (max-width: 1000px) {
+        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #top-bar {
+            width: 100vw;
+        }
+
+        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #sheld {
+            margin: unset;
+            width: unset;
+            height: unset;
+            min-width: unset;
+            max-width: unset;
+            min-height: unset;
+            max-height: unset;
+            width: 100vw;
+            width: 100dvw;
+            height: calc(100vh - 36px);
+            height: calc(100dvh - 36px);
+        }
+
+        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #world_popup,
+        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #left-nav-panel,
+        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #right-nav-panel,
+        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) .drawer-content {
+            width: unset;
+            height: unset;
+            min-width: unset;
+            max-width: unset;
+            min-height: unset;
+            max-height: unset;
+            left: 0;
+            right: 0;
+            top: 0;
+            margin: 0 auto;
+            height: calc(100vh - 70px);
+            height: calc(100dvh - 70px);
+            width: calc(100dvw - 5px);
+            max-height: calc(100vh - 70px);
+            max-height: calc(100dvh - 70px);
+            max-width: calc(100dvw - 5px);
+        }
+
+        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) #world_popup,
+        :where(body:not(.drawerBarBottom, .drawerBarLeft, .drawerBarRight), body.forceMobileView) .drawer-content {
+            margin-top: 36px;
+        }
     }
 
     .scrollableInner {
@@ -1323,12 +1382,6 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
 
         body.PWA:where(.drawerBarBottom:not(.forceMobileView)) #sheld {
             padding-bottom: 0;
-        }
-
-        /* 36px is the bar, as above. */
-        :where(body.PWA.drawerBarBottom:not(.forceMobileView)) #sheld {
-            height: calc(100vh - 36px - var(--pwaSafeAreaBottom));
-            height: calc(100dvh - 36px - var(--pwaSafeAreaBottom));
         }
 
         body.PWA.drawerBarBottom:not(.forceMobileView) #top-bar {
