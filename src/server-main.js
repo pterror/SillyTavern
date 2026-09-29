@@ -86,6 +86,7 @@ import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { runOnceAtBoot as runUnimportEmbeddedLoreAtBoot } from './migrations/unimport-embedded-lore.js';
 import { maybeStartGroupChatRestore } from './migrations/restore-group-chat-migration-losses.js';
 import { wasBrowserRecentlyConnected } from './browser-presence.js';
+import { startTokenCountMaintenance } from './token-count-store.js';
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
 // https://github.com/nodejs/node/issues/47822#issuecomment-1564708870
@@ -514,6 +515,10 @@ async function postSetupTasks(result) {
     // Not awaited. Each store's one-time metadata migration passes, in a worker per store, once its boot chain ends.
     startMetadataMigrations(await getUserDirectoriesList())
         .catch(err => console.error(color.red('[metadata-migrations] Starting the metadata migration workers failed:'), err));
+
+    // Not awaited. Sets each store's token table row counts and prunes a table over its cap, in small batches on this thread.
+    startTokenCountMaintenance(await getUserDirectoriesList())
+        .catch(err => console.error(color.red('[token-count-store] Counting and pruning the token tables failed:'), err));
 
     // Not awaited. The restore reads what the group migration left, so it starts only once that has finished, and only
     // for users it left no chat file un-migrated for. Off unless config.yaml sets restoreGroupChatMigrationLosses: true.
