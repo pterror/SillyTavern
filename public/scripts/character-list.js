@@ -84,10 +84,12 @@ async function getEmptyBlock() {
 
 /**
  * @param {number} hidden Number of hidden characters
+ * @param {boolean} [approx] Whether `hidden` is an estimate
  */
-async function getHiddenBlock(hidden) {
+async function getHiddenBlock(hidden, approx = false) {
+    const shown = `${approx ? '~' : ''}${hidden}`;
     const params = {
-        text: (hidden > 1 ? t`${hidden} characters hidden.` : t`${hidden} character hidden.`),
+        text: (hidden > 1 ? t`${shown} characters hidden.` : t`${shown} character hidden.`),
     };
     const hiddenBlock = await renderTemplateAsync('hiddenBlock', params);
     return $(hiddenBlock);
@@ -298,6 +300,8 @@ export function onCharacterListShown() {
 // Must be a string, not a function: pagination.js only enters real per-page `isAsync` mode (calling
 // `ajaxFunction` fresh on every page turn) for a string `dataSource`. The value itself is never fetched.
 const SERVER_PAGINATED_DATA_SOURCE = '/api/characters/query';
+/** @type {('rows'|'total'|'hidden')[]} */
+const PAGE_WANT = ['rows', 'total', 'hidden'];
 
 // The entities of the rows on screen. Always reassigned, never mutated: the page callback stores pagination.js's own
 // page array here, which must not change under it.
@@ -340,9 +344,9 @@ export async function printCharacters(fullRefresh = false) {
     const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
     const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
 
-    // getMatchTotal parameterizes the "N hidden" count, since the two printCharacters() paths below know the
-    // match total differently (one holds the whole filtered array, the other only one page).
-    function makePageCallback(getMatchTotal) {
+    // getHidden gives the "N hidden" count, which the two printCharacters() paths below know differently: one
+    // holds the whole filtered array, the other gets it with each page from the server.
+    function makePageCallback(getHidden) {
         return async function (/** @type {Entity[]} */ data) {
             const list = $(listId).get(0);
 
@@ -390,11 +394,9 @@ export async function printCharacters(fullRefresh = false) {
             }
             list.appendChild(fragment);
 
-            // getMatchTotal() is the match count for the active filter, independent of the current page - using
-            // page-local displayCount here would conflate "filtered out" with "not on this page".
-            const hidden = (characters.length + groups.length) - getMatchTotal();
-            if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
-                const hiddenBlock = await getHiddenBlock(hidden);
+            const hidden = parseQueryTotal(getHidden());
+            if (hidden.value > 0 && entitiesFilter.hasAnyFilter()) {
+                const hiddenBlock = await getHiddenBlock(hidden.value, hidden.approx);
                 $(listId).append(hiddenBlock);
             }
             localizePagination($('#rm_print_characters_pagination'));
@@ -453,7 +455,7 @@ export async function printCharacters(fullRefresh = false) {
                     const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
                     return `${rangeStart}-${rangeEnd} .. ${TOP_SEARCH_RESULTS_LIMIT}+`;
                 },
-            callback: makePageCallback(() => entities.length),
+            callback: makePageCallback(() => (characters.length + groups.length) - entities.length),
         });
     }
 
@@ -481,7 +483,7 @@ export async function printCharacters(fullRefresh = false) {
         /** @type {unknown} */
         let firstPageError;
         try {
-            firstPage = await characterRepository.query(filter, sort, 1, pageSize, ['rows', 'total']);
+            firstPage = await characterRepository.query(filter, sort, 1, pageSize, PAGE_WANT);
         } catch (error) {
             if (!isInvalidSortFieldError(error)) throw error;
             firstPageError = error;
@@ -490,8 +492,9 @@ export async function printCharacters(fullRefresh = false) {
         if (firstPageError !== undefined) {
             await renderLocalPaginated();
         } else {
-            // May be an approximate `~`-prefixed count; fine for the "N hidden" badge and page-count math.
-            let matchTotal = 0;
+            // The page response's count of entities the filter leaves out, `~`-prefixed when approximate.
+            /** @type {number|string} */
+            let pageHidden = 0;
             // Serves the already-fetched probe to ajaxFunction's first call instead of re-fetching.
             let pendingFirstPage = firstPage;
             // Whether the latest page response's `total` was `~`-prefixed (approximate).
@@ -521,7 +524,7 @@ export async function printCharacters(fullRefresh = false) {
                     const requestedPageSize = ajaxParams.data.pageSize;
                     const resultPromise = (page === 1 && requestedPageSize === pageSize && pendingFirstPage)
                         ? Promise.resolve(pendingFirstPage)
-                        : characterRepository.query(filter, sort, page, requestedPageSize, ['rows', 'total']);
+                        : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT);
                     pendingFirstPage = undefined;
                     resultPromise
                         .then(async result => {
@@ -531,7 +534,7 @@ export async function printCharacters(fullRefresh = false) {
                             const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
                             saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
                             pageTotalApprox = isApproxTotal(result.total);
-                            matchTotal = saveCharactersTotal + folderTiles.length;
+                            pageHidden = result.hidden ?? 0;
                             ajaxParams.success({ rows: [...folderTiles, ...pageEntities], total: result.total });
                         })
                         .catch(error => {
@@ -542,7 +545,7 @@ export async function printCharacters(fullRefresh = false) {
                         })
                         .finally(pageFetchSettled);
                 },
-                callback: makePageCallback(() => matchTotal),
+                callback: makePageCallback(() => pageHidden),
             });
         }
     }
