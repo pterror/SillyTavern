@@ -25,6 +25,7 @@ jest.unstable_mockModule('../src/endpoints/characters.js', () => ({
     readCardContent: jest.fn(),
 }));
 jest.unstable_mockModule('../src/message-tree-migration.js', () => ({
+    migrateGroupFile: jest.fn(),
     migrateOwnerOnTouch: jest.fn(),
 }));
 
