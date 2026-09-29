@@ -292,6 +292,45 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(warning).not.toContainText(added);
     });
 
+    test('#character_json_data save: an add lands at the end even when another session changes the list length just before it', async ({ page }) => {
+        const s = stamp();
+        const [g0, g1] = [`Zero ${s}`, `One ${s}`];
+        const avatar = await createCharacter(page, `FormAppend-${s}`, [g0, g1]);
+        await openCharacter(page, avatar);
+
+        const elsewhere = `Added elsewhere ${s}`;
+        /** @type {number|null} */
+        let otherStatus = null;
+        await page.route('**/api/characters/greetings/add', async (route) => {
+            if (otherStatus === null) {
+                otherStatus = 0;
+                otherStatus = await page.evaluate(async ({ avatar, text }) => {
+                    // @ts-ignore
+                    const headers = SillyTavern.getContext().getRequestHeaders();
+                    const response = await fetch('/api/characters/greetings/add', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, position: 2, expected_length: 2, text }) });
+                    return response.status;
+                }, { avatar, text: elsewhere });
+            }
+            await route.continue();
+        });
+
+        const added = `Two added ${s}`;
+        await page.evaluate(async (greetings) => {
+            // @ts-ignore
+            const card = JSON.parse($('#character_json_data').val());
+            card.data.alternate_greetings = greetings;
+            // @ts-ignore
+            $('#character_json_data').val(JSON.stringify(card));
+            const { createOrEditCharacter } = await import('/script.js');
+            await createOrEditCharacter(new CustomEvent('newChat'));
+        }, [g1, added]);
+
+        expect(otherStatus).toBe(200);
+        expect((await storedModel(page, avatar)).greetings).toEqual([g0, g1, elsewhere, added]);
+        await expectPageHoldsServerList(page, avatar);
+        await expect(page.locator('.toast-warning')).toHaveCount(0);
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];

@@ -9647,7 +9647,7 @@ function hashGreetingText(text) {
  * @property {string[]} greetings
  * @property {number[]} hashes Position-aligned with `greetings`.
  * @property {number|null} defaultPosition
- * @property {number} [position] Where an edit, delete or set-default acted.
+ * @property {number} [position] Where an edit, delete, set-default or appending add acted.
  */
 
 /**
@@ -10914,7 +10914,7 @@ function withoutEmptyGreetings(model) {
  * change is checked against the greetings as the fork last loaded them (with this run's own saved ops applied), so a
  * greeting another session changed since then is refused, not overwritten. A refused op is skipped and the rest of
  * the run still goes through; a warning then lists each change that wasn't saved, with its text. Adds can't
- * overwrite anything, so they go at the end of the list as currently stored.
+ * overwrite anything, so they are appended to the list as currently stored, with no length check.
  * @param {string} avatar
  * @param {object} baselineCard
  * @param {object} card
@@ -10932,8 +10932,6 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
         // The greetings as loaded, with this run's saved ops applied: every precondition is read from here.
         const planned = start.greetings.slice();
         let plannedDefault = start.defaultIndex;
-        /** @type {number|null} Length of the list as stored, from the latest op response. */
-        let storedLength = null;
         /** @type {string[]} */
         const notSaved = [];
 
@@ -10964,7 +10962,6 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
                 toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
                 return 'failed';
             }
-            storedLength = result.hashes.length;
             const character = charactersStore.get(avatar);
             if (character) {
                 applyGreetingOpSuccess(character, result, opName === 'edit' ? { expectedHash: body.expected_hash, text: body.text } : undefined);
@@ -10983,14 +10980,7 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
             }
             for (let index = planned.length; index < target.greetings.length; index++) {
                 const text = target.greetings[index];
-                if (storedLength === null) {
-                    storedLength = await readStoredGreetingCount(avatar);
-                    if (storedLength === null) {
-                        toastr.error(t`Failed to save the greeting. Your edit is still shown here, but it was not saved.`, t`Greeting not saved`);
-                        return false;
-                    }
-                }
-                const outcome = await runOp('add', { position: storedLength, expected_length: storedLength, text }, t`New greeting: ${text}`);
+                const outcome = await runOp('add', { append: true, text }, t`New greeting: ${text}`);
                 if (outcome === 'failed') return false;
                 if (outcome === 'saved') planned.push(text);
             }
@@ -11026,22 +11016,6 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
         warnNotSaved();
         return ok;
     });
-}
-
-/**
- * How many greetings the character has as stored.
- * @param {string} avatar
- * @returns {Promise<number|null>} Null when it couldn't be read.
- */
-async function readStoredGreetingCount(avatar) {
-    try {
-        const response = await fetch('/api/characters/get', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
-        if (!response.ok) return null;
-        return cardToGreetingsModel(await response.json()).greetings.length;
-    } catch (error) {
-        console.error('Greeting list read failed', error);
-        return null;
-    }
 }
 
 /**

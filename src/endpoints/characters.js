@@ -39,7 +39,7 @@ import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
-import { hashGreetingText, opAdd, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
+import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault } from '../greeting-ops.js';
 import { copyCharacterFile } from '../local-import-copy.js';
 import { withSearchTiming, timePhase, markSinceStart } from '../search-timing.js';
 
@@ -1561,7 +1561,7 @@ async function applyGreetingOperation(request, avatar, op) {
 /**
  * On success, echoes back the post-op greeting list, its hash-per-position list and the default position, so a caller can
  * show the list as stored (other sessions' changes included) and chain further operations without re-fetching the card,
- * and the positions the op acted on: `position` for edit, delete and set-default, `source_position` and
+ * and the positions the op acted on: `position` for edit, delete, set-default and an appending add, `source_position` and
  * `target_position` for move.
  * @param {import('express').Response} response
  * @param {Awaited<ReturnType<typeof applyGreetingOperation>>} result
@@ -1579,15 +1579,23 @@ function sendGreetingOpResult(response, result) {
 
 /**
  * Inserts a new greeting at `position` (length appends at the end). Refuses a stale `expected_length`. No content dedup - two identical greetings are legitimate on a card.
+ * With `append: true` (and no `position` or `expected_length`) it goes after the last greeting, whatever the length, and the response's `position` is where it landed.
  */
 router.post('/greetings/add', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
-        const position = Number(request.body.position);
-        const expectedLength = Number(request.body.expected_length);
         const text = request.body.text;
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
+        if (request.body.append === true) {
+            if (request.body.position !== undefined || request.body.expected_length !== undefined) {
+                return response.status(400).send({ ok: false, reason: 'append takes no position or expected_length' });
+            }
+            const appended = await applyGreetingOperation(request, avatar, model => opAppend(model, text));
+            return sendGreetingOpResult(response, appended);
+        }
+        const position = Number(request.body.position);
+        const expectedLength = Number(request.body.expected_length);
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isInteger(expectedLength)) return response.status(400).send({ ok: false, reason: 'expected_length is required' });
 

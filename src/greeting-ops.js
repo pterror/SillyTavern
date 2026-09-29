@@ -4,7 +4,7 @@ import { reindexDefaultAfterMove, reindexDefaultAfterRemoval } from './greeting-
 /**
  * Six named operations against a character's greeting list, addressing positions in the unified list
  * (see {@link import('./greeting-list.js').GreetingsModel}). Every op takes a precondition and refuses
- * with `{ ok: false, reason }` when it doesn't match: ops that target an existing greeting (edit,
+ * with `{ ok: false, reason }` when it doesn't match (append, which can't overwrite anything, takes none): ops that target an existing greeting (edit,
  * delete, move's source and its anchor, set-default) take an `expectedHash` of that greeting, found at
  * the position given or, if it moved, by the hash alone (see {@link findGreeting}); add takes the `expectedLength` of the list, unset-default the `expectedDefaultPosition`. Pure: each
  * returns either `{ ok: true, model }` (new model, input never mutated) or `{ ok: false, reason }`.
@@ -78,6 +78,19 @@ export function opAdd(model, position, expectedLength, text) {
     let defaultIndex = model.defaultIndex;
     if (defaultIndex !== null && position <= defaultIndex) defaultIndex += 1;
     return { ok: true, model: { greetings, defaultIndex } };
+}
+
+/**
+ * Inserts `text` after the last greeting, whatever the list's length. Refuses empty text. It can't overwrite
+ * anything, so it takes no precondition. `position` in the result is where it landed.
+ * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {string} text
+ * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
+ */
+export function opAppend(model, text) {
+    const length = model.greetings.length;
+    const result = opAdd(model, length, length, text);
+    return result.ok ? { ...result, position: length } : result;
 }
 
 /**

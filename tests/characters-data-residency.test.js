@@ -463,6 +463,41 @@ describe('delete, set default and move find a greeting that moved by its hash, a
     });
 });
 
+describe('/greetings/add with append appends without a length check', () => {
+    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+
+    test('it lands after the last greeting whatever the length, and answers with its position', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
+
+        const appended = await post('greetings/add', { avatar_url: 'Alice.png', append: true, text: 'third' });
+        expect(appended.status).toBe(200);
+        const body = await appended.json();
+        expect(body.greetings).toEqual(['hello', 'second', 'third']);
+        expect(body.position).toBe(2);
+        expect((await storedCard()).data.alternate_greetings).toEqual(['second', 'third']);
+    });
+
+    test('append with a position or expected_length is a 400 and leaves the card unchanged', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        const before = await storedCard();
+
+        const withPosition = await post('greetings/add', { avatar_url: 'Alice.png', append: true, position: 0, text: 'x' });
+        expect(withPosition.status).toBe(400);
+        expect((await withPosition.json()).reason).toBe('append takes no position or expected_length');
+        const withLength = await post('greetings/add', { avatar_url: 'Alice.png', append: true, expected_length: 1, text: 'x' });
+        expect(withLength.status).toBe(400);
+        expect(await storedCard()).toEqual(before);
+    });
+
+    test('append with empty text is refused', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        const appended = await post('greetings/add', { avatar_url: 'Alice.png', append: true, text: '' });
+        expect(appended.status).toBe(409);
+        expect((await appended.json()).reason).toBe('refused to add empty greeting text');
+    });
+});
+
 describe('every greeting op answers with the greeting list as stored', () => {
     test('add, edit, move, set default, unset default and delete each return the list after the op, other writers\' changes included', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });

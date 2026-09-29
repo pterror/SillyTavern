@@ -350,7 +350,7 @@ test.describe('createOrEditCharacter in edit mode', () => {
 
             expect(writes.map(w => w.path)).toEqual(['/api/characters/greetings/edit', '/api/characters/greetings/add']);
             expect(writes[0].body).toMatchObject({ avatar_url: avatar, position: 0, text: g0e, expected_hash: expect.anything() });
-            expect(writes[1].body).toMatchObject({ avatar_url: avatar, position: 2, expected_length: 2, text: g2 });
+            expect(writes[1].body).toEqual({ avatar_url: avatar, append: true, text: g2 });
 
             const stored = await fetchStoredCharacter(page, avatar);
             expect(stored.data.first_mes).toBe(g0e);
