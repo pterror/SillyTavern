@@ -7,13 +7,15 @@
 #expression-wrapper {
     display: flex;
     height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
-    width: 100vw;
+    width: var(--besideDrawerBarWidth);
+    margin-left: var(--drawerBarLeft);
 }
 
 #visual-novel-wrapper {
     display: flex;
     height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
-    width: 100vw;
+    width: var(--besideDrawerBarWidth);
+    margin-left: var(--drawerBarLeft);
     overflow: hidden;
 }
 
@@ -38,11 +40,11 @@
     min-height: 100px;
     max-height: 90vh;
     max-width: 90vh;
-    width: calc((100vw - var(--sheldWidth)) /2);
+    width: calc((var(--besideDrawerBarWidth) - var(--sheldWidth)) /2);
     position: absolute;
     bottom: 0;
     padding: 0;
-    left: 0;
+    left: var(--drawerBarLeft);
     filter: drop-shadow(2px 2px 2px #51515199);
     z-index: 2;
     overflow: hidden;

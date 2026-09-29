@@ -1189,13 +1189,15 @@ function switchStackedDrawers() {
 }
 
 /** Values of power_user.drawer_bar_position. */
-const drawerBarPositions = ['top', 'bottom'];
+const drawerBarPositions = ['top', 'bottom', 'left', 'right'];
 
 function applyDrawerBarPosition() {
     if (!drawerBarPositions.includes(power_user.drawer_bar_position)) {
         power_user.drawer_bar_position = 'top';
     }
     $('body').toggleClass('drawerBarBottom', power_user.drawer_bar_position === 'bottom');
+    $('body').toggleClass('drawerBarLeft', power_user.drawer_bar_position === 'left');
+    $('body').toggleClass('drawerBarRight', power_user.drawer_bar_position === 'right');
     $('#drawer_bar_position').val(power_user.drawer_bar_position);
 }
 
@@ -1308,9 +1310,10 @@ function applyToastrPosition() {
 }
 
 function getChatWidthValue() {
-    // The rendered width is whichever is smaller: the % of viewport width, or the ch-based cap.
+    // The rendered width is whichever is smaller: the % of the width beside the drawer bar (the viewport's, unless
+    // the bar is at a side), or the ch-based cap.
     // This keeps the chat readable on ultrawide monitors without affecting narrower screens.
-    return `min(${power_user.chat_width}vw, ${power_user.chat_width_max}ch)`;
+    return `min(calc(var(--besideDrawerBarWidth) * ${power_user.chat_width} / 100), ${power_user.chat_width_max}ch)`;
 }
 
 function applyChatWidth(type) {
