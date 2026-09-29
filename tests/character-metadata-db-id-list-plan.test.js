@@ -183,6 +183,14 @@ describe('a query narrowed to a hit list returns what the hit list names, once e
         expect(result?.rows?.map(r => r.id).sort()).toEqual(['1700000000002', 'B.png']);
     });
 
+    test('queryEntities() random order without a handle throws', async () => {
+        await seedCharacter('A.png');
+        await metadataDb.upsertGroupRow(directories, '1700000000001', 'G1', { fav: false });
+
+        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3 })).rejects.toThrow(/handle/);
+        await expect(metadataDb.queryEntities(directories, { sortField: 'random', seed: 3, wantRows: false, wantHashes: true })).rejects.toThrow(/handle/);
+    });
+
     test('the other filters still apply to the hits', async () => {
         await seedCharacter('Fav.png', { fav: true });
         await seedCharacter('Plain.png');
