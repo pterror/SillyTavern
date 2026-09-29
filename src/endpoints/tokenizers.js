@@ -1373,14 +1373,19 @@ function countTiktokenMessages(model, messages) {
  * @param {import('../tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a failed count and
  * a downloaded tokenizer file, for a send's or a response's warnings.
  * @param {import('../users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
+ * @param {import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions['answeredOut']} [answeredOut]
+ * Receives the tokenizer that gave the count: `resolved`, its local copy, or null for the estimate.
  * @returns {Promise<number>}
  */
-export async function countChatCompletionMessages(resolved, messages, outcome = undefined, directories = undefined) {
+export async function countChatCompletionMessages(resolved, messages, outcome = undefined, directories = undefined, answeredOut = undefined) {
+    if (answeredOut) answeredOut.tokenizer = null;
     if (resolved.kind === 'estimate') {
         return guesstimate(JSON.stringify(messages));
     }
     try {
-        return await countMessagesWith(resolved, messages, outcome, directories);
+        const count = await countMessagesWith(resolved, messages, outcome, directories);
+        if (answeredOut) answeredOut.tokenizer = resolved;
+        return count;
     } catch (error) {
         console.error('An error counting tokens', error);
     }
@@ -1388,6 +1393,7 @@ export async function countChatCompletionMessages(resolved, messages, outcome = 
         try {
             const count = await countMessagesWith(resolved.localCopy, messages, outcome, directories);
             if (outcome) outcome.usedCopy = resolved.localCopy;
+            if (answeredOut) answeredOut.tokenizer = resolved.localCopy;
             return count;
         } catch (error) {
             console.error('An error counting tokens with the local copy', error);
