@@ -20,6 +20,11 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
     isBusyError,
 }));
 
+const queueChatStats = jest.fn();
+const openOwnerChatStatsQueue = jest.fn(async () => queueChatStats);
+const kickChatStatsReconcile = jest.fn();
+jest.unstable_mockModule('../src/character-metadata-db.js', () => ({ openOwnerChatStatsQueue, kickChatStatsReconcile }));
+
 /** @type {typeof import('../src/migrations/restore-group-chat-migration-losses.js')} */
 let restore;
 /** @type {typeof import('../src/message-tree-db.js')} */
@@ -42,6 +47,9 @@ let warns;
 beforeEach(() => {
     logs = [];
     warns = [];
+    queueChatStats.mockClear();
+    openOwnerChatStatsQueue.mockClear();
+    kickChatStatsReconcile.mockClear();
 });
 
 afterEach(() => {
@@ -310,5 +318,40 @@ describe('restoreGroupChatMigrationLosses', () => {
             warn.mockRestore();
         }
         expect(spawnWorker).not.toHaveBeenCalled();
+    });
+});
+
+describe('a restore queues the groups whose messages it changed', () => {
+    test('a restored group is queued after its tree commit, from a store opened without creating one', async () => {
+        const { dirs, db } = await test1Setup();
+        /** @type {number[]} */
+        const rowsWhenQueued = [];
+        queueChatStats.mockImplementation(() => {
+            rowsWhenQueued.push(db.get('SELECT COUNT(*) AS n FROM messages WHERE owner_id = @o', { o: 'g1' }).n);
+        });
+        const rowsBefore = db.get('SELECT COUNT(*) AS n FROM messages WHERE owner_id = @o', { o: 'g1' }).n;
+
+        expect((await run(dirs)).status).toBe('ran');
+
+        expect(openOwnerChatStatsQueue).toHaveBeenCalledWith(dirs, { existingOnly: true });
+        expect(queueChatStats.mock.calls.every(([ownerId, owner]) => ownerId === 'g1' && owner.kind === 'group' && owner.rowId === 'g1')).toBe(true);
+        const rowsAfter = db.get('SELECT COUNT(*) AS n FROM messages WHERE owner_id = @o', { o: 'g1' }).n;
+        expect(rowsAfter).toBeGreaterThan(rowsBefore);
+        expect(rowsWhenQueued.at(-1)).toBe(rowsAfter);
+    });
+
+    test('the worker exiting starts counting what it queued, for each of its users', () => {
+        const dirs = makeDirectories();
+        /** @type {Record<string, () => void>} */
+        const handlers = {};
+        const spawnWorker = jest.fn(() => ({ on: jest.fn((event, fn) => { handlers[event] = fn; }), unref: jest.fn() }));
+
+        restore.maybeStartGroupChatRestore([dirs], { enabled: true, spawnWorker });
+        expect(kickChatStatsReconcile).not.toHaveBeenCalled();
+        handlers.exit();
+
+        return new Promise(resolve => setImmediate(resolve)).then(() => {
+            expect(kickChatStatsReconcile).toHaveBeenCalledWith(dirs);
+        });
     });
 });

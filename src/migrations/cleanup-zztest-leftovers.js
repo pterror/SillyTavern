@@ -18,7 +18,8 @@ import { groupDigestContentHash, groupDigestFavHash, normalizeFav } from '../../
  *    `groups` row digest follows the file. A missing row is reported and its digest write skipped.
  * 2. message-tree.sqlite: the group's anchor points its default child back at Ivy's opening instead of the stray
  *    "hi group" node (which stays in the tree).
- * 3. message-tree.sqlite: owner `zztestchar`'s two rows (its anchor and a user "hi") are removed.
+ * 3. message-tree.sqlite: owner `zztestchar`'s two rows (its anchor and a user "hi") are removed. Any existing
+ *    character-metadata.sqlite row its chat stats belong to is queued in `chat_stats_pending` to be counted again.
  *
  * Every item is checked against the exact expected state first; an item already in its end state is a no-op, and an
  * item in any other state is refused and left untouched. What an item changes is backed up (row JSON, a copy of the
@@ -531,6 +532,7 @@ export async function runCleanup(options) {
     log(`${LOG_PREFIX} backups: ${backupDir}`);
     let failed = false;
 
+    if (strayPlan.status === 'change') await queueStrayOwnerChatStats(dirs, warn);
     if (repointPlan.status === 'change' || strayPlan.status === 'change') {
         failed = !applyTree({ Database, treePath, backupDir, repoint: repointPlan.status === 'change', stray: strayPlan.status === 'change', characterFileExists, characterRowExists, log, warn });
     }
@@ -538,6 +540,24 @@ export async function runCleanup(options) {
         failed = !(await applyGroup({ dirs, metaPath, groupPlan, groupRow, backupDir, log, warn })) || failed;
     }
     return anyRefused || failed ? 1 : 0;
+}
+
+/**
+ * Item 3 deletes messages without going through the owner write hook, so any row holding the owner's chat stats is
+ * queued to be counted again on the next server start. Queued before the delete, so a crash can't lose it.
+ * @param {object} dirs
+ * @param {(line: string) => void} warn
+ */
+async function queueStrayOwnerChatStats(dirs, warn) {
+    const { openOwnerChatStatsQueue, disposeMetadataStores } = await import('../character-metadata-db.js');
+    try {
+        const queue = await openOwnerChatStatsQueue(/** @type {import('../users.js').UserDirectoryList} */ (dirs), { existingOnly: true });
+        queue?.(STRAY_OWNER);
+    } catch (err) {
+        warn(`${LOG_PREFIX} 3. zztestchar rows: queueing their owner's chat stats to be counted again failed: ${err.message}`);
+    } finally {
+        disposeMetadataStores();
+    }
 }
 
 /**

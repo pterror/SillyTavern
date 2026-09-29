@@ -373,3 +373,73 @@ describe('a one-time pass counts every row\'s chat stats', () => {
         expect(await queued()).toEqual([]);
     });
 });
+
+describe('a tree migration queues the rows of the owner it migrated', () => {
+    /** @type {typeof import('../src/message-tree-migration.js')} */
+    let migration;
+    beforeAll(async () => {
+        migration = await import('../src/message-tree-migration.js');
+    });
+
+    async function clearQueue() {
+        const { default: Database } = await import('better-sqlite3');
+        const raw = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        try {
+            raw.prepare('DELETE FROM chat_stats_pending').run();
+        } finally {
+            raw.close();
+        }
+    }
+
+    /**
+     * @param {string} dir
+     * @param {string} fileName
+     * @param {string[]} texts
+     */
+    function writeChatFile(dir, fileName, texts) {
+        fs.mkdirSync(dir, { recursive: true });
+        const lines = [{ user_name: 'User', character_name: 'Alice', chat_metadata: {} }, ...texts.map(msg)];
+        fs.writeFileSync(path.join(dir, fileName), lines.map(line => JSON.stringify(line)).join('\n'));
+    }
+
+    test('a character\'s chat files migrated with no known kind queue its row, and the drain counts them', async () => {
+        await seedCharacter('Alice.png');
+        await clearQueue();
+        const chatDir = path.join(directories.chats, 'Alice');
+        writeChatFile(chatDir, 'first.jsonl', ['one', 'two']);
+
+        await migration.migrateOwnerOnTouch(directories, { ownerId: 'Alice', chatDir });
+
+        expect(await queued()).toEqual([{ kind: 'character', id: 'Alice.png' }]);
+        metadataDb.startChatStatsReconcile([directories]);
+        await drained();
+        const expected = await recompute('Alice');
+        expect(expected.chatSize).toBeGreaterThan(0);
+        expect(await storedCharacter('Alice.png')).toEqual(expected);
+    });
+
+    test('a group\'s chat files migrated queue its row', async () => {
+        await seedGroup('g1');
+        await clearQueue();
+        writeChatFile(directories.groupChats, 'c1.jsonl', ['hello group']);
+
+        await migration.migrateOwnerOnTouch(directories, { ownerId: 'g1', chatDir: directories.groupChats, isGroup: true, fileNames: ['c1.jsonl'] });
+
+        expect(await queued()).toEqual([{ kind: 'group', id: 'g1' }]);
+        metadataDb.startChatStatsReconcile([directories]);
+        await drained();
+        expect(await storedGroup('g1')).toEqual(await recompute('g1'));
+    });
+
+    test('an owner with no row queues nothing, and one with nothing to migrate isn\'t queued', async () => {
+        await seedCharacter('Bob.png');
+        await clearQueue();
+        const chatDir = path.join(directories.chats, 'Nobody');
+        writeChatFile(chatDir, 'x.jsonl', ['hi']);
+
+        await migration.migrateOwnerOnTouch(directories, { ownerId: 'Nobody', chatDir });
+        await migration.migrateOwnerOnTouch(directories, { ownerId: 'Bob', chatDir: path.join(directories.chats, 'Bob') });
+
+        expect(await queued()).toEqual([]);
+    });
+});

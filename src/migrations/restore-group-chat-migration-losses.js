@@ -481,9 +481,12 @@ async function readBackup(backupPath, groupId) {
  * @param {Reader} options.reader With `apply`, the getDbHandle(directories) write handle.
  * @param {boolean} options.apply
  * @param {number} [options.pauseMs]
+ * @param {((ownerId: string, owner: import('../message-tree-db.js').OwnerDescriptor) => void) | null} [options.queueChatStats]
+ *   With `apply`, queues a group whose messages it changes to have its chat stats counted again, since these writes
+ *   don't go through the owner write hook (character-metadata-db.js openOwnerChatStatsQueue()).
  * @returns {Promise<RestoreResult>}
  */
-export async function restoreGroupChatLosses(directories, { reader, apply, pauseMs = DEFAULT_PAUSE_MS }) {
+export async function restoreGroupChatLosses(directories, { reader, apply, pauseMs = DEFAULT_PAUSE_MS, queueChatStats = null }) {
     /** @type {RestoreResult} */
     const result = { intact: [], restored: [], unrestorable: [], notices: [] };
 
@@ -568,10 +571,21 @@ export async function restoreGroupChatLosses(directories, { reader, apply, pause
                 if (!apply) {
                     plan = planChatRestore(reader, input);
                 } else {
+                    const owner = /** @type {const} */ ({ kind: 'group', rowId: groupId });
                     try {
+                        // Before, so a crash after the commit can't lose it; after too, since the server's drain runs
+                        // on another thread and may count the group between the two.
+                        queueChatStats?.(groupId, owner);
                         plan = planAndApplySync(/** @type {import('../endpoints/sqlite-engine.js').SqliteEngineHandle} */ (reader), input);
                     } catch (err) {
                         plan = { status: 'unrestorable', reason: `restoring it failed: ${err?.message ?? String(err)}` };
+                    }
+                    if (plan.status === 'restore') {
+                        try {
+                            queueChatStats?.(groupId, owner);
+                        } catch (err) {
+                            result.notices.push(item(`restored, but queueing its chat stats to be counted again failed: ${err?.message ?? String(err)}`));
+                        }
                     }
                 }
 
@@ -653,7 +667,9 @@ export async function runOnceAtBoot(directories, options = {}) {
 
     let result;
     try {
-        result = await restoreGroupChatLosses(directories, { reader: db, apply: true, pauseMs: options.pauseMs });
+        const { openOwnerChatStatsQueue } = await import('../character-metadata-db.js');
+        const queueChatStats = await openOwnerChatStatsQueue(/** @type {import('../users.js').UserDirectoryList} */ (directories), { existingOnly: true });
+        result = await restoreGroupChatLosses(directories, { reader: db, apply: true, pauseMs: options.pauseMs, queueChatStats });
     } catch (err) {
         warn(color.red(`${LOG_PREFIX} ${root}: run failed, will retry next boot: ${err?.message ?? String(err)}`));
         return { status: 'error' };
@@ -689,6 +705,12 @@ export function maybeStartGroupChatRestore(directoriesList, { enabled, held = []
     if (directoriesList.length === 0) return false;
     const worker = spawnWorker({ directoriesList, configPath: getConfigFilePath() });
     worker.on('error', err => console.error(color.red(`${LOG_PREFIX} worker failed:`), err));
+    // What the worker queued is counted only on this thread (character-metadata-db.js kickChatStatsReconcile()).
+    worker.on('exit', () => {
+        import('../character-metadata-db.js')
+            .then(({ kickChatStatsReconcile }) => { for (const directories of directoriesList) kickChatStatsReconcile(/** @type {import('../users.js').UserDirectoryList} */ (directories)); })
+            .catch(err => console.error(color.red(`${LOG_PREFIX} counting the restored groups' chat stats failed to start:`), err));
+    });
     worker.unref?.();
     return true;
 }
