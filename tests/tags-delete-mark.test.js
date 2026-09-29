@@ -145,9 +145,9 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
 
         await withDb((db) => {
             expect(db.prepare('SELECT id FROM tags WHERE id = ?').get('x')).toEqual({ id: 'x' });
-            expect(db.prepare('SELECT character_id FROM character_tags WHERE tag_id = ? ORDER BY character_id').all('x').map(r => r.character_id)).toEqual(['c1.png', 'c2.png']);
-            expect(db.prepare('SELECT group_id FROM group_tags WHERE tag_id = ?').all('x').map(r => r.group_id)).toEqual(['g1']);
-            expect(db.prepare('SELECT tag_id, merge_into FROM tag_deletions').all()).toEqual([{ tag_id: 'x', merge_into: 'y' }]);
+            expect(Array.from(db.prepare('SELECT character_id FROM character_tags WHERE tag_id = ? ORDER BY character_id').iterate('x'), r => r.character_id)).toEqual(['c1.png', 'c2.png']);
+            expect(Array.from(db.prepare('SELECT group_id FROM group_tags WHERE tag_id = ?').iterate('x'), r => r.group_id)).toEqual(['g1']);
+            expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions').iterate())).toEqual([{ tag_id: 'x', merge_into: 'y' }]);
         });
     });
 
@@ -155,7 +155,7 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
         await seedLibrary();
         await deleteTag('d');
         await withDb((db) => {
-            expect(db.prepare('SELECT tag_id, merge_into FROM tag_deletions').all()).toEqual([{ tag_id: 'd', merge_into: null }]);
+            expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions').iterate())).toEqual([{ tag_id: 'd', merge_into: null }]);
         });
     });
 
@@ -165,7 +165,7 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
         await deleteTag('x', 'nope');
         await deleteTag('z', 'z');
         await withDb((db) => {
-            expect(db.prepare('SELECT tag_id, merge_into FROM tag_deletions ORDER BY tag_id').all()).toEqual([
+            expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions ORDER BY tag_id').iterate())).toEqual([
                 { tag_id: 'x', merge_into: null },
                 { tag_id: 'z', merge_into: null },
             ]);
@@ -189,7 +189,7 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
         await deleteTag('x', 'y');
         await deleteTag('y', 'z');
         await withDb((db) => {
-            expect(db.prepare('SELECT tag_id, merge_into FROM tag_deletions ORDER BY tag_id').all()).toEqual([
+            expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions ORDER BY tag_id').iterate())).toEqual([
                 { tag_id: 'x', merge_into: 'z' },
                 { tag_id: 'y', merge_into: 'z' },
             ]);
@@ -422,7 +422,7 @@ describe('usage counts', () => {
         const pruned = await (await post('/api/tags/prune', { limit: 10 })).json();
         expect(pruned.deleted).toEqual(['u']);
         await withDb((db) => {
-            expect(db.prepare('SELECT id FROM tags ORDER BY id').all().map(r => r.id)).toEqual(['x', 'y']);
+            expect(Array.from(db.prepare('SELECT id FROM tags ORDER BY id').iterate(), r => r.id)).toEqual(['x', 'y']);
         });
     });
 });
@@ -438,7 +438,7 @@ describe('writes that name a marked tag', () => {
         expect(await listedTagIds()).toEqual(['d', 'y', 'z']);
         await withDb((db) => {
             expect(db.prepare('SELECT id FROM tags WHERE id = ?').get('x')).toBeUndefined();
-            expect(db.prepare('SELECT tag_id FROM tag_deletions').all()).toEqual([{ tag_id: 'x' }]);
+            expect(Array.from(db.prepare('SELECT tag_id FROM tag_deletions').iterate())).toEqual([{ tag_id: 'x' }]);
         });
         const messages = warn.mock.calls.map(args => args.join(' '));
         expect(messages.filter(m => m.includes('x')).length).toBeGreaterThanOrEqual(2);
@@ -453,8 +453,8 @@ describe('writes that name a marked tag', () => {
         await assign('g2', 'x');
         await assign('c4.png', 'd');
         await withDb((db) => {
-            expect(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ? ORDER BY tag_id').all('c4.png').map(r => r.tag_id)).toEqual(['y', 'z']);
-            expect(db.prepare('SELECT tag_id FROM group_tags WHERE group_id = ? ORDER BY tag_id').all('g2').map(r => r.tag_id)).toEqual(['y', 'z']);
+            expect(Array.from(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ? ORDER BY tag_id').iterate('c4.png'), r => r.tag_id)).toEqual(['y', 'z']);
+            expect(Array.from(db.prepare('SELECT tag_id FROM group_tags WHERE group_id = ? ORDER BY tag_id').iterate('g2'), r => r.tag_id)).toEqual(['y', 'z']);
         });
         expect(warn.mock.calls.map(args => args.join(' ')).some(m => m.includes('d') && m.includes('c4.png'))).toBe(true);
     });
@@ -467,8 +467,8 @@ describe('writes that name a marked tag', () => {
         const response = await post('/api/tags/assign-many', { tagIdsByEntity: { 'c4.png': ['x', 'y', 'd'], g2: ['x'] } });
         expect(response.status).toBe(200);
         await withDb((db) => {
-            expect(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?').all('c4.png').map(r => r.tag_id)).toEqual(['y']);
-            expect(db.prepare('SELECT tag_id FROM group_tags WHERE group_id = ?').all('g2').map(r => r.tag_id)).toEqual(['y']);
+            expect(Array.from(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?').iterate('c4.png'), r => r.tag_id)).toEqual(['y']);
+            expect(Array.from(db.prepare('SELECT tag_id FROM group_tags WHERE group_id = ?').iterate('g2'), r => r.tag_id)).toEqual(['y']);
         });
         expect(warn.mock.calls.map(args => args.join(' ')).some(m => m.includes('d') && m.includes('c4.png'))).toBe(true);
     });
@@ -478,7 +478,7 @@ describe('writes that name a marked tag', () => {
         await deleteTag('x', 'y');
         await metadataDb.restoreTagMap(directories, { 'c4.png': ['x'] });
         await withDb((db) => {
-            expect(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ? ORDER BY tag_id').all('c4.png').map(r => r.tag_id)).toEqual(['y', 'z']);
+            expect(Array.from(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ? ORDER BY tag_id').iterate('c4.png'), r => r.tag_id)).toEqual(['y', 'z']);
         });
     });
 
@@ -537,7 +537,7 @@ describe('POST /api/tags/create and /api/tags/edit', () => {
             expect({ url, body, status: response.status }).toEqual({ url, body, status: 400 });
         }
         await withDb((db) => {
-            expect(db.prepare('SELECT id, data FROM tags').all()).toEqual([{ id: 'a', data: JSON.stringify({ id: 'a', name: 'name-a' }) }]);
+            expect(Array.from(db.prepare('SELECT id, data FROM tags').iterate())).toEqual([{ id: 'a', data: JSON.stringify({ id: 'a', name: 'name-a' }) }]);
         });
     });
 

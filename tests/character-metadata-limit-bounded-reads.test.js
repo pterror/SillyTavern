@@ -180,7 +180,7 @@ describe('the character digest backfill reads each keyset chunk with readBounded
         for (const id of ids) await seedCharacter(id, id === 'Bea.png');
         metadataDb.disposeMetadataStores();
 
-        const readDigests = () => withRawDb(db => db.prepare('SELECT id, digest_fav, digest_tag_ids, digest_content FROM characters ORDER BY id').all());
+        const readDigests = () => withRawDb(db => Array.from(db.prepare('SELECT id, digest_fav, digest_tag_ids, digest_content FROM characters ORDER BY id').iterate()));
         const written = readDigests();
         expect(written.map(r => r.id)).toEqual(ids);
         withRawDb(db => {

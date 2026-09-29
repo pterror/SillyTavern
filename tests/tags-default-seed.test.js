@@ -59,7 +59,7 @@ function metaValue(key) {
 function tagRows() {
     const db = new Database(dbPath(), { readonly: true });
     try {
-        return /** @type {any} */ (db.prepare('SELECT id, data, name_key, sort_order FROM tags ORDER BY sort_order, rowid').all());
+        return /** @type {any} */ (Array.from(db.prepare('SELECT id, data, name_key, sort_order FROM tags ORDER BY sort_order, rowid').iterate()));
     } finally {
         db.close();
     }

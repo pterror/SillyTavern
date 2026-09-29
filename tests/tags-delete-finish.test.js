@@ -112,32 +112,32 @@ async function assign(id, tagId) {
 
 /** Every tag_usage row next to the counts the tag rows give, for rows whose counts differ. */
 function tagUsageMismatches(db) {
-    return db.prepare(`
+    return Array.from(db.prepare(`
         WITH actual AS (
             SELECT tag_id, COUNT(*) AS n FROM (SELECT tag_id FROM character_tags UNION ALL SELECT tag_id FROM group_tags) GROUP BY tag_id
         )
         SELECT u.tag_id, u.count, COALESCE(a.n, 0) AS actual FROM tag_usage u LEFT JOIN actual a ON a.tag_id = u.tag_id WHERE u.count <> COALESCE(a.n, 0)
         UNION ALL
         SELECT a.tag_id, NULL, a.n FROM actual a WHERE a.tag_id NOT IN (SELECT tag_id FROM tag_usage)
-    `).all();
+    `).iterate());
 }
 
 /** Characters whose shallow_json.tag_ids differ from their character_tags rows. */
 function characterCopiesOutOfSync(db) {
-    const rows = db.prepare('SELECT id, shallow_json FROM characters').all();
+    const rows = Array.from(db.prepare('SELECT id, shallow_json FROM characters').iterate());
     const tagsOf = db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?').pluck();
-    return rows.filter(r => JSON.stringify(JSON.parse(r.shallow_json).tag_ids) !== JSON.stringify(hashUtils.normalizeTagIds(tagsOf.all(r.id)))).map(r => r.id);
+    return rows.filter(r => JSON.stringify(JSON.parse(r.shallow_json).tag_ids) !== JSON.stringify(hashUtils.normalizeTagIds(Array.from(tagsOf.iterate(r.id))))).map(r => r.id);
 }
 
 /** Groups whose digest_tag_ids differ from their group_tags rows. NULL means not yet backfilled, which is no copy to compare. */
 function groupCopiesOutOfSync(db) {
-    const rows = db.prepare('SELECT id, digest_tag_ids FROM groups WHERE digest_tag_ids IS NOT NULL').all();
+    const rows = Array.from(db.prepare('SELECT id, digest_tag_ids FROM groups WHERE digest_tag_ids IS NOT NULL').iterate());
     const tagsOf = db.prepare('SELECT tag_id FROM group_tags WHERE group_id = ? ORDER BY tag_id').pluck();
-    return rows.filter(r => Number(r.digest_tag_ids) !== hashUtils.groupDigestTagIdsHash({ tag_ids: tagsOf.all(r.id) })).map(r => r.id);
+    return rows.filter(r => Number(r.digest_tag_ids) !== hashUtils.groupDigestTagIdsHash({ tag_ids: Array.from(tagsOf.iterate(r.id)) })).map(r => r.id);
 }
 
 function rawTagsOf(table, column, id) {
-    return withRawDb(db => db.prepare(`SELECT tag_id FROM ${table} WHERE ${column} = ? ORDER BY tag_id`).pluck().all(id));
+    return withRawDb(db => Array.from(db.prepare(`SELECT tag_id FROM ${table} WHERE ${column} = ? ORDER BY tag_id`).pluck().iterate(id)));
 }
 
 function markOf(tagId) {
@@ -153,7 +153,7 @@ function usageRowOf(tagId) {
 }
 
 function changeFieldsFor(id) {
-    return withRawDb(db => db.prepare('SELECT fields FROM changes WHERE id = ? ORDER BY seq').pluck().all(id));
+    return withRawDb(db => Array.from(db.prepare('SELECT fields FROM changes WHERE id = ? ORDER BY seq').pluck().iterate(id)));
 }
 
 describe('finishDeletedTags', () => {
@@ -319,7 +319,7 @@ describe('finishDeletedTags', () => {
 async function seedCharacterCopies(count, tagIdsOf) {
     await seedCharacter('seed.png');
     withRawDb(db => {
-        const columns = db.prepare('SELECT name FROM pragma_table_info(\'characters\')').pluck().all().filter(c => c !== 'id');
+        const columns = Array.from(db.prepare('SELECT name FROM pragma_table_info(\'characters\')').pluck().iterate()).filter(c => c !== 'id');
         db.prepare(`
             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
             INSERT INTO characters (id, ${columns.join(', ')})
@@ -342,7 +342,7 @@ async function seedCharacterCopies(count, tagIdsOf) {
 async function seedGroupCopies(count, tagIdsOf) {
     await seedGroup('seedg');
     withRawDb(db => {
-        const columns = db.prepare('SELECT name FROM pragma_table_info(\'groups\')').pluck().all().filter(c => c !== 'id');
+        const columns = Array.from(db.prepare('SELECT name FROM pragma_table_info(\'groups\')').pluck().iterate()).filter(c => c !== 'id');
         db.prepare(`
             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
             INSERT INTO groups (id, ${columns.join(', ')})

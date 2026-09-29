@@ -102,20 +102,20 @@ const DONE = { upto: null, done: true };
  */
 function counterMismatches(db) {
     const filled = (kind, column) => `EXISTS (SELECT 1 FROM entity_count_fill f WHERE f.kind = '${kind}' AND (f.done = 1 OR ${column} <= f.upto))`;
-    const expectedEntities = db.prepare(`
+    const expectedEntities = Array.from(db.prepare(`
         SELECT 'character' AS kind, fav, COUNT(*) AS n FROM characters WHERE ${filled('character', 'id')} GROUP BY fav
         UNION ALL
         SELECT 'group' AS kind, fav, COUNT(*) AS n FROM groups WHERE ${filled('group', 'id')} GROUP BY fav
-    `).all();
-    const expectedTags = db.prepare(`
+    `).iterate());
+    const expectedTags = Array.from(db.prepare(`
         SELECT t.tag_id, 'character' AS kind, c.fav, COUNT(*) AS n FROM character_tags t JOIN characters c ON c.id = t.character_id
             WHERE ${filled('character', 'c.id')} GROUP BY t.tag_id, c.fav
         UNION ALL
         SELECT t.tag_id, 'group' AS kind, g.fav, COUNT(*) AS n FROM group_tags t JOIN groups g ON g.id = t.group_id
             WHERE substr(t.group_id, -4) <> '.png' AND ${filled('group', 'g.id')} GROUP BY t.tag_id, g.fav
-    `).all();
-    const storedEntities = db.prepare('SELECT kind, fav, count AS n FROM entity_counts WHERE count <> 0').all();
-    const storedTags = db.prepare('SELECT tag_id, kind, fav, count AS n FROM entity_tag_counts WHERE count <> 0').all();
+    `).iterate());
+    const storedEntities = Array.from(db.prepare('SELECT kind, fav, count AS n FROM entity_counts WHERE count <> 0').iterate());
+    const storedTags = Array.from(db.prepare('SELECT tag_id, kind, fav, count AS n FROM entity_tag_counts WHERE count <> 0').iterate());
 
     const mismatches = [];
     const compare = (table, expected, stored, keyOf) => {
@@ -271,7 +271,7 @@ describe('entity counters', () => {
     test('the schema starts with nothing filled and every counter empty', async () => {
         await metadataDb.ensureSchemaMigrated(directories);
         withRawDb(db => {
-            expect(db.prepare('SELECT kind, upto, done FROM entity_count_fill ORDER BY kind').all()).toEqual([
+            expect(Array.from(db.prepare('SELECT kind, upto, done FROM entity_count_fill ORDER BY kind').iterate())).toEqual([
                 { kind: 'character', upto: null, done: 0 },
                 { kind: 'group', upto: null, done: 0 },
             ]);
@@ -324,8 +324,8 @@ describe('entity counters', () => {
         runRawWrites();
 
         const read = () => withRawDb(db => ({
-            entities: db.prepare('SELECT kind, fav, count FROM entity_counts').all(),
-            tags: db.prepare('SELECT tag_id, kind, fav, count FROM entity_tag_counts').all(),
+            entities: Array.from(db.prepare('SELECT kind, fav, count FROM entity_counts').iterate()),
+            tags: Array.from(db.prepare('SELECT tag_id, kind, fav, count FROM entity_tag_counts').iterate()),
         }));
         const { entities, tags } = read();
         const sum = (rows, pred) => rows.filter(pred).reduce((n, r) => n + r.count, 0);
@@ -357,7 +357,7 @@ describe('entity counters', () => {
         await assign('z1.png', 't1');
         withRawDb(db => {
             expect(counterMismatches(db)).toEqual([]);
-            expect(db.prepare('SELECT kind, fav, count FROM entity_counts').all()).toEqual([{ kind: 'character', fav: 1, count: 1 }]);
+            expect(Array.from(db.prepare('SELECT kind, fav, count FROM entity_counts').iterate())).toEqual([{ kind: 'character', fav: 1, count: 1 }]);
         });
     });
 
@@ -407,7 +407,7 @@ describe('entity counters', () => {
         metadataDb.disposeMetadataStores();
         // A store whose card_json is still nullable (a boot that left unresolved rows), with the triggers in place.
         withRawDb(db => {
-            const columns = db.prepare('PRAGMA table_info(characters)').all();
+            const columns = Array.from(db.prepare('PRAGMA table_info(characters)').iterate());
             db.pragma('legacy_alter_table = ON');
             db.exec('CREATE TABLE characters_old (' + columns.map(c => `${c.name} ${c.type}${c.name !== 'card_json' && c.notnull ? ' NOT NULL' : ''}${c.pk ? ' PRIMARY KEY' : ''}`).join(', ') + ')');
             db.exec('INSERT INTO characters_old SELECT * FROM characters');

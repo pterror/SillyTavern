@@ -63,7 +63,7 @@ afterEach(() => {
 function planOfTheOnlyRecordedGet() {
     expect(recordedGets.map(r => r.sql)).toHaveLength(1);
     const [{ sql, handle }] = recordedGets;
-    return handle.all(`EXPLAIN QUERY PLAN ${sql}`).map(row => row.detail);
+    return Array.from(handle.iterate(`EXPLAIN QUERY PLAN ${sql}`), row => row.detail);
 }
 
 describe('change-log seq bounds read without scanning the log', () => {

@@ -119,7 +119,7 @@ function card(name) {
 async function seedCopies(count) {
     await metadataDb.upsertCharacterFromWrite(directories, 'seed.png', card('seed'));
     withRawDb(db => {
-        const columns = db.prepare('SELECT name FROM pragma_table_info(\'characters\')').pluck().all().filter(c => c !== 'id');
+        const columns = Array.from(db.prepare('SELECT name FROM pragma_table_info(\'characters\')').pluck().iterate()).filter(c => c !== 'id');
         db.prepare(`
             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
             INSERT INTO characters (id, ${columns.join(', ')})
@@ -313,7 +313,7 @@ async function seedStaleGroups(count) {
     }
     const staleDigest = await groupDigestFav(true);
     withRawDb(db => {
-        const columns = db.prepare('SELECT name FROM pragma_table_info(\'groups\')').pluck().all().filter(c => c !== 'id');
+        const columns = Array.from(db.prepare('SELECT name FROM pragma_table_info(\'groups\')').pluck().iterate()).filter(c => c !== 'id');
         db.prepare(`
             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
             INSERT INTO groups (id, ${columns.join(', ')})
@@ -335,12 +335,12 @@ function setCardTags(where, tags) {
 
 /** @param {string} id */
 function assignedTagIds(id) {
-    return withRawDb(db => db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?').pluck().all(id));
+    return withRawDb(db => Array.from(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?').pluck().iterate(id)));
 }
 
 /** @param {string} name */
 function tagIdsNamed(name) {
-    return withRawDb(db => db.prepare('SELECT id FROM tags WHERE json_extract(data, \'$.name\') = ?').pluck().all(name));
+    return withRawDb(db => Array.from(db.prepare('SELECT id FROM tags WHERE json_extract(data, \'$.name\') = ?').pluck().iterate(name)));
 }
 
 describe('one-time group and card-tag passes resume after a mid-pass stop', () => {

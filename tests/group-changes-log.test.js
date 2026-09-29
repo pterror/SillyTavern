@@ -84,7 +84,7 @@ function withRawDb(fn) {
 
 /** @returns {{ version: number, group_id: string | null }[]} */
 function logRows() {
-    return withRawDb(db => /** @type {any[]} */ (db.prepare('SELECT version, group_id FROM group_changes ORDER BY version').all()));
+    return withRawDb(db => /** @type {any[]} */ (Array.from(db.prepare('SELECT version, group_id FROM group_changes ORDER BY version').iterate())));
 }
 
 /** @returns {number} */
@@ -102,8 +102,8 @@ async function addedBy(act) {
 /** Every groups and group_tags row, for comparing before and after a write. */
 function groupTables() {
     return withRawDb(db => JSON.stringify({
-        groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
-        groupTags: db.prepare('SELECT * FROM group_tags ORDER BY group_id, tag_id').all(),
+        groups: Array.from(db.prepare('SELECT * FROM groups ORDER BY id').iterate()),
+        groupTags: Array.from(db.prepare('SELECT * FROM group_tags ORDER BY group_id, tag_id').iterate()),
     }));
 }
 
@@ -376,7 +376,7 @@ describe('the groups version log', () => {
         await metadataDb.bootstrapGroupsIfNeeded(directories);
         failLogInsertFor = new Set();
 
-        expect(withRawDb(db => db.prepare('SELECT id FROM groups ORDER BY id').pluck().all())).toEqual(['1002']);
+        expect(withRawDb(db => Array.from(db.prepare('SELECT id FROM groups ORDER BY id').pluck().iterate()))).toEqual(['1002']);
         expect(logRows().map(row => row.group_id)).toEqual(['1002']);
     });
 });
@@ -421,7 +421,7 @@ describe('migrations run when the store opens', () => {
         await metadataDb.getGroupsVersion(directories);
         failLogInsertFor = new Set();
 
-        expect(withRawDb(db => db.prepare('SELECT id, name, digest_content IS NULL AS noDigest FROM groups ORDER BY id').all())).toEqual([
+        expect(withRawDb(db => Array.from(db.prepare('SELECT id, name, digest_content IS NULL AS noDigest FROM groups ORDER BY id').iterate()))).toEqual([
             { id: '1001', name: 'old', noDigest: 1 },
             { id: '1002', name: 'from file', noDigest: 0 },
         ]);
@@ -441,7 +441,7 @@ describe('migrations run when the store opens', () => {
         await metadataDb.getGroupsVersion(directories);
         failLogInsertFor = new Set();
 
-        expect(withRawDb(db => db.prepare('SELECT id, digest_content IS NULL AS noDigest FROM groups ORDER BY id').all())).toEqual([
+        expect(withRawDb(db => Array.from(db.prepare('SELECT id, digest_content IS NULL AS noDigest FROM groups ORDER BY id').iterate()))).toEqual([
             { id: '1001', noDigest: 1 },
             { id: '1002', noDigest: 0 },
         ]);

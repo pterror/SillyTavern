@@ -294,7 +294,14 @@ describe('cleanup-zztest-leftovers', () => {
 
         expect(out.code).toBe(0);
         expect(treeRow(scratch.root, cleanup.STRAY_CHILD_ID)).toBeNull();
-        expect(withDb(metaPath, db => db.all('SELECT kind, id FROM chat_stats_pending ORDER BY kind, id'))).toEqual([{ kind: 'group', id: cleanup.STRAY_OWNER }]);
+        expect(withDb(metaPath, db => {
+            const stmt = db.prepare('SELECT kind, id FROM chat_stats_pending ORDER BY kind, id');
+            try {
+                return Array.from(stmt.iterate());
+            } finally {
+                stmt.finalize();
+            }
+        })).toEqual([{ kind: 'group', id: cleanup.STRAY_OWNER }]);
     });
 
     test('second real run is a no-op', async () => {
@@ -435,7 +442,14 @@ describe('cleanup-zztest-leftovers', () => {
         expect(readGroup(scratch.dirs).chats).toEqual([cleanup.GROUP_CHAT]);
         expect(groupRow(scratch.root)).toBeNull();
         // The groups search index reads the file, so changing it is a group change even with no row.
-        expect(withDb(metaPath, db => db.all('SELECT group_id FROM group_changes WHERE version > ?', [versionBefore]))).toEqual([{ group_id: cleanup.GROUP_ID }]);
+        expect(withDb(metaPath, db => {
+            const stmt = db.prepare('SELECT group_id FROM group_changes WHERE version > ?');
+            try {
+                return Array.from(stmt.iterate([versionBefore]));
+            } finally {
+                stmt.finalize();
+            }
+        })).toEqual([{ group_id: cleanup.GROUP_ID }]);
         const backupParent = path.join(scratch.dirs.backups, '_cleanup-zztest-leftovers');
         const [backupDir] = fs.readdirSync(backupParent);
         expect(fs.existsSync(path.join(backupParent, backupDir, 'character-metadata-groups-row.json'))).toBe(false);

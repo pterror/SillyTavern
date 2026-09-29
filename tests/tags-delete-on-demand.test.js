@@ -96,7 +96,7 @@ describe('POST /api/tags/delete while the server is running', () => {
         const db = new Database(path.join(tempDir, 'character-metadata.sqlite'), { readonly: true });
         try {
             expect(db.prepare('SELECT COUNT(*) AS n FROM tag_deletions').get()).toEqual({ n: 0 });
-            expect(db.prepare('SELECT character_id, tag_id FROM character_tags ORDER BY character_id').all())
+            expect(Array.from(db.prepare('SELECT character_id, tag_id FROM character_tags ORDER BY character_id').iterate()))
                 .toEqual([{ character_id: 'c1.png', tag_id: 'y' }, { character_id: 'c2.png', tag_id: 'y' }]);
         } finally {
             db.close();

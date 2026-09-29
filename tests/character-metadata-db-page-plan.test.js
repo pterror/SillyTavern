@@ -108,7 +108,7 @@ function recordedLaterPage() {
 }
 
 function planOf({ sql, params, handle }) {
-    return handle.all(`EXPLAIN QUERY PLAN ${sql}`, params).map(row => row.detail);
+    return Array.from(handle.iterate(`EXPLAIN QUERY PLAN ${sql}`, params), row => row.detail);
 }
 
 describe('a keyset stream\'s later page seeks on its key instead of re-reading from the start', () => {
