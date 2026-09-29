@@ -5,8 +5,8 @@ import { reindexDefaultAfterMove, reindexDefaultAfterRemoval } from './greeting-
  * Six named operations against a character's greeting list, addressing positions in the unified list
  * (see {@link import('./greeting-list.js').GreetingsModel}). Every op takes a precondition and refuses
  * with `{ ok: false, reason }` when it doesn't match: ops that target an existing greeting (edit,
- * delete, move's source and its anchor, set-default) take an `expectedHash` of the greeting there,
- * add takes the `expectedLength` of the list, unset-default the `expectedDefaultPosition`. Pure: each
+ * delete, move's source and its anchor, set-default) take an `expectedHash` of that greeting, found at
+ * the position given or, if it moved, by the hash alone (see {@link findGreeting}); add takes the `expectedLength` of the list, unset-default the `expectedDefaultPosition`. Pure: each
  * returns either `{ ok: true, model }` (new model, input never mutated) or `{ ok: false, reason }`.
  */
 
@@ -25,6 +25,34 @@ function positionInBounds(position, length) {
 function hashMatches(model, position, expectedHash) {
     return hashGreetingText(model.greetings[position]) === expectedHash;
 }
+
+/**
+ * Finds the greeting whose hash is `expectedHash`: the one at `position` when its hash matches; otherwise (the
+ * position is out of range, or holds something else) the one greeting anywhere in the list that has it. Refuses when
+ * no greeting or more than one greeting has it, with `outOfRange` when `position` is out of range, else `changed`.
+ * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {number} position
+ * @param {number} expectedHash
+ * @param {{outOfRange: string, changed: string}} reasons
+ * @returns {{ok: true, position: number}|{ok: false, reason: string}}
+ */
+function findGreeting(model, position, expectedHash, reasons) {
+    const inBounds = positionInBounds(position, model.greetings.length);
+    if (inBounds && hashMatches(model, position, expectedHash)) {
+        return { ok: true, position };
+    }
+    const matches = [];
+    for (let i = 0; i < model.greetings.length && matches.length < 2; i++) {
+        if (hashMatches(model, i, expectedHash)) matches.push(i);
+    }
+    if (matches.length !== 1) {
+        return { ok: false, reason: inBounds ? reasons.changed : reasons.outOfRange };
+    }
+    return { ok: true, position: matches[0] };
+}
+
+const GREETING_REASONS = { outOfRange: 'position out of range', changed: 'greeting at position changed since it was loaded' };
+const TARGET_REASONS = { outOfRange: 'target position out of range', changed: 'target greeting changed since it was loaded' };
 
 /**
  * Inserts `text` at `position` (0..length, i.e. `length` appends at the end). Refuses empty text.
@@ -53,10 +81,8 @@ export function opAdd(model, position, expectedLength, text) {
 }
 
 /**
- * Replaces the text of the greeting whose hash is `expectedHash`. That is the greeting at `position` when its
- * hash matches; otherwise (the position is out of range, or holds something else) the greeting is looked up by
- * `expectedHash` alone, so an edit still lands on its greeting after other greetings were added, removed or
- * moved. Refuses empty text, and refuses when no greeting or more than one greeting has that hash.
+ * Replaces the text of the greeting whose hash is `expectedHash`, found by {@link findGreeting}, so an edit still
+ * lands on its greeting after other greetings were added, removed or moved. Refuses empty text.
  * `position` in the result is where the edit landed.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
@@ -68,100 +94,77 @@ export function opEdit(model, position, expectedHash, text) {
     if (typeof text !== 'string' || text === '') {
         return { ok: false, reason: 'refused to blank stored greeting text' };
     }
-    let target = position;
-    if (!positionInBounds(position, model.greetings.length) || !hashMatches(model, position, expectedHash)) {
-        const matches = [];
-        for (let i = 0; i < model.greetings.length && matches.length < 2; i++) {
-            if (hashMatches(model, i, expectedHash)) matches.push(i);
-        }
-        if (matches.length !== 1) {
-            return {
-                ok: false,
-                reason: !positionInBounds(position, model.greetings.length)
-                    ? 'position out of range'
-                    : 'greeting at position changed since it was loaded',
-            };
-        }
-        target = matches[0];
-    }
+    const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
+    if (!found.ok) return found;
     const greetings = model.greetings.slice();
-    greetings[target] = text;
-    return { ok: true, model: { greetings, defaultIndex: model.defaultIndex }, position: target };
+    greetings[found.position] = text;
+    return { ok: true, model: { greetings, defaultIndex: model.defaultIndex }, position: found.position };
 }
 
 /**
- * Removes the greeting at `position`. Removing the current default clears default-ness (no
- * successor is guessed at) via {@link reindexDefaultAfterRemoval}.
+ * Removes the greeting whose hash is `expectedHash`, found by {@link findGreeting}. Removing the current default
+ * clears default-ness (no successor is guessed at) via {@link reindexDefaultAfterRemoval}.
+ * `position` in the result is where the removed greeting was.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
+ * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
  */
 export function opDelete(model, position, expectedHash) {
-    if (!positionInBounds(position, model.greetings.length)) {
-        return { ok: false, reason: 'position out of range' };
-    }
-    if (!hashMatches(model, position, expectedHash)) {
-        return { ok: false, reason: 'greeting at position changed since it was loaded' };
-    }
+    const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
+    if (!found.ok) return found;
     const greetings = model.greetings.slice();
-    greetings.splice(position, 1);
-    const defaultIndex = reindexDefaultAfterRemoval(model.defaultIndex, position);
-    return { ok: true, model: { greetings, defaultIndex } };
+    greetings.splice(found.position, 1);
+    const defaultIndex = reindexDefaultAfterRemoval(model.defaultIndex, found.position);
+    return { ok: true, model: { greetings, defaultIndex }, position: found.position };
 }
 
 /**
- * Moves the greeting at `sourcePosition` immediately before or after the anchor greeting at
- * `targetPosition`, order otherwise preserved. Both positions are read against the list as it
- * currently stands. "Move to the end" is `side: 'after'` with the last greeting as the anchor.
+ * Moves the greeting whose hash is `expectedHash` immediately before or after the anchor greeting whose hash is
+ * `targetExpectedHash`, order otherwise preserved. Each is found by {@link findGreeting}, starting from
+ * `sourcePosition` and `targetPosition` read against the list as it currently stands. "Move to the end" is
+ * `side: 'after'` with the last greeting as the anchor. `sourcePosition` and `targetPosition` in the result are
+ * where the moved greeting and the anchor were found.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} sourcePosition
- * @param {number} expectedHash hash of the greeting at `sourcePosition`
+ * @param {number} expectedHash hash of the greeting to move
  * @param {'before'|'after'} side which side of the anchor the moved greeting lands on
  * @param {number} targetPosition position of the anchor greeting (an existing greeting, not an insertion index)
- * @param {number} targetExpectedHash hash of the greeting at `targetPosition`
+ * @param {number} targetExpectedHash hash of the anchor greeting
+ * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, sourcePosition: number, targetPosition: number}|{ok: false, reason: string}}
  */
 export function opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash) {
-    if (!positionInBounds(sourcePosition, model.greetings.length)) {
-        return { ok: false, reason: 'position out of range' };
-    }
-    if (!hashMatches(model, sourcePosition, expectedHash)) {
-        return { ok: false, reason: 'greeting at position changed since it was loaded' };
-    }
-    if (!positionInBounds(targetPosition, model.greetings.length)) {
-        return { ok: false, reason: 'target position out of range' };
-    }
-    if (!hashMatches(model, targetPosition, targetExpectedHash)) {
-        return { ok: false, reason: 'target greeting changed since it was loaded' };
-    }
-    if (targetPosition === sourcePosition) {
+    const source = findGreeting(model, sourcePosition, expectedHash, GREETING_REASONS);
+    if (!source.ok) return source;
+    const target = findGreeting(model, targetPosition, targetExpectedHash, TARGET_REASONS);
+    if (!target.ok) return target;
+    if (target.position === source.position) {
         return { ok: false, reason: 'cannot move a greeting next to itself' };
     }
     if (side !== 'before' && side !== 'after') {
         return { ok: false, reason: 'side must be before or after' };
     }
     const greetings = model.greetings.slice();
-    const [moved] = greetings.splice(sourcePosition, 1);
-    const anchorIndex = targetPosition > sourcePosition ? targetPosition - 1 : targetPosition;
+    const [moved] = greetings.splice(source.position, 1);
+    const anchorIndex = target.position > source.position ? target.position - 1 : target.position;
     const insertIndex = side === 'before' ? anchorIndex : anchorIndex + 1;
     greetings.splice(insertIndex, 0, moved);
-    const defaultIndex = reindexDefaultAfterMove(model.defaultIndex, sourcePosition, insertIndex);
-    return { ok: true, model: { greetings, defaultIndex } };
+    const defaultIndex = reindexDefaultAfterMove(model.defaultIndex, source.position, insertIndex);
+    return { ok: true, model: { greetings, defaultIndex }, sourcePosition: source.position, targetPosition: target.position };
 }
 
 /**
- * Makes the greeting at `position` the default. Never reorders anything.
+ * Makes the greeting whose hash is `expectedHash`, found by {@link findGreeting}, the default. Never reorders
+ * anything. `position` in the result is where that greeting is.
  * @param {import('./greeting-list.js').GreetingsModel} model
  * @param {number} position
  * @param {number} expectedHash
+ * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
  */
 export function opSetDefault(model, position, expectedHash) {
-    if (!positionInBounds(position, model.greetings.length)) {
-        return { ok: false, reason: 'position out of range' };
-    }
-    if (!hashMatches(model, position, expectedHash)) {
-        return { ok: false, reason: 'greeting at position changed since it was loaded' };
-    }
-    return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: position } };
+    const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
+    if (!found.ok) return found;
+    return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: found.position }, position: found.position };
 }
 
 /**
