@@ -24,6 +24,11 @@ jest.unstable_mockModule('../src/endpoints/sqlite-engine.js', () => ({
                     return real(sql, ...args);
                 };
             }
+            const realTransaction = handle.transaction;
+            handle.transaction = (fn) => {
+                calls.push({ method: 'transaction', sql: '', args: [] });
+                return realTransaction(fn);
+            };
             return handle;
         },
     }),
@@ -127,6 +132,108 @@ describe('migrateIdentityHashSync reads the rows to hash in keyset chunks', () =
             expect(check.get('SELECT COUNT(*) AS c FROM sqlite_master WHERE type = \'index\' AND name = \'idx_messages_identity\'')).toEqual({ c: 1 });
         } finally {
             check.close();
+        }
+    });
+});
+
+describe('renameCharacterInMessages reads the rows to rename in keyset chunks', () => {
+    const insertSql = 'INSERT INTO messages (id, parent_id, owner_id, content, label, created_at, default_child_id, metadata, identity_hash) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, ?)';
+
+    /**
+     * Opens the store once so it has the current schema, then writes the rows straight into its file.
+     * @param {{ root: string }} directories
+     * @param {string} ownerId
+     * @param {{ id: string, content: string }[]} replies Children of the owner's anchor.
+     */
+    async function seedStore(directories, ownerId, replies) {
+        await treeDb.getDbHandle(directories);
+        treeDb.disposeMessageTreeStores();
+        const raw = new WasmDatabase(path.join(directories.root, 'message-tree.sqlite'));
+        try {
+            raw.exec('BEGIN');
+            raw.run(insertSql, [`${ownerId}-anchor`, null, ownerId, treeDb.ANCHOR_CONTENT, 1, null]);
+            replies.forEach(({ id, content }, i) => {
+                raw.run(insertSql, [id, `${ownerId}-anchor`, ownerId, content, i + 2, treeDb.identityHashOf(`${ownerId}-anchor`, content)]);
+            });
+            raw.exec('COMMIT');
+        } finally {
+            raw.close();
+        }
+    }
+
+    /** @param {{ root: string }} directories */
+    function readRows(directories) {
+        const check = new WasmDatabase(path.join(directories.root, 'message-tree.sqlite'));
+        try {
+            return new Map(Array.from(check.prepare('SELECT id, content, identity_hash FROM messages WHERE parent_id IS NOT NULL').iterate(), r => [r.id, r]));
+        } finally {
+            check.close();
+        }
+    }
+
+    test('2001 character rows: three bounded chunk reads, every one renamed and rehashed, user/system/narrator rows untouched, a rerun opens no transaction', async () => {
+        const directories = makeDirectories();
+        /** @type {{ id: string, content: string }[]} */
+        const characterRows = [];
+        for (let i = 0; i < 2001; i++) {
+            characterRows.push({ id: `c${String(i).padStart(5, '0')}`, content: JSON.stringify({ ...makeMessage(`hello ${i}`), name: 'Old' }) });
+        }
+        const keptRows = [
+            { id: 'u00000', content: JSON.stringify(makeMessage('from the user', true)) },
+            { id: 's00000', content: JSON.stringify({ ...makeMessage('a system note'), name: 'Old', is_system: true }) },
+            { id: 'n00000', content: JSON.stringify({ ...makeMessage('the narrator speaks'), name: 'Old', extra: { type: 'narrator' } }) },
+        ];
+        await seedStore(directories, 'owner-1', [...characterRows, ...keptRows]);
+        await treeDb.getDbHandle(directories);
+
+        calls.length = 0;
+        expect(await treeDb.renameCharacterInMessages(directories, 'owner-1', 'New')).toBe(2001);
+
+        const chunkSql = 'SELECT id, parent_id, content FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL AND json_extract(content, \'$.is_user\') IS NOT 1 AND json_extract(content, \'$.is_system\') IS NOT 1 AND COALESCE(json_extract(content, \'$.extra.type\'), \'\') != \'narrator\' AND json_extract(content, \'$.name\') IS NOT @newName AND id > @lastId ORDER BY id LIMIT @limit';
+        const chunkReads = calls.filter(c => oneLine(c) === chunkSql);
+        expect(chunkReads.map(c => c.method)).toEqual(['readBounded', 'readBounded', 'readBounded']);
+        expect(chunkReads.map(c => c.args[0].lastId)).toEqual(['', 'c00999', 'c01999']);
+        for (const read of chunkReads) {
+            expect(read.args[1]).toBe(1000);
+            expect(read.args[0].limit).toBe(1000);
+        }
+        expect(calls.filter(c => c.method === 'all' && oneLine(c).startsWith('SELECT id, parent_id, content FROM messages WHERE owner_id = @ownerId'))).toEqual([]);
+
+        calls.length = 0;
+        expect(await treeDb.renameCharacterInMessages(directories, 'owner-1', 'New')).toBe(0);
+        expect(calls.filter(c => c.method === 'transaction' || c.method === 'run')).toEqual([]);
+
+        treeDb.disposeMessageTreeStores();
+        const rows = readRows(directories);
+        for (const { id, content } of characterRows) {
+            const expected = JSON.stringify({ ...JSON.parse(content), name: 'New' });
+            expect(rows.get(id).content).toBe(expected);
+            expect(rows.get(id).identity_hash).toBe(treeDb.identityHashOf('owner-1-anchor', expected));
+        }
+        for (const { id, content } of keptRows) {
+            expect(rows.get(id).content).toBe(content);
+            expect(rows.get(id).identity_hash).toBe(treeDb.identityHashOf('owner-1-anchor', content));
+        }
+    });
+
+    test('a row whose rename would collide with a sibling that already has the new name and the same text keeps its old name', async () => {
+        const directories = makeDirectories();
+        const sibling = { id: 't00000', content: JSON.stringify({ ...makeMessage('same words'), name: 'New' }) };
+        const twin = { id: 't00001', content: JSON.stringify({ ...makeMessage('same words'), name: 'Old' }) };
+        await seedStore(directories, 'owner-2', [sibling, twin]);
+
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            expect(await treeDb.renameCharacterInMessages(directories, 'owner-2', 'New')).toBe(0);
+        } finally {
+            warn.mockRestore();
+        }
+
+        treeDb.disposeMessageTreeStores();
+        const rows = readRows(directories);
+        for (const { id, content } of [sibling, twin]) {
+            expect(rows.get(id).content).toBe(content);
+            expect(rows.get(id).identity_hash).toBe(treeDb.identityHashOf('owner-2-anchor', content));
         }
     });
 });
