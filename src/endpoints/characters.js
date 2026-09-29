@@ -35,7 +35,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2321,13 +2321,14 @@ function pageOverFetch(pageSize) {
  * sorted by tantivy, groups merged in by the same key. Only index data is read, never metadata rows.
  * @param {string} handle
  * @param {import('../users.js').UserDirectoryList} directories
- * @param {{ searchTerm: string, sortField: string, sortOrder: string, filter: object, includeGroups: boolean, offset: number, count: number }} params
+ * @param {{ searchTerm: string, sortField: string, sortOrder: string, filter: object, includeGroups: boolean, groupsOnly?: boolean, offset: number, count: number }} params
+ *   groupsOnly: no characters, and the characters index isn't searched.
  * @returns {Promise<{ entities: { type: 'character'|'group', id: string }[], total: number, backend: string, position: import('./search-index-coordinator.js').SearchIndexPosition | null, groupsPosition: import('./search-index-coordinator.js').GroupsIndexPosition | null } | null>}
  * null when the sort field has no fast field. `position` is the characters index's as of its search, null when
  * unknown or when two searches read different ones. `groupsPosition` is the groups index's as of its search, null
  * when unknown or groups weren't searched.
  */
-async function searchSortedPage(handle, directories, { searchTerm, sortField, sortOrder, filter, includeGroups, offset, count }) {
+async function searchSortedPage(handle, directories, { searchTerm, sortField, sortOrder, filter, includeGroups, groupsOnly = false, offset, count }) {
     const order = tantivySortOrder(sortField, sortOrder);
     const filterOptions = {
         fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
@@ -2338,6 +2339,10 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
     const { groups, backend: groupsBackend, position: groupsPosition } = includeGroups
         ? await searchGroupsSorted(handle, directories, searchTerm, sortField, order, filterOptions)
         : { groups: [], backend: 'tantivy', position: null };
+    if (groupsOnly) {
+        const entities = groups.slice(offset, offset + count).map(group => ({ type: /** @type {'group'} */ ('group'), id: group.id }));
+        return { entities, total: groups.length, backend: groupsBackend, position: null, groupsPosition };
+    }
 
     // Each group can push the page's first character back by one rank, so the character window starts that far
     // earlier; mergeSortedWindow() then places it exactly.
@@ -2383,13 +2388,16 @@ function queryHashesReply(hashes) {
  * `/query`'s answer to one request body.
  * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
  * @param {object} body The request body: filter, sort, want, page, pageSize, ifToken.
+ * @param {{ groupsOnly?: boolean }} [options] groupsOnly, with `filter.includeGroups`: leave characters out. Its token
+ *   is null on the search path, as the characters index's position isn't read.
  * @returns {Promise<QueryReply>}
  */
-async function runQuery(user, body) {
+async function runQuery(user, body, { groupsOnly: onlyGroups = false } = {}) {
     const filter = body.filter ?? {};
     const sort = body.sort ?? {};
     const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
     const includeGroups = filter.includeGroups === true;
+    const groupsOnly = includeGroups && onlyGroups;
 
     const searchTerm = typeof filter.search === 'string' ? filter.search.trim() : '';
     const hasSearch = searchTerm.length > 0;
@@ -2455,6 +2463,7 @@ async function runQuery(user, body) {
         wantRows,
         wantTotal,
         wantHashes,
+        groupsOnly,
     };
     // Whether a total computed against a search-narrowed candidate set is exact or approximate
     // (wire convention: a `~` prefix, never a silently-truncated number).
@@ -2478,7 +2487,7 @@ async function runQuery(user, body) {
         // has no world field, so a world-filtered search takes the SQL path below.
         if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world) {
             const sortedPage = await searchSortedPage(handle, user.directories, {
-                searchTerm, sortField: sort.field, sortOrder: sort.order, filter, includeGroups,
+                searchTerm, sortField: sort.field, sortOrder: sort.order, filter, includeGroups, groupsOnly,
                 offset, count: pageSize + pageOverFetch(pageSize),
             });
             if (sortedPage !== null) {
@@ -2530,7 +2539,9 @@ async function runQuery(user, body) {
         // capped list and leaves the page short. world isn't: the search engine has no world field. The SQL
         // below still checks fav, tags and excludeIds, and explicitIds still intersects, because the index can
         // lag the db by about a second.
-        const searchResult = await searchCharacterIds(handle, user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags, ids: Array.isArray(filter.ids) ? filter.ids : undefined, excludeIds: filter.excludeIds });
+        const searchResult = groupsOnly
+            ? { ids: [], scoresById: new Map(), total: 0, backend: undefined, position: null }
+            : await searchCharacterIds(handle, user.directories, searchTerm, idFetchCap, { fav: typeof filter.fav === 'boolean' ? filter.fav : undefined, tags: filter.tags, ids: Array.isArray(filter.ids) ? filter.ids : undefined, excludeIds: filter.excludeIds });
         searchPosition = searchResult.position;
 
         // filter.ids and filter.search both restrict the candidate set - when both are present they
@@ -2550,7 +2561,7 @@ async function runQuery(user, body) {
         // (both go through the same process-wide resolveSearchEngine() cache) - report whichever is worse,
         // matching the `/all` route's identical BACKEND_SEVERITY comparison, in case they ever don't.
         const BACKEND_SEVERITY = { tantivy: 0, unavailable: 1 };
-        searchBackend = includeGroups && BACKEND_SEVERITY[groupSearchResult.backend] > BACKEND_SEVERITY[searchResult.backend]
+        searchBackend = groupsOnly || (includeGroups && BACKEND_SEVERITY[groupSearchResult.backend] > BACKEND_SEVERITY[searchResult.backend])
             ? groupSearchResult.backend
             : searchResult.backend;
 
@@ -2578,7 +2589,7 @@ async function runQuery(user, body) {
             const combinedIds = timePhase('merge_ids', () => [...effectiveIds, ...effectiveGroupIds]);
             const entityParams = {
                 tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
-                ids: combinedIds, handle, wantRows, wantTotal, wantHashes,
+                ids: combinedIds, handle, wantRows, wantTotal, wantHashes, groupsOnly,
             };
             if (sort.field === 'search') {
                 // No SQL column for relevance - fetch every matched row so the JS reorder+slice below sees the true top-K.
@@ -2696,6 +2707,114 @@ async function handleQuery(request, response) {
 }
 
 router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
+
+/** Rows a folder tile's avatar strip shows. */
+export const FOLDER_TILE_STRIP_ROWS = 10;
+export const MAX_FOLDER_TILES_PER_REQUEST = 200;
+/** Closed folders a folder-tiles request reads. Past this many it fails rather than hide entities from part of them. */
+export const MAX_FOLDER_TILES_CLOSED_FOLDERS = 1000;
+
+/**
+ * @param {number | string | undefined} total A `/query` total, `~`-prefixed when approximate.
+ * @returns {{ value: number, approx: boolean }}
+ */
+function parseQueryTotal(total) {
+    const approx = typeof total === 'string' && total.startsWith('~');
+    const value = Number(approx ? total.slice(1) : total);
+    return { value: Number.isFinite(value) ? value : 0, approx };
+}
+
+/**
+ * The folder tiles on screen, in one request: for each tile's tag, the entities in its sub-list as the character
+ * list shows them, and how many of those tagged with it are hidden.
+ *
+ * A tile's sub-list is every character and group tagged with its tag that the list's filters keep: `filter.search`,
+ * `filter.fav`, `filter.tags` (every included tag, no excluded one) and `filter.group` (true: only groups, false:
+ * no groups). Unless the tile's own folder is closed, an entity tagged with a closed folder that `filter.tags`
+ * doesn't include is left out too.
+ * - `count`: the sub-list's size. `hidden`: the entities tagged with the tile's tag that aren't in it.
+ * - `rows`: the sub-list's first FOLDER_TILE_STRIP_ROWS in `sort`'s order, shaped as `/query`'s rows with
+ *   `filter.includeGroups`.
+ * Either number is a `~`-prefixed string when it's an estimate, as `/query`'s `total` is. A tag that doesn't exist
+ * or is marked deleted is answered `{ id, missing: true }`. `sort` and the errors it gives are `/query`'s.
+ */
+router.post('/folder-tiles', async function (request, response) {
+    try {
+        const body = request.body ?? {};
+        const filter = body.filter ?? {};
+        const sort = body.sort ?? {};
+        const tiles = body.tiles;
+        if (!Array.isArray(tiles) || !tiles.every(id => typeof id === 'string' && id.length > 0)) {
+            return response.status(400).send({ error: true, reason: 'invalid-tiles' });
+        }
+        const tileIds = [...new Set(tiles)];
+        if (tileIds.length > MAX_FOLDER_TILES_PER_REQUEST) {
+            return response.status(400).send({ error: true, reason: 'too-many-tiles', max: MAX_FOLDER_TILES_PER_REQUEST });
+        }
+
+        const tags = await getFolderTileTags(request.user.directories, tileIds, MAX_FOLDER_TILES_CLOSED_FOLDERS);
+        if (tags === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        if (tags.closedIds === null) {
+            return response.status(500).send({ error: true, reason: 'too-many-closed-folders', max: MAX_FOLDER_TILES_CLOSED_FOLDERS });
+        }
+
+        const include = Array.isArray(filter.tags?.include) ? filter.tags.include.filter(id => typeof id === 'string' && id) : [];
+        const exclude = Array.isArray(filter.tags?.exclude) ? filter.tags.exclude.filter(id => typeof id === 'string' && id) : [];
+        const group = typeof filter.group === 'boolean' ? filter.group : undefined;
+        const hasSearch = typeof filter.search === 'string' && filter.search.trim().length > 0;
+        const baseFilter = {
+            search: filter.search,
+            fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
+            includeGroups: group !== false,
+        };
+        const runOptions = { groupsOnly: group === true };
+
+        const results = [];
+        for (const id of tileIds) {
+            const closed = tags.closedByTileId.get(id);
+            if (closed === undefined) {
+                results.push({ id, missing: true });
+                continue;
+            }
+            const hiddenBy = closed ? [] : tags.closedIds.filter(closedId => !include.includes(closedId));
+            const tileFilter = {
+                ...baseFilter,
+                tags: { include: [...include, id], exclude: [...new Set([...exclude, ...hiddenBy])], mode: 'and' },
+            };
+            // Without 'hashes' in want, the reply is JSON.
+            const page = /** @type {{ status: number, body: any }} */ (await runQuery(request.user, { filter: tileFilter, sort, want: ['rows', 'total'], page: 1, pageSize: FOLDER_TILE_STRIP_ROWS }, runOptions));
+            if (page.status !== 200) return response.status(page.status).send(page.body);
+
+            let count = parseQueryTotal(page.body.total);
+            if (hasSearch && sort.field === 'search') {
+                // A relevance-ordered page counts only the matches it ranked; a field order counts them all.
+                const counted = /** @type {{ status: number, body: any }} */ (await runQuery(request.user, { filter: tileFilter, sort: { field: 'name', order: 'asc' }, want: ['total'], page: 1, pageSize: 1 }, runOptions));
+                if (counted.status !== 200) return response.status(counted.status).send(counted.body);
+                count = parseQueryTotal(counted.body.total);
+            }
+
+            const tagged = await queryEntities(request.user.directories, { tags: { include: [id] }, wantRows: false, wantTotal: true });
+            if (tagged === null) {
+                return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+            }
+            const approx = count.approx || tagged.approxTotal;
+            const hidden = Math.max(0, Number(tagged.total ?? 0) - count.value);
+            results.push({
+                id,
+                count: count.approx ? `~${count.value}` : count.value,
+                hidden: approx ? `~${hidden}` : hidden,
+                // Without groups, /query's rows are bare characters.
+                rows: (page.body.rows ?? []).map(row => baseFilter.includeGroups ? row : { type: 'character', item: row }),
+            });
+        }
+        return response.send({ tiles: results });
+    } catch (err) {
+        console.error('[characters/folder-tiles] Failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
 
 /**
  * Explicit repair path for a user's character search index. Forces an immediate full rebuild regardless of the current freshness signature.
