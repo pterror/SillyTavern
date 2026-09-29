@@ -71,6 +71,38 @@ const QUERY_RESPONSE_CACHE_LIMIT = 100;
 /** Mirrors the server's own page cap (`MAX_QUERY_PAGE_SIZE`) - `queryAll()` chunks its loop at this size. */
 const QUERY_ALL_PAGE_SIZE = 2000;
 
+/** Mirrors the server's `MAX_FOLDER_TILES_PER_REQUEST`: `folderTiles()` splits its tiles into requests of this many. */
+export const FOLDER_TILES_PER_REQUEST = 200;
+
+/**
+ * @typedef {object} FolderTileFilter - mirrors `POST /api/characters/folder-tiles`'s filter shape.
+ * @property {string} [search]
+ * @property {boolean} [fav]
+ * @property {{include: string[], exclude: string[], mode?: 'and'|'or'}} [tags]
+ * @property {boolean} [group] - `true`: only groups, `false`: no groups.
+ */
+
+/**
+ * @typedef {object} FolderTileResult - one tile as `/folder-tiles` answers it.
+ * @property {string} id - the tile's tag id.
+ * @property {true} [missing] - the tag doesn't exist or is marked deleted; nothing else is set.
+ * @property {number|string} [count] - the tile's sub-list size, `~`-prefixed when approximate.
+ * @property {number|string} [hidden] - its tagged entities not in the sub-list, `~`-prefixed when approximate.
+ * @property {Array<{type: 'character'|'group', item: object}>} [rows] - the sub-list's first rows, at most what
+ * the strip shows.
+ */
+
+/**
+ * A `/query` or `/folder-tiles` count as a number and whether it's approximate.
+ * @param {number|string|undefined|null} total A plain number, or a `~`-prefixed string when approximate.
+ * @returns {{ value: number, approx: boolean }} `value` is 0 when `total` isn't a number.
+ */
+export function parseQueryTotal(total) {
+    const approx = typeof total === 'string' && total.startsWith('~');
+    const value = Number(approx ? total.slice(1) : total ?? 0);
+    return { value: Number.isFinite(value) ? value : 0, approx };
+}
+
 /**
  * @typedef {object} CharacterQueryStateInput
  * @property {string} [searchTerm] - current search box value.
@@ -720,6 +752,29 @@ export class CharacterRepository {
             page++;
         }
         return rows;
+    }
+
+    /**
+     * The folder tiles for `tileIds`, from `POST /api/characters/folder-tiles`, in requests of
+     * FOLDER_TILES_PER_REQUEST sent one after another.
+     * @param {string[]} tileIds - the tiles' tag ids.
+     * @param {FolderTileFilter} filter
+     * @param {CharacterQuerySort} [sort]
+     * @returns {Promise<FolderTileResult[]>} one entry per distinct id, in the order asked.
+     */
+    async folderTiles(tileIds, filter, sort = undefined) {
+        const ids = [...new Set(tileIds)];
+        /** @type {FolderTileResult[]} */
+        const tiles = [];
+        for (let i = 0; i < ids.length; i += FOLDER_TILES_PER_REQUEST) {
+            const fetchStamp = tagFetchStamp();
+            const result = await postJson('/api/characters/folder-tiles', { tiles: ids.slice(i, i + FOLDER_TILES_PER_REQUEST), filter, sort });
+            for (const tile of result.tiles ?? []) {
+                stampRowsTagFetch(tile, fetchStamp);
+                tiles.push(tile);
+            }
+        }
+        return tiles;
     }
 
     /**

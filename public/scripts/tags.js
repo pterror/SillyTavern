@@ -34,6 +34,7 @@ import { getCachedTags, setCachedTags } from './tags-cache.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, digestsEqual } from './hash-utils.js';
 import { checkCharactersExistOrNull } from './character-existence-check.js';
 import { beginLocalTagChange } from './tag-fetch-stamps.js';
+import { parseQueryTotal } from './character-repository.js';
 
 export {
     TAG_FOLDER_TYPES,
@@ -1233,10 +1234,14 @@ function chooseBogusFolder(source, tagId, remove = false) {
  * @param {any[]} entities The list ob sub items for this tag
  * @param {number} hidden A count of how many sub items are hidden
  * @param {boolean} isUseless Whether the tag is useless (should be displayed greyed out)
+ * @param {number|string} [total] How many sub items there are when `entities` holds only the first of them; the
+ *   rest show as a "+N" marker. `hidden` and this are `~`-prefixed strings when approximate.
  * @returns The html for the tag block
  */
-function getTagBlock(tag, entities, hidden = 0, isUseless = false) {
-    let count = entities.length;
+function getTagBlock(tag, entities, hidden = 0, isUseless = false, total = undefined) {
+    const count = parseQueryTotal(total ?? entities.length);
+    const hiddenCount = parseQueryTotal(hidden);
+    const approx = count.approx ? '~' : '';
 
     const tagFolder = TAG_FOLDER_TYPES[tag.folder_type];
 
@@ -1245,13 +1250,19 @@ function getTagBlock(tag, entities, hidden = 0, isUseless = false) {
     template.attr({ 'tagid': tag.id, 'id': `BogusFolder${tag.id}` });
     template.find('.avatar').css({ 'background-color': tag.color, 'color': tag.color2 }).attr('title', `[Folder] ${tag.name}`);
     template.find('.ch_name').text(tag.name).attr('title', `[Folder] ${tag.name}`);
-    template.find('.bogus_folder_hidden_counter').text(hidden > 0 ? `${hidden} hidden` : '');
-    template.find('.bogus_folder_counter').text(`${count} ` + (count != 1 ? t`characters` : t`character`));
+    template.find('.bogus_folder_hidden_counter').text(hiddenCount.value > 0 ? `${hiddenCount.approx ? '~' : ''}${hiddenCount.value} hidden` : '');
+    template.find('.bogus_folder_counter').text(`${approx}${count.value} ` + (count.value != 1 ? t`characters` : t`character`));
     template.find('.bogus_folder_icon').addClass(tagFolder.fa_icon);
     if (isUseless) template.addClass('useless');
 
     // Fill inline character images
-    buildAvatarList(template.find('.bogus_folder_avatars_block'), entities);
+    const avatarsBlock = template.find('.bogus_folder_avatars_block');
+    buildAvatarList(avatarsBlock, entities);
+    const more = count.value - entities.length;
+    if (more > 0) {
+        const marker = `+${approx}${more}`;
+        avatarsBlock.append($('<small class="bogus_folder_more"></small>').text(marker).attr('title', t`${marker} more`));
+    }
 
     return template;
 }

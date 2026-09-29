@@ -9,7 +9,7 @@ import { debounce_timeout } from './constants.js';
 import { tags, filterByTagState, isBogusFolder, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, tagsStore } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
-import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
+import { characterRepository, buildCharacterQuery, isServerQueryableSort, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -374,7 +374,7 @@ export async function printCharacters(fullRefresh = false) {
                         fragment.appendChild(getGroupBlock(i.item).get(0));
                         break;
                     case 'tag':
-                        fragment.appendChild(getTagBlock(i.item, i.entities, i.hidden, i.isUseless).get(0));
+                        fragment.appendChild(getTagBlock(i.item, i.entities, i.hidden, i.isUseless, i.total).get(0));
                         break;
                 }
             }
@@ -472,11 +472,10 @@ export async function printCharacters(fullRefresh = false) {
     updatePersonaConnectionsAvatarList();
 
     async function printServerPaginated() {
-        // Bogus-folder tag tiles are computed locally and prepended to page 1 only (never paginated), so page 1 can exceed pageSize.
+        // Folder tiles are prepended to page 1 only (never paginated), so page 1 can exceed pageSize.
         const { filter, sort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
 
         // Probe with the page-1 request up front so an unsupported sort field falls back to renderLocalPaginated() before the plugin is built.
-        const folderTiles = await getFolderTileEntities();
         /** @type {Awaited<ReturnType<typeof characterRepository.query>>|undefined} */
         let firstPage;
         /** @type {unknown} */
@@ -525,15 +524,15 @@ export async function printCharacters(fullRefresh = false) {
                         : characterRepository.query(filter, sort, page, requestedPageSize, ['rows', 'total']);
                     pendingFirstPage = undefined;
                     resultPromise
-                        .then(result => {
+                        .then(async result => {
+                            const folderTiles = await getFolderTileEntities(page, filter, sort, result.total);
                             const rows = Array.isArray(result.rows) ? result.rows : [];
                             const pageEntities = rows.map(row => queryRowToEntity(row));
                             const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
                             saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
                             pageTotalApprox = isApproxTotal(result.total);
                             matchTotal = saveCharactersTotal + folderTiles.length;
-                            const combined = page === 1 ? [...folderTiles, ...pageEntities] : pageEntities;
-                            ajaxParams.success({ rows: combined, total: result.total });
+                            ajaxParams.success({ rows: [...folderTiles, ...pageEntities], total: result.total });
                         })
                         .catch(error => {
                             console.error('[printCharacters] server-paginated /query failed:', error);
@@ -574,7 +573,10 @@ function verifyCharactersSearchSortRule() {
  * @property {string|number} id - The id
  * @property {'character'|'group'|'tag'} type - The type of this entity (character, group, tag)
  * @property {Entity[]?} [entities=null] - An optional list of entities relevant for this item
- * @property {number?} [hidden=null] - An optional number representing how many hidden entities this entity contains
+ * @property {number|string?} [hidden=null] - An optional number representing how many hidden entities this entity contains. A
+ *   folder tile's is `~`-prefixed when approximate.
+ * @property {number|string?} [total=null] - A folder tile's sub-list size when `entities` holds only its first rows,
+ *   `~`-prefixed when approximate
  * @property {boolean?} [isUseless=null] - Specifies if the entity is useless (not relevant, but should still be displayed for consistency) and should be displayed greyed out
  */
 
@@ -765,18 +767,63 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
     return entities;
 }
 
-// Folder tiles are never part of a server-paginated page, so this filters the local arrays directly.
-async function getFolderTileEntities() {
-    if (!power_user.bogus_folders) return [];
+/**
+ * The folder tiles on a page of the server-paged list. They all go at the top of page 1, so every other page has
+ * none and asks for none.
+ *
+ * Which folders get a tile follows filterAndSortEntities(): a folder the tag filter selects or excludes gets none,
+ * none do while "Folders" is excluded, and with a search term only folders whose name matches it do, each whatever
+ * its count. With no search term a folder gets a tile only when its sub-list isn't empty.
+ *
+ * A tile's `entities` hold only its strip's rows; `total` is the sub-list's size and `hidden` how many tagged
+ * entities it leaves out, each `~`-prefixed when approximate. `isUseless` is set when the sub-list is the whole
+ * list, `listTotal` long.
+ * @param {number} page The page, 1-based.
+ * @param {import('./character-repository.js').CharacterQueryFilter} filter The list's `/query` filter.
+ * @param {import('./character-repository.js').CharacterQuerySort|undefined} sort The list's `/query` sort.
+ * @param {number|string|undefined} listTotal The list's `/query` total.
+ * @returns {Promise<Entity[]>}
+ */
+export async function getFolderTileEntities(page, filter, sort, listTotal) {
+    if (page !== 1 || !power_user.bogus_folders) return [];
+    if (isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FOLDER), FILTER_STATES.EXCLUDED)) return [];
 
-    const rawEntities = [
-        ...characters.map(item => characterToEntity(item)),
-        ...groups.map(item => groupToEntity(item)),
-        ...tags.filter(isBogusFolder).sort(compareTagsForSort).map(item => tagToEntity(item)),
-    ];
+    const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
+    const folders = tags
+        .filter(tag => isBogusFolder(tag) && !tagFilterData.selected.includes(tag.id) && !tagFilterData.excluded.includes(tag.id))
+        .sort(compareTagsForSort)
+        .map(tag => tagToEntity(tag));
+    const candidates = entitiesFilter.tagSearchFilter(folders);
+    entitiesFilter.clearFuzzySearchCaches();
+    if (!candidates.length) return [];
 
-    const entities = filterAndSortEntities(rawEntities, { doFilter: true, doSort: true });
-    return entities.filter(entity => entity.type === 'tag');
+    const groupState = entitiesFilter.getFilterData(FILTER_TYPES.GROUP);
+    const answers = await characterRepository.folderTiles(candidates.map(entity => String(entity.id)), {
+        search: filter.search,
+        fav: filter.fav,
+        tags: filter.tags,
+        group: isFilterState(groupState, FILTER_STATES.SELECTED) ? true : (isFilterState(groupState, FILTER_STATES.EXCLUDED) ? false : undefined),
+    }, sort);
+    const answerById = new Map(answers.map(answer => [answer.id, answer]));
+
+    const hasSearchTerm = Boolean(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH));
+    const list = parseQueryTotal(listTotal);
+    /** @type {Entity[]} */
+    const tiles = [];
+    for (const entity of candidates) {
+        const answer = answerById.get(String(entity.id));
+        // Missing: the server has no such tag, or it's marked deleted.
+        if (!answer || answer.missing) continue;
+        const rows = Array.isArray(answer.rows) ? answer.rows : [];
+        if (!hasSearchTerm && rows.length === 0) continue;
+        const count = parseQueryTotal(answer.count);
+        entity.entities = rows.map(row => queryRowToEntity(row));
+        entity.total = answer.count;
+        entity.hidden = answer.hidden;
+        entity.isUseless = !count.approx && !list.approx && count.value === list.value;
+        tiles.push(entity);
+    }
+    return tiles;
 }
 
 /**
