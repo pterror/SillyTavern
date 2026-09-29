@@ -5056,6 +5056,49 @@ export async function getTagDeletions(directories) {
 
 const NOT_MARKED_DELETED_SQL = 'id NOT IN (SELECT tag_id FROM tag_deletions)';
 
+/**
+ * The tags folder tiles are drawn for, and the closed folders their sub-lists hide entities in. Tags marked deleted
+ * are left out of both.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} tileIds Distinct tag ids.
+ * @param {number} maxClosed
+ * @returns {Promise<{ closedByTileId: Map<string, boolean>, closedIds: string[] | null } | null>} closedByTileId: for
+ *   each of `tileIds` that exists, whether its folder_type is CLOSED. closedIds: every closed folder, null when there
+ *   are more than `maxClosed`. null when no SQLite engine is usable.
+ */
+export async function getFolderTileTags(directories, tileIds, maxClosed) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    /** @type {Map<string, boolean>} */
+    const closedByTileId = new Map();
+    const tileRows = /** @type {TagRow[]} */ (entry.db.readBounded(
+        `SELECT id, data FROM tags WHERE id IN (SELECT value FROM json_each(?)) AND ${NOT_MARKED_DELETED_SQL}`,
+        [JSON.stringify(tileIds)],
+        tileIds.length,
+    ));
+    for (const row of tileRows) {
+        /** @type {unknown} */
+        let tag = null;
+        try {
+            tag = JSON.parse(row.data);
+        } catch {
+            // A tag whose data doesn't parse has no folder_type.
+        }
+        closedByTileId.set(row.id, tagDerivedColumns(tag).folderType === 'CLOSED');
+    }
+    // Until the derived columns are filled, folder_type is read from data, as tagDerivedColumns() reads it.
+    const closedWhere = tagQueryColumnsReady(entry)
+        ? 'is_folder = 1 AND folder_type = \'CLOSED\''
+        : 'CASE WHEN json_valid(data) THEN json_extract(data, \'$.folder_type\') END = \'CLOSED\'';
+    const closedRows = /** @type {{ id: string }[]} */ (entry.db.readBounded(
+        `SELECT id FROM tags WHERE ${closedWhere} AND ${NOT_MARKED_DELETED_SQL} ORDER BY id LIMIT ?`,
+        [maxClosed + 1],
+        maxClosed + 1,
+    ));
+    const closedIds = closedRows.length > maxClosed ? null : closedRows.map(row => row.id);
+    return { closedByTileId, closedIds };
+}
+
 // Returns tag definitions in no particular order - sorting is a client concern (compareTagsForSort(), tags.js).
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -10360,6 +10403,7 @@ export async function getEntityRowsByIds(directories, entities, { wantRows = tru
  * @param {boolean} [params.wantRows]
  * @param {boolean} [params.wantTotal]
  * @param {boolean} [params.wantHashes]
+ * @param {boolean} [params.groupsOnly] Leaves characters out.
  * @returns {Promise<{ rows: {type: 'character'|'group', id: string, fav: boolean, date_added: number, date_last_chat: number, chat_size: number, item: object | null}[] | undefined, hashRows: object[] | undefined, total: number | undefined, approxTotal: boolean, seq: number, groupsVersion: number | null } | null>}
  * A group row's `item` is `null` here - the caller hydrates it; a character row's `item` is the full toShallow().
  * `approxTotal` marks `total` as an estimate (totalWithoutCount()). `groupsVersion`: readGroupsVersionSync()'s, read
@@ -10375,6 +10419,7 @@ export async function queryEntities(directories, params = {}) {
         offset, limit, handle,
         wantRows = true, wantTotal = true,
         wantHashes = false,
+        groupsOnly = false,
     } = params;
 
     const seqRow = (/** @type {{ seq: number } | undefined} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) as seq FROM changes')));
@@ -10391,9 +10436,12 @@ export async function queryEntities(directories, params = {}) {
 
     let total;
     let approxTotal = false;
-    const counted = wantTotal ? totalWithoutCount(entry.db, ['character', 'group'], { tags, fav, world, excludeIds, ids }, deletions, seq) : null;
+    const counted = wantTotal ? totalWithoutCount(entry.db, groupsOnly ? ['group'] : ['character', 'group'], { tags, fav, world, excludeIds, ids }, deletions, seq) : null;
     if (counted) {
         ({ total, approxTotal } = counted);
+    } else if (wantTotal && groupsOnly) {
+        const countRow = /** @type {{ total: number } | undefined} */ (entry.db.get(`SELECT COUNT(*) as total FROM ${groupWhere.from} ${groupWhere.where}`, groupWhere.args));
+        total = Number(countRow?.total ?? 0);
     } else if (wantTotal) {
         const countRow = /** @type {{ total: number } | undefined} */ (entry.db.get(
             `SELECT COUNT(*) as total FROM (
@@ -10441,9 +10489,9 @@ export async function queryEntities(directories, params = {}) {
             }
             const sortedAllIds = getRandomSortedEntityIds(entry.db, handle, Number(seed) || 0, seq, groupsVersion);
 
-            const hasFilters = charWhere.from !== 'characters' || charWhere.where !== '' || groupWhere.from !== 'groups' || groupWhere.where !== '';
+            const hasFilters = groupsOnly || charWhere.from !== 'characters' || charWhere.where !== '' || groupWhere.from !== 'groups' || groupWhere.where !== '';
             const filterSet = hasFilters ? new Set([
-                ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM ${charWhere.from} ${charWhere.where}`, charWhere.args))).map(r => r.id),
+                ...(groupsOnly ? [] : (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM ${charWhere.from} ${charWhere.where}`, charWhere.args))).map(r => r.id)),
                 ...(/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM ${groupWhere.from} ${groupWhere.where}`, groupWhere.args))).map(r => r.id),
             ]) : null;
 
@@ -10498,7 +10546,7 @@ export async function queryEntities(directories, params = {}) {
                 .replace(/\bcreate_date\b/g, 'date_added');
 
             const charArgs = [...charWhere.args, ...orderArgs, fetchLimit];
-            const charRawRows = /** @type {EntityRow[]} */ (entry.db.all(
+            const charRawRows = groupsOnly ? [] : /** @type {EntityRow[]} */ (entry.db.all(
                 `SELECT ${ENTITY_CHARACTER_COLUMNS}
                 FROM ${charWhere.from} ${charWhere.where}
                 ${orderBy}
