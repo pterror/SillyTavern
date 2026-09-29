@@ -103,7 +103,14 @@ describe('writeGroupFile at a path other than the group\'s own <id>.json', () =>
         expect(await addedBy(() => groupsModule.writeGroupFile(directories, { ...group }, { filePath, createRow: false }))).toEqual([]);
     });
 
-    test('adds a NULL ("every group") row when the file has no valid group id', async () => {
+    test('adds a row for a legacy non-digit group id, which is a real id', async () => {
+        const filePath = path.join(directories.groups, 'legacy.json');
+        writeRawFile('legacy.json', { id: 'my group', name: 'g', members: ['a.png'], chats: [] });
+
+        expect(await addedBy(() => groupsModule.writeGroupFile(directories, { id: 'my group', name: 'g', members: ['b.png'], chats: [] }, { filePath, createRow: false }))).toEqual(['my group']);
+    });
+
+    test('adds a NULL ("every group") row when the file has no id', async () => {
         const filePath = path.join(directories.groups, 'no-id.json');
         writeRawFile('no-id.json', { name: 'g', members: ['a.png'], chats: [] });
 

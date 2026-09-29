@@ -535,7 +535,7 @@ export async function runCleanup(options) {
         failed = !applyTree({ Database, treePath, backupDir, repoint: repointPlan.status === 'change', stray: strayPlan.status === 'change', characterFileExists, characterRowExists, log, warn });
     }
     if (groupPlan.status === 'change') {
-        failed = !(await applyGroup({ dirs, groupPlan, groupRow, backupDir, log, warn })) || failed;
+        failed = !(await applyGroup({ dirs, metaPath, groupPlan, groupRow, backupDir, log, warn })) || failed;
     }
     return anyRefused || failed ? 1 : 0;
 }
@@ -590,7 +590,7 @@ function applyTree({ Database, treePath, backupDir, repoint, stray, characterFil
 /**
  * @returns {Promise<boolean>}
  */
-async function applyGroup({ dirs, groupPlan, groupRow, backupDir, log, warn }) {
+async function applyGroup({ dirs, metaPath, groupPlan, groupRow, backupDir, log, warn }) {
     const current = fs.existsSync(groupPlan.filePath) ? fs.readFileSync(groupPlan.filePath, 'utf8') : null;
     if (current !== groupPlan.originalText) {
         warn(`${LOG_PREFIX} REFUSED group file: it changed since planning; left untouched`);
@@ -601,6 +601,12 @@ async function applyGroup({ dirs, groupPlan, groupRow, backupDir, log, warn }) {
         writeBackupFile(path.join(backupDir, 'character-metadata-groups-row.json'), JSON.stringify(groupRow, (_k, v) => (typeof v === 'bigint' ? Number(v) : v), 4));
     }
     const writeFile = () => writeFileAtomicSync(groupPlan.filePath, groupPlan.newText);
+    // Opening the store would create it. A new store has no groups version log to add to: its index builds from the files.
+    if (!fs.existsSync(metaPath)) {
+        writeFile();
+        log(`${LOG_PREFIX} 1. group file: chats updated; character-metadata.sqlite missing, digest write skipped`);
+        return true;
+    }
     const { writeGroupFileAndRow, disposeMetadataStores } = await import('../character-metadata-db.js');
     try {
         await writeGroupFileAndRow(dirs, groupPlan.newGroup, writeFile, { createIfMissing: false });

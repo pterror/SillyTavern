@@ -18,7 +18,7 @@ import { getBetterSqlite3 } from './endpoints/native-sqlite.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
-import { normalizeGroupId, normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
+import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
@@ -4011,7 +4011,7 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
 /**
  * Writes a group file that is not the group's own `<id>.json` (via `writeFile`). No row describes that file, but the
  * groups search index reads every file in the folder, so a change to its bytes adds a groups version log row: for the
- * group's id, or NULL ("every group") when it has no valid id. Never throws after the file is written.
+ * group's id, or NULL ("every group") when it has no id a row could be keyed by. Never throws after the file is written.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} group The exact object `writeFile` serializes.
  * @param {string} filePath The file `writeFile` writes.
@@ -4026,7 +4026,7 @@ export async function writeGroupFileAtOtherPath(directories, group, filePath, wr
     const fileBefore = readFileForComparison(filePath);
     writeFile();
     if (sameFileContents(fileBefore, readFileForComparison(filePath))) return;
-    const groupId = normalizeGroupId(/** @type {any} */ (group).id);
+    const groupId = hasGroupIdForRow(group) ? /** @type {any} */ (group).id : null;
     try {
         entry.db.transaction(() => insertGroupChange(entry.db, groupId));
     } catch (err) {

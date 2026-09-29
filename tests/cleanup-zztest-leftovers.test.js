@@ -427,6 +427,31 @@ describe('cleanup-zztest-leftovers', () => {
         expect(fs.existsSync(path.join(backupParent, backupDir, 'character-metadata-groups-row.json'))).toBe(false);
     });
 
+    test('a metadata store gone by the time the group file is written is not created again', async () => {
+        const scratch = await makeScratch();
+        const metaPath = path.join(scratch.root, 'character-metadata.sqlite');
+        class RemovesMetaOnClose extends WasmBetterSqlite3 {
+            constructor(file, options) {
+                super(file, options);
+                this.file = file;
+            }
+
+            close() {
+                super.close();
+                if (this.file === metaPath) {
+                    for (const suffix of ['', '-wal', '-shm', '-journal']) fs.rmSync(`${metaPath}${suffix}`, { force: true });
+                }
+            }
+        }
+
+        const out = await run(scratch, APPLY, { Database: RemovesMetaOnClose });
+
+        expect(out.code).toBe(0);
+        expect(out.all).toContain('character-metadata.sqlite missing, digest write skipped');
+        expect(readGroup(scratch.dirs).chats).toEqual([cleanup.GROUP_CHAT]);
+        expect(fs.existsSync(metaPath)).toBe(false);
+    });
+
     test('with native better-sqlite3 where it loads: dry run, real run, then no-op', async () => {
         const { getBetterSqlite3 } = await import('../src/endpoints/native-sqlite.js');
         const Native = await getBetterSqlite3();
