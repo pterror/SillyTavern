@@ -246,3 +246,162 @@ test.describe('one character\'s greeting writes never overlap', () => {
         expect(await storedModel(page, avatar)).toEqual({ greetings: [e0, g1, e2], defaultIndex: 0 });
     });
 });
+
+/**
+ * Registers a CHARACTER_EDITED listener that, on the first event only, saves `nestedText` through the sidebar pager
+ * and waits for that save, then runs `start` and waits up to `limitMs` for it and for the nested save.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} nestedText
+ * @param {'pager'|'form'} outer What starts the outer save: the pager saving `outerText`, or `createOrEditCharacter`
+ * after `#character_json_data`'s greetings are set to `outerGreetings`.
+ * @param {{outerText?: string, outerGreetings?: string[]}} args
+ * @returns {Promise<{outer: string, nested: string}>} Each is `'done'`, or `'hung'` if it didn't finish in time.
+ */
+async function saveWithNestedListenerSave(page, nestedText, outer, { outerText, outerGreetings }) {
+    return page.evaluate(async ({ nestedText, outer, outerText, outerGreetings }) => {
+        const limitMs = 10000;
+        const { saveGreetingField, createOrEditCharacter } = await import('/script.js');
+        // @ts-ignore
+        const { eventSource, eventTypes } = SillyTavern.getContext();
+        const timedOut = () => new Promise(resolve => setTimeout(() => resolve('hung'), limitMs));
+        /** @type {Promise<any>|null} */
+        let nested = null;
+        const listener = async () => {
+            if (nested) return;
+            nested = saveGreetingField(nestedText);
+            await nested;
+        };
+        eventSource.on(eventTypes.CHARACTER_EDITED, listener);
+        try {
+            let outerSave;
+            if (outer === 'pager') {
+                outerSave = saveGreetingField(outerText);
+            } else {
+                // @ts-ignore
+                const card = JSON.parse($('#character_json_data').val());
+                card.first_mes = outerGreetings[0];
+                card.data.first_mes = outerGreetings[0];
+                card.data.alternate_greetings = outerGreetings.slice(1);
+                // @ts-ignore
+                $('#character_json_data').val(JSON.stringify(card));
+                outerSave = createOrEditCharacter(new CustomEvent('newChat'));
+            }
+            const outerResult = await Promise.race([outerSave.then(() => 'done'), timedOut()]);
+            const nestedResult = nested ? await Promise.race([nested.then(() => 'done'), timedOut()]) : 'never started';
+            return { outer: outerResult, nested: nestedResult };
+        } finally {
+            eventSource.removeListener(eventTypes.CHARACTER_EDITED, listener);
+        }
+    }, { nestedText, outer, outerText, outerGreetings });
+}
+
+test.describe('a greeting save started from inside CHARACTER_EDITED', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test('from a pager save\'s event, both saves finish and the nested one lands last', async ({ page }) => {
+        const s = stamp();
+        const [g0, g1] = [`Zero ${s}`, `One ${s}`];
+        const [outerText, nestedText] = [`Zero outer ${s}`, `Zero nested ${s}`];
+        const avatar = await createCharacter(page, `NestedPager-${s}`, [g0, g1]);
+        await openCharacter(page, avatar);
+
+        expect(await saveWithNestedListenerSave(page, nestedText, 'pager', { outerText })).toEqual({ outer: 'done', nested: 'done' });
+        expect(await storedModel(page, avatar)).toEqual({ greetings: [nestedText, g1], defaultIndex: 0 });
+    });
+
+    test('from the first event of a #character_json_data run of several ops, both saves finish', async ({ page }) => {
+        const s = stamp();
+        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const [e0, e2, nestedText] = [`Zero edited ${s}`, `Two edited ${s}`, `Zero nested ${s}`];
+        const avatar = await createCharacter(page, `NestedForm-${s}`, [g0, g1, g2]);
+        await openCharacter(page, avatar);
+
+        expect(await saveWithNestedListenerSave(page, nestedText, 'form', { outerGreetings: [e0, g1, e2] })).toEqual({ outer: 'done', nested: 'done' });
+        expect(await storedModel(page, avatar)).toEqual({ greetings: [nestedText, g1, e2], defaultIndex: 0 });
+    });
+});
+
+/**
+ * Sets `#character_json_data`'s greetings to `greetings` and runs `createOrEditCharacter`, recording every
+ * CHARACTER_EDITED it fires.
+ * @param {import('@playwright/test').Page} page
+ * @param {string[]} greetings
+ * @returns {Promise<{greetingEdit: any, greetingEdits: any}[]>}
+ */
+async function formSaveEvents(page, greetings) {
+    return page.evaluate(async (greetings) => {
+        const { createOrEditCharacter } = await import('/script.js');
+        // @ts-ignore
+        const { eventSource, eventTypes } = SillyTavern.getContext();
+        /** @type {{greetingEdit: any, greetingEdits: any}[]} */
+        const events = [];
+        const listener = (/** @type {any} */ event) => { events.push({ greetingEdit: event.detail.greetingEdit, greetingEdits: event.detail.greetingEdits }); };
+        eventSource.on(eventTypes.CHARACTER_EDITED, listener);
+        try {
+            // @ts-ignore
+            const card = JSON.parse($('#character_json_data').val());
+            card.first_mes = greetings[0];
+            card.data.first_mes = greetings[0];
+            card.data.alternate_greetings = greetings.slice(1);
+            // @ts-ignore
+            $('#character_json_data').val(JSON.stringify(card));
+            await createOrEditCharacter(new CustomEvent('newChat'));
+            return events;
+        } finally {
+            eventSource.removeListener(eventTypes.CHARACTER_EDITED, listener);
+        }
+    }, greetings);
+}
+
+test.describe('a #character_json_data greeting save of several ops', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test('fires one CHARACTER_EDITED, with greetingEdit null and greetingEdits listing every changed greeting', async ({ page }) => {
+        const s = stamp();
+        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const [e0, e2] = [`Zero edited ${s}`, `Two edited ${s}`];
+        const avatar = await createCharacter(page, `FormOneEvent-${s}`, [g0, g1, g2]);
+        await openCharacter(page, avatar);
+
+        expect(await formSaveEvents(page, [e0, g1, e2])).toEqual([{
+            greetingEdit: null,
+            greetingEdits: [{ from: g0, to: e0, index: 0 }, { from: g2, to: e2, index: 2 }],
+        }]);
+        expect(await storedModel(page, avatar)).toEqual({ greetings: [e0, g1, e2], defaultIndex: 0 });
+    });
+
+    test('with one greeting changed, greetingEdit is that change and greetingEdits lists only it', async ({ page }) => {
+        const s = stamp();
+        const [g0, g1] = [`Zero ${s}`, `One ${s}`];
+        const e1 = `One edited ${s}`;
+        const avatar = await createCharacter(page, `FormOneEdit-${s}`, [g0, g1]);
+        await openCharacter(page, avatar);
+
+        const edit = { from: g1, to: e1, index: 1 };
+        expect(await formSaveEvents(page, [g0, e1])).toEqual([{ greetingEdit: edit, greetingEdits: [edit] }]);
+    });
+
+    test('the chat keeps showing the greeting it was on, with its new text', async ({ page }) => {
+        const s = stamp();
+        const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const [e0, e2] = [`Zero edited ${s}`, `Two edited ${s}`];
+        const avatar = await createCharacter(page, `FormFollow-${s}`, [g0, g1, g2]);
+        await openCharacter(page, avatar);
+        await page.evaluate(async () => {
+            const { swipe } = await import('/script.js');
+            const { SWIPE_DIRECTION, SWIPE_SOURCE } = await import('/scripts/constants.js');
+            await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: 2 });
+        });
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g2, { timeout: 10000 });
+
+        await formSaveEvents(page, [e0, g1, e2]);
+
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(e2, { timeout: 10000 });
+        const opening = await page.evaluate(() => {
+            // @ts-ignore
+            const m = SillyTavern.getContext().chat[0];
+            return { mes: m.mes, swipe_id: m.swipe_id, swipes: [...m.swipes] };
+        });
+        expect(opening).toEqual({ mes: e2, swipe_id: 2, swipes: [e0, g1, e2] });
+    });
+});

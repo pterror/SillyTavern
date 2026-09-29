@@ -256,8 +256,10 @@ export async function ensureOpeningRow(mesId = 0) {
 /**
  * @param {object} [options]
  * @param {{from: string, to: string, index?: number}|null} [options.greetingEdit] The one card greeting whose text just changed, if that's what happened; `index` is its position in the card's greeting list.
+ * @param {{from: string, to: string, index?: number}[]} [options.greetingEdits] Every card greeting whose text just changed, in the order the changes were made; when given, used instead of `greetingEdit`.
  */
-export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null } = {}) {
+export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, greetingEdits } = {}) {
+    const edits = Array.isArray(greetingEdits) ? greetingEdits : (greetingEdit ? [greetingEdit] : []);
     const opening = _chatAt(0);
     const character = getCurrentCharacter();
     if (opening?.node_id == null || opening.node_id === '' || character?.avatar == null || character.avatar === '') return;
@@ -403,9 +405,11 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null } = {
     if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
         // The card greeting on screen is gone: follow it to its new text if it was edited (by position on the
         // card when its new text isn't among the openings), otherwise show the default.
-        if (greetingEdit && greetingEdit.from === shownText) {
-            landAt = await placeText(greetingEdit.to);
-            if (landAt < 0 && greetingEdit.index !== undefined) landAt = placeCardPosition(greetingEdit.index);
+        // With several greetings changed from the shown text, the shown text was left only once the last of them was.
+        const edit = edits.findLast(e => e.from === shownText);
+        if (edit) {
+            landAt = await placeText(edit.to);
+            if (landAt < 0 && edit.index !== undefined) landAt = placeCardPosition(edit.index);
         }
         if (landAt < 0) landAt = placeDefault();
         if (_chatAt(0) !== current) return;
