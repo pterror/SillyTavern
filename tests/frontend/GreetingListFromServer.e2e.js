@@ -841,6 +841,83 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expectPageHoldsServerList(page, avatar);
     });
 
+    /**
+     * Edits the chat's opening message in place to `text`.
+     * @param {import('@playwright/test').Page} page
+     * @param {string} text
+     */
+    async function editOpeningInChat(page, text) {
+        await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+        await page.locator('#curEditTextarea').fill(text);
+        await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
+        await expect(page.locator('#curEditTextarea')).toHaveCount(0);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(text, { timeout: 10000 });
+    }
+
+    /**
+     * The chat's opening: its swipes, and the node id behind each.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function openingSwipes(page) {
+        return page.evaluate(() => {
+            // @ts-ignore
+            const m = SillyTavern.getContext().chat[0];
+            return { swipes: [...m.swipes], nodeIds: m.swipe_info.map(i => i?.node_id ?? null), swipe_id: m.swipe_id };
+        });
+    }
+
+    /**
+     * @param {string|null} id
+     */
+    const isStoredId = id => typeof id === 'string' && !id.startsWith('card:');
+
+    test('a card greeting edited, then the chat\'s opening edited to the same text: the stored opening plus the card\'s other greetings, the text once, the chat on it', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `DedupCardThenChat-${s}`, g);
+        await openCharacter(page, avatar);
+        const x = `Shared ${s}`;
+        await openGreetingsPopup(page, 3);
+        const response = greetingOpResponse(page, 'edit');
+        await popupRow(page, 2).locator('.alternate_greeting_text').fill(x);
+        expect((await response).ok()).toBe(true);
+        await page.keyboard.press('Escape');
+        await expect(greetingsPopup(page)).toHaveCount(0);
+
+        await editOpeningInChat(page, x);
+
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([x, g[0], g[1]]);
+        const opening = await openingSwipes(page);
+        expect(isStoredId(opening.nodeIds[0])).toBe(true);
+        expect(opening.nodeIds.slice(1).every(id => !isStoredId(id))).toBe(true);
+        expect(opening.swipe_id).toBe(0);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(x);
+    });
+
+    test('the chat\'s opening edited, then a card greeting edited to the same text: the stored opening plus the card\'s other greetings, the text once, the chat on it', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `DedupChatThenCard-${s}`, g);
+        await openCharacter(page, avatar);
+        const y = `Shared ${s}`;
+        await editOpeningInChat(page, y);
+
+        // Clicking into the chat closes the character's editor.
+        await openCharacter(page, avatar);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y, { timeout: 10000 });
+        await openGreetingsPopup(page, 3);
+        const response = greetingOpResponse(page, 'edit');
+        await popupRow(page, 2).locator('.alternate_greeting_text').fill(y);
+        expect((await response).ok()).toBe(true);
+
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
+        const opening = await openingSwipes(page);
+        expect(isStoredId(opening.nodeIds[0])).toBe(true);
+        expect(opening.nodeIds.slice(1).every(id => !isStoredId(id))).toBe(true);
+        expect(opening.swipe_id).toBe(0);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y);
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
