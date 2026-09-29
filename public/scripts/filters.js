@@ -105,29 +105,6 @@ export class FilterHelper {
             [fuzzySearchCategories.tags]: { resultMap: new Map() },
             [fuzzySearchCategories.groups]: { resultMap: new Map() },
         };
-        /** @type {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number>, total: number } | null} */
-        this.serverSearchResults = null;
-    }
-
-    /**
-     * Supplies pre-computed character/group search scores from the server's full-content search index, so
-     * searchFilter() can use those instead of the client-side fuzzy pass, which only sees the lazily-loaded
-     * subset of character data. Pass `null` to clear stale/failed results.
-     * @param {{ searchValue: string, favOnly: boolean, characterScores: Map<string, number>, groupScores: Map<string, number>, total: number } | null} results
-     */
-    setServerSearchResults(results) {
-        this.serverSearchResults = results;
-    }
-
-    /**
-     * @returns {boolean} Whether searchFilter() matches characters and groups by the server search results, so it
-     * keeps only the entities those results hold.
-     */
-    usesServerSearchResults() {
-        const searchValue = this.filterData[FILTER_TYPES.SEARCH];
-        if (!searchValue || !power_user.fuzzy_search) return false;
-        const favOnly = isFilterState(this.filterData[FILTER_TYPES.FAV], FILTER_STATES.SELECTED);
-        return this.serverSearchResults?.searchValue === searchValue && this.serverSearchResults?.favOnly === favOnly;
     }
 
     /**
@@ -350,16 +327,12 @@ export class FilterHelper {
             const fuzzySearchTagsResult = fuzzySearchTags(searchValue, this.fuzzySearchCaches);
             this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchTagsResult.map(i => [`tag.${i.item.id}`, i.score])));
 
-            if (this.usesServerSearchResults()) {
-                this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.characterScores].map(([avatar, score]) => [`character.${avatar}`, score])));
-                this.cacheScores(FILTER_TYPES.SEARCH, new Map([...this.serverSearchResults.groupScores].map(([id, score]) => [`group.${id}`, score])));
-            } else {
-                // Server results for this search/fav state aren't in yet; fall back to the client-side pass.
-                const fuzzySearchCharactersResults = fuzzySearchCharacters(searchValue, this.fuzzySearchCaches);
-                const fuzzySearchGroupsResults = fuzzySearchGroups(searchValue, this.fuzzySearchCaches);
-                this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.item.avatar}`, i.score])));
-                this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchGroupsResults.map(i => [`group.${i.item.id}`, i.score])));
-            }
+            // The main list is searched on the server. This pass serves callers that filter rows they already hold,
+            // such as upstream's synchronous getEntitiesList({ doFilter: true }).
+            const fuzzySearchCharactersResults = fuzzySearchCharacters(searchValue, this.fuzzySearchCaches);
+            const fuzzySearchGroupsResults = fuzzySearchGroups(searchValue, this.fuzzySearchCaches);
+            this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchCharactersResults.map(i => [`character.${i.item.avatar}`, i.score])));
+            this.cacheScores(FILTER_TYPES.SEARCH, new Map(fuzzySearchGroupsResults.map(i => [`group.${i.item.id}`, i.score])));
         }
 
         const _this = this;

@@ -7,7 +7,7 @@ import {
     menu_type,
     buildAvatarList,
 } from '../script.js';
-import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, fetchServerCharacterSearchResults, setFilterDataFromUser } from './character-list.js';
+import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, setFilterDataFromUser } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { characters, charactersStore } from './character-store.js';
@@ -1327,15 +1327,6 @@ function determineTagFilterState(filterHelper, tag, isFilterActionable) {
  */
 function filterByFav(filterHelper) {
     applyActionableTagFilter.call(this, filterHelper, ACTIONABLE_TAGS.FAV, FILTER_TYPES.FAV, ACTIONABLE_FILTER_STORAGE_KEYS.FAV);
-
-    // The render above reused server search results fetched for the previous fav state - the server's relevance
-    // ranking can omit a favorited match entirely, so re-fetch when a search is active to pick it up.
-    if (isMainCharacterList(filterHelper)) {
-        const searchTerm = filterHelper.getFilterData(FILTER_TYPES.SEARCH);
-        if (searchTerm) {
-            fetchServerCharacterSearchResults(searchTerm).then(() => printCharactersDebounced());
-        }
-    }
 }
 
 /**

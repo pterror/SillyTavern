@@ -492,6 +492,7 @@ export async function printCharacters(fullRefresh = false) {
                         saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
                         pageTotalApprox = isApproxTotal(result.total);
                         pageHidden = result.hidden ?? 0;
+                        if (result.searchBackend !== undefined) showSearchBackend(result.searchBackend);
                         ajaxParams.success({ rows: [...folderTiles, ...pageEntities], total: result.total });
                     })
                     .catch(error => {
@@ -1176,13 +1177,6 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
     await getGroups({ silent: silentGroups });
     if (skipPrint) return;
     await printCharacters(!keepListPosition);
-
-    // Server search results were fetched against whatever search index state existed at the time; a change
-    // that landed since then (e.g. an import, or the background rebuild it triggered) can make them stale.
-    const activeSearchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
-    if (activeSearchTerm) {
-        await fetchServerCharacterSearchResults(activeSearchTerm).then(() => printCharactersDebounced());
-    }
 }
 
 // Per-backend UI info for the persistent search-backend indicator icon; null means "hide it, this backend is fully healthy".
@@ -1212,9 +1206,6 @@ const SEARCH_BACKEND_INDICATOR = {
     },
 };
 
-// Rows fetchServerCharacterSearchResults() asks for.
-const TOP_SEARCH_RESULTS_LIMIT = 500;
-
 /**
  * @param {number|string|undefined} total A `/query` response's `total`.
  * @returns {boolean} Whether it is a `~`-prefixed approximate count.
@@ -1223,67 +1214,27 @@ function isApproxTotal(total) {
     return typeof total === 'string' && total.startsWith('~');
 }
 
-// Lets fetchServerCharacterSearchResults() pop a transition toast only when the backend actually changes.
 /** @type {string | null} */
 let lastKnownSearchBackend = null;
 
-// Results come back best-first; each match gets a synthetic ascending-is-better score from its position, since the endpoint exposes no raw relevance score.
-// The fav filter is mirrored into the request rather than applied client-side, since a favorited character ranking below the server's top-pageSize cutoff would never reach the client.
 /**
- * @param {string} searchQuery The current search box value
- * @returns {Promise<void>}
+ * Shows the search-backend indicator for a list page's `searchBackend`, with a toast when it differs from the last one.
+ * @param {string} searchBackend
  */
-export async function fetchServerCharacterSearchResults(searchQuery) {
-    if (!String(searchQuery ?? '').trim()) {
-        entitiesFilter.setServerSearchResults(null);
-        return;
+function showSearchBackend(searchBackend) {
+    const indicatorInfo = SEARCH_BACKEND_INDICATOR[searchBackend] ?? null;
+    const indicator = $('#character_search_backend_indicator');
+    indicator.toggle(Boolean(indicatorInfo));
+    if (indicatorInfo) {
+        indicator
+            .attr('class', `fa-solid ${indicatorInfo.icon} ${indicatorInfo.tone}`)
+            .attr('title', indicatorInfo.tooltip);
     }
-
-    const favOnly = isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FAV), FILTER_STATES.SELECTED);
-
-    try {
-        // This is a UI-chrome/local-fallback data source, not the main list's own render, so it only ever needs a bounded top page.
-        const result = await characterRepository.query(
-            { search: searchQuery, includeGroups: true, ...(favOnly ? { fav: true } : {}) },
-            { field: 'search' },
-            1, TOP_SEARCH_RESULTS_LIMIT, ['rows', 'total'],
-        );
-
-        const rows = Array.isArray(result.rows) ? result.rows : [];
-        // `total` may be `~`-prefixed (an approximate count under a capped search set) - stripped to a plain number.
-        const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
-        const total = Number.isFinite(parsedTotal) ? parsedTotal : rows.length;
-        const searchBackend = result.searchBackend;
-        const characterScores = new Map();
-        const groupScores = new Map();
-
-        rows.forEach(({ type, item }, rank) => {
-            if (type === 'character') {
-                characterScores.set(item.avatar, rank);
-            } else if (type === 'group') {
-                groupScores.set(item.id, rank);
-            }
-        });
-
-        entitiesFilter.setServerSearchResults({ searchValue: searchQuery, favOnly, characterScores, groupScores, total });
-
-        const indicatorInfo = SEARCH_BACKEND_INDICATOR[searchBackend] ?? null;
-        const indicator = $('#character_search_backend_indicator');
-        indicator.toggle(Boolean(indicatorInfo));
-        if (indicatorInfo) {
-            indicator
-                .attr('class', `fa-solid ${indicatorInfo.icon} ${indicatorInfo.tone}`)
-                .attr('title', indicatorInfo.tooltip);
-        }
-        if (searchBackend !== lastKnownSearchBackend && indicatorInfo) {
-            const toastFn = indicatorInfo.tone === 'error' ? toastr.error : toastr.warning;
-            toastFn(indicatorInfo.tooltip, t`Search backend changed`, { timeOut: 0, extendedTimeOut: 0 });
-        }
-        lastKnownSearchBackend = searchBackend;
-    } catch (error) {
-        console.error('Server-side character search failed, falling back to client-side search', error);
-        entitiesFilter.setServerSearchResults(null);
+    if (searchBackend !== lastKnownSearchBackend && indicatorInfo) {
+        const toastFn = indicatorInfo.tone === 'error' ? toastr.error : toastr.warning;
+        toastFn(indicatorInfo.tooltip, t`Search backend changed`, { timeOut: 0, extendedTimeOut: 0 });
     }
+    lastKnownSearchBackend = searchBackend;
 }
 
 // Mirrors the label sets the server's FIELD_LABELS actually accept, so a token only becomes a pill when the server will really treat it as a filter.
@@ -1306,8 +1257,7 @@ export function initCharacterSearch() {
     /** @type {{ label: string, value: string }[]} */
     let searchPills = [];
 
-    const debouncedCharacterSearch = debounce(async (searchQuery) => {
-        await fetchServerCharacterSearchResults(searchQuery);
+    const debouncedCharacterSearch = debounce((searchQuery) => {
         setFilterDataFromUser(entitiesFilter, FILTER_TYPES.SEARCH, searchQuery);
     });
 
