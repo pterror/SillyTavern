@@ -13,7 +13,7 @@ import {
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, getEntitiesList, queryEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { printCharacters, printCharactersDebounced, getEntitiesList, queryEntitiesList, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too).
 export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
@@ -1066,6 +1066,9 @@ export const per_page_default = 50;
 export let menu_type = '';
 
 let _charactersDirty = false;
+let characterListWasShowing = false;
+// Set while select_rm_characters() shows the list, since it re-queries the list itself.
+let characterListShowHandledByCaller = false;
 
 export let selected_button = ''; //which button pressed
 
@@ -8360,6 +8363,19 @@ function recomputeDrawerFronts() {
         }
     }
     onCharacterEditorMaybeShown();
+    onCharacterListMaybeShown();
+}
+
+function onCharacterListMaybeShown() {
+    const showing = isCharacterListShowing();
+    const becameShown = showing && !characterListWasShowing;
+    characterListWasShowing = showing;
+    if (!becameShown || characterListShowHandledByCaller) return;
+    if (_charactersDirty) {
+        syncDirtyCharacterList(false);
+    } else {
+        onCharacterListShown();
+    }
 }
 
 /**
@@ -8731,17 +8747,31 @@ function select_rm_create({ switchMenu = true } = {}) {
 function select_rm_characters() {
     const doFullRefresh = menu_type === 'characters';
     setMenuType('characters');
-    selectRightMenuWithAnimation('rm_characters_block');
+    // Both branches below re-query the list, so showing it here mustn't fetch it a second time.
+    characterListShowHandledByCaller = true;
+    try {
+        selectRightMenuWithAnimation('rm_characters_block');
+    } finally {
+        characterListShowHandledByCaller = false;
+    }
     if (_charactersDirty) {
-        _charactersDirty = false;
-        if (hasActiveCharacterSearch()) {
-            // Only the page fetch, without getCharacters()' extra search query.
-            getCharacters({ skipPrint: true }).then(() => printCharacters(doFullRefresh));
-        } else {
-            getCharacters();
-        }
+        syncDirtyCharacterList(doFullRefresh);
     } else {
         printCharacters(doFullRefresh);
+    }
+}
+
+/**
+ * Runs the change sync that a change message arriving while the list was hidden left pending, and reprints the list.
+ * @param {boolean} doFullRefresh Passed to printCharacters() when a search term is active.
+ */
+function syncDirtyCharacterList(doFullRefresh) {
+    _charactersDirty = false;
+    if (hasActiveCharacterSearch()) {
+        // Only the page fetch, without getCharacters()' extra search query.
+        getCharacters({ skipPrint: true }).then(() => printCharacters(doFullRefresh));
+    } else {
+        getCharacters();
     }
 }
 
