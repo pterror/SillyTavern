@@ -936,33 +936,50 @@ function migrateGroupDigestColumns(db, directories) {
 
     if (!isNewColumn) return;
 
-    const existingIds = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM groups'))).map(r => r.id);
-    if (existingIds.length === 0) return;
+    const readIdChunk = (/** @type {string} */ afterId) => (/** @type {{ id: string }[]} */ (db.readBounded(
+        'SELECT id FROM groups WHERE id > ? ORDER BY id LIMIT ?',
+        [afterId, KEYSET_CHUNK],
+        KEYSET_CHUNK,
+    )));
 
+    const firstChunk = readIdChunk('');
+    if (firstChunk.length === 0) return;
+
+    let lastId = '';
     db.transaction(() => {
-        for (const id of existingIds) {
-            try {
-                const filePath = path.join(directories.groups, `${id}.json`);
-                const raw = fs.readFileSync(filePath, 'utf8');
-                const group = normalizeGroupRecord(JSON.parse(raw));
-                const tagIds = tagEntityTypeOf(id) === 'group' ? Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })), r => r.tag_id) : [];
-                const fingerprintSource = { ...group, tag_ids: tagIds };
-                inItemSavepoint(db, () => {
-                    const { changes } = db.run(
-                        `UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash
-                            WHERE id = @id AND (digest_fav IS NOT @favHash OR digest_tag_ids IS NOT @tagIdsHash OR digest_content IS NOT @contentHash)`,
-                        {
-                            id,
-                            favHash: groupDigestFavHash(fingerprintSource),
-                            tagIdsHash: groupDigestTagIdsHash(fingerprintSource),
-                            contentHash: groupDigestContentHash(fingerprintSource),
-                        },
-                    );
-                    if (changes > 0) insertGroupChange(db, id);
-                });
-            } catch (err) {
-                console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, /** @type {any} */ (err).message);
+        // transaction() reruns this callback on busy; a rerun starts over from the first chunk.
+        lastId = '';
+        let chunk = firstChunk;
+        for (;;) {
+            for (const { id } of chunk) {
+                try {
+                    const filePath = path.join(directories.groups, `${id}.json`);
+                    const raw = fs.readFileSync(filePath, 'utf8');
+                    const group = normalizeGroupRecord(JSON.parse(raw));
+                    const tagIds = tagEntityTypeOf(id) === 'group' ? Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })), r => r.tag_id) : [];
+                    const fingerprintSource = { ...group, tag_ids: tagIds };
+                    inItemSavepoint(db, () => {
+                        const { changes } = db.run(
+                            `UPDATE groups SET digest_fav = @favHash, digest_tag_ids = @tagIdsHash, digest_content = @contentHash
+                                WHERE id = @id AND (digest_fav IS NOT @favHash OR digest_tag_ids IS NOT @tagIdsHash OR digest_content IS NOT @contentHash)`,
+                            {
+                                id,
+                                favHash: groupDigestFavHash(fingerprintSource),
+                                tagIdsHash: groupDigestTagIdsHash(fingerprintSource),
+                                contentHash: groupDigestContentHash(fingerprintSource),
+                            },
+                        );
+                        if (changes > 0) insertGroupChange(db, id);
+                    });
+                } catch (err) {
+                    console.error(`[character-metadata] Group digest backfill failed for ${id}, leaving digests NULL (hash-mode falls back to computing live):`, /** @type {any} */ (err).message);
+                }
             }
+
+            if (chunk.length < KEYSET_CHUNK) break;
+            lastId = chunk[chunk.length - 1].id;
+            chunk = readIdChunk(lastId);
+            if (chunk.length === 0) break;
         }
     });
 }
