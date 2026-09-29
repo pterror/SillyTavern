@@ -156,16 +156,6 @@ describe('script-exports: normal commit', () => {
         expect(result.status).toBe(0);
     }, TIMEOUT);
 
-    test('blocks a list refreshed ahead of what the commit contains', () => {
-        const { repo, u0, u1 } = linearRepo();
-        expect(checker(repo, 'refresh', u1).status).toBe(0);
-        stageRecords(repo);
-        const result = hooked(repo, 'commit', '-q', '-m', 'ahead');
-        expect(result.status).toBe(1);
-        expect(result.stderr).toContain(`records ${u1}, which this commit does not contain`);
-        expect(result.stderr).toContain(`the newest upstream/staging commit it contains is ${u0}`);
-    }, TIMEOUT);
-
     test('blocks dropping an upstream export', () => {
         const { repo } = linearRepo();
         dropExport(repo, 'b');
@@ -192,7 +182,7 @@ describe('script-exports: npm run merge:upstream', () => {
 });
 
 describe('script-exports: clean merge, then a commit', () => {
-    test('post-merge warns, the next commit is blocked until the list is refreshed', () => {
+    test('post-merge warns, and the refresh is committed as its own step', () => {
         const { repo, u1, u2 } = linearRepo();
         expect(npm(repo, 'merge:upstream').status).toBe(0);
         expect(hooked(repo, 'commit', '-q', '--no-edit').status).toBe(0);
@@ -205,9 +195,9 @@ describe('script-exports: clean merge, then a commit', () => {
         expect(merged.stderr).toContain(`now ${u2}`);
 
         touch(repo, 'note.txt');
-        const blocked = hooked(repo, 'commit', '-q', '-m', 'next');
-        expect(blocked.status).toBe(1);
-        expect(blocked.stderr).toContain(`refresh .upstream-script-exports: it records ${u1}, but the newest upstream/staging commit it contains is ${u2}`);
+        const next = hooked(repo, 'commit', '-q', '-m', 'next');
+        expect(next.status).toBe(0);
+        expect(listCommit(repo)).toBe(u1);
 
         expect(npm(repo, 'script-exports:refresh').status).toBe(0);
         stageRecords(repo);
@@ -277,44 +267,22 @@ describe('script-exports: several merge-bases', () => {
         const result = hooked(fixture.repo, 'commit', '-q', '-m', 'list at one base');
         expect(result.status).toBe(0);
     }, TIMEOUT);
-
-    test('an export only the other base has must stay', () => {
-        const { repo, a1, b1 } = crissCrossRepo();
-        expect(checker(repo, 'refresh', a1).status).toBe(0);
-        stageRecords(repo);
-        dropExport(repo, 'q');
-        const result = hooked(repo, 'commit', '-q', '-m', 'drop q');
-        expect(result.status).toBe(1);
-        expect(result.stderr).toMatch(new RegExp(`does not export 1 name\\(s\\) that upstream/staging ${b1} \\(also contained in this commit\\) exports:\\n {2}q\\n`));
-    }, TIMEOUT);
-
-    test('a list behind both bases is blocked', () => {
-        const { repo, u0 } = crissCrossRepo();
-        touch(repo, 'note.txt');
-        expect(listCommit(repo)).toBe(u0);
-        const result = hooked(repo, 'commit', '-q', '-m', 'lagging');
-        expect(result.status).toBe(1);
-        expect(result.stderr).toContain(`refresh .upstream-script-exports: it records ${u0}, but the newest upstream/staging commits it contains are`);
-    }, TIMEOUT);
 });
 
-const SKIP_NOTICE = /script-exports: notice - .*, so whether \.upstream-script-exports is up to date was not checked\./;
-
 describe('script-exports: no upstream/staging ref', () => {
-    test('skips the staleness part with a notice and still runs parity', () => {
+    test('the commit check runs in full with nothing skipped', () => {
         const { repo } = linearRepo();
         git(repo, 'update-ref', '-d', 'refs/remotes/upstream/staging');
 
         touch(repo, 'note.txt');
         const passed = hooked(repo, 'commit', '-q', '-m', 'no ref');
         expect(passed.status).toBe(0);
-        expect(passed.stderr).toContain('script-exports: notice - upstream/staging does not resolve here');
-        expect(passed.stderr).toMatch(SKIP_NOTICE);
+        expect(passed.stderr).not.toContain('script-exports: notice');
 
         dropExport(repo, 'b');
         const blocked = hooked(repo, 'commit', '-q', '-m', 'no ref, drop b');
         expect(blocked.status).toBe(1);
-        expect(blocked.stderr).toMatch(SKIP_NOTICE);
+        expect(blocked.stderr).not.toContain('script-exports: notice');
         expect(blocked.stderr).toMatch(/no longer exports 1 name\(s\)[\s\S]*\n {2}b\n/);
 
         const refresh = checker(repo, 'refresh');
@@ -324,7 +292,7 @@ describe('script-exports: no upstream/staging ref', () => {
 });
 
 describe('script-exports: shallow clone with no merge-base', () => {
-    test('skips the staleness part with a notice and still runs parity', () => {
+    test('the commit check runs in full with nothing skipped', () => {
         const { repo: source } = linearRepo();
         const repo = path.join(tempDir('shallow'), 'clone');
         const cloned = run(path.dirname(repo), 'git', ['-c', 'core.hooksPath=/dev/null', 'clone', '-q', '--depth', '1', '--no-single-branch', '--branch', 'ours', `file://${source}`, repo]);
@@ -337,13 +305,12 @@ describe('script-exports: shallow clone with no merge-base', () => {
         touch(repo, 'note.txt');
         const passed = hooked(repo, 'commit', '-q', '-m', 'shallow');
         expect(passed.status).toBe(0);
-        expect(passed.stderr).toContain('script-exports: notice - upstream/staging has no merge-base with HEAD here');
-        expect(passed.stderr).toMatch(SKIP_NOTICE);
+        expect(passed.stderr).not.toContain('script-exports: notice');
 
         dropExport(repo, 'b');
         const blocked = hooked(repo, 'commit', '-q', '-m', 'shallow, drop b');
         expect(blocked.status).toBe(1);
-        expect(blocked.stderr).toMatch(SKIP_NOTICE);
+        expect(blocked.stderr).not.toContain('script-exports: notice');
         expect(blocked.stderr).toMatch(/no longer exports 1 name\(s\)[\s\S]*\n {2}b\n/);
     }, TIMEOUT);
 });
@@ -523,14 +490,6 @@ export { promised, reexported };
         expect(result.status).toBe(1);
         expect(result.stderr).toContain(`records ${other} but`);
         expect(result.stderr).toContain(`records ${u0}; both must describe the same upstream commit`);
-    }, TIMEOUT);
-
-    test('fails when the signatures record is stale for its commit', () => {
-        const { repo } = signatureRepo();
-        edit(repo, '.upstream-script-signatures', 'plain fn a b\n', 'plain fn a b?\n');
-        const result = checker(repo, 'check');
-        expect(result.status).toBe(1);
-        expect(result.stderr).toContain('its lines are not that commit\'s public/script.js export signatures');
     }, TIMEOUT);
 
     test('refresh fails on a computed key on upstream\'s side', () => {

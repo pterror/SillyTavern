@@ -3,8 +3,7 @@
 # that commits without a conflict, which never runs pre-commit. Without it, a clean merge whose
 # script.js drops an upstream/staging export would land.
 #
-# Git hasn't written MERGE_HEAD when this runs, so the list is checked against the pre-merge HEAD.
-# Whether the merge left the list behind is reported by post-merge and enforced on the next commit.
+# Whether the merge left the list behind is reported by post-merge.
 
 set -euo pipefail
 
@@ -24,7 +23,7 @@ fi
 build_staged_snapshot
 cd "$snap_tree"
 
-if ! node scripts/script-exports.mjs check --repo "$toplevel" >/dev/null; then
+if ! node scripts/script-exports.mjs check >/dev/null; then
     echo "pre-merge-commit: blocked -- script.js export parity failed in the staged snapshot (see above)." >&2
     exit 1
 fi

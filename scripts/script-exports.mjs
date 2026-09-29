@@ -6,30 +6,31 @@
 // holds those names: its first line is the upstream/staging commit the list was taken from, then one
 // export name per line, sorted.
 //
-// The list must be taken from the newest upstream/staging commit the commit being made contains: the
-// merge-base of upstream/staging with HEAD, or with HEAD and MERGE_HEAD while a merge is being
-// committed. A list that lags behind it, or records a commit ahead of it, fails. In a criss-cross
-// history with several independent merge-bases, the list records one of them and script.js must
-// export every name of each.
+// `check` compares public/script.js against the checked-in records only and reads no git history, so
+// it runs the same in every clone and has nothing to skip. It does not check that the records are up
+// to date with upstream: refreshing them is a step of merging upstream/staging.
 //
-//   node scripts/script-exports.mjs check [--root DIR] [--repo DIR]
+// Merging upstream/staging: use `npm run merge:upstream`, which refreshes and stages the records in
+// the merge itself. After any other merge of upstream/staging, run `npm run script-exports:refresh`
+// (or `refresh REF`) and commit the records.
+//
+//   node scripts/script-exports.mjs check [--root DIR]
 //       Fails unless every name in DIR/.upstream-script-exports is an export of DIR/public/script.js
-//       (extra exports in ours are fine), and unless the list is exactly what `refresh` writes for
-//       the --repo checkout. Without a local upstream/staging ref, or with no merge-base (a shallow
-//       fetch), the second part is skipped with a notice. --root defaults to the current directory,
-//       --repo to --root.
+//       (extra exports in ours are fine) with a signature compatible with the one recorded in
+//       DIR/.upstream-script-signatures. --root defaults to the current directory.
 //
 //   node scripts/script-exports.mjs refresh [REF]
-//       Rewrites .upstream-script-exports from REF's public/script.js (default: the commit `check`
-//       expects).
+//       Rewrites the records from REF's public/script.js (default: the merge-base of upstream/staging
+//       with HEAD, and with MERGE_HEAD while a merge is in progress; it asks for a REF when there is
+//       no such single commit).
 //
 //   node scripts/script-exports.mjs merge-upstream
 //       `git merge --no-commit --no-ff upstream/staging`, then, if a merge is in progress, refreshes
 //       and stages the list. Exits with the merge's status.
 //
 //   node scripts/script-exports.mjs post-merge
-//       Warns when the merge just made moved the merge-base with upstream/staging but the committed
-//       list wasn't refreshed. Never fails: git ignores post-merge's exit status.
+//       Reminds to refresh when the merge just made moved the merge-base with upstream/staging but
+//       the committed records weren't refreshed. Never fails: git ignores post-merge's exit status.
 //
 // There is no allowlist, exception list or inline disable. Export forms other than
 // `export <function|class|var|let|const declaration>` and `export { ... }` (with or without `from`)
@@ -252,8 +253,8 @@ function mergeHeads(repo) {
 /**
  * The newest upstream/staging commits contained in `commits` (for several, in a merge of them):
  * `{ bases }`, the independent merge-bases (one unless the history is criss-crossed), or
- * `{ skipped }`, the reason they can't be computed here. Hooks never fetch, so a missing ref or a
- * shallow upstream fetch with no merge-base skips instead of blocking every commit.
+ * `{ skipped }`, the reason they can't be computed here (no local ref, or no merge-base, as in a
+ * shallow fetch).
  */
 function upstreamBasesIn(repo, commits) {
     if (!gitSucceeds(repo, ['rev-parse', '--verify', '--quiet', `${UPSTREAM_REF}^{commit}`])) {
@@ -291,47 +292,9 @@ function describeBases(bases) {
         : `the newest ${UPSTREAM_REF} commits it contains are ${bases.join(', ')} (criss-cross history)`;
 }
 
-function checkFreshness(ts, repo, list, listPath, signatures, signaturesPath, ours, oursSignature) {
-    const result = upstreamBasesOfCommit(repo);
-    if (result.skipped) {
-        notice(`${result.skipped}, so whether ${LIST_FILE} is up to date was not checked.`);
-        return [];
-    }
-    const { bases } = result;
-    const fix = `Run 'npm run script-exports:refresh' and stage ${RECORD_FILES}.`;
-    const problems = [];
-    if (!bases.includes(list.commit)) {
-        const lags = bases.some(base => gitSucceeds(repo, ['merge-base', '--is-ancestor', list.commit, base]));
-        problems.push(lags
-            ? `refresh ${LIST_FILE}: it records ${list.commit}, but ${describeBases(bases)}. ${fix}`
-            : `${listPath} records ${list.commit}, which this commit does not contain; ${describeBases(bases)}. ${fix}`);
-    } else {
-        if (list.text !== upstreamList(ts, repo, list.commit)) {
-            problems.push(`${listPath} records ${list.commit} but its names are not that commit's ${SCRIPT_FILE} exports. ${fix}`);
-        }
-        if (signatures.text !== upstreamSignatures(ts, repo, list.commit)) {
-            problems.push(`${signaturesPath} records ${list.commit} but its lines are not that commit's ${SCRIPT_FILE} export signatures. ${fix}`);
-        }
-    }
-    // With several independent bases the list holds one of them; every other one's exports must
-    // stay importable too.
-    for (const base of bases) {
-        if (base === list.commit) continue;
-        const missing = upstreamNames(ts, repo, base).filter(name => !ours.has(name));
-        if (missing.length > 0) {
-            problems.push(`${SCRIPT_FILE} does not export ${missing.length} name(s) that ${UPSTREAM_REF} ${base} (also contained in this commit) exports:\n`
-                + missing.map(name => `  ${name}`).join('\n'));
-        }
-        const baseSignatures = parseSignatures(upstreamSignatures(ts, repo, base), `${base}:${SIGNATURES_FILE}`);
-        problems.push(...signatureProblems(baseSignatures.entries, ours, oursSignature, `${UPSTREAM_REF} ${base}, also contained in this commit`));
-    }
-    return problems;
-}
-
 async function check(argv) {
-    const options = parseOptions(argv, ['--root', '--repo']);
+    const options = parseOptions(argv, ['--root']);
     const root = path.resolve(options['--root'] ?? '.');
-    const repo = path.resolve(options['--repo'] ?? root);
     const ts = await loadTypeScript();
 
     const listPath = path.join(root, LIST_FILE);
@@ -366,7 +329,6 @@ async function check(argv) {
         );
     }
     problems.push(...signatureProblems(signatures.entries, ours, oursSignature, `${SIGNATURES_FILE}, upstream ${list.commit.slice(0, 12)}`));
-    problems.push(...checkFreshness(ts, repo, list, listPath, signatures, signaturesPath, ours, oursSignature));
 
     if (problems.length > 0) {
         throw new CheckError(problems.join('\n\n'));
@@ -445,7 +407,7 @@ async function postMerge(argv) {
         bar,
         `script-exports: WARNING - this merge moved the newest ${UPSTREAM_REF} commits this branch contains`,
         `(now ${now.bases.join(', ')}), but the committed ${RECORD_FILES} were not refreshed to it.`,
-        'The next commit will be blocked until they are:',
+        'Refreshing them is part of merging upstream; until it is done, exports upstream added are not checked:',
         `    npm run script-exports:refresh && git add ${LIST_FILE} ${SIGNATURES_FILE}`,
         `Use 'npm run merge:upstream' to merge ${UPSTREAM_REF} with the list refreshed in the same commit.`,
         bar,
