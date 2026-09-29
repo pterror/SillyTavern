@@ -1177,8 +1177,10 @@ async function getEntry(directories) {
     if (!fs.existsSync(directories.root)) {
         fs.mkdirSync(directories.root, { recursive: true });
     }
+    const isNewStore = !fs.existsSync(getDbPath(directories));
     const db = engine.openDatabase(getDbPath(directories));
     db.exec(SCHEMA_SQL);
+    if (isNewStore) db.run(UPSERT_META_VALUE_SQL, { key: TAGS_SEED_PENDING_KEY, value: String(Date.now()) });
     migrateContentHashColumn(db);
     migrateContentIdentityColumns(db);
     migrateAvatarIdentityColumn(db);
@@ -5129,6 +5131,8 @@ export async function migrateTagsJsonIfNeeded(directories) {
         );
         return { batches: 0, rowsChanged: 0 };
     }
+    // An install that had a tags.json, readable or not, isn't fresh, so it never gets the default tags.
+    entry.db.run('DELETE FROM meta WHERE key = @key', { key: TAGS_SEED_PENDING_KEY });
 
     /** @type {{ tags?: TagDefinitionInput[], tag_map?: Record<string, string[]> }} */
     let parsed;
@@ -5190,6 +5194,45 @@ export async function migrateTagsJsonIfNeeded(directories) {
 
 const SETTINGS_TAGS_MIGRATED_FLAG = 'settings_tags_migrated';
 const SETTINGS_TAGS_IMPORT_BATCH_SIZE = 500;
+
+// Written when getEntry() creates the database file, so only a store's first settings tags import decides the seed.
+const TAGS_SEED_PENDING_KEY = 'tags_seed_pending';
+// Upstream's DEFAULT_TAGS (public/scripts/tags.js), which upstream shows when settings have no `tags` key.
+const DEFAULT_TAG_NAMES = ['Plain Text', 'OpenAI', 'W++', 'Boostyle', 'PList', 'AliChat'];
+
+/**
+ * On a store with TAGS_SEED_PENDING_KEY, decides whether it gets upstream's default tags, and clears the key in the
+ * same transaction. It gets them when every settings source was read and none has a `tags` key. They have no
+ * sort_order of their own, so they get max+1 upward in the order upstream shows them, alphabetically.
+ * @param {MetadataDbEntry} entry
+ * @param {{ tagsKey: boolean, unreadable: string[] }} settings
+ */
+function seedDefaultTagsIfPendingSync(entry, settings) {
+    const outcome = { decided: false, seeded: false };
+    entry.db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        outcome.decided = false;
+        outcome.seeded = false;
+        if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAGS_SEED_PENDING_KEY })) return;
+        outcome.decided = true;
+        entry.db.run('DELETE FROM meta WHERE key = @key', { key: TAGS_SEED_PENDING_KEY });
+        if (settings.tagsKey || settings.unreadable.length > 0) return;
+        const tags = DEFAULT_TAG_NAMES
+            .map(name => ({ id: crypto.randomUUID(), name, create_date: Date.now() }))
+            .sort((a, b) => compareNameKeys(tagDefinitionNameKey(a), tagDefinitionNameKey(b)));
+        let next = nextTagSortOrderSync(entry);
+        for (const tag of tags) {
+            entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams({ ...tag, sort_order: next++ }));
+        }
+        updateTagsHashSync(entry.db);
+        characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+        outcome.seeded = true;
+    });
+    if (outcome.seeded) entry.tagCache = null;
+    if (outcome.decided && settings.unreadable.length > 0) {
+        console.warn(color.yellow(`[character-metadata] This store is new, but the default tags were not added, because these settings files could not be read, so whether they have tags is unknown: ${settings.unreadable.join(', ')}`));
+    }
+}
 
 /**
  * @param {string} filePath
@@ -5398,6 +5441,8 @@ export async function migrateSettingsTagsIfNeeded(directories) {
     if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: SETTINGS_TAGS_MIGRATED_FLAG })) return totals;
 
     let sourceLeft = false;
+    /** @type {{ tagsKey: boolean, unreadable: string[] }} */
+    const seedCheck = { tagsKey: false, unreadable: [] };
 
     const legacyPath = legacySettingsPath(directories);
     const legacy = readSettingsTagsSource(legacyPath);
@@ -5405,10 +5450,12 @@ export async function migrateSettingsTagsIfNeeded(directories) {
         sourceLeft = true;
         const label = `settings tags import (${legacyPath})`;
         if ('error' in legacy) {
+            seedCheck.unreadable.push(legacyPath);
             console.error(color.red(`[character-metadata] ${label}: could not read ${legacyPath}, nothing imported from it; retrying next boot: ${legacy.error}`));
         } else if (!legacy.value || typeof legacy.value !== 'object' || Array.isArray(legacy.value)) {
             console.warn(color.yellow(`[character-metadata] ${label}: ${legacyPath} is not an object, nothing imported from it.`));
         } else {
+            if (Object.hasOwn(legacy.value, 'tags')) seedCheck.tagsKey = true;
             await importSettingsTagsSource(entry, label, /** @type {object} */ (legacy.value), totals);
         }
     }
@@ -5416,11 +5463,13 @@ export async function migrateSettingsTagsIfNeeded(directories) {
     const dir = settingsDirPath(directories);
     const keyFiles = [path.join(dir, 'tags.json'), path.join(dir, 'tag_map.json')].map(filePath => ({ filePath, read: readSettingsTagsSource(filePath) }));
     const present = keyFiles.filter(file => !('missing' in file.read));
+    if (!('missing' in keyFiles[0].read)) seedCheck.tagsKey = true;
     if (present.length > 0) {
         const label = `settings tags import (${present.map(file => file.filePath).join(' + ')})`;
         const unreadable = present.filter(file => 'error' in file.read);
         if (unreadable.length > 0) {
             sourceLeft = true;
+            seedCheck.unreadable.push(...unreadable.map(file => file.filePath));
             for (const file of unreadable) {
                 console.error(color.red(`[character-metadata] ${label}: could not read ${file.filePath}, nothing imported from the key files; retrying next boot: ${/** @type {{ error: string }} */ (file.read).error}`));
             }
@@ -5440,6 +5489,8 @@ export async function migrateSettingsTagsIfNeeded(directories) {
             }
         }
     }
+
+    seedDefaultTagsIfPendingSync(entry, seedCheck);
 
     if (!sourceLeft) {
         entry.db.run(UPSERT_META_VALUE_SQL, { key: SETTINGS_TAGS_MIGRATED_FLAG, value: String(Date.now()) });

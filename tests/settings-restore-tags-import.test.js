@@ -41,6 +41,8 @@ beforeAll(async () => {
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     metadataDb = await import('../src/character-metadata-db.js');
     Database = (await import('better-sqlite3')).default;
+    // An existing store, which never gets the default tags (tags-default-seed.test.js).
+    new Database(path.join(tempDir, 'character-metadata.sqlite')).close();
 
     const { router } = await import('../src/endpoints/settings.js');
     const express = (await import('express')).default;
