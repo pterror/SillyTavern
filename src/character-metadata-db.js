@@ -1965,6 +1965,31 @@ export async function getCardJsonByIds(directories, ids) {
 }
 
 /**
+ * @typedef {{ id: string, card_json: string, chat_size: number, date_last_chat: number }} CharacterIndexRow
+ */
+
+/** The rows of `ids`, which the caller keeps bounded (one batch), the same as getCardJsonByIds().
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, CharacterIndexRow>>}
+ */
+export async function getCharacterIndexRowsByIds(directories, ids) {
+    const entry = await getEntry(directories);
+    /** @type {Map<string, CharacterIndexRow>} */
+    const result = new Map();
+    if (!entry || ids.length === 0) return result;
+
+    for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
+        const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
+        const placeholders = batch.map(() => '?').join(',');
+        for (const row of /** @type {Generator<CharacterIndexRow>} */ (entry.db.iterate(`SELECT id, card_json, chat_size, date_last_chat FROM characters WHERE id IN (${placeholders})`, batch))) {
+            result.set(row.id, row);
+        }
+    }
+    return result;
+}
+
+/**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} avatar
  */
@@ -10018,18 +10043,18 @@ export async function getCurrentTagNameChangeSeq(directories) {
     return Number(row?.seq ?? 0);
 }
 
-/** Every character's id and card_json, in id order, in batches - for a caller that must visit the whole library
- * without holding it.
+/** Every character's id, card_json and chat stats, in id order, in batches - for a caller that must visit the whole
+ * library without holding it.
  * @param {import('./users.js').UserDirectoryList} directories
- * @returns {AsyncGenerator<{ id: string, card_json: string }[], void, undefined>}
+ * @returns {AsyncGenerator<CharacterIndexRow[], void, undefined>}
  */
 export async function* streamCharacterCardJsonBatches(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
-    yield* /** @type {AsyncGenerator<{ id: string, card_json: string }[], void, undefined>} */ (streamRows(entry.db, {
-        firstPageSql: 'SELECT id, card_json FROM characters ORDER BY id LIMIT @limit',
+    yield* /** @type {AsyncGenerator<CharacterIndexRow[], void, undefined>} */ (streamRows(entry.db, {
+        firstPageSql: 'SELECT id, card_json, chat_size, date_last_chat FROM characters ORDER BY id LIMIT @limit',
         firstPageParams: {},
-        nextPageSql: 'SELECT id, card_json FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
+        nextPageSql: 'SELECT id, card_json, chat_size, date_last_chat FROM characters WHERE id > @after ORDER BY id LIMIT @limit',
         nextPageParams: {},
         keyColumn: 'id',
     }));

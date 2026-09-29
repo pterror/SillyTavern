@@ -582,9 +582,11 @@ async function tryReadImage(imgPath, crop) {
  * @param  {object} options Options for the character processing
  * @param  {boolean} options.shallow If true, only return the core character's metadata
  * @param  {string|null} [options.cardJson] The row's card_json when the caller already read it; otherwise it is read here
+ * @param  {{ chatSize: number, dateLastChat: number }} [options.chatStats] The row's chat_size and date_last_chat;
+ *   without them both come from the character's chats folder
  * @return {Promise<object>}     A Promise that resolves when the character processing is done.
  */
-export const processCharacter = async (item, directories, { shallow, cardJson = undefined }) => {
+export const processCharacter = async (item, directories, { shallow, cardJson = undefined, chatStats = undefined }) => {
     try {
         const imgFile = path.join(directories.characters, item);
         // Reused for both the cache key and date_added.
@@ -608,7 +610,7 @@ export const processCharacter = async (item, directories, { shallow, cardJson = 
         const charDirName = item.replace('.png', '');
         const chatsDirectory = charDirName ? path.join(directories.chats, charDirName) : null;
 
-        const { chatSize, dateLastChat } = chatsDirectory ? calculateChatSize(chatsDirectory) : { chatSize: 0, dateLastChat: 0 };
+        const { chatSize, dateLastChat } = chatStats ?? (chatsDirectory ? calculateChatSize(chatsDirectory) : { chatSize: 0, dateLastChat: 0 });
         character.chat_size = chatSize;
         character.date_last_chat = dateLastChat;
         character.data_size = calculateDataSize(jsonObject?.data);
