@@ -10455,8 +10455,7 @@ export async function checkCharactersExist(directories, ids) {
     for (let i = 0; i < ids.length; i += BATCH_FLUSH_SIZE) {
         const chunk = ids.slice(i, i + BATCH_FLUSH_SIZE).filter(id => typeof id === 'string' && id.length > 0);
         if (chunk.length === 0) continue;
-        const rows = (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM characters WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk)));
-        for (const row of rows) {
+        for (const row of /** @type {Generator<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM characters WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk))) {
             result[row.id] = true;
         }
     }
