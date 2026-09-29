@@ -66,6 +66,32 @@ const literalTagsExt = {
 };
 
 /**
+ * marked's GFM `_backpedal` without `_`: trailing punctuation is dropped from a bare URL so a sentence's full stop
+ * isn't swallowed, but `_` isn't sentence punctuation, so a URL ending in `_` keeps it.
+ */
+const urlBackpedal = /(?:[^?!.,:;*'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*'"~)]+(?!$))+/;
+
+/** @type {import('marked').MarkedExtension} */
+const urlTrailingUnderscoreExt = {
+    tokenizer: {
+        url(src) {
+            const cap = this.rules.inline.url.exec(src);
+            if (!cap || cap[2] === '@') {
+                return false;
+            }
+            let text = cap[0];
+            let prev;
+            do {
+                prev = text;
+                text = urlBackpedal.exec(text)?.[0] ?? '';
+            } while (prev !== text);
+            const href = cap[1] === 'www.' ? `http://${text}` : text;
+            return { type: 'link', raw: text, text, href, autolink: true, tokens: [{ type: 'text', raw: text, text }] };
+        },
+    },
+};
+
+/**
  * @param {string} [escapeStrings] power_user.markdown_escape_strings; pass the real value when calling this from a module that already imports power_user (e.g. on power_user.markdown_escape_strings change), same as the old reloadMarkdownProcessor() was called.
  * @param {(text: string) => string} [substituteParamsFn] The real `substituteParams` from script.js, from a module that already imports it.
  */
@@ -75,12 +101,14 @@ export function reloadMarkedProcessor(escapeStrings, substituteParamsFn = identi
         breaks: true,
     });
     markedProcessor.use(markdownExclusionExt(escapeStrings, substituteParamsFn));
+    markedProcessor.use(urlTrailingUnderscoreExt);
 
     markedLiteralTagsProcessor = new Marked({
         gfm: true,
         breaks: true,
     });
     markedLiteralTagsProcessor.use(markdownExclusionExt(escapeStrings, substituteParamsFn));
+    markedLiteralTagsProcessor.use(urlTrailingUnderscoreExt);
     markedLiteralTagsProcessor.use(literalTagsExt);
     return markedProcessor;
 }
