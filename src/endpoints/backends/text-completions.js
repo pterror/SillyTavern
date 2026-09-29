@@ -25,7 +25,7 @@ import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveTokenizer, encodeWithTokenizer, resolveProfileTokenizerSetting, createTokenizerOutcome, sendTokenizerWarnings, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
-import { createStoredCounter } from '../../token-count-store.js';
+import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-status.js';
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
@@ -722,6 +722,15 @@ router.post('/generate', async function (request, response) {
     /** @type {Array<{kind: string, key: string, message: string, entries?: string[]}>} */
     const warnings = [];
 
+    // The raw-action build's counts and ids, stored once the backend has the request.
+    /** @type {import('../../token-count-store.js').PendingTokenRows | null} */
+    let tokenCountRows = null;
+    const storeTokenCountRows = () => {
+        if (!tokenCountRows) return;
+        writeBack(request.user.directories, tokenCountRows)
+            .catch(error => console.error('Failed to store token counts:', error));
+    };
+
     try {
         // "Generate using connection profile X" - the raw action is the profile id plus the raw
         // messages/generation-type facts; the server resolves the profile's backend, preset, and
@@ -845,6 +854,7 @@ router.post('/generate', async function (request, response) {
                 return response.status(400).send({ error: true, message: error?.message ?? 'Could not resolve this generation request' });
             }
             warnings.push(...built.warnings);
+            tokenCountRows = built.tokenCountRows;
 
             // Persist the NEW USER MESSAGE - "the user sent this" - BEFORE dispatching to the
             // backend. This is a real fact that should be committed regardless of whether
@@ -1101,9 +1111,11 @@ router.post('/generate', async function (request, response) {
 
         if (request.body.api_type === TEXTGEN_TYPES.OLLAMA && request.body.stream) {
             const stream = await fetch(url, args);
+            storeTokenCountRows();
             parseOllamaStream(stream, request, response, pendingAssistantPersist, rawActionItemization, warnings);
         } else if (request.body.stream) {
             const completionsStream = await fetch(url, args);
+            storeTokenCountRows();
             if (request.body.api_type === TEXTGEN_TYPES.LLAMACPP) {
                 // Compact wire format for the llama.cpp raw-completions path only - see llamacpp-compact-stream.js.
                 await pipeLlamaCppCompactStream(completionsStream, response, pendingAssistantPersist, rawActionItemization, warnings);
@@ -1125,6 +1137,7 @@ router.post('/generate', async function (request, response) {
             }
         } else {
             const completionsReply = await fetch(url, args);
+            storeTokenCountRows();
 
             if (completionsReply.ok) {
                 /** @type {any} */
