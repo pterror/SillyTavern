@@ -498,6 +498,50 @@ describe('/greetings/add with append appends without a length check', () => {
     });
 });
 
+describe('/greetings/default/unset with expected_default_hash checks the default greeting, not its position', () => {
+    const storedCard = async () => JSON.parse(await metadataDb.getCharacterCardJson(directories, 'Alice.png'));
+
+    /** Alice with greetings ['hello', 'second', 'third'], 'second' the default. Resolves to their hashes. */
+    async function aliceWithDefaultSecond() {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
+        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'third' });
+        const hashes = (await add.json()).hashes;
+        await post('greetings/default/set', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[1] });
+        return hashes;
+    }
+
+    test('clears the default after an earlier greeting was deleted', async () => {
+        const hashes = await aliceWithDefaultSecond();
+        await post('greetings/delete', { avatar_url: 'Alice.png', position: 0, expected_hash: hashes[0] });
+
+        const unset = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_hash: hashes[1] });
+        expect(unset.status).toBe(200);
+        const body = await unset.json();
+        expect(body.default_position).toBeNull();
+        expect(body.greetings).toEqual(['second', 'third']);
+    });
+
+    test('is a 409 when the default is another greeting, and leaves the card unchanged', async () => {
+        const hashes = await aliceWithDefaultSecond();
+        await post('greetings/default/set', { avatar_url: 'Alice.png', position: 2, expected_hash: hashes[2] });
+        const before = await storedCard();
+
+        const unset = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_hash: hashes[1] });
+        expect(unset.status).toBe(409);
+        expect((await unset.json()).reason).toBe('default greeting changed since it was loaded');
+        expect(await storedCard()).toEqual(before);
+    });
+
+    test('with expected_default_position as well is a 400', async () => {
+        const hashes = await aliceWithDefaultSecond();
+
+        const unset = await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_hash: hashes[1], expected_default_position: 1 });
+        expect(unset.status).toBe(400);
+        expect((await unset.json()).reason).toBe('expected_default_hash and expected_default_position can\'t both be given');
+    });
+});
+
 describe('every greeting op answers with the greeting list as stored', () => {
     test('add, edit, move, set default, unset default and delete each return the list after the op, other writers\' changes included', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });

@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault } from '../src/greeting-ops.js';
+import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from '../src/greeting-ops.js';
 
 const h = hashGreetingText;
 const modelOf = (greetings, defaultIndex = 0) => ({ greetings, defaultIndex });
@@ -271,5 +271,26 @@ describe('opAppend', () => {
         const model = modelOf(['a'], 0);
         opAppend(model, 'b');
         expect(model).toEqual(modelOf(['a'], 0));
+    });
+});
+
+describe('opUnsetDefaultByHash', () => {
+    test('clears the default when the default greeting has the hash, wherever it now sits', () => {
+        expect(opUnsetDefaultByHash(modelOf(['a', 'b', 'c'], 1), h('b'))).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], null) });
+        expect(opUnsetDefaultByHash(modelOf(['b', 'c'], 0), h('b'))).toEqual({ ok: true, model: modelOf(['b', 'c'], null) });
+    });
+
+    test('refuses when the default is another greeting', () => {
+        expect(opUnsetDefaultByHash(modelOf(['a', 'b', 'c'], 2), h('b'))).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
+    });
+
+    test('refuses when there is no default any more', () => {
+        expect(opUnsetDefaultByHash(modelOf(['a', 'b'], null), h('b'))).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
+    });
+
+    test('never mutates the input model', () => {
+        const model = modelOf(['a', 'b'], 1);
+        opUnsetDefaultByHash(model, h('b'));
+        expect(model).toEqual(modelOf(['a', 'b'], 1));
     });
 });
