@@ -138,12 +138,13 @@ describe('createSearchIndexCoordinator()', () => {
         expect(workers.map(w => w.workerData.handle)).toEqual(['userA', 'userB']);
     });
 
-    test('"committed" reloads the reader; for characters it also fires onSearchIndexUpdated with the handle, seq and groups version', async () => {
+    test('"committed" reloads the reader and fires onSearchIndexUpdated with the handle, seq and groups version, for characters and groups alike', async () => {
+        jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick'] });
         const { coordinator, workers, onSearchIndexUpdated } = setup();
         const charsPending = coordinator.getIndex('user1', directories, 'characters');
         await flush();
         workers[0].send({ type: 'ready', target: 'characters', dir: '/chars', seq: 1, tagNameSeq: 0, retrySeq: 0 });
-        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups', version: 6 });
+        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups', version: 6, tagNameSeq: 0 });
         const chars = await charsPending;
         const groups = await coordinator.getIndex('user1', directories, 'groups');
 
@@ -152,9 +153,20 @@ describe('createSearchIndexCoordinator()', () => {
         expect(onSearchIndexUpdated).toHaveBeenCalledTimes(1);
         expect(onSearchIndexUpdated).toHaveBeenLastCalledWith('user1', 5, 6);
 
-        workers[0].send({ type: 'committed', target: 'groups', changed: true });
+        jest.advanceTimersByTime(1000);
+        workers[0].send({ type: 'committed', target: 'groups', changed: true, version: 7, tagNameSeq: 3 });
         expect(groups.index.reload).toHaveBeenCalledTimes(1);
-        expect(onSearchIndexUpdated).toHaveBeenCalledTimes(1);
+        expect(groups.position).toEqual({ version: 7, tagNameSeq: 3 });
+        expect(onSearchIndexUpdated).toHaveBeenCalledTimes(2);
+        expect(onSearchIndexUpdated).toHaveBeenLastCalledWith('user1', 5, 7);
+
+        // Only the tag-rename cursor moved: the call carries the same groups version, and is still made.
+        jest.advanceTimersByTime(1000);
+        workers[0].send({ type: 'committed', target: 'groups', changed: true, version: 7, tagNameSeq: 4 });
+        expect(groups.index.reload).toHaveBeenCalledTimes(2);
+        expect(groups.position).toEqual({ version: 7, tagNameSeq: 4 });
+        expect(onSearchIndexUpdated).toHaveBeenCalledTimes(3);
+        expect(onSearchIndexUpdated).toHaveBeenLastCalledWith('user1', 5, 7);
     });
 
     test('by default a characters commit emits \'search-index-updated\' (handle, seq, groupsVersion) and never \'change\'', async () => {
@@ -201,7 +213,7 @@ describe('createSearchIndexCoordinator()', () => {
         expect(onSearchIndexUpdated.mock.calls).toEqual([['user1', 4, null]]);
 
         jest.advanceTimersByTime(1000);
-        worker.send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt', version: 12 });
+        worker.send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt', version: 12, tagNameSeq: 0 });
         expect(onSearchIndexUpdated.mock.calls).toEqual([['user1', 4, null], ['user1', 4, 12]]);
         expect((await coordinator.getIndex('user1', directories, 'groups')).dir).toBe('/groups-rebuilt');
     });
@@ -211,9 +223,9 @@ describe('createSearchIndexCoordinator()', () => {
         const pending = coordinator.getIndex('user1', directories, 'groups');
         await flush();
         workers[0].send({ type: 'ready', target: 'characters', dir: null });
-        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups', version: 2 });
+        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups', version: 2, tagNameSeq: 0 });
         await pending;
-        workers[0].send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt', version: 3 });
+        workers[0].send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt', version: 3, tagNameSeq: 0 });
         expect(onSearchIndexUpdated.mock.calls).toEqual([['user1', null, 3]]);
     });
 
@@ -221,9 +233,9 @@ describe('createSearchIndexCoordinator()', () => {
         jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'nextTick'] });
         const { coordinator, workers, onSearchIndexUpdated } = setup();
         const worker = await spawnReady(coordinator, workers, 'user1');
-        worker.send({ type: 'swapped', target: 'groups', dir: '/groups-1', version: 1 });
+        worker.send({ type: 'swapped', target: 'groups', dir: '/groups-1', version: 1, tagNameSeq: 0 });
         worker.send({ type: 'committed', target: 'characters', changed: true, seq: 8, tagNameSeq: 0, retrySeq: 0 });
-        worker.send({ type: 'swapped', target: 'groups', dir: '/groups-2', version: 2 });
+        worker.send({ type: 'swapped', target: 'groups', dir: '/groups-2', version: 2, tagNameSeq: 0 });
         expect(onSearchIndexUpdated.mock.calls).toEqual([['user1', null, 1]]);
         jest.advanceTimersByTime(1000);
         expect(onSearchIndexUpdated.mock.calls).toEqual([['user1', null, 1], ['user1', 8, 2]]);
@@ -231,10 +243,9 @@ describe('createSearchIndexCoordinator()', () => {
         expect(onSearchIndexUpdated).toHaveBeenCalledTimes(2);
     });
 
-    test('a groups "committed" and errors don\'t fire onSearchIndexUpdated', async () => {
+    test('errors don\'t fire onSearchIndexUpdated', async () => {
         const { coordinator, workers, onSearchIndexUpdated } = setup();
         const worker = await spawnReady(coordinator, workers, 'user1');
-        worker.send({ type: 'committed', target: 'groups', changed: true });
         worker.send({ type: 'error', message: 'x' });
         expect(onSearchIndexUpdated).not.toHaveBeenCalled();
     });
@@ -354,19 +365,22 @@ describe('createSearchIndexCoordinator()', () => {
         expect(swapped.position).toBeNull();
     });
 
-    test('the groups reader\'s position is the version the worker says it was built from: set on ready, replaced with each swap, null when a message has none', async () => {
+    test('the groups reader\'s position is the version and tag-rename seq the worker says it covers: set on ready, replaced with each swap, null when a message lacks either', async () => {
         const { coordinator, workers } = setup();
         const pending = coordinator.getIndex('user1', directories, 'groups');
         await flush();
-        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups', version: 4 });
-        expect((await pending).position).toEqual({ version: 4 });
+        workers[0].send({ type: 'ready', target: 'groups', dir: '/groups', version: 4, tagNameSeq: 0 });
+        expect((await pending).position).toEqual({ version: 4, tagNameSeq: 0 });
 
-        workers[0].send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt', version: 7 });
+        workers[0].send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt', version: 7, tagNameSeq: 0 });
         const swapped = await coordinator.getIndex('user1', directories, 'groups');
         expect(swapped.dir).toBe('/groups-rebuilt');
-        expect(swapped.position).toEqual({ version: 7 });
+        expect(swapped.position).toEqual({ version: 7, tagNameSeq: 0 });
 
         workers[0].send({ type: 'swapped', target: 'groups', dir: '/groups-rebuilt-again', version: null });
+        expect((await coordinator.getIndex('user1', directories, 'groups')).position).toBeNull();
+
+        workers[0].send({ type: 'swapped', target: 'groups', dir: '/groups-no-rename-seq', version: 8 });
         expect((await coordinator.getIndex('user1', directories, 'groups')).position).toBeNull();
     });
 

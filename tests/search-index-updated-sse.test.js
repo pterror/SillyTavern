@@ -87,9 +87,12 @@ async function coordinatorWithWorkers() {
     };
     /** @param {string} handle @param {number} version */
     const swapGroups = async (handle, version) => {
-        (await workerFor(handle)).send({ type: 'swapped', target: 'groups', dir: '/groups', version });
+        (await workerFor(handle)).send({ type: 'swapped', target: 'groups', dir: '/groups', version, tagNameSeq: 0 });
     };
-    return { commit, swapGroups };
+    const commitGroups = async (handle, version, tagNameSeq) => {
+        (await workerFor(handle)).send({ type: 'committed', target: 'groups', changed: true, version, tagNameSeq });
+    };
+    return { commit, swapGroups, commitGroups };
 }
 
 /**
@@ -158,6 +161,22 @@ test('a groups swap reaches /changes/stream within a second with its groupsVersi
     try {
         await swapGroups('sse-user-groups', 17);
         expect(await stream.nextMessage(1000)).toBe(true);
+        expect(stream.messages).toEqual(['data: {"type":"search-index-updated","seq":null,"groupsVersion":17}']);
+    } finally {
+        stream.close();
+    }
+});
+
+test('a groups catch-up reaches /changes/stream, also when only its tag-rename cursor moved', async () => {
+    const { swapGroups, commitGroups } = await coordinatorWithWorkers();
+    const stream = await openStream('sse-user-groups-commit');
+    try {
+        await swapGroups('sse-user-groups-commit', 17);
+        expect(await stream.nextMessage(1000)).toBe(true);
+        stream.messages.splice(0);
+        // The same groups version: the browser re-queries on any search-index-updated, whatever it carries.
+        await commitGroups('sse-user-groups-commit', 17, 5);
+        expect(await stream.nextMessage(2000)).toBe(true);
         expect(stream.messages).toEqual(['data: {"type":"search-index-updated","seq":null,"groupsVersion":17}']);
     } finally {
         stream.close();

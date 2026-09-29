@@ -18,9 +18,9 @@ const DISPOSE_TIMEOUT_MS = 10000;
 export const CHARACTERS_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
 export const CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
 export const CHARACTERS_INDEX_RETRY_SEQ_META_KEY = 'tantivy_char_index_retry_seq';
-/** The meta key the groups index persists the groups version it was built from under (groups-search-index.js
- * writes it). */
+/** The meta keys the groups index persists its position under (groups-search-index.js writes them). */
 export const GROUPS_INDEX_VERSION_META_KEY = 'tantivy_group_index_version';
+export const GROUPS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_group_index_tag_name_change_seq';
 const SEARCH_INDEX_UPDATED_INTERVAL_MS = 1000;
 
 // Emitted on characterChangeEmitter as (handle, warning) when a card couldn't be indexed; warning is a
@@ -32,8 +32,8 @@ export const CHARACTER_INDEX_FAILED_EVENT = 'character-index-failed';
  * @typedef {{ seq: number, tagNameSeq: number, retrySeq: number }} SearchIndexPosition How far the characters index
  * has applied the change log (`seq`) and the tag-rename log (`tagNameSeq`), and how many of its catch-ups changed
  * it by retrying cards that had failed to index, without moving either cursor (`retrySeq`).
- * @typedef {{ version: number }} GroupsIndexPosition The groups version (getGroupsVersion()) the groups index was
- * built from.
+ * @typedef {{ version: number, tagNameSeq: number }} GroupsIndexPosition How far the groups index has applied the
+ * groups version log (`version`, a getGroupsVersion() value) and the tag-rename log (`tagNameSeq`).
  * @typedef {{ index: any, schema: any, position?: SearchIndexPosition | GroupsIndexPosition | null }} SearchIndexReader
  * `position` is the index's position as of what this reader shows: a SearchIndexPosition for the characters
  * reader, a GroupsIndexPosition for the groups reader; null or absent when it isn't known.
@@ -64,15 +64,15 @@ function spawnSearchIndexWorker(workerData) {
  *
  * A reader shows a new commit only when reload() is called on it (tantivy's Manual reload policy), which happens
  * here in the same step that sets its `position`, so a reader never shows more than its position says. The
- * position comes from the worker's messages; in read-only mode it's the persisted cursors (characters) or version
- * (groups), read before the index is opened (null when they can't be read).
+ * position comes from the worker's messages; in read-only mode it's the index's persisted position, read before the
+ * index is opened (null when it can't be read).
  * @param {object} [options]
  * @param {(workerData: object) => SearchIndexWorker} [options.spawnWorker]
  * @param {(dir: string) => SearchIndexReader} [options.openIndex] Defaults to tantivy's Index.open().
  * @param {(handle: string, seq: number | null, groupsVersion: number | null) => void} [options.onSearchIndexUpdated]
- * Called when a commit or a rebuild-and-swap changed a handle's characters index, or a rebuild-and-swap changed its
- * groups index. Every call carries both readers' current positions as of the call: `seq`, the change-log seq the
- * characters reader covers, and `groupsVersion`, the groups version the groups reader was built from; each is null
+ * Called when a commit or a rebuild-and-swap changed a handle's characters or groups index. Every call carries both
+ * readers' current positions as of the call: `seq`, the change-log seq the characters reader covers, and
+ * `groupsVersion`, the groups version the groups reader covers; each is null
  * when that reader has no known position. At most once per SEARCH_INDEX_UPDATED_INTERVAL_MS per handle, characters
  * and groups together: the first change in a quiet period is passed on at once, later ones in the interval are
  * coalesced into one call at its end. Defaults to emitting characterChangeEmitter's 'search-index-updated'
@@ -168,7 +168,7 @@ export function createSearchIndexCoordinator({
      */
     function positionOf(msg) {
         if (msg?.target === 'groups') {
-            return Number.isFinite(msg?.version) ? { version: msg.version } : null;
+            return Number.isFinite(msg?.version) && Number.isFinite(msg?.tagNameSeq) ? { version: msg.version, tagNameSeq: msg.tagNameSeq } : null;
         }
         return Number.isFinite(msg?.seq) && Number.isFinite(msg?.tagNameSeq) && Number.isFinite(msg?.retrySeq)
             ? { seq: msg.seq, tagNameSeq: msg.tagNameSeq, retrySeq: msg.retrySeq }
@@ -273,9 +273,7 @@ export function createSearchIndexCoordinator({
                     reader.index.reload();
                     reader.position = positionOf(msg);
                 }
-                if (msg.target === 'characters') {
-                    searchIndexUpdated(handle);
-                }
+                searchIndexUpdated(handle);
                 return;
             }
             case 'swapped': {
@@ -335,10 +333,12 @@ export function createSearchIndexCoordinator({
             try {
                 const version = await getMetaValue(directories, GROUPS_INDEX_VERSION_META_KEY);
                 if (version === null) return null;
-                const position = { version: Number(version) };
-                return Number.isFinite(position.version) ? position : null;
+                // As for the characters index, a missing tag-rename cursor reads as 0.
+                const tagNameSeq = await getMetaValue(directories, GROUPS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY);
+                const position = { version: Number(version), tagNameSeq: tagNameSeq === null ? 0 : Number(tagNameSeq) };
+                return Number.isFinite(position.version) && Number.isFinite(position.tagNameSeq) ? position : null;
             } catch (err) {
-                console.error(color.red(`[search] reading the groups index's persisted version failed: ${err.message}`));
+                console.error(color.red(`[search] reading the groups index's persisted position failed: ${err.message}`));
                 return null;
             }
         }

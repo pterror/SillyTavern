@@ -34,7 +34,7 @@ export function stringToSortKey(str, byteCount = 6) {
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
  * @param {string[]} searchableFieldNames
  * @param {string[]} [unsignedFastFieldNames] Fields usable as runSearch()'s `orderByField`; must be declared `fast: true`.
- * @param {{name: string, tokenizerName?: string}[]} [filterTextFields] Exact-tokenized fields for structured term filtering (e.g. tag IDs).
+ * @param {{name: string, tokenizerName?: string, stored?: boolean}[]} [filterTextFields] Exact-tokenized fields for structured term filtering (e.g. tag IDs). stored: a hit's value can be read back.
  * @returns {import('@oxdev03/node-tantivy-binding').Schema}
  */
 export function buildSchema(tantivy, searchableFieldNames, unsignedFastFieldNames = [], filterTextFields = []) {
@@ -45,8 +45,8 @@ export function buildSchema(tantivy, searchableFieldNames, unsignedFastFieldName
     for (const name of unsignedFastFieldNames) {
         builder.addUnsignedField(name, { stored: false, indexed: false, fast: true });
     }
-    for (const { name, tokenizerName } of filterTextFields) {
-        builder.addTextField(name, { stored: false, tokenizerName: tokenizerName ?? 'whitespace', indexOption: 'basic' });
+    for (const { name, tokenizerName, stored = false } of filterTextFields) {
+        builder.addTextField(name, { stored, tokenizerName: tokenizerName ?? 'whitespace', indexOption: 'basic' });
     }
     builder.addTextField(DATA_FIELD, { stored: true, tokenizerName: 'raw', indexOption: 'basic' });
     builder.addBooleanField(FAV_FIELD, { indexed: true });

@@ -4,7 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 
 // Every groups version log row records the name of the group JSON file its write wrote, replaced or removed, and
-// NULL when the write touched no file. group_id stays the group's id (NULL for a tag rename or a file with no id).
+// NULL when the write touched no file. group_id stays the group's id (NULL for a file with no id). A tag rename adds
+// no row.
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -315,19 +316,19 @@ const WRITERS = [
         name: 'saveTagDefinitions renaming a tag',
         setup: async () => { await saveTags(['x']); },
         act: () => metadataDb.saveTagDefinitions(directories, [{ id: 'x', name: 'new-x' }]),
-        rows: [[null, null]],
+        rows: [],
     },
     {
         name: 'editTagDefinition renaming a tag',
         setup: async () => { await saveTags(['x']); },
         act: () => metadataDb.editTagDefinition(directories, 'x', { name: 'new-x' }),
-        rows: [[null, null]],
+        rows: [],
     },
     {
         name: 'deleteTagDefinition',
         setup: async () => { await saveTags(['x']); },
         act: () => metadataDb.deleteTagDefinition(directories, 'x'),
-        rows: [[null, null]],
+        rows: [],
     },
 ];
 

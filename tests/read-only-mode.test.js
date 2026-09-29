@@ -281,12 +281,14 @@ describe('read-only mode: POST /api/characters/query against an existing library
         expect(reader.position).toEqual({ seq: Number(seq), tagNameSeq: Number(tagNameSeq), retrySeq: Number(retrySeq) });
     });
 
-    test('the groups reader\'s position is the groups version the normal code persisted for the index', async () => {
+    test('the groups reader\'s position is the groups version and tag-rename seq the normal code persisted for the index', async () => {
         const version = await metadataDb.getMetaValue(directories, 'tantivy_group_index_version');
+        const tagNameSeq = await metadataDb.getMetaValue(directories, 'tantivy_group_index_tag_name_change_seq');
         expect(Number(version)).toBeGreaterThan(0);
         expect(Number(version)).toBe(await metadataDb.getGroupsVersion(directories));
+        expect(tagNameSeq).not.toBeNull();
         const reader = await searchCoordinator.getSearchIndex('read-only-test-user', directories, 'groups');
-        expect(reader.position).toEqual({ version: Number(version) });
+        expect(reader.position).toEqual({ version: Number(version), tagNameSeq: Number(tagNameSeq) });
     });
 
     // A group file that fails to parse leaves the pass's done flag unwritten, so the pass writes nothing and

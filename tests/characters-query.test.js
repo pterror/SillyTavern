@@ -885,12 +885,14 @@ describe('POST /api/characters/query - the freshness token (token / ifToken)', (
         await seedGroup('g0', { name: 'Vampire Coven 0' });
         await settledQuery(request);
 
-        // The groups index rebuilds about once a second, so a search right after a write usually doesn't have it yet.
+        // The groups index catches up about once a second, so a search right after a write usually doesn't have it yet.
         let behind = null;
         let groupId = null;
         for (let i = 1; i <= 20 && !behind; i++) {
             groupId = `g${i}`;
-            await seedGroup(groupId, { name: `Vampire Coven ${i}` });
+            // As the groups endpoints write a group, so the log row names its file.
+            const group = { id: groupId, name: `Vampire Coven ${i}`, members: [], chats: [], fav: false };
+            await metadataDb.writeGroupFileAndRow(directories, group, () => fs.writeFileSync(`${directories.groups}/${groupId}.json`, JSON.stringify(group)));
             const body = await (await postJson('/api/characters/query', request)).json();
             if (!body.rows.some(r => r.type === 'group' && r.item.id === groupId)) behind = body;
         }
