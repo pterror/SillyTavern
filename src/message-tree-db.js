@@ -1320,6 +1320,14 @@ function buildPathMessages(db, rows, branchName = null, fullSwipes = false) {
         fullSwipes,
     ));
 
+    // A chat's own name is stored as the label on its first message. Upstream code (/checkpoint-*, Timelines)
+    // treats any bookmark_link as a checkpoint, so the chat must not show its own name as one.
+    if (branchName !== null) {
+        for (const m of messages) {
+            if (m.extra && typeof m.extra === 'object' && m.extra.bookmark_link === branchName) delete m.extra.bookmark_link;
+        }
+    }
+
     const childIds = getChildIdsBatchSync(db, rows.map(r => r.id));
     for (let i = 0; i < rows.length; i++) {
         const kids = childIds.get(rows[i].id) ?? [];
