@@ -443,6 +443,49 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('.toast-error')).toHaveCount(0);
     });
 
+    test('#character_json_data save: a failure partway lists the refused change, the failed one, and every change never sent', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `FormFailure-${s}`, g);
+        await openCharacter(page, avatar);
+        const elsewhere = `One changed elsewhere ${s}`;
+        await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]), text: elsewhere });
+
+        const [e0, e1, e2, added] = [`Zero edited ${s}`, `One edited ${s}`, `Two edited ${s}`, `Three added ${s}`];
+        /** @type {string[]} */
+        const sent = [];
+        await page.route('**/api/characters/greetings/**', async (route) => {
+            const body = route.request().postDataJSON();
+            sent.push(body.text);
+            if (body.text === e2) {
+                await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ ok: false, reason: 'internal error' }) });
+                return;
+            }
+            await route.continue();
+        });
+
+        await page.evaluate(async (greetings) => {
+            // @ts-ignore
+            const card = JSON.parse($('#character_json_data').val());
+            card.first_mes = greetings[0];
+            card.data.first_mes = greetings[0];
+            card.data.alternate_greetings = greetings.slice(1);
+            // @ts-ignore
+            $('#character_json_data').val(JSON.stringify(card));
+            const { createOrEditCharacter } = await import('/script.js');
+            await createOrEditCharacter(new CustomEvent('newChat'));
+        }, [e0, e1, e2, added]);
+
+        expect(sent).toEqual([e0, e1, e2]);
+        expect((await storedModel(page, avatar)).greetings).toEqual([e0, elsewhere, g[2]]);
+        const warning = page.locator('.toast-warning');
+        await expect(warning).toHaveCount(1, { timeout: 10000 });
+        await expect(warning).toContainText(e1);
+        await expect(warning).toContainText(e2);
+        await expect(warning).toContainText(added);
+        await expect(warning).not.toContainText(e0);
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
