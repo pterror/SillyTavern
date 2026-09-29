@@ -53,7 +53,7 @@ import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normali
  * from, sent back as `ifToken` on a repeat of the same request. `null` when there is nothing to send back.
  * @property {string} [searchBackend] - which search engine answered `filter.search` ('tantivy'), present only
  * when `filter.search` was non-empty.
- * @property {number|string} [hidden] - with `want: 'hidden'`: how many entities the filter leaves out, `~`-prefixed
+ * @property {number|string} [hidden] - with `want: 'hidden'`: every entity less the rows on this page, `~`-prefixed
  * when approximate like `total`.
  */
 
@@ -541,8 +541,8 @@ export class CharacterRepository {
      * @param {number} [page] - 1-based, matching the server's convention.
      * @param {number} [pageSize]
      * @param {('rows'|'total'|'hidden'|'facets'|'rank')[]} [want] - defaults to `['rows', 'total']`; pass a narrower set
-     * (e.g. `['rows']`) to skip paying for a count the caller doesn't need. `'hidden'` adds `hidden`, how many
-     * entities the filter leaves out.
+     * (e.g. `['rows']`) to skip paying for a count the caller doesn't need. `'hidden'` adds `hidden`, every entity
+     * less the rows on this page.
      * @returns {Promise<CharacterQueryResult>}
      */
     async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT) {

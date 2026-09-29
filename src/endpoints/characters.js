@@ -2395,9 +2395,9 @@ function queryHashesReply(hashes) {
 /**
  * `/query`'s answer to one request body.
  *
- * `want: 'hidden'` adds `hidden`: how many entities the filter leaves out, that is every character (and, with
- * `filter.includeGroups`, every group) less `total`. It implies `total`, and is `~`-prefixed (in hash mode, flagged)
- * when either count is estimated.
+ * `want: 'hidden'` adds `hidden`, upstream's "N hidden" count: every character (and, with `filter.includeGroups`, every
+ * group) less the rows on this page. It implies `total`, and is `~`-prefixed (in hash mode, flagged) when the count of
+ * every entity is estimated.
  * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
  * @param {object} body The request body: filter, sort, want, page, pageSize, ifToken.
  * @param {{ groupsOnly?: boolean }} [options] groupsOnly, with `filter.includeGroups`: leave characters out. Its token
@@ -2424,13 +2424,13 @@ async function runQuery(user, body, options = {}) {
         const hashes = reply.hashes;
         return queryHashesReply({
             ...hashes,
-            hidden: Math.max(0, Number(all.total ?? 0) - Number(hashes.total ?? 0)),
-            approxHidden: Boolean(all.approxTotal || hashes.approxTotal),
+            hidden: Math.max(0, Number(all.total ?? 0) - (hashes.hashRows?.length ?? 0)),
+            approxHidden: Boolean(all.approxTotal),
         });
     }
-    const listed = parseQueryTotal(reply.body.total);
-    const hidden = Math.max(0, Number(all.total ?? 0) - listed.value);
-    return queryReply(reply.status, { ...reply.body, hidden: all.approxTotal || listed.approx ? `~${hidden}` : hidden });
+    const shown = Array.isArray(reply.body.rows) ? reply.body.rows.length : 0;
+    const hidden = Math.max(0, Number(all.total ?? 0) - shown);
+    return queryReply(reply.status, { ...reply.body, hidden: all.approxTotal ? `~${hidden}` : hidden });
 }
 
 /**

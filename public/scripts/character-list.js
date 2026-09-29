@@ -449,7 +449,7 @@ export async function printCharacters(fullRefresh = false) {
         const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
             trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT));
 
-        // The page response's count of entities the filter leaves out, `~`-prefixed when approximate.
+        // The page response's `hidden`: every entity less the rows on that page, `~`-prefixed when approximate.
         /** @type {number|string} */
         let pageHidden = 0;
         // Serves the already-fetched probe to ajaxFunction's first call instead of re-fetching.

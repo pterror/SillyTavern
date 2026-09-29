@@ -5,8 +5,10 @@ import os from 'node:os';
 import process from 'node:process';
 import lodash from 'lodash';
 
-// `/query`'s `want: 'hidden'`: how many entities the filter leaves out, which the character list's "N hidden" badge
-// shows. The same on every page, in JSON and in hash mode (through the real client repository).
+// `/query`'s `want: 'hidden'`, which the character list's "N hidden" badge shows. Upstream's printCharacters() counts
+// `(characters.length + groups.length) - displayCount`, displayCount being the characters and groups rendered on the
+// current page (folder tiles don't add to it): every entity less the page's rows. Checked in JSON and in hash mode
+// (through the real client repository).
 
 const originalCwd = process.cwd();
 const noop = () => {};
@@ -153,16 +155,25 @@ async function seedLibrary() {
 const NAME_ASC = { field: 'name', order: 'asc' };
 
 describe('/query want: hidden', () => {
-    test('JSON: every entity less the matches, the same on every page', async () => {
+    test('JSON: every entity less the rows on this page', async () => {
         await seedLibrary();
-        for (const page of [1, 2, 3]) {
-            const withGroups = await queryJson({ filter: { fav: true, includeGroups: true }, sort: NAME_ASC, page, pageSize: 1, want: ['rows', 'hidden'] });
-            expect(withGroups).toMatchObject({ total: 3, hidden: 4 });
-            const charactersOnly = await queryJson({ filter: { fav: true }, sort: NAME_ASC, page, pageSize: 1, want: ['rows', 'total', 'hidden'] });
-            expect(charactersOnly).toMatchObject({ total: 2, hidden: 3 });
+        // Three matches (A, B, g1) over pages of two: two rows, then one, then none.
+        for (const [page, rows, hidden] of [[1, 2, 5], [2, 1, 6], [3, 0, 7]]) {
+            const withGroups = await queryJson({ filter: { fav: true, includeGroups: true }, sort: NAME_ASC, page, pageSize: 2, want: ['rows', 'hidden'] });
+            expect(withGroups.rows).toHaveLength(rows);
+            expect(withGroups).toMatchObject({ total: 3, hidden });
         }
+        // Characters only: five in all, two matches.
+        for (const [page, hidden] of [[1, 4], [2, 4]]) {
+            const charactersOnly = await queryJson({ filter: { fav: true }, sort: NAME_ASC, page, pageSize: 1, want: ['rows', 'total', 'hidden'] });
+            expect(charactersOnly).toMatchObject({ total: 2, hidden });
+        }
+        // No filter still leaves out what isn't on this page; the badge shows only while a filter is set, as upstream.
         const unfiltered = await queryJson({ filter: { includeGroups: true }, sort: NAME_ASC, page: 1, pageSize: 2, want: ['rows', 'total', 'hidden'] });
-        expect(unfiltered).toMatchObject({ total: 7, hidden: 0 });
+        expect(unfiltered).toMatchObject({ total: 7, hidden: 5 });
+        // No rows wanted, none shown.
+        const noRows = await queryJson({ filter: { fav: true, includeGroups: true }, sort: NAME_ASC, page: 1, pageSize: 2, want: ['total', 'hidden'] });
+        expect(noRows).toMatchObject({ total: 3, hidden: 7 });
 
         const without = await queryJson({ filter: { fav: true, includeGroups: true }, sort: NAME_ASC, page: 1, pageSize: 1, want: ['rows', 'total'] });
         expect(without).not.toHaveProperty('hidden');
@@ -171,22 +182,24 @@ describe('/query want: hidden', () => {
     test('hash mode through the client repository, on every page and from its unchanged cache', async () => {
         await seedLibrary();
         const repository = new repositoryModule.CharacterRepository(/** @type {any} */ ({ get: () => undefined, has: () => false, onChange: () => noop }));
+        // Four matches (C, D, E, g2) over pages of three.
         const filter = { fav: false, includeGroups: true };
-        for (const page of [1, 2]) {
-            const result = await repository.query(filter, NAME_ASC, page, 2, ['rows', 'total', 'hidden']);
-            expect(result).toMatchObject({ total: 4, hidden: 3 });
+        for (const [page, rows, hidden] of [[1, 3, 4], [2, 1, 6]]) {
+            const result = await repository.query(filter, NAME_ASC, page, 3, ['rows', 'total', 'hidden']);
+            expect(result.rows).toHaveLength(rows);
+            expect(result).toMatchObject({ total: 4, hidden });
         }
         // The repeat is answered `unchanged` and served from the cached response.
-        const repeat = await repository.query(filter, NAME_ASC, 1, 2, ['rows', 'total', 'hidden']);
-        expect(repeat).toMatchObject({ total: 4, hidden: 3 });
-        expect(repeat.rows).toHaveLength(2);
+        const repeat = await repository.query(filter, NAME_ASC, 1, 3, ['rows', 'total', 'hidden']);
+        expect(repeat).toMatchObject({ total: 4, hidden: 4 });
+        expect(repeat.rows).toHaveLength(3);
 
         const without = await repository.query(filter, NAME_ASC, 1, 2, ['rows', 'total']);
         expect(without.hidden).toBeUndefined();
         expect(without.rows).toHaveLength(2);
     }, 30000);
 
-    test('an estimated total gives an estimated hidden count', async () => {
+    test('an estimated match total leaves the hidden count exact', async () => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
         for (let i = 0; i < 20; i++) {
             await seedCharacter(`v${String(i).padStart(2, '0')}.png`, { name: `Vampire ${i}`, file: true });
@@ -204,7 +217,9 @@ describe('/query want: hidden', () => {
         } while (Date.now() < deadline);
 
         // A relevance page counts only the matches it ranked (2 + 5 over-fetched).
+        // Twenty-one characters less the two rows on the page; the match estimate plays no part.
         expect(answer.total).toBe('~7');
-        expect(answer.hidden).toBe('~14');
+        expect(answer.rows).toHaveLength(2);
+        expect(answer.hidden).toBe(19);
     }, 30000);
 });
