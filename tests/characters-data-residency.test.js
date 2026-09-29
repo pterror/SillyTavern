@@ -418,7 +418,7 @@ describe('delete, set default and move find a greeting that moved by its hash, a
 
         const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[2] });
         expect(deleted.status).toBe(200);
-        expect(await deleted.json()).toEqual({ ok: true, hashes: [hashes[0], hashes[1]], default_position: 0, position: 2 });
+        expect(await deleted.json()).toEqual({ ok: true, greetings: ['hello', 'second'], hashes: [hashes[0], hashes[1]], default_position: 0, position: 2 });
         expect((await storedCard()).data.alternate_greetings).toEqual(['second']);
     });
 
@@ -427,7 +427,7 @@ describe('delete, set default and move find a greeting that moved by its hash, a
 
         const set = await post('greetings/default/set', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[2] });
         expect(set.status).toBe(200);
-        expect(await set.json()).toEqual({ ok: true, hashes, default_position: 2, position: 2 });
+        expect(await set.json()).toEqual({ ok: true, greetings: ['hello', 'second', 'third'], hashes, default_position: 2, position: 2 });
         expect((await storedCard()).first_mes).toBe('third');
     });
 
@@ -439,7 +439,7 @@ describe('delete, set default and move find a greeting that moved by its hash, a
         });
         expect(moved.status).toBe(200);
         expect(await moved.json()).toEqual({
-            ok: true, hashes: [hashes[0], hashes[2], hashes[1]], default_position: 0, source_position: 2, target_position: 1,
+            ok: true, greetings: ['hello', 'third', 'second'], hashes: [hashes[0], hashes[2], hashes[1]], default_position: 0, source_position: 2, target_position: 1,
         });
         expect((await storedCard()).data.alternate_greetings).toEqual(['third', 'second']);
     });
@@ -460,6 +460,39 @@ describe('delete, set default and move find a greeting that moved by its hash, a
         });
         expect(moved.status).toBe(409);
         expect(await storedCard()).toEqual(before);
+    });
+});
+
+describe('every greeting op answers with the greeting list as stored', () => {
+    test('add, edit, move, set default, unset default and delete each return the list after the op, other writers\' changes included', async () => {
+        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
+        const body = async (response) => {
+            expect(response.status).toBe(200);
+            return response.json();
+        };
+
+        const add = await body(await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' }));
+        expect(add.greetings).toEqual(['hello', 'second']);
+        // A write this caller didn't make: its next response carries it.
+        await body(await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'third' }));
+
+        const edit = await body(await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: add.hashes[1], text: 'second-edited' }));
+        expect(edit.greetings).toEqual(['hello', 'second-edited', 'third']);
+        expect(edit.hashes).toHaveLength(3);
+
+        const move = await body(await post('greetings/move', {
+            avatar_url: 'Alice.png', source_position: 2, expected_hash: edit.hashes[2], side: 'before', target_position: 0, target_expected_hash: edit.hashes[0],
+        }));
+        expect(move.greetings).toEqual(['third', 'hello', 'second-edited']);
+
+        const set = await body(await post('greetings/default/set', { avatar_url: 'Alice.png', position: 2, expected_hash: move.hashes[2] }));
+        expect(set.greetings).toEqual(['third', 'hello', 'second-edited']);
+
+        const unset = await body(await post('greetings/default/unset', { avatar_url: 'Alice.png', expected_default_position: set.default_position }));
+        expect(unset.greetings).toEqual(['third', 'hello', 'second-edited']);
+
+        const deleted = await body(await post('greetings/delete', { avatar_url: 'Alice.png', position: 0, expected_hash: unset.hashes[0] }));
+        expect(deleted.greetings).toEqual(['hello', 'second-edited']);
     });
 });
 

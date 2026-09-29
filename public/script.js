@@ -9642,10 +9642,19 @@ function hashGreetingText(text) {
 }
 
 /**
+ * @typedef {object} GreetingOpResult A confirmed greeting op: the character's greeting list as the server holds it after the op.
+ * @property {true} ok
+ * @property {string[]} greetings
+ * @property {number[]} hashes Position-aligned with `greetings`.
+ * @property {number|null} defaultPosition
+ * @property {number} [position] Where an edit, delete or set-default acted.
+ */
+
+/**
  * Posts one named greeting-list operation; resolves to a result object rather than throwing, even for a refused op (409) or network failure.
  * @param {string} opName The path segment after `/greetings/`, e.g. `'add'`, `'default/set'`.
  * @param {object} body
- * @returns {Promise<{ok: true, hashes: number[], defaultPosition: number|null, position?: number}|{ok: false, status?: number, reason?: string}>} `position` is where an edit landed.
+ * @returns {Promise<GreetingOpResult|{ok: false, status?: number, reason?: string}>}
  */
 async function postGreetingOp(opName, body) {
     try {
@@ -9657,7 +9666,7 @@ async function postGreetingOp(opName, body) {
         let payload = null;
         try { payload = await response.json(); } catch { /* no body, or not JSON */ }
         if (response.ok && payload?.ok) {
-            return { ok: true, hashes: payload.hashes, defaultPosition: payload.default_position, position: payload.position };
+            return { ok: true, greetings: payload.greetings, hashes: payload.hashes, defaultPosition: payload.default_position, position: payload.position };
         }
         return { ok: false, status: response.status, reason: payload?.reason };
     } catch (error) {
@@ -9689,30 +9698,33 @@ function applyGreetingsModelToCharacter(character, model) {
 }
 
 /**
- * Applies a confirmed greeting op to the character and the pager. Call it only from inside {@link queueGreetingSave}:
- * the save's CHARACTER_EDITED fires once the save has released its queue slot.
- * `hashes` must be the op response's `hashes`, never recomputed locally.
+ * Gives the character and the pager the greeting list the server returned for a confirmed op, which also carries
+ * whatever other sessions changed. Call it only from inside {@link queueGreetingSave}: the save's CHARACTER_EDITED
+ * fires once the save has released its queue slot.
  * @param {object} character
- * @param {string[]} greetings
- * @param {number|null} defaultIndex
- * @param {number[]} hashes
+ * @param {GreetingOpResult} result
+ * @param {{expectedHash: number, text: string}} [edit] For an edit op: the edited greeting's hash before the edit, and the text sent.
+ * The edit is recorded from these, since the list before and after can also differ by other sessions' changes.
  */
-function applyGreetingOpSuccess(character, greetings, defaultIndex, hashes) {
+function applyGreetingOpSuccess(character, result, edit) {
     const run = greetingSaveRuns.get(character?.avatar);
     if (!run) {
         throw new Error(`applyGreetingOpSuccess: no queued greeting save for ${character?.avatar} is running`);
     }
     const before = cardToGreetingsModel(character).greetings;
-    applyGreetingsModelToCharacter(character, { greetings, defaultIndex });
-    setGreetingPagerGreetings(greetings, defaultIndex, hashes);
+    applyGreetingsModelToCharacter(character, { greetings: result.greetings, defaultIndex: result.defaultPosition });
+    setGreetingPagerGreetings(result.greetings, result.defaultPosition, result.hashes);
     const after = cardToGreetingsModel(character).greetings;
     if (!run.character) {
         run.character = character;
         run.before = before;
     }
     run.after = after;
-    const edit = findGreetingEdit(before, after);
-    if (edit) run.edits.push(edit);
+    const from = edit ? before.find(text => hashGreetingText(text) === edit.expectedHash) : undefined;
+    const change = edit
+        ? (from !== undefined && from !== edit.text && Number.isInteger(result.position) ? { from, to: edit.text, index: result.position } : null)
+        : findGreetingEdit(before, after);
+    if (change) run.edits.push(change);
 }
 
 /**
@@ -9739,22 +9751,6 @@ function findGreetingEdit(before, after) {
     if (before.length !== after.length) return null;
     const changed = after.flatMap((text, i) => (text === before[i] ? [] : [i]));
     return changed.length === 1 ? { from: before[changed[0]], to: after[changed[0]], index: changed[0] } : null;
-}
-
-/**
- * The greeting list the server holds after a confirmed edit or add: the character's last confirmed list with
- * `text` (the text sent with that op) put at `position`. Never the live editing list, which may already hold
- * text typed after the op was sent, or edits to other greetings that aren't saved yet.
- * @param {object} character
- * @param {'edit'|'add'} op
- * @param {number} position
- * @param {string} text
- * @returns {string[]}
- */
-function confirmedGreetingsAfterOp(character, op, position, text) {
-    const greetings = cardToGreetingsModel(character).greetings.slice();
-    greetings.splice(position, op === 'edit' ? 1 : 0, text);
-    return greetings;
 }
 
 /**
@@ -9933,7 +9929,7 @@ async function saveGreetingPagerEdit(avatar, character, position, expectedHash, 
     const result = await postGreetingOp('edit', { avatar_url: avatar, position, expected_hash: expectedHash, text });
     if (result.ok) {
         const landed = Number.isInteger(result.position) ? result.position : position;
-        applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', landed, text), result.defaultPosition, result.hashes);
+        applyGreetingOpSuccess(character, result, { expectedHash, text });
         return { position: landed, hash: result.hashes[landed] };
     }
     console.error('Greeting save failed', { avatar, position, status: result.status, reason: result.reason });
@@ -9981,7 +9977,7 @@ async function commitGreetingFieldValue(value) {
         if (value === '') return false;
         const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: greetingPagerState.hashes.length, text: value });
         if (result.ok) {
-            applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', target.position, value), result.defaultPosition, result.hashes);
+            applyGreetingOpSuccess(character, result);
             if (edit && greetingPagerEdit === edit) {
                 edit.committed = true;
                 edit.hash = result.hashes[target.position];
@@ -10149,10 +10145,7 @@ function openAlternateGreetings() {
                     toastr.error(t`Failed to move the greeting.`, t`Greeting not moved`);
                     return;
                 }
-                const newGreetings = array.slice();
-                const [moved] = newGreetings.splice(sourceIndex, 1);
-                newGreetings.splice(insertIndex, 0, moved);
-                applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
+                applyGreetingOpSuccess(character, result);
 
                 await popup.complete(POPUP_RESULT.AFFIRMATIVE);
                 openAlternateGreetings();
@@ -10231,7 +10224,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
 
             const result = await postGreetingOp('edit', { avatar_url: avatar, position: rowIndex, expected_hash: expectedHash, text });
             if (result.ok) {
-                applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'edit', rowIndex, text), result.defaultPosition, result.hashes);
+                applyGreetingOpSuccess(character, result, { expectedHash, text });
                 return;
             }
             console.error('Greeting edit failed', { avatar, position: rowIndex, status: result.status, reason: result.reason });
@@ -10272,7 +10265,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 const result = await queueGreetingSave(avatar, async () => {
                     const added = await postGreetingOp('add', { avatar_url: avatar, position: addedIndex, expected_length: greetingPagerState.hashes.length, text: value });
                     if (added.ok) {
-                        applyGreetingOpSuccess(character, confirmedGreetingsAfterOp(character, 'add', addedIndex, value), added.defaultPosition, added.hashes);
+                        applyGreetingOpSuccess(character, added);
                     }
                     return added;
                 });
@@ -10343,9 +10336,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                     : t`Failed to delete the greeting.`, t`Greeting not deleted`);
                 return;
             }
-            const newGreetings = array.slice();
-            newGreetings.splice(index, 1);
-            applyGreetingOpSuccess(character, newGreetings, result.defaultPosition, result.hashes);
+            applyGreetingOpSuccess(character, result);
 
             // Sync and reopen
             await popup.complete(POPUP_RESULT.AFFIRMATIVE);
@@ -10402,7 +10393,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                     : t`Failed to set the default greeting.`, t`Default not changed`);
                 return;
             }
-            applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
+            applyGreetingOpSuccess(character, result);
 
             await popup.complete(POPUP_RESULT.AFFIRMATIVE);
             openAlternateGreetings();
@@ -10431,7 +10422,7 @@ function addAlternateGreeting(template, greeting, index, getArray, popup, model,
                 toastr.error(t`Failed to clear the default greeting.`, t`Default not changed`);
                 return;
             }
-            applyGreetingOpSuccess(character, getArray().slice(), result.defaultPosition, result.hashes);
+            applyGreetingOpSuccess(character, result);
 
             await popup.complete(POPUP_RESULT.AFFIRMATIVE);
             openAlternateGreetings();
@@ -10958,7 +10949,7 @@ async function saveGreetingsFromForm(avatar, baselineCard, card) {
             defaultIndex = result.defaultPosition;
             const character = charactersStore.get(avatar);
             if (character) {
-                applyGreetingOpSuccess(character, greetings.slice(), defaultIndex, hashes);
+                applyGreetingOpSuccess(character, result, opName === 'edit' ? { expectedHash: body.expected_hash, text: body.text } : undefined);
             }
             return true;
         };

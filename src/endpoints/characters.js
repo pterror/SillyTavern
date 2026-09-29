@@ -1506,7 +1506,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
  * @param {import('express').Request} request
  * @param {string} avatar avatar filename (e.g. "char.png")
  * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
- * @returns {Promise<{ok: boolean, reason?: string, status?: number, hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
+ * @returns {Promise<{ok: boolean, reason?: string, status?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
  */
 async function applyGreetingOperation(request, avatar, op) {
     const avatarPath = path.join(request.user.directories.characters, avatar);
@@ -1528,6 +1528,7 @@ async function applyGreetingOperation(request, avatar, op) {
     if (unchanged) {
         return {
             ok: true,
+            greetings: model.greetings,
             hashes: model.greetings.map(hashGreetingText),
             defaultPosition: model.defaultIndex,
             position: result.position,
@@ -1548,6 +1549,7 @@ async function applyGreetingOperation(request, avatar, op) {
 
     return {
         ok: true,
+        greetings: result.model.greetings,
         hashes: result.model.greetings.map(hashGreetingText),
         defaultPosition: result.model.defaultIndex,
         position: result.position,
@@ -1557,7 +1559,8 @@ async function applyGreetingOperation(request, avatar, op) {
 }
 
 /**
- * On success, echoes back the post-op hash-per-position list and default position so a caller can chain further operations without re-fetching the card,
+ * On success, echoes back the post-op greeting list, its hash-per-position list and the default position, so a caller can
+ * show the list as stored (other sessions' changes included) and chain further operations without re-fetching the card,
  * and the positions the op acted on: `position` for edit, delete and set-default, `source_position` and
  * `target_position` for move.
  * @param {import('express').Response} response
@@ -1567,7 +1570,7 @@ function sendGreetingOpResult(response, result) {
     if (!result.ok) {
         return response.status(result.status ?? 409).send({ ok: false, reason: result.reason });
     }
-    const body = { ok: true, hashes: result.hashes, default_position: result.defaultPosition };
+    const body = { ok: true, greetings: result.greetings, hashes: result.hashes, default_position: result.defaultPosition };
     if (result.position !== undefined) body.position = result.position;
     if (result.sourcePosition !== undefined) body.source_position = result.sourcePosition;
     if (result.targetPosition !== undefined) body.target_position = result.targetPosition;
