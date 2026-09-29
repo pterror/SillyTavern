@@ -1060,9 +1060,11 @@ export function showCharacterSyncFailedToast() {
  * @param {object} [options]
  * @param {boolean} [options.silent=false]
  * @param {boolean} [options.silentGroups=false]
- * @param {boolean} [options.skipPrint=false] Skip the trailing printCharacters(true)/search-refetch - for a
+ * @param {boolean} [options.skipPrint=false] Skip the trailing printCharacters()/search-refetch - for a
  * caller that's about to do its own smaller, targeted DOM update (or its own real requery, like
  * select_rm_info()'s flash-to-new-character navigation) instead.
+ * @param {boolean} [options.keepListPosition=false] Reprint the list on the page and scroll distance it is at,
+ * instead of going back to page 1 at the top - for a refresh the user didn't ask for.
  */
 export async function getCharacters(options = {}) {
     try {
@@ -1073,7 +1075,7 @@ export async function getCharacters(options = {}) {
     }
 }
 
-async function syncCharacters({ silent = false, silentGroups = false, skipPrint = false } = {}) {
+async function syncCharacters({ silent = false, silentGroups = false, skipPrint = false, keepListPosition = false } = {}) {
     let newCharacters;
     let charactersChanged = true;
     let lastError;
@@ -1151,7 +1153,7 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
 
     await getGroups({ silent: silentGroups });
     if (skipPrint) return;
-    await printCharacters(true);
+    await printCharacters(!keepListPosition);
 
     // Server search results were fetched against whatever search index state existed at the time; a change
     // that landed since then (e.g. an import, or the background rebuild it triggered) can make them stale.
