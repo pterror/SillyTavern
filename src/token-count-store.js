@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { getMessageTreeDb } from './message-tree-db.js';
 import { countWithTokenizer, encodeWithTokenizer, encodeWithTokenizerAndChunks, isLlamaCppTokenizer, tokenizerIdentity } from './tokenizer-resolve.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
+import { delay } from './util.js';
 
 /**
  * What a stored result is of. The same text counts differently with and without BOS, or as a
@@ -102,37 +103,55 @@ export async function readIdsRow(directories, identity, hash) {
  * @param {import('./message-tree-db.js').Directories} directories
  * @param {PendingTokenRows} pending
  * @param {number} [now] The `last_used` to write.
+ * @param {TokenTableLimits} [limits]
+ * @returns {Promise<{ prunesScheduled: TokenTable[] }>} The tables this write pushed past the cap and scheduled a
+ *   prune for; a table with one already pending or its row count being set isn't scheduled again.
  */
-export async function writeBack(directories, { counts = [], ids = [] }, now = Date.now()) {
-    if (counts.length === 0 && ids.length === 0) return;
+export async function writeBack(directories, { counts = [], ids = [] }, now = Date.now(), limits = DEFAULT_TOKEN_TABLE_LIMITS) {
+    /** @type {TokenTable[]} */
+    const prunesScheduled = [];
+    if (counts.length === 0 && ids.length === 0) return { prunesScheduled };
     const db = await getMessageTreeDb(directories);
-    if (!db) return;
+    if (!db) return { prunesScheduled };
+    const countsFill = rowCountFills.get(jobKey(directories, 'token_counts'));
+    const idsFill = rowCountFills.get(jobKey(directories, 'token_ids'));
+    const inserted = { token_counts: 0, token_ids: 0, countsBehindFill: 0, idsBehindFill: 0 };
     db.transaction(() => {
-        let insertedCounts = 0;
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        inserted.token_counts = inserted.token_ids = inserted.countsBehindFill = inserted.idsBehindFill = 0;
         for (const { identity, hash, count } of counts) {
             if (db.run(
                 'INSERT INTO token_counts (identity, text_hash, count, last_used) VALUES (@identity, @hash, @count, @now) ON CONFLICT DO NOTHING',
                 { identity, hash, count, now }).changes > 0) {
-                insertedCounts++;
+                inserted.token_counts++;
+                if (countsFill && isBehindFill(countsFill, identity, hash)) inserted.countsBehindFill++;
             } else {
                 db.run('UPDATE token_counts SET last_used = @now WHERE identity = @identity AND text_hash = @hash', { identity, hash, now });
             }
         }
-        let insertedIds = 0;
         for (const { identity, hash, ids: tokenIds, chunks = null } of ids) {
             const storedChunks = chunks === null ? null : JSON.stringify(chunks);
             if (db.run(
                 'INSERT INTO token_ids (identity, text_hash, ids, chunks, last_used) VALUES (@identity, @hash, @ids, @chunks, @now) ON CONFLICT DO NOTHING',
                 { identity, hash, ids: JSON.stringify(Array.from(tokenIds)), chunks: storedChunks, now }).changes > 0) {
-                insertedIds++;
+                inserted.token_ids++;
+                if (idsFill && isBehindFill(idsFill, identity, hash)) inserted.idsBehindFill++;
             } else {
                 db.run('UPDATE token_ids SET last_used = @now, chunks = COALESCE(chunks, @chunks) WHERE identity = @identity AND text_hash = @hash',
                     { identity, hash, chunks: storedChunks, now });
             }
         }
-        addToRowCount(db, ROW_COUNT_KEYS.token_counts, insertedCounts);
-        addToRowCount(db, ROW_COUNT_KEYS.token_ids, insertedIds);
+        addToRowCount(db, ROW_COUNT_KEYS.token_counts, inserted.token_counts);
+        addToRowCount(db, ROW_COUNT_KEYS.token_ids, inserted.token_ids);
     });
+    if (countsFill) countsFill.behind += inserted.countsBehindFill;
+    if (idsFill) idsFill.behind += inserted.idsBehindFill;
+    for (const table of TOKEN_TABLES) {
+        if (inserted[table] > 0 && readRowCount(db, table) > limits.cap && schedulePrune(directories, table, limits)) {
+            prunesScheduled.push(table);
+        }
+    }
+    return { prunesScheduled };
 }
 
 /**
@@ -147,6 +166,249 @@ function addToRowCount(db, key, delta) {
         `INSERT INTO meta (key, value) VALUES (@key, @delta)
          ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + @delta`,
         { key, delta });
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {TokenTable} table
+ * @returns {number}
+ */
+function readRowCount(db, table) {
+    const row = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: ROW_COUNT_KEYS[table] }));
+    return row === undefined ? 0 : Number(row.value);
+}
+
+// ---------------------------------------------------------------------------
+//  Row cap: counting after listen, pruning least recently used first
+// ---------------------------------------------------------------------------
+
+/** Rows each table may hold before the least recently used are pruned. */
+export const TOKEN_COUNT_ROW_CAP = 1_000_000;
+/** Rows one page of the count, or one prune batch, reads. */
+export const PRUNE_BATCH_ROWS = 5000;
+/** The pause between pages and between batches. */
+export const PRUNE_PAUSE_MS = 50;
+
+/** @typedef {'token_counts' | 'token_ids'} TokenTable */
+/** @typedef {{ cap: number, batchRows: number, pauseMs: number }} TokenTableLimits */
+
+/** @type {readonly TokenTable[]} */
+const TOKEN_TABLES = Object.freeze(['token_counts', 'token_ids']);
+
+/** @type {TokenTableLimits} */
+const DEFAULT_TOKEN_TABLE_LIMITS = Object.freeze({ cap: TOKEN_COUNT_ROW_CAP, batchRows: PRUNE_BATCH_ROWS, pauseMs: PRUNE_PAUSE_MS });
+
+/**
+ * The count or prune running for a table of a store, by {@link jobKey}; at most one per table. A job removes itself
+ * in the same synchronous step as its last check, so a write-back never sees one that has finished its work.
+ * @type {Map<string, Promise<void>>}
+ */
+const tableJobs = new Map();
+
+/**
+ * A table's row count being set, by {@link jobKey}: the keys up to `after` (in primary key order) are counted
+ * already, so a row inserted at or before it is added to `behind`; one after it is counted by a later page.
+ * @type {Map<string, { after: { identity: string, hash: string } | null, behind: number }>}
+ */
+const rowCountFills = new Map();
+
+/**
+ * @param {import('./message-tree-db.js').Directories} directories
+ * @param {TokenTable} table
+ */
+function jobKey(directories, table) {
+    return `${directories.root}\0${table}`;
+}
+
+/**
+ * Whether a key sorts at or before the fill's page boundary, in SQLite's BINARY order (UTF-8 bytes).
+ * @param {{ after: { identity: string, hash: string } | null }} fill
+ * @param {string} identity
+ * @param {string} hash
+ */
+function isBehindFill(fill, identity, hash) {
+    if (fill.after === null) return false;
+    const byIdentity = Buffer.compare(Buffer.from(identity), Buffer.from(fill.after.identity));
+    return byIdentity < 0 || (byIdentity === 0 && Buffer.compare(Buffer.from(hash), Buffer.from(fill.after.hash)) <= 0);
+}
+
+/**
+ * Starts `work` as the table's job. `release` removes it from {@link tableJobs}; `work` calls it in the same
+ * synchronous step as its last check, and it is called anyway once `work` settles.
+ * @param {string} key
+ * @param {(release: () => void) => Promise<void>} work
+ * @param {string} label For the log when the job fails.
+ * @returns {Promise<void>}
+ */
+function startTableJob(key, work, label) {
+    /** @type {Promise<void>} */
+    let job;
+    const release = () => {
+        if (tableJobs.get(key) === job) tableJobs.delete(key);
+    };
+    job = Promise.resolve().then(() => work(release)).catch((err) => {
+        console.error(`[token-count-store] ${label} failed:`, err);
+    }).finally(release);
+    tableJobs.set(key, job);
+    return job;
+}
+
+/**
+ * Schedules a prune of the table, unless it has a job already.
+ * @param {import('./message-tree-db.js').Directories} directories
+ * @param {TokenTable} table
+ * @param {TokenTableLimits} limits
+ * @returns {boolean} Whether one was scheduled.
+ */
+function schedulePrune(directories, table, limits) {
+    const key = jobKey(directories, table);
+    if (tableJobs.has(key)) return false;
+    startTableJob(key, release => pruneTokenTable(directories, table, limits, release), `Pruning ${table} of ${directories.root}`);
+    return true;
+}
+
+/**
+ * Deletes one batch of the table's least recently used rows: as many as it is over the cap, at most `batchRows`.
+ * The read finishes before the delete, and the delete and the lower running count are one transaction.
+ * @param {import('./message-tree-db.js').Directories} directories
+ * @param {TokenTable} table
+ * @param {TokenTableLimits} [limits]
+ * @returns {Promise<number>} The rows deleted; 0 at or under the cap.
+ */
+export async function pruneBatch(directories, table, limits = DEFAULT_TOKEN_TABLE_LIMITS) {
+    if (!TOKEN_TABLES.includes(table)) throw new Error(`Not a token table: ${table}`);
+    const db = await getMessageTreeDb(directories);
+    return db ? pruneBatchSync(db, directories, table, limits) : 0;
+}
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {import('./message-tree-db.js').Directories} directories
+ * @param {TokenTable} table
+ * @param {TokenTableLimits} limits
+ * @returns {number} The rows deleted.
+ */
+function pruneBatchSync(db, directories, table, { cap, batchRows }) {
+    const over = readRowCount(db, table) - cap;
+    if (over <= 0) return 0;
+    const limit = Math.min(batchRows, over);
+    const rows = /** @type {{ identity: string, text_hash: string, last_used: number }[]} */ (db.readBounded(
+        `SELECT identity, text_hash, last_used FROM ${table} ORDER BY last_used LIMIT @limit`, { limit }, limit));
+    if (rows.length === 0) {
+        throw new Error(`${table} of ${directories.root} has a running count of ${readRowCount(db, table)} but no rows`);
+    }
+    const state = { deleted: 0 };
+    db.transaction(() => {
+        // Reset here: a transaction that hits busy is rolled back and rerun.
+        state.deleted = 0;
+        for (const row of rows) {
+            state.deleted += db.run(
+                `DELETE FROM ${table} WHERE identity = @identity AND text_hash = @hash AND last_used = @lastUsed`,
+                { identity: row.identity, hash: row.text_hash, lastUsed: row.last_used }).changes;
+        }
+        addToRowCount(db, ROW_COUNT_KEYS[table], -state.deleted);
+    });
+    return state.deleted;
+}
+
+/**
+ * Prunes the table a batch at a time, with a pause between batches, until it is at or under the cap, and logs how
+ * many rows it deleted when it deleted any.
+ * @param {import('./message-tree-db.js').Directories} directories
+ * @param {TokenTable} table
+ * @param {TokenTableLimits} [limits]
+ * @param {() => void} [release] Called in the same synchronous step as the check that finds the table at or under
+ *   the cap.
+ * @returns {Promise<number>} The batches that deleted rows.
+ */
+export async function pruneTokenTable(directories, table, limits = DEFAULT_TOKEN_TABLE_LIMITS, release = () => {}) {
+    if (!TOKEN_TABLES.includes(table)) throw new Error(`Not a token table: ${table}`);
+    let batches = 0;
+    let deleted = 0;
+    for (;;) {
+        const db = await getMessageTreeDb(directories);
+        const batchDeleted = db ? pruneBatchSync(db, directories, table, limits) : 0;
+        if (batchDeleted === 0) {
+            release();
+            if (deleted > 0) {
+                console.log(`[token-count-store] Pruned ${deleted} rows from ${table} of ${directories.root}, least recently used first, to its cap of ${limits.cap}.`);
+            }
+            return batches;
+        }
+        deleted += batchDeleted;
+        batches++;
+        await delay(limits.pauseMs);
+    }
+}
+
+/**
+ * Sets the table's running row count from a count read in primary key pages of `batchRows`, with a pause between
+ * pages. Rows written meanwhile are counted once (see {@link rowCountFills}). Writes only when the count differs.
+ * @param {import('./message-tree-db.js').Directories} directories
+ * @param {TokenTable} table
+ * @param {TokenTableLimits} limits
+ */
+async function setRowCountFromTable(directories, table, { batchRows, pauseMs }) {
+    const db = await getMessageTreeDb(directories);
+    if (!db) return;
+    const key = jobKey(directories, table);
+    /** @type {{ after: { identity: string, hash: string } | null, behind: number }} */
+    const fill = { after: null, behind: 0 };
+    rowCountFills.set(key, fill);
+    try {
+        let counted = 0;
+        for (;;) {
+            const page = /** @type {{ identity: string, text_hash: string }[]} */ (fill.after === null
+                ? db.readBounded(`SELECT identity, text_hash FROM ${table} ORDER BY identity, text_hash LIMIT @limit`, { limit: batchRows }, batchRows)
+                : db.readBounded(
+                    `SELECT identity, text_hash FROM ${table} WHERE (identity, text_hash) > (@identity, @hash) ORDER BY identity, text_hash LIMIT @limit`,
+                    { identity: fill.after.identity, hash: fill.after.hash, limit: batchRows }, batchRows));
+            counted += page.length;
+            if (page.length < batchRows) break;
+            const last = page[page.length - 1];
+            fill.after = { identity: last.identity, hash: last.text_hash };
+            await delay(pauseMs);
+        }
+        const total = counted + fill.behind;
+        if (readRowCount(db, table) !== total) {
+            db.run('INSERT INTO meta (key, value) VALUES (@key, @total) ON CONFLICT(key) DO UPDATE SET value = @total',
+                { key: ROW_COUNT_KEYS[table], total });
+        }
+    } finally {
+        rowCountFills.delete(key);
+    }
+}
+
+/**
+ * After listen, for each store in turn and each of its tables: waits for a prune already running, sets the running
+ * row count from the table ({@link setRowCountFromTable}), then prunes it if it is over the cap. Meant to be called
+ * without awaiting it.
+ * @param {import('./message-tree-db.js').Directories[]} directoriesList
+ * @param {TokenTableLimits} [limits]
+ * @returns {Promise<void>} Settles once every store is done.
+ */
+export async function startTokenCountMaintenance(directoriesList, limits = DEFAULT_TOKEN_TABLE_LIMITS) {
+    for (const directories of directoriesList) {
+        for (const table of TOKEN_TABLES) {
+            const key = jobKey(directories, table);
+            while (tableJobs.has(key)) await tableJobs.get(key);
+            await startTableJob(key, async (release) => {
+                await setRowCountFromTable(directories, table, limits);
+                await pruneTokenTable(directories, table, limits, release);
+            }, `Counting and pruning ${table} of ${directories.root}`);
+        }
+    }
+}
+
+/**
+ * @param {import('./message-tree-db.js').Directories} directories
+ * @returns {Promise<void>} Settles once neither of the store's tables has a count or prune running.
+ */
+export async function tokenCountMaintenanceIdle(directories) {
+    for (const table of TOKEN_TABLES) {
+        const key = jobKey(directories, table);
+        while (tableJobs.has(key)) await tableJobs.get(key);
+    }
 }
 
 /**

@@ -23,6 +23,13 @@ const {
     readIdsRow,
     writeBack,
     createStoredCounter,
+    TOKEN_COUNT_ROW_CAP,
+    PRUNE_BATCH_ROWS,
+    PRUNE_PAUSE_MS,
+    pruneBatch,
+    pruneTokenTable,
+    startTokenCountMaintenance,
+    tokenCountMaintenanceIdle,
 } = await import('./token-count-store.js');
 const { tokenizers, tokenizerIdentity } = await import('./tokenizer-resolve.js');
 const { countChatCompletionMessages } = await import('./endpoints/tokenizers.js');
@@ -32,6 +39,7 @@ const directories = { root: tmpRoot };
 const storedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
 const chunksRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
 const oldRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
+const pruneRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'token-count-store-test-'));
 
 /**
  * Reads the rows and the running counts straight from the file, on a handle of its own.
@@ -497,6 +505,147 @@ try {
         assert.deepEqual(Object.keys(localEncoded), ['ids']);
         assert.deepEqual(local.pending.ids.map(row => Object.keys(row)), [['identity', 'hash', 'ids']]);
     }
+
+    // --- pruning, with the constants passed in small ---
+    assert.equal(TOKEN_COUNT_ROW_CAP, 1_000_000);
+    assert.equal(PRUNE_BATCH_ROWS, 5000);
+    assert.equal(PRUNE_PAUSE_MS, 50);
+
+    const pruneIdentity = 'file:sentencepiece:prune';
+    /** One count row per `last_used`, written one write-back each, so each has its own time. */
+    const writeRows = async (dirs, lastUseds, limits = undefined) => {
+        for (const lastUsed of lastUseds) {
+            await writeBack(dirs, { counts: [{ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, `row ${lastUsed}`), count: 1 }] }, lastUsed, limits);
+        }
+    };
+    const lastUseds = rows => rows.map(row => Number(row.last_used)).sort((a, b) => a - b);
+    const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+    /** Sets a running count by hand, on a handle of its own, as a store whose count went wrong. */
+    const setRunning = async (root, key, value) => {
+        const engine = await getSqliteEngine();
+        const db = engine.openDatabase(path.join(root, 'message-tree.sqlite'));
+        try {
+            db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = @value', { key, value: String(value) });
+        } finally {
+            db.close();
+        }
+    };
+
+    // A batch deletes the least recently used, at most the batch size and never below the cap.
+    {
+        const dirs = { root: fs.mkdtempSync(path.join(pruneRoot, 'batch-')) };
+        await writeRows(dirs, range(1, 25));
+        const limits = { cap: 10, batchRows: 5, pauseMs: 0 };
+        assert.equal(await pruneBatch(dirs, 'token_counts', limits), 5, 'one batch is the batch size');
+        let pruned = await inspect(dirs.root);
+        assert.deepEqual(lastUseds(pruned.counts), range(6, 25), 'the 5 least recently used went');
+        assert.equal(pruned.countsRunning, 20);
+
+        const logged = [];
+        const log = console.log;
+        console.log = (...args) => { logged.push(args.join(' ')); };
+        let batches, idle;
+        try {
+            batches = await pruneTokenTable(dirs, 'token_counts', limits);
+            idle = await pruneTokenTable(dirs, 'token_counts', limits);
+        } finally {
+            console.log = log;
+        }
+        assert.equal(batches, 2, 'the rest in two more batches of 5');
+        assert.equal(idle, 0);
+        assert.equal(logged.length, 1, 'one line for the pass that pruned, none for the one that had nothing to prune');
+        assert.match(logged[0], /\b10 rows\b.*\btoken_counts\b/);
+        assert.ok(logged[0].includes(dirs.root));
+        pruned = await inspect(dirs.root);
+        assert.deepEqual(lastUseds(pruned.counts), range(16, 25), 'the 10 most recently used are left');
+        assert.equal(pruned.countsRunning, 10, 'the running count is the real count');
+        assert.equal(await pruneBatch(dirs, 'token_counts', limits), 0, 'at the cap: nothing to delete');
+
+        // Near the cap a batch takes only what is over it.
+        await writeRows(dirs, range(26, 27));
+        assert.equal(await pruneBatch(dirs, 'token_counts', limits), 2);
+        pruned = await inspect(dirs.root);
+        assert.deepEqual(lastUseds(pruned.counts), range(18, 27));
+        assert.equal(pruned.countsRunning, 10);
+        assert.equal(pruned.idsRunning, undefined, 'the other table is untouched');
+    }
+
+    // A write-back that crosses the cap schedules one prune, and the table ends at the cap.
+    {
+        const dirs = { root: fs.mkdtempSync(path.join(pruneRoot, 'crossing-')) };
+        const limits = { cap: 10, batchRows: 4, pauseMs: 30 };
+        await writeRows(dirs, range(1, 10), limits);
+        assert.equal((await inspect(dirs.root)).counts.length, 10, 'at the cap: nothing pruned');
+        assert.deepEqual(await writeBack(dirs, { counts: [{ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, 'row 11'), count: 1 }] }, 11, limits),
+            { prunesScheduled: ['token_counts'] }, 'crossing the cap schedules a prune');
+        // While that prune pauses between batches, more rows cross the cap again: no second prune.
+        assert.deepEqual(await writeBack(dirs, {
+            counts: range(12, 20).map(n => ({ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, `row ${n}`), count: 1 })),
+        }, 20, limits), { prunesScheduled: [] }, 'one prune pending at a time');
+        await tokenCountMaintenanceIdle(dirs);
+        const after = await inspect(dirs.root);
+        assert.equal(after.counts.length, 10, 'the table ends at the cap');
+        assert.equal(after.countsRunning, 10, 'the running count equals the real row count');
+        assert.deepEqual(lastUseds(after.counts), [...range(12, 20).map(() => 20), 11].sort((a, b) => a - b), 'the most recently used are kept');
+        // Under the cap, a write-back schedules nothing.
+        assert.deepEqual(await writeBack(dirs, { counts: [{ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, 'row 12'), count: 1 }] }, 21, limits),
+            { prunesScheduled: [] });
+    }
+
+    // After listen: each table's running count is set from a paged count, then a table over the cap is pruned.
+    {
+        const dirs = { root: fs.mkdtempSync(path.join(pruneRoot, 'boot-')) };
+        await writeRows(dirs, range(1, 13));
+        await writeBack(dirs, { ids: [{ identity: pruneIdentity, hash: tokenKeyHash(TOKEN_KEY_KINDS.IDS, 'x'), ids: [1] }] }, 1);
+        await setRunning(dirs.root, 'token_counts_rows', 999);
+        await setRunning(dirs.root, 'token_ids_rows', 0);
+
+        // Under a cap it doesn't reach: the counts are corrected, nothing pruned.
+        await startTokenCountMaintenance([dirs], { cap: 100, batchRows: 4, pauseMs: 0 });
+        let state = await inspect(dirs.root);
+        assert.equal(state.countsRunning, 13, 'a wrong running count is set to the real one');
+        assert.equal(state.idsRunning, 1);
+        assert.equal(state.counts.length, 13);
+
+        // Rows written while the count pauses between pages are counted once, on either side of where it has got to.
+        await setRunning(dirs.root, 'token_counts_rows', 999);
+        const counting = startTokenCountMaintenance([dirs], { cap: 100, batchRows: 4, pauseMs: 100 });
+        await new Promise(resolve => setTimeout(resolve, 150));
+        const early = { identity: '', hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, 'early') };
+        const late = { identity: '￿', hash: tokenKeyHash(TOKEN_KEY_KINDS.TEXT, 'late') };
+        await writeBack(dirs, { counts: [{ ...early, count: 1 }, { ...late, count: 1 }] }, 50, { cap: 100, batchRows: 4, pauseMs: 100 });
+        await counting;
+        state = await inspect(dirs.root);
+        assert.equal(state.counts.length, 15);
+        assert.equal(state.countsRunning, 15, 'the running count equals the real row count');
+
+        // Over the cap at boot: pruned to it.
+        await startTokenCountMaintenance([dirs], { cap: 6, batchRows: 4, pauseMs: 0 });
+        state = await inspect(dirs.root);
+        assert.equal(state.counts.length, 6);
+        assert.equal(state.countsRunning, 6);
+        assert.deepEqual(lastUseds(state.counts), [10, 11, 12, 13, 50, 50]);
+    }
+
+    // A store whose running count already matches isn't written.
+    {
+        const dirs = { root: fs.mkdtempSync(path.join(pruneRoot, 'unchanged-')) };
+        await startTokenCountMaintenance([dirs], { cap: 10, batchRows: 4, pauseMs: 0 });
+        const state = await inspect(dirs.root);
+        assert.equal(state.countsRunning, undefined, 'an empty table with no running count gets none');
+        assert.equal(state.idsRunning, undefined);
+    }
+
+    // The server starts it after it listens, unawaited.
+    {
+        const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'server-main.js'), 'utf8');
+        const postSetup = source.slice(source.indexOf('async function postSetupTasks('));
+        const postSetupBody = postSetup.slice(0, postSetup.indexOf('\n}\n'));
+        assert.match(postSetupBody, /startTokenCountMaintenance\(/);
+        assert.doesNotMatch(postSetupBody, /await\s+startTokenCountMaintenance/);
+        const preSetup = source.slice(source.indexOf('async function preSetupTasks('));
+        assert.doesNotMatch(preSetup.slice(0, preSetup.indexOf('\n}\n')), /startTokenCountMaintenance\(/);
+    }
 } finally {
     fakeServer.close();
     disposeMessageTreeStores();
@@ -504,6 +653,7 @@ try {
     fs.rmSync(storedRoot, { recursive: true, force: true });
     fs.rmSync(chunksRoot, { recursive: true, force: true });
     fs.rmSync(oldRoot, { recursive: true, force: true });
+    fs.rmSync(pruneRoot, { recursive: true, force: true });
 }
 
 console.log('token-count-store.test.js: all assertions passed');
