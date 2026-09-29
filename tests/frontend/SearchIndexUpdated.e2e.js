@@ -538,6 +538,192 @@ test.describe('re-rendering the visible page keeps the list\'s scroll distance',
     });
 });
 
+test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scroll distance', () => {
+    const CHARACTER_COUNT = 30;
+    const PAGE_SIZE = 10;
+    const SCROLLED_TO = 100;
+
+    /** @type {Awaited<ReturnType<typeof instrument>>} */
+    let log;
+    let term;
+
+    const listPageQueries = (from) => pageQueries(log, from).filter(q => q.pageSize === PAGE_SIZE);
+    const listScrollTop = page => page.locator('#rm_print_characters_block').evaluate(el => el.scrollTop);
+    const currentPage = page => page.evaluate(() => window['$']('#rm_print_characters_pagination').pagination('getCurrentPageNum'));
+
+    test.beforeEach(async ({ page }) => {
+        log = await instrument(page);
+        await page.setViewportSize({ width: 1400, height: 400 });
+        await testSetup.awaitST({ page });
+        await awaitAppReady(page);
+        term = `Pagekeep${Date.now()}`;
+        await page.evaluate(async ({ term, count, size }) => {
+            // @ts-ignore
+            const headers = SillyTavern.getContext().getRequestHeaders({ omitContentType: true });
+            for (let i = 0; i < count; i++) {
+                const form = new FormData();
+                form.set('ch_name', `${term} ${String(i).padStart(2, '0')}`);
+                const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
+                if (!response.ok) throw new Error(`create failed: ${response.status}`);
+            }
+            const { accountStorage } = await import('/scripts/util/AccountStorage.js');
+            accountStorage.setItem('Characters_PerPage', String(size));
+        }, { term, count: CHARACTER_COUNT, size: PAGE_SIZE });
+        await page.reload();
+        await awaitAppReady(page);
+        await openCharacterManagementDrawer(page);
+        await expect.poll(() => listShowing(page)).toBe(true);
+        await waitForQuiet(log);
+    });
+
+    /** Searches for `term` until the search index has taken up the characters created for it. */
+    async function searchCreated(page) {
+        await setSearchTerm(page, log, term);
+        const rows = page.locator('#rm_print_characters_block .character_select');
+        await expect.poll(async () => {
+            if (await rows.count() >= PAGE_SIZE) return true;
+            await sendStreamMessage(page, searchIndexUpdated());
+            await waitForQuiet(log);
+            return false;
+        }, { timeout: 60000 }).toBe(true);
+    }
+
+    /** Goes to page 2 and scrolls the list to SCROLLED_TO. Returns where the queries after that start. */
+    async function toPage2Scrolled(page) {
+        await page.evaluate(() => window['$']('#rm_print_characters_pagination').pagination('go', 2));
+        await waitForQuiet(log);
+        expect(await currentPage(page)).toBe(2);
+        await page.locator('#rm_print_characters_block').evaluate((el, top) => { el.scrollTop = top; }, SCROLLED_TO);
+        expect(await listScrollTop(page)).toBe(SCROLLED_TO);
+        return log.queries.length;
+    }
+
+    /** Checks that page queries ran since `from`, the last for page 2, and that the list is on page 2 at SCROLLED_TO. */
+    async function expectPage2Kept(page, from) {
+        expect(listPageQueries(from).length).toBeGreaterThan(0);
+        expect(listPageQueries(from).at(-1).page).toBe(2);
+        expect(await currentPage(page)).toBe(2);
+        expect(await listScrollTop(page)).toBe(SCROLLED_TO);
+    }
+
+    async function coverList(page) {
+        await page.locator('#rm_button_create').click();
+        await expect.poll(() => listShowing(page)).toBe(false);
+        await waitForQuiet(log);
+    }
+
+    async function uncoverList(page) {
+        await page.locator('#charInfoDrawerIcon').click();
+        await expect.poll(() => listShowing(page)).toBe(true);
+    }
+
+    async function duplicateFirstRow(page) {
+        await page.evaluate(async () => {
+            const avatar = document.querySelector('#rm_print_characters_block .character_select[data-avatar]').getAttribute('data-avatar');
+            const { duplicateCharacter } = await import('/script.js');
+            await duplicateCharacter({ avatar, silent: true });
+        });
+    }
+
+    test('on search-index-updated with a search term', async ({ page }) => {
+        await searchCreated(page);
+        const from = await toPage2Scrolled(page);
+
+        await sendStreamMessage(page, searchIndexUpdated());
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        await expectPage2Kept(page, from);
+    });
+
+    test('on the change stream reopening after an error, without a search term', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+        const changesBefore = log.changes;
+
+        await fireStreamEvents(page, ['error', 'open']);
+        await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        await expectPage2Kept(page, from);
+    });
+
+    test('on the change stream reopening after an error, with a search term', async ({ page }) => {
+        await searchCreated(page);
+        const from = await toPage2Scrolled(page);
+        const changesBefore = log.changes;
+
+        await fireStreamEvents(page, ['error', 'open']);
+        await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        await expectPage2Kept(page, from);
+    });
+
+    test('on the list showing again with a change sync pending, without a search term', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+        await coverList(page);
+        const changesBefore = log.changes;
+        await sendStreamMessage(page, {});
+        await waitForQuiet(log);
+        expect(log.changes).toBe(changesBefore);
+
+        await uncoverList(page);
+        await expect.poll(() => log.changes).toBeGreaterThan(changesBefore);
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        await expectPage2Kept(page, from);
+    });
+
+    test('on the list showing again with no change sync pending', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+        await coverList(page);
+        const changesBefore = log.changes;
+
+        await uncoverList(page);
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        expect(log.changes).toBe(changesBefore);
+        await expectPage2Kept(page, from);
+    });
+
+    test('on duplicating a character, when the visible page is re-queried', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+
+        await duplicateFirstRow(page);
+        await waitForQuiet(log);
+
+        await expectPage2Kept(page, from);
+    });
+
+    test('on duplicating a character, when the visible page can\'t be re-queried', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+        // The search sort still selected after the search term is cleared: the list isn't server-queryable.
+        expect(await page.evaluate(async () => {
+            window['$']('#character_sort_order option[data-field="search"]').prop('selected', true);
+            const { refreshCharacterListCurrentPage } = await import('/scripts/character-list.js');
+            return refreshCharacterListCurrentPage();
+        })).toBe(false);
+        await page.evaluate(() => {
+            window['__pagesLoaded'] = 0;
+            const { eventSource, eventTypes } = window['SillyTavern'].getContext();
+            eventSource.on(eventTypes.CHARACTER_PAGE_LOADED, () => { window['__pagesLoaded']++; });
+        });
+
+        await duplicateFirstRow(page);
+        await waitForQuiet(log);
+
+        // Printed from the resident characters, without a page query.
+        expect(await page.evaluate(() => window['__pagesLoaded'])).toBeGreaterThan(0);
+        expect(listPageQueries(from)).toEqual([]);
+        expect(await currentPage(page)).toBe(2);
+        expect(await listScrollTop(page)).toBe(SCROLLED_TO);
+    });
+});
+
 function disconnectedNotice(page) {
     return page.locator('#toast-container .toast-warning .toast-message', { hasText: 'Live updates are disconnected' });
 }

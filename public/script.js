@@ -901,7 +901,7 @@ export function saveSettingsDebounced(loopCounter, ...keys) {
 
 
 // With a search term the list isn't re-queried here; the visible page is, on 'search-index-updated'.
-const getCharactersDebounced = debounce(() => getCharacters({ skipPrint: hasActiveCharacterSearch() }), 2000);
+const getCharactersDebounced = debounce(() => getCharacters({ skipPrint: hasActiveCharacterSearch(), keepListPosition: true }), 2000);
 
 /**
  * The warning for a queued tag move the server couldn't apply. src/character-metadata-db.js's tagMoveFailedText()
@@ -4988,7 +4988,7 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
     // The duplicate's sorted position isn't knowable client-side (sort can be by name/date/fav/random/search) -
     // re-fetch just the current page rather than guess where to insert a new row.
     if (!refreshCharacterListCurrentPage()) {
-        await printCharacters(true);
+        await printCharacters(false);
     }
 
     return data.path;
@@ -8822,7 +8822,7 @@ function select_rm_characters() {
 
 /**
  * Runs the change sync that a change message arriving while the list was hidden left pending, and reprints the list.
- * @param {boolean} doFullRefresh Passed to printCharacters() when a search term is active.
+ * @param {boolean} doFullRefresh Passed to printCharacters(): false keeps the list's page and scroll distance.
  */
 function syncDirtyCharacterList(doFullRefresh) {
     _charactersDirty = false;
@@ -8830,7 +8830,7 @@ function syncDirtyCharacterList(doFullRefresh) {
         // Only the page fetch, without getCharacters()' extra search query.
         getCharacters({ skipPrint: true }).then(() => printCharacters(doFullRefresh));
     } else {
-        getCharacters();
+        getCharacters({ keepListPosition: !doFullRefresh });
     }
 }
 
