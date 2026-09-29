@@ -26,7 +26,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
+    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
 /**
@@ -881,21 +881,34 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
  * @returns {Promise<TreeChatMessage[]>} Empty array if the character can't be read.
  */
 async function _cardGreetingsFromDisk(directories, avatar) {
+    return (await _cardFromDisk(directories, avatar)).greetings;
+}
+
+/**
+ * {@link _cardGreetingsFromDisk}'s greetings, plus the card's greeting texts by card position.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {Promise<{ greetings: TreeChatMessage[], texts: string[] }>} Both empty if the character can't be read.
+ */
+async function _cardFromDisk(directories, avatar) {
     try {
         // readCardContent(), not readCharacterData(): a greeting edit is persisted to the metadata db
         // without rewriting the PNG, so reading the file directly could show stale greetings.
         const pngStringData = await readCardContent(directories, avatar);
-        if (pngStringData == null || pngStringData === '') return [];
+        if (pngStringData == null || pngStringData === '') return { greetings: [], texts: [] };
         const character = JSON.parse(pngStringData);
         const { greetings } = cardToGreetingsModel(character);
         const speaker = character?.name ?? character?.data?.name ?? '';
         const sendDate = Date.now();
-        return greetings
-            .filter(text => typeof text === 'string' && text.length > 0)
-            .map(text => ({ name: speaker, is_user: false, is_system: false, send_date: sendDate, mes: text, extra: {} }));
+        return {
+            greetings: greetings
+                .filter(text => typeof text === 'string' && text.length > 0)
+                .map(text => ({ name: speaker, is_user: false, is_system: false, send_date: sendDate, mes: text, extra: {} })),
+            texts: greetings,
+        };
     } catch (error) {
         console.error(`Error reading card greetings for "${avatar}":`, error);
-        return [];
+        return { greetings: [], texts: [] };
     }
 }
 
@@ -919,6 +932,37 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
         return response.send(result);
     } catch (error) {
         console.error('Error listing openings:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Where a chat showing one of a character's card greetings should land after the card changed, from the full list
+ * of its openings (see findOpeningToLandOn). Body: `shown_text` (the text the chat showed), `index` (the opening
+ * index it was on) and `edits` (this page's own edits in the change, `{ from, to, index }`, at most
+ * LANDING_EDITS_MAX). Answers `{ index, opening }`, `opening` null when the character has no openings.
+ */
+router.post('/openings/land', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        if (!avatar) return response.status(400).send({ error: 'avatar_url is required' });
+        const shownText = request.body.shown_text;
+        if (typeof shownText !== 'string') return response.status(400).send({ error: 'shown_text is required' });
+        const index = request.body.index;
+        if (!Number.isInteger(index) || index < 0) return response.status(400).send({ error: 'index must be a non-negative integer' });
+        const rawEdits = request.body.edits ?? [];
+        if (!Array.isArray(rawEdits) || rawEdits.length > LANDING_EDITS_MAX) return response.status(400).send({ error: `edits must be a list of at most ${LANDING_EDITS_MAX}` });
+        const edits = [];
+        for (const e of rawEdits) {
+            if (typeof e?.from !== 'string' || typeof e?.to !== 'string') return response.status(400).send({ error: 'each edit needs from and to' });
+            edits.push({ from: e.from, to: e.to, index: Number.isInteger(e.index) ? e.index : undefined });
+        }
+        const card = await _cardFromDisk(request.user.directories, avatar);
+        const result = await findOpeningToLandOn(request.user.directories, ownerOf(request), card.greetings, card.texts, { shownText, index, edits });
+        if (!result) return response.status(404).send({ error: 'Tree storage unavailable' });
+        return response.send(result);
+    } catch (error) {
+        console.error('Error finding the opening to land on:', error);
         return response.status(500).send({ error: true });
     }
 });

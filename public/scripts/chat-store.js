@@ -250,6 +250,9 @@ export async function ensureOpeningRow(mesId = 0) {
     return realId;
 }
 
+/** Most of this page's own edits sent to find where the chat lands (the server's limit too). */
+const LANDING_EDITS = 64;
+
 // Brings the card's current greetings into an already-open chat's opening alternatives. Nothing is
 // written here: an appended slot carries a provisional id, marking it as card-only text; it gains a
 // row only if someone uses it.
@@ -370,92 +373,26 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
         return k < alternatives.length ? placeOpening(alternatives[k], (head.offset ?? 0) + k) : -1;
     };
 
-    /** @param {string} text */
-    const placeText = async (text) => {
-        const at = keptSwipes.indexOf(text);
-        if (at >= 0) return at;
-        // A stored opening outside the loaded window: ask for the window around it.
-        const around = await ask({ around: { name: speaker, is_user: false, mes: text } });
-        const k = (around?.alternatives ?? []).findIndex(a => isStoredNodeId(a.node_id) && a.mes === text);
-        return k < 0 ? -1 : placeOpening(around.alternatives[k], (around.offset ?? 0) + k);
-    };
-
-    /**
-     * The card-only opening the card greeting at `index` became, found by position: the card's greetings before
-     * and after it are matched, in order, against the server's card-only openings (which skip empty, stored and
-     * repeated greetings), and the one opening they leave between them is it. -1 when they don't leave exactly one.
-     * @param {number} index
-     */
-    const placeCardPosition = (index) => {
-        const cardTexts = cardToGreetingsModel(character).greetings;
-        if (!Number.isInteger(index) || index < 0 || index >= cardTexts.length) return -1;
-        let before = 0;
-        for (let j = 0; j < index && before < extras.length; j++) {
-            if (cardTexts[j] === extras[before].mes) before++;
+    /** Where the server says the shown card greeting landed among the character's full openings, applied here. */
+    const placeLanding = async () => {
+        try {
+            const response = await fetch('/api/chats/openings/land', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar_url: character.avatar, shown_text: shownText, index: shownWas, edits: edits.slice(-LANDING_EDITS) }),
+            });
+            const landing = response.ok ? await response.json().catch(() => null) : null;
+            return landing?.opening ? placeOpening(landing.opening, landing.index) : -1;
+        } catch (error) {
+            console.warn('[greetings] Could not find where the chat lands:', error);
+            return -1;
         }
-        let after = 0;
-        for (let j = cardTexts.length - 1; j > index && before + after < extras.length; j--) {
-            if (cardTexts[j] === extras[extras.length - 1 - after].mes) after++;
-        }
-        if (before + after + 1 !== extras.length) return -1;
-        return keptSwipes.indexOf(extras[before].mes);
-    };
-
-    /**
-     * The shown greeting's slot among the new openings, from the openings shown before and the new ones alone: the
-     * openings before and after the slot are matched, in order, against the new ones. What they leave between them is
-     * the slot: the opening at its old offset from the matched one before it, clamped to what they leave; when they
-     * leave nothing, the opening after the matched one before it, or the one before that if none follows. -1 when
-     * there are no openings.
-     */
-    const placeShownSlot = () => {
-        /** @type {string[]} */
-        const oldList = [];
-        let slot = -1;
-        for (let k = 0; k < swipes.length; k++) {
-            if (typeof swipes[k] !== 'string') continue;
-            if (k === shownWas) slot = oldList.length;
-            oldList.push(swipes[k]);
-        }
-        /** @type {number[]} */
-        const newAt = [];
-        for (let k = 0; k < keptSwipes.length; k++) {
-            if (typeof keptSwipes[k] === 'string') newAt.push(k);
-        }
-        if (slot < 0 || newAt.length === 0) return -1;
-        const newList = newAt.map(k => keptSwipes[k]);
-        let before = 0;
-        let leftOld = -1;
-        for (let j = 0; j < slot && before < newList.length; j++) {
-            if (oldList[j] === newList[before]) {
-                before++;
-                leftOld = j;
-            }
-        }
-        let after = 0;
-        for (let j = oldList.length - 1; j > slot && before + after < newList.length; j--) {
-            if (oldList[j] === newList[newList.length - 1 - after]) after++;
-        }
-        const end = newList.length - after;
-        if (before < end) {
-            return newAt[Math.min(Math.max(before - 1 + (slot - leftOld), before), end - 1)];
-        }
-        return newAt[before < newList.length ? before : before - 1];
     };
 
     let landAt = shownAt;
     if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
-        // The card greeting on screen isn't among the loaded openings: show a stored opening with its text if there is
-        // one, else follow it to its new text if this page edited it (by position on the card when its new text isn't
-        // among the openings), else keep to its slot among the openings.
-        landAt = await placeText(shownText);
-        // With several greetings changed from the shown text, the shown text was left only once the last of them was.
-        const edit = landAt < 0 ? edits.findLast(e => e.from === shownText) : undefined;
-        if (edit) {
-            landAt = await placeText(edit.to);
-            if (landAt < 0 && edit.index !== undefined) landAt = placeCardPosition(edit.index);
-        }
-        if (landAt < 0) landAt = placeShownSlot();
+        // The card greeting on screen isn't among the loaded openings: the server works out where it landed.
+        landAt = await placeLanding();
         if (landAt < 0) landAt = placeDefault();
         if (_chatAt(0) !== current) return;
     }

@@ -2569,6 +2569,87 @@ export async function getOpeningAlternatives(directories, ownerId, range = {}, c
     };
 }
 
+/** Most of this page's own edits {@link findOpeningToLandOn} takes. */
+export const LANDING_EDITS_MAX = 64;
+
+/**
+ * Where a chat showing a card greeting should land among a character's openings (stored first, then the card's
+ * greetings with no row, as {@link getOpeningAlternatives} lists them), from the full list rather than a window:
+ * 1. the first opening with exactly the shown text (so a stored one before a card greeting);
+ * 2. else, when this page's own edit took the shown text elsewhere, the first opening with the edit's new text, or
+ *    with the text now at the edit's card position;
+ * 3. else the opening at the index the chat was on, clamped to the openings there are now.
+ * @param {Directories} directories
+ * @param {string} ownerId
+ * @param {TreeChatMessage[]} cardGreetings
+ * @param {string[]} cardTexts The card's greeting list, by card position.
+ * @param {{ shownText: string, index: number, edits: { from: string, to: string, index?: number }[] }} request
+ * @returns {Promise<{ index: number, opening: OpeningAlternativeEntry | null } | null>} Null when the tree is unavailable.
+ */
+export async function findOpeningToLandOn(directories, ownerId, cardGreetings, cardTexts, request) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const anchor = getAnchorSync(entry.db, ownerId);
+
+    const edit = request.edits.findLast(e => e.from === request.shownText);
+    const editCardText = edit && Number.isInteger(edit.index) ? cardTexts[/** @type {number} */ (edit.index)] : undefined;
+    const wanted = [request.shownText, edit?.to, editCardText].filter(text => typeof text === 'string');
+    /** @type {Map<string, number>} First index of each wanted text. */
+    const textAt = new Map();
+    /**
+     * @param {number} index
+     * @param {string} mes
+     */
+    const see = (index, mes) => {
+        if (wanted.includes(mes) && !textAt.has(mes)) textAt.set(mes, index);
+    };
+
+    /** @param {string} body */
+    const identity = body => (anchor ? nodeIdentityKey(anchor.id, body) : body);
+    const seen = new Set();
+    let stored = 0;
+    if (anchor) {
+        for (const row of /** @type {Iterable<Pick<MessageRow, 'content'>>} */ (entry.db.iterate(
+            'SELECT content FROM messages WHERE parent_id = @p ORDER BY created_at ASC, id ASC', { p: anchor.id }))) {
+            seen.add(identity(row.content));
+            /** @type {any} */
+            let o = {};
+            try { o = JSON.parse(row.content); } catch { /* leave empty */ }
+            see(stored, o?.mes ?? '');
+            stored++;
+        }
+    }
+    /** @type {any[]} */
+    const virtual = [];
+    for (const greeting of cardGreetings) {
+        const body = sanitizeForStorage(greeting);
+        const key = identity(body);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const o = JSON.parse(body);
+        see(stored + virtual.length, o?.mes ?? '');
+        virtual.push(o);
+    }
+    const total = stored + virtual.length;
+    if (total === 0) return { index: -1, opening: null };
+
+    let target = textAt.get(request.shownText) ?? -1;
+    if (target < 0 && edit) target = textAt.get(edit.to) ?? (typeof editCardText === 'string' ? (textAt.get(editCardText) ?? -1) : -1);
+    if (target < 0) target = Math.min(Math.max(request.index, 0), total - 1);
+
+    if (target >= stored) {
+        const o = virtual[target - stored];
+        return { index: target, opening: { node_id: null, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user } };
+    }
+    const row = /** @type {Pick<MessageRow, 'id' | 'content'> | undefined} */ (entry.db.get(
+        'SELECT id, content FROM messages WHERE parent_id = @p ORDER BY created_at ASC, id ASC LIMIT 1 OFFSET @k', { p: anchor?.id, k: target }));
+    if (!row) return { index: -1, opening: null };
+    /** @type {any} */
+    let o = {};
+    try { o = JSON.parse(row.content); } catch { /* leave empty */ }
+    return { index: target, opening: { node_id: row.id, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user } };
+}
+
 /**
  * Makes sure these openings exist for a character, creating the anchor if this is its first. Idempotent, like addAlternatives.
  * @param {Directories} directories
