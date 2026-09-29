@@ -2398,20 +2398,39 @@ function queryHashesReply(hashes) {
  * `want: 'hidden'` adds `hidden`, upstream's "N hidden" count: every character (and, with `filter.includeGroups`, every
  * group) less the rows on this page. It implies `total`, and is `~`-prefixed (in hash mode, flagged) when the count of
  * every entity is estimated.
+ *
+ * `filter.group` is the Groups filter: `true` keeps only groups and needs `filter.includeGroups`, `false` keeps only
+ * characters. Rows keep the shape `filter.includeGroups` asks for, and `hidden` still counts every entity, as
+ * upstream's does.
  * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
  * @param {object} body The request body: filter, sort, want, page, pageSize, ifToken.
- * @param {{ groupsOnly?: boolean }} [options] groupsOnly, with `filter.includeGroups`: leave characters out. Its token
- *   is null on the search path, as the characters index's position isn't read.
+ * @param {{ groupsOnly?: boolean }} [options] groupsOnly, with `filter.includeGroups`: leave characters out, and out of
+ *   `hidden`'s count of every entity too. Its token is null on the search path, as the characters index's position
+ *   isn't read.
  * @returns {Promise<QueryReply>}
  */
 async function runQuery(user, body, options = {}) {
-    const want = Array.isArray(body.want) ? body.want : undefined;
-    if (!want?.includes('hidden')) return runQueryPage(user, body, options);
+    const includeGroups = body.filter?.includeGroups === true;
+    const group = typeof body.filter?.group === 'boolean' ? body.filter.group : undefined;
+    if (group === true && !includeGroups) {
+        return queryReply(400, { error: true, reason: 'group-requires-include-groups', message: 'filter.group true requires filter.includeGroups.' });
+    }
+    // Only characters: the characters-only query, its bare rows put back in the includeGroups shape.
+    const charactersOnly = group === false && includeGroups;
+    const pageBody = charactersOnly ? { ...body, filter: { ...body.filter, includeGroups: false } } : body;
+    const pageOptions = group === true ? { ...options, groupsOnly: true } : options;
+    /** @param {QueryReply} reply */
+    const shaped = reply => {
+        if (!charactersOnly || 'hashes' in reply || !Array.isArray(reply.body.rows)) return reply;
+        return queryReply(reply.status, { ...reply.body, rows: reply.body.rows.map(item => ({ type: 'character', item })) });
+    };
 
-    const reply = await runQueryPage(user, { ...body, want: [...new Set([...want.filter(w => w !== 'hidden'), 'total'])] }, options);
+    const want = Array.isArray(body.want) ? body.want : undefined;
+    if (!want?.includes('hidden')) return shaped(await runQueryPage(user, pageBody, pageOptions));
+
+    const reply = shaped(await runQueryPage(user, { ...pageBody, want: [...new Set([...want.filter(w => w !== 'hidden'), 'total'])] }, pageOptions));
     if (!('hashes' in reply) && (reply.status !== 200 || reply.body.unchanged === true)) return reply;
 
-    const includeGroups = body.filter?.includeGroups === true;
     const groupsOnly = includeGroups && options.groupsOnly === true;
     const all = includeGroups
         ? await queryEntities(user.directories, { wantRows: false, wantTotal: true, groupsOnly })

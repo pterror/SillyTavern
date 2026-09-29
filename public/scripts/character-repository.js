@@ -31,6 +31,8 @@ import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normali
  * becomes `Array<{type: 'character', item: Character} | {type: 'group', item: Group}>` instead of bare
  * `Character[]` - see `normalizeQueryRow()`. A non-empty `search` still includes matching groups when this is
  * set - groups have their own full-text index, merged server-side with the character one.
+ * @property {boolean} [group] - the Groups filter: `true` keeps only groups (with `includeGroups`), `false` only
+ * characters. Rows keep the `includeGroups` shape, and `hidden` still counts every entity.
  */
 
 /**
@@ -116,6 +118,7 @@ export function parseQueryTotal(total) {
  * @property {'asc'|'desc'} [sortOrder] - `'random'` itself is carried via `sortField`, not this.
  * @property {number} [randomSeed] - required (finite) when `sortField === 'random'`.
  * @property {boolean} [includeGroups] - see `CharacterQueryFilter.includeGroups`.
+ * @property {boolean} [group] - see `CharacterQueryFilter.group`; `undefined` for no Groups filter.
  */
 
 /**
@@ -134,6 +137,7 @@ export function buildCharacterQuery({
     sortOrder = 'asc',
     randomSeed = undefined,
     includeGroups = false,
+    group = undefined,
 } = {}) {
     /** @type {CharacterQueryFilter} */
     const filter = {};
@@ -145,6 +149,7 @@ export function buildCharacterQuery({
     }
     if (typeof fav === 'boolean') filter.fav = fav;
     if (includeGroups) filter.includeGroups = true;
+    if (typeof group === 'boolean') filter.group = group;
 
     /** @type {CharacterQuerySort|undefined} */
     let sort;
