@@ -185,6 +185,7 @@ export const power_user = {
 
     waifuMode: false,
     stacked_drawers: false,
+    drawer_bar_position: 'top',
     forceMobileView: false,
     movingUI: false,
     movingUIState: {},
@@ -1187,6 +1188,17 @@ function switchStackedDrawers() {
     refreshTagsDrawerUnderlayClip();
 }
 
+/** Values of power_user.drawer_bar_position. */
+const drawerBarPositions = ['top', 'bottom'];
+
+function applyDrawerBarPosition() {
+    if (!drawerBarPositions.includes(power_user.drawer_bar_position)) {
+        power_user.drawer_bar_position = 'top';
+    }
+    $('body').toggleClass('drawerBarBottom', power_user.drawer_bar_position === 'bottom');
+    $('#drawer_bar_position').val(power_user.drawer_bar_position);
+}
+
 function switchForceMobileView() {
     $('body').toggleClass('forceMobileView', power_user.forceMobileView);
     $('#forceMobileView').prop('checked', power_user.forceMobileView);
@@ -1520,6 +1532,12 @@ function applyTheme(name) {
             key: 'toastr_position',
             action: () => {
                 applyToastrPosition();
+            },
+        },
+        {
+            key: 'drawer_bar_position',
+            action: () => {
+                applyDrawerBarPosition();
             },
         },
         {
@@ -2075,6 +2093,7 @@ export async function loadPowerUserSettings(settings, data) {
     loadMaxContextUnlocked();
     switchWaifuMode();
     switchStackedDrawers();
+    applyDrawerBarPosition();
     switchForceMobileView();
     switchSpoilerMode();
     loadMovingUIState();
@@ -2991,6 +3010,7 @@ export function getThemeObject(name) {
         avatar_style: power_user.avatar_style,
         chat_display: power_user.chat_display,
         toastr_position: power_user.toastr_position,
+        drawer_bar_position: power_user.drawer_bar_position,
         noShadows: power_user.noShadows,
         chat_width: power_user.chat_width,
         chat_width_max: power_user.chat_width_max,
@@ -3876,6 +3896,12 @@ jQuery(() => {
         if (changed) {
             saveSettingsDebounced('power_user.toastr_position');
         }
+    });
+
+    $('#drawer_bar_position').on('change', function () {
+        power_user.drawer_bar_position = String($(this).val());
+        applyDrawerBarPosition();
+        saveSettingsDebounced('power_user.drawer_bar_position');
     });
 
     $('#chat_width_slider').on('input', function (e, data) {

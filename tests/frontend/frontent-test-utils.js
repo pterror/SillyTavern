@@ -84,3 +84,23 @@ export async function setStackedDrawers(page, on) {
     await saved;
     await page.waitForFunction(expected => document.body.classList.contains('stackedDrawers') === expected, on);
 }
+
+/**
+ * Sets the Drawer Bar setting through its select (in the closed User Settings drawer) and waits until the change is
+ * applied and saved, so it survives a reload.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} value 'top' or 'bottom'
+ */
+export async function setDrawerBarPosition(page, value) {
+    const select = page.locator('#drawer_bar_position');
+    if (await select.inputValue() === value) return;
+    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
+        && response.ok()
+        && (response.request().postData() ?? '').includes('drawer_bar_position'));
+    await select.evaluate((el, v) => {
+        el.value = v;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, value);
+    await saved;
+    await page.waitForFunction(v => document.body.classList.contains('drawerBarBottom') === (v === 'bottom'), value);
+}
