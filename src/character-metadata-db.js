@@ -4972,7 +4972,35 @@ const NOT_MARKED_DELETED_SQL = 'id NOT IN (SELECT tag_id FROM tag_deletions)';
 export async function getTagDefinitions(directories) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    return (/** @type {{ data: string }[]} */ (entry.db.all(`SELECT data FROM tags WHERE ${NOT_MARKED_DELETED_SQL}`))).map(r => JSON.parse(r.data));
+    // Known violation of CLAUDE.md Scale: this array holds every tag definition. It goes when its callers do.
+    const definitions = [];
+    for (const row of /** @type {Iterable<{ data: string }>} */ (entry.db.iterate(`SELECT data FROM tags WHERE ${NOT_MARKED_DELETED_SQL}`))) {
+        definitions.push(JSON.parse(row.data));
+    }
+    return definitions;
+}
+
+/**
+ * Every tag definition, in batches of at most 1000, in the same (rowid) order getTagDefinitions() returns them. Each
+ * batch is one keyset page, finished before it is yielded, so the caller may await between batches.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<AsyncGenerator<object[], void, undefined> | null>} null when the store is unavailable.
+ */
+export async function streamTagDefinitionBatches(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const pages = streamRows(entry.db, {
+        firstPageSql: `SELECT rowid AS k, data FROM tags WHERE ${NOT_MARKED_DELETED_SQL} ORDER BY rowid LIMIT @limit`,
+        firstPageParams: {},
+        nextPageSql: `SELECT rowid AS k, data FROM tags WHERE rowid > @after AND ${NOT_MARKED_DELETED_SQL} ORDER BY rowid LIMIT @limit`,
+        nextPageParams: {},
+        keyColumn: 'k',
+    });
+    return (async function* () {
+        for await (const rows of pages) {
+            yield (/** @type {{ data: string }[]} */ (rows)).map(row => JSON.parse(row.data));
+        }
+    })();
 }
 
 // Bucketed digest over every tag definition, computed on demand and stored nowhere - a tag row is small

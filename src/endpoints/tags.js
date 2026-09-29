@@ -7,7 +7,7 @@ import {
     getEntityTagIdsForMany,
     getAllEntityTagAssignments,
     getAllTagUsage,
-    getTagDefinitions,
+    streamTagDefinitionBatches,
     saveTagDefinitions,
     createTagDefinition,
     editTagDefinition,
@@ -26,6 +26,7 @@ import {
     TAG_REORDER_MODES,
 } from '../character-metadata-db.js';
 import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.js';
+import { writeBackpressured } from '../util.js';
 
 export const router = express.Router();
 
@@ -240,17 +241,37 @@ router.post('/delete', async (request, response) => {
 });
 
 router.post('/get', async (request, response) => {
+    let batches;
+    let first;
     try {
-        const tags = await getTagDefinitions(request.user.directories);
-        if (tags === null) {
+        batches = await streamTagDefinitionBatches(request.user.directories);
+        if (batches === null) {
             return response.send({ tags: null });
         }
-
-        response.send({ tags });
+        // Read before the first write, so a failure here can still answer 500.
+        first = await batches.next();
     } catch (err) {
         console.error('Could not read tag definitions', err);
-        response.sendStatus(500);
+        return response.sendStatus(500);
     }
+
+    // Past the first write, a failure can't un-send the 200 and partial body, so it logs and ends the connection.
+    response.set('Content-Type', 'application/json');
+    response.status(200);
+    try {
+        await writeBackpressured(response, '{"tags":[');
+        let wroteAny = false;
+        for (let next = first; !next.done; next = await batches.next()) {
+            for (const tag of next.value) {
+                await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify(tag));
+                wroteAny = true;
+            }
+        }
+        await writeBackpressured(response, ']}');
+    } catch (err) {
+        console.error('[tags/get] Streaming response failed mid-flight; ending the connection:', err);
+    }
+    response.end();
 });
 
 /** Bucketed digest of every tag definition, for cheap client-side cache verification. */

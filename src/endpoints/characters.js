@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
-import { once } from 'node:events';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -16,7 +15,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction, forbiddenRegExp } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, mapWithConcurrency } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements, getArrayBufferSlice, uuidv7, mapWithConcurrency, writeBackpressured } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { importFailure, NO_CARD_DATA } from '../character-import-error.js';
 import { parse, write, writeCardToFile, stripCardData, computeAvatarIdentityHashFromImageBuffer, reclaimReflinkPrefix } from '../character-card-parser.js';
@@ -1954,19 +1953,6 @@ function paginateSearchResults(characterResults, groupResults, { offset, limit, 
 const DEFAULT_PAGE_LIMIT = 500;
 
 const STREAM_ALL_READ_CONCURRENCY = getConfigValue('performance.characterStreamAllReadConcurrency', 64, 'number');
-
-/**
- * Writes `chunk` to `response`, awaiting the real Node/Express backpressure signal ('drain') when the socket's
- * write buffer is full, instead of blasting further writes in regardless of whether the client is keeping up.
- * @param {import('express').Response} response
- * @param {string} chunk
- * @returns {Promise<void>}
- */
-async function writeBackpressured(response, chunk) {
-    if (!response.write(chunk)) {
-        await once(response, 'drain');
-    }
-}
 
 /**
  * Overwrites each character's `.fav` and `data.extensions.fav` with the metadata store's own value, in place. A
