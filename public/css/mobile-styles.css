@@ -1270,4 +1270,78 @@ body.forceMobileView.waifuMode:where(.drawerBarMobileBottom) #sheld {
         height: calc(100vh - var(--drawerBarBottom));
         height: calc(100dvh - var(--drawerBarBottom));
     }
+
+    /* body.PWA with the drawer bar at the bottom: the bar, not #sheld, keeps clear of the home indicator. #sheld's
+       padding-bottom (--pwaSafeAreaBottom) goes below the bar's icons, and --drawerBarBottom includes it, so
+       whatever ends at the bar ends at its top edge. */
+    :root {
+        --pwaSafeAreaBottom: max(env(safe-area-inset-bottom), 15px);
+    }
+
+    @media screen and (max-width: 1000px) {
+        :root:has(> body.drawerBarMobileBottom:where(.PWA)) {
+            --drawerBarBottom: calc(var(--topBarBlockSize) + var(--pwaSafeAreaBottom));
+        }
+
+        body.PWA:where(.drawerBarMobileBottom) #sheld {
+            padding-bottom: 0;
+        }
+
+        body.PWA.drawerBarMobileBottom #top-bar {
+            box-sizing: content-box;
+            padding-bottom: var(--pwaSafeAreaBottom);
+        }
+
+        body.drawerBarMobileBottom:where(.PWA) #top-settings-holder {
+            top: calc(100vh - var(--drawerBarBottom));
+            top: calc(100dvh - var(--drawerBarBottom));
+        }
+    }
+
+    :root:has(> body.forceMobileView.drawerBarMobileBottom:where(.PWA)) {
+        --drawerBarBottom: calc(var(--topBarBlockSize) + var(--pwaSafeAreaBottom));
+    }
+
+    body.PWA:where(.forceMobileView.drawerBarMobileBottom) #sheld {
+        padding-bottom: 0;
+    }
+
+    body.PWA.forceMobileView.drawerBarMobileBottom #top-bar {
+        box-sizing: content-box;
+        padding-bottom: var(--pwaSafeAreaBottom);
+    }
+
+    body.forceMobileView.drawerBarMobileBottom:where(.PWA) #top-settings-holder {
+        top: calc(100vh - var(--drawerBarBottom));
+        top: calc(100dvh - var(--drawerBarBottom));
+    }
+
+    @media not screen and (max-width: 1000px) {
+        :root:has(> body.drawerBarBottom:not(.forceMobileView):where(.PWA)) {
+            --drawerBarBottom: calc(var(--topBarBlockSize) + var(--pwaSafeAreaBottom));
+        }
+
+        body.PWA:where(.drawerBarBottom:not(.forceMobileView)) #sheld {
+            padding-bottom: 0;
+        }
+
+        /* 36px is the bar, as above. */
+        :where(body.PWA.drawerBarBottom:not(.forceMobileView)) #sheld {
+            height: calc(100vh - 36px - var(--pwaSafeAreaBottom));
+            height: calc(100dvh - 36px - var(--pwaSafeAreaBottom));
+        }
+
+        body.PWA.drawerBarBottom:not(.forceMobileView) #top-bar {
+            box-sizing: content-box;
+            padding-bottom: var(--pwaSafeAreaBottom);
+        }
+
+        body.drawerBarBottom:not(.forceMobileView):where(.PWA) #top-settings-holder {
+            bottom: var(--pwaSafeAreaBottom);
+        }
+
+        body.drawerBarBottom:not(.forceMobileView):where(.PWA) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight, #WorldInfo) {
+            --drawerContainerTop: calc(100dvh - var(--drawerBarBottom));
+        }
+    }
 }

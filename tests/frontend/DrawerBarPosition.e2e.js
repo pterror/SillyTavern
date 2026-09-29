@@ -745,3 +745,54 @@ test.describe('Drawer bar position, mobile, expression sprite', () => {
         });
     }
 });
+
+/** The rects of the bar, the holder and the chat, and the chat's padding-bottom. */
+async function barLayout(page) {
+    return {
+        bar: await rect(page, '#top-bar'),
+        holder: await rect(page, '#top-settings-holder'),
+        sheld: await rect(page, '#sheld'),
+        sheldPaddingBottom: await page.locator('#sheld').evaluate(el => getComputedStyle(el).paddingBottom),
+    };
+}
+
+/** Sets body.PWA, as script.js does when the page runs as a home-screen app. */
+function setPwa(page, on) {
+    return page.evaluate(value => document.body.classList.toggle('PWA', value), on);
+}
+
+// The home-indicator safe area moves from #sheld to a bottom bar only in the iOS-only CSS, which Chromium doesn't
+// apply: here a home-screen app lays out exactly as the page does in a browser tab.
+for (const [layout, viewport, setPosition] of /** @type {const} */ ([
+    ['desktop', VIEWPORT, setDrawerBarPosition],
+    ['mobile', MOBILE_VIEWPORT, setDrawerBarMobilePosition],
+])) {
+    test.describe(`Drawer bar position, ${layout}, home-screen app outside iOS`, () => {
+        test.use({ viewport });
+
+        test.beforeEach(testSetup.awaitST);
+
+        test.beforeEach(async ({ page }) => {
+            await awaitAppReady(page);
+        });
+
+        // The data root is shared by the worker's later tests, which expect the defaults.
+        test.afterEach(async ({ page }) => {
+            await setPwa(page, false);
+            await setPosition(page, 'top');
+        });
+
+        for (const position of ['top', 'bottom']) {
+            test(`${layout} ${position}: the bar, its icons and the chat are where they are in a browser tab`, async ({ page }) => {
+                await setPosition(page, position);
+                const inTab = await barLayout(page);
+                await setPwa(page, true);
+                const inApp = await barLayout(page);
+                for (const key of /** @type {const} */ (['bar', 'holder', 'sheld'])) {
+                    expectSameRect(inApp[key], inTab[key]);
+                }
+                expect(inApp.sheldPaddingBottom).toBe(inTab.sheldPaddingBottom);
+            });
+        }
+    });
+}
