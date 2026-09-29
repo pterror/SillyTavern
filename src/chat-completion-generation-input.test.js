@@ -215,7 +215,7 @@ async function startStubLlamaCpp() {
 }
 
 // Stored counts: a second resolution on an unchanged chat, after its first's rows are written back, sends
-// no /tokenize for a text-only message; a tool-call message is counted both times.
+// no /tokenize for a text-only message; a tool-call message and its tool result are counted both times.
 async function storedCountsSkipTextOnlyMessages() {
     const stub = await startStubLlamaCpp();
     try {
@@ -247,16 +247,20 @@ async function storedCountsSkipTextOnlyMessages() {
             return { input, prepared, bodies: stub.tokenizeBodies.map(body => String(body.content)) };
         };
         const isToolCallCount = (content) => content.startsWith('assistant\n\n[{"id":"call_1"');
+        const toolResultCount = 'tool\n\nNoon.';
+        const isFreshCount = (content) => isToolCallCount(content) || content === toolResultCount;
 
         const first = await generate();
         assert.ok(first.bodies.some(isToolCallCount), 'the first resolution counted the tool-call message with /tokenize');
-        assert.ok(first.bodies.some(content => !isToolCallCount(content)), 'and text-only messages with /tokenize');
+        assert.ok(first.bodies.includes(toolResultCount), 'and the tool result');
+        assert.ok(first.bodies.some(content => !isFreshCount(content)), 'and text-only messages with /tokenize');
         assert.ok(first.input.tokenCountRows.counts.length > 0, 'the first resolution has rows to write back');
         await writeBack(directories, first.input.tokenCountRows);
 
         const second = await generate();
-        assert.deepEqual(second.bodies.filter(content => !isToolCallCount(content)), [], 'no /tokenize for a text-only message counted in the first');
+        assert.deepEqual(second.bodies.filter(content => !isFreshCount(content)), [], 'no /tokenize for a text-only message counted in the first');
         assert.deepEqual(second.bodies.filter(isToolCallCount), first.bodies.filter(isToolCallCount), 'the tool-call message is counted both times');
+        assert.deepEqual(second.bodies.filter(content => content === toolResultCount), first.bodies.filter(content => content === toolResultCount), 'the tool result is counted both times');
         assert.deepEqual(second.prepared.chat, first.prepared.chat, 'the same messages');
         assert.deepEqual(second.prepared.counts, first.prepared.counts, 'the same budgets');
     } finally {

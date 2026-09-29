@@ -580,9 +580,10 @@ export function getChatCompletionModel(settings) {
  * counting like `/api/tokenizers/openai/count` with a resolveTokenizer() answer: the model's own
  * tokenizer, or the estimate when the model map has none. Only string fields are counted.
  * With `storedCounter`, a count whose messages are all text only is read from or added to the token
- * tables; any other count (a tool-call count's `tool_calls` or `reasoning`) is counted fresh. A message
- * is text only when every own key whose value isn't undefined is `role`, `content` or `name` and
- * holds a string, so `[{ content: text }]` (the world-info counter) is text only.
+ * tables; any other count (a tool-call count's `tool_calls` or `reasoning`, a tool result) is counted
+ * fresh. A message is text only when its `role` isn't `'tool'` and every own key whose value isn't
+ * undefined is `role`, `content` or `name` and holds a string, so `[{ content: text }]` (the
+ * world-info counter) is text only and a tool result's `{ role: 'tool', content }` isn't.
  * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @param {import('./tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a count that fell to
  * the estimate because the tokenizer failed, and a downloaded tokenizer file.
@@ -607,11 +608,11 @@ export function createOpenAITokenCounter(resolved, outcome = undefined, director
 const TEXT_ONLY_MESSAGE_KEYS = new Set(['role', 'content', 'name']);
 
 /**
- * @param {unknown} message
+ * @param {any} message
  * @returns {boolean}
  */
 function isTextOnlyMessage(message) {
-    return !!message && typeof message === 'object'
+    return !!message && typeof message === 'object' && message.role !== 'tool'
         && Object.entries(message).every(([key, value]) => value === undefined
             || (TEXT_ONLY_MESSAGE_KEYS.has(key) && typeof value === 'string'));
 }
