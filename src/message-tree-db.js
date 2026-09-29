@@ -962,20 +962,6 @@ function getPathSync(db, leafId) {
     return /** @type {Omit<MessageRow, 'identity_hash'>[]} */ (db.all(PATH_CTE_SQL, { leafId }));
 }
 
-/**
- * Immediate children of a message, deterministically ordered.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string} messageId
- * @returns {Pick<MessageRow, 'id' | 'parent_id' | 'content' | 'label' | 'created_at' | 'default_child_id'>[]}
- */
-function getChildrenSync(db, messageId) {
-    return /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'content' | 'label' | 'created_at' | 'default_child_id'>[]} */ (db.all(
-        `SELECT id, parent_id, content, label, created_at, default_child_id
-         FROM messages WHERE parent_id = @messageId ORDER BY created_at ASC, id ASC`,
-        { messageId },
-    ));
-}
-
 // ---------------------------------------------------------------------------
 //  Anchor + default-child navigation
 // ---------------------------------------------------------------------------
