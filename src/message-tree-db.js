@@ -2840,43 +2840,58 @@ export async function renameCharacterInMessages(directories, ownerId, newName) {
     const entry = await getEntry(directories);
     if (!entry) return 0;
 
-    const rows = /** @type {Pick<MessageRow, 'id' | 'parent_id' | 'content'>[]} */ (entry.db.all(
+    const readChunk = (/** @type {string} */ lastId) => (/** @type {Pick<MessageRow, 'id' | 'parent_id' | 'content'>[]} */ (entry.db.readBounded(
         `SELECT id, parent_id, content FROM messages
          WHERE owner_id = @ownerId
            AND parent_id IS NOT NULL
            AND json_extract(content, '$.is_user') IS NOT 1
            AND json_extract(content, '$.is_system') IS NOT 1
            AND COALESCE(json_extract(content, '$.extra.type'), '') != 'narrator'
-           AND json_extract(content, '$.name') IS NOT @newName`,
-        { ownerId, newName },
-    ));
-    if (rows.length === 0) return 0;
+           AND json_extract(content, '$.name') IS NOT @newName
+           AND id > @lastId
+         ORDER BY id LIMIT @limit`,
+        { ownerId, newName, lastId, limit: KEYSET_CHUNK },
+        KEYSET_CHUNK,
+    )));
+
+    const firstChunk = readChunk('');
+    if (firstChunk.length === 0) return 0;
 
     let updated = 0;
+    let lastId = '';
     const stats = newWriteStats();
     entry.db.transaction(() => {
-        // Reset here: a transaction that hits busy is rolled back and rerun.
+        // Reset here: a transaction that hits busy is rolled back and rerun, starting over from the first chunk.
         Object.assign(stats, newWriteStats());
-        for (const row of rows) {
-            try {
-                const msg = JSON.parse(row.content);
-                msg.name = newName;
-                const next = JSON.stringify(msg);
-                // parent_id is never null here - filtered by `parent_id IS NOT NULL` in the SELECT above.
-                const parentId = /** @type {string} */ (row.parent_id);
-                // Speaker is part of identity, so renaming can collide two rows into the same identity hash.
-                // Leave the colliding row with its old name rather than merge distinct subtrees.
-                const twin = /** @type {Pick<MessageRow, 'id'> | undefined} */ (entry.db.get(
-                    'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity AND id != @id',
-                    { parentId, identity: identityHashOf(parentId, next), id: row.id }));
-                if (twin) {
-                    console.warn(`[message-tree] Not renaming ${row.id}: ${twin.id} already says the same thing under this parent.`);
-                    continue;
-                }
-                updateMessageContentSync(entry.db, row.id, next);
-                countReplace(stats, row.content, next);
-                updated++;
-            } catch { /* skip malformed */ }
+        lastId = '';
+        let chunk = firstChunk;
+        for (;;) {
+            for (const row of chunk) {
+                try {
+                    const msg = JSON.parse(row.content);
+                    msg.name = newName;
+                    const next = JSON.stringify(msg);
+                    // parent_id is never null here - filtered by `parent_id IS NOT NULL` in the SELECT above.
+                    const parentId = /** @type {string} */ (row.parent_id);
+                    // Speaker is part of identity, so renaming can collide two rows into the same identity hash.
+                    // Leave the colliding row with its old name rather than merge distinct subtrees.
+                    const twin = /** @type {Pick<MessageRow, 'id'> | undefined} */ (entry.db.get(
+                        'SELECT id FROM messages WHERE parent_id = @parentId AND identity_hash = @identity AND id != @id',
+                        { parentId, identity: identityHashOf(parentId, next), id: row.id }));
+                    if (twin) {
+                        console.warn(`[message-tree] Not renaming ${row.id}: ${twin.id} already says the same thing under this parent.`);
+                        continue;
+                    }
+                    updateMessageContentSync(entry.db, row.id, next);
+                    countReplace(stats, row.content, next);
+                    updated++;
+                } catch { /* skip malformed */ }
+            }
+
+            if (chunk.length < KEYSET_CHUNK) break;
+            lastId = chunk[chunk.length - 1].id;
+            chunk = readChunk(lastId);
+            if (chunk.length === 0) break;
         }
     });
     await reportOwnerWrite(directories, entry.db, ownerId, stats);
