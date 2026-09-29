@@ -56,6 +56,8 @@ jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({ favsT
 jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     characters: residentCharacters,
     charactersStore: { get: () => undefined, has: () => false, onChange: () => noop, reindex: noop, reset: noop },
+    // The real resolveCharacterRef over this mock's stores: charactersStore.get() always misses.
+    resolveCharacterRef: ref => residentCharacters[ref],
     this_avatar: undefined,
 }));
 jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ groups: [], getGroups: async () => {}, getGroupBlock: noop }));
