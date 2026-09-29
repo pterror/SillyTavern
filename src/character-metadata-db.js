@@ -694,7 +694,7 @@ function getDbPath(directories) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateContentHashColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     const hasColumn = columns.some(c => c.name === 'content_hash');
     if (!hasColumn) {
         db.exec('ALTER TABLE characters ADD COLUMN content_hash TEXT');
@@ -707,7 +707,7 @@ function migrateContentHashColumn(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateContentIdentityColumns(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'content_identity_hash')) {
         db.exec('ALTER TABLE characters ADD COLUMN content_identity_hash TEXT');
     }
@@ -722,7 +722,7 @@ function migrateContentIdentityColumns(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateAvatarIdentityColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'avatar_identity_hash')) {
         db.exec('ALTER TABLE characters ADD COLUMN avatar_identity_hash TEXT');
     }
@@ -735,7 +735,7 @@ function migrateAvatarIdentityColumn(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateActiveChatColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     const hadActiveChatAlready = columns.some(c => c.name === 'active_chat');
     if (!hadActiveChatAlready) {
         db.exec('ALTER TABLE characters ADD COLUMN active_chat TEXT');
@@ -756,7 +756,7 @@ function migrateActiveChatColumn(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateCreateDateColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     const createDateColumn = columns.find(c => c.name === 'create_date');
     const createDateMsColumn = columns.find(c => c.name === 'create_date_ms');
 
@@ -811,7 +811,7 @@ function migrateCreateDateColumn(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateDropFileMtimeColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     if (columns.some(c => c.name === 'file_mtime')) {
         db.exec('ALTER TABLE characters DROP COLUMN file_mtime');
     }
@@ -823,7 +823,7 @@ function migrateDropFileMtimeColumn(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateLocalImportMtimesDuplicateOfColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(local_import_mtimes)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(local_import_mtimes)')));
     if (!columns.some(c => c.name === 'duplicate_of')) {
         db.exec('ALTER TABLE local_import_mtimes ADD COLUMN duplicate_of TEXT');
     }
@@ -839,7 +839,7 @@ export { computeContentIdentityHash };
  * @param {import('./users.js').UserDirectoryList} directories
  */
 function migrateGroupsColumns(db, directories) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(groups)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(groups)')));
     const columnNames = new Set(columns.map(c => c.name));
     const isPreExistingTable = columnNames.size > 0 && !columnNames.has('date_added');
 
@@ -891,7 +891,7 @@ function migrateGroupsColumns(db, directories) {
  * @param {import('./users.js').UserDirectoryList} directories
  */
 function migrateGroupDigestColumns(db, directories) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(groups)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(groups)')));
     const columnNames = new Set(columns.map(c => c.name));
     const isNewColumn = !columnNames.has('digest_fav');
     if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE groups ADD COLUMN digest_fav INTEGER');
@@ -909,7 +909,7 @@ function migrateGroupDigestColumns(db, directories) {
                 const filePath = path.join(directories.groups, `${id}.json`);
                 const raw = fs.readFileSync(filePath, 'utf8');
                 const group = normalizeGroupRecord(JSON.parse(raw));
-                const tagIds = tagEntityTypeOf(id) === 'group' ? (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) : [];
+                const tagIds = tagEntityTypeOf(id) === 'group' ? Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })), r => r.tag_id) : [];
                 const fingerprintSource = { ...group, tag_ids: tagIds };
                 inItemSavepoint(db, () => {
                     const { changes } = db.run(
@@ -936,7 +936,7 @@ function migrateGroupDigestColumns(db, directories) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateChangesFieldsColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(changes)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(changes)')));
     if (!columns.some(c => c.name === 'fields')) {
         db.exec('ALTER TABLE changes ADD COLUMN fields TEXT');
     }
@@ -946,11 +946,11 @@ function migrateChangesFieldsColumn(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateRevToSeqColumns(db) {
-    const charCols = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(\'characters\')'))).map(c => c.name);
+    const charCols = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(\'characters\')')), c => c.name);
     if (charCols.includes('rev') && !charCols.includes('change_seq')) {
         db.exec('ALTER TABLE characters RENAME COLUMN rev TO change_seq');
     }
-    const changeCols = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(\'changes\')'))).map(c => c.name);
+    const changeCols = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(\'changes\')')), c => c.name);
     if (changeCols.includes('rev') && !changeCols.includes('seq')) {
         db.exec('ALTER TABLE changes RENAME COLUMN rev TO seq');
     }
@@ -970,7 +970,7 @@ function migrateRevToSeqColumns(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateCharacterDigestColumns(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     const columnNames = new Set(columns.map(c => c.name));
     const isNewColumn = !columnNames.has('digest_fav');
     if (!columnNames.has('digest_fav')) db.exec('ALTER TABLE characters ADD COLUMN digest_fav INTEGER NOT NULL DEFAULT 0');
@@ -1014,7 +1014,7 @@ function migrateCharacterDigestColumns(db) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 function migrateAllowGlobalStylesColumn(db) {
-    const columns = (/** @type {{ name: string, type: string, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'allow_global_styles')) {
         db.exec('ALTER TABLE characters ADD COLUMN allow_global_styles INTEGER');
     }
@@ -1031,10 +1031,10 @@ function migrateAllowGlobalStylesColumn(db) {
  * @param {import('./users.js').UserDirectoryList} directories
  */
 function migrateCardJsonColumn(db, directories) {
-    let columns = (/** @type {{ name: string, type: string, notnull: number, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+    let columns = Array.from(/** @type {Iterable<{ name: string, type: string, notnull: number, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     if (!columns.some(c => c.name === 'card_json')) {
         db.exec('ALTER TABLE characters ADD COLUMN card_json TEXT');
-        columns = (/** @type {{ name: string, type: string, notnull: number, [key: string]: unknown }[]} */ (db.all('PRAGMA table_info(characters)')));
+        columns = Array.from(/** @type {Iterable<{ name: string, type: string, notnull: number, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(characters)')));
     }
 
     const cardJsonColumn = columns.find(c => c.name === 'card_json');
@@ -1106,7 +1106,7 @@ function migrateCardJsonColumn(db, directories) {
 // name_key is tagNameKey() of the row's name. Rows written before this column existed have it NULL until
 // fillTagNameKeysIfNeeded() fills them; its index is built there too, since both take a pass over every tag.
 function migrateTagNameKeyColumn(db) {
-    const columns = (/** @type {{ name: string }[]} */ (db.all('PRAGMA table_info(tags)')));
+    const columns = Array.from(/** @type {Iterable<{ name: string }>} */ (db.iterate('PRAGMA table_info(tags)')));
     if (!columns.some(c => c.name === 'name_key')) {
         db.exec('ALTER TABLE tags ADD COLUMN name_key TEXT');
     }
@@ -1554,7 +1554,7 @@ function writeRowSync(db, row, tagIds) {
         // Only a non-NULL existing active_chat gets forced back; NULL means not-yet-examined or confirmed-no-chat,
         // so this write's freshly-resolved candidate is allowed to seed it.
         const forceActiveChat = existingRow.active_chat !== null && row.active_chat !== existingRow.active_chat;
-        const currentTagIds = (/** @type {{ tag_id: string }[]} */ (db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id }))).map(r => r.tag_id);
+        const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: row.id })), r => r.tag_id);
 
         const shallow = JSON.parse(row.shallow_json);
         shallow.tag_ids = normalizeTagIds(currentTagIds);
@@ -1784,8 +1784,7 @@ export async function getCharacterFavsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = (/** @type {{ id: string, fav: number }[]} */ (entry.db.all(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, batch)));
-        for (const row of rows) {
+        for (const row of /** @type {Iterable<{ id: string, fav: number }>} */ (entry.db.iterate(`SELECT id, fav FROM characters WHERE id IN (${placeholders})`, batch))) {
             result[row.id] = !!row.fav;
         }
     }
@@ -1806,8 +1805,7 @@ export async function getGroupFavsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = (/** @type {{ id: string, fav: number }[]} */ (entry.db.all(`SELECT id, fav FROM groups WHERE id IN (${placeholders})`, batch)));
-        for (const row of rows) {
+        for (const row of /** @type {Iterable<{ id: string, fav: number }>} */ (entry.db.iterate(`SELECT id, fav FROM groups WHERE id IN (${placeholders})`, batch))) {
             result[row.id] = !!row.fav;
         }
     }
@@ -1851,8 +1849,7 @@ export async function getCharacterAllowGlobalStylesByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = (/** @type {{ id: string, allow_global_styles: number | null }[]} */ (entry.db.all(`SELECT id, allow_global_styles FROM characters WHERE id IN (${placeholders})`, batch)));
-        for (const row of rows) {
+        for (const row of /** @type {Iterable<{ id: string, allow_global_styles: number | null }>} */ (entry.db.iterate(`SELECT id, allow_global_styles FROM characters WHERE id IN (${placeholders})`, batch))) {
             if (row.allow_global_styles != null) {
                 result[row.id] = !!row.allow_global_styles;
             }
@@ -1876,8 +1873,7 @@ export async function getCharacterTagIdsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = (/** @type {{ id: string }[]} */ (entry.db.all(`SELECT id FROM characters WHERE id IN (${placeholders})`, batch)));
-        for (const row of rows) {
+        for (const row of /** @type {Iterable<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM characters WHERE id IN (${placeholders})`, batch))) {
             trackedIds.add(row.id);
         }
     }
@@ -1891,8 +1887,7 @@ export async function getCharacterTagIdsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = (/** @type {{ character_id: string, tag_id: string }[]} */ (entry.db.all(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, batch)));
-        for (const row of rows) {
+        for (const row of /** @type {Iterable<{ character_id: string, tag_id: string }>} */ (entry.db.iterate(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${placeholders})`, batch))) {
             if (Object.hasOwn(result, row.character_id)) {
                 result[row.character_id].push(row.tag_id);
             }
@@ -1922,8 +1917,7 @@ export async function getCharacterActiveChatsByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = (/** @type {{ id: string, active_chat: string }[]} */ (entry.db.all(`SELECT id, active_chat FROM characters WHERE id IN (${placeholders}) AND active_chat IS NOT NULL`, batch)));
-        for (const row of rows) {
+        for (const row of /** @type {Iterable<{ id: string, active_chat: string }>} */ (entry.db.iterate(`SELECT id, active_chat FROM characters WHERE id IN (${placeholders}) AND active_chat IS NOT NULL`, batch))) {
             result[row.id] = row.active_chat;
         }
     }
@@ -1945,8 +1939,7 @@ export async function getShallowByIds(directories, ids) {
     for (let i = 0; i < ids.length; i += FAV_LOOKUP_BATCH_SIZE) {
         const batch = ids.slice(i, i + FAV_LOOKUP_BATCH_SIZE);
         const placeholders = batch.map(() => '?').join(',');
-        const rows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch)));
-        for (const row of rows) {
+        for (const row of /** @type {Iterable<{ id: string, shallow_json: string }>} */ (entry.db.iterate(`SELECT id, shallow_json FROM characters WHERE id IN (${placeholders})`, batch))) {
             try {
                 result[row.id] = parseShallowResolvingTags(row.shallow_json, deletions);
             } catch {
@@ -2074,7 +2067,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     }
 
     // Must read before the transaction below deletes oldAvatar's rows.
-    const oldTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar }))).map(r => r.tag_id);
+    const oldTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: oldAvatar })), r => r.tag_id);
     if (oldTagIds.length > 0) {
         entry.db.transaction(() => {
             for (const tagId of oldTagIds) {
@@ -3250,7 +3243,7 @@ export async function getLocalImportMtimesForPaths(directories, sourcePaths) {
     if (!entry) return result;
 
     const placeholders = sourcePaths.map(() => '?').join(',');
-    for (const row of (/** @type {{ source_path: string, mtime_ms: number }[]} */ (entry.db.all(`SELECT source_path, mtime_ms FROM local_import_mtimes WHERE source_path IN (${placeholders})`, sourcePaths)))) {
+    for (const row of /** @type {Iterable<{ source_path: string, mtime_ms: number }>} */ (entry.db.iterate(`SELECT source_path, mtime_ms FROM local_import_mtimes WHERE source_path IN (${placeholders})`, sourcePaths))) {
         result.set(row.source_path, Number(row.mtime_ms));
     }
     return result;
@@ -3315,7 +3308,7 @@ export async function clearLocalImportMtime(directories, sourcePath) {
 export async function getCharacterTagIds(directories, avatar) {
     const entry = await getEntry(directories);
     if (!entry) return [];
-    return resolveTagIds((/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar }))).map(r => r.tag_id), readTagDeletionsSync(entry.db));
+    return resolveTagIds(Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id: avatar })), r => r.tag_id), readTagDeletionsSync(entry.db));
 }
 
 /**
@@ -3766,7 +3759,7 @@ export async function assignEntityTag(directories, id, tagId) {
             // it would be a full O(library-wide tag count) scan for zero signal.
             const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
             if (charRow) {
-                const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
+                const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id })), r => r.tag_id);
                 const shallow = JSON.parse(charRow.shallow_json);
                 shallow.tag_ids = currentTagIds;
                 writeShallowJson(entry.db, id, shallow, ['tag_ids']);
@@ -3774,7 +3767,7 @@ export async function assignEntityTag(directories, id, tagId) {
             result.found = true;
         } else if (type === 'group' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
             const inserted = entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId }).changes > 0;
-            const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id);
+            const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })), r => r.tag_id);
             const digestSet = setGroupDigestTagIdsSync(entry.db, id, groupDigestTagIdsHash({ tag_ids: currentTagIds }));
             if (inserted || digestSet) insertGroupChange(entry.db, id);
             result.found = true;
@@ -3838,7 +3831,7 @@ export async function unassignEntityTag(directories, id, tagId) {
             const digestSet = setGroupDigestTagIdsSync(
                 entry.db,
                 id,
-                groupDigestTagIdsHash({ tag_ids: (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id }))).map(r => r.tag_id) }),
+                groupDigestTagIdsHash({ tag_ids: Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })), r => r.tag_id) }),
             );
             if (deleted || digestSet) insertGroupChange(entry.db, id);
             return;
@@ -3847,7 +3840,7 @@ export async function unassignEntityTag(directories, id, tagId) {
         entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
         const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
         if (charRow) {
-            const currentTagIds = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM character_tags WHERE character_id = @id', { id }))).map(r => r.tag_id);
+            const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id })), r => r.tag_id);
             const shallow = JSON.parse(charRow.shallow_json);
             shallow.tag_ids = currentTagIds;
             writeShallowJson(entry.db, id, shallow, ['tag_ids']);
@@ -3952,7 +3945,7 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
 export async function getGroupTagIds(directories, groupId) {
     const entry = await getEntry(directories);
     if (!entry || tagEntityTypeOf(groupId) !== 'group') return [];
-    return resolveTagIds(normalizeTagIds((/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId }))).map(r => r.tag_id)), readTagDeletionsSync(entry.db));
+    return resolveTagIds(normalizeTagIds(Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId })), r => r.tag_id)), readTagDeletionsSync(entry.db));
 }
 
 /**
@@ -9875,13 +9868,13 @@ export async function queryCharacters(directories, params = {}) {
             const pageWhere = where ? `${where} AND id IN (SELECT value FROM json_each(?))` : 'WHERE id IN (SELECT value FROM json_each(?))';
             const pageArgs = [...args, JSON.stringify(pageIds)];
             if (wantHashes) {
-                const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.all(`SELECT ${HASH_COLUMNS} FROM ${from} ${pageWhere}`, pageArgs)));
+                const rawRows = Array.from(/** @type {Iterable<HashSourceRow>} */ (entry.db.iterate(`SELECT ${HASH_COLUMNS} FROM ${from} ${pageWhere}`, pageArgs)));
                 const rowById = new Map(rawRows.map(r => [r.id, r]));
                 hashRows = pageIds
                     .filter(id => rowById.has(id))
                     .map(id => toHashRow(/** @type {HashSourceRow} */ (rowById.get(id))));
             } else {
-                const rawRows = (/** @type {{ id: string, shallow_json: string }[]} */ (entry.db.all(`SELECT id, shallow_json FROM ${from} ${pageWhere}`, pageArgs)));
+                const rawRows = Array.from(/** @type {Iterable<{ id: string, shallow_json: string }>} */ (entry.db.iterate(`SELECT id, shallow_json FROM ${from} ${pageWhere}`, pageArgs)));
                 const shallowById = new Map(rawRows.map(r => [r.id, r.shallow_json]));
                 rows = pageIds
                     .filter(id => shallowById.has(id))
