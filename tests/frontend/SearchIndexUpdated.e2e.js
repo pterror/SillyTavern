@@ -292,6 +292,119 @@ test.describe('change message ({}) on /changes/stream', () => {
     });
 });
 
+test.describe('the list going from hidden to showing', () => {
+    /** @type {Awaited<ReturnType<typeof instrument>>} */
+    let log;
+
+    test.beforeEach(async ({ page }) => {
+        log = await instrument(page);
+        await page.setViewportSize({ width: 1400, height: 900 });
+        await testSetup.awaitST({ page });
+        await awaitAppReady(page);
+        await openCharacterManagementDrawer(page);
+        await expect.poll(() => listShowing(page)).toBe(true);
+        await waitForQuiet(log);
+    });
+
+    /** Covers the list with the character info panel, then waits for quiet. */
+    async function coverList(page) {
+        await page.locator('#rm_button_create').click();
+        await expect.poll(() => listShowing(page)).toBe(false);
+        await waitForQuiet(log);
+    }
+
+    /** Waits for the list to show and for quiet, then checks exactly one page query and no change sync since `from`. */
+    async function expectOnePageQueryOnly(page, from, changesBefore) {
+        await expect.poll(() => listShowing(page)).toBe(true);
+        await expect.poll(() => pageQueries(log, from).length).toBe(1);
+        await waitForQuiet(log);
+        expect(pageQueries(log, from)).toHaveLength(1);
+        expect(topSearchQueries(log, from)).toEqual([]);
+        expect(log.changes).toBe(changesBefore);
+    }
+
+    test('closing the panel covering it re-queries the visible page once', async ({ page }) => {
+        await coverList(page);
+        const from = log.queries.length;
+        const changesBefore = log.changes;
+
+        await page.locator('#charInfoDrawerIcon').click();
+
+        await expectOnePageQueryOnly(page, from, changesBefore);
+    });
+
+    test('bringing it to the front while covered re-queries the visible page once', async ({ page }) => {
+        await coverList(page);
+        const from = log.queries.length;
+        const changesBefore = log.changes;
+
+        await page.locator('#rightNavDrawerIcon').click();
+
+        await expectOnePageQueryOnly(page, from, changesBefore);
+    });
+
+    test('opening its drawer re-queries the visible page once', async ({ page }) => {
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect.poll(() => listShowing(page)).toBe(false);
+        await waitForQuiet(log);
+        const from = log.queries.length;
+        const changesBefore = log.changes;
+
+        await page.locator('#rightNavDrawerIcon').click();
+
+        await expectOnePageQueryOnly(page, from, changesBefore);
+    });
+
+    test('bringing it to the front while already showing sends nothing', async ({ page }) => {
+        const from = log.queries.length;
+        const changesBefore = log.changes;
+
+        await page.evaluate(async () => {
+            const { frontDrawer } = await import('/script.js');
+            frontDrawer('right-nav-panel');
+        });
+        await waitForQuiet(log);
+
+        expect(log.queries.slice(from)).toEqual([]);
+        expect(log.changes).toBe(changesBefore);
+    });
+
+    test('after a change message while covered, uncovering it syncs and fetches the page once', async ({ page }) => {
+        await coverList(page);
+        const from = log.queries.length;
+        const changesBefore = log.changes;
+        await sendStreamMessage(page, {});
+        await waitForQuiet(log);
+        expect(log.changes).toBe(changesBefore);
+
+        await page.locator('#charInfoDrawerIcon').click();
+        await expect.poll(() => log.changes).toBeGreaterThan(changesBefore);
+        await expect.poll(() => pageQueries(log, from).length).toBe(1);
+        await waitForQuiet(log);
+
+        expect(pageQueries(log, from)).toHaveLength(1);
+        expect(topSearchQueries(log, from)).toEqual([]);
+    });
+
+    test('with a search term, after a change message while covered, uncovering it syncs and fetches only the page', async ({ page }) => {
+        await setSearchTerm(page, log, 'zq');
+        await coverList(page);
+        const from = log.queries.length;
+        const changesBefore = log.changes;
+        await sendStreamMessage(page, {});
+        await waitForQuiet(log);
+        expect(log.changes).toBe(changesBefore);
+
+        await page.locator('#charInfoDrawerIcon').click();
+        await expect.poll(() => log.changes).toBeGreaterThan(changesBefore);
+        await expect.poll(() => pageQueries(log, from).length).toBe(1);
+        await waitForQuiet(log);
+
+        expect(pageQueries(log, from)).toEqual([{ search: 'zq', pageSize: expect.any(Number), page: 1, fav: undefined }]);
+        expect(topSearchQueries(log, from)).toEqual([]);
+    });
+});
+
 test.describe('re-rendering the visible page keeps the list\'s scroll distance', () => {
     const CHARACTER_COUNT = 40;
     const SCROLLED_TO = 200;

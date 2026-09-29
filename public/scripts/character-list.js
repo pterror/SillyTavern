@@ -204,15 +204,22 @@ let keepScrollOnNextRender = false;
 
 // Page fetches of the characters list still running: printCharacters()'s page-1 probe through to the pager it
 // builds, and every pager ajaxFunction call. pagination.js drops a refresh while its own fetch runs, so a
-// search-index-updated arriving meanwhile waits here for the last one to settle.
+// search-index-updated or the list being shown arriving meanwhile waits here for the last one to settle.
 let pageFetchesInFlight = 0;
 let searchIndexRefreshPending = false;
+let shownRefreshPending = false;
 // Whether the pager was last built in server-query mode (renderLocalPaginated() has no server page).
 let serverPagedList = false;
 
 function pageFetchSettled() {
     pageFetchesInFlight--;
-    if (pageFetchesInFlight === 0 && searchIndexRefreshPending) {
+    if (pageFetchesInFlight !== 0) return;
+    // The shown refresh re-queries the page whatever the search term, so it covers a pending search-index one.
+    if (shownRefreshPending) {
+        shownRefreshPending = false;
+        searchIndexRefreshPending = false;
+        onCharacterListShown();
+    } else if (searchIndexRefreshPending) {
         searchIndexRefreshPending = false;
         onSearchIndexUpdated();
     }
@@ -237,6 +244,19 @@ export function onSearchIndexUpdated() {
     if (!hasActiveCharacterSearch()) return;
     if (pageFetchesInFlight > 0) {
         searchIndexRefreshPending = true;
+        return;
+    }
+    if (!serverPagedList) return;
+    refreshCharacterListCurrentPage();
+}
+
+// For the list going from hidden to showing, when no change sync is pending: re-queries the visible page with its
+// token, since anything that changed while it was hidden wasn't shown. A local-pagination list is built from the
+// resident characters/groups, which only a change sync updates, so there is nothing to re-query.
+export function onCharacterListShown() {
+    if (!isCharacterListShowing()) return;
+    if (pageFetchesInFlight > 0) {
+        shownRefreshPending = true;
         return;
     }
     if (!serverPagedList) return;
