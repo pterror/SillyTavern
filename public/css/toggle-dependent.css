@@ -8,9 +8,10 @@
     padding: 5px;
 }
 
-/* Pinning can leave both .fillRight panels open at once; hide whichever isn't the active tab so panel
-   translucency doesn't blend two overlapping open panels into an unreadable mess. */
-.fillRight.openDrawer:not(.frontFillRight) {
+/* Stacked drawers (power_user.stacked_drawers) lets both .fillRight panels be open at once; hide whichever isn't
+   the active tab so panel translucency doesn't blend two overlapping open panels into an unreadable mess. Every
+   rule that hides something for being behind a drawer requires body.stackedDrawers. */
+body.stackedDrawers .fillRight.openDrawer:not(.frontFillRight) {
     visibility: hidden;
     transition: visibility 0s !important;
 }
@@ -202,7 +203,7 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
    once this panel covers the full viewport where #sheld normally sits. Requires .frontInZone (not just
    .frontFillRight, a separate right-zone-only tracker) since a center-zone drawer can evict this panel's
    zone without touching frontFillRight. */
-body.charGalleryView:has(#right-nav-panel.galleryFullscreen.frontFillRight.frontInZone.openDrawer[data-active-menu="rm_characters_block"]) #sheld {
+body.charGalleryView.stackedDrawers:has(#right-nav-panel.galleryFullscreen.frontFillRight.frontInZone.openDrawer[data-active-menu="rm_characters_block"]) #sheld {
     visibility: hidden;
 }
 
@@ -224,7 +225,7 @@ body.charGalleryView:has(#right-nav-panel.galleryFullscreen.frontFillRight.front
 
 /* Same one-visible-at-a-time trick as above, extended to #sheld while this panel is the fullscreen drawer.
    Requires .frontInZone too, for the same reason as the galleryFullscreen rule above. */
-body:has(#char-info-panel.charInfoFullscreen.frontFillRight.frontInZone.openDrawer[data-active-menu="rm_ch_create_block"]) #sheld {
+body.stackedDrawers:has(#char-info-panel.charInfoFullscreen.frontFillRight.frontInZone.openDrawer[data-active-menu="rm_ch_create_block"]) #sheld {
     visibility: hidden;
 }
 
@@ -232,12 +233,12 @@ body:has(#char-info-panel.charInfoFullscreen.frontFillRight.frontInZone.openDraw
    #WorldInfo is pinnable (can stay open while eclipsed by another zone occupant, see activateZoneFront
    in script.js), so it only counts here while it's actually the visible one; the rest can't be pinned
    and so are never open-but-eclipsed. */
-body:has(#WorldInfo.openDrawer.frontInZone) #sheld,
-body:has(#PersonaManagement.openDrawer) #sheld,
-body:has(#rm_extensions_block.openDrawer) #sheld,
-body:has(#Backgrounds.openDrawer) #sheld,
-body:has(#user-settings-block.openDrawer) #sheld,
-body:has(#AdvancedFormatting.openDrawer) #sheld {
+body.stackedDrawers:has(#WorldInfo.openDrawer.frontInZone) #sheld,
+body.stackedDrawers:has(#PersonaManagement.openDrawer) #sheld,
+body.stackedDrawers:has(#rm_extensions_block.openDrawer) #sheld,
+body.stackedDrawers:has(#Backgrounds.openDrawer) #sheld,
+body.stackedDrawers:has(#user-settings-block.openDrawer) #sheld,
+body.stackedDrawers:has(#AdvancedFormatting.openDrawer) #sheld {
     visibility: hidden;
 }
 
@@ -247,19 +248,19 @@ body:has(#AdvancedFormatting.openDrawer) #sheld {
    data-drawer-zones) - so a fullscreen .fillRight panel
    can end up sharing a zone with a pinned drawer that normally lives there. Whichever is frontInZone wins;
    the loser stays logically open but hidden, same trick as .fillRight.openDrawer:not(.frontFillRight) above. */
-#left-nav-panel.openDrawer:not(.frontInZone),
-#WorldInfo.openDrawer:not(.frontInZone),
-#right-nav-panel.galleryFullscreen.openDrawer:not(.frontInZone),
-#char-info-panel.charInfoFullscreen.openDrawer:not(.frontInZone) {
+body.stackedDrawers #left-nav-panel.openDrawer:not(.frontInZone),
+body.stackedDrawers #WorldInfo.openDrawer:not(.frontInZone),
+body.stackedDrawers #right-nav-panel.galleryFullscreen.openDrawer:not(.frontInZone),
+body.stackedDrawers #char-info-panel.charInfoFullscreen.openDrawer:not(.frontInZone) {
     visibility: hidden;
     transition: visibility 0s !important;
 }
 
 /* .zoomed_avatar_container isn't a drawer (no open/close state of its own), so it just sits under
    whichever left-zone drawer currently has focus, same as #sheld does for the center zone. */
-body:has(#left-nav-panel.openDrawer.frontInZone) .zoomed_avatar_container,
-body:has(#right-nav-panel.galleryFullscreen.openDrawer.frontInZone) .zoomed_avatar_container,
-body:has(#char-info-panel.openDrawer.frontInZone[data-drawer-zones~="left"]) .zoomed_avatar_container {
+body.stackedDrawers:has(#left-nav-panel.openDrawer.frontInZone) .zoomed_avatar_container,
+body.stackedDrawers:has(#right-nav-panel.galleryFullscreen.openDrawer.frontInZone) .zoomed_avatar_container,
+body.stackedDrawers:has(#char-info-panel.openDrawer.frontInZone[data-drawer-zones~="left"]) .zoomed_avatar_container {
     visibility: hidden;
 }
 

@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, setStackedDrawers } from './frontent-test-utils.js';
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
@@ -52,6 +52,7 @@ test.describe('Drawer front order', () => {
     test.beforeEach(async ({ page }) => {
         await awaitAppReady(page);
         await page.setViewportSize({ width: 1400, height: 900 });
+        await setStackedDrawers(page, true);
     });
 
     test('character info brought forward over character management uncovers the zoomed avatar', async ({ page }) => {
@@ -431,6 +432,7 @@ test.describe('Drawer overlap, desktop', () => {
     test.beforeEach(async ({ page }) => {
         await awaitAppReady(page);
         await page.setViewportSize({ width: 1400, height: 900 });
+        await setStackedDrawers(page, true);
     });
 
     test('pinned fullscreen character info brought forward over User Settings hides User Settings', async ({ page }) => {
@@ -555,6 +557,7 @@ test.describe('Character info fullscreen width', () => {
     test.beforeEach(async ({ page }) => {
         await awaitAppReady(page);
         await page.setViewportSize({ width: 1400, height: 900 });
+        await setStackedDrawers(page, true);
     });
 
     /**
@@ -641,7 +644,142 @@ test.describe('Drawer overlap, mobile', () => {
 
     test.beforeEach(async ({ page }) => {
         await awaitAppReady(page);
+        await setStackedDrawers(page, true);
     });
 
     drawerPairTests('mobile');
+});
+
+/** @param {import('@playwright/test').Page} page @param {string} selector */
+function isShown(page, selector) {
+    return page.locator(selector).evaluate(el => el.checkVisibility({ visibilityProperty: true, opacityProperty: true }));
+}
+
+test.describe('Stacked drawers off', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+        await page.setViewportSize({ width: 1400, height: 900 });
+        await setStackedDrawers(page, false);
+    });
+
+    test('the two right-side pins act as one', async ({ page }) => {
+        await startScenario(page, { variants: [], pinned: [] });
+        await setPin(page, '#rm_button_panel_pin', true);
+        await expect(page.locator('#charInfo_button_panel_pin')).toBeChecked();
+        await expect(page.locator('#char-info-panel')).toHaveClass(/pinnedOpen/);
+        await setPin(page, '#charInfo_button_panel_pin', false);
+        await expect(page.locator('#rm_button_panel_pin')).not.toBeChecked();
+        await expect(page.locator('#right-nav-panel')).not.toHaveClass(/pinnedOpen/);
+    });
+
+    test('opening either right-side panel closes the other, pinned, and the pin carries over', async ({ page }) => {
+        await startScenario(page, { variants: [{ id: 'right-nav-panel', fullscreen: false }], pinned: ['right-nav-panel'] });
+        await openDrawer(page, 'right-nav-panel');
+        await openDrawer(page, 'char-info-panel');
+        await expect(page.locator('#right-nav-panel')).toHaveClass(/closedDrawer/);
+        await expect(page.locator('#char-info-panel')).toHaveClass(/pinnedOpen/);
+        await expect(page.locator('#char-info-panel')).toBeVisible();
+
+        await openDrawer(page, 'right-nav-panel');
+        await expect(page.locator('#char-info-panel')).toHaveClass(/closedDrawer/);
+        await expect(page.locator('#right-nav-panel')).toHaveClass(/pinnedOpen/);
+        await expect(page.locator('#right-nav-panel')).toBeVisible();
+    });
+
+    test('pinned World Info stays visible under User Settings, the chat too, and its icon closes it', async ({ page }) => {
+        await startScenario(page, { variants: [], pinned: ['WorldInfo'] });
+        await openDrawer(page, 'WorldInfo');
+        await openDrawer(page, 'user-settings-block');
+        await expect.poll(async () => (await drawerOverlapState(page)).visible.sort()).toEqual(['WorldInfo', 'user-settings-block']);
+        expect(await isShown(page, '#sheld')).toBe(true);
+
+        await drawerIcon(page, 'WorldInfo').click();
+        await expect(page.locator('#WorldInfo')).toHaveClass(/closedDrawer/);
+    });
+
+    test('pinned fullscreen character management stays visible under Persona Management, the chat too', async ({ page }) => {
+        await startScenario(page, { variants: [{ id: 'right-nav-panel', fullscreen: true }], pinned: ['right-nav-panel'] });
+        await openDrawer(page, 'right-nav-panel');
+        expect(await isShown(page, '#sheld')).toBe(true);
+        await openDrawer(page, 'PersonaManagement');
+        await expect.poll(async () => (await drawerOverlapState(page)).visible.sort()).toEqual(['PersonaManagement', 'right-nav-panel']);
+        expect(await isShown(page, '#sheld')).toBe(true);
+    });
+
+    test('the zoomed avatar stays visible beside pinned AI Response Configuration', async ({ page }) => {
+        // Fullscreen character info would cover the chat the helper clicks to close it.
+        await startScenario(page, { variants: [{ id: 'char-info-panel', fullscreen: false }], pinned: [] });
+        await openChatWithCharacterMessage(page);
+        await startScenario(page, { variants: [], pinned: ['left-nav-panel'] });
+        await openDrawer(page, 'left-nav-panel');
+        await page.locator('#chat .mes .avatar').first().click();
+        await expect(page.locator('.zoomed_avatar[forChar] .zoomed_avatar_img')).toBeVisible();
+        await expect(page.locator('#left-nav-panel')).toBeVisible();
+    });
+
+    test('turning it off with only one right-side pin set pins both', async ({ page }) => {
+        await setStackedDrawers(page, true);
+        await startScenario(page, { variants: [], pinned: ['right-nav-panel'] });
+        await expect(page.locator('#charInfo_button_panel_pin')).not.toBeChecked();
+        await setStackedDrawers(page, false);
+        await expect(page.locator('#charInfo_button_panel_pin')).toBeChecked();
+        await expect(page.locator('#char-info-panel')).toHaveClass(/pinnedOpen/);
+    });
+
+    test('turning it off with both right-side panels open leaves only the front one open', async ({ page }) => {
+        await setStackedDrawers(page, true);
+        await startScenario(page, { variants: [{ id: 'right-nav-panel', fullscreen: false }], pinned: ['right-nav-panel', 'char-info-panel'] });
+        await openDrawer(page, 'char-info-panel');
+        await openDrawer(page, 'right-nav-panel');
+        await expect(page.locator('#char-info-panel')).toHaveClass(/openDrawer/);
+        await setStackedDrawers(page, false);
+        await expect(page.locator('#char-info-panel')).toHaveClass(/closedDrawer/);
+        await expect(page.locator('#right-nav-panel')).toBeVisible();
+    });
+
+    test('a reload with differing saved right-side pins pins both', async ({ page }) => {
+        await startScenario(page, { variants: [], pinned: ['right-nav-panel'] });
+        await page.evaluate(() => localStorage.setItem('CharInfoNavLockOn', 'false'));
+        await page.reload();
+        await awaitAppReady(page);
+        await expect(page.locator('#charInfo_button_panel_pin')).toBeChecked();
+        await expect(page.locator('#rm_button_panel_pin')).toBeChecked();
+    });
+
+    test('a theme saves the setting and applies it', async ({ page }) => {
+        const name = `StackedDrawersTheme-${Date.now()}`;
+        await setStackedDrawers(page, true);
+        const saved = page.waitForResponse(response => response.url().endsWith('/api/themes/save-from-settings') && response.ok());
+        await page.locator('#ui-preset-save-button').evaluate(el => el.click());
+        await page.locator('dialog[open] .popup-input').fill(name);
+        await page.locator('dialog[open] .popup-button-ok').click();
+        expect((await (await saved).json()).theme.stacked_drawers).toBe(true);
+
+        await setStackedDrawers(page, false);
+        await openDrawer(page, 'user-settings-block');
+        await page.locator('#themes').selectOption(name);
+        await expect(page.locator('body')).toHaveClass(/\bstackedDrawers\b/);
+        await expect(page.locator('#stackedDrawers')).toBeChecked();
+    });
+});
+
+test.describe('Stacked drawers off, mobile', () => {
+    test.use({ viewport: { width: 412, height: 915 } });
+
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+        await setStackedDrawers(page, false);
+    });
+
+    test('pinned World Info stays visible under User Settings, the chat too', async ({ page }) => {
+        await startScenario(page, { variants: [], pinned: ['WorldInfo'] });
+        await openDrawer(page, 'WorldInfo');
+        await openDrawer(page, 'user-settings-block');
+        await expect.poll(async () => (await drawerOverlapState(page)).visible.sort()).toEqual(['WorldInfo', 'user-settings-block']);
+        expect(await isShown(page, '#sheld')).toBe(true);
+    });
 });

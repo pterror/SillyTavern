@@ -29,7 +29,7 @@ import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId } from './character-store.js';
 import { eventSource, event_types } from './events.js';
-import { isMobile, initMovingUI, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './RossAscends-mods.js';
+import { isMobile, initMovingUI, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
 import {
     groups,
     resetSelectedGroup,
@@ -46,7 +46,7 @@ import {
     updateBindModelTemplatesState,
 } from './instruct-mode.js';
 
-import { getTagsList, tag_import_setting, tag_sort_mode, tags, getAssignedTagIds } from './tags.js';
+import { getTagsList, tag_import_setting, tag_sort_mode, tags, getAssignedTagIds, refreshTagsDrawerUnderlayClip } from './tags.js';
 import { tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 
@@ -184,6 +184,7 @@ export const power_user = {
     custom_css: '',
 
     waifuMode: false,
+    stacked_drawers: false,
     forceMobileView: false,
     movingUI: false,
     movingUIState: {},
@@ -1179,6 +1180,13 @@ function switchWaifuMode() {
     scrollChatToBottom();
 }
 
+function switchStackedDrawers() {
+    $('body').toggleClass('stackedDrawers', power_user.stacked_drawers);
+    $('#stackedDrawers').prop('checked', power_user.stacked_drawers);
+    onStackedDrawersChanged();
+    refreshTagsDrawerUnderlayClip();
+}
+
 function switchForceMobileView() {
     $('body').toggleClass('forceMobileView', power_user.forceMobileView);
     $('#forceMobileView').prop('checked', power_user.forceMobileView);
@@ -1494,6 +1502,12 @@ function applyTheme(name) {
             key: 'waifuMode',
             action: () => {
                 switchWaifuMode();
+            },
+        },
+        {
+            key: 'stacked_drawers',
+            action: () => {
+                switchStackedDrawers();
             },
         },
         {
@@ -1856,6 +1870,10 @@ export async function loadPowerUserSettings(settings, data) {
         power_user.waifuMode = false;
     }
 
+    if (typeof power_user.stacked_drawers !== 'boolean') {
+        power_user.stacked_drawers = false;
+    }
+
     if (typeof power_user.chat_width !== 'number') {
         power_user.chat_width = 50;
     }
@@ -2056,6 +2074,7 @@ export async function loadPowerUserSettings(settings, data) {
     await loadReasoningTemplates(data);
     loadMaxContextUnlocked();
     switchWaifuMode();
+    switchStackedDrawers();
     switchForceMobileView();
     switchSpoilerMode();
     loadMovingUIState();
@@ -2967,6 +2986,7 @@ export function getThemeObject(name) {
         font_scale: power_user.font_scale,
         fast_ui_mode: power_user.fast_ui_mode,
         waifuMode: power_user.waifuMode,
+        stacked_drawers: power_user.stacked_drawers,
         forceMobileView: power_user.forceMobileView,
         avatar_style: power_user.avatar_style,
         chat_display: power_user.chat_display,
@@ -3793,6 +3813,12 @@ jQuery(() => {
         power_user.waifuMode = !!$('#waifuMode').prop('checked');
         switchWaifuMode();
         saveSettingsDebounced('power_user.waifuMode');
+    });
+
+    $('#stackedDrawers').on('change', () => {
+        power_user.stacked_drawers = !!$('#stackedDrawers').prop('checked');
+        switchStackedDrawers();
+        saveSettingsDebounced('power_user.stacked_drawers');
     });
 
     $('#forceMobileView').on('change', () => {

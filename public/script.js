@@ -8359,7 +8359,8 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
 // fullscreen character info spans center plus each sidebar it reaches - each only while toggle-dependent.css
 // actually draws it fullscreen.
 // Only pinnable drawers can stay open behind another drawer: opening or bringing forward a drawer closes every
-// unpinned one (closeUnpinnedDrawersFor), and a pinned drawer that isn't in front is open but hidden.
+// unpinned one (closeUnpinnedDrawersFor). With stacked drawers on (body.stackedDrawers), a pinned drawer that isn't
+// in front is open but hidden; with it off, it stays visible under the front one.
 const ZONE_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
 // The 4 pinnable panels. In the mobile layout every top-bar drawer covers the whole screen (see mobile-styles.css),
 // so one of these is shown there only while no other open top-bar drawer is in front of it.
@@ -8501,26 +8502,54 @@ function closeDrawerContent(content) {
     recomputeDrawerFronts();
 }
 
+/** @param {Element} content A .drawer-content. @returns {Element|null} Its navbar icon. */
+function getDrawerIcon(content) {
+    return content.parentElement?.querySelector(':scope > .drawer-toggle .drawer-icon') ?? null;
+}
+
 /**
  * Closes every unpinned open drawer other than `content`, as opening or bringing forward `content` requires.
- * The two .fillRight panels are meant to coexist, so one never closes the other.
+ * With stacked drawers on, the two .fillRight panels coexist, so one never closes the other. With it off only one
+ * right-side panel is open at a time: opening either .fillRight panel closes the other, pinned or not.
  * @param {Element} content The .drawer-content being opened or brought forward.
  * @returns {number} How many drawers were closed.
  */
 function closeUnpinnedDrawersFor(content) {
     const isFillRight = content.classList.contains('fillRight');
-    const ownIcon = content.parentElement?.querySelector(':scope > .drawer-toggle .drawer-icon');
+    const stacked = Boolean(power_user.stacked_drawers);
+    const ownIcon = getDrawerIcon(content);
     document.querySelectorAll('.openIcon:not(.drawerPinnedOpen)').forEach(el => {
-        if (el === ownIcon || (isFillRight && el.classList.contains('fillRightIcon'))) return;
+        if (el === ownIcon || (isFillRight && stacked && el.classList.contains('fillRightIcon'))) return;
         el.classList.replace('openIcon', 'closedIcon');
     });
     let closed = 0;
     document.querySelectorAll('.openDrawer:not(.pinnedOpen)').forEach(el => {
-        if (el === content || (isFillRight && el.classList.contains('fillRight'))) return;
+        if (el === content || (isFillRight && stacked && el.classList.contains('fillRight'))) return;
         closeDrawerContent(el);
         closed++;
     });
+    if (isFillRight && !stacked) {
+        document.querySelectorAll('.fillRight.openDrawer.pinnedOpen').forEach(el => {
+            if (el === content) return;
+            getDrawerIcon(el)?.classList.replace('openIcon', 'closedIcon');
+            closeDrawerContent(el);
+            closed++;
+        });
+    }
     return closed;
+}
+
+/** With stacked drawers off, closes every open .fillRight panel but the front one. */
+export function keepOneRightPanelOpen() {
+    if (power_user.stacked_drawers) return;
+    const open = Array.from(document.querySelectorAll('.fillRight.openDrawer'));
+    if (open.length < 2) return;
+    const front = open.find(el => el.classList.contains('frontFillRight')) ?? open.at(-1);
+    for (const el of open) {
+        if (el === front) continue;
+        getDrawerIcon(el)?.classList.replace('openIcon', 'closedIcon');
+        closeDrawerContent(el);
+    }
 }
 
 /**
@@ -12550,7 +12579,8 @@ export async function doNavbarIconClick() {
 
         frontDrawer(targetDrawerID);
     } else if (drawerWasOpenAlready) {
-        // Open but hidden behind another drawer: the click brings it forward rather than closing it.
+        // Open but hidden behind another drawer (only stacked drawers hide any): the click brings it forward
+        // rather than closing it.
         if (getComputedStyle(drawer[0]).visibility === 'hidden') {
             bringOpenDrawerForward(drawer[0]);
             return;

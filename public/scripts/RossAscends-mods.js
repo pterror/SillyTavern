@@ -12,6 +12,7 @@ import {
     userInputGenerateMutex,
     doNavbarIconClick,
     frontDrawer,
+    keepOneRightPanelOpen,
     readSavedPanelOpenStates,
     isSwipingAllowed,
 } from '../script.js';
@@ -781,6 +782,53 @@ export const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea, deboun
 
 // ---------------------------------------------------
 
+// The pin of #right-nav-panel (#rm_button_panel_pin) and of #char-info-panel (#charInfo_button_panel_pin).
+function applyRightNavPin() {
+    accountStorage.setItem('NavLockOn', $(RPanelPin).prop('checked'));
+    if ($(RPanelPin).prop('checked') == true) {
+        $(RightNavPanel).addClass('pinnedOpen');
+        $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
+    } else {
+        $(RightNavPanel).removeClass('pinnedOpen');
+        $(RightNavDrawerIcon).removeClass('drawerPinnedOpen');
+
+        // #char-info-panel can stay open independent of this pin, so it's excluded below.
+        if ($(RightNavPanel).hasClass('openDrawer') && $('.openDrawer').not(CharInfoPanel).length > 1) {
+            const toggle = $('#unimportantYes');
+            doNavbarIconClick.call(toggle);
+        }
+    }
+}
+
+function applyCharInfoPin() {
+    accountStorage.setItem('CharInfoNavLockOn', $(CharInfoPanelPin).prop('checked'));
+    if ($(CharInfoPanelPin).prop('checked') == true) {
+        $(CharInfoPanel).addClass('pinnedOpen');
+        $(CharInfoDrawerIcon).addClass('drawerPinnedOpen');
+    } else {
+        $(CharInfoPanel).removeClass('pinnedOpen');
+        $(CharInfoDrawerIcon).removeClass('drawerPinnedOpen');
+
+        // #right-nav-panel can stay open independent of this pin, so it's excluded below.
+        if ($(CharInfoPanel).hasClass('openDrawer') && $('.openDrawer').not(RightNavPanel).length > 1) {
+            const toggle = $('#charInfoHolder>.drawer-toggle');
+            doNavbarIconClick.call(toggle);
+        }
+    }
+}
+
+/** Applies power_user.stacked_drawers to the right-side panels and their pins. */
+export function onStackedDrawersChanged() {
+    // With stacked drawers off, the two right-side pins act as one; if they differ, pinned wins.
+    if (!power_user.stacked_drawers && $(RPanelPin).prop('checked') !== $(CharInfoPanelPin).prop('checked')) {
+        $(RPanelPin).prop('checked', true);
+        $(CharInfoPanelPin).prop('checked', true);
+        applyRightNavPin();
+        applyCharInfoPin();
+    }
+    keepOneRightPanelOpen();
+}
+
 export function initRossMods() {
     checkStatusDebounced();
 
@@ -801,21 +849,10 @@ export function initRossMods() {
 
     //toggle pin class when lock toggle clicked
     $(RPanelPin).on('click', function () {
-        accountStorage.setItem('NavLockOn', $(RPanelPin).prop('checked'));
-        if ($(RPanelPin).prop('checked') == true) {
-            //console.log('adding pin class to right nav');
-            $(RightNavPanel).addClass('pinnedOpen');
-            $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
-        } else {
-            //console.log('removing pin class from right nav');
-            $(RightNavPanel).removeClass('pinnedOpen');
-            $(RightNavDrawerIcon).removeClass('drawerPinnedOpen');
-
-            // #char-info-panel can stay open independent of this pin, so it's excluded below.
-            if ($(RightNavPanel).hasClass('openDrawer') && $('.openDrawer').not(CharInfoPanel).length > 1) {
-                const toggle = $('#unimportantYes');
-                doNavbarIconClick.call(toggle);
-            }
+        applyRightNavPin();
+        if (!power_user.stacked_drawers) {
+            $(CharInfoPanelPin).prop('checked', $(RPanelPin).prop('checked'));
+            applyCharInfoPin();
         }
     });
     $(LPanelPin).on('click', function () {
@@ -856,19 +893,10 @@ export function initRossMods() {
     });
 
     $(CharInfoPanelPin).on('click', function () {
-        accountStorage.setItem('CharInfoNavLockOn', $(CharInfoPanelPin).prop('checked'));
-        if ($(CharInfoPanelPin).prop('checked') == true) {
-            $(CharInfoPanel).addClass('pinnedOpen');
-            $(CharInfoDrawerIcon).addClass('drawerPinnedOpen');
-        } else {
-            $(CharInfoPanel).removeClass('pinnedOpen');
-            $(CharInfoDrawerIcon).removeClass('drawerPinnedOpen');
-
-            // #right-nav-panel can stay open independent of this pin, so it's excluded below.
-            if ($(CharInfoPanel).hasClass('openDrawer') && $('.openDrawer').not(RightNavPanel).length > 1) {
-                const toggle = $('#charInfoHolder>.drawer-toggle');
-                doNavbarIconClick.call(toggle);
-            }
+        applyCharInfoPin();
+        if (!power_user.stacked_drawers) {
+            $(RPanelPin).prop('checked', $(CharInfoPanelPin).prop('checked'));
+            applyRightNavPin();
         }
     });
 
@@ -882,9 +910,13 @@ export function initRossMods() {
             { panel: WorldInfo, icon: WIDrawerIcon, pin: WIPanelPin, lockKey: 'WINavLockOn' },
         ];
         const reopened = [];
+        // With stacked drawers off, the two right-side pins act as one; if they differ, pinned wins.
+        const rightPanelPinned = ['NavLockOn', 'CharInfoNavLockOn'].some(key => accountStorage.getItem(key) === 'true');
         for (const { panel, icon, pin, lockKey } of pinnable) {
-            const pinned = accountStorage.getItem(lockKey) === 'true';
+            const linked = !power_user.stacked_drawers && panel.classList.contains('fillRight');
+            const pinned = linked ? rightPanelPinned : accountStorage.getItem(lockKey) === 'true';
             $(pin).prop('checked', pinned);
+            if (linked) accountStorage.setItem(lockKey, pinned);
             if (!pinned) continue;
             $(panel).addClass('pinnedOpen');
             $(icon).addClass('drawerPinnedOpen');
@@ -900,6 +932,7 @@ export function initRossMods() {
         const fillRightFirst = el => Number(!el.classList.contains('fillRight'));
         reopened.sort((x, y) => fillRightFirst(x) - fillRightFirst(y) || Number(x.id === savedFront) - Number(y.id === savedFront));
         reopened.forEach(el => frontDrawer(el.id));
+        keepOneRightPanelOpen();
     }
 
     var chatbarInFocus = false;
