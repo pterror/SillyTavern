@@ -63,6 +63,7 @@ import { mergeChatCompletionPreset } from '../../chat-completion-preset-merge.js
 import { createGenerationParameters } from '../../chat-completion-generation-data.js';
 import { substituteParams } from '../../macro-substitution.js';
 import { refreshLlamaCppDetection } from '../../custom-llamacpp.js';
+import { createLlamaCppPropsCheck } from '../../llamacpp-props.js';
 import { readSettingsAtPaths } from '../../settings-store.js';
 import { readPresetByName } from '../presets.js';
 import { resolveChatCompletionGenerationInput } from '../../chat-completion-generation-input.js';
@@ -2575,13 +2576,14 @@ async function chatCompletionSendWarnings(source, model, droppedEntries, outcome
  * @param {any} settings The send's chat-completion settings
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {object} macroContext
+ * @param {import('../../llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps] The send's `/props` check
  * @returns {import('../../tokenizer-map-resolution.js').ChatCompletionConnection}
  */
-function chatCompletionConnection(settings, directories, macroContext) {
+function chatCompletionConnection(settings, directories, macroContext, llamaCppProps = undefined) {
     if (settings.chat_completion_source !== CHAT_COMPLETION_SOURCES.CUSTOM) {
         return { directories };
     }
-    return { url: settings.custom_url, directories, customIncludeHeaders: substituteParams(settings.custom_include_headers, macroContext) };
+    return { url: settings.custom_url, directories, customIncludeHeaders: substituteParams(settings.custom_include_headers, macroContext), llamaCppProps };
 }
 
 /**
@@ -2855,9 +2857,11 @@ export async function buildRawActionChatCompletionRequest(directories, {
     // `media_inlining` enabled - `Message.addImage()`'s own real backend call would then fail/be
     // ignored by that backend, not this server silently mis-behaving.
     const mediaInliningEnabled = Boolean(settings.media_inlining);
+    // A custom URL that is llama.cpp is asked its /props afresh, once, for every count and encode of this send.
+    const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
     const orchestratorInput = await resolveChatCompletionGenerationInput(directories, {
         avatar: characterAvatar, groupId, ownerId, nodeId,
-        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra,
+        type, isImpersonate, isContinue, isSwipe, userMessageText, userMessageExtra, llamaCppProps,
         macroExtras: {
             imageInlining: mediaInliningEnabled, videoInlining: mediaInliningEnabled, audioInlining: mediaInliningEnabled,
         },
@@ -2941,6 +2945,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
         chatId: anchorNodeId,
         toolsPayload,
         jsonSchema,
+        llamaCppProps,
     });
 
     // JUDGMENT CALL: unlike buildRawActionTextCompletionRequest() (which gets `name1` back directly
@@ -2961,7 +2966,7 @@ export async function buildRawActionChatCompletionRequest(directories, {
     const anchorContent = anchorChat.length > 0 ? anchorChat[anchorChat.length - 1] : null;
 
     const warnings = await chatCompletionSendWarnings(settings.chat_completion_source, orchestratorInput.model, droppedBiasEntries, orchestratorInput.tokenizerOutcome,
-        chatCompletionConnection(settings, directories, orchestratorInput.macroContext));
+        chatCompletionConnection(settings, directories, orchestratorInput.macroContext, llamaCppProps));
 
     return { params: generate_data, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledServerTools, enabledClientToolNames, enabledStealthClientToolNames, warnings };
 }

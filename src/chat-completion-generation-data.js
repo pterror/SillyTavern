@@ -197,6 +197,8 @@ function getVerbosity(settings) {
  * @property {{name1?: string, name2?: string}} [macroContext]
  * @property {string} [chatId] getCurrentChatId() - only used for FIREWORKS's chat_id field
  * @property {import('./users.js').UserDirectoryList} [directories] For a custom URL that is llama.cpp: the custom key
+ * @property {import('./llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps] The send's `/props` check for a
+ * custom URL that is llama.cpp (see ChatCompletionConnection).
  */
 
 /**
@@ -221,6 +223,7 @@ export async function createGenerationParameters(settings, model, type, messages
         macroContext = {},
         chatId = undefined,
         directories = undefined,
+        llamaCppProps = undefined,
     } = context;
 
     if (!Array.isArray(messages)) {
@@ -255,7 +258,7 @@ export async function createGenerationParameters(settings, model, type, messages
         logit_bias = logitBiasOverride;
     } else if (Array.isArray(biasPresetEntries) && biasPresetEntries.length && logitBiasSources.includes(settings.chat_completion_source)) {
         const connection = settings.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM
-            ? { url: settings.custom_url, directories, customIncludeHeaders: substituteParams(settings.custom_include_headers, macroContext) }
+            ? { url: settings.custom_url, directories, customIncludeHeaders: substituteParams(settings.custom_include_headers, macroContext), llamaCppProps }
             : { directories };
         logit_bias = await computeLogitBias(biasPresetEntries, model, droppedBiasEntries, settings.chat_completion_source, connection);
     }

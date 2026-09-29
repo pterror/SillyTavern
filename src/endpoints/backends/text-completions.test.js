@@ -36,6 +36,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // framework, matching this file's existing "real on-disk fixtures over mocks" convention.
 const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
+const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
 const { saveChatToTree, loadBranch, appendMessages, getAncestorPath, getAlternatives, disposeMessageTreeStores } = await import('../../message-tree-db.js');
 // The client-side compact-stream decoder (public/scripts/llamacpp-compact-stream.js) has no browser-
 // only dependencies (just TextDecoder/Uint8Array, both real Node globals), so it's imported directly
@@ -1832,6 +1833,110 @@ async function run() {
         assert.deepEqual(fields, [{ model: 'gemma-2-9b-it', content: 'BosCount: Hi.\n' }], 'a message is counted with upstream\'s { model, content }');
         assert.ok(built.params.prompt.endsWith('Tell me one.'));
         assert.deepEqual(built.warnings ?? [], []);
+    });
+
+    /**
+     * A llama.cpp backend recording each request's URL: `/props` answers `props` (500 when null),
+     * `/v1/models` lists `modelsId`, and `/tokenize` one token per UTF-8 byte (500 when `failTokenize`).
+     */
+    async function startPropsLlamaCpp({ props, modelsId = 'from-v1-models', failTokenize = false }) {
+        const requests = [];
+        const backend = await startFakeBackend((req, res, body) => {
+            requests.push({ url: req.url, headers: req.headers });
+            if (req.url.startsWith('/props')) {
+                res.writeHead(props ? 200 : 500, { 'Content-Type': 'application/json' });
+                return res.end(props ? JSON.stringify(props) : '{}');
+            }
+            if (req.url === '/v1/models') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ data: [{ id: modelsId }] }));
+            }
+            if (req.url === '/tokenize' && !failTokenize) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ tokens: Array.from(Buffer.from(JSON.parse(body).content), (_, i) => i) }));
+            }
+            res.writeHead(500);
+            res.end('no');
+        });
+        return { ...backend, requests, urls: () => requests.map(r => r.url) };
+    }
+
+    let propsChats = 0;
+    /** Builds a raw-action continue on a new two-message chat against `backend` with the given model setting. */
+    async function buildOnPropsLlamaCpp(backend, model) {
+        const name = `PropsCheck${++propsChats}`;
+        const avatar = await writeCharacter(`${name}.png`, { name, data: { name, first_mes: 'Hi.' } });
+        await saveChatToTree(directories, avatar, 'props-chat', [
+            { chat_metadata: {} },
+            { name, is_user: false, mes: 'Hi.', send_date: 1, extra: {} },
+            { name: 'Tester', is_user: true, mes: 'Tell me one.', send_date: 2, extra: {} },
+        ]);
+        const branch = await loadBranch(directories, avatar, 'props-chat');
+        const settings = buildSettingsFixture();
+        settings.power_user.tokenizer = 99;
+        Object.assign(settings.textgenerationwebui_settings, {
+            type: 'llamacpp',
+            llamacpp_model: model,
+            server_urls: { llamacpp: backend.url },
+        });
+        writeAllSettings(directories, settings);
+        try {
+            return await buildRawActionTextCompletionRequest(directories, {
+                request: /** @type {any} */ ({ body: { api_type: 'llamacpp' }, user: { directories } }),
+                characterAvatar: avatar, ownerId: avatar, nodeId: branch.branch.leaf_id,
+                type: 'continue', isContinue: true,
+            });
+        } finally {
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
+    await tokenizerCase('raw-action on llama.cpp, /props with model_alias: one /props, no /v1/models, identity from model_path and build_info', async () => {
+        const props = { model_alias: 'gemma-2-9b-it', model_path: '/models/gemma-2-9b-it-Q4_K_M.gguf', build_info: 'b4000-abc' };
+        const backend = await startPropsLlamaCpp({ props });
+        const built = await buildOnPropsLlamaCpp(backend, '');
+        assert.deepEqual(backend.urls().filter(url => url.startsWith('/props') || url === '/v1/models'), ['/props']);
+        assert.equal(built.tokenizerIdentity, `llamacpp:${JSON.stringify([props.model_path, props.build_info])}`);
+    });
+
+    await tokenizerCase('raw-action on llama.cpp, a model setting (router mode): one /props?model=, with the llama.cpp key, no /v1/models', async () => {
+        writeSecret(directories, SECRET_KEYS.LLAMACPP, 'props-llamacpp-key');
+        const backend = await startPropsLlamaCpp({ props: { model_path: '/m/a.gguf', build_info: 'b1' } });
+        try {
+            await buildOnPropsLlamaCpp(backend, 'gemma 2');
+        } finally {
+            deleteSecret(directories, SECRET_KEYS.LLAMACPP);
+        }
+        const asked = backend.requests.filter(r => r.url.startsWith('/props') || r.url === '/v1/models');
+        assert.deepEqual(asked.map(r => r.url), ['/props?model=gemma%202']);
+        assert.equal(asked[0].headers.authorization, 'Bearer props-llamacpp-key');
+    });
+
+    await tokenizerCase('raw-action on llama.cpp, /props without model_alias: /v1/models too, and the map gets its name', async () => {
+        const backend = await startPropsLlamaCpp({ props: { model_path: '/models/x.gguf', build_info: 'b1' }, modelsId: 'gemma-2-9b-it', failTokenize: true });
+        const built = await buildOnPropsLlamaCpp(backend, '');
+        assert.deepEqual(backend.urls().filter(url => url.startsWith('/props') || url === '/v1/models'), ['/props', '/v1/models']);
+        const copy = built.warnings.find(w => w.kind === 'fallback-copy');
+        assert.ok(copy?.message.includes('Gemma'), 'the gemma copy, from the /v1/models name');
+    });
+
+    await tokenizerCase('raw-action on llama.cpp, model_alias equal to model_path: the map gets the file name after the last /', async () => {
+        // The whole path maps to no tokenizer; the file name maps to gemma.
+        const modelPath = '/models/Meta-Llama-3-8B-Instruct/gemma-2-9b-it.gguf';
+        const backend = await startPropsLlamaCpp({ props: { model_alias: modelPath, model_path: modelPath, build_info: 'b1' }, failTokenize: true });
+        const built = await buildOnPropsLlamaCpp(backend, '');
+        assert.deepEqual(backend.urls().filter(url => url.startsWith('/props') || url === '/v1/models'), ['/props']);
+        const copy = built.warnings.find(w => w.kind === 'fallback-copy');
+        assert.ok(copy?.message.includes('Gemma'), 'the gemma copy, from gemma-2-9b-it.gguf');
+    });
+
+    await tokenizerCase('raw-action on llama.cpp, /props failing: no identity, so nothing stored is read or written', async () => {
+        const backend = await startPropsLlamaCpp({ props: null });
+        const built = await buildOnPropsLlamaCpp(backend, 'gemma-2-9b-it');
+        assert.deepEqual(backend.urls().filter(url => url.startsWith('/props')), ['/props?model=gemma-2-9b-it']);
+        assert.equal(built.tokenizerIdentity, null);
+        assert.ok(backend.urls().includes('/tokenize'), 'counts still go to /tokenize');
     });
 
     assert.deepEqual(tokenizerCaseFailures, [], 'tokenizer resolution cases');

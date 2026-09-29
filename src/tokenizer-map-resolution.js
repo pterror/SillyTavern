@@ -4,6 +4,7 @@ import { lookupModelTokenizer } from './tokenizer-model-map.js';
 import { findEntriesByRepo, findTokenizerSource, getTokenizerDisplayName } from './tokenizer-sources.js';
 import { lookupOpenRouterHuggingFaceId } from './openrouter-models.js';
 import { lookupCustomLlamaCppModel, resolveCustomLlamaCppEndpoint } from './custom-llamacpp.js';
+import { llamaCppPropsModelName } from './llamacpp-props.js';
 
 // The parts of resolveTokenizer() (src/tokenizer-resolve.js) that need only the model map, kept
 // apart so src/endpoints/tokenizers.js can resolve chat-completion models without importing the
@@ -222,6 +223,9 @@ export function estimateResolution(basis) {
  * @property {import('./users.js').UserDirectoryList} [directories] For the custom key and saved custom headers
  * @property {string} [customIncludeHeaders] The custom headers with the send's own macros substituted;
  * without them the saved ones are used (see resolveCustomLlamaCppEndpoint())
+ * @property {import('./llamacpp-props.js').LlamaCppPropsCheck} [llamaCppProps] Asks a custom URL that is
+ * llama.cpp for its `/props`: for its identity, and for its model name when the model setting is empty
+ * and the reply has `model_alias`. Without it, an empty model setting is looked up with `/v1/models`.
  */
 
 /**
@@ -248,12 +252,16 @@ export async function resolveChatCompletionTokenizer(model, source = undefined, 
 /**
  * @param {import('./custom-llamacpp.js').CustomLlamaCppEndpoint} endpoint
  * @param {string} model The custom model setting; empty asks the URL
- * @param {MapDeps} deps
+ * @param {MapDeps & ChatCompletionConnection} deps
  * @returns {Promise<import('./tokenizer-resolve.js').ResolvedTokenizer>}
  */
 async function customLlamaCppResolution(endpoint, model, deps) {
     const state = { api: 'textgenerationwebui', type: TEXTGEN_TYPES.LLAMACPP };
-    const name = model || await lookupCustomLlamaCppModel(endpoint);
+    const props = deps.llamaCppProps
+        ? await deps.llamaCppProps.ask({ api: 'openai', type: CHAT_COMPLETION_SOURCES.CUSTOM, url: endpoint.url, model, headers: endpoint.headers })
+        : undefined;
+    const propsName = model ? undefined : llamaCppPropsModelName(props);
+    const name = model || (propsName !== undefined ? propsName : await lookupCustomLlamaCppModel(endpoint));
     const local = describeMapEntry(await selectModelResult(state.api, name, state, deps), state.api, deps.registry);
     const resolved = {
         kind: /** @type {const} */ ('remote'),
