@@ -8355,18 +8355,28 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
 }
 
 // Desktop layout has 3 zones: left (#left-nav-panel, .zoomed_avatar_container), center (#sheld and most
-// drawers), right (#right-nav-panel, #char-info-panel). galleryFullscreen spans all 3 zones;
-// charInfoFullscreen spans center only. Only pinnable drawers (see doNavbarIconClick's sweep) can survive
-// open behind another zone occupant, but any drawer opening can evict one, so every top-bar drawer is zone-aware.
+// drawers), right (#right-nav-panel, #char-info-panel). Fullscreen character management spans all 3 zones;
+// fullscreen character info spans center only - each only while toggle-dependent.css actually draws it fullscreen.
+// Only pinnable drawers can stay open behind another drawer: opening or bringing forward a drawer closes every
+// unpinned one (closeUnpinnedDrawersFor), and a pinned drawer that isn't in front is open but hidden.
 const ZONE_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
-// The 4 pinnable panels, which overlap each other entirely in the mobile layout (see mobile-styles.css).
+// The 4 pinnable panels. In the mobile layout every top-bar drawer covers the whole screen (see mobile-styles.css),
+// so one of these is shown there only while no other open top-bar drawer is in front of it.
 const MOBILE_OVERLAY_PANEL_IDS = ['right-nav-panel', 'char-info-panel', 'left-nav-panel', 'WorldInfo'];
 function getDrawerZones(id) {
     const el = document.getElementById(id);
     if (!el) return [];
     if (id === 'left-nav-panel') return ['left'];
-    if (id === 'right-nav-panel') return el.classList.contains('galleryFullscreen') ? ['left', 'center', 'right'] : ['right'];
-    if (id === 'char-info-panel') return el.classList.contains('charInfoFullscreen') ? ['center'] : ['right'];
+    // Same conditions as the fullscreen rules in toggle-dependent.css; any other menu is drawn in the right sidebar.
+    const menu = el.getAttribute('data-active-menu');
+    if (id === 'right-nav-panel') {
+        const fullscreen = document.body.classList.contains('charGalleryView') && el.classList.contains('galleryFullscreen') && menu === 'rm_characters_block';
+        return fullscreen ? ['left', 'center', 'right'] : ['right'];
+    }
+    if (id === 'char-info-panel') {
+        const fullscreen = el.classList.contains('charInfoFullscreen') && menu === 'rm_ch_create_block';
+        return fullscreen ? ['center'] : ['right'];
+    }
     return ['center'];
 }
 
@@ -8395,8 +8405,8 @@ export function readSavedPanelOpenStates() {
 }
 
 // Derives every "which open drawer is on top" class from drawerFrontOrder, each over its own overlap group:
-// .frontFillRight (the two .fillRight panels), .frontMobileOverlay (MOBILE_OVERLAY_PANEL_IDS), and
-// .frontInZone (per zone; an id spanning several zones must be on top of all of them).
+// .frontFillRight (the two .fillRight panels), .frontMobileOverlay (on MOBILE_OVERLAY_PANEL_IDS, ranked against
+// every top-bar drawer), and .frontInZone (per zone; an id spanning several zones must be on top of all of them).
 function recomputeDrawerFronts() {
     const openDrawers = Array.from(document.querySelectorAll('.drawer-content.openDrawer'));
     const rank = el => drawerFrontOrder.indexOf(el.id);
@@ -8407,10 +8417,11 @@ function recomputeDrawerFronts() {
     const fillRightFront = topOf(fillRightIds);
     for (const id of fillRightIds) document.getElementById(id).classList.toggle('frontFillRight', id === fillRightFront);
 
-    const mobileFront = topOf(MOBILE_OVERLAY_PANEL_IDS);
+    const zoneDrawerIds = Array.from(document.querySelectorAll(ZONE_DRAWER_SELECTOR), el => el.id);
+
+    const mobileFront = topOf(zoneDrawerIds);
     for (const id of MOBILE_OVERLAY_PANEL_IDS) document.getElementById(id)?.classList.toggle('frontMobileOverlay', id === mobileFront);
 
-    const zoneDrawerIds = Array.from(document.querySelectorAll(ZONE_DRAWER_SELECTOR), el => el.id);
     const zoneTop = {};
     for (const zone of ['left', 'center', 'right']) zoneTop[zone] = topOf(zoneDrawerIds.filter(id => getDrawerZones(id).includes(zone)));
     for (const id of zoneDrawerIds) {
@@ -8459,28 +8470,50 @@ function closeDrawerContent(content) {
     recomputeDrawerFronts();
 }
 
+/**
+ * Closes every unpinned open drawer other than `content`, as opening or bringing forward `content` requires.
+ * The two .fillRight panels are meant to coexist, so one never closes the other.
+ * @param {Element} content The .drawer-content being opened or brought forward.
+ * @returns {number} How many drawers were closed.
+ */
+function closeUnpinnedDrawersFor(content) {
+    const isFillRight = content.classList.contains('fillRight');
+    const ownIcon = content.parentElement?.querySelector(':scope > .drawer-toggle .drawer-icon');
+    document.querySelectorAll('.openIcon:not(.drawerPinnedOpen)').forEach(el => {
+        if (el === ownIcon || (isFillRight && el.classList.contains('fillRightIcon'))) return;
+        el.classList.replace('openIcon', 'closedIcon');
+    });
+    let closed = 0;
+    document.querySelectorAll('.openDrawer:not(.pinnedOpen)').forEach(el => {
+        if (el === content || (isFillRight && el.classList.contains('fillRight'))) return;
+        closeDrawerContent(el);
+        closed++;
+    });
+    return closed;
+}
+
+/**
+ * Brings an already open drawer to the front. Every path that does so goes through here, so it closes
+ * unpinned drawers exactly as opening would.
+ * @param {Element} content The open .drawer-content.
+ */
+function bringOpenDrawerForward(content) {
+    closeUnpinnedDrawersFor(content);
+    frontDrawer(content.id);
+}
+
 function ensureDrawerOpen(drawerId) {
     const drawer = document.getElementById(drawerId);
-    if (!drawer) return;
-    const content = drawer.querySelector('.drawer-content');
-    const icon = drawer.querySelector('.drawer-icon');
-    if (content && !content.classList.contains('openDrawer')) {
-        // .fillRight panels are meant to coexist - opening one shouldn't close the other.
-        const isFillRight = content.classList.contains('fillRight');
-        document.querySelectorAll('.openDrawer:not(.pinnedOpen)').forEach(el => {
-            if (isFillRight && el.classList.contains('fillRight')) return;
-            closeDrawerContent(el);
-        });
-        document.querySelectorAll('.openIcon:not(.drawerPinnedOpen)').forEach(el => {
-            if (isFillRight && el.classList.contains('fillRightIcon')) return;
-            el.classList.replace('openIcon', 'closedIcon');
-        });
-        content.classList.replace('closedDrawer', 'openDrawer');
-        if (icon) icon.classList.replace('closedIcon', 'openIcon');
+    const content = drawer?.querySelector('.drawer-content');
+    if (!content) return;
+    if (content.classList.contains('openDrawer')) {
+        bringOpenDrawerForward(content);
+        return;
     }
-    if (content) {
-        frontDrawer(content.id);
-    }
+    closeUnpinnedDrawersFor(content);
+    content.classList.replace('closedDrawer', 'openDrawer');
+    drawer.querySelector('.drawer-icon')?.classList.replace('closedIcon', 'openIcon');
+    frontDrawer(content.id);
 }
 
 /**
@@ -12468,17 +12501,8 @@ export async function doNavbarIconClick() {
     const targetDrawerID = $(this).parent().find('.drawer-content').attr('id');
 
     if (!drawerWasOpenAlready) {
-        // .fillRight drawers coexist, so opening one must not sweep-close the other here either.
-        const isFillRight = drawer.hasClass('fillRight');
-        const $openDrawers = $('.openDrawer:not(.pinnedOpen)').not(isFillRight ? '.fillRight' : []);
-        const $openIcons = $('.openIcon:not(.drawerPinnedOpen)').not(isFillRight ? '.fillRightIcon' : []);
-        for (const iconEl of $openIcons) {
-            $(iconEl).toggleClass('closedIcon openIcon');
-        }
-        for (const el of $openDrawers) {
-            closeDrawerContent(el);
-        }
-        if ($openDrawers.length && animation_duration) {
+        const closedCount = closeUnpinnedDrawersFor(drawer[0]);
+        if (closedCount && animation_duration) {
             await delay(animation_duration);
         }
         icon.toggleClass('openIcon closedIcon');
@@ -12497,7 +12521,7 @@ export async function doNavbarIconClick() {
     } else if (drawerWasOpenAlready) {
         // Open but hidden behind another drawer: the click brings it forward rather than closing it.
         if (getComputedStyle(drawer[0]).visibility === 'hidden') {
-            frontDrawer(targetDrawerID);
+            bringOpenDrawerForward(drawer[0]);
             return;
         }
         icon.toggleClass('closedIcon openIcon');
@@ -14312,8 +14336,8 @@ jQuery(async function () {
                 btn.classList.toggle('fa-expand', !power_user.charGalleryFullscreen);
                 btn.classList.toggle('fa-compress', power_user.charGalleryFullscreen);
             }
-            // Fullscreen changes which zones this panel spans - re-evict/re-front accordingly.
-            frontDrawer('right-nav-panel');
+            // Fullscreen changes which drawers this panel covers.
+            if (panel.classList.contains('openDrawer')) bringOpenDrawerForward(panel);
             saveSettingsDebounced('power_user.charGalleryFullscreen');
         }
     });
@@ -14328,8 +14352,8 @@ jQuery(async function () {
                 btn.classList.toggle('fa-expand', !power_user.charInfoFullscreen);
                 btn.classList.toggle('fa-compress', power_user.charInfoFullscreen);
             }
-            // Fullscreen changes which zones this panel spans - re-evict/re-front accordingly.
-            frontDrawer('char-info-panel');
+            // Fullscreen changes which drawers this panel covers.
+            if (panel.classList.contains('openDrawer')) bringOpenDrawerForward(panel);
             saveSettingsDebounced('power_user.charInfoFullscreen');
         }
     });
