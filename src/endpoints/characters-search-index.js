@@ -6,7 +6,7 @@ import {
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
     streamDeletedIdsBetween, getMetaValue, trySetMetaValues, getCharacterFavsByIds, getCharacterIndexRowsByIds,
 } from '../character-metadata-db.js';
-import { processCharacter } from './characters.js';
+import { processCharacterOrPlaceholder } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter, stringToSortKey } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { getSearchIndex, rebuildSearchIndex, startSearchWorker, CHARACTERS_INDEX_SEQ_META_KEY, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY } from './search-index-coordinator.js';
@@ -221,20 +221,16 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
     const { tagNamesFor, tagIdsFor } = await makeTagResolvers(directories, ids, phases);
     const favFor = await timeAsync(phases, 'load', () => makeFavResolver(directories, ids));
     const characters = await timeAsync(phases, 'build', () => mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
-        try {
-            const row = rowById.get(id);
-            return await processCharacter(id, directories, {
-                shallow: false,
-                cardJson: row.card_json,
-                chatStats: { chatSize: row.chat_size, dateLastChat: row.date_last_chat },
-            });
-        } catch {
-            // File gone or corrupt - leave it deleted rather than throwing the whole pass away.
-            return null;
-        }
+        const row = rowById.get(id);
+        return await processCharacterOrPlaceholder(id, directories, {
+            shallow: false,
+            cardJson: row.card_json,
+            chatStats: { chatSize: row.chat_size, dateLastChat: row.date_last_chat },
+        });
     }));
     for (const character of characters) {
-        if (!character?.name) continue;
+        // The placeholder of a card that couldn't be processed has no `name`; a card whose name is empty has one.
+        if (!('name' in character)) continue;
         const doc = timeSync(phases, 'build', () => characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor));
         timeSync(phases, 'add', () => writer.addDocument(doc));
     }
@@ -265,7 +261,7 @@ export function formatCatchUpLine(r) {
 
 /**
  * The only writer of a user's characters index. Runs in search-index-worker.js, never in the request process:
- * every call here is synchronous work (better-sqlite3, processCharacter()'s fs reads, tantivy's napi calls) that
+ * every call here is synchronous work (better-sqlite3, processCharacterOrPlaceholder()'s fs reads, tantivy's napi calls) that
  * would otherwise hold the event loop.
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {typeof import('@oxdev03/node-tantivy-binding')} tantivy
@@ -643,7 +639,7 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}
     return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, score: r.score }))), total, backend: 'tantivy', position };
 }
 
-// A matched id that can no longer be resolved (deleted, or corrupt) is silently dropped.
+// A matched id that can no longer be resolved (deleted, or corrupt) is logged and dropped.
 export async function searchCharacters(handle, directories, searchTerm, maxRows, favOnly, tags) {
     const { hits, total, backend } = await runIdSearch(handle, directories, searchTerm, maxRows, { fav: favOnly ? true : undefined, tags });
     if (hits.length === 0) {
@@ -651,12 +647,8 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
     }
 
     const resolved = await mapWithConcurrency(hits, INDEX_BUILD_READ_CONCURRENCY, async (hit) => {
-        try {
-            const character = await processCharacter(hit.id, directories, { shallow: false });
-            return character?.name ? { item: character, score: hit.score } : null;
-        } catch {
-            return null;
-        }
+        const character = await processCharacterOrPlaceholder(hit.id, directories, { shallow: false });
+        return 'name' in character ? { item: character, score: hit.score } : null;
     });
 
     return { results: resolved.filter(Boolean), total, backend };
