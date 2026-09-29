@@ -410,22 +410,22 @@ export async function printCharacters(fullRefresh = false) {
         serverPagedList = false;
         const entities = await queryEntitiesList({ doFilter: true });
 
-        // entities.length is capped by the page-fetch limit during search; use serverSearchResults.total for the displayed total instead.
+        // A full top-500 means the search may match more than that, and nothing here knows how many, so the count
+        // says "500+" rather than passing a number off as the total.
         const searchResults = entitiesFilter.serverSearchResults;
         const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
-        const realMatchTotal = searchTerm && searchResults?.searchValue === searchTerm && searchResults.total > entities.length
-            ? searchResults.total
-            : undefined;
+        const topSearchFull = Boolean(searchTerm) && searchResults?.searchValue === searchTerm
+            && searchResults.characterScores.size + searchResults.groupScores.size >= TOP_SEARCH_RESULTS_LIMIT;
 
         $('#rm_print_characters_pagination').pagination({
             ...sharedPaginationOptions,
             dataSource: entities,
-            formatNavigator: realMatchTotal === undefined
+            formatNavigator: !topSearchFull
                 ? PAGINATION_TEMPLATE
                 : function (currentPage, _totalPage, totalNumber) {
                     const rangeStart = (currentPage - 1) * pageSize + 1;
                     const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
-                    return `${rangeStart}-${rangeEnd} .. ${realMatchTotal}`;
+                    return `${rangeStart}-${rangeEnd} .. ${TOP_SEARCH_RESULTS_LIMIT}+`;
                 },
             callback: makePageCallback(() => entities.length),
         });
@@ -469,21 +469,18 @@ export async function printCharacters(fullRefresh = false) {
             let matchTotal = 0;
             // Serves the already-fetched probe to ajaxFunction's first call instead of re-fetching.
             let pendingFirstPage = firstPage;
+            // Whether the latest page response's `total` was `~`-prefixed (approximate).
+            let pageTotalApprox = isApproxTotal(firstPage.total);
 
-            const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
             serverPagedList = true;
             $('#rm_print_characters_pagination').pagination({
                 ...sharedPaginationOptions,
                 dataSource: SERVER_PAGINATED_DATA_SOURCE,
                 locator: 'rows',
                 formatNavigator: function (currentPage, _totalPage, totalNumber) {
-                    const searchResults = entitiesFilter.serverSearchResults;
-                    const realMatchTotal = searchTerm && searchResults?.searchValue === searchTerm && searchResults.total > totalNumber
-                        ? searchResults.total
-                        : totalNumber;
                     const rangeStart = (currentPage - 1) * pageSize + 1;
                     const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
-                    return `${rangeStart}-${rangeEnd} .. ${realMatchTotal}`;
+                    return `${rangeStart}-${rangeEnd} .. ${pageTotalApprox ? '~' : ''}${totalNumber}`;
                 },
                 // Lets a re-render restore the page the user was on instead of bouncing to page 1 while the ajax response is in flight.
                 totalNumber: saveCharactersTotal || undefined,
@@ -506,6 +503,7 @@ export async function printCharacters(fullRefresh = false) {
                             const pageEntities = rows.map(row => queryRowToEntity(row));
                             const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
                             saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
+                            pageTotalApprox = isApproxTotal(result.total);
                             matchTotal = saveCharactersTotal + folderTiles.length;
                             const combined = page === 1 ? [...folderTiles, ...pageEntities] : pageEntities;
                             ajaxParams.success({ rows: combined, total: result.total });
@@ -1191,6 +1189,17 @@ const SEARCH_BACKEND_INDICATOR = {
     },
 };
 
+// Rows fetchServerCharacterSearchResults() asks for.
+const TOP_SEARCH_RESULTS_LIMIT = 500;
+
+/**
+ * @param {number|string|undefined} total A `/query` response's `total`.
+ * @returns {boolean} Whether it is a `~`-prefixed approximate count.
+ */
+function isApproxTotal(total) {
+    return typeof total === 'string' && total.startsWith('~');
+}
+
 // Lets fetchServerCharacterSearchResults() pop a transition toast only when the backend actually changes.
 /** @type {string | null} */
 let lastKnownSearchBackend = null;
@@ -1214,7 +1223,7 @@ export async function fetchServerCharacterSearchResults(searchQuery) {
         const result = await characterRepository.query(
             { search: searchQuery, includeGroups: true, ...(favOnly ? { fav: true } : {}) },
             { field: 'search' },
-            1, 500, ['rows', 'total'],
+            1, TOP_SEARCH_RESULTS_LIMIT, ['rows', 'total'],
         );
 
         const rows = Array.isArray(result.rows) ? result.rows : [];
