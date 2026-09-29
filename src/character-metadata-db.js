@@ -85,10 +85,12 @@ function insertChange(db, id, op, fields) {
  * Adds a groups version log row (see group_changes in SCHEMA_SQL). Callers add it only when their write changed
  * something, in that write's transaction.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {string | null} groupId null: every group (a tag rename).
+ * @param {string | null} groupId null: every group (a tag rename), or a group file with no id.
+ * @param {string | null} [fileName] The name of the group JSON file the write wrote, replaced or removed, within the
+ *   groups folder; null when it touched no file.
  */
-function insertGroupChange(db, groupId) {
-    db.run('INSERT INTO group_changes (group_id) VALUES (@groupId)', { groupId });
+function insertGroupChange(db, groupId, fileName = null) {
+    db.run('INSERT INTO group_changes (group_id, file_name) VALUES (@groupId, @fileName)', { groupId, fileName });
 }
 
 /** Connections whose groups version read has already failed and been logged, so it's logged once each. */
@@ -483,14 +485,17 @@ const SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_group_tags_tag ON group_tags(tag_id, group_id);
 
-    -- The groups version log: one row per write that changed a group's groups row, its group_tags rows or its own
-    -- JSON file (writeGroupFileAndRow()), in the same transaction as that write, and one row with group_id NULL
-    -- ("every group") next to each tag_name_changes row, since group docs carry tag names. The groups version is
-    -- MAX(version) (getGroupsVersion()), as the characters' is MAX(changes.seq). A write that changes nothing adds
-    -- no row.
+    -- The groups version log: one row per write that changed a group's groups row, its group_tags rows or a group
+    -- JSON file, in the same transaction as that write, and one row with group_id NULL ("every group") next to each
+    -- tag_name_changes row, since group docs carry tag names. The groups version is MAX(version)
+    -- (getGroupsVersion()), as the characters' is MAX(changes.seq). A write that changes nothing adds no row.
+    -- file_name: the name, within the groups folder, of the group JSON file the write wrote, replaced or removed
+    -- (writeGroupFileAndRow(), writeGroupFileAtOtherPath(), deleteGroupRow() with fileDeleted); NULL when it touched
+    -- no file. group_id is the group's id; a file whose JSON has no id logs group_id NULL with its file_name.
     CREATE TABLE IF NOT EXISTS group_changes (
-        version  INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id TEXT
+        version   INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id  TEXT,
+        file_name TEXT
     );
 
     -- Exact counts of what queryEntities() counts, kept by the triggers ENTITY_COUNT_TRIGGERS_SQL creates. kind is
@@ -995,6 +1000,17 @@ function migrateChangesFieldsColumn(db) {
     }
 }
 
+// file_name: see group_changes in SCHEMA_SQL. Rows logged before it existed keep NULL.
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function migrateGroupChangesFileNameColumn(db) {
+    const columns = Array.from(/** @type {Iterable<{ name: string, type: string, [key: string]: unknown }>} */ (db.iterate('PRAGMA table_info(group_changes)')));
+    if (!columns.some(c => c.name === 'file_name')) {
+        db.exec('ALTER TABLE group_changes ADD COLUMN file_name TEXT');
+    }
+}
+
 /**
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
@@ -1369,6 +1385,8 @@ async function getEntry(directories) {
     migrateDropFileMtimeColumn(db);
     migrateLocalImportMtimesDuplicateOfColumn(db);
     migrateChangesFieldsColumn(db);
+    // Before any migration below that logs a group change.
+    migrateGroupChangesFileNameColumn(db);
     migrateRevToSeqColumns(db);
     migrateCharacterDigestColumns(db);
     migrateAllowGlobalStylesColumn(db);
@@ -4235,7 +4253,7 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
             if (createIfMissing || entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })) {
                 upsertGroupRowSync(entry.db, { id, name: group.name, fav: group.fav, group, dateAdded: Date.now() });
             }
-            if (fileChanged || groupRowSnapshot(entry.db, id) !== rowBefore) insertGroupChange(entry.db, id);
+            if (fileChanged || groupRowSnapshot(entry.db, id) !== rowBefore) insertGroupChange(entry.db, id, path.basename(filePath));
         });
     } catch (err) {
         console.error(`[character-metadata] Could not update the row for group ${id} after writing its file; its digest stays NULL and is recomputed from the file:`, /** @type {any} */ (err).message);
@@ -4244,8 +4262,9 @@ export async function writeGroupFileAndRow(directories, group, writeFile, { crea
 
 /**
  * Writes a group file that is not the group's own `<id>.json` (via `writeFile`). No row describes that file, but the
- * groups search index reads every file in the folder, so a change to its bytes adds a groups version log row: for the
- * group's id, or NULL ("every group") when it has no id a row could be keyed by. Never throws after the file is written.
+ * groups search index reads every file in the folder, so a change to its bytes adds a groups version log row naming
+ * that file: for the group's id, or group_id NULL when it has no id a row could be keyed by. Never throws after the
+ * file is written.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {object} group The exact object `writeFile` serializes.
  * @param {string} filePath The file `writeFile` writes.
@@ -4262,7 +4281,7 @@ export async function writeGroupFileAtOtherPath(directories, group, filePath, wr
     if (sameFileContents(fileBefore, readFileForComparison(filePath))) return;
     const groupId = hasGroupIdForRow(group) ? /** @type {any} */ (group).id : null;
     try {
-        entry.db.transaction(() => insertGroupChange(entry.db, groupId));
+        entry.db.transaction(() => insertGroupChange(entry.db, groupId, path.basename(filePath)));
     } catch (err) {
         console.error(`[character-metadata] Could not add the groups version log row for group file ${filePath} after writing it; results that include groups may stay stale until the next group write:`, /** @type {any} */ (err).message);
     }
@@ -4738,8 +4757,8 @@ function writeGroupChatStatsSync(db, groupId, stats) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} id
  * @param {object} [options]
- * @param {boolean} [options.fileDeleted] The caller deleted the group's file, which the groups search index reads, so
- * the delete is a group change even when the group had no rows.
+ * @param {boolean} [options.fileDeleted] The caller deleted the group's own `<id>.json`, which the groups search index
+ * reads, so the delete is a group change even when the group had no rows, and its log row names that file.
  */
 export async function deleteGroupRow(directories, id, { fileDeleted = false } = {}) {
     const entry = await getEntry(directories);
@@ -4747,7 +4766,7 @@ export async function deleteGroupRow(directories, id, { fileDeleted = false } = 
     entry.db.transaction(() => {
         const rowDeleted = entry.db.run('DELETE FROM groups WHERE id = @id', { id }).changes > 0;
         const tagsDeleted = entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id }).changes > 0;
-        if (rowDeleted || tagsDeleted || fileDeleted) insertGroupChange(entry.db, id);
+        if (rowDeleted || tagsDeleted || fileDeleted) insertGroupChange(entry.db, id, fileDeleted ? sanitize(`${id}.json`) : null);
     });
 }
 
