@@ -2771,6 +2771,26 @@ function parseQueryTotal(total) {
 }
 
 /**
+ * A `/query` hash row as JSON, with the values the binary hash mode's decoder reads for it.
+ * @param {any} row
+ */
+function hashRowJson(row) {
+    return {
+        id: row.id,
+        isGroup: row.isGroup === true,
+        favHash: row.favHash >>> 0,
+        tagIdsHash: row.tagIdsHash >>> 0,
+        contentHash: row.contentHash >>> 0,
+        date_added: Number(row.date_added ?? 0),
+        create_date: row.create_date === null || row.create_date === undefined ? null : Number(row.create_date),
+        date_last_chat: Number(row.date_last_chat ?? 0),
+        chat_size: Number(row.chat_size ?? 0),
+        data_size: Number(row.data_size ?? 0),
+        chat: row.chat ? String(row.chat) : null,
+    };
+}
+
+/**
  * The folder tiles on screen, in one request: for each tile's tag, the entities in its sub-list as the character
  * list shows them, and how many of those tagged with it are hidden.
  *
@@ -2780,7 +2800,9 @@ function parseQueryTotal(total) {
  * doesn't include is left out too.
  * - `count`: the sub-list's size. `hidden`: the entities tagged with the tile's tag that aren't in it.
  * - `rows`: the sub-list's first FOLDER_TILE_STRIP_ROWS in `sort`'s order, shaped as `/query`'s rows with
- *   `filter.includeGroups`.
+ *   `filter.includeGroups`. With `want: ['hashes']` they come as `hashRows` instead: the rows `/query`'s hash mode
+ *   carries, as JSON objects `{ id, isGroup, favHash, tagIdsHash, contentHash, date_added, create_date,
+ *   date_last_chat, chat_size, data_size, chat }`, which the browser resolves from its cache.
  * Either number is a `~`-prefixed string when it's an estimate, as `/query`'s `total` is. A tag that doesn't exist
  * or is marked deleted is answered `{ id, missing: true }`. `sort` and the errors it gives are `/query`'s.
  */
@@ -2793,6 +2815,11 @@ router.post('/folder-tiles', async function (request, response) {
         if (!Array.isArray(tiles) || !tiles.every(id => typeof id === 'string' && id.length > 0)) {
             return response.status(400).send({ error: true, reason: 'invalid-tiles' });
         }
+        const want = body.want === undefined ? ['rows'] : body.want;
+        if (!Array.isArray(want) || want.length !== 1 || (want[0] !== 'rows' && want[0] !== 'hashes')) {
+            return response.status(400).send({ error: true, reason: 'invalid-want', message: 'want is ["rows"] or ["hashes"].' });
+        }
+        const wantHashes = want[0] === 'hashes';
         const tileIds = [...new Set(tiles)];
         if (tileIds.length > MAX_FOLDER_TILES_PER_REQUEST) {
             return response.status(400).send({ error: true, reason: 'too-many-tiles', max: MAX_FOLDER_TILES_PER_REQUEST });
@@ -2826,11 +2853,13 @@ router.post('/folder-tiles', async function (request, response) {
                 ...baseFilter,
                 tags: { include: [...include, id], exclude: [...new Set([...exclude, ...hiddenBy])], mode: 'and' },
             };
-            // Without 'hashes' in want, the reply is JSON.
-            const page = /** @type {{ status: number, body: any }} */ (await runQuery(request.user, { filter: tileFilter, sort, want: ['rows', 'total'], page: 1, pageSize: FOLDER_TILE_STRIP_ROWS }, runOptions));
-            if (page.status !== 200) return response.status(page.status).send(page.body);
+            const reply = await runQuery(request.user, { filter: tileFilter, sort, want: [wantHashes ? 'hashes' : 'rows', 'total'], page: 1, pageSize: FOLDER_TILE_STRIP_ROWS }, runOptions);
+            if (!('hashes' in reply) && reply.status !== 200) return response.status(reply.status).send(reply.body);
+            const page = 'hashes' in reply
+                ? { total: reply.hashes.approxTotal ? `~${reply.hashes.total}` : reply.hashes.total, hashRows: reply.hashes.hashRows }
+                : reply.body;
 
-            let count = parseQueryTotal(page.body.total);
+            let count = parseQueryTotal(page.total);
             if (hasSearch && sort.field === 'search') {
                 // A relevance-ordered page counts only the matches it ranked; a field order counts them all.
                 const counted = /** @type {{ status: number, body: any }} */ (await runQuery(request.user, { filter: tileFilter, sort: { field: 'name', order: 'asc' }, want: ['total'], page: 1, pageSize: 1 }, runOptions));
@@ -2844,13 +2873,18 @@ router.post('/folder-tiles', async function (request, response) {
             }
             const approx = count.approx || tagged.approxTotal;
             const hidden = Math.max(0, Number(tagged.total ?? 0) - count.value);
-            results.push({
+            const tile = {
                 id,
                 count: count.approx ? `~${count.value}` : count.value,
                 hidden: approx ? `~${hidden}` : hidden,
+            };
+            if (wantHashes) {
+                tile.hashRows = (page.hashRows ?? []).map(hashRowJson);
+            } else {
                 // Without groups, /query's rows are bare characters.
-                rows: (page.body.rows ?? []).map(row => baseFilter.includeGroups ? row : { type: 'character', item: row }),
-            });
+                tile.rows = (page.rows ?? []).map(row => baseFilter.includeGroups ? row : { type: 'character', item: row });
+            }
+            results.push(tile);
         }
         return response.send({ tiles: results });
     } catch (err) {

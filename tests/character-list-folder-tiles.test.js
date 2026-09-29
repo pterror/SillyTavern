@@ -121,6 +121,8 @@ let baseUrl;
 let directories;
 /** Bodies of the /folder-tiles requests the client sent, in order. */
 let tileRequests;
+/** Every request the client sent, in order. */
+let requests;
 let inFlight;
 let maxInFlight;
 
@@ -133,6 +135,7 @@ beforeAll(async () => {
     searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
     searchEngine = await import('../src/endpoints/search-engine.js');
     const { router } = await import('../src/endpoints/characters.js');
+    const groupsModule = await import('../src/endpoints/groups.js');
     characterList = await import('../public/scripts/character-list.js');
     repository = await import('../public/scripts/character-repository.js');
     filters = await import('../public/scripts/filters.js');
@@ -145,6 +148,7 @@ beforeAll(async () => {
         next();
     });
     app.use('/api/characters', router);
+    app.use('/api/groups', groupsModule.router);
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     baseUrl = `http://127.0.0.1:${/** @type {any} */ (server.address()).port}`;
@@ -177,9 +181,11 @@ beforeEach(() => {
     filter.setFilterData(FILTER_TYPES.TAG, { excluded: [], selected: [] }, true);
 
     tileRequests = [];
+    requests = [];
     inFlight = 0;
     maxInFlight = 0;
     globalThis.fetch = jest.fn(async (url, init) => {
+        requests.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
         if (url === '/api/characters/folder-tiles') {
             tileRequests.push(JSON.parse(String(init?.body)));
             inFlight++;
@@ -269,7 +275,7 @@ describe('getFolderTileEntities', () => {
         const tiles = await characterList.getFolderTileEntities(1, {}, NAME_ASC, 15);
         // `plain` isn't a folder; `empty` has nothing to show.
         expect(tiles.map(tile => tile.id)).toEqual(['big', 'shut']);
-        expect(tileRequests).toEqual([{ tiles: ['big', 'shut', 'empty'], filter: {}, sort: NAME_ASC }]);
+        expect(tileRequests).toEqual([{ tiles: ['big', 'shut', 'empty'], filter: {}, sort: NAME_ASC, want: ['hashes'] }]);
 
         const [big, shut] = tiles;
         expect(big).toMatchObject({ type: 'tag', item: { id: 'big', name: 'Big' }, total: 14, hidden: 1, isUseless: false });
@@ -306,7 +312,7 @@ describe('getFolderTileEntities', () => {
         const listFilter = { fav: true, tags: { include: ['b'], exclude: [], mode: 'and' }, includeGroups: true };
 
         const tiles = await characterList.getFolderTileEntities(1, listFilter, NAME_ASC, 1);
-        expect(tileRequests).toEqual([{ tiles: ['a', 'c'], filter: { fav: true, tags: listFilter.tags, group: false }, sort: NAME_ASC }]);
+        expect(tileRequests).toEqual([{ tiles: ['a', 'c'], filter: { fav: true, tags: listFilter.tags, group: false }, sort: NAME_ASC, want: ['hashes'] }]);
         expect(tiles.map(tile => [tile.id, tile.total, tile.entities.map(entityKey)])).toEqual([['a', 1, ['Fav.png']], ['c', 1, ['Fav.png']]]);
 
         filter.setFilterData(FILTER_TYPES.TAG, { selected: [], excluded: [] }, true);
@@ -386,9 +392,49 @@ describe('getFolderTileEntities', () => {
             previous = JSON.stringify(next);
         }
 
-        expect(tileRequests.at(-1)).toEqual({ tiles: ['vamps', 'vempty'], filter: { search: 'vampire' }, sort: NAME_ASC });
+        expect(tileRequests.at(-1)).toEqual({ tiles: ['vamps', 'vempty'], filter: { search: 'vampire' }, sort: NAME_ASC, want: ['hashes'] });
         // `other` holds a match but its name doesn't match.
         expect(next).toEqual([['vamps', 1, 0, ['Vlad.png']], ['vempty', 0, 0, []]]);
+    }, 30000);
+});
+
+describe('folder tile strips and the cache', () => {
+    test('strip rows are hash-checked: fetched once, then read from the cache until they change', async () => {
+        await defineTags([
+            { id: 'a', name: 'A', folder_type: 'OPEN' },
+            { id: 'b', name: 'B', folder_type: 'OPEN' },
+        ]);
+        await seedCharacter('Anna.png');
+        await seedCharacter('Bo.png');
+        await seedGroup('g1', 'Coven');
+        await tag('Anna.png', ['a', 'b']);
+        await tag('Bo.png', ['a']);
+        await tag('g1', ['a']);
+
+        const batches = () => requests.filter(request => request.url === '/api/characters/batch' || request.url === '/api/groups/batch');
+        const strips = tiles => tiles.map(tile => [tile.id, tile.entities.map(entity => [entityKey(entity), entity.item.name, entity.item.fav])]);
+
+        const first = await characterList.getFolderTileEntities(1, {}, NAME_ASC, 3);
+        expect(strips(first)).toEqual([
+            ['a', [['Anna.png', 'Anna', false], ['Bo.png', 'Bo', false], ['group:g1', 'Coven', false]]],
+            ['b', [['Anna.png', 'Anna', false]]],
+        ]);
+        // Anna is on both tiles and fetched once.
+        expect(batches().map(request => [request.url, request.body.avatars ?? request.body.ids])).toEqual([
+            ['/api/characters/batch', ['Anna.png', 'Bo.png']],
+            ['/api/groups/batch', ['g1']],
+        ]);
+
+        requests.length = 0;
+        const second = await characterList.getFolderTileEntities(1, {}, NAME_ASC, 3);
+        expect(strips(second)).toEqual(strips(first));
+        expect(batches()).toEqual([]);
+
+        await seedCharacter('Bo.png', { name: 'Bob' });
+        requests.length = 0;
+        const third = await characterList.getFolderTileEntities(1, {}, NAME_ASC, 3);
+        expect(strips(third)[0][1][1]).toEqual(['Bo.png', 'Bob', false]);
+        expect(batches().map(request => [request.url, request.body.avatars ?? request.body.ids])).toEqual([['/api/characters/batch', ['Bo.png']]]);
     }, 30000);
 });
 

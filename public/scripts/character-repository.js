@@ -769,6 +769,9 @@ export class CharacterRepository {
     /**
      * The folder tiles for `tileIds`, from `POST /api/characters/folder-tiles`, in requests of
      * FOLDER_TILES_PER_REQUEST sent one after another.
+     *
+     * The strip rows come as hash rows and are resolved as `query()`'s hash mode resolves them: from the cache on a
+     * hash match, otherwise fetched, once per request for an entity on several tiles.
      * @param {string[]} tileIds - the tiles' tag ids.
      * @param {FolderTileFilter} filter
      * @param {CharacterQuerySort} [sort]
@@ -780,8 +783,32 @@ export class CharacterRepository {
         const tiles = [];
         for (let i = 0; i < ids.length; i += FOLDER_TILES_PER_REQUEST) {
             const fetchStamp = tagFetchStamp();
-            const result = await postJson('/api/characters/folder-tiles', { tiles: ids.slice(i, i + FOLDER_TILES_PER_REQUEST), filter, sort });
-            for (const tile of result.tiles ?? []) {
+            const result = await postJson('/api/characters/folder-tiles', { tiles: ids.slice(i, i + FOLDER_TILES_PER_REQUEST), filter, sort, want: ['hashes'] });
+            const answered = result.tiles ?? [];
+
+            const characterRows = new Map();
+            const groupRows = new Map();
+            for (const tile of answered) {
+                for (const hashRow of tile.hashRows ?? []) {
+                    const byId = hashRow.isGroup ? groupRows : characterRows;
+                    if (!byId.has(hashRow.id)) byId.set(hashRow.id, hashRow);
+                }
+            }
+            const [characters, groups] = await Promise.all([
+                this.#resolveCharacterHashRows([...characterRows.values()]),
+                this.#resolveGroupHashRows([...groupRows.values()]),
+            ]);
+
+            for (const { hashRows, ...tile } of answered) {
+                if (hashRows) {
+                    // A row whose entity was deleted before its fetch is left out, as query() leaves it out.
+                    tile.rows = hashRows
+                        .map(hashRow => {
+                            const item = (hashRow.isGroup ? groups : characters).get(hashRow.id);
+                            return item ? { type: hashRow.isGroup ? 'group' : 'character', item } : undefined;
+                        })
+                        .filter(Boolean);
+                }
                 stampRowsTagFetch(tile, fetchStamp);
                 tiles.push(tile);
             }

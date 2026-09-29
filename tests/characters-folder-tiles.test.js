@@ -248,6 +248,26 @@ describe('POST /api/characters/folder-tiles', () => {
         const tooMany = Array.from({ length: charactersModule.MAX_FOLDER_TILES_PER_REQUEST + 1 }, (_, i) => `t${i}`);
         expect(await tilesRequest({ tiles: tooMany, filter: {} })).toEqual({ status: 400, body: { error: true, reason: 'too-many-tiles', max: charactersModule.MAX_FOLDER_TILES_PER_REQUEST } });
         expect(await tilesRequest({ tiles: ['open'], filter: {}, sort: { field: 'nonsense' } })).toEqual({ status: 400, body: { error: true, reason: 'invalid-sort-field' } });
+        for (const want of ['hashes', [], ['rows', 'hashes'], ['total']]) {
+            expect((await tilesRequest({ tiles: ['open'], filter: {}, want })).body.reason).toBe('invalid-want');
+        }
+    });
+
+    test('want: [\'hashes\'] answers each strip as /query\'s hash rows, for the same entities in the same order', async () => {
+        await seedFolders();
+        for (const filter of [{}, { group: false }, { group: true }]) {
+            const withRows = await tiles({ tiles: ['open', 'shut', 'plain'], filter });
+            const withHashes = await tiles({ tiles: ['open', 'shut', 'plain'], filter, want: ['hashes'] });
+            expect(withHashes.map(({ id, count, hidden }) => ({ id, count, hidden }))).toEqual(withRows.map(({ id, count, hidden }) => ({ id, count, hidden })));
+            for (const [index, tile] of withHashes.entries()) {
+                expect(tile).not.toHaveProperty('rows');
+                expect(tile.hashRows.map(row => row.isGroup ? `group:${row.id}` : row.id)).toEqual(withRows[index].rows.map(rowId));
+                for (const row of tile.hashRows) {
+                    expect(Object.keys(row).sort()).toEqual(['chat', 'chat_size', 'contentHash', 'create_date', 'data_size', 'date_added', 'date_last_chat', 'favHash', 'id', 'isGroup', 'tagIdsHash']);
+                    for (const hash of [row.favHash, row.tagIdsHash, row.contentHash]) expect(Number.isInteger(hash) && hash >= 0).toBe(true);
+                }
+            }
+        }
     });
 
     describe.each([['tag columns filled', true], ['tag columns not filled yet', false]])('%s', (_, ready) => {
