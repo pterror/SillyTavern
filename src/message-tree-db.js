@@ -99,6 +99,26 @@ const SCHEMA_SQL = `
         kind     TEXT NOT NULL CHECK (kind IN ('character', 'group')),
         row_id   TEXT NOT NULL
     );
+
+    -- Token counts and token ids, keyed by the tokenizer that gave them (tokenizerIdentity()) and the sha256 of a
+    -- key string (token-count-store.js). Never keyed to a message node. Each table's row count is kept in meta.
+    CREATE TABLE IF NOT EXISTS token_counts (
+        identity  TEXT NOT NULL,
+        text_hash TEXT NOT NULL,
+        count     INTEGER NOT NULL,
+        last_used INTEGER NOT NULL,
+        PRIMARY KEY (identity, text_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_token_counts_last_used ON token_counts(last_used);
+
+    CREATE TABLE IF NOT EXISTS token_ids (
+        identity  TEXT NOT NULL,
+        text_hash TEXT NOT NULL,
+        ids       TEXT NOT NULL,
+        last_used INTEGER NOT NULL,
+        PRIMARY KEY (identity, text_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_token_ids_last_used ON token_ids(last_used);
 `;
 
 /** SQL to walk from a leaf to the root via recursive CTE, returning the path in root-to-leaf order. */
@@ -475,6 +495,15 @@ async function getEntry(directories) {
     const entry = { db };
     entries.set(key, entry);
     return entry;
+}
+
+/**
+ * The store's database handle, for the modules that own tables in it (token-count-store.js).
+ * @param {Directories} directories
+ * @returns {Promise<import('./endpoints/sqlite-engine.js').SqliteEngineHandle | null>} null when the store is unavailable.
+ */
+export async function getMessageTreeDb(directories) {
+    return (await getEntry(directories))?.db ?? null;
 }
 
 /**
