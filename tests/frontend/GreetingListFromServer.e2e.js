@@ -486,6 +486,44 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(warning).not.toContainText(e0);
     });
 
+    test('popup set default: another session\'s edit of the shown greeting isn\'t announced as this page\'s edit, and the chat doesn\'t follow it', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `OwnEditsOnly-${s}`, g);
+        await openCharacter(page, avatar);
+        await page.evaluate(async () => {
+            const { swipe } = await import('/script.js');
+            const { SWIPE_DIRECTION, SWIPE_SOURCE } = await import('/scripts/constants.js');
+            await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: 1 });
+        });
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[1], { timeout: 10000 });
+        await openGreetingsPopup(page, 3);
+        const elsewhere = `One changed elsewhere ${s}`;
+        await otherSessionOp(page, 'edit', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]), text: elsewhere });
+        await page.evaluate(() => {
+            // @ts-ignore
+            const { eventSource, eventTypes } = SillyTavern.getContext();
+            // @ts-ignore
+            window.__greetingEvents = [];
+            eventSource.on(eventTypes.CHARACTER_EDITED, (/** @type {any} */ event) => {
+                // @ts-ignore
+                window.__greetingEvents.push({ greetingEdit: event.detail.greetingEdit ?? null, greetingEdits: event.detail.greetingEdits ?? [] });
+            });
+        });
+
+        const response = greetingOpResponse(page, 'default/set');
+        await popupRow(page, 2).locator('.set_default_greeting').click();
+        expect((await response).ok()).toBe(true);
+        expect(await storedModel(page, avatar)).toEqual({ greetings: [g[0], elsewhere, g[2]], defaultIndex: 2 });
+        await expectPageHoldsServerList(page, avatar);
+
+        // @ts-ignore
+        await expect.poll(() => page.evaluate(() => window.__greetingEvents)).toEqual([{ greetingEdit: null, greetingEdits: [] }]);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).not.toHaveText(elsewhere);
+        // The shown greeting is gone and no edit of this page's took it anywhere: the chat shows the default.
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[2], { timeout: 10000 });
+    });
+
     test('popup delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];

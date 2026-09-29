@@ -9704,7 +9704,8 @@ function applyGreetingsModelToCharacter(character, model) {
  * @param {object} character
  * @param {GreetingOpResult} result
  * @param {{expectedHash: number, text: string}} [edit] For an edit op: the edited greeting's hash before the edit, and the text sent.
- * The edit is recorded from these, since the list before and after can also differ by other sessions' changes.
+ * Only this is recorded as a text change for the save's CHARACTER_EDITED: the list before and after can also differ by
+ * other sessions' changes, which aren't this page's to announce.
  */
 function applyGreetingOpSuccess(character, result, edit) {
     const run = greetingSaveRuns.get(character?.avatar);
@@ -9714,51 +9715,31 @@ function applyGreetingOpSuccess(character, result, edit) {
     const before = cardToGreetingsModel(character).greetings;
     applyGreetingsModelToCharacter(character, { greetings: result.greetings, defaultIndex: result.defaultPosition });
     setGreetingPagerGreetings(result.greetings, result.defaultPosition, result.hashes);
-    const after = cardToGreetingsModel(character).greetings;
-    if (!run.character) {
-        run.character = character;
-        run.before = before;
+    run.character = character;
+    if (!edit) return;
+    const from = before.find(text => hashGreetingText(text) === edit.expectedHash);
+    if (from !== undefined && from !== edit.text && Number.isInteger(result.position)) {
+        run.edits.push({ from, to: edit.text, index: result.position });
     }
-    run.after = after;
-    const from = edit ? before.find(text => hashGreetingText(text) === edit.expectedHash) : undefined;
-    const change = edit
-        ? (from !== undefined && from !== edit.text && Number.isInteger(result.position) ? { from, to: edit.text, index: result.position } : null)
-        : findGreetingEdit(before, after);
-    if (change) run.edits.push(change);
 }
 
 /**
- * Fires the one CHARACTER_EDITED for a greeting save that applied anything. `greetingEdit` is the save's one
- * in-place greeting change, null when it made any other kind or more than one; `greetingEdits` lists each op's
- * in-place change, in order.
+ * Fires the one CHARACTER_EDITED for a greeting save that applied anything. `greetingEdits` lists the text edits
+ * this save made, in order; `greetingEdit` is its one text edit, null when it made none or more than one. Neither
+ * ever carries another session's change.
  * @param {GreetingSaveRun} run
  * @returns {Promise<void>}
  */
 function emitGreetingSaveEdited(run) {
     if (!run.character) return Promise.resolve();
-    const greetingEdit = findGreetingEdit(run.before, run.after);
+    const greetingEdit = run.edits.length === 1 ? run.edits[0] : null;
     return eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: characterEditedId(run.character.avatar), character: run.character, greetingEdit, greetingEdits: run.edits } });
-}
-
-/**
- * The one greeting whose text changed in place, with its position in the card's greeting list; null for anything
- * else (add, delete, move, default change).
- * @param {string[]} before
- * @param {string[]} after
- * @returns {{from: string, to: string, index: number}|null}
- */
-function findGreetingEdit(before, after) {
-    if (before.length !== after.length) return null;
-    const changed = after.flatMap((text, i) => (text === before[i] ? [] : [i]));
-    return changed.length === 1 ? { from: before[changed[0]], to: after[changed[0]], index: changed[0] } : null;
 }
 
 /**
  * @typedef {object} GreetingSaveRun What one queued greeting save applied.
  * @property {object|null} character Null until the save applies an op.
- * @property {string[]} before The character's greetings before the save's first applied op.
- * @property {string[]} after The character's greetings after its last applied op.
- * @property {{from: string, to: string, index: number}[]} edits Each applied op's in-place greeting change, in order.
+ * @property {{from: string, to: string, index: number}[]} edits Each text edit the save made, in order; `index` is where it landed.
  */
 
 /** @type {Map<string, Promise<void>>} Per character avatar, the tail of its queue of greeting saves; only held while one is queued or in flight. */
@@ -9800,7 +9781,7 @@ function holdUntilSettled(map, key, promise) {
 function queueGreetingSave(avatar, save) {
     const previous = greetingSaveQueues.get(avatar) ?? Promise.resolve();
     /** @type {GreetingSaveRun} */
-    const record = { character: null, before: [], after: [], edits: [] };
+    const record = { character: null, edits: [] };
     const run = previous.then(async () => {
         greetingSaveRuns.set(avatar, record);
         try {
