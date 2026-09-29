@@ -982,9 +982,10 @@ function migrateCharacterDigestColumns(db) {
     const BACKFILL_CHUNK = 1000;
     let lastId = '';
     for (;;) {
-        const chunk = (/** @type {{ id: string, shallow_json: string }[]} */ (db.all(
+        const chunk = (/** @type {{ id: string, shallow_json: string }[]} */ (db.readBounded(
             'SELECT id, shallow_json FROM characters WHERE id > ? ORDER BY id LIMIT ?',
             [lastId, BACKFILL_CHUNK],
+            BACKFILL_CHUNK,
         )));
         if (chunk.length === 0) break;
 
@@ -3267,9 +3268,10 @@ export async function getLocalImportMtimeSourcePathsAfter(directories, afterSour
     const entry = await getEntry(directories);
     if (!entry) return [];
 
-    const rows = /** @type {{ source_path: string }[]} */ (entry.db.all(
+    const rows = /** @type {{ source_path: string }[]} */ (entry.db.readBounded(
         'SELECT source_path FROM local_import_mtimes WHERE source_path > @after ORDER BY source_path LIMIT @limit',
         { after: afterSourcePath, limit },
+        limit,
     ));
     return rows.map(row => row.source_path);
 }
@@ -9914,10 +9916,10 @@ export async function queryCharacters(directories, params = {}) {
         // placeholders strictly in the order they appear in the SQL text.
         const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
         if (wantHashes) {
-            const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.all(`SELECT ${HASH_COLUMNS} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
+            const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.readBounded(`SELECT ${HASH_COLUMNS} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset], numericLimit)));
             hashRows = rawRows.map(toHashRow);
         } else {
-            const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.all(`SELECT shallow_json FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset])));
+            const rawRows = (/** @type {{ shallow_json: string }[]} */ (entry.db.readBounded(`SELECT shallow_json FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset], numericLimit)));
             rows = rawRows.map(r => parseShallowResolvingTags(r.shallow_json, deletions));
         }
     }
