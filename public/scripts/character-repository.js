@@ -53,6 +53,8 @@ import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normali
  * from, sent back as `ifToken` on a repeat of the same request. `null` when there is nothing to send back.
  * @property {string} [searchBackend] - which search engine answered `filter.search` ('tantivy'), present only
  * when `filter.search` was non-empty.
+ * @property {number|string} [hidden] - with `want: 'hidden'`: how many entities the filter leaves out, `~`-prefixed
+ * when approximate like `total`.
  */
 
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
@@ -269,7 +271,7 @@ const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 
  * `serializeQueryHashesBinary()` server-side (src/endpoints/characters.js) for the matching encoder and the
  * field-by-field layout spec this just walks with a `DataView`.
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, searchBackend: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
  */
 function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -319,7 +321,15 @@ function deserializeQueryHashesBinary(buffer) {
     const token = tokenLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, tokenLen)) : null;
     offset += tokenLen;
 
-    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows };
+    // Present only when the request wanted 'hidden': hiddenFlags(1) [bit0=approx] + hidden(8).
+    let hidden;
+    let hiddenApprox = false;
+    if (offset + 9 <= buffer.byteLength) {
+        hiddenApprox = (view.getUint8(offset) & 0b1) !== 0; offset += 1;
+        hidden = view.getFloat64(offset, true); offset += 8;
+    }
+
+    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox };
 }
 
 /**
@@ -530,8 +540,9 @@ export class CharacterRepository {
      * @param {CharacterQuerySort} [sort]
      * @param {number} [page] - 1-based, matching the server's convention.
      * @param {number} [pageSize]
-     * @param {('rows'|'total'|'facets'|'rank')[]} [want] - defaults to `['rows', 'total']`; pass a narrower set
-     * (e.g. `['rows']`) to skip paying for a count the caller doesn't need.
+     * @param {('rows'|'total'|'hidden'|'facets'|'rank')[]} [want] - defaults to `['rows', 'total']`; pass a narrower set
+     * (e.g. `['rows']`) to skip paying for a count the caller doesn't need. `'hidden'` adds `hidden`, how many
+     * entities the filter leaves out.
      * @returns {Promise<CharacterQueryResult>}
      */
     async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT) {
@@ -597,6 +608,7 @@ export class CharacterRepository {
         /** @type {CharacterQueryResult} */
         const result = { seq: decoded.seq, token: decoded.token };
         if (decoded.total !== undefined) result.total = decoded.totalApprox ? `~${decoded.total}` : decoded.total;
+        if (decoded.hidden !== undefined) result.hidden = decoded.hiddenApprox ? `~${decoded.hidden}` : decoded.hidden;
         if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
         result.rows = await this.#resolveHashRows(decoded.hashRows, includeGroups);
         return result;

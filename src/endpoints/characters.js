@@ -2207,11 +2207,14 @@ const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavai
  * chat(chatLen, utf8, omitted if chatLen is 0).
  *
  * Trailer, after the last row: tokenLen(2, uint16) + token(tokenLen, utf8); tokenLen 0 when the token is null.
- * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
+ * Then, only when `hidden` is a number: hiddenFlags(1) [bit0=approx] + hidden(8, float64). A decoder that reads no
+ * further than the token still reads the rest correctly.
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean}} params
  * @returns {Buffer}
  */
-function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend }) {
+function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false }) {
     const hasTotal = typeof total === 'number';
+    const hasHidden = typeof hidden === 'number';
     const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
@@ -2222,6 +2225,7 @@ function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, 
         totalSize += 1 + 2 + idBytes + 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
     totalSize += 2 + tokenBytes; // trailer
+    if (hasHidden) totalSize += 1 + 8;
 
     const buf = Buffer.allocUnsafe(totalSize);
     let offset = 0;
@@ -2262,6 +2266,10 @@ function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, 
     buf.writeUInt16LE(tokenBytes, offset); offset += 2;
     if (tokenBytes > 0) {
         buf.write(token, offset, tokenBytes, 'utf8'); offset += tokenBytes;
+    }
+    if (hasHidden) {
+        buf.writeUInt8(approxHidden ? 0b1 : 0, offset); offset += 1;
+        buf.writeDoubleLE(hidden, offset); offset += 8;
     }
 
     return buf;
@@ -2386,13 +2394,53 @@ function queryHashesReply(hashes) {
 
 /**
  * `/query`'s answer to one request body.
+ *
+ * `want: 'hidden'` adds `hidden`: how many entities the filter leaves out, that is every character (and, with
+ * `filter.includeGroups`, every group) less `total`. It implies `total`, and is `~`-prefixed (in hash mode, flagged)
+ * when either count is estimated.
  * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
  * @param {object} body The request body: filter, sort, want, page, pageSize, ifToken.
  * @param {{ groupsOnly?: boolean }} [options] groupsOnly, with `filter.includeGroups`: leave characters out. Its token
  *   is null on the search path, as the characters index's position isn't read.
  * @returns {Promise<QueryReply>}
  */
-async function runQuery(user, body, { groupsOnly: onlyGroups = false } = {}) {
+async function runQuery(user, body, options = {}) {
+    const want = Array.isArray(body.want) ? body.want : undefined;
+    if (!want?.includes('hidden')) return runQueryPage(user, body, options);
+
+    const reply = await runQueryPage(user, { ...body, want: [...new Set([...want.filter(w => w !== 'hidden'), 'total'])] }, options);
+    if (!('hashes' in reply) && (reply.status !== 200 || reply.body.unchanged === true)) return reply;
+
+    const includeGroups = body.filter?.includeGroups === true;
+    const groupsOnly = includeGroups && options.groupsOnly === true;
+    const all = includeGroups
+        ? await queryEntities(user.directories, { wantRows: false, wantTotal: true, groupsOnly })
+        : await queryCharacters(user.directories, { wantRows: false, wantTotal: true });
+    if (all === null) {
+        return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
+    }
+
+    if ('hashes' in reply) {
+        const hashes = reply.hashes;
+        return queryHashesReply({
+            ...hashes,
+            hidden: Math.max(0, Number(all.total ?? 0) - Number(hashes.total ?? 0)),
+            approxHidden: Boolean(all.approxTotal || hashes.approxTotal),
+        });
+    }
+    const listed = parseQueryTotal(reply.body.total);
+    const hidden = Math.max(0, Number(all.total ?? 0) - listed.value);
+    return queryReply(reply.status, { ...reply.body, hidden: all.approxTotal || listed.approx ? `~${hidden}` : hidden });
+}
+
+/**
+ * runQuery() without `want: 'hidden'`.
+ * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
+ * @param {object} body
+ * @param {{ groupsOnly?: boolean }} [options]
+ * @returns {Promise<QueryReply>}
+ */
+async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {}) {
     const filter = body.filter ?? {};
     const sort = body.sort ?? {};
     const want = Array.isArray(body.want) ? body.want : ['rows', 'total'];
