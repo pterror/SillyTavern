@@ -1093,28 +1093,48 @@ function migrateCardJsonColumn(db, directories) {
     const cardJsonColumn = columns.find(c => c.name === 'card_json');
     if (cardJsonColumn !== undefined && cardJsonColumn.notnull === 1) return; // already migrated
 
-    const nullRows = (/** @type {{ id: string }[]} */ (db.all('SELECT id FROM characters WHERE card_json IS NULL')));
-    if (nullRows.length > 0) {
+    const readIdChunk = (/** @type {string} */ afterId) => (/** @type {{ id: string }[]} */ (db.readBounded(
+        'SELECT id FROM characters WHERE card_json IS NULL AND id > ? ORDER BY id LIMIT ?',
+        [afterId, KEYSET_CHUNK],
+        KEYSET_CHUNK,
+    )));
+
+    const firstChunk = readIdChunk('');
+    if (firstChunk.length > 0) {
         let backfilled = 0;
         /** @type {string[]} */
         const unresolved = [];
+        let lastId = '';
+        let rowsRead = 0;
         db.transaction(() => {
-            for (const row of nullRows) {
-                let cardJson;
-                try {
-                    cardJson = readCharacterCardFromBuffer(fs.readFileSync(path.join(directories.characters, row.id)));
-                } catch {
-                    cardJson = undefined;
+            // transaction() reruns this callback on busy; a rerun starts over from the first chunk.
+            lastId = '';
+            rowsRead = 0;
+            let chunk = firstChunk;
+            for (;;) {
+                rowsRead += chunk.length;
+                for (const row of chunk) {
+                    let cardJson;
+                    try {
+                        cardJson = readCharacterCardFromBuffer(fs.readFileSync(path.join(directories.characters, row.id)));
+                    } catch {
+                        cardJson = undefined;
+                    }
+                    if (cardJson === undefined) {
+                        unresolved.push(row.id);
+                        continue;
+                    }
+                    db.run('UPDATE characters SET card_json = @cardJson WHERE id = @id', { id: row.id, cardJson });
+                    backfilled++;
                 }
-                if (cardJson === undefined) {
-                    unresolved.push(row.id);
-                    continue;
-                }
-                db.run('UPDATE characters SET card_json = @cardJson WHERE id = @id', { id: row.id, cardJson });
-                backfilled++;
+
+                if (chunk.length < KEYSET_CHUNK) break;
+                lastId = chunk[chunk.length - 1].id;
+                chunk = readIdChunk(lastId);
+                if (chunk.length === 0) break;
             }
         });
-        console.log(color.cyan(`[character-metadata] card_json migration: backfilled ${backfilled}/${nullRows.length} pre-existing row(s) from their PNG.`));
+        console.log(color.cyan(`[character-metadata] card_json migration: backfilled ${backfilled}/${rowsRead} pre-existing row(s) from their PNG.`));
         if (unresolved.length > 0) {
             console.error(color.red(
                 `[character-metadata] card_json migration: ${unresolved.length} row(s) have no readable PNG and no other ` +
