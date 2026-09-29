@@ -891,6 +891,49 @@ await testCase('countChatCompletionMessages: answeredOut names the tokenizer tha
     resetStepFake();
 });
 
+await testCase('computeLogitBias at a custom llama.cpp URL: with a storedEncoder, a second call after writeBack encodes nothing; without one, every call encodes', async () => {
+    const { createLlamaCppPropsCheck } = await import('../llamacpp-props.js');
+    const { createStoredEncoder, writeBack } = await import('../token-count-store.js');
+    const { disposeMessageTreeStores } = await import('../message-tree-db.js');
+    resetStepFake();
+    stepFake.props = { model_path: '/models/bias.gguf' };
+    const directories = { root: dataRoot };
+    const entries = [{ text: 'hi', value: -5 }, { text: 'hello', value: -2 }, { text: '[70]', value: 2 }];
+    const expected = { 0: -2, 1: -2, 2: -2, 3: -2, 4: -2, 70: 2 };
+    const bias = async (withStoredEncoder) => {
+        const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
+        const pending = { counts: [], ids: [] };
+        const connection = {
+            url: stepUrl, directories, customIncludeHeaders: '', llamaCppProps,
+            ...(withStoredEncoder ? { storedEncoder: createStoredEncoder({ directories, pending, llamaCppProps }) } : {}),
+        };
+        const requestsBefore = tokenizeBodies().length;
+        const dropped = [];
+        const result = await computeLogitBias(entries, 'gemma-2-9b-it', dropped, 'custom', connection);
+        return { result, dropped, pending, encoded: tokenizeBodies().slice(requestsBefore).map(body => body.content) };
+    };
+    try {
+        const plain = await bias(false);
+        assert.deepEqual(plain, { result: expected, dropped: [], pending: { counts: [], ids: [] }, encoded: ['hi', 'hello'] }, 'without a storedEncoder: as before');
+        const plainAgain = await bias(false);
+        assert.deepEqual(plainAgain.encoded, ['hi', 'hello'], 'without a storedEncoder: encoded again');
+
+        const first = await bias(true);
+        assert.deepEqual(first.result, expected);
+        assert.deepEqual(first.encoded, ['hi', 'hello'], 'nothing stored yet: both entries encoded');
+        assert.deepEqual(first.pending.ids.map(row => Array.from(row.ids)), [[0, 1], [0, 1, 2, 3, 4]], 'each encoded entry pending');
+        await writeBack(directories, first.pending);
+
+        const second = await bias(true);
+        assert.deepEqual(second.encoded, [], 'after writeBack: nothing encoded');
+        assert.deepEqual(second.result, first.result, 'the same bias map');
+        assert.deepEqual(second.dropped, []);
+    } finally {
+        resetStepFake();
+        disposeMessageTreeStores();
+    }
+});
+
 fakeServer.close();
 server.close();
 stepServer.close();

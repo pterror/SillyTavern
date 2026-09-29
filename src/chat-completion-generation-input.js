@@ -12,7 +12,8 @@ import { bucketActivatedEntries, world_info_position } from './world-info/result
 import { setExtensionPrompt, extension_prompt_types } from './extension-prompt-table.js';
 import { getRegexedString, regex_placement } from './regex-scripts-engine.js';
 import { countChatCompletionMessages } from './endpoints/tokenizers.js';
-import { resolveTokenizer, createTokenizerOutcome } from './tokenizer-resolve.js';
+import { resolveTokenizer, createTokenizerOutcome, tokenizerIdentity } from './tokenizer-resolve.js';
+import { createStoredCounter } from './token-count-store.js';
 import { getBiasStrings } from './prompt-line-formatting.js';
 import { appendFileAttachments } from './file-attachment-inline.js';
 import { substituteParams } from './macro-substitution.js';
@@ -578,20 +579,41 @@ export function getChatCompletionModel(settings) {
  * Per-message chat-completion token-counting `CountTokenAsyncFn` (src/chat-completion-budget.js),
  * counting like `/api/tokenizers/openai/count` with a resolveTokenizer() answer: the model's own
  * tokenizer, or the estimate when the model map has none. Only string fields are counted.
+ * With `storedCounter`, a count whose messages are all text only is read from or added to the token
+ * tables; any other count (a tool-call count's `tool_calls` or `reasoning`) is counted fresh. A message
+ * is text only when every own key whose value isn't undefined is `role`, `content` or `name` and
+ * holds a string, so `[{ content: text }]` (the world-info counter) is text only.
  * @param {import('./tokenizer-resolve.js').ResolvedTokenizer} resolved
  * @param {import('./tokenizer-resolve.js').TokenizerOutcome} [outcome] Records a count that fell to
  * the estimate because the tokenizer failed, and a downloaded tokenizer file.
  * @param {import('./users.js').UserDirectoryList} [directories] For the user's saved Hugging Face token
+ * @param {import('./token-count-store.js').StoredCounter} [storedCounter] A createStoredCounter() for `resolved`.
  * @returns {import('./chat-completion-budget.js').CountTokenAsyncFn}
  */
-export function createOpenAITokenCounter(resolved, outcome = undefined, directories = undefined) {
+export function createOpenAITokenCounter(resolved, outcome = undefined, directories = undefined, storedCounter = undefined) {
     /** @type {import('./chat-completion-budget.js').CountTokenAsyncFn} */
     const countTokenAsyncFn = async function countTokenAsyncFn(messages) {
-        const list = (Array.isArray(messages) ? messages : [messages])
+        const input = Array.isArray(messages) ? messages : [messages];
+        const list = input
             .map(msg => Object.fromEntries(Object.entries(msg ?? {}).filter(([, value]) => typeof value === 'string')));
+        if (storedCounter && input.every(isTextOnlyMessage)) {
+            return storedCounter.countChatMessage(list);
+        }
         return countChatCompletionMessages(resolved, list, outcome, directories);
     };
     return countTokenAsyncFn;
+}
+
+const TEXT_ONLY_MESSAGE_KEYS = new Set(['role', 'content', 'name']);
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+function isTextOnlyMessage(message) {
+    return !!message && typeof message === 'object'
+        && Object.entries(message).every(([key, value]) => value === undefined
+            || (TEXT_ONLY_MESSAGE_KEYS.has(key) && typeof value === 'string'));
 }
 
 /**
@@ -799,7 +821,12 @@ async function resolveChatHistory(directories, { ownerId, branchName, nodeId, ow
  * @param {object} [params.macroExtras] Shallow-merged over the resolved input object.
  * @param {import('./llamacpp-props.js').LlamaCppPropsCheck} [params.llamaCppProps] The send's `/props`
  * check for a custom URL that is llama.cpp (see ChatCompletionConnection).
- * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome }>}
+ * @param {import('./token-count-store.js').PendingTokenRows} [params.tokenCountRows] Where the default
+ * counter pushes the rows it read from or added to the token tables; one object may be shared with the
+ * send's bias encode. Unused with a `countTokenAsyncFn` or `tokenHandler` override.
+ * @returns {Promise<import('./chat-completion-prepare-messages.js').PrepareOpenAIMessagesInput & { worldInfoCandidates: WIEntry[], tokenizerOutcome: import('./tokenizer-resolve.js').TokenizerOutcome, tokenCountRows: import('./token-count-store.js').PendingTokenRows }>}
+ * `tokenCountRows` is the pending object the default counter used, for writeBack() once the request is
+ * sent; with an override, the given `tokenCountRows` or an empty one.
  */
 export async function resolveChatCompletionGenerationInput(directories, {
     avatar, groupId, ownerId, branchName, nodeId,
@@ -809,7 +836,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
     regexScripts = [], regexExtensionEnabled = true,
     model: modelOverride, modelList, characterId = PROMPT_ORDER_DUMMY_ID,
     countTokenAsyncFn: countTokenAsyncFnOverride, tokenHandler: tokenHandlerOverride,
-    macroExtras = {}, llamaCppProps,
+    macroExtras = {}, llamaCppProps, tokenCountRows: tokenCountRowsParam,
 } = {}) {
     void isImpersonate; void isContinue; // Folded into `type` by the caller; kept as documented params for parity with the task's signature, matching text-completion-generation-input.js's own equivalents (which are likewise not separately re-derived from `type` there either).
     // `isSwipe` IS read (see `promptChat` below) - unlike isImpersonate/isContinue, it drives real
@@ -1006,14 +1033,24 @@ export async function resolveChatCompletionGenerationInput(directories, {
 
     // See doc comment decision 3.
     const tokenizerOutcome = createTokenizerOutcome();
-    const tokenHandler = tokenHandlerOverride ?? new TokenHandler(countTokenAsyncFnOverride ?? createOpenAITokenCounter(
-        await resolveTokenizer(
+    let tokenCountRows = tokenCountRowsParam ?? { counts: [], ids: [] };
+    let tokenHandler = tokenHandlerOverride;
+    if (!tokenHandler && countTokenAsyncFnOverride) {
+        tokenHandler = new TokenHandler(countTokenAsyncFnOverride);
+    }
+    if (!tokenHandler) {
+        const resolved = await resolveTokenizer(
             { api: 'openai', source: oaiSettings.chat_completion_source, model: model ?? '', url: oaiSettings.custom_url },
             { directories, customIncludeHeaders: substituteParams(oaiSettings.custom_include_headers, macroContext), llamaCppProps },
-        ),
-        tokenizerOutcome,
-        directories,
-    ));
+        );
+        const identityFacts = { llamaCppProps: llamaCppProps?.props };
+        const storedCounter = createStoredCounter({
+            resolved, identity: await tokenizerIdentity(resolved, identityFacts), directories,
+            encodeOptions: { outcome: tokenizerOutcome }, identityFacts, pending: tokenCountRows,
+        });
+        tokenCountRows = storedCounter.pending;
+        tokenHandler = new TokenHandler(createOpenAITokenCounter(resolved, tokenizerOutcome, directories, storedCounter));
+    }
 
     // Real world-info ACTIVATION - see doc comment decision 4 for the full rationale/settings-path
     // mapping for every option below. This is the one call site this resolver adds that
@@ -1147,6 +1184,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         // --- Token budget ---
         tokenHandler,
         tokenizerOutcome,
+        tokenCountRows,
         maxContext: oaiSettings.openai_max_context ?? 4095,
         maxTokens: oaiSettings.openai_max_tokens ?? 300,
 

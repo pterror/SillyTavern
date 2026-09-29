@@ -696,9 +696,9 @@ export function getTiktokenTokenizer(model) {
  * Gets tokenids for a given logit bias preset entry. Mirrors the getEntryTokens() helper that used
  * to live inline in the /api/backends/chat-completions/bias route handler.
  * @param {string} text Entry text
- * @param {((text: string) => Uint32Array|Promise<Uint32Array>)|null} encode Function to encode text to
+ * @param {((text: string) => ArrayLike<number>|null|Promise<ArrayLike<number>|null>)|null} encode Function to encode text to
  * token ids; null when there is no tokenizer.
- * @returns {Promise<Uint32Array|null>} Array of token ids; null when the entry needs a tokenizer and there is none.
+ * @returns {Promise<ArrayLike<number>|null>} Array of token ids; null when the entry needs a tokenizer and there is none.
  */
 async function getEntryTokens(text, encode) {
     // Get raw token ids from JSON array
@@ -753,7 +753,8 @@ async function getLocalEncoder(resolved) {
  * @param {string[]} [dropped] Receives the text of each entry left out because there are no token ids for it.
  * @param {string} [source] The chat-completion source, which decides the file for a model with several official files.
  * @param {import('../tokenizer-map-resolution.js').ChatCompletionConnection} [connection] The custom source's
- * URL and what its requests carry, for a custom URL that is llama.cpp.
+ * URL and what its requests carry, for a custom URL that is llama.cpp. With `storedEncoder`, entries are
+ * encoded through it, so ids already stored for the tokenizer are read, not encoded.
  * @returns {Promise<{[tokenId: number]: number}>} Token-id-keyed bias map
  */
 export async function computeLogitBias(biasPresetEntries, requestModel, dropped = undefined, source = undefined, connection = {}) {
@@ -771,21 +772,42 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
     }
 
     const resolved = await resolveChatCompletionTokenizer(modelName, source, connection);
+    /** @type {((text: string) => Uint32Array|Promise<Uint32Array|null>)|null} */
     let encodeFunction = null;
+    /** @type {((text: string, answeredOut: import('../token-count-store.js').AnsweredOut) => Promise<Uint32Array|null>)|null} Sets `answeredOut.tokenizer` to the tokenizer that answered. */
+    let reportingEncoder = null;
     if (resolved.llamaCpp) {
         const { llamaCpp, localCopy } = resolved;
-        encodeFunction = async (text) => {
+        reportingEncoder = async (text, answeredOut) => {
+            answeredOut.tokenizer = null;
             const result = await encodeViaCustomLlamaCpp(llamaCpp, text);
-            if (result) return new Uint32Array(result.ids);
+            if (result) {
+                answeredOut.tokenizer = resolved;
+                return new Uint32Array(result.ids);
+            }
             const localEncoder = localCopy ? await getLocalEncoder(localResolution(localCopy, null)) : null;
-            return localEncoder ? await localEncoder(text) : null;
+            if (!localEncoder) return null;
+            const ids = await localEncoder(text);
+            answeredOut.tokenizer = localCopy;
+            return ids;
         };
+        encodeFunction = (text) => reportingEncoder(text, {});
     } else if (resolved.kind !== 'estimate') {
-        encodeFunction = await getLocalEncoder(resolved);
-        if (!encodeFunction) {
+        const localEncoder = await getLocalEncoder(resolved);
+        encodeFunction = localEncoder;
+        if (!localEncoder) {
             console.error('Tokenizer not initialized:', resolved.name);
+        } else {
+            reportingEncoder = async (text, answeredOut) => {
+                const ids = await localEncoder(text);
+                answeredOut.tokenizer = resolved;
+                return ids;
+            };
         }
     }
+    const entryEncoder = encodeFunction && connection.storedEncoder
+        ? await connection.storedEncoder(resolved, reportingEncoder)
+        : encodeFunction;
 
     for (const entry of biasPresetEntries) {
         if (!entry || !entry.text) {
@@ -793,7 +815,7 @@ export async function computeLogitBias(biasPresetEntries, requestModel, dropped 
         }
 
         try {
-            const tokens = await getEntryTokens(entry.text, encodeFunction);
+            const tokens = await getEntryTokens(entry.text, entryEncoder);
 
             if (tokens === null) {
                 dropped?.push(entry.text);
