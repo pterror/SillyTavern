@@ -141,12 +141,12 @@ test.describe('A refused tag save', () => {
         await openTagManagement(page);
 
         // The server gets a tag with the same id just before the page's own create reaches it.
-        /** @type {{ id: string, filter_state: string } | null} */
+        /** @type {{ id: string, sentFilterState: boolean } | null} */
         let pageCreated = null;
         await page.route('**/api/tags/create', async route => {
             const { tag } = route.request().postDataJSON();
             if (tag.name !== storedName && !pageCreated) {
-                pageCreated = { id: tag.id, filter_state: tag.filter_state };
+                pageCreated = { id: tag.id, sentFilterState: Object.hasOwn(tag, 'filter_state') };
                 await createTag(page, tag.id, storedName, 'SELECTED');
             }
             await route.continue();
@@ -154,9 +154,10 @@ test.describe('A refused tag save', () => {
 
         await page.locator('#tag_view_list .tag_view_create').click();
         await expect.poll(() => pageCreated, { timeout: 30000 }).not.toBeNull();
-        const { id, filter_state } = /** @type {{ id: string, filter_state: string }} */ (pageCreated);
-        expect(filter_state).not.toBe('SELECTED');
+        const { id, sentFilterState } = /** @type {{ id: string, sentFilterState: boolean }} */ (pageCreated);
+        // A tag's filter is this browser's, so it is not part of what the page asks the server to store.
+        expect(sentFilterState).toBe(false);
 
-        await expect.poll(() => pageTag(page, id), { timeout: 30000 }).toEqual({ name: storedName, filter_state });
+        await expect.poll(() => pageTag(page, id), { timeout: 30000 }).toEqual({ name: storedName, filter_state: 'UNDEFINED' });
     });
 });

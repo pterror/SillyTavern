@@ -45,6 +45,7 @@ export {
     chooseBogusFolder,
     getTagBlock,
     loadTagsSettings,
+    renameTagKey,
     reindexTagAssignments,
     printTagFilters,
     getTagsList,
@@ -193,6 +194,76 @@ function getFilterStorageKey(filterHelper) {
  */
 function isMainCharacterList(filterHelper) {
     return filterHelper === entitiesFilter;
+}
+
+/**
+ * What this file last put in each held tag's `filter_state`: the filter this browser has saved for the tag on the
+ * main character list. A different value on the object is a change an extension made.
+ * @type {WeakMap<Tag, string>}
+ */
+const tagFilterStatesShown = new WeakMap();
+
+/**
+ * @param {string} tagId
+ * @returns {string} the filter this browser has saved for the tag on the main character list
+ */
+function savedMainListTagFilterState(tagId) {
+    const state = accountStorage.getItem(`${getFilterStorageKey(entitiesFilter)}_tag_${tagId}`);
+    return state && Object.hasOwn(FILTER_STATES, state) ? state : DEFAULT_FILTER_STATE;
+}
+
+/** @param {Tag} tag @param {string} state */
+function setTagFilterState(tag, state) {
+    tag.filter_state = state;
+    tagFilterStatesShown.set(tag, state);
+}
+
+/**
+ * Gives a tag object this browser's saved filter. A `filter_state` that came with the object is not this browser's:
+ * upstream stores the field with the definition, which every browser shares.
+ * @param {Tag} tag
+ */
+function showSavedTagFilterState(tag) {
+    setTagFilterState(tag, savedMainListTagFilterState(tag.id));
+}
+
+/**
+ * Takes in a change an extension made to a held tag's `filter_state`: it becomes the tag's filter on the main
+ * character list, as a click on the tag there does.
+ * @param {Tag} tag
+ */
+function takeInTagFilterState(tag) {
+    const shown = tagFilterStatesShown.get(tag);
+    if (shown === undefined) {
+        // An object an extension put in place of the one this file held.
+        showSavedTagFilterState(tag);
+        return;
+    }
+    const state = tag.filter_state ?? DEFAULT_FILTER_STATE;
+    if (state === shown) return;
+    tagFilterStatesShown.set(tag, state);
+    if (!Object.hasOwn(FILTER_STATES, state)) return;
+
+    accountStorage.setItem(`${getFilterStorageKey(entitiesFilter)}_tag_${tag.id}`, state);
+    $(CHARACTER_FILTER_SELECTOR).find('.tag:not(.actionable)').filter((_, element) => element.id === tag.id)
+        .each((_, element) => { toggleTagThreeState($(element), { stateOverride: state }); });
+    const { selected, excluded } = entitiesFilter.getFilterData(FILTER_TYPES.TAG);
+    const others = (/** @type {string[]} */ ids) => (Array.isArray(ids) ? ids : []).filter(id => id !== tag.id);
+    setFilterDataFromUser(entitiesFilter, FILTER_TYPES.TAG, {
+        excluded: state === 'EXCLUDED' ? [...others(excluded), tag.id] : others(excluded),
+        selected: state === 'SELECTED' ? [...others(selected), tag.id] : others(selected),
+    });
+}
+
+/**
+ * @param {Tag} tag
+ * @returns {Tag} `tag` as the server is given it. `filter_state` is left out: it is this browser's, and a stored
+ *   definition is every browser's.
+ */
+function tagDefinitionToStore(tag) {
+    const definition = { ...tag };
+    delete definition.filter_state;
+    return definition;
 }
 
 /** @enum {number} */
@@ -968,6 +1039,7 @@ function addStoredTag(tag) {
     tags.push(tag);
     tagsStore.byId.set(tag.id, tag);
     noteStoredTag(tag);
+    showSavedTagFilterState(tag);
 }
 
 /** @param {string} id @param {Record<string, any>} fields - the fields the server now stores */
@@ -1102,7 +1174,7 @@ function sendTagsAddedThroughExport() {
         /** @type {{ id: string, name: string, reason: string }[]} */
         const refused = [];
         await runWithConcurrency(toCreate, async (tag) => {
-            const answer = await postTagWrite('/api/tags/create', { tag });
+            const answer = await postTagWrite('/api/tags/create', { tag: tagDefinitionToStore(tag) });
             tagIdsBeingCreated.delete(tag.id);
             if (!answer) return;
             if (tagsAddedThroughExport.get(tag.id) === tag) tagsAddedThroughExport.delete(tag.id);
@@ -1110,6 +1182,7 @@ function sendTagsAddedThroughExport() {
                 refused.push({ id: tag.id, name: String(tag.name ?? tag.id), reason: answer[0].reason });
             } else {
                 noteStoredTag(tag);
+                showSavedTagFilterState(tag);
                 storedIds.push(tag.id);
             }
         });
@@ -1184,6 +1257,7 @@ async function storeTagExportChangesOnce() {
     const toReread = [];
     for (const tag of tags) {
         if (!isTagObject(tag) || !storedTagFields.has(tag.id)) continue;
+        takeInTagFilterState(tag);
         const { patch, lacksStoredField } = tagFieldsChangedOnObject(tag);
         if (patch) edits.push({ tag, patch });
         if (lacksStoredField) toReread.push(tag.id);
@@ -1285,7 +1359,11 @@ function rebuildTagStores() {
     });
 
     storedTagFields.clear();
-    for (const tag of tags) noteStoredTag(tag);
+    for (const tag of tags) {
+        if (!isTagObject(tag)) continue;
+        noteStoredTag(tag);
+        showSavedTagFilterState(tag);
+    }
 }
 
 /** Refreshes the client-side tags cache so the next boot's freshness check can hit it. */
@@ -1337,7 +1415,7 @@ async function createTagOnServer(tag) {
         const response = await fetch('/api/tags/create', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ tag }),
+            body: JSON.stringify({ tag: tagDefinitionToStore(tag) }),
             cache: 'no-cache',
         });
 
@@ -1560,6 +1638,7 @@ function takeServerTagFields(local, serverTag) {
     }
     Object.assign(local, serverTag);
     if (hadFilterState) local.filter_state = filterState; else delete local.filter_state;
+    if (!tagFilterStatesShown.has(local)) showSavedTagFilterState(local);
     noteStoredTag(local);
 }
 
@@ -1653,7 +1732,7 @@ function moveTagFilters(fromId, toId) {
             list.push(toId);
             if (storagePrefix) accountStorage.setItem(`${storagePrefix}_tag_${toId}`, state);
             const target = tagsStore.get(toId);
-            if (target && isMainCharacterList(helper)) target.filter_state = state;
+            if (target && isMainCharacterList(helper)) setTagFilterState(target, state);
         }
         if (changed) {
             held = true;
@@ -2258,7 +2337,41 @@ function setTagList(list) {
     for (const tag of list) tags.push(tag);
 }
 
-async function loadTagsSettings() {
+/**
+ * With neither `tags` nor `tag_map` in `settings`, reads the tag definitions from the server.
+ *
+ * Upstream passes the settings object and takes both from it. Given here, they are taken in as an extension's
+ * writes to `tags` and `tag_map` are, and `tags` holds the given tags when this returns. The given `tag_map` only
+ * adds: upstream's replaces the whole map, which would take every tag off each character it doesn't name.
+ * @param {{ tags?: Tag[], tag_map?: Record<string, string[]> }} [settings]
+ * @returns {Promise<void>}
+ */
+function loadTagsSettings(settings) {
+    const givenTags = Array.isArray(settings?.tags) ? [...settings.tags] : null;
+    const givenMap = settings?.tag_map !== null && typeof settings?.tag_map === 'object' ? settings.tag_map : null;
+    if (!givenTags && !givenMap) return loadTagsFromServer();
+
+    if (givenTags) {
+        tags.length = 0;
+        for (const tag of givenTags) tags.push(tag);
+    }
+    if (givenMap) {
+        for (const [key, ids] of Object.entries(givenMap)) {
+            if (!Array.isArray(ids)) continue;
+            const entry = tag_map[key];
+            if (!Array.isArray(entry)) {
+                tag_map[key] = [...ids];
+                continue;
+            }
+            for (const id of ids) {
+                if (!entry.includes(id)) entry.push(id);
+            }
+        }
+    }
+    return storeTagChangesMadeThroughExport();
+}
+
+async function loadTagsFromServer() {
     let tagsFile = null;
     let fetchFailed = false;
     let manifestHash = null;
@@ -3345,7 +3458,7 @@ function onTagFilterClick(listElement) {
     // Deliberately not calling saveSettingsDebounced() here - persistence is via accountStorage below.
     // A full settings resave on every tag filter click is a real perf cost once there are lots of tags/entities.
     if (existingTag && isMainCharacterList(filterHelper)) {
-        existingTag.filter_state = state;
+        setTagFilterState(existingTag, state);
     }
 
     const storagePrefix = getFilterStorageKey(filterHelper);
@@ -4747,6 +4860,56 @@ async function copyTags(data) {
 }
 
 /**
+ * Moves the tags of `oldKey` to `newKey`. Upstream's puts what the page holds for `oldKey` in place of what
+ * `newKey` had; here the server adds what it has for `oldKey` to what `newKey` has, so nothing `newKey` has is
+ * removed, and takes them off `oldKey`.
+ * @param {string} oldKey - entity key (character avatar or group id)
+ * @param {string} newKey - entity key (character avatar or group id)
+ */
+function renameTagKey(oldKey, newKey) {
+    moveTagsToKey(String(oldKey), String(newKey))
+        .catch(error => console.error(`Error moving tags from ${oldKey} to ${newKey}:`, error));
+}
+
+/** @param {string} oldKey @param {string} newKey */
+async function moveTagsToKey(oldKey, newKey) {
+    // What an extension changed through `tag_map` is sent before the server moves what it has.
+    tagMapKeysToCheck = true;
+    takeInTagExportWrites();
+    if (tagCreatesInFlight.size) await Promise.allSettled([...tagCreatesInFlight]);
+    await Promise.all([tagSaveChains.get(oldKey), tagSaveChains.get(newKey)]);
+
+    let moved;
+    try {
+        const response = await fetch('/api/tags/rename-key', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ from: oldKey, to: newKey }),
+            cache: 'no-cache',
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to move tags: ${response.status}`);
+        }
+        ({ moved } = await response.json());
+    } catch (error) {
+        console.error(`Error moving tags from ${oldKey} to ${newKey}:`, error);
+        const nameOfKey = (/** @type {string} */ key) => escapeHtml(String(charactersStore.get(key)?.name ?? groupsStore.get(key)?.name ?? key));
+        toastr.error(t`The tags of ${nameOfKey(oldKey)} could not be moved to ${nameOfKey(newKey)}.`, t`Tags could not be saved`, { escapeHtml: false });
+        // The server adds before it takes off, so a move that failed part way has lost nothing.
+        await rereadResidentEntityTagIds([oldKey, newKey]);
+        return;
+    }
+
+    // An entry an extension gave `tag_map` for a key the page doesn't hold: upstream's rename deletes it.
+    if (!resolveTagIdsArray(oldKey) && Object.hasOwn(tag_map, oldKey)) {
+        delete tag_map[oldKey];
+        unheldTagMapSent.delete(oldKey);
+    }
+    await rereadResidentEntityTagIds([oldKey, newKey]);
+    if (Array.isArray(moved) && moved.length) await eventSource.emit(event_types.SETTINGS_UPDATED);
+}
+
+/**
  * Clears all tags assigned to a given entity key.
  * Exported so other modules (BulkEditOverlay.js) don't need to reach into `setKeyTagIds()` directly.
  * @param {string} key - entity key (character avatar or group id)
@@ -4821,6 +4984,8 @@ function removeMissingTagFilters() {
                 if (storagePrefix) {
                     accountStorage.removeItem(`${storagePrefix}_tag_${tagIdList[i]}`);
                 }
+                const tag = tagsStore.get(tagIdList[i]);
+                if (tag && isMainCharacterList(helper)) setTagFilterState(tag, DEFAULT_FILTER_STATE);
 
                 tagIdList.splice(i, 1);
                 anyRemoved = true;

@@ -4,6 +4,7 @@ import {
     assignEntityTag,
     unassignEntityTag,
     copyEntityTags,
+    moveEntityTags,
     restoreTagBackup,
     getEntityTagIdsForMany,
     getAllEntityTagAssignments,
@@ -514,6 +515,33 @@ router.post('/copy', async (request, response) => {
         response.send({ result: 'ok' });
     } catch (err) {
         console.error('Could not copy tags', err);
+        response.sendStatus(500);
+    }
+});
+
+/**
+ * `{ from, to }` → `{ result: 'ok', moved }`: the tags of `from` are added to what `to` has and taken off
+ * `from`. `moved` lists the tag ids taken off. 404, and nothing written, if `from` has tags and `to` is not a
+ * character or group.
+ */
+router.post('/rename-key', async (request, response) => {
+    try {
+        const { from, to } = request.body ?? {};
+        if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) {
+            return response.status(400).send({ error: 'from and to are required non-empty strings' });
+        }
+
+        const answer = await moveEntityTags(request.user.directories, from, to);
+        if (answer === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+        if (answer.result === 'not_found') {
+            return response.status(404).send({ error: 'Character or group not found' });
+        }
+
+        response.send(answer);
+    } catch (err) {
+        console.error('Could not move tags', err);
         response.sendStatus(500);
     }
 });
