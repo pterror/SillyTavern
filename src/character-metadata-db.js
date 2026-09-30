@@ -4113,6 +4113,36 @@ export async function setEntityTagIdsMany(directories, tagIdsByEntity) {
 }
 
 /**
+ * Adds the tags `fromId` has to what `toId` has; nothing `toId` already has is removed. A tag being deleted
+ * is copied as its merge target, or not at all if it has none.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} fromId
+ * @param {string} toId
+ * @returns {Promise<'ok' | 'not_found' | null>} 'not_found' if either is not a character or group the store has.
+ */
+export async function copyEntityTags(directories, fromId, toId) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const fromType = tagEntityTypeOf(fromId);
+    if (fromType === null || tagEntityTypeOf(toId) === null) return 'not_found';
+
+    if (fromType === 'character') flushBufferedRow(entry, fromId);
+    const fromExists = fromType === 'character'
+        ? !!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id: fromId })
+        : !!entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id: fromId });
+    if (!fromExists) return 'not_found';
+
+    const tagIds = fromType === 'character'
+        ? readCharacterTagIds(entry.db, fromId)
+        : Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id', { id: fromId })), r => r.tag_id);
+
+    const imported = await importTagMap(entry, { [toId]: tagIds }, { label: 'tag copy', writeBuffered: true });
+    if (imported.failed.length > 0) throw new Error(`Could not copy tags to ${toId}: ${imported.failed[0].message}`);
+    return imported.droppedKeys.includes(toId) ? 'not_found' : 'ok';
+}
+
+/**
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} groupId
  * @returns {Promise<string[]>}

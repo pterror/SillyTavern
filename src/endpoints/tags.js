@@ -3,7 +3,7 @@ import express from 'express';
 import {
     assignEntityTag,
     unassignEntityTag,
-    setEntityTagIdsMany,
+    copyEntityTags,
     restoreTagBackup,
     getEntityTagIdsForMany,
     getAllEntityTagAssignments,
@@ -495,28 +495,25 @@ router.post('/unassign', async (request, response) => {
     }
 });
 
-// Bulk counterpart to /assign and /unassign, for a multi-entity, whole-tag-set write (e.g. restoring a tag
-// backup file) instead of looping single-tag calls per tag per entity.
-router.post('/assign-many', async (request, response) => {
+/** `{ from, to }` (character avatars or group ids): adds the tags `from` has to what `to` has. */
+router.post('/copy', async (request, response) => {
     try {
-        const { tagIdsByEntity } = request.body;
-        if (typeof tagIdsByEntity !== 'object' || tagIdsByEntity === null || Array.isArray(tagIdsByEntity)) {
-            return response.status(400).send({ error: 'tagIdsByEntity must be an object' });
-        }
-        for (const [id, tagIds] of Object.entries(tagIdsByEntity)) {
-            if (!id || !Array.isArray(tagIds) || !tagIds.every(t => typeof t === 'string' && t)) {
-                return response.status(400).send({ error: 'tagIdsByEntity must map non-empty entity ids to arrays of non-empty string tag ids' });
-            }
+        const { from, to } = request.body ?? {};
+        if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) {
+            return response.status(400).send({ error: 'from and to are required non-empty strings' });
         }
 
-        const result = await setEntityTagIdsMany(request.user.directories, tagIdsByEntity);
+        const result = await copyEntityTags(request.user.directories, from, to);
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
+        if (result === 'not_found') {
+            return response.status(404).send({ error: 'Character or group not found' });
+        }
 
-        response.send({ result });
+        response.send({ result: 'ok' });
     } catch (err) {
-        console.error('Could not bulk-assign tags', err);
+        console.error('Could not copy tags', err);
         response.sendStatus(500);
     }
 });
