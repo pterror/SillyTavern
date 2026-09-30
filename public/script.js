@@ -196,6 +196,7 @@ import {
     removeEntityTags,
     onTagOrderSettled,
     storeTagChangesMadeThroughExport,
+    noteTagExportsMayHaveChanged,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
@@ -899,6 +900,8 @@ function scheduleSettingsSave({ full, count }) {
  * @param {...string} keys Further settings keys to save.
  */
 export function saveSettingsDebounced(loopCounter, ...keys) {
+    // Upstream's extensions change `tags` and `tag_map` and then ask for a settings save to have them stored.
+    noteTagExportsMayHaveChanged();
     scheduleSettingsSave(readSettingsSaveArgs(loopCounter, keys));
 }
 
@@ -7607,6 +7610,7 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
  * @param {...string} keys Further settings keys to save.
  */
 export async function saveSettings(loopCounter, ...keys) {
+    noteTagExportsMayHaveChanged();
     const save = readSettingsSaveArgs(loopCounter, keys);
     // This save sends the pending keys, leaving a keyed window nothing to send; a full window must still run.
     if (!save.full && !_settingsSaveWindow.full) {
