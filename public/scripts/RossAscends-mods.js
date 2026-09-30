@@ -274,7 +274,7 @@ export async function RA_CountCharTokens() {
             input.data('last-value-hash', '');
             counter.text(0);
             renderCountBasis(counter, getRememberedTokenizerAnswer());
-            counter.closest('.inline-drawer, .tab-title').add(counter.closest('.tab-contents').prev('.tab-title')).toggleClass('token-count-zero', true);
+            counter.closest('.inline-drawer').toggleClass('token-count-zero', true);
             counter.closest('small').toggle(false);
             continue;
         }
@@ -302,7 +302,7 @@ export async function RA_CountCharTokens() {
             const tokens = counted[i];
             p.counter.text(tokens);
             renderCountBasis(p.counter, answer);
-            p.counter.closest('.inline-drawer, .tab-title').add(p.counter.closest('.tab-contents').prev('.tab-title')).toggleClass('token-count-zero', tokens === 0);
+            p.counter.closest('.inline-drawer').toggleClass('token-count-zero', tokens === 0);
             p.counter.closest('small').toggle(tokens !== 0);
             total_tokens += tokens;
             permanent_tokens += p.isPermanent ? tokens : 0;

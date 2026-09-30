@@ -1,5 +1,6 @@
 import { DOMPurify } from '../lib.js';
 import { renderMarkdownLiteralTags } from './marked-processor.js';
+import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 
 // A leaf module: everything it needs from the rest of the app is passed to initCharacterFieldEditor()
 // (and to substituteMacrosWithPlaceholders()), so importing it never adds an import cycle.
@@ -168,6 +169,7 @@ export function setFieldValue(id, value) {
  * @param {string} id Textarea id.
  */
 function refreshFieldPreview(id) {
+    refreshCharInfoTabDimming();
     const field = FIELDS[id];
     const preview = getPreview(id);
     if (!field || !preview.length || !deps) {
