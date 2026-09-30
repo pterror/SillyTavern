@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
-import { characterChangeEmitter, clearTagCache, kickChatStatsReconcile, reportTagChanges, reportTagMoveFailed, reportTagOrderSettled, waitForMetadataBootChain } from './character-metadata-db.js';
+import { characterChangeEmitter, clearTagCache, GROUP_CHANGES_EVENT, kickChatStatsReconcile, reportTagChanges, reportTagMoveFailed, reportTagOrderSettled, waitForMetadataBootChain } from './character-metadata-db.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { color, getConfigFilePath } from './util.js';
 
@@ -57,7 +57,8 @@ function spawnMigrationWorker(workerData) {
  * chain (initializeMetadataStores()) has finished, and not at all if the chain failed, since the passes rely on what
  * it populates. Keeps this process in step with what the worker writes: after each batch that
  * wrote tag definitions the store's tag cache is cleared, after each batch that logged tag changes the store's
- * clients are told (reportTagChanges()), and after each batch that wrote change rows 'change' is emitted once. A queued tag move the worker couldn't apply is reported here (reportTagMoveFailed()). A pass that
+ * clients are told (reportTagChanges()), after each batch that wrote change rows 'change' is emitted once, and after
+ * each batch that wrote groups version rows GROUP_CHANGES_EVENT is. A queued tag move the worker couldn't apply is reported here (reportTagMoveFailed()). A pass that
  * inserts rows queues their chat stats, which only this thread counts (kickChatStatsReconcile()), so the count is
  * started after each batch and once the worker has exited.
  * @param {object} [options]
@@ -68,6 +69,7 @@ function spawnMigrationWorker(workerData) {
  * @param {(directories: import('./users.js').UserDirectoryList, payload: import('./character-metadata-db.js').TagMoveFailedPayload) => void} [options.onTagMoveFailed]
  * @param {(directories: import('./users.js').UserDirectoryList) => void} [options.onTagOrderSettled]
  * @param {(directories: import('./users.js').UserDirectoryList) => void} [options.onTagChangesLogged]
+ * @param {() => void} [options.onGroupChangesLogged]
  * @param {(directories: import('./users.js').UserDirectoryList) => void} [options.onChatStatsMayBeQueued]
  */
 export function createMetadataMigrationCoordinator({
@@ -78,6 +80,7 @@ export function createMetadataMigrationCoordinator({
     onTagMoveFailed = (directories, payload) => reportTagMoveFailed(directories.root, payload),
     onTagOrderSettled = directories => reportTagOrderSettled(directories.root),
     onTagChangesLogged = directories => reportTagChanges(directories.root),
+    onGroupChangesLogged = () => characterChangeEmitter.emit(GROUP_CHANGES_EVENT),
     onChatStatsMayBeQueued = kickChatStatsReconcile,
 } = {}) {
     /** @type {Map<string, WorkerEntry>} */
@@ -100,6 +103,7 @@ export function createMetadataMigrationCoordinator({
                 // After the cache is cleared, so a client that asks on this isn't answered from the old cache.
                 if (msg.tagChangesLogged) onTagChangesLogged(directories);
                 if (msg.changed) onChanged();
+                if (msg.groupChangesLogged) onGroupChangesLogged();
                 onChatStatsMayBeQueued(directories);
                 return;
             }

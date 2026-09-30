@@ -252,6 +252,23 @@ test('logged tag changes for the stream\'s store are written as one data: {"type
     expect(characterChangeEmitter.listenerCount(TAG_CHANGES_EVENT)).toBe(0);
 });
 
+test('groups version rows are written as one data: {"type":"groups-changed"}, however many were added', async () => {
+    const { characterChangeEmitter, GROUP_CHANGES_EVENT } = await import('../src/character-metadata-db.js');
+    const stream = await openStream('sse-user-groups-changed');
+    try {
+        characterChangeEmitter.emit(GROUP_CHANGES_EVENT);
+        characterChangeEmitter.emit(GROUP_CHANGES_EVENT);
+        characterChangeEmitter.emit(GROUP_CHANGES_EVENT);
+        expect(await stream.nextMessage(1500)).toBe(true);
+        await new Promise(resolve => setTimeout(resolve, 800));
+        expect(stream.messages).toEqual([`data: ${JSON.stringify({ type: 'groups-changed' })}`]);
+    } finally {
+        stream.close();
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(characterChangeEmitter.listenerCount(GROUP_CHANGES_EVENT)).toBe(0);
+});
+
 test('a character index failure for the stream\'s handle is written as data: {"type":"character-index-failed",...}; another handle\'s isn\'t', async () => {
     const { characterChangeEmitter } = await import('../src/character-metadata-db.js');
     const { CHARACTER_INDEX_FAILED_EVENT } = await import('../src/endpoints/search-index-coordinator.js');

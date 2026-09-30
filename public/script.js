@@ -194,6 +194,7 @@ import {
     applyCharacterTagsToMessageDivs,
     removeEntityTags,
     onTagsChanged,
+    onEntityTagsChanged,
     storeTagChangesMadeThroughExport,
     noteTagExportsMayHaveChanged,
 } from './scripts/tags.js';
@@ -940,6 +941,8 @@ function characterIndexFailedText({ id, name, error, retryInMs, keptEntry }) {
 const CHANGE_STREAM_NOTICE_AFTER_MS = 10000;
 
 function onCharacterChangeMessage() {
+    // Wherever a held character's tags are shown, not only in the list.
+    onEntityTagsChanged();
     if (isCharacterListShowing()) {
         getCharactersDebounced();
     } else {
@@ -983,6 +986,10 @@ function setupCharacterChangeStream() {
             }
             if (message?.type === 'tags-changed' || message?.type === 'tag-order-settled') {
                 onTagsChanged();
+                return;
+            }
+            if (message?.type === 'groups-changed') {
+                onEntityTagsChanged();
                 return;
             }
             if (message?.type === 'character-index-failed') {
