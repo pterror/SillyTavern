@@ -30,7 +30,7 @@ import {
 
 import { characterRepository, buildCharacterQuery, normalizeQueryRow } from './character-repository.js';
 import { getRandomSortSeed } from './random-sort.js';
-import { selected_group, is_group_generating, openGroupById, groups } from './group-chats.js';
+import { selected_group, is_group_generating, openGroupById } from './group-chats.js';
 import { applyTagsOnCharacterSelect } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import {
