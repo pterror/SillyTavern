@@ -2,11 +2,11 @@ import { appendMessages, addAlternatives, selectDefaultChild, editMessage } from
 
 /**
  * The reply text in a non-streaming answer, read exactly as the page's `extractMessageFromData()`
- * (public/script.js) reads it for `api`, so the stored reply is the text the page shows. Where the page
- * would throw on the answer's shape and show nothing, this returns `''`.
+ * (public/script.js) reads it for `api`, so the stored reply is the text the page shows.
  * @param {any} data The answer body sent to the page.
  * @param {'textgenerationwebui'|'openai'} api
- * @returns {string}
+ * @returns {string|null} null when no field the page reads holds text, or the page would throw on the
+ * answer's shape.
  */
 export function replyTextAsPageShows(data, api) {
     function getResult() {
@@ -15,19 +15,37 @@ export function replyTextAsPageShows(data, api) {
         }
         switch (api) {
             case 'textgenerationwebui':
-                return data.choices?.[0]?.text ?? data.choices?.[0]?.message?.content ?? data.content ?? data.response ?? data[0]?.content ?? '';
+                return data.choices?.[0]?.text ?? data.choices?.[0]?.message?.content ?? data.content ?? data.response ?? data[0]?.content;
             case 'openai':
-                return data?.content?.filter(p => p.type === 'text')?.map(p => p.text)?.join('\n\n') ?? data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? data?.text ?? data?.message?.content?.[0]?.text ?? data?.message?.tool_plan ?? '';
+                return data?.content?.filter(p => p.type === 'text')?.map(p => p.text)?.join('\n\n') ?? data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? data?.text ?? data?.message?.content?.[0]?.text ?? data?.message?.tool_plan;
             default:
-                return '';
+                return undefined;
         }
     }
     try {
         const result = getResult();
-        return Array.isArray(result) ? result.map(x => x.text).filter(x => x).join('') : result;
+        const text = Array.isArray(result) ? result.map(x => x.text).filter(x => x).join('') : result;
+        return typeof text === 'string' ? text : null;
     } catch {
-        return '';
+        return null;
     }
+}
+
+/**
+ * For a non-streaming answer whose reply can't be read: logs the answer's keys (never its content) and
+ * returns the warning the page shows.
+ * @param {any} data The answer body sent to the page.
+ * @param {string} key The backend, as `api|type-or-source`.
+ * @returns {{ kind: 'unreadable-reply', key: string, message: string }}
+ */
+export function unreadableReplyWarning(data, key) {
+    const keys = data !== null && typeof data === 'object' ? Object.keys(data) : [];
+    console.warn(`Reply not saved: the ${key} answer has no reply text where it is read. Answer keys: ${JSON.stringify(keys)}`);
+    return {
+        kind: 'unreadable-reply',
+        key,
+        message: 'The reply came back in a format SillyTavern can\'t read, so it wasn\'t saved.',
+    };
 }
 
 /**

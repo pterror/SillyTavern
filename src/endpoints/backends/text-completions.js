@@ -33,7 +33,7 @@ import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../t
 import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
-import { persistAssistantReply, replyTextAsPageShows } from '../../assistant-reply-persist.js';
+import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
 
 export const router = express.Router();
 
@@ -715,7 +715,7 @@ router.post('/generate', async function (request, response) {
     // read by both the non-streaming response branch and the streaming branches further down.
     let rawActionItemization = null;
 
-    // Per-request warnings for the screen (dropped entries, estimate trims, tokenizer fallbacks),
+    // Per-request warnings for the screen (dropped entries, estimate trims, tokenizer fallbacks, an unreadable reply),
     // covering every branch below and not gated on persistence like `rawActionItemization` is.
     // Sent as its own `{control: {warnings}}` frame on a stream and as `data.warnings` on a
     // non-streaming reply, only when non-empty - so a reply with no warnings is byte-identical.
@@ -1159,7 +1159,10 @@ router.post('/generate', async function (request, response) {
                 // `selectDefaultChild()` rationale (unchanged from this route's own original design).
                 if (pendingAssistantPersist) {
                     const generatedText = replyTextAsPageShows(data, 'textgenerationwebui');
-                    const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
+                    if (generatedText === null) {
+                        warnings.push(unreadableReplyWarning(data, `textgenerationwebui|${apiType}`));
+                    }
+                    const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText ?? '');
                     if (persisted) {
                         data.assistant_node_id = persisted.node_id;
                     }
