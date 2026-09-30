@@ -5,6 +5,7 @@ import { sendSystemMessage, system_message_types } from '../../../script.js';
 import { chat } from '../../chat-state.js';
 import { t } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
+import { addImageLightbox } from '../../image-lightbox.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';
 import { SlashCommandBreakController } from '../SlashCommandBreakController.js';
 import { SlashCommandClosure } from '../SlashCommandClosure.js';
@@ -119,6 +120,7 @@ async function buttonsCallback(args, text) {
 
             const popupContainer = document.createElement('div');
             popupContainer.innerHTML = safeValue;
+            addImageLightbox(popupContainer);
             popupContainer.appendChild(scrollableContainer);
 
             popupContainer.style.display = 'flex';
@@ -159,6 +161,7 @@ async function popupCallback(args, value) {
         okButton: args?.okButton !== undefined && typeof args?.okButton === 'string' ? args.okButton : t`OK`,
         cancelButton: args?.cancelButton !== undefined && typeof args?.cancelButton === 'string' ? args.cancelButton : null,
         tooltip: args?.tooltip !== undefined && typeof args?.tooltip === 'string' ? args.tooltip : null,
+        onOpen: popup => addImageLightbox(popup.content),
     };
     const result = await Popup.show.text(safeHeader, safeBody, popupOptions);
     return String(requestedResult ? result ?? '' : value);
@@ -302,6 +305,7 @@ async function inputCallback(args, prompt) {
         rows: args?.rows !== undefined && typeof args?.rows === 'string' ? isNaN(Number(args.rows)) ? 4 : Number(args.rows) : 4,
         placeholder: args?.placeholder !== undefined && typeof args?.placeholder === 'string' ? args.placeholder : null,
         tooltip: args?.tooltip !== undefined && typeof args?.tooltip === 'string' ? args.tooltip : null,
+        onOpen: popup => addImageLightbox(popup.content),
     };
     // Do not remove this delay: the prompt will not show up without it
     await delay(1);
@@ -490,6 +494,11 @@ async function echoCallback(args, value) {
 
     if (args.color) {
         toast.css('background-color', args.color);
+    }
+
+    // No toast comes back for a suppressed duplicate
+    if (!options.escapeHtml && toast) {
+        addImageLightbox(toast);
     }
 
     if (awaitDismissal) {

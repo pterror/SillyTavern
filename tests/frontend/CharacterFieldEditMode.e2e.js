@@ -731,6 +731,41 @@ test.describe('character field edit mode', () => {
                 });
             }
 
+            for (const clickToEdit of [true, false]) {
+                test(`clicking an image in the preview shows it in the lightbox and stays in the preview (click to edit ${clickToEdit ? 'on' : 'off'})`, async ({ page }) => {
+                    await withCharacter(page, field, 'plain words\n\n![the image](/img/ai4.png)', async () => {
+                        await openInfoTab(page, field.tab);
+                        const previous = await setPowerUserSetting(page, 'click_to_edit', clickToEdit);
+                        try {
+                            const f = fieldLocators(page, field.id);
+                            const image = f.preview.locator('img');
+                            await expect(image).toBeVisible();
+                            const enlarged = page.locator('.img_enlarged_container img.img_enlarged');
+
+                            await image.click();
+                            await expect(enlarged).toBeVisible();
+                            await expect(enlarged).toHaveAttribute('src', /\/img\/ai4\.png$/);
+                            await page.keyboard.press('Escape');
+                            await expect(page.locator('.img_enlarged_container')).toHaveCount(0);
+                            await expectPreviewMode(page, field);
+
+                            // Outside the image the preview still opens the editor.
+                            const words = f.preview.getByText('plain words');
+                            if (clickToEdit) {
+                                await words.click();
+                            } else {
+                                await words.dblclick();
+                            }
+                            await expectEditMode(page, field);
+                            await f.cancel.click();
+                            await expectPreviewMode(page, field);
+                        } finally {
+                            await setPowerUserSetting(page, 'click_to_edit', previous);
+                        }
+                    });
+                });
+            }
+
             test('an empty field shows the placeholder hint', async ({ page }) => {
                 await withCharacter(page, field, '', async () => {
                     await openInfoTab(page, field.tab);

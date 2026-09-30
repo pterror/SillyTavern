@@ -2,6 +2,7 @@ import { getCurrentCharacter, getCurrentChatId, getSelectionState, messageFormat
 import { eventSource, event_types } from '../../events.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { selected_group } from '../../group-chats.js';
+import { addImageLightbox } from '../../image-lightbox.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from '../../popup.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../../slash-commands/SlashCommandArgument.js';
@@ -1234,6 +1235,7 @@ async function onRegexDebuggerOpenClick() {
             const formattedHtml = messageFormatting(textForNextStep, 'Debugger', true, false, null);
             const messageBlock = $('<div class="mes"><div class="mes_text"></div></div>');
             messageBlock.find('.mes_text').html(formattedHtml);
+            addImageLightbox(messageBlock);
             finalOutput.append(messageBlock);
         } else {
             finalOutput.text(textForNextStep);
