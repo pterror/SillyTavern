@@ -195,6 +195,7 @@ import {
     applyCharacterTagsToMessageDivs,
     removeEntityTags,
     onTagOrderSettled,
+    storeTagChangesMadeThroughExport,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
@@ -7652,6 +7653,9 @@ async function runSettingsSave({ full, count }) {
         console.error('Response length is currently being overridden, but the save loop has reached the maximum number of retries');
         TempResponseLength.restore(null);
     }
+
+    // Upstream's settings save stores `tags`; here what an extension changed in it goes out as its own requests.
+    storeTagChangesMadeThroughExport();
 
     // Queue behind any save already in flight, so overlapping calls can't race on a stale serverKeyHashes snapshot.
     const run = () => performSave({ full });
