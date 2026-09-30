@@ -15,7 +15,8 @@ const MODEL = 'raw-action-log-model';
 
 /**
  * A mock llama.cpp server that logs every request it gets.
- * @param {{ completion?: (n: number) => object }} [options] The body `/completion` answers with for the n-th reply.
+ * @param {{ completion?: (n: number) => object | null }} [options] The body `/completion` answers with for the n-th reply;
+ * null answers with a 500 error instead.
  * @returns {Promise<{ url: string, log: { method: string, url: string, body: string }[], close: () => Promise<void> }>}
  */
 function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` }) } = {}) {
@@ -49,6 +50,10 @@ function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` })
             }
             if (path === '/completion') {
                 const answer = completion(++replies);
+                if (answer === null) {
+                    res.writeHead(500, { 'Content-Type': 'text/plain' });
+                    return res.end('mock llama.cpp error');
+                }
                 if (JSON.parse(body || '{}').stream) {
                     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
                     res.write(`data: ${JSON.stringify({ ...answer, stop: false })}\n\n`);
@@ -275,6 +280,181 @@ test.describe('raw-action send request log', () => {
 
             expect(stored.copies).toBe(1);
             expect(stored.pageIds).toEqual(stored.pathIds);
+        });
+    }
+
+    for (const streaming of [false, true]) {
+        test(`a ${streaming ? 'streaming' : 'non-streaming'} llama.cpp send that fails, then one that works, store the first user message once`, async ({ page }) => {
+            const failing = await startMockLlamaCpp({ completion: n => (n === 1 ? null : { content: `Mock reply ${n}.` }) });
+            try {
+                const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+                const avatar = await createCharacter(page, `RawActionError-${stamp}`, `Hello from the greeting ${stamp}.`);
+                await openCharacter(page, avatar);
+                await connectLlamaCpp(page, failing.url);
+                // @ts-ignore
+                await page.evaluate((on) => { SillyTavern.getContext().textCompletionSettings.streaming = on; }, streaming);
+                await page.waitForTimeout(SETTLE_MS);
+
+                const first = `First question ${stamp}?`;
+                await page.locator('#send_textarea').fill(first);
+                await page.locator('#send_but').click();
+                await expect(page.locator('#chat .mes[mesid="1"] .mes_text')).toContainText(first, { timeout: 30000 });
+                await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
+                await page.waitForTimeout(SETTLE_MS);
+                await send(page, `Second question ${stamp}?`, 3);
+                await page.waitForTimeout(SETTLE_MS);
+
+                const stored = await page.evaluate(async (first) => {
+                    // @ts-ignore
+                    const context = SillyTavern.getContext();
+                    const post = async (url, body) => (await fetch(url, { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify(body) })).json();
+                    const pageIds = context.chat.map(m => m.node_id ?? null);
+                    const leaf = pageIds[pageIds.length - 1];
+                    const path = leaf ? (await post('/api/chats/ancestry', { node_id: leaf })).messages : null;
+                    const firstStored = path?.find(m => m.is_user && m.mes === first);
+                    const copies = firstStored
+                        ? (await post('/api/chats/alternatives', { node_id: firstStored.node_id })).alternatives.filter(a => a.is_user && a.mes === first).length
+                        : null;
+                    return { pageIds, pathIds: path?.map(m => m.node_id) ?? null, copies };
+                }, first);
+                await test.info().attach('page ids, stored path, copies of the first user message', { body: JSON.stringify(stored, null, 2), contentType: 'application/json' });
+
+                expect(stored.copies).toBe(1);
+                expect(stored.pageIds).toEqual(stored.pathIds);
+            } finally {
+                await failing.close();
+            }
+        });
+    }
+
+    // Each request sender takes on the `stored` an error answer reports, from the X-ST-Stored header or the
+    // body's `stored` field: the answers are stood in for, so only the page's reading is under test.
+    const senders = [
+        {
+            name: 'text completion, non-streaming (sendGenerationRequest, 200 error body)', url: '**/api/backends/text-completions/generate',
+            answer: stored => ({ status: 200, body: { error: true, status: 500, response: 'failed', stored } }),
+            call: async () => {
+                const { sendGenerationRequest } = await import('/script.js');
+                const { setMainApi } = await import('/scripts/generation-params.js');
+                setMainApi('textgenerationwebui');
+                return sendGenerationRequest('normal', { owner_id: 'x' });
+            },
+        },
+        {
+            name: 'kobold, non-streaming (sendGenerationRequest, 400)', url: '**/api/backends/kobold/generate',
+            answer: stored => ({ status: 400, body: { error: { message: 'failed' }, stored } }),
+            call: async () => {
+                const { sendGenerationRequest } = await import('/script.js');
+                const { setMainApi } = await import('/scripts/generation-params.js');
+                setMainApi('kobold');
+                return sendGenerationRequest('normal', { owner_id: 'x' });
+            },
+        },
+        {
+            name: 'NovelAI, non-streaming (sendGenerationRequest, 500)', url: '**/api/novelai/generate',
+            answer: stored => ({ status: 500, body: { error: { message: 'failed' }, stored } }),
+            call: async () => {
+                const { sendGenerationRequest } = await import('/script.js');
+                const { setMainApi } = await import('/scripts/generation-params.js');
+                setMainApi('novel');
+                return sendGenerationRequest('normal', { owner_id: 'x' });
+            },
+        },
+        {
+            name: 'NovelAI, non-streaming (sendGenerationRequest, 400 with a plain-text body)', url: '**/api/novelai/generate',
+            answer: () => ({ status: 400, text: 'Bad Request' }),
+            call: async () => {
+                const { sendGenerationRequest } = await import('/script.js');
+                const { setMainApi } = await import('/scripts/generation-params.js');
+                setMainApi('novel');
+                return sendGenerationRequest('normal', { owner_id: 'x' });
+            },
+        },
+        {
+            name: 'text completion, streaming (backend error passed on)', url: '**/api/backends/text-completions/generate',
+            answer: () => ({ status: 500, text: 'backend exploded' }),
+            call: async () => (await import('/scripts/textgen-settings.js')).generateTextGenWithStreaming({ owner_id: 'x' }, new AbortController().signal),
+        },
+        {
+            name: 'kobold, streaming (backend error passed on)', url: '**/api/backends/kobold/generate',
+            answer: () => ({ status: 500, text: 'backend exploded' }),
+            call: async () => (await import('/scripts/kai-settings.js')).generateKoboldWithStreaming({ owner_id: 'x' }, new AbortController().signal),
+        },
+        {
+            name: 'NovelAI, streaming (backend error passed on)', url: '**/api/novelai/generate',
+            answer: () => ({ status: 500, text: 'backend exploded' }),
+            call: async () => (await import('/scripts/nai-settings.js')).generateNovelWithStreaming({ owner_id: 'x' }, new AbortController().signal),
+        },
+        {
+            name: 'chat completion, non-streaming (sendOpenAIRequest, 200 error body)', url: '**/api/backends/chat-completions/generate',
+            answer: stored => ({ status: 200, body: { error: { message: 'failed' }, quota_error: false, stored } }),
+            call: async () => {
+                const { sendOpenAIRequest, oai_settings } = await import('/scripts/chat-completion-settings.js');
+                oai_settings.stream_openai = false;
+                return sendOpenAIRequest('normal', [], new AbortController().signal, { rawAction: { owner_id: 'x' } });
+            },
+        },
+        {
+            name: 'chat completion, streaming (backend error passed on)', url: '**/api/backends/chat-completions/generate',
+            answer: () => ({ status: 500, text: 'backend exploded' }),
+            call: async () => {
+                const { sendOpenAIRequest, oai_settings } = await import('/scripts/chat-completion-settings.js');
+                oai_settings.stream_openai = true;
+                return sendOpenAIRequest('normal', [], new AbortController().signal, { rawAction: { owner_id: 'x' } });
+            },
+        },
+        {
+            name: 'Horde (failed submit)', url: '**/api/horde/generate-text',
+            answer: stored => ({ status: 200, body: { error: { message: 'failed' }, stored } }),
+            before: async (page) => {
+                await page.route('**/api/horde/text-models', route => route.fulfill({ json: [{ name: 'stand-in-model', count: 1, performance: 1, queued: 0, eta: 0 }] }));
+            },
+            call: async () => {
+                const horde = await import('/scripts/horde.js');
+                await horde.getHordeModels(true);
+                horde.horde_settings.models = ['stand-in-model'];
+                return horde.generateHordeRawAction({ owner_id: 'x' }, new AbortController().signal, false);
+            },
+        },
+    ];
+    for (const sender of senders) {
+        test(`${sender.name}: the page takes on the stored user message from an error answer`, async ({ page }) => {
+            const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+            const avatar = await createCharacter(page, `RawActionAdopt-${stamp}`, `Hello from the greeting ${stamp}.`);
+            await openCharacter(page, avatar);
+            await sender.before?.(page);
+
+            // A user message the server is asked to store, as a raw-action send makes it.
+            const ref = await page.evaluate(async () => {
+                const { sendMessageAsUser } = await import('/script.js');
+                const { storeRefOf } = await import('/scripts/chat-store.js');
+                const message = await sendMessageAsUser('Stood-in question?', '', null, false, undefined, undefined, true);
+                return storeRefOf(message);
+            });
+            expect(typeof ref).toBe('string');
+            const stored = [{ ref, node_id: `adopted-${stamp}` }];
+            await page.route(sender.url, async (route) => {
+                const answer = sender.answer(stored);
+                await route.fulfill({
+                    status: answer.status,
+                    headers: { 'X-ST-Stored': JSON.stringify(stored), 'Content-Type': answer.body ? 'application/json' : 'text/plain' },
+                    body: answer.body ? JSON.stringify(answer.body) : answer.text,
+                });
+            });
+
+            const nodeId = await page.evaluate(async (call) => {
+                // eslint-disable-next-line no-new-func
+                const run = new Function(`return (${call})();`);
+                try {
+                    await run();
+                } catch {
+                    // The error answer is thrown on, as before.
+                }
+                // @ts-ignore
+                const chat = SillyTavern.getContext().chat;
+                return chat[chat.length - 1].node_id ?? null;
+            }, sender.call.toString());
+            expect(nodeId).toBe(stored[0].node_id);
         });
     }
 });

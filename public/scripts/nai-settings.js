@@ -19,6 +19,7 @@ import {
 import { buildLogitBiasListResult, createNewLogitBiasEntry, displayLogitBias, getLogitBiasEntryTexts } from './logit-bias.js';
 import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
+import { reportStoredHeader } from './stored-report.js';
 
 const default_preamble = '[ Style: chat, complex, sensory, visceral ]';
 const default_order = [1, 5, 0, 2, 3, 4];
@@ -741,6 +742,7 @@ export async function generateNovelWithStreaming(generate_data, signal) {
         method: 'POST',
         signal: signal,
     });
+    reportStoredHeader(response);
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);

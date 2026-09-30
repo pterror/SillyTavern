@@ -21,6 +21,7 @@ import {
 import { getSortableDelay, versionCompare } from './utils.js';
 import { main_api } from './generation-params.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
+import { reportStoredHeader } from './stored-report.js';
 
 export let koboldai_settings;
 export let koboldai_setting_names;
@@ -221,6 +222,7 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
         method: 'POST',
         signal: signal,
     });
+    reportStoredHeader(response);
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);

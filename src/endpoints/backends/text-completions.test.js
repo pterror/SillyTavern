@@ -774,6 +774,96 @@ async function run() {
 
     assert.deepEqual(storedRefFailures, [], 'stored ref cases');
 
+    // An error answer after the user message was stored still reports it: a body the route builds
+    // carries `stored`, and every error answer carries the X-ST-Stored header. A backend's own error
+    // passed on from a stream keeps its status and body exactly.
+    const storedErrorFailures = [];
+    /**
+     * @param {string} name
+     * @param {{ stream: boolean, point: (url: string) => void, handler?: (req: any, res: any, body: string) => void, expect: (answer: { status: number, headers: Headers, text: string }, stored: object[]) => void }} options
+     */
+    async function storedErrorCase(name, { stream, point, handler, expect }) {
+        const chatName = `stored-error-${name.replace(/\W+/g, '-')}`;
+        const backend = handler ? await startFakeBackend(handler) : null;
+        point(backend ? backend.url : 'http://127.0.0.1:9');
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        try {
+            await saveChatToTree(directories, ownerId, chatName, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+            ]);
+            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const ref = `ref-${chatName}`;
+            const res = await fetch(`http://127.0.0.1:${server.address().port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream,
+                }),
+            });
+            const answer = { status: res.status, headers: res.headers, text: await res.text() };
+            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const added = branchAfter.messages.slice(branchBefore.messages.length);
+            assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
+            const stored = [{ ref, node_id: added[0].node_id }];
+            assert.deepEqual(JSON.parse(answer.headers.get('X-ST-Stored') ?? 'null'), stored, `the X-ST-Stored header names the stored user message (status ${answer.status}, body ${answer.text})`);
+            expect(answer, stored);
+            console.log(`  pass: ${name}`);
+        } catch (error) {
+            storedErrorFailures.push(name);
+            console.log(`  FAIL: ${name}: ${error.message}`);
+        } finally {
+            backend?.server.close();
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+    const backendError = (req, res) => {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('backend exploded');
+    };
+    const llamaCppError = (req, res, body) => {
+        const route = (req.url ?? '').split('?')[0];
+        if (route === '/completion') return backendError(req, res);
+        return llamaCppBackend('')(req, res, body);
+    };
+
+    await storedErrorCase('generic, non-streaming, backend error (200 error body)', {
+        stream: false, point: pointBackendAt, handler: backendError,
+        expect: (answer, stored) => {
+            assert.equal(answer.status, 200);
+            assert.deepEqual(JSON.parse(answer.text), { error: true, status: 500, response: 'backend exploded', stored });
+        },
+    });
+    await storedErrorCase('generic, non-streaming, backend unreachable (catch-all)', {
+        stream: false, point: pointBackendAt,
+        expect: (answer, stored) => {
+            const body = JSON.parse(answer.text);
+            assert.equal(body.error, true);
+            assert.deepEqual(body.stored, stored);
+        },
+    });
+    await storedErrorCase('generic, streaming, backend error passed on', {
+        stream: true, point: pointBackendAt, handler: backendError,
+        expect: (answer) => {
+            assert.equal(answer.status, 500, 'the backend\'s status is kept');
+            assert.equal(answer.text, 'backend exploded', 'the backend\'s body is kept exactly');
+        },
+    });
+    await storedErrorCase('llama.cpp, streaming, backend error passed on', {
+        stream: true, point: pointLlamaCppBackendAt, handler: llamaCppError,
+        expect: (answer) => {
+            assert.equal(answer.status, 500, 'the backend\'s status is kept');
+            assert.equal(answer.text, 'backend exploded', 'the backend\'s body is kept exactly');
+        },
+    });
+
+    assert.deepEqual(storedErrorFailures, [], 'stored error cases');
+
     // (c) is_impersonate: true - NEITHER the (spuriously passed) user_message NOR the generated
     // reply may ever land on the tree, even though the backend call succeeds and returns real text.
     // The generated text must still reach the client unchanged.

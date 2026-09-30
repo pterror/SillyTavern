@@ -27,8 +27,53 @@ export async function storeUserMessage(response, { directories, ownerId, anchorN
     if (nodeId && typeof ref === 'string' && ref !== '') {
         response.locals.storedMessages ??= [];
         response.locals.storedMessages.push({ ref, node_id: nodeId });
+        reportStoredOnErrorAnswers(response);
     }
     return nodeId;
+}
+
+/** Response header carrying `stored` (JSON) on an error answer, whose body and status stay as they are. */
+export const STORED_HEADER = 'X-ST-Stored';
+
+/**
+ * Makes every error answer this response sends from now on report what the request stored: an error
+ * status (a backend's error passed on as it came, or one of the route's own) gets the `X-ST-Stored`
+ * header, and an error body the route builds itself (`{ error, ... }`) also gets a `stored` field.
+ * @param {import('express').Response} response
+ */
+function reportStoredOnErrorAnswers(response) {
+    if (response.locals.reportsStoredOnErrors) return;
+    response.locals.reportsStoredOnErrors = true;
+
+    const setStoredHeader = () => {
+        const stored = storedMessagesOf(response);
+        if (stored && !response.headersSent) {
+            // Header values must be ASCII; \u escapes keep it the same JSON.
+            response.setHeader(STORED_HEADER, JSON.stringify(stored).replace(/[\u007f-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`));
+        }
+    };
+    const withStoredError = (body) => {
+        const isObject = body !== null && typeof body === 'object' && !Array.isArray(body) && !Buffer.isBuffer(body);
+        if ((isObject && body.error) || response.statusCode >= 400) {
+            setStoredHeader();
+            if (isObject) body.stored ??= storedMessagesOf(response);
+        }
+        return body;
+    };
+
+    const writeHead = response.writeHead;
+    response.writeHead = function (statusCode, ...rest) {
+        if (statusCode >= 400) setStoredHeader();
+        return writeHead.call(this, statusCode, ...rest);
+    };
+    const json = response.json;
+    response.json = function (body) {
+        return json.call(this, withStoredError(body));
+    };
+    const send = response.send;
+    response.send = function (body) {
+        return send.call(this, withStoredError(body));
+    };
 }
 
 /**

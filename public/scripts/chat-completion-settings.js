@@ -83,6 +83,7 @@ import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } fr
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
 import { main_api } from './generation-params.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
+import { reportStored, reportStoredHeader } from './stored-report.js';
 
 export {
     openai_messages_count,
@@ -3217,6 +3218,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
         signal: signal,
     });
 
+    reportStoredHeader(response);
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
@@ -3303,6 +3305,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
         throw new Error('Expected X-ST-Stream-Format: compact-v1 - every streaming response from this route uses the compact binary protocol.');
     } else {
         const data = await response.json();
+        reportStored(data?.stored);
 
         checkQuotaError(data);
         checkModerationError(data);
