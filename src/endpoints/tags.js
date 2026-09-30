@@ -4,6 +4,7 @@ import {
     assignEntityTag,
     unassignEntityTag,
     setEntityTagIdsMany,
+    restoreTagAssignments,
     getEntityTagIdsForMany,
     getAllEntityTagAssignments,
     getAllTagUsage,
@@ -531,6 +532,34 @@ router.post('/assign-many', async (request, response) => {
         response.send({ result });
     } catch (err) {
         console.error('Could not bulk-assign tags', err);
+        response.sendStatus(500);
+    }
+});
+
+/**
+ * Adds a tag backup's assignments: `tagMap` maps entity ids to the tag ids to add. Nothing already assigned is
+ * removed. The answer lists everything that was not written.
+ */
+router.post('/restore-assignments', async (request, response) => {
+    try {
+        const { tagMap } = request.body;
+        if (typeof tagMap !== 'object' || tagMap === null || Array.isArray(tagMap)) {
+            return response.status(400).send({ error: 'tagMap must be an object' });
+        }
+        for (const [id, tagIds] of Object.entries(tagMap)) {
+            if (!id || !Array.isArray(tagIds) || !tagIds.every(t => typeof t === 'string' && t)) {
+                return response.status(400).send({ error: 'tagMap must map non-empty entity ids to arrays of non-empty string tag ids' });
+            }
+        }
+
+        const result = await restoreTagAssignments(request.user.directories, tagMap);
+        if (result === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+
+        response.send(result);
+    } catch (err) {
+        console.error('Could not restore tag assignments', err);
         response.sendStatus(500);
     }
 });
