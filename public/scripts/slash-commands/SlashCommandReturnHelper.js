@@ -2,6 +2,7 @@ import { DOMPurify } from '../../lib.js';
 import { renderMarkdown } from '../marked-processor.js';
 import { sendSystemMessage, system_message_types } from '../../script.js';
 import { callGenericPopup, POPUP_TYPE } from '../popup.js';
+import { addImageLightbox } from '../image-lightbox.js';
 import { escapeHtml } from '../utils.js';
 import { enumIcons } from './SlashCommandCommonEnumsProvider.js';
 import { enumTypes, SlashCommandEnumValue } from './SlashCommandEnumValue.js';
@@ -60,9 +61,13 @@ export const slashCommandReturnHelper = {
             case 'toast-html': {
                 const htmlOrNotHtml = shouldHtml ? DOMPurify.sanitize(renderMarkdown(stringValue)) : escapeHtml(stringValue);
 
-                if (type.startsWith('popup')) await callGenericPopup(htmlOrNotHtml, POPUP_TYPE.TEXT, '', { allowVerticalScrolling: true, wide: true });
+                if (type.startsWith('popup')) await callGenericPopup(htmlOrNotHtml, POPUP_TYPE.TEXT, '', { allowVerticalScrolling: true, wide: true, onOpen: popup => addImageLightbox(popup.content) });
                 if (type.startsWith('chat')) sendSystemMessage(system_message_types.GENERIC, htmlOrNotHtml);
-                if (type.startsWith('toast')) toastr.info(htmlOrNotHtml, null, { escapeHtml: !shouldHtml });
+                if (type.startsWith('toast')) {
+                    const toast = toastr.info(htmlOrNotHtml, null, { escapeHtml: !shouldHtml });
+                    // No toast comes back for a suppressed duplicate
+                    if (toast) addImageLightbox(toast);
+                }
 
                 return '';
             }

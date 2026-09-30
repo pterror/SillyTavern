@@ -26,6 +26,7 @@ import {
 } from '../script.js';
 import { renderMarkdown } from './marked-processor.js';
 import { insertMacroSpans, substituteMacrosWithPlaceholders } from './character-field-editor.js';
+import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
@@ -2458,10 +2459,10 @@ export function initChatUtilities() {
         const { messageId, mediaIndex } = getMediaContainerInfo.call(this);
         expandMessageMedia(messageId, mediaIndex);
     });
-    chatElement.on('click', '.mes_text img', function (event) {
-        event.stopPropagation();
-        showMediaLightbox(this.src, this.alt || '');
-    });
+    initImageLightbox(showMediaLightbox);
+    chatElement.on('click', '.mes_text img, .mes_reasoning img, .mes_bias img', onLightboxImageClick);
+    // The character info field previews. The image's handler runs before the preview's own, so the field stays in the preview.
+    $(document).on('click', '.field_preview img', onLightboxImageClick);
     chatElement.on('click', '.mes_media_enlarge', async function () {
         const { messageId, mediaIndex } = getMediaContainerInfo.call(this);
         expandMessageMedia(messageId, mediaIndex).click();
