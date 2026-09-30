@@ -9,8 +9,10 @@ import { setConfigFilePath } from './util.js';
  * done-marker is written last. workerData.boot is set for the once-per-boot run, whose lines are [boot-timing] ones.
  *
  * Messages to the coordinator:
- *   { type: 'batch', changed, tagDefinitionsChanged }   a batch committed that wrote change rows (changed) and/or
- *                                                     tag definitions (tagDefinitionsChanged).
+ *   { type: 'batch', changed, tagDefinitionsChanged, tagChangesLogged }
+ *                                                     a batch committed that wrote change rows (changed), tag
+ *                                                     definitions (tagDefinitionsChanged) and/or tag change log
+ *                                                     rows (tagChangesLogged).
  *   { type: 'tag-move-failed', payload }               a queued tag move couldn't be applied (reportTagMoveFailed()).
  *   { type: 'tag-order-settled' }                      the queued tag moves are all applied (reportTagOrderSettled()).
  *   { type: 'error', message }
@@ -32,17 +34,19 @@ const logPrefix = boot ? '[boot-timing] [metadata-migrations]' : '[metadata-migr
 /** @param {object} msg */
 const post = (msg) => parentPort?.postMessage(msg);
 
-// Both events fire inside a pass's synchronous transaction, so the microtask runs once that batch has committed.
+// The events fire inside a pass's synchronous transaction, so the microtask runs once that batch has committed.
 let changed = false;
 let tagDefinitionsChanged = false;
+let tagChangesLogged = false;
 let batchReportQueued = false;
 function queueBatchReport() {
     if (batchReportQueued) return;
     batchReportQueued = true;
     queueMicrotask(() => {
-        post({ type: 'batch', changed, tagDefinitionsChanged });
+        post({ type: 'batch', changed, tagDefinitionsChanged, tagChangesLogged });
         changed = false;
         tagDefinitionsChanged = false;
+        tagChangesLogged = false;
         batchReportQueued = false;
     });
 }
@@ -52,6 +56,10 @@ metadataDb.characterChangeEmitter.on('change', () => {
 });
 metadataDb.characterChangeEmitter.on(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, () => {
     tagDefinitionsChanged = true;
+    queueBatchReport();
+});
+metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, () => {
+    tagChangesLogged = true;
     queueBatchReport();
 });
 // The main process reports it on to the user's clients, or logs it.

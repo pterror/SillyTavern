@@ -566,6 +566,16 @@ const SCHEMA_SQL = `
         tag_id TEXT NOT NULL
     );
 
+    -- One row per change to what a reader gets as a tag's definition, in the transaction that made it: a tag
+    -- created, a stored field changed, a tag marked deleted or pruned (logTagChangesSync()). A client pages through
+    -- it with seq > its cursor (getTagChangesSince()), so hearing of other tabs' changes costs work proportional to
+    -- how many there were, never to how many tags exist. tag_id NULL is one batch of a background pass, or the end
+    -- of a reorder: many definitions changed and a reader re-reads the ones it shows instead of being told each.
+    CREATE TABLE IF NOT EXISTS tag_changes (
+        seq    INTEGER PRIMARY KEY AUTOINCREMENT,
+        tag_id TEXT
+    );
+
     -- A card tag name that couldn't be resolved yet because some tags rows have no name_key (see
     -- tagNameKeysReady()). fillTagNameKeysIfNeeded() resolves and assigns each one once they all do.
     -- only_existing = 1: assigned only if a tag with that name exists, never created.
@@ -2991,6 +3001,33 @@ export async function reconcile(directories) {
 // Emitted on characterChangeEmitter, inside the transaction, when a migration pass writes a tag definition.
 export const TAG_DEFINITIONS_CHANGED_EVENT = 'tag-definitions-changed';
 
+// Emitted on characterChangeEmitter as (root) when tag_changes rows were added for that store: its clients ask for
+// what changed since their cursor (getTagChangesSince()).
+export const TAG_CHANGES_EVENT = 'tag-changes';
+
+/**
+ * @param {string} root The store's directories.root.
+ */
+export function reportTagChanges(root) {
+    characterChangeEmitter.emit(TAG_CHANGES_EVENT, root);
+}
+
+/**
+ * Adds tag_changes rows (see SCHEMA_SQL) in the caller's transaction and tells this process's listeners. A
+ * transaction that is rolled back takes the rows with it; the listeners then find nothing new.
+ * @param {MetadataDbEntry} entry
+ * @param {string[] | null} tagIds The tags whose definition changed, or null for one batch row.
+ */
+function logTagChangesSync(entry, tagIds) {
+    if (tagIds === null) {
+        entry.db.run('INSERT INTO tag_changes (tag_id) VALUES (NULL)');
+    } else {
+        if (tagIds.length === 0) return;
+        for (const tagId of new Set(tagIds)) entry.db.run('INSERT INTO tag_changes (tag_id) VALUES (@tagId)', { tagId });
+    }
+    reportTagChanges(entry.directories.root);
+}
+
 /**
  * @typedef {'deleted' | 'unreadable' | 'unordered' | 'no-room'} TagMoveFailedReason
  * @typedef {{ tagId: string, tagName: string | null, anchorId: string | null, anchorName: string | null,
@@ -3678,6 +3715,89 @@ export async function getTagNameChangesSince(directories, sinceSeq, { limit } = 
 
     const rows = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT DISTINCT tag_id FROM tag_name_changes WHERE seq > ?', [numericSince])));
     return { seq: maxSeq, tagIds: rows.map(row => row.tag_id), truncated: false };
+}
+
+/**
+ * @typedef {object} TagChangesPage
+ * @property {number} seq The cursor to ask from next.
+ * @property {boolean} reset The caller can't be told what changed: it has no usable cursor, the log no longer
+ *   reaches back to it, or a batch row lies past it. It re-reads the tags it holds; `seq` is the log's end.
+ * @property {object[]} tags The stored definition of each changed tag that still exists.
+ * @property {{ id: string, mergedInto: string | null }[]} removed Each changed tag that no longer exists, with the
+ *   tag it reads as now when it is marked deleted with a merge target.
+ * @property {boolean} hasMore Rows remain past `seq`.
+ */
+
+/**
+ * One page of the tag definition change log (tag_changes) past `sinceSeq`, at most `limit` rows, as what each
+ * changed tag is now. A tag changed several times is listed once.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {unknown} sinceSeq The caller's cursor; anything but a non-negative integer asks only for the log's end.
+ * @param {{ limit: number }} options
+ * @returns {Promise<TagChangesPage | null>} null when the store is unavailable.
+ */
+export async function getTagChangesSince(directories, sinceSeq, { limit }) {
+    if (!Number.isInteger(limit) || limit <= 0) {
+        throw new TypeError('getTagChangesSince() requires a positive integer limit');
+    }
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const bounds = /** @type {{ minSeq: number | null, maxSeq: number | null }} */ (entry.db.get('SELECT (SELECT MIN(seq) FROM tag_changes) AS minSeq, (SELECT MAX(seq) FROM tag_changes) AS maxSeq'));
+    const maxSeq = bounds.maxSeq !== null ? Number(bounds.maxSeq) : 0;
+    /** @type {TagChangesPage} */
+    const reset = { seq: maxSeq, reset: true, tags: [], removed: [], hasMore: false };
+    if (typeof sinceSeq !== 'number' || !Number.isInteger(sinceSeq) || sinceSeq < 0) return reset;
+    if (sinceSeq > maxSeq) return reset;
+    if (bounds.minSeq !== null && sinceSeq < Number(bounds.minSeq) - 1) return reset;
+
+    /** @type {Set<string>} */
+    const ids = new Set();
+    let lastSeq = sinceSeq;
+    let hasMore = false;
+    let read = 0;
+    for (const row of /** @type {Generator<{ seq: number, tag_id: string | null }>} */ (entry.db.iterate('SELECT seq, tag_id FROM tag_changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [sinceSeq, limit + 1]))) {
+        // The page's LIMIT is limit + 1: reaching the extra row means more remain, and it isn't part of this page.
+        if (read === limit) {
+            hasMore = true;
+            break;
+        }
+        if (row.tag_id === null) return reset;
+        read++;
+        lastSeq = Number(row.seq);
+        ids.add(row.tag_id);
+    }
+
+    const deletions = readTagDeletionsSync(entry.db);
+    /** @type {object[]} */
+    const tags = [];
+    /** @type {TagChangesPage['removed']} */
+    const removed = [];
+    for (const id of ids) {
+        const row = deletions.has(id) ? undefined
+            : /** @type {{ data: string } | undefined} */ (entry.db.get('SELECT data FROM tags WHERE id = @id', { id }));
+        const tag = row ? parseTagObject(row.data) : null;
+        if (tag) {
+            tags.push(tag);
+        } else if (row) {
+            console.warn(color.yellow(`[character-metadata] Tag definition ${id} could not be parsed, left out of the tag changes.`));
+        } else {
+            removed.push({ id, mergedInto: deletions.get(id) ?? null });
+        }
+    }
+    return { seq: lastSeq, reset: false, tags, removed, hasMore };
+}
+
+/**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<number | null>} The tag definition change log's end, the cursor a client that has just read the
+ *   tags asks from; null when the store is unavailable.
+ */
+export async function getTagChangesSeq(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = /** @type {{ seq: number }} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) AS seq FROM tag_changes'));
+    return Number(row.seq);
 }
 
 /** Ids of the characters carrying any of `tagIds`, in batches, each id once. `tagIds` goes into one IN (...), so
@@ -5427,6 +5547,7 @@ export async function saveTagDefinitions(directories, tagsArray) {
             }
         }
         updateTagsHashSync(entry.db);
+        logTagChangesSync(entry, null);
     });
     warnStaleDeletedTagSave(skipped);
     // Invalidate: a whole-table replace can't be patched into getTagCache()'s Maps incrementally.
@@ -5502,6 +5623,7 @@ export async function createTagDefinition(directories, rawTag) {
         entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
         if (!assignOrder && !tagSortOrdersSettledSync(entry.db)) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
         updateTagsHashSync(entry.db);
+        logTagChangesSync(entry, [id]);
     });
     if (result.refused.length > 0) {
         if (result.refused[0].reason === 'deleted') warnStaleDeletedTagSave([id]);
@@ -5546,6 +5668,7 @@ function editTagSync(entry, id, patch) {
         entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
     }
     updateTagsHashSync(entry.db);
+    logTagChangesSync(entry, [id]);
     return { refused: null, written: true };
 }
 
@@ -5643,6 +5766,7 @@ export async function pruneUnusedTags(directories, limit) {
         entry.db.run('DELETE FROM tags WHERE id IN (SELECT value FROM json_each(@ids))', { ids });
         entry.db.run('DELETE FROM tag_usage WHERE tag_id IN (SELECT value FROM json_each(@ids))', { ids });
         updateTagsHashSync(entry.db);
+        logTagChangesSync(entry, deleted);
     });
     if (deleted.length) entry.tagCache = null;
     return deleted;
@@ -5714,6 +5838,7 @@ export async function deleteTagDefinition(directories, tagId, mergeInto = null) 
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
         }
         updateTagsHashSync(entry.db);
+        logTagChangesSync(entry, [tagId]);
         result.mergedInto = target;
     });
     if (!result.refused.length) entry.tagCache = null;
@@ -6305,6 +6430,7 @@ export async function migrateTagsJsonIfNeeded(directories) {
         }
         if (insertedDefinitions > 0) {
             updateTagsHashSync(entry.db);
+            logTagChangesSync(entry, null);
             characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
         }
     });
@@ -6371,6 +6497,7 @@ function seedDefaultTagsIfPendingSync(entry, settings) {
             entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams({ ...tag, sort_order: next++ }));
         }
         updateTagsHashSync(entry.db);
+        logTagChangesSync(entry, null);
         characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
         outcome.seeded = true;
     });
@@ -6472,6 +6599,7 @@ async function importSettingsTagDefinitions(entry, label, tags) {
             }
             if (batchInserted.length > 0) {
                 updateTagsHashSync(entry.db);
+                logTagChangesSync(entry, null);
                 characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
             }
         });
@@ -6981,7 +7109,10 @@ async function restoreTagDefinitions(entry, tags, overwrite) {
                 if (!assignOrder && !settled) queueTagSortOrderValueSync(entry.db, newId, tag.sort_order);
                 done.created.push(newId);
             }
-            if (done.created.length > 0) updateTagsHashSync(entry.db);
+            if (done.created.length > 0) {
+                updateTagsHashSync(entry.db);
+                logTagChangesSync(entry, done.created);
+            }
         });
         const { done } = state;
         definitions.createdTagIds.push(...done.created);
@@ -7179,7 +7310,10 @@ function createCardTagsSync(entry, resolved) {
         resolved.learned.push({ key: params.nameKey, id, data: params.data });
         return id;
     });
-    if (created.length > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+    if (created.length > 0) {
+        logTagChangesSync(entry, created);
+        characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+    }
     resolved.tagIds.push(...created);
     resolved.toCreate = [];
     return created;
@@ -7776,7 +7910,10 @@ async function spreadLargeTie(entry, value, totals) {
                 state.written++;
                 state.last = row.rowid;
             }
-            if (state.written > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            if (state.written > 0) {
+                logTagChangesSync(entry, null);
+                characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            }
             state.finished = page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE || state.written < page.length;
         });
         if (state.noRoom) {
@@ -7878,7 +8015,10 @@ export async function fillTagSortOrdersIfNeeded(directories) {
                 writeTagSortOrderSync(db, row.rowid, tag, values[state.written]);
                 state.written++;
             }
-            if (state.written > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            if (state.written > 0) {
+                logTagChangesSync(entry, null);
+                characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            }
             const last = page[page.length - 1];
             state.next = page.length < TAG_SORT_ORDERS_FILL_BATCH_SIZE ? { phase: 'ties', s: null } : { phase: 'unordered', k: last.name_key, r: last.rowid };
             saveAt(state.next);
@@ -7935,7 +8075,10 @@ export async function fillTagSortOrdersIfNeeded(directories) {
                 }
                 state.s = rows.length > 1 ? values[values.length - 1] : value;
             }
-            if (state.written > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            if (state.written > 0) {
+                logTagChangesSync(entry, null);
+                characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+            }
             state.done = atEnd;
             if (state.done) {
                 db.run(UPSERT_META_VALUE_SQL, { key: TAG_SORT_ORDERS_FILLED_FLAG, value: String(Date.now()) });
@@ -8338,6 +8481,7 @@ export async function moveTagDefinition(directories, id, placement) {
             }
             result = moveTagSync(db, id, anchorId, side);
             if (result.rollback) throw new TagMoveRollback();
+            logTagChangesSync(entry, result.written.map(w => w.id));
         });
     } catch (err) {
         if (!(err instanceof TagMoveRollback)) throw err;
@@ -8469,6 +8613,8 @@ async function drainTagPendingMoves(entry, directories, totals, passId = null) {
                 if (!pending) {
                     stop = 'done';
                     if (passId !== null) db.run('DELETE FROM meta WHERE key = @key', { key: TAG_REORDER_PASS_KEY });
+                    // One batch row for the whole pass: its batches log none of their own.
+                    if (passId !== null) logTagChangesSync(entry, null);
                     return;
                 }
                 const { tag_id: tagId, side, anchor_id: anchorId } = pending;
@@ -8505,7 +8651,10 @@ async function drainTagPendingMoves(entry, directories, totals, passId = null) {
                     }
                 }
                 db.run('DELETE FROM tag_pending_moves WHERE seq = @seq', { seq: pending.seq });
-                if (rows > 0) characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+                if (rows > 0) {
+                    logTagChangesSync(entry, moved ? /** @type {TagMoveOutcome} */ (moved).written.map(w => w.id) : [tagId]);
+                    characterChangeEmitter.emit(TAG_DEFINITIONS_CHANGED_EVENT);
+                }
             });
         } catch (err) {
             if (!(err instanceof TagMoveRollback)) throw err;

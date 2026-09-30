@@ -1411,6 +1411,8 @@ function warnRefusedTags(refused, tag, title) {
  *   has a tag with that id, this tab now has the server's copy of it.
  */
 async function createTagOnServer(tag) {
+    // Until this answers, the tag changes feed leaves the id alone: the tag is put into `tags` here.
+    tagIdsBeingCreated.add(tag.id);
     try {
         const response = await fetch('/api/tags/create', {
             method: 'POST',
@@ -1439,6 +1441,8 @@ async function createTagOnServer(tag) {
     } catch (error) {
         console.error(`Error creating tag ${tag?.id}:`, error);
         return 'failed';
+    } finally {
+        tagIdsBeingCreated.delete(tag.id);
     }
 }
 
@@ -1743,29 +1747,37 @@ function moveTagFilters(fromId, toId) {
 }
 
 /**
- * Removes tag `id` from this tab only (the server already has no such tag), then re-reads the tags of every
- * resident entity so what the server gave them in its place shows up.
- * @param {string} id
- * @param {{ replaceWithId?: string }} [options] - replaceWithId: the tag the server merged `id` into. Resident
- *   entities and tag filters get it in `id`'s place at once, ahead of the re-read.
- * @returns {Promise<{ held: boolean, moved: boolean }>} what became of the tag filters on `id` (moveTagFilters())
+ * Removes tags from this tab only (the server already has no such tags), then re-reads the tags of every resident
+ * entity so what the server gave them in their place shows up.
+ * @param {{ id: string, replaceWithId?: string }[]} drops - replaceWithId: the tag the server merged `id` into.
+ *   Resident entities and tag filters get it in `id`'s place at once, ahead of the re-read.
+ * @returns {Promise<Map<string, { held: boolean, moved: boolean }>>} by id, what became of the tag filters on it
+ *   (moveTagFilters())
  */
-async function dropTagLocally(id, { replaceWithId } = {}) {
-    const needsFullRedraw = tagChangeAffectsCurrentView(replaceWithId ? [id, replaceWithId] : [id]);
-    const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithTag(id);
-    const hadUse = (tagUsageCounts.get(id) ?? 0) > 0;
+async function dropTagsLocally(drops) {
+    /** @type {Map<string, { held: boolean, moved: boolean }>} */
+    const filters = new Map();
+    if (!drops.length) return filters;
+    const needsFullRedraw = tagChangeAffectsCurrentView(drops.flatMap(({ id, replaceWithId }) => replaceWithId ? [id, replaceWithId] : [id]));
+    const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithAnyTag(new Set(drops.map(({ id }) => id)));
 
-    removeTagIdLocally(id, { replaceWithId });
-    // Cards this tab doesn't hold carried it too, and now carry the merge target.
-    if (replaceWithId && hadUse && !(tagUsageCounts.get(replaceWithId) > 0)) tagUsageCounts.set(replaceWithId, 1);
-    const filters = moveTagFilters(id, replaceWithId);
-    storedTagFields.delete(id);
-    tagsAddedThroughExport.delete(id);
+    let heldDefinition = false;
+    for (const { id, replaceWithId } of drops) {
+        const hadUse = (tagUsageCounts.get(id) ?? 0) > 0;
+        removeTagIdLocally(id, { replaceWithId });
+        // Cards this tab doesn't hold carried it too, and now carry the merge target.
+        if (replaceWithId && hadUse && !(tagUsageCounts.get(replaceWithId) > 0)) tagUsageCounts.set(replaceWithId, 1);
+        filters.set(id, moveTagFilters(id, replaceWithId));
+        storedTagFields.delete(id);
+        tagsAddedThroughExport.delete(id);
+        if (tagsStore.has(id)) heldDefinition = true;
+    }
 
-    if (tagsStore.has(id)) {
+    if (heldDefinition) {
+        const dropped = new Set(drops.map(({ id }) => id));
         let write = 0;
         for (const tag of tags) {
-            if (tag.id !== id) tags[write++] = tag;
+            if (!dropped.has(tag.id)) tags[write++] = tag;
         }
         tags.length = write;
         tagsStore.reindex();
@@ -1775,10 +1787,12 @@ async function dropTagLocally(id, { replaceWithId } = {}) {
         await refreshTagsManifestCache();
     }
 
-    // An unsaved name has no tag left to go to.
-    writeTagNameDraft(id, null);
-    $(`.tag[id="${id}"]`).remove();
-    $(`.tag_view_item[id="${id}"]`).remove();
+    for (const { id } of drops) {
+        // An unsaved name has no tag left to go to.
+        writeTagNameDraft(id, null);
+        $(`.tag[id="${id}"]`).remove();
+        $(`.tag_view_item[id="${id}"]`).remove();
+    }
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
@@ -1791,6 +1805,16 @@ async function dropTagLocally(id, { replaceWithId } = {}) {
 
     await rereadResidentEntityTagIds();
     return filters;
+}
+
+/**
+ * dropTagsLocally() for one tag.
+ * @param {string} id
+ * @param {{ replaceWithId?: string }} [options]
+ * @returns {Promise<{ held: boolean, moved: boolean }>} what became of the tag filters on `id` (moveTagFilters())
+ */
+async function dropTagLocally(id, { replaceWithId } = {}) {
+    return (await dropTagsLocally([{ id, replaceWithId }])).get(id);
 }
 
 /**
@@ -2372,6 +2396,16 @@ function loadTagsSettings(settings) {
 }
 
 async function loadTagsFromServer() {
+    try {
+        await loadTagDefinitionsFromServer();
+    } finally {
+        // What changed between the manifest read, which set the cursor, and now.
+        tagsLoadedOnce = true;
+        onTagsChanged();
+    }
+}
+
+async function loadTagDefinitionsFromServer() {
     let tagsFile = null;
     let fetchFailed = false;
     let manifestHash = null;
@@ -2389,8 +2423,10 @@ async function loadTagsFromServer() {
             cache: 'no-cache',
         });
         if (manifestResponse.ok) {
-            const { hash } = await manifestResponse.json();
+            const { hash, changesSeq } = await manifestResponse.json();
             manifestHash = hash;
+            // Read before the definitions are, so nothing that changes while they load is missed.
+            tagChangesSeq = typeof changesSeq === 'number' ? changesSeq : null;
             if (hash !== null && hash !== undefined) {
                 const cached = await getCachedTags();
                 if (cached && cached.hash === hash) {
@@ -2806,10 +2842,18 @@ function updateEntityRowTags(keys) {
  * @returns {string[]}
  */
 function getRenderedKeysWithTag(tagId) {
+    return getRenderedKeysWithAnyTag(new Set([tagId]));
+}
+
+/**
+ * @param {Set<string>} tagIds
+ * @returns {string[]} the key of every currently-rendered character/group list row carrying any of `tagIds`
+ */
+function getRenderedKeysWithAnyTag(tagIds) {
     const keys = [];
     document.querySelectorAll('#rm_print_characters_block [data-avatar], #rm_print_characters_block [data-grid]').forEach(el => {
         const key = el.getAttribute('data-avatar') ?? el.getAttribute('data-grid');
-        if (getTagsList(key).some(t => t.id === tagId)) {
+        if (getTagsList(key).some(t => tagIds.has(t.id))) {
             keys.push(key);
         }
     });
@@ -3964,9 +4008,6 @@ function tagMoveRefusedText(id, anchorId, refusal) {
 // before it left. A re-read of the tags joins the same chain, so it never lands in the middle of a move.
 let tagOrderChain = Promise.resolve();
 
-// A move the server queued has written no sort_order yet; 'tag-order-settled' on the changes stream says when it has.
-let tagOrderAwaitsSettle = false;
-
 /** Redraws Manage Tags' list, if it is open, unless it already shows the tags in the order a redraw would. */
 function redrawViewTagListIfStale() {
     const tagContainer = $('#tag_view_list .tag_view_list_tags');
@@ -4022,10 +4063,8 @@ async function moveTagOnServer(id, placement, mode) {
         saveSettingsDebounced('power_user.tag_sort_mode');
     }
 
-    if (answer.queued) {
-        tagOrderAwaitsSettle = true;
-        return;
-    }
+    // A queued move has written no sort_order yet; the tag changes feed brings the order once it is applied.
+    if (answer.queued) return;
 
     let changed = false;
     for (const { id: writtenId, sort_order } of answer.written ?? []) {
@@ -4043,6 +4082,48 @@ async function moveTagOnServer(id, placement, mode) {
 }
 
 /**
+ * Takes the server's definitions of `serverTags` into `tags`, in place: a tag this tab has keeps its object and
+ * takes the server's fields, one it doesn't is added. Redraws each drawn field that changed except the order.
+ * Left as they are: a tag this tab is creating (its create's answer puts it in), and a field an extension changed
+ * on the object that hasn't been stored yet.
+ * @param {Tag[]} serverTags
+ * @returns {{ anyChanged: boolean, sortOrderChanged: boolean }}
+ */
+function takeInServerTagDefinitions(serverTags) {
+    let sortOrderChanged = false;
+    let anyChanged = false;
+    for (const serverTag of serverTags) {
+        if (!isTagObject(serverTag)) continue;
+        const local = tagsStore.get(serverTag.id);
+        if (local === serverTag) continue;
+        if (!local) {
+            if (tagIdsBeingCreated.has(serverTag.id)) continue;
+            addStoredTag(serverTag);
+            anyChanged = true;
+            continue;
+        }
+        if (!storedTagFields.has(local.id)) continue;
+        const old = { ...local };
+        const unstored = tagFieldsChangedOnObject(local).patch;
+        takeServerTagFields(local, serverTag);
+        if (unstored) Object.assign(local, unstored);
+        for (const [field, redraw] of Object.entries(TAG_FIELD_REDRAWS)) {
+            if (old[field] === local[field]) continue;
+            anyChanged = true;
+            if (field === 'sort_order') sortOrderChanged = true; else redraw(local);
+        }
+    }
+    tagsStore.reindex();
+    if (anyChanged) {
+        invalidateTagsFuseIndex();
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+        applyCharacterTagsToMessageDivs();
+    }
+    return { anyChanged, sortOrderChanged };
+}
+
+/**
  * Makes this tab's tag definitions match the server's, in place: `tags` stays the same array and a tag that
  * is still there stays the same object. Only what differs is downloaded, unless most of it does.
  * @returns {Promise<boolean>} false if the server couldn't be read; nothing is changed then.
@@ -4057,37 +4138,9 @@ async function rereadTagDefinitions() {
         serverTags = answer.tags;
     }
 
-    const serverIds = new Set();
-    let sortOrderChanged = false;
-    let anyChanged = false;
-    for (const serverTag of serverTags) {
-        if (!serverTag || typeof serverTag.id !== 'string') continue;
-        serverIds.add(serverTag.id);
-        const local = tagsStore.get(serverTag.id);
-        if (local === serverTag) continue;
-        if (!local) {
-            addStoredTag(serverTag);
-            anyChanged = true;
-            continue;
-        }
-        const old = { ...local };
-        takeServerTagFields(local, serverTag);
-        for (const [field, redraw] of Object.entries(TAG_FIELD_REDRAWS)) {
-            if (old[field] === local[field]) continue;
-            anyChanged = true;
-            if (field === 'sort_order') sortOrderChanged = true; else redraw(local);
-        }
-    }
-    tagsStore.reindex();
-    if (anyChanged) {
-        invalidateTagsFuseIndex();
-        invalidateCharactersFuseIndex();
-        invalidateGroupsFuseIndex();
-        applyCharacterTagsToMessageDivs();
-    }
-    for (const id of tags.map(tag => tag.id).filter(id => !serverIds.has(id))) {
-        await dropTagLocally(id);
-    }
+    const serverIds = new Set(serverTags.filter(isTagObject).map(tag => tag.id));
+    const { sortOrderChanged } = takeInServerTagDefinitions(serverTags);
+    await dropTagsLocally(tags.filter(tag => !serverIds.has(tag.id) && storedTagFields.has(tag.id)).map(tag => ({ id: tag.id })));
     if (sortOrderChanged) redrawAfterTagSortOrderChange();
     await refreshTagsManifestCache();
     redrawViewTagListIfStale();
@@ -4095,16 +4148,55 @@ async function rereadTagDefinitions() {
 }
 
 /**
- * The server has applied every queued tag move ('tag-order-settled' on the changes stream), or the stream is back
- * after a break that may have swallowed that message: re-reads the tags, whose sort_order values it rewrote.
- * @param {object} [options]
- * @param {boolean} [options.onlyIfAwaited=false] Do nothing unless this tab has a queued move of its own out.
+ * Where in the server's tag change log (/api/tags/changes) this tab's tags are current to. null: not known, so the
+ * next ask is answered with a re-read.
+ * @type {number | null}
  */
-export function onTagOrderSettled({ onlyIfAwaited = false } = {}) {
-    if (onlyIfAwaited && !tagOrderAwaitsSettle) return;
-    tagOrderChain = tagOrderChain.then(async () => {
-        if (await rereadTagDefinitions()) tagOrderAwaitsSettle = false;
-    }).catch(error => console.error('Error re-reading tags after a reorder:', error));
+let tagChangesSeq = null;
+// Set once loadTagsFromServer() has filled `tags`; until then the feed is not asked, and the load asks once it ends.
+let tagsLoadedOnce = false;
+let tagChangesAskQueued = false;
+
+/**
+ * Brings this tab's tags up to the server's tag change log: asks what changed past this tab's cursor, page by page,
+ * and takes each changed tag's definition in or drops it. When the server can't say what changed (a background
+ * pass or a reorder rewrote many, or the cursor is of no use to it), re-reads the tags this tab holds instead. A
+ * failed request leaves the cursor where it was, so the next ask covers the same changes.
+ */
+async function takeInTagChanges() {
+    for (;;) {
+        const page = await postTagsRead('/api/tags/changes', { sinceSeq: tagChangesSeq });
+        if (!page || typeof page.seq !== 'number') return;
+        if (page.reset) {
+            if (await rereadTagDefinitions()) tagChangesSeq = page.seq;
+            return;
+        }
+
+        const { anyChanged, sortOrderChanged } = takeInServerTagDefinitions(Array.isArray(page.tags) ? page.tags : []);
+        const drops = (Array.isArray(page.removed) ? page.removed : [])
+            .filter(removed => typeof removed?.id === 'string' && tagsStore.has(removed.id))
+            .map(({ id, mergedInto }) => ({ id, replaceWithId: typeof mergedInto === 'string' ? mergedInto : undefined }));
+        await dropTagsLocally(drops);
+        if (sortOrderChanged) redrawAfterTagSortOrderChange();
+        if (anyChanged) await refreshTagsManifestCache();
+        if (anyChanged || drops.length) redrawViewTagListIfStale();
+        tagChangesSeq = page.seq;
+        if (!page.hasMore) return;
+    }
+}
+
+/**
+ * The server's tag definitions changed ('tags-changed' or 'tag-order-settled' on the changes stream), or the stream
+ * is back after a break that may have swallowed such a message. Any number of calls while one ask is waiting its
+ * turn make one ask.
+ */
+export function onTagsChanged() {
+    if (!tagsLoadedOnce || tagChangesAskQueued) return;
+    tagChangesAskQueued = true;
+    tagOrderChain = tagOrderChain.then(() => {
+        tagChangesAskQueued = false;
+        return takeInTagChanges();
+    }).catch(error => console.error('Error taking in tag changes:', error));
 }
 
 function makeTagListDraggable(tagContainer) {

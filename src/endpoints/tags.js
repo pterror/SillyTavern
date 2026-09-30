@@ -18,6 +18,8 @@ import {
     countUnusedTags,
     pruneUnusedTags,
     getTagsHash,
+    getTagChangesSince,
+    getTagChangesSeq,
     getTagsDigest,
     getTagsBucketMembers,
     getTagDefinitionsByIds,
@@ -399,13 +401,38 @@ router.post('/by-ids', async (request, response) => {
     }
 });
 
-/** Freshness check for the client's tags cache; only changes when definitions change, not assignments. */
+/**
+ * Freshness check for the client's tags cache; only changes when definitions change, not assignments. `changesSeq`
+ * is where the tag change log ends at the definitions `hash` covers: the cursor to give /changes next.
+ */
 router.post('/manifest', async (request, response) => {
     try {
         const hash = await getTagsHash(request.user.directories);
-        response.send({ hash });
+        const changesSeq = await getTagChangesSeq(request.user.directories);
+        response.send({ hash, changesSeq });
     } catch (err) {
         console.error('Could not get tags revision', err);
+        response.sendStatus(500);
+    }
+});
+
+const TAG_CHANGES_PAGE_SIZE = 500;
+
+/**
+ * `{ sinceSeq }` → one page of what changed in the tag definitions past that cursor:
+ * `{ seq, reset, tags, removed: [{ id, mergedInto }], hasMore }` (TagChangesPage). At most TAG_CHANGES_PAGE_SIZE log
+ * rows per answer. `reset` tells the client to re-read the tags it holds instead; a missing or unusable `sinceSeq`
+ * always answers that, with the cursor to go on from.
+ */
+router.post('/changes', async (request, response) => {
+    try {
+        const page = await getTagChangesSince(request.user.directories, request.body?.sinceSeq, { limit: TAG_CHANGES_PAGE_SIZE });
+        if (page === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        response.send(page);
+    } catch (err) {
+        console.error('Could not read tag changes', err);
         response.sendStatus(500);
     }
 });
