@@ -108,7 +108,7 @@ export async function switchToNode(targetNodeId) {
         const response = await fetch('/api/chats/ancestry', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ node_id: targetNodeId }),
+            body: JSON.stringify({ node_id: targetNodeId, chat_name: getCurrentChatId() }),
         });
         if (!response.ok) {
             return false;

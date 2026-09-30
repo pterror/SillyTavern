@@ -1929,9 +1929,10 @@ export async function getAlternatives(directories, nodeId, range = {}) {
  * Path from the owner's anchor down to `nodeId` by actual parentage (not default_child_id — a bookmark can sit off the default path). Returns messages root-to-node, oldest first; null if unknown.
  * @param {Directories} directories
  * @param {string} nodeId
+ * @param {string | null} [chatName] The chat this path is shown in, so its own label isn't shown as a bookmark; null hides no label.
  * @returns {Promise<TreeChatMessage[] | null>}
  */
-export async function getAncestorPath(directories, nodeId) {
+export async function getAncestorPath(directories, nodeId, chatName = null) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -1939,7 +1940,7 @@ export async function getAncestorPath(directories, nodeId) {
     if (!node) return null;
 
     const rows = getPathSync(entry.db, nodeId).filter(r => !isAnchorRow(r));
-    return buildPathMessages(entry.db, rows, null);
+    return buildPathMessages(entry.db, rows, chatName);
 }
 
 /**

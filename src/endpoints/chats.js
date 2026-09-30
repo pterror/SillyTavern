@@ -798,7 +798,8 @@ router.post('/ancestry', async function (request, response) {
         if (!nodeId) {
             return response.status(400).send({ error: 'node_id is required' });
         }
-        const result = await getAncestorPath(request.user.directories, nodeId);
+        const chatName = typeof request.body.chat_name === 'string' ? request.body.chat_name : null;
+        const result = await getAncestorPath(request.user.directories, nodeId, chatName);
         if (!result) {
             return response.status(404).send({ error: 'Node not found' });
         }
