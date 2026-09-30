@@ -38,7 +38,7 @@ import { parseQueryTotal } from './character-repository.js';
 export {
     TAG_FOLDER_TYPES,
     TAG_FOLDER_DEFAULT_TYPE,
-    tags,
+    exportedTags as tags,
     filterByTagState,
     isBogusFolder,
     isBogusFolderOpen,
@@ -342,10 +342,37 @@ const TAG_FOLDER_DEFAULT_TYPE = 'NONE';
  */
 
 /**
- * An list of all tags that are available
+ * The tag definitions this tab holds. Always the same array: a reload refills it in place.
  * @type {Tag[]}
  */
-let tags = [];
+const tags = [];
+
+/**
+ * Upstream's export of the same name. Here it is the tags this tab holds. A tag put in through it is created on
+ * the server once the writing code has finished its turn, and a changed field is stored with the next settings save
+ * (see storeTagChangesMadeThroughExport()). A tag taken out through it is not deleted: deleting a tag on the server
+ * also takes it off every character and group, which upstream's removal from this array doesn't, so a tag put back
+ * later would have lost them. It is put back here instead, with a warning. Code in this file uses `tags` itself,
+ * which sends nothing.
+ * @type {Tag[]}
+ */
+const exportedTags = new Proxy(tags, {
+    set(target, property, value) {
+        noteTagsExportWrite();
+        const done = Reflect.set(target, property, value);
+        // Until the turn ends, lookups by id already find a tag put in.
+        if (isTagObject(value)) tagsStore.byId.set(value.id, value);
+        return done;
+    },
+    defineProperty(target, property, descriptor) {
+        noteTagsExportWrite();
+        return Reflect.defineProperty(target, property, descriptor);
+    },
+    deleteProperty(target, property) {
+        noteTagsExportWrite();
+        return Reflect.deleteProperty(target, property);
+    },
+});
 
 /**
  * Per-tag assignment count across every character and group, maintained incrementally (never by scanning
@@ -564,6 +591,12 @@ function noteTagMapWrite(key, ids) {
  * the writing code has finished its turn, so a clear followed by a refill sends only the difference.
  */
 function sendTagMapWrites() {
+    // A tag pushed onto `tags` in the same turn has to exist on the server before it is assigned.
+    takeInTagsExportWrites();
+    if (tagCreatesInFlight.size) {
+        Promise.allSettled([...tagCreatesInFlight]).then(sendTagMapWrites);
+        return;
+    }
     const writes = [...unsentTagMapWrites];
     unsentTagMapWrites.clear();
     /** @type {(() => Promise<void>)[]} */
@@ -675,6 +708,304 @@ const tag_map = new Proxy({}, {
 });
 
 /**
+ * What this tab last knew the server to store for each tag it holds, by id. `filter_state` belongs to this browser
+ * and is left out. A tag's fields are compared against this to find what an extension changed on the object.
+ * @type {Map<string, Record<string, any>>}
+ */
+const storedTagFields = new Map();
+
+/** @param {any} tag @returns {tag is Tag} */
+function isTagObject(tag) {
+    return !!tag && typeof tag === 'object' && typeof tag.id === 'string' && tag.id !== '';
+}
+
+/** @param {any} value @returns {boolean} whether a settings save could carry it */
+function isStorableTagValue(value) {
+    return value !== undefined && typeof value !== 'function' && typeof value !== 'symbol';
+}
+
+/** @param {any} a @param {any} b */
+function sameTagValue(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** @param {Record<string, any>} fields @returns {Record<string, any>} */
+function copyTagFields(fields) {
+    /** @type {Record<string, any>} */
+    const copy = {};
+    for (const [key, value] of Object.entries(fields)) {
+        if (key === 'filter_state' || !isStorableTagValue(value)) continue;
+        copy[key] = value !== null && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+    }
+    return copy;
+}
+
+/** @param {Tag} tag - as the server stores it */
+function noteStoredTag(tag) {
+    if (isTagObject(tag)) storedTagFields.set(tag.id, copyTagFields(tag));
+}
+
+/** @param {string} id @param {Record<string, any>} fields - the fields the server now stores */
+function noteStoredTagFields(id, fields) {
+    const stored = storedTagFields.get(id);
+    if (stored) Object.assign(stored, copyTagFields(fields));
+}
+
+/**
+ * @param {Tag} tag
+ * @returns {{ patch: Record<string, any> | null, lacksStoredField: boolean }} patch: the fields of `tag` that differ
+ *   from what the server stores. A field `tag` doesn't have is never part of it: the server keeps its own.
+ */
+function tagFieldsChangedOnObject(tag) {
+    const stored = storedTagFields.get(tag.id);
+    /** @type {Record<string, any> | null} */
+    let patch = null;
+    for (const key of Object.keys(tag)) {
+        const value = tag[key];
+        if (key === 'id' || key === 'filter_state' || !isStorableTagValue(value)) continue;
+        if (sameTagValue(value, stored[key])) continue;
+        patch ??= {};
+        patch[key] = value;
+    }
+    const lacksStoredField = Object.keys(stored).some(key => !Object.hasOwn(tag, key));
+    return { patch, lacksStoredField };
+}
+
+/** @type {Tag[] | null} What `tags` held before the first write through the export in this turn. */
+let tagsBeforeExportWrites = null;
+
+/**
+ * Tags put into `tags` through the export whose create the server hasn't stored yet.
+ * @type {Map<string, Tag>}
+ */
+const tagsAddedThroughExport = new Map();
+
+/** @type {Set<Promise<void>>} */
+const tagCreatesInFlight = new Set();
+/** @type {Set<string>} */
+const tagIdsBeingCreated = new Set();
+
+function noteTagsExportWrite() {
+    if (tagsBeforeExportWrites) return;
+    tagsBeforeExportWrites = [...tags];
+    queueMicrotask(takeInTagsExportWrites);
+}
+
+/**
+ * Works out what the writes made through the export since the turn began added and took out. Sends a create for
+ * each tag added, and puts back each tag taken out. A clear followed by a refill in one turn takes out only the
+ * tags the refill left out.
+ */
+function takeInTagsExportWrites() {
+    const before = tagsBeforeExportWrites;
+    if (!before) return;
+    tagsBeforeExportWrites = null;
+
+    const beforeIds = new Set();
+    for (const tag of before) {
+        if (isTagObject(tag)) beforeIds.add(tag.id);
+    }
+    const afterIds = new Set();
+    for (const tag of tags) {
+        if (!isTagObject(tag)) continue;
+        afterIds.add(tag.id);
+        if (!beforeIds.has(tag.id) && !storedTagFields.has(tag.id)) tagsAddedThroughExport.set(tag.id, tag);
+    }
+    /** @type {Tag[]} */
+    const putBack = [];
+    for (const tag of before) {
+        if (!isTagObject(tag) || afterIds.has(tag.id)) continue;
+        tagsAddedThroughExport.delete(tag.id);
+        if (storedTagFields.has(tag.id) || tagIdsBeingCreated.has(tag.id)) putBack.push(tag);
+    }
+    for (const tag of putBack) tags.push(tag);
+    if (putBack.length) {
+        toastr.warning(
+            `${putBack.map(tag => `'${escapeHtml(String(tag.name ?? tag.id))}'`).join(', ')}<br />${t`Delete a tag in Manage Tags.`}`,
+            t`An extension removed these tags from the tag list. They were not deleted.`,
+            { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 },
+        );
+    }
+
+    tagsStore.reindex();
+    invalidateTagsFuseIndex();
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
+    sendTagsAddedThroughExport();
+}
+
+/**
+ * @param {string} path
+ * @param {object} body
+ * @returns {Promise<{ id: string, reason: string }[] | null>} what the server refused, or null if the request failed
+ */
+async function postTagWrite(path, body) {
+    try {
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+            cache: 'no-cache',
+        });
+        if (!response.ok) throw new Error(response.statusText);
+        const { refused } = await response.json();
+        return refused ?? [];
+    } catch (error) {
+        console.error(`${path} failed:`, error);
+        return null;
+    }
+}
+
+/**
+ * @param {string} title
+ * @param {{ name: string, reason: string }[]} refused
+ */
+function warnRefusedExportTagChanges(title, refused) {
+    if (!refused.length) return;
+    const lines = refused.map(r => `${escapeHtml(r.name)}: ${TAG_REFUSAL_REASONS[r.reason] ?? escapeHtml(r.reason)}`);
+    toastr.warning(lines.join('<br />'), title, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
+}
+
+/**
+ * Sends a create for every tag added through the export that isn't being created already. A failed create stays
+ * in tagsAddedThroughExport and is sent again with the next settings save.
+ */
+function sendTagsAddedThroughExport() {
+    /** @type {Tag[]} */
+    const toCreate = [];
+    for (const [id, tag] of tagsAddedThroughExport) {
+        if (tagsStore.get(id) !== tag) tagsAddedThroughExport.delete(id);
+        else if (!tagIdsBeingCreated.has(id)) toCreate.push(tag);
+    }
+    if (!toCreate.length) return;
+    for (const tag of toCreate) tagIdsBeingCreated.add(tag.id);
+
+    const run = (async () => {
+        /** @type {string[]} */
+        const storedIds = [];
+        /** @type {{ id: string, name: string, reason: string }[]} */
+        const refused = [];
+        await runWithConcurrency(toCreate, async (tag) => {
+            const answer = await postTagWrite('/api/tags/create', { tag });
+            tagIdsBeingCreated.delete(tag.id);
+            if (!answer) return;
+            if (tagsAddedThroughExport.get(tag.id) === tag) tagsAddedThroughExport.delete(tag.id);
+            if (answer.length) {
+                refused.push({ id: tag.id, name: String(tag.name ?? tag.id), reason: answer[0].reason });
+            } else {
+                noteStoredTag(tag);
+                storedIds.push(tag.id);
+            }
+        });
+
+        warnRefusedExportTagChanges(t`Tags an extension added were not saved`, refused);
+        for (const { id } of refused) await resyncRefusedTag(id);
+        if (!storedIds.length) return;
+        // The server gave each new tag its sort_order.
+        await takeStoredFieldsTagsLack(storedIds);
+        await refreshTagsManifestCache();
+        await eventSource.emit(event_types.SETTINGS_UPDATED);
+    })().catch(error => console.error('Error storing tags added through the tags export:', error));
+
+    tagCreatesInFlight.add(run);
+    run.finally(() => tagCreatesInFlight.delete(run));
+}
+
+/**
+ * Gives each of the tags `ids` the fields the server stores for it that its object here doesn't have. Fields the
+ * object does have are left as they are, so a change an extension has made since isn't undone.
+ * @param {string[]} ids
+ */
+async function takeStoredFieldsTagsLack(ids) {
+    for (let i = 0; i < ids.length; i += TAG_READ_MAX_IDS) {
+        const answer = await postTagsRead('/api/tags/by-ids', { ids: ids.slice(i, i + TAG_READ_MAX_IDS) });
+        if (!answer || !Array.isArray(answer.tags)) return;
+        for (const serverTag of answer.tags) {
+            const local = isTagObject(serverTag) ? tagsStore.get(serverTag.id) : undefined;
+            if (!local) continue;
+            for (const [key, value] of Object.entries(serverTag)) {
+                if (key !== 'filter_state' && !Object.hasOwn(local, key)) local[key] = value;
+            }
+            noteStoredTag(serverTag);
+        }
+    }
+}
+
+let storingTagExportChanges = false;
+let tagExportChangesArrivedWhileStoring = false;
+
+/**
+ * Stores the fields extensions changed on the objects in the exported `tags` since the last settings save, as edits
+ * of just those fields. Upstream stores `tags` with the settings, so this runs with every settings save.
+ */
+export async function storeTagChangesMadeThroughExport() {
+    if (storingTagExportChanges) {
+        tagExportChangesArrivedWhileStoring = true;
+        return;
+    }
+    storingTagExportChanges = true;
+    try {
+        do {
+            tagExportChangesArrivedWhileStoring = false;
+            await storeTagExportChangesOnce();
+        } while (tagExportChangesArrivedWhileStoring);
+    } catch (error) {
+        console.error('Error storing tag changes made through the tags export:', error);
+    } finally {
+        storingTagExportChanges = false;
+    }
+}
+
+async function storeTagExportChangesOnce() {
+    takeInTagsExportWrites();
+    sendTagsAddedThroughExport();
+    if (tagCreatesInFlight.size) await Promise.allSettled([...tagCreatesInFlight]);
+
+    /** @type {{ tag: Tag, patch: Record<string, any> }[]} */
+    const edits = [];
+    /** @type {string[]} */
+    const toReread = [];
+    for (const tag of tags) {
+        if (!isTagObject(tag) || !storedTagFields.has(tag.id)) continue;
+        const { patch, lacksStoredField } = tagFieldsChangedOnObject(tag);
+        if (patch) edits.push({ tag, patch });
+        if (lacksStoredField) toReread.push(tag.id);
+    }
+
+    let storedAny = false;
+    let failedAny = false;
+    /** @type {{ id: string, name: string, reason: string }[]} */
+    const refused = [];
+    await runWithConcurrency(edits, async ({ tag, patch }) => {
+        const answer = await postTagWrite('/api/tags/edit', { id: tag.id, patch });
+        if (!answer) {
+            failedAny = true;
+        } else if (answer.length) {
+            refused.push({ id: tag.id, name: String(tag.name ?? tag.id), reason: answer[0].reason });
+        } else {
+            noteStoredTagFields(tag.id, patch);
+            storedAny = true;
+        }
+    });
+    warnRefusedExportTagChanges(t`Tag changes an extension made were not saved`, refused);
+    for (const { id } of refused) await resyncRefusedTag(id);
+
+    if (failedAny) {
+        toastr.error(t`They are sent again with the next settings save.`, t`Some tag changes an extension made could not be saved`);
+    }
+
+    // A tag object an extension put in place of another may lack fields the server stores.
+    await takeStoredFieldsTagsLack(toReread);
+
+    if (storedAny) {
+        await refreshTagsManifestCache();
+        await eventSource.emit(event_types.SETTINGS_UPDATED);
+    }
+}
+
+/**
  * Removes `tagId` from every resident key, putting `replaceWithId` in its place when given. Sends nothing to the
  * server.
  * @param {string} tagId @param {{replaceWithId?: string}} [options]
@@ -738,6 +1069,14 @@ function rebuildTagStores() {
     });
 
     tagsStore.onChange(persistTagChange);
+
+    storedTagFields.clear();
+    for (const tag of tags) noteStoredTag(tag);
+    tagsStore.onChange(change => {
+        if (change.op === 'created') noteStoredTag(change.entity);
+        if (change.op === 'updated') noteStoredTagFields(change.id, change.patch);
+        if (change.op === 'removed') storedTagFields.delete(change.id);
+    });
 }
 
 /** Refreshes the client-side tags cache so the next boot's freshness check can hit it. */
@@ -934,6 +1273,7 @@ function takeServerTagFields(local, serverTag) {
     }
     Object.assign(local, serverTag);
     if (hadFilterState) local.filter_state = filterState; else delete local.filter_state;
+    noteStoredTag(local);
 }
 
 /**
@@ -951,7 +1291,12 @@ async function readTagDefinitionsFromServer(ids) {
             for (const serverTag of answer.tags) {
                 if (!serverTag || typeof serverTag.id !== 'string') continue;
                 const local = tagsStore.get(serverTag.id);
-                if (local) takeServerTagFields(local, serverTag); else tags.push(serverTag);
+                if (local) {
+                    takeServerTagFields(local, serverTag);
+                } else {
+                    tags.push(serverTag);
+                    noteStoredTag(serverTag);
+                }
                 changed = true;
             }
             // Per chunk: the next chunk's tagsStore.get() must see the tags this one added.
@@ -1049,6 +1394,8 @@ async function dropTagLocally(id, { replaceWithId } = {}) {
     // Cards this tab doesn't hold carried it too, and now carry the merge target.
     if (replaceWithId && hadUse && !(tagUsageCounts.get(replaceWithId) > 0)) tagUsageCounts.set(replaceWithId, 1);
     const filters = moveTagFilters(id, replaceWithId);
+    storedTagFields.delete(id);
+    tagsAddedThroughExport.delete(id);
 
     if (tagsStore.has(id)) {
         let write = 0;
@@ -1625,6 +1972,13 @@ async function syncTagDefinitionsFromDigest(cachedTags) {
     return [...byId.values()];
 }
 
+/** @param {Tag[]} list */
+function setTagList(list) {
+    tags.length = 0;
+    if (!Array.isArray(list)) return;
+    for (const tag of list) tags.push(tag);
+}
+
 async function loadTagsSettings() {
     let tagsFile = null;
     let fetchFailed = false;
@@ -1648,7 +2002,7 @@ async function loadTagsSettings() {
             if (hash !== null && hash !== undefined) {
                 const cached = await getCachedTags();
                 if (cached && cached.hash === hash) {
-                    tags = cached.tags;
+                    setTagList(cached.tags);
                     rebuildTagStores();
                     invalidateCharactersFuseIndex();
                     invalidateGroupsFuseIndex();
@@ -1670,7 +2024,7 @@ async function loadTagsSettings() {
             if (cached && Array.isArray(cached.tags) && cached.tags.length) {
                 const repaired = await syncTagDefinitionsFromDigest(cached.tags);
                 if (repaired) {
-                    tags = repaired;
+                    setTagList(repaired);
                     rebuildTagStores();
                     await setCachedTags(manifestHash, tags);
                     invalidateCharactersFuseIndex();
@@ -1706,12 +2060,12 @@ async function loadTagsSettings() {
     }
 
     if (tagsFile) {
-        tags = tagsFile.tags;
+        setTagList(tagsFile.tags);
     } else if (fetchFailed) {
         // Don't know the server's actual state - reuse the cache rather than guessing.
         const cached = await getCachedTags();
         if (cached) {
-            tags = cached.tags;
+            setTagList(cached.tags);
         } else {
             console.warn('Could not load tag definitions and no cached copy exists - showing no tags.');
         }
@@ -2229,6 +2583,7 @@ function mergeServerTagDefinitions(tagDefinitions) {
     for (const tag of tagDefinitions) {
         if (!tag || typeof tag.id !== 'string' || tagsStore.has(tag.id)) continue;
         tags.push(tag);
+        noteStoredTag(tag);
         addedAny = true;
     }
     if (addedAny) {
@@ -3239,6 +3594,7 @@ async function moveTagOnServer(id, placement, mode) {
         const tag = tagsStore.get(writtenId);
         if (!tag || tag.sort_order === sort_order) continue;
         tag.sort_order = sort_order;
+        noteStoredTagFields(writtenId, { sort_order });
         changed = true;
     }
     if (changed) {
@@ -3273,6 +3629,7 @@ async function rereadTagDefinitions() {
         if (local === serverTag) continue;
         if (!local) {
             tags.push(serverTag);
+            noteStoredTag(serverTag);
             anyChanged = true;
             continue;
         }
@@ -3572,6 +3929,7 @@ async function onTagsPruneClick() {
             if (!prunedIds.has(tag.id)) tags[write++] = tag;
         }
         tags.length = write;
+        for (const id of prunedIds) storedTagFields.delete(id);
         tagsStore.reindex();
         invalidateTagsFuseIndex();
         invalidateCharactersFuseIndex();
@@ -3700,6 +4058,7 @@ async function onTagHideToggleClick(id) {
             const current = tagsStore.get(id);
             if (!current) return;
             current.is_hidden_on_character_card = hidden;
+            noteStoredTagFields(id, { is_hidden_on_character_card: hidden });
             TAG_FIELD_REDRAWS.is_hidden_on_character_card(current);
         });
     } finally {
