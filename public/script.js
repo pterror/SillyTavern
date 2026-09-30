@@ -168,7 +168,6 @@ import {
     saveBase64AsFile,
     equalsIgnoreCaseAndAccents,
     importFromExternalUrl,
-    canUseNegativeLookbehind,
     trimSpaces,
     clamp,
     shakeElement,
@@ -182,7 +181,7 @@ import { getAtPath, seedKeyHashes, characterDigestFieldsHash, characterDigestCar
 import { debounce_timeout, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, UNSET_VALUE } from './scripts/extensions.js';
-import { COMMENT_NAME_DEFAULT, CONNECT_API_MAP, executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution, UNIQUE_APIS } from './scripts/slash-commands.js';
+import { CONNECT_API_MAP, executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution, UNIQUE_APIS } from './scripts/slash-commands.js';
 import { initMacroAutoComplete } from './scripts/autocomplete/MacroAutoComplete.js';
 import {
     chooseBogusFolder,
@@ -236,7 +235,7 @@ import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_set
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
-import { hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
+import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, handleFieldEditKey, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
 import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
 import { initPresetManager } from './scripts/preset-manager.js';
@@ -281,7 +280,6 @@ import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
-import { MessageFormatter } from './scripts/message-formatter.js';
 // Lives in message-formatting.js, isolated from this module's chat-store write access; re-exported for existing importers.
 import { messageFormatting } from './scripts/message-formatting.js';
 import { reportStoredHeader } from './scripts/stored-report.js';
