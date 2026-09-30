@@ -29,5 +29,6 @@ export function onLightboxImageClick(event) {
  * @param {HTMLElement|JQuery<HTMLElement>} element Element holding user-written HTML
  */
 export function addImageLightbox(element) {
-    $(element).on('click', 'img', onLightboxImageClick);
+    // The class gives those images the pointer cursor (style.css).
+    $(element).addClass('image_lightbox').on('click', 'img', onLightboxImageClick);
 }

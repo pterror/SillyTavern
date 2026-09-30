@@ -5425,6 +5425,13 @@ a:hover {
     cursor: pointer;
 }
 
+/* Every image a click shows in the lightbox. A default only: :where() keeps the specificity at a bare
+   `img`, so any other rule still wins. .image_lightbox is set by addImageLightbox() (image-lightbox.js).
+   An image that is a popup result control ([data-result]) shows no lightbox, so it is left out. */
+:where(#chat .mes_text, #chat .mes_reasoning, #chat .mes_bias, .field_preview, .image_lightbox, .zoomed_avatar) img:where(:not([data-result], [data-result] *)) {
+    cursor: pointer;
+}
+
 .mes_img.error {
     visibility: hidden;
     min-height: 100px;
