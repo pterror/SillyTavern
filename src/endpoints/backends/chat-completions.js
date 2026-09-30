@@ -3945,10 +3945,9 @@ router.post('/generate', async function (request, response) {
     //   `/chat/completions` unless its model is in TEXT_COMPLETION_MODELS (`isTextCompletion`), which
     //   sends it to `/completions` with a string prompt. Non-streaming, the reply is read the way the
     //   page reads it (`replyTextAsPageShows()`), which covers both answer shapes. Streaming,
-    //   `forwardAndPersistCompactStream()` accumulates `choices[0].delta.content` per chunk and persists
-    //   the full text via the shared `persistAssistantReply()` (../../assistant-reply-persist.js) once
-    //   the stream ends; a `/completions` stream carries `choices[0].text` instead, so for those models
-    //   neither the page nor the store gets the streamed text.
+    //   `forwardAndPersistCompactStream()` accumulates `choices[0].delta.content` per chunk (`choices[0].text`
+    //   for a `/completions` stream) and persists the full text via the shared `persistAssistantReply()`
+    //   (../../assistant-reply-persist.js) once the stream ends.
     // - ALL 12 provider-`switch` functions dispatched below (sendClaudeRequest/sendMakerSuiteRequest
     //   (also used for VERTEXAI)/sendAI21Request/sendMistralAIRequest/sendCohereRequest/
     //   sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest/sendChutesRequest/sendMinimaxRequest/
@@ -4657,7 +4656,8 @@ router.post('/generate', async function (request, response) {
         }
 
         const textPrompt = isTextCompletion ? convertTextCompletionPrompt(request.body.messages) : '';
-        const endpointUrl = isTextCompletion && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.OPENROUTER ?
+        const usesCompletionsEndpoint = isTextCompletion && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.OPENROUTER;
+        const endpointUrl = usesCompletionsEndpoint ?
             `${apiUrl}/completions` :
             `${apiUrl}/chat/completions`;
 
@@ -4749,12 +4749,15 @@ router.post('/generate', async function (request, response) {
             }
 
             // Pipe remote SSE stream to Express response, tapping the same bytes (unaltered) to
-            // accumulate the OpenAI Chat-Completions-shaped `choices[0].delta.content` field for
-            // persistence - see `forwardAndPersistCompactStream()`'s own doc comment above for
-            // the full teeing mechanism and the `choices[0].delta.content` shape verification. The
-            // compact re-encoding itself always happens; `pendingAssistantPersist` being `null`
+            // accumulate the reply text for persistence - see `forwardAndPersistCompactStream()`'s own
+            // doc comment above for the full teeing mechanism. A `/chat/completions` stream carries it at
+            // `choices[0].delta.content`, a `/completions` stream at `choices[0].text`. The compact
+            // re-encoding itself always happens; `pendingAssistantPersist` being `null`
             // (connection_profile_id and legacy/default calls) only skips persistence.
-            return await forwardAndPersistCompactStream(fetchResponse, response, pendingAssistantPersist, json => json?.choices?.[0]?.delta?.content, extractGenericReasoning, warnings);
+            const streamedText = usesCompletionsEndpoint
+                ? json => json?.choices?.[0]?.text
+                : json => json?.choices?.[0]?.delta?.content;
+            return await forwardAndPersistCompactStream(fetchResponse, response, pendingAssistantPersist, streamedText, extractGenericReasoning, warnings);
         }
 
         if (fetchResponse.ok) {
