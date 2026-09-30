@@ -365,3 +365,21 @@
     outline-offset: 1px;
     font-style: italic;
 }
+
+.tag_view_list_edge {
+    height: 1px;
+}
+
+.tag_view_list_status {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+    min-height: 1px;
+    opacity: 0.8;
+}
+
+.tag_view_item.tag_view_item_kept {
+    border-left: 3px solid var(--SmartThemeQuoteColor);
+    padding-left: 5px;
+}

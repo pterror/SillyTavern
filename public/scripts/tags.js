@@ -15,7 +15,7 @@ import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, Filte
 
 import { groupCandidatesFilter, groupMembersFilter, selected_group } from './group-chats.js';
 import { groups, groupsStore } from './group-store.js';
-import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, getFreeName, debounce, findChar, escapeHtml } from './utils.js';
+import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, debounce, findChar, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
 import { EntityStore, onAnyEntityStoreChange } from './entity-store.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -1464,26 +1464,34 @@ function warnRefusedTags(refused, tag, title) {
  * Asks the server to create `tag`, which this tab doesn't have yet, and puts it into `tags` once the server has
  * stored it.
  * @param {Tag} tag
+ * @param {object} [options]
+ * @param {boolean} [options.freeName] `tag.name` is only a base: the server picks a name no other tag has, and
+ *   `tag` takes that name and the rest of what the server stored.
  * @returns {Promise<'stored' | 'refused' | 'failed'>} 'refused': the user has been told why. If the server already
  *   has a tag with that id, this tab now has the server's copy of it.
  */
-async function createTagOnServer(tag) {
+async function createTagOnServer(tag, { freeName = false } = {}) {
     // Until this answers, the tag changes feed leaves the id alone: the tag is put into `tags` here.
     tagIdsBeingCreated.add(tag.id);
     try {
         const response = await fetch('/api/tags/create', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ tag: tagDefinitionToStore(tag) }),
+            body: JSON.stringify(freeName ? { tag: tagDefinitionToStore(tag), freeName } : { tag: tagDefinitionToStore(tag) }),
             cache: 'no-cache',
         });
 
+        if (response.status === 503 && (await response.clone().json().catch(() => null))?.reason === 'tag-names-not-indexed') {
+            toastr.warning(t`Tag names are still being indexed after an update. No tag was created. Try again in a moment.`, t`Creating Tag`);
+            return 'refused';
+        }
         if (!response.ok) {
             throw new Error(`Failed to create tag: ${response.statusText}`);
         }
 
-        const { refused } = await response.json();
+        const { refused, tag: stored } = await response.json();
         const reason = refused?.[0]?.reason;
+        if (!reason && isTagObject(stored)) Object.assign(tag, stored);
         if (!reason || reason === 'exists') {
             addStoredTag(tag);
             invalidateTagsFuseIndex();
@@ -2013,12 +2021,15 @@ async function takeInEntityTagChanges() {
             if (await rereadResidentEntityTagIds()) {
                 entityTagChangesCursor = { sinceSeq: page.endSeq, sinceGroupsVersion: page.endGroupsVersion };
             }
+            refreshViewTagList();
             return;
         }
 
         const held = (Array.isArray(page.ids) ? page.ids : []).filter(key => typeof key === 'string' && resolveTagIdsArray(key));
         if (held.length && !await rereadResidentEntityTagIds(held)) return;
         entityTagChangesCursor = { sinceSeq: page.seq, sinceGroupsVersion: page.groupsVersion };
+        // Manage Tags shows counts, which cover the characters and groups this tab doesn't hold too.
+        if (Array.isArray(page.ids) && page.ids.length) refreshViewTagList();
         if (!page.hasMore) return;
     }
 }
@@ -3424,12 +3435,20 @@ async function createNewTag(tagName) {
  * @return {Tag} The newly created tag object
  */
 function newTag(tagName) {
+    return { ...newTagWithoutOrder(tagName), sort_order: Math.max(0, ...tags.map(t => t.sort_order)) + 1 };
+}
+
+/**
+ * newTag() without a place in the manual order: the server gives it one when it creates the tag.
+ * @param {string} tagName
+ * @returns {Tag}
+ */
+function newTagWithoutOrder(tagName) {
     return {
         id: uuidv4(),
         name: tagName,
         folder_type: TAG_FOLDER_DEFAULT_TYPE,
         filter_state: DEFAULT_FILTER_STATE,
-        sort_order: Math.max(0, ...tags.map(t => t.sort_order)) + 1,
         is_hidden_on_character_card: false,
         color: '',
         color2: '',
@@ -4099,8 +4118,31 @@ async function onViewTagsListClick() {
     html.attr('id', 'tag_view_list');
     html.append(await renderTemplateAsync('tagManagement', { bogus_folders: power_user.bogus_folders }));
 
+    const topEdge = $('<div class="tag_view_list_edge"></div>');
     const tagContainer = $('<div class="tag_view_list_tags ui-sortable"></div>');
-    html.append(tagContainer);
+    const status = $('<div class="tag_view_list_status"></div>');
+    html.append(topEdge, tagContainer, status);
+
+    /** @type {ViewTagList} */
+    const state = {
+        container: tagContainer,
+        topEdge,
+        status,
+        sort: power_user.tag_sort_mode,
+        contains: '',
+        beforeFirstId: null,
+        trail: [],
+        trailCut: false,
+        endCursor: undefined,
+        emptyReads: 0,
+        ownIds: new Set(),
+        dragging: false,
+        stale: false,
+        queued: new Set(),
+        chain: Promise.resolve(),
+        observer: null,
+    };
+    viewTagList = state;
 
     const $sortModeSelect = html.find('#tag_sort_mode_select');
     $sortModeSelect.val(power_user.tag_sort_mode);
@@ -4108,16 +4150,30 @@ async function onViewTagsListClick() {
         const newMode = $(this).val().toString();
         power_user.tag_sort_mode = newMode;
         saveSettingsDebounced('power_user.tag_sort_mode');
-        printViewTagList(tagContainer);
+        reloadViewTagList();
     });
 
     const $search = html.find('#tag_view_search');
-    $search.on('input', debounce(() => printViewTagList(tagContainer), debounce_timeout.standard));
+    $search.on('input', debounce(() => reloadViewTagList(), debounce_timeout.standard));
 
-    printViewTagList(tagContainer);
+    // A re-read that waited for the user to finish typing into a row runs once the focus has left the rows.
+    tagContainer.on('focusout', (evt) => {
+        if (state.stale && !(evt.relatedTarget instanceof Node && tagContainer[0].contains(evt.relatedTarget))) {
+            setTimeout(refreshViewTagList, 0);
+        }
+    });
+
+    reloadViewTagList();
     makeTagListDraggable(tagContainer);
 
-    await callGenericPopup(html, POPUP_TYPE.TEXT, null, { allowVerticalScrolling: true, wide: true, large: true });
+    await callGenericPopup(html, POPUP_TYPE.TEXT, null, {
+        allowVerticalScrolling: true,
+        wide: true,
+        large: true,
+        onOpen: () => watchViewTagEdges(state),
+    });
+    state.observer?.disconnect();
+    if (viewTagList === state) viewTagList = null;
 }
 
 function redrawAfterTagSortOrderChange() {
@@ -4160,16 +4216,6 @@ function tagMoveRefusedText(id, anchorId, refusal) {
 // before it left. A re-read of the tags joins the same chain, so it never lands in the middle of a move.
 let tagOrderChain = Promise.resolve();
 
-/** Redraws Manage Tags' list, if it is open, unless it already shows the tags in the order a redraw would. */
-function redrawViewTagListIfStale() {
-    const tagContainer = $('#tag_view_list .tag_view_list_tags');
-    if (!tagContainer.length) return;
-    const shown = tagContainer.find('.tag_view_item').map((_, el) => el.id).get();
-    const wanted = getViewTagListTags().sortedTags.map(tag => tag.id);
-    if (shown.length === wanted.length && shown.every((id, i) => id === wanted[i])) return;
-    printViewTagList(tagContainer);
-}
-
 /**
  * Sends one reorder as an action and shows the server's answer. In Manual the tag is moved; in another sort mode the
  * server first makes that mode's order the manual one, then moves it.
@@ -4195,13 +4241,13 @@ async function moveTagOnServer(id, placement, mode) {
     } catch (error) {
         console.error(`Error moving tag ${id}:`, error);
         toastr.error(`Couldn't move tag "${tagNameForWarning(id)}": the request failed. The order is unchanged.`, 'Moving Tag');
-        redrawViewTagListIfStale();
+        refreshViewTagList();
         return;
     }
 
     if (answer.refused?.length) {
         toastr.warning(answer.refused.map(r => escapeHtml(tagMoveRefusedText(id, anchorId, r))).join('<br />'), 'Moving Tag', { escapeHtml: false });
-        redrawViewTagListIfStale();
+        refreshViewTagList();
         for (const refusal of answer.refused) {
             if (refusal.reason === 'deleted' || refusal.reason === 'missing') await resyncRefusedTag(refusal.id);
         }
@@ -4213,6 +4259,13 @@ async function moveTagOnServer(id, placement, mode) {
         $('#tag_sort_mode_select').val(tag_sort_mode.MANUAL);
         toastr.info('Switched to Manual sorting mode.');
         saveSettingsDebounced('power_user.tag_sort_mode');
+    }
+
+    // The rows are where the user put them. Manage Tags reads on in the manual order, from its last row: the move
+    // may have renumbered the tags around it.
+    if (viewTagList) {
+        viewTagList.sort = tag_sort_mode.MANUAL;
+        viewTagList.endCursor = undefined;
     }
 
     // A queued move has written no sort_order yet; the tag changes feed brings the order once it is applied.
@@ -4230,7 +4283,6 @@ async function moveTagOnServer(id, placement, mode) {
         redrawAfterTagSortOrderChange();
         await refreshTagsManifestCache();
     }
-    redrawViewTagListIfStale();
 }
 
 /**
@@ -4295,7 +4347,7 @@ async function rereadTagDefinitions() {
     await dropTagsLocally(tags.filter(tag => !serverIds.has(tag.id) && storedTagFields.has(tag.id)).map(tag => ({ id: tag.id })));
     if (sortOrderChanged) redrawAfterTagSortOrderChange();
     await refreshTagsManifestCache();
-    redrawViewTagListIfStale();
+    refreshViewTagList();
     return true;
 }
 
@@ -4331,7 +4383,7 @@ async function takeInTagChanges() {
         await dropTagsLocally(drops);
         if (sortOrderChanged) redrawAfterTagSortOrderChange();
         if (anyChanged) await refreshTagsManifestCache();
-        if (anyChanged || drops.length) redrawViewTagListIfStale();
+        if (anyChanged || drops.length) refreshViewTagList();
         tagChangesSeq = page.seq;
         if (!page.hasMore) return;
     }
@@ -4367,6 +4419,18 @@ function makeTagListDraggable(tagContainer) {
                 .catch(error => console.error(`Error moving tag ${id}:`, error));
         },
         handle: '.drag-handle',
+        items: '> .tag_view_item',
+        start: () => {
+            if (viewTagList) viewTagList.dragging = true;
+        },
+        // Reads that waited for the drag to end run now.
+        stop: () => {
+            const state = viewTagList;
+            if (!state) return;
+            state.dragging = false;
+            if (state.stale) refreshViewTagList();
+            recheckViewTagEdges(state);
+        },
     });
 }
 
@@ -4526,8 +4590,7 @@ async function onTagRestoreFileSelect(e) {
     // A restore can touch an arbitrary number of tags across an arbitrary number of characters/groups - not a
     // known small set, so there's no smaller-than-full update to target here.
     printCharactersDebounced();
-    const tagContainer = $('#tag_view_list .tag_view_list_tags');
-    printViewTagList(tagContainer);
+    refreshViewTagList();
 }
 
 function onBackupRestoreClick() {
@@ -4625,8 +4688,7 @@ async function onTagsPruneClick() {
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
-    const tagContainer = $('#tag_view_list .tag_view_list_tags');
-    printViewTagList(tagContainer);
+    refreshViewTagList();
 
     if (!failed) {
         toastr.success(t`Unused tags pruned successfully.`);
@@ -4634,14 +4696,16 @@ async function onTagsPruneClick() {
 }
 
 async function onTagCreateClick() {
-    const tagName = getFreeName('New Tag', tags.map(x => x.name));
-    const tag = await createNewTag(tagName);
-    if (!tag) return;
-    printViewTagList($('#tag_view_list .tag_view_list_tags'));
-
-    const tagElement = ($('#tag_view_list .tag_view_list_tags')).find(`.tag_view_item[id="${tag.id}"]`);
-    tagElement[0]?.scrollIntoView();
-    flashHighlight(tagElement);
+    // The server names it: only it knows which names are taken, and it gives the tag its place in the manual order.
+    const tag = newTagWithoutOrder('New Tag');
+    const outcome = await createTagOnServer(tag, { freeName: true });
+    if (outcome === 'failed') {
+        toastr.error(t`Check the server connection and try again.`, t`Tags could not be created`);
+    }
+    if (outcome !== 'stored') return;
+    // Upstream's create saves the settings, which is how extensions hear of the new tag.
+    await eventSource.emit(event_types.SETTINGS_UPDATED);
+    await showOwnTagInViewList(tag.id, { scrollTo: true });
 
     // A brand new tag isn't assigned to any character/group yet - nothing in the character list can show it.
     printTagFilters(tag_filter_type.character);
@@ -4655,7 +4719,7 @@ async function onTagCreateClick() {
  * Appends a tag to the view tag list.
  * @param {JQuery<HTMLElement>} list List element
  * @param {Tag} tag Tag object
- * @param {number} count Count of characters/groups using this tag
+ * @param {string} count How many characters and groups carry the tag, as shown (viewTagCountText())
  */
 function appendViewTagToList(list, tag, count) {
     const template = VIEW_TAG_TEMPLATE.clone();
@@ -4831,6 +4895,8 @@ async function onTagDeleteClick() {
     if (target) mergeServerTagDefinitions([target]);
     const filters = await dropTagLocally(id, { replaceWithId: mergedInto ?? undefined });
     await eventSource.emit(event_types.SETTINGS_UPDATED);
+    // The merge target now counts what carried the deleted tag.
+    refreshViewTagList();
 
     const lines = [mergedInto ? t`'${tag.name}' deleted and merged into '${target.name}'.` : t`'${tag.name}' deleted.`];
     if (mergedInto && mergedInto !== mergeTagId) {
@@ -4913,9 +4979,8 @@ function onTagRenameKeydown(evt) {
  * Sends the name typed into a tag's row in Manage Tags. If it isn't stored, the field keeps what was typed, marked
  * as unsaved, and leaving the field or pressing Enter in it sends it again.
  * @param {HTMLElement} nameElement
- * @param {HTMLElement} [focusMovedTo] - where the focus went when the field was left
  */
-async function commitTagRename(nameElement, focusMovedTo) {
+async function commitTagRename(nameElement) {
     const id = $(nameElement).closest('.tag_view_item').attr('id');
     const tag = tagsStore.get(id);
     if (!tag) return;
@@ -4933,23 +4998,7 @@ async function commitTagRename(nameElement, focusMovedTo) {
     if (outcome !== 'stored') return;
 
     applyCharacterTagsToMessageDivs();
-
-    // Reprint in the new order, unless a name is being typed: a reprint would take the cursor out of it.
-    const list = $('#tag_view_list .tag_view_list_tags');
-    if (!list.length || $(document.activeElement).is('.tag_view_name')) return;
-    const focusWasInList = !!focusMovedTo && list[0].contains(focusMovedTo) && list[0].contains(document.activeElement);
-    const oldOrder = $('#tag_view_list .tag_view_item').map((_, el) => el.id).get();
-
-    printViewTagList(list);
-
-    // The reprint removed the element that had the focus; tab navigation goes on from the renamed tag.
-    if (focusWasInList) $(`#tag_view_list .tag_view_item[id="${id}"] .tag_view_name`)[0]?.focus();
-
-    const newOrder = $('#tag_view_list .tag_view_item').map((_, el) => el.id).get();
-    const orderChanged = !oldOrder.every((id, index) => id === newOrder[index]);
-    if (orderChanged) {
-        flashHighlight($(`#tag_view_list .tag_view_item[id="${id}"]`));
-    }
+    await showOwnTagInViewList(id);
 }
 
 /**
@@ -5172,34 +5221,500 @@ export function removeEntityTags(key) {
     removeKeyTagIds(key);
 }
 
+/** How many tags Manage Tags asks the server for at a time. */
+const VIEW_TAG_PAGE_SIZE = 100;
+/** The most list rows Manage Tags keeps drawn: scrolling on removes the rows furthest behind. */
+const VIEW_TAG_MAX_ROWS = 300;
+/** The most one /api/tags/query request may ask for. */
+const VIEW_TAG_MAX_PAGE_SIZE = 500;
+/** How many removed stretches of rows Manage Tags can scroll back through one by one; further back starts at the top. */
+const VIEW_TAG_TRAIL_MAX = 100;
+/** How many reads in a row may come back cut short by the server's work cap with no tag found before the user is asked whether to go on. */
+const VIEW_TAG_EMPTY_READS = 5;
+/** The most tags created or renamed in Manage Tags that are kept in view at the top when their place is elsewhere. */
+const VIEW_TAG_KEPT_MAX = 50;
+
 /**
- * The tags Manage Tags lists under its search box's term, in the current sort mode's order, with each tag's count.
- * @returns {{ sortedTags: Tag[], counts: Map<string, number> }}
+ * The open Manage Tags popup's list. Its list rows are a run of the server's tag list (/api/tags/query) in the sort
+ * mode and under the search text, at most VIEW_TAG_MAX_ROWS of them. Above them sit the kept rows: tags created or
+ * renamed here whose place is outside the run.
+ * @typedef {object} ViewTagList
+ * @property {JQuery<HTMLElement>} container Holds the rows.
+ * @property {JQuery<HTMLElement>} topEdge Right above the container; coming into view asks for the rows before.
+ * @property {JQuery<HTMLElement>} status Right below the container; coming into view asks for the rows after. Says
+ *   what the list is waiting for.
+ * @property {string} sort The tag_sort_mode the rows are in.
+ * @property {string} contains The search text the rows match.
+ * @property {string | null} beforeFirstId The tag right before the first list row in the server's list; null when
+ *   the first list row is the list's first.
+ * @property {(string | null)[]} trail For each stretch of rows removed from the top, oldest first, what
+ *   `beforeFirstId` was while that stretch was the first drawn.
+ * @property {boolean} trailCut The trail's oldest entries were dropped.
+ * @property {string | null | undefined} endCursor The cursor after the last list row. null: the list ends there.
+ *   undefined: not known, and read by that row's id when needed.
+ * @property {number} emptyReads Reads in a row that the server's work cap cut short with nothing found.
+ * @property {Set<string>} ownIds Tags created or renamed here since the list was last loaded from its start.
+ * @property {boolean} dragging A row is being dragged.
+ * @property {boolean} stale The rows need re-reading, which waits until the user is done typing or dragging.
+ * @property {Set<string>} queued The kinds of read waiting their turn; a kind waits at most once.
+ * @property {Promise<void>} chain Reads run one at a time, in the order asked.
+ * @property {IntersectionObserver | null} observer
  */
-function getViewTagListTags() {
-    const counts = new Map(tags.map(tag => [tag.id, 0]));
-    for (const [, tagIds] of allTagIdsEntries()) {
-        for (const tagId of tagIds) {
-            if (counts.has(tagId)) counts.set(tagId, counts.get(tagId) + 1);
-        }
+
+/** @type {ViewTagList | null} null while Manage Tags is closed. */
+let viewTagList = null;
+
+/** @param {ViewTagList} state @returns {JQuery<HTMLElement>} the list rows, without the kept rows */
+function viewTagListRows(state) {
+    return state.container.children('.tag_view_item:not(.tag_view_item_kept)');
+}
+
+/** @param {ViewTagList} state @returns {HTMLElement | null} the element Manage Tags scrolls in */
+function viewTagScroller(state) {
+    for (let element = state.container[0]?.parentElement; element; element = element.parentElement) {
+        const overflowY = getComputedStyle(element).overflowY;
+        if (overflowY === 'auto' || overflowY === 'scroll') return element;
     }
-    const searchTerm = $('#tag_view_search').val()?.toString().trim() ?? '';
-    const matchingTags = searchTerm ? tags.filter(tag => includesIgnoreCaseAndAccents(tag.name, searchTerm)) : tags;
-    return { sortedTags: sortTags(matchingTags, counts).slice(0, FIND_TAG_RESULT_LIMIT), counts };
+    return null;
 }
 
 /**
- * Prints the tag list in the view tags popup.
- * @param {JQuery<HTMLElement>} tagContainer Container element
- * @param {boolean} empty Whether to empty the container before printing
+ * Changes the rows while `anchorRow` stays where it is on screen.
+ * @param {ViewTagList} state
+ * @param {HTMLElement | undefined} anchorRow A row the change leaves in the list.
+ * @param {() => void} change
  */
-function printViewTagList(tagContainer, empty = true) {
-    if (empty) tagContainer.empty();
-    const { sortedTags, counts } = getViewTagListTags();
-    for (const tag of sortedTags) {
-        const count = counts.get(tag.id) || 0;
-        appendViewTagToList(tagContainer, tag, count);
+function changeViewTagRowsInPlace(state, anchorRow, change) {
+    const topBefore = anchorRow?.isConnected ? anchorRow.getBoundingClientRect().top : null;
+    change();
+    const scroller = viewTagScroller(state);
+    if (topBefore === null || !scroller || !anchorRow.isConnected) return;
+    const moved = anchorRow.getBoundingClientRect().top - topBefore;
+    if (moved) scroller.scrollTop += moved;
+}
+
+/**
+ * @param {ViewTagList} state
+ * @param {'' | 'loading' | 'failed' | 'paused' | 'end'} kind
+ */
+function setViewTagStatus(state, kind) {
+    const status = state.status.empty().attr('data-status', kind);
+    /** @param {string} label @param {string} read */
+    const button = (label, read) => $('<div class="menu_button menu_button_icon"></div>').text(label).on('click', () => askForViewTags(read));
+    switch (kind) {
+        case 'loading':
+            status.text(t`Loading tags...`);
+            break;
+        case 'failed':
+            status.append($('<span></span>').text(t`The tags could not be loaded.`), button(t`Try again`, viewTagListRows(state).length ? 'after' : 'reload'));
+            break;
+        case 'paused':
+            status.append($('<span></span>').text(t`No tag found yet among the ones looked at so far.`), button(t`Keep looking`, 'after'));
+            break;
+        case 'end':
+            if (!state.container.children('.tag_view_item').length) status.text(state.contains ? t`No tags match the search.` : t`There are no tags yet.`);
+            break;
     }
+}
+
+/**
+ * One read of /api/tags/query in the list's sort mode.
+ * @param {ViewTagList} state
+ * @param {object} read
+ * @param {string | null} [read.cursor]
+ * @param {number} read.pageSize
+ * @param {string[]} [read.ids] Only these tags, whatever the search text; else the tags matching it.
+ * @param {boolean} [read.counts]
+ * @returns {Promise<{ rows: Tag[], cursor: string | null, more: boolean, counts?: Record<string, number>, approximate?: string[] } | 'invalid-cursor' | null>}
+ *   null if the request failed. 'invalid-cursor': the server no longer takes the cursor.
+ */
+async function queryViewTags(state, { cursor = null, pageSize, ids, counts = true }) {
+    const filter = ids ? { ids } : state.contains ? { contains: state.contains } : {};
+    try {
+        const response = await fetch('/api/tags/query', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ filter, sort: { field: state.sort }, pageSize, cursor, counts }),
+            cache: 'no-cache',
+        });
+        if (response.status === 400 && (await response.clone().json().catch(() => null))?.reason === 'invalid-cursor') return 'invalid-cursor';
+        if (!response.ok) throw new Error(response.statusText);
+        const answer = await response.json();
+        if (!Array.isArray(answer?.rows)) throw new Error('no rows in the answer');
+        return answer;
+    } catch (error) {
+        console.error('Error reading tags for Manage Tags:', error);
+        return null;
+    }
+}
+
+/**
+ * @param {ViewTagList} state
+ * @param {string} id
+ * @returns {Promise<string | null | undefined>} the cursor right after tag `id` in the list's sort mode. null: the
+ *   server has no such tag. undefined: it could not be read.
+ */
+async function viewTagCursorAfter(state, id) {
+    // A page the tag fills comes back with the cursor at the tag's own place.
+    const answer = await queryViewTags(state, { ids: [id], pageSize: 1, counts: false });
+    if (!answer || answer === 'invalid-cursor') return undefined;
+    return answer.rows.length && typeof answer.cursor === 'string' ? answer.cursor : null;
+}
+
+/**
+ * Makes rows for the tags of a query answer, after taking the ones this tab doesn't hold into `tags`: a row's
+ * controls work on the tag this tab holds.
+ * @param {{ rows: Tag[], counts?: Record<string, number>, approximate?: string[] }} answer
+ * @param {(id: string) => boolean} [wanted]
+ * @returns {HTMLElement[]}
+ */
+function makeViewTagRows(answer, wanted = () => true) {
+    mergeServerTagDefinitions(answer.rows.filter(row => isTagObject(row) && !tagIdsBeingCreated.has(row.id)));
+    const holder = $('<div></div>');
+    for (const row of answer.rows) {
+        const tag = isTagObject(row) && wanted(row.id) ? tagsStore.get(row.id) : null;
+        if (tag) appendViewTagToList(holder, tag, viewTagCountText(answer, tag.id));
+    }
+    return holder.children().toArray();
+}
+
+/**
+ * @param {{ counts?: Record<string, number>, approximate?: string[] }} answer
+ * @param {string} id
+ * @returns {string} how many characters and groups carry the tag; `~` marks a count that may be too high.
+ */
+function viewTagCountText(answer, id) {
+    const count = answer.counts?.[id] ?? 0;
+    return answer.approximate?.includes(id) ? `~${count}` : String(count);
+}
+
+/**
+ * Draws a kept row for each tag created or renamed here that has no list row, and removes the kept row of each that
+ * has one or is gone.
+ * @param {ViewTagList} state
+ */
+async function syncKeptViewTags(state) {
+    const listed = new Set(viewTagListRows(state).map((_, el) => el.id).get());
+    for (const id of [...state.ownIds]) {
+        if (!tagsStore.has(id)) state.ownIds.delete(id);
+    }
+    const kept = [...state.ownIds].filter(id => !listed.has(id));
+    state.container.children('.tag_view_item_kept').each((_, el) => {
+        if (!kept.includes(el.id)) el.remove();
+    });
+    const missing = kept.filter(id => !state.container.children(`.tag_view_item_kept[id="${id}"]`).length);
+    if (!missing.length) return;
+
+    const answer = await queryViewTags(state, { ids: missing, pageSize: missing.length });
+    if (!answer || answer === 'invalid-cursor') return;
+    const stillListed = new Set(viewTagListRows(state).map((_, el) => el.id).get());
+    const rows = makeViewTagRows(answer, id => !stillListed.has(id));
+    for (const row of rows) {
+        row.classList.add('tag_view_item_kept');
+        row.title = t`Kept at the top so you can go on working with it. Its own place in the list is further on.`;
+    }
+    const firstListRow = viewTagListRows(state)[0];
+    changeViewTagRowsInPlace(state, firstListRow, () => {
+        if (firstListRow) $(firstListRow).before(rows); else state.container.append(rows);
+    });
+}
+
+/** @param {ViewTagList} state @returns {boolean} whether the user is typing into a row or dragging one */
+function isViewTagListInUse(state) {
+    return state.dragging || (!!document.activeElement && state.container[0].contains(document.activeElement));
+}
+
+/**
+ * Reads the list from its start in the current sort mode and under the search box's text, and draws that.
+ * @param {ViewTagList} state
+ * @returns {Promise<boolean>} whether rows were drawn
+ */
+async function reloadViewTags(state) {
+    state.sort = power_user.tag_sort_mode;
+    state.contains = $('#tag_view_search').val()?.toString().trim() ?? '';
+    setViewTagStatus(state, 'loading');
+    const answer = await queryViewTags(state, { pageSize: VIEW_TAG_PAGE_SIZE });
+    if (!answer || answer === 'invalid-cursor') {
+        setViewTagStatus(state, 'failed');
+        return false;
+    }
+
+    const rows = makeViewTagRows(answer);
+    viewTagListRows(state).remove();
+    state.container.append(rows);
+    state.beforeFirstId = null;
+    state.trail = [];
+    state.trailCut = false;
+    state.endCursor = answer.cursor;
+    state.emptyReads = 0;
+    state.stale = false;
+    await syncKeptViewTags(state);
+    setViewTagStatus(state, answer.cursor === null ? 'end' : '');
+    return true;
+}
+
+/**
+ * Reads the rows after the last list row and draws them. Past VIEW_TAG_MAX_ROWS, the rows at the top are removed.
+ * @param {ViewTagList} state
+ * @returns {Promise<boolean>} whether there may be more to read right away
+ */
+async function loadViewTagsAfter(state) {
+    if (state.endCursor === null || state.dragging) return false;
+    setViewTagStatus(state, 'loading');
+
+    let cursor = state.endCursor;
+    /** @type {Awaited<ReturnType<typeof queryViewTags>>} */
+    let answer = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (cursor === undefined) {
+            const lastId = viewTagListRows(state).last().attr('id');
+            if (!lastId) return reloadViewTags(state);
+            cursor = await viewTagCursorAfter(state, lastId);
+            // The last row's tag is gone: the rows no longer say where the list goes on.
+            if (cursor === null) {
+                setViewTagStatus(state, '');
+                return refreshViewTags(state);
+            }
+            if (cursor === undefined) break;
+        }
+        answer = await queryViewTags(state, { cursor, pageSize: VIEW_TAG_PAGE_SIZE });
+        if (answer !== 'invalid-cursor') break;
+        cursor = undefined;
+    }
+    if (!answer || answer === 'invalid-cursor') {
+        setViewTagStatus(state, 'failed');
+        return false;
+    }
+
+    const listed = new Set(viewTagListRows(state).map((_, el) => el.id).get());
+    const rows = makeViewTagRows(answer, id => !listed.has(id));
+    state.container.append(rows);
+    state.endCursor = answer.cursor;
+    state.emptyReads = answer.rows.length === 0 && answer.more ? state.emptyReads + 1 : 0;
+
+    const listRows = viewTagListRows(state);
+    const extra = listRows.length - VIEW_TAG_MAX_ROWS;
+    if (extra > 0) {
+        const removed = listRows.slice(0, extra);
+        state.trail.push(state.beforeFirstId);
+        if (state.trail.length > VIEW_TAG_TRAIL_MAX) {
+            state.trail.shift();
+            state.trailCut = true;
+        }
+        state.beforeFirstId = removed.last().attr('id');
+        changeViewTagRowsInPlace(state, listRows[extra], () => removed.remove());
+    }
+    await syncKeptViewTags(state);
+
+    if (answer.cursor === null) {
+        setViewTagStatus(state, 'end');
+        return false;
+    }
+    if (state.emptyReads >= VIEW_TAG_EMPTY_READS) {
+        state.emptyReads = 0;
+        setViewTagStatus(state, 'paused');
+        return false;
+    }
+    setViewTagStatus(state, '');
+    return true;
+}
+
+/**
+ * Reads the stretch of rows before the first list row and draws it. Past VIEW_TAG_MAX_ROWS, the rows at the bottom
+ * are removed.
+ * @param {ViewTagList} state
+ * @returns {Promise<boolean>} whether there may be more to read right away
+ */
+async function loadViewTagsBefore(state) {
+    if (state.beforeFirstId === null || state.dragging) return false;
+
+    /** @type {string | null} */
+    let afterId = null;
+    /** @type {string | null} */
+    let cursor = null;
+    for (;;) {
+        if (!state.trail.length) {
+            if (state.trailCut) return reloadViewTags(state);
+            break;
+        }
+        afterId = state.trail[state.trail.length - 1];
+        if (afterId === null) break;
+        const found = await viewTagCursorAfter(state, afterId);
+        if (found === undefined) return false;
+        if (found !== null) {
+            cursor = found;
+            break;
+        }
+        // That tag is gone: the stretch before it is read together with this one.
+        state.trail.pop();
+        afterId = null;
+    }
+
+    const answer = await queryViewTags(state, { cursor, pageSize: VIEW_TAG_PAGE_SIZE });
+    if (!answer || answer === 'invalid-cursor') return false;
+    state.trail.pop();
+
+    const listRows = viewTagListRows(state);
+    const listed = new Set(listRows.map((_, el) => el.id).get());
+    const reachesRows = answer.rows.findIndex(row => listed.has(row?.id));
+    const reachesFirst = reachesRows !== -1 || answer.rows.at(-1)?.id === state.beforeFirstId;
+    state.beforeFirstId = afterId;
+    if (!reachesFirst) {
+        // What was read stops short of the rows drawn: the rows read take their place.
+        const rows = makeViewTagRows(answer);
+        listRows.remove();
+        state.container.append(rows);
+        state.endCursor = answer.cursor;
+    } else {
+        const before = reachesRows === -1 ? answer.rows : answer.rows.slice(0, reachesRows);
+        const rows = makeViewTagRows({ ...answer, rows: before }, id => !listed.has(id));
+        changeViewTagRowsInPlace(state, listRows[0], () => {
+            if (listRows.length) listRows.first().before(rows); else state.container.append(rows);
+        });
+        const all = viewTagListRows(state);
+        if (all.length > VIEW_TAG_MAX_ROWS) {
+            all.slice(VIEW_TAG_MAX_ROWS).remove();
+            state.endCursor = undefined;
+        }
+    }
+    await syncKeptViewTags(state);
+    setViewTagStatus(state, state.endCursor === null ? 'end' : '');
+    return true;
+}
+
+/**
+ * Reads the rows drawn again from the server and draws what it answers: the same stretch of the list, as it is now.
+ * Waits while the user is typing into a row or dragging one, so neither is cut off.
+ * @param {ViewTagList} state
+ * @returns {Promise<boolean>} whether rows were read
+ */
+async function refreshViewTags(state) {
+    if (isViewTagListInUse(state)) {
+        state.stale = true;
+        return false;
+    }
+
+    /** @type {string | null} */
+    let cursor = null;
+    if (state.beforeFirstId !== null) {
+        const found = await viewTagCursorAfter(state, state.beforeFirstId);
+        if (found === undefined) return false;
+        // The tag the rows started after is gone.
+        if (found === null) return reloadViewTags(state);
+        cursor = found;
+    }
+    const shown = viewTagListRows(state).map((_, el) => el.id).get();
+    const pageSize = Math.min(VIEW_TAG_MAX_PAGE_SIZE, Math.max(VIEW_TAG_PAGE_SIZE, shown.length));
+    const answer = await queryViewTags(state, { cursor, pageSize });
+    if (!answer || answer === 'invalid-cursor') return false;
+    if (isViewTagListInUse(state)) {
+        state.stale = true;
+        return false;
+    }
+    state.stale = false;
+
+    mergeServerTagDefinitions(answer.rows.filter(row => isTagObject(row) && !tagIdsBeingCreated.has(row.id)));
+    const wanted = answer.rows.filter(row => isTagObject(row) && tagsStore.has(row.id)).map(row => row.id);
+    if (wanted.length === shown.length && wanted.every((id, i) => id === shown[i])) {
+        for (const id of wanted) {
+            state.container.children(`.tag_view_item[id="${id}"]`).find('.tag_view_counter_value').text(viewTagCountText(answer, id));
+        }
+    } else {
+        const scroller = viewTagScroller(state);
+        const scrollTop = scroller?.scrollTop;
+        const rows = makeViewTagRows(answer);
+        viewTagListRows(state).remove();
+        state.container.append(rows);
+        if (scroller) scroller.scrollTop = scrollTop;
+    }
+    state.endCursor = answer.cursor;
+    state.emptyReads = 0;
+    await syncKeptViewTags(state);
+    setViewTagStatus(state, answer.cursor === null ? 'end' : '');
+    return true;
+}
+
+/**
+ * Asks for one read of the open Manage Tags list. Reads run one at a time in the order asked, and a kind of read
+ * that is already waiting its turn is not asked for twice.
+ * @param {string} kind 'reload', 'refresh', 'after' or 'before'
+ * @returns {Promise<void>} settles once the read has run; at once if Manage Tags is closed
+ */
+function askForViewTags(kind) {
+    const state = viewTagList;
+    if (!state) return Promise.resolve();
+    if (state.queued.has(kind)) return state.chain;
+    state.queued.add(kind);
+    state.chain = state.chain.then(async () => {
+        state.queued.delete(kind);
+        if (viewTagList !== state) return;
+        const reads = { reload: reloadViewTags, refresh: refreshViewTags, after: loadViewTagsAfter, before: loadViewTagsBefore };
+        const mayHaveMore = await reads[kind](state);
+        if (mayHaveMore && viewTagList === state) recheckViewTagEdges(state);
+    }).catch(error => console.error('Error reading tags for Manage Tags:', error));
+    return state.chain;
+}
+
+/**
+ * Has the edges report again whether they are in view: an edge that stayed in view through a read reports nothing
+ * on its own.
+ * @param {ViewTagList} state
+ */
+function recheckViewTagEdges(state) {
+    if (!state.observer) return;
+    for (const edge of [state.topEdge[0], state.status[0]]) {
+        state.observer.unobserve(edge);
+        state.observer.observe(edge);
+    }
+}
+
+/**
+ * Starts reading more rows whenever an end of the drawn rows comes near the part of the list in view.
+ * @param {ViewTagList} state
+ */
+function watchViewTagEdges(state) {
+    if (state.observer || viewTagList !== state) return;
+    state.observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            askForViewTags(entry.target === state.status[0] ? 'after' : 'before');
+        }
+    }, { root: viewTagScroller(state), rootMargin: '600px 0px' });
+    state.observer.observe(state.topEdge[0]);
+    state.observer.observe(state.status[0]);
+}
+
+/** Reads the open Manage Tags list from its start: the sort mode or the search text changed. */
+function reloadViewTagList() {
+    viewTagList?.ownIds.clear();
+    return askForViewTags('reload');
+}
+
+/** Reads the rows of the open Manage Tags list again: tags or their counts changed on the server. */
+function refreshViewTagList() {
+    return askForViewTags('refresh');
+}
+
+/**
+ * A tag was created or renamed in Manage Tags: reads its rows again and keeps the tag in view, as a kept row at the
+ * top if its place in the list is not among the rows drawn.
+ * @param {string} id
+ * @param {object} [options]
+ * @param {boolean} [options.scrollTo] Scroll the tag's row into view.
+ */
+async function showOwnTagInViewList(id, { scrollTo = false } = {}) {
+    const state = viewTagList;
+    if (!state) return;
+    const rowOf = () => state.container.children(`.tag_view_item[id="${id}"]`);
+    const placeBefore = rowOf().index();
+    state.ownIds.add(id);
+    if (state.ownIds.size > VIEW_TAG_KEPT_MAX) state.ownIds.delete(state.ownIds.values().next().value);
+    await refreshViewTagList();
+    if (viewTagList !== state) return;
+
+    const row = rowOf();
+    if (scrollTo) row[0]?.scrollIntoView({ block: 'nearest' });
+    if (row.length && row.index() !== placeBefore) flashHighlight(row);
 }
 
 function removeMissingTagFilters() {
@@ -5837,7 +6352,7 @@ export function initTags() {
     $(document).on('input', '.tag_view_name', onTagRenameInput);
     $(document).on('keydown', '.tag_view_name', onTagRenameKeydown);
     $(document).on('focusout', '.tag_view_name', (evt) => {
-        commitTagRename(evt.target, evt.relatedTarget instanceof HTMLElement ? evt.relatedTarget : undefined);
+        commitTagRename(evt.target);
     });
     $(document).on('click', '.tag_view_create', onTagCreateClick);
     $(document).on('click', '.tag_view_backup', onTagsBackupClick);

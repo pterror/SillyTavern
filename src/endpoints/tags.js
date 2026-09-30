@@ -35,20 +35,35 @@ import { writeBackpressured } from '../util.js';
 
 export const router = express.Router();
 
-/** `{ tag }` → `{ result, refused: [{ id, reason: 'deleted' | 'exists' }] }`. */
+/**
+ * `{ tag, freeName }` → `{ result, refused: [{ id, reason: 'deleted' | 'exists' }], tag }`. With `freeName: true`,
+ * `tag.name` is only a base and the server picks a name no other tag has (`name`, else `name #1`, `name #2`, ...);
+ * the answer's `tag` is then the definition as stored, when it was. 503 with reason 'tag-names-not-indexed', and
+ * nothing written, until tag names can be looked up.
+ */
 router.post('/create', async (request, response) => {
     try {
         const tag = request.body?.tag;
         if (!tag || typeof tag !== 'object' || typeof tag.id !== 'string' || !tag.id) {
             return response.status(400).send({ error: 'tag with a non-empty id is required' });
         }
+        const freeName = request.body?.freeName;
+        if (freeName !== undefined && typeof freeName !== 'boolean') {
+            return response.status(400).send({ error: 'freeName must be a boolean' });
+        }
+        if (freeName === true && (typeof tag.name !== 'string' || !tag.name)) {
+            return response.status(400).send({ error: 'freeName needs a non-empty tag.name to start from' });
+        }
 
-        const result = await createTagDefinition(request.user.directories, tag);
+        const result = await createTagDefinition(request.user.directories, tag, { freeName: freeName === true });
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
+        if (result === 'names-not-ready') {
+            return response.status(503).send({ error: 'Tag names are still being indexed', reason: 'tag-names-not-indexed' });
+        }
 
-        response.send({ result: 'ok', refused: result.refused });
+        response.send({ result: 'ok', refused: result.refused, tag: result.tag });
     } catch (err) {
         console.error('Could not create tag definition', err);
         response.status(500).send({ error: 'Could not create tag definition' });

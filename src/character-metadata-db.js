@@ -5716,21 +5716,29 @@ function nextTagSortOrderSync(entry) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {unknown} rawTag Raw request-body value - client-controlled and not guaranteed to actually
  *   match {@link TagDefinitionInput}'s shape, so it's validated below before use.
- * @returns {Promise<TagWriteResult | null>}
+ * @param {object} [options]
+ * @param {boolean} [options.freeName] The given name is only a base: the tag gets freeTagNameSync()'s name for it.
+ *   Needs tagNameKeysReady().
+ * @returns {Promise<(TagWriteResult & { tag?: TagDefinitionInput }) | 'names-not-ready' | null>} tag: with
+ *   `freeName`, the definition as stored, when it was. 'names-not-ready': a free name was asked for before names can
+ *   be looked up; nothing is written.
  */
-export async function createTagDefinition(directories, rawTag) {
+export async function createTagDefinition(directories, rawTag, { freeName = false } = {}) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     const tag = /** @type {TagDefinitionInput | null | undefined} */ (rawTag);
     if (!tag || typeof tag !== 'object' || typeof tag.id !== 'string' || !tag.id) return null;
     const id = tag.id;
     const assignOrder = !Object.hasOwn(tag, 'sort_order');
+    const baseName = typeof tag.name === 'string' ? tag.name : '';
 
     /** @type {TagWriteResult} */
     const result = { refused: [] };
+    const names = { ready: true };
     entry.db.transaction(() => {
         // Reset here: a transaction that hits busy is rolled back and rerun.
         result.refused = [];
+        names.ready = true;
         if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id })) {
             result.refused.push({ id, reason: 'deleted' });
             return;
@@ -5739,18 +5747,46 @@ export async function createTagDefinition(directories, rawTag) {
             result.refused.push({ id, reason: 'exists' });
             return;
         }
+        if (freeName) {
+            if (!tagNameKeysReady(entry)) {
+                names.ready = false;
+                return;
+            }
+            tag.name = freeTagNameSync(entry.db, baseName);
+        }
         if (assignOrder) tag.sort_order = nextTagSortOrderSync(entry);
         entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
         if (!assignOrder && !tagSortOrdersSettledSync(entry.db)) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
         updateTagsHashSync(entry.db);
         logTagChangesSync(entry, [id]);
     });
+    if (!names.ready) return 'names-not-ready';
     if (result.refused.length > 0) {
         if (result.refused[0].reason === 'deleted') warnStaleDeletedTagSave([id]);
         return result;
     }
     entry.tagCache = null;
-    return result;
+    return freeName ? { ...result, tag } : result;
+}
+
+/** How many numbered names freeTagNameSync() tries, one name_key lookup each, before it stops looking. */
+const FREE_TAG_NAME_TRIES = 20000;
+
+/**
+ * A name no live tag has, made from `base` as the page's getFreeName() makes one: `base` itself, else the first free
+ * of `base #1`, `base #2`, ... Names are compared as tag names are looked up (tagNameKey()). Past FREE_TAG_NAME_TRIES
+ * it is `base #<a new uuid>`, free without looking.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} base
+ * @returns {string}
+ */
+function freeTagNameSync(db, base) {
+    if (liveTagIdByNameKeySync(db, tagNameKey(base), '') === null) return base;
+    for (let n = 1; n <= FREE_TAG_NAME_TRIES; n++) {
+        const name = `${base} #${n}`;
+        if (liveTagIdByNameKeySync(db, tagNameKey(name), '') === null) return name;
+    }
+    return `${base} #${crypto.randomUUID()}`;
 }
 
 /**
