@@ -44,6 +44,52 @@ export function deepFreeze(obj) {
     return obj;
 }
 
+// The ref the page sent the server for a message it asked the server to store, until the server's
+// `stored` entry for it arrives. Kept off the message itself so extensions never see it and it is never saved.
+/** @type {WeakMap<object, string>} */
+const _storeRefs = new WeakMap();
+
+/**
+ * Records the ref to send the server with the request that stores this message.
+ * @param {object} message
+ * @param {string} ref A fresh uuidv4() per message.
+ */
+export function setStoreRef(message, ref) {
+    _storeRefs.set(message, ref);
+}
+
+/**
+ * @param {object|null|undefined} message
+ * @returns {string|undefined} The ref setStoreRef() gave this message.
+ */
+export function storeRefOf(message) {
+    return message ? _storeRefs.get(message) : undefined;
+}
+
+/** @param {ChatMessage} from @param {ChatMessage} to */
+function _carryStoreRef(from, to) {
+    const ref = _storeRefs.get(from);
+    if (ref !== undefined) _storeRefs.set(to, ref);
+}
+
+/**
+ * Takes on the node ids the server reports for the messages it stored: each `{ ref, node_id }` goes to
+ * the message on screen holding that ref, which is then saved as far as the page is concerned.
+ * @param {unknown} stored The answer's `stored` list.
+ */
+export function adoptStored(stored) {
+    if (!Array.isArray(stored)) return;
+    for (const entry of stored) {
+        if (typeof entry?.ref !== 'string' || !isStoredNodeId(entry?.node_id)) continue;
+        for (let i = chat.length - 1; i >= 0; i--) {
+            if (_storeRefs.get(chat[i]) !== entry.ref) continue;
+            if (chat[i].node_id !== entry.node_id) updateMessage(i, { node_id: entry.node_id });
+            _markMessageSaved(i, entry.node_id);
+            break;
+        }
+    }
+}
+
 // The only write path for messages; mutating a frozen message directly throws TypeError.
 /**
  * @param {number} mesId
@@ -54,6 +100,7 @@ export function updateMessage(mesId, updates) {
     const old = _chatAt(mesId);
     if (!old) return old;
     const result = deepFreeze({ ...old, ...updates });
+    _carryStoreRef(old, result);
     chat[mesId] = result;
     return result;
 }
@@ -90,6 +137,7 @@ export function updateIn(mesId, path, value) {
     };
 
     const result = /** @type {ChatMessage} */ (deepFreeze(rebuild(old, 0)));
+    _carryStoreRef(old, result);
     chat[mesId] = result;
     return result;
 }

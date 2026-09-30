@@ -4426,6 +4426,82 @@ async function run() {
         assert.equal(branchAfter.messages.length, branchBefore.messages.length, 'a quiet generation persists neither the user nor the assistant side, json_schema or not');
     }
 
+    // `stored`: the node the user message was stored at, under the `user_message_ref` the page sent - a
+    // field on a non-streaming answer, the first control frame of a stream.
+    {
+        const failures = [];
+        const chatSse = (text) => (_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n\n`);
+        };
+        const jsonAnswer = (value) => (_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(value));
+        };
+        const cases = [
+            { name: 'default block, non-streaming', stream: false, point: pointBackendAt, handler: jsonAnswer({ choices: [{ message: { role: 'assistant', content: 'Stored reply.' } }] }) },
+            { name: 'default block, streaming', stream: true, point: pointBackendAt, handler: chatSse('Stored reply.') },
+            { name: 'default block with a server tool, streaming', stream: true, point: pointBackendAtWithToolsEnabled, handler: chatSse('Stored reply.'), tool: true },
+            { name: 'Claude, non-streaming', stream: false, point: pointClaudeBackendAt, handler: jsonAnswer({ content: [{ type: 'text', text: 'Stored reply.' }] }) },
+            {
+                name: 'Claude, streaming', stream: true, point: pointClaudeBackendAt,
+                handler: (_req, res) => {
+                    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                    res.end(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Stored reply.' } })}\n\nevent: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+                },
+            },
+        ];
+        for (const { name, stream, point, handler, tool } of cases) {
+            const chatName = `cc-stored-ref-${name.replace(/\W+/g, '-')}`;
+            const backend = await startFakeBackend(handler);
+            point(backend.url);
+            if (tool) {
+                registerServerTool({
+                    id: 'test-tool:stored_ref', name: 'stored_ref', description: 'Never called.',
+                    parameters: { type: 'object', properties: {} }, invoke: async () => 'unused',
+                });
+            }
+            try {
+                await saveChatToTree(directories, ownerId, chatName, [
+                    { chat_metadata: {} },
+                    { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+                ]);
+                const branchBefore = await loadBranch(directories, ownerId, chatName);
+                const ref = `ref-${chatName}`;
+                const body = {
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream,
+                };
+                let stored;
+                if (stream) {
+                    const { bodyBytes } = await postGenerateStream(buildTestApp(), body);
+                    const decoder = new CompactStreamDecoder();
+                    const events = [...decoder.push(new Uint8Array(bodyBytes)), ...decoder.flush()];
+                    assert.ok('control' in events[0] && events[0].control.stored, `the first frame is the stored control frame: ${JSON.stringify(events[0])}`);
+                    stored = events[0].control.stored;
+                } else {
+                    stored = (await postGenerate(buildTestApp(), body)).data.stored;
+                }
+                const branchAfter = await waitFor(async () => {
+                    const branch = await loadBranch(directories, ownerId, chatName);
+                    return branch.messages.length === branchBefore.messages.length + 2 ? branch : null;
+                });
+                const userNode = branchAfter.messages[branchBefore.messages.length];
+                assert.equal(userNode.mes, `Question for ${chatName}?`);
+                assert.deepEqual(stored, [{ ref, node_id: userNode.node_id }], 'the user message\'s ref is echoed with the node it was stored at');
+                console.log(`  pass: ${name}`);
+            } catch (error) {
+                failures.push(name);
+                console.log(`  FAIL: ${name}: ${error.message}`);
+            } finally {
+                if (tool) unregisterServerTool('test-tool:stored_ref');
+                backend.server.close();
+                writeAllSettings(directories, buildSettingsFixture());
+            }
+        }
+        assert.deepEqual(failures, [], 'stored ref cases');
+    }
+
     console.log('chat-completions.test.js: all assertions passed');
 }
 

@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 
 import { forwardFetchResponse } from '../../util.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
+import { storedMessagesOf } from '../../stored-messages.js';
 
 /**
  * Compact wire protocol, originally for the llama.cpp raw-completions streaming path, now also used
@@ -161,6 +162,19 @@ export function encodeImageFrame(image) {
 
 export function encodeControlFrame(data) {
     return encodeLengthPrefixedJsonFrame(FRAME_TYPE_CONTROL, data);
+}
+
+/**
+ * Writes a stream's `stored` control frame when this request stored anything under a page ref. Called
+ * before any other frame, so it is the stream's first.
+ * @param {{ write: (chunk: Buffer) => unknown }} writer
+ * @param {import('express').Response} response
+ */
+export function writeStoredMessagesFrame(writer, response) {
+    const stored = storedMessagesOf(response);
+    if (stored) {
+        writer.write(encodeControlFrame({ stored }));
+    }
 }
 
 export function encodeKeepaliveFrame() {
@@ -576,6 +590,7 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
         const generationRecord = createGenerationRecord(id);
         const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
         let writer = initialWriter;
+        writeStoredMessagesFrame(writer, response);
         if (itemization) {
             writer.write(encodeControlFrame({ itemization }));
         }

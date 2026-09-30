@@ -975,6 +975,60 @@ async function run() {
         }
     }
 
+    // `stored`: the node the user message was stored at, under the `user_message_ref` the page sent - a
+    // field on a non-streaming answer, the first control frame of a stream.
+    for (const streaming of [false, true]) {
+        const chatName = `kobold-stored-ref-${streaming ? 'stream' : 'nonstream'}`;
+        const backend = await startFakeBackend((req, res) => {
+            if (req.url === '/extra/generate/stream') {
+                res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                return res.end(`data: ${JSON.stringify({ token: 'Stored reply.' })}\n\ndata: [DONE]\n\n`);
+            }
+            if (req.url === '/v1/generate') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ results: [{ text: 'Stored reply.' }] }));
+            }
+            res.writeHead(404);
+            res.end();
+        });
+        const settings = buildSettingsFixture();
+        settings.kai_settings.api_server = backend.url;
+        settings.kai_settings.streaming_kobold = streaming;
+        writeAllSettings(directories, settings);
+        try {
+            await saveChatToTree(directories, ownerId, chatName, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+            ]);
+            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const ref = `ref-${chatName}`;
+            const body = {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, streaming,
+            };
+            let stored;
+            if (streaming) {
+                const { bytes } = await postGenerateStreamBytes(buildTestApp(), body);
+                const decoder = new CompactStreamDecoder();
+                const events = [...decoder.push(new Uint8Array(bytes)), ...decoder.flush()];
+                assert.ok('control' in events[0] && events[0].control.stored, `the first frame is the stored control frame: ${JSON.stringify(events[0])}`);
+                stored = events[0].control.stored;
+            } else {
+                stored = (await postGenerate(buildTestApp(), body)).data.stored;
+            }
+            const branchAfter = await waitFor(async () => {
+                const branch = await loadBranch(directories, ownerId, chatName);
+                return branch.messages.length === branchBefore.messages.length + 2 ? branch : null;
+            });
+            const userNode = branchAfter.messages[branchBefore.messages.length];
+            assert.equal(userNode.mes, `Question for ${chatName}?`);
+            assert.deepEqual(stored, [{ ref, node_id: userNode.node_id }], `${streaming ? 'streaming' : 'non-streaming'}: the user message's ref is echoed with the node it was stored at`);
+        } finally {
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
     console.log('kobold.test.js: all assertions passed');
 }
 

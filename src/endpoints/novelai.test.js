@@ -852,6 +852,36 @@ async function run() {
         }
     }
 
+    // `stored`: the node the user message was stored at, under the `user_message_ref` the page sent, as
+    // a field on the non-streaming answer.
+    {
+        const chatName = 'novel-stored-ref-nonstream';
+        const backend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ output: 'Stored reply.' }));
+        });
+        pointNovelBackendAt(backend.url);
+        try {
+            await saveChatToTree(directories, ownerId, chatName, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+            ]);
+            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const ref = `ref-${chatName}`;
+            const { data } = await postGenerate(buildTestApp(), {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream: false,
+            });
+            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const userNode = branchAfter.messages[branchBefore.messages.length];
+            assert.equal(userNode?.mes, `Question for ${chatName}?`);
+            assert.deepEqual(data.stored, [{ ref, node_id: userNode.node_id }], 'the user message\'s ref is echoed with the node it was stored at');
+        } finally {
+            backend.server.close();
+            pointNovelBackendAt(null);
+        }
+    }
+
     console.log('novelai.test.js: all assertions passed');
 }
 

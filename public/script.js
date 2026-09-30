@@ -175,6 +175,7 @@ import {
     createTimeout,
     getStringHash,
     cancelDebounce,
+    uuidv4,
 } from './scripts/utils.js';
 // Imported directly from hash-utils.js, not re-exported via utils.js, so tests mocking utils.js aren't affected.
 import { getAtPath, seedKeyHashes, characterDigestFieldsHash, characterDigestCardBodyHash, normalizeFav } from './scripts/hash-utils.js';
@@ -288,7 +289,7 @@ export { messageFormatting };
 import {
     updateMessage, updateIn, deepFreeze,
     ensureOpeningRow, chatOpEdit, chatOpEditMany, chatOpAppend, chatOpAddAlternative, chatOpEndPath, chatOpEndPathAtAnchor, chatOpSelect, chatOpGraft, chatOpDegraft, chatOpSwapAdjacent, chatOpDeleteAlternative, chatOpDeleteAlternativeNode,
-    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget,
+    _mergeCardGreetingsIntoOpening, _restoreContinuation, _isBlankSlot, _setCurrentTarget, setStoreRef, adoptStored,
 } from './scripts/chat-store.js';
 export {
     updateMessage, updateIn,
@@ -3726,6 +3727,8 @@ export class StreamingProcessor {
         this.assistantNodeId = null;
         /** @type {Record<string, *>?} Raw-action prompt-breakdown fields for itemized-prompts.js, if the server sent them via a control frame. */
         this.itemization = null;
+        /** @type {unknown} The server's last `stored` list this stream adopted (see adoptStored(), chat-store.js). */
+        this.adoptedStored = null;
         // Initialize reasoning in its own handler
         this.reasoningHandler = new ReasoningHandler(timeStarted);
         /** @type {PromptReasoning} */
@@ -4065,6 +4068,10 @@ export class StreamingProcessor {
                 this.toolCallAborted = state?.toolCallAborted ?? this.toolCallAborted;
                 this.assistantNodeId = state?.assistantNodeId ?? this.assistantNodeId;
                 this.itemization = state?.itemization ?? this.itemization;
+                if (state?.stored && state.stored !== this.adoptedStored) {
+                    this.adoptedStored = state.stored;
+                    adoptStored(state.stored);
+                }
                 this.result = text;
                 this.swipes = Array.from(swipes ?? []);
                 if (logprobs) {
@@ -4795,6 +4802,9 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
 
     await populateFileAttachment(message);
     statMesProcess(message, 'user', getCurrentCharacter(), '');
+    // A raw-action send asks the server to store this message and sends this ref with it, so the
+    // server's answer can say which node it was stored at.
+    setStoreRef(message, uuidv4());
 
     chat_metadata.tainted = true;
 
@@ -5236,7 +5246,7 @@ export async function sendGenerationRequest(type, data, options = {}) {
         // differs (no client-resolved `prompt`/`params` at all - the server resolves those) even
         // though the submit-then-poll mechanics are shared (see that function's own doc comment).
         if (data.owner_id) {
-            return await generateHordeRawAction(data, abortController.signal, true);
+            return await generateHordeRawAction(data, abortController.signal, true, adoptStored);
         }
         return await generateHorde(data.prompt, data, abortController.signal, true);
     }

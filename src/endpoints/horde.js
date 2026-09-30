@@ -4,11 +4,12 @@ import { AIHorde, ModelGenerationInputStableSamplers, ModelInterrogationFormType
 import { getVersion, delay, Cache } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { buildRawActionKoboldRequest } from './backends/kobold.js';
-import { appendMessages, sanitizeUserMessageExtra } from '../message-tree-db.js';
+import { sanitizeUserMessageExtra } from '../message-tree-db.js';
+import { storeUserMessage } from '../stored-messages.js';
 import { persistAssistantReply } from '../assistant-reply-persist.js';
 import {
     createGenerationRecord, createResumableWriter, createBackpressureWriter, detachFromResponse,
-    encodeContent, encodeAssistantNodeIdFrame, encodeControlFrame, handleGenerationResume, KEEPALIVE_INTERVAL_MS,
+    encodeContent, encodeAssistantNodeIdFrame, encodeControlFrame, handleGenerationResume, KEEPALIVE_INTERVAL_MS, writeStoredMessagesFrame,
 } from './backends/llamacpp-compact-stream.js';
 
 const ANONYMOUS_KEY = '0000000000';
@@ -279,9 +280,10 @@ router.post('/task-status', async (request, response) => {
  * unadjusted size. This is an honest, narrow MVP boundary, not a disguised gap: nothing about basic
  * generation is broken or faked by this omission.
  * @param {import('express').Request} request
+ * @param {import('express').Response} response The request's response, which records the stored user message.
  * @returns {Promise<{ body: object, rawActionPersist: object|null }>}
  */
-async function buildRawActionHordePayload(request) {
+async function buildRawActionHordePayload(request, response) {
     const {
         character_avatar: characterAvatar, group_id: groupId, owner_id: ownerId,
         node_id: nodeId, type = 'normal',
@@ -312,13 +314,12 @@ async function buildRawActionHordePayload(request) {
     const skipPersistence = isImpersonate || type === 'quiet';
     let replyAnchorNodeId = built.anchorNodeId;
     if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
-        const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-            { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
-        ]);
-        if (!appendResult.ok) {
-            console.error('Failed to persist user message onto the tree:', appendResult.reason);
-        } else if (appendResult.node_ids?.length) {
-            replyAnchorNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
+        const userNodeId = await storeUserMessage(response, {
+            directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
+            message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+        });
+        if (userNodeId) {
+            replyAnchorNodeId = userNodeId;
         }
     }
     const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
@@ -417,6 +418,7 @@ async function streamHordeGeneration({ response, jobId, agent, rawActionPersist,
     const generationRecord = createGenerationRecord(jobId);
     const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord, HORDE_KEEPALIVE_INTERVAL_MS);
     let writer = initialWriter;
+    writeStoredMessagesFrame(writer, response);
     if (itemization) {
         writer.write(encodeControlFrame({ itemization }));
     }
@@ -514,7 +516,7 @@ router.post('/generate-text', async (request, response) => {
     if (request.body.owner_id && (request.body.character_avatar || request.body.group_id)) {
         const ownerId = request.body.owner_id;
         try {
-            const built = await buildRawActionHordePayload(request);
+            const built = await buildRawActionHordePayload(request, response);
             request.body = built.body;
             rawActionPersist = built.rawActionPersist
                 ? { ...built.rawActionPersist, directories: request.user.directories, ownerId }

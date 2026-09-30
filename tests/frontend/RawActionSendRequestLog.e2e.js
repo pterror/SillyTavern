@@ -48,7 +48,13 @@ function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` })
                 return json({ tokens });
             }
             if (path === '/completion') {
-                return json(completion(++replies));
+                const answer = completion(++replies);
+                if (JSON.parse(body || '{}').stream) {
+                    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                    res.write(`data: ${JSON.stringify({ ...answer, stop: false })}\n\n`);
+                    return res.end(`data: ${JSON.stringify({ content: '', stop: true })}\n\n`);
+                }
+                return json(answer);
             }
             if (path === '/health' || path === '/slots') {
                 return json({});
@@ -229,4 +235,46 @@ test.describe('raw-action send request log', () => {
             await unreadable.close();
         }
     });
+
+    for (const streaming of [false, true]) {
+        test(`two ${streaming ? 'streaming' : 'non-streaming'} llama.cpp sends store each user message once, and the page holds the stored ids`, async ({ page }) => {
+            const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+            const avatar = await createCharacter(page, `RawActionTwice-${stamp}`, `Hello from the greeting ${stamp}.`);
+            await openCharacter(page, avatar);
+            await connectLlamaCpp(page, mock.url);
+            // @ts-ignore
+            await page.evaluate((on) => { SillyTavern.getContext().textCompletionSettings.streaming = on; }, streaming);
+            await page.waitForTimeout(SETTLE_MS);
+
+            const browser = recordApiRequests(page);
+            const first = `First question ${stamp}?`;
+            await send(page, first, 2);
+            await page.waitForTimeout(SETTLE_MS);
+            await send(page, `Second question ${stamp}?`, 4);
+            await page.waitForTimeout(SETTLE_MS);
+
+            const generate = browser.filter(r => r.url === '/api/backends/text-completions/generate');
+            expect(generate.map(r => r.body.stream === true)).toEqual([streaming, streaming]);
+
+            // The stored path to the newest message, and every stored copy of the first user message: a
+            // second write of it is stored as a sibling.
+            const stored = await page.evaluate(async (first) => {
+                // @ts-ignore
+                const context = SillyTavern.getContext();
+                const post = async (url, body) => (await fetch(url, { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify(body) })).json();
+                const pageIds = context.chat.map(m => m.node_id ?? null);
+                const leaf = pageIds[pageIds.length - 1];
+                const path = leaf ? (await post('/api/chats/ancestry', { node_id: leaf })).messages : null;
+                const firstStored = path?.find(m => m.is_user && m.mes === first);
+                const copies = firstStored
+                    ? (await post('/api/chats/alternatives', { node_id: firstStored.node_id })).alternatives.filter(a => a.is_user && a.mes === first).length
+                    : null;
+                return { pageIds, pathIds: path?.map(m => m.node_id) ?? null, copies };
+            }, first);
+            await test.info().attach('page ids, stored path, copies of the first user message', { body: JSON.stringify(stored, null, 2), contentType: 'application/json' });
+
+            expect(stored.copies).toBe(1);
+            expect(stored.pageIds).toEqual(stored.pathIds);
+        });
+    }
 });
