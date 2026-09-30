@@ -81,7 +81,6 @@ import {
     collapseNewlines,
     loadPowerUserSettings,
     playMessageSound,
-    fixMarkdown,
     power_user,
     persona_description_positions,
     personaStore,
@@ -5758,10 +5757,6 @@ export function cleanUpMessage({ getMessage, isImpersonate, isContinue, displayI
 
     if (isImpersonate) {
         getMessage = getMessage.trim();
-    }
-
-    if (power_user.auto_fix_generated_markdown) {
-        getMessage = fixMarkdown(getMessage, false);
     }
 
     if (trimNames) {

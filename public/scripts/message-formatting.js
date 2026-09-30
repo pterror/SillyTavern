@@ -6,7 +6,7 @@ import { COMMENT_NAME_DEFAULT } from './slash-commands.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { decodeStyleTags, encodeStyleTags } from './chats.js';
 import { MessageFormatter } from './message-formatter.js';
-import { fixMarkdown, power_user } from './power-user.js';
+import { power_user } from './power-user.js';
 import { escapeRegex, escapeHtml, canUseNegativeLookbehind } from './utils.js';
 import { DOMPurify } from '../lib.js';
 import { renderMarkdown } from './marked-processor.js';
@@ -95,10 +95,6 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         mes = MessageFormatter.runStage(MessageFormatter.stage.AFTER_REGEX, mes,
             { ch_name, isSystem, isUser, messageId, isReasoning },
         );
-    }
-
-    if (power_user.auto_fix_generated_markdown) {
-        mes = fixMarkdown(mes, true);
     }
 
     if (!isSystem && power_user.encode_tags) {

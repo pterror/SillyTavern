@@ -6,7 +6,6 @@ import showdown from 'showdown';
 // Other trailing punctuation stays out of a bare URL's link, as GFM's extended-autolink rule says.
 // Checked on both marked processors and through messageFormatting (the chat render path). messageFormatting's
 // DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the identity here.
-// fixMarkdown is the identity: it only acts on paired `*`/`_` and odd `*`/`"`, which none of these inputs have.
 
 jest.unstable_mockModule('../public/lib.js', () => ({
     Marked,
@@ -31,11 +30,9 @@ jest.unstable_mockModule('../public/scripts/message-formatter.js', () => ({
     MessageFormatter: { stage: {}, runStage: (_stage, text) => text },
 }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
-    fixMarkdown: (text) => text,
     power_user: {
         user_prompt_bias: '',
         show_user_prompt_bias: true,
-        auto_fix_generated_markdown: true,
         encode_tags: false,
         reasoning: { prefix: '', suffix: '' },
         allow_name2_display: false,
