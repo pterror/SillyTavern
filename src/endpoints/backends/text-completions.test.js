@@ -629,6 +629,60 @@ async function run() {
         });
     }
 
+    await nonStreamReplyCase('llama.cpp, non-streaming, an answer with no readable reply: a warning in the answer, its keys logged without its content', async () => {
+        const backend = await startFakeBackend((req, res, body) => {
+            const json = (value) => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(value));
+            };
+            const route = (req.url ?? '').split('?')[0];
+            if (route === '/props') return json({ model_path: '/models/nonstream.gguf', build_info: 'b-nonstream', default_generation_settings: { n_ctx: 8192 } });
+            if (route === '/tokenize') return json({ tokens: String(JSON.parse(body || '{}').content ?? '').split(/(?=\s)/).filter(Boolean).map((_, i) => i) });
+            if (route === '/completion') return json({ unexpected_field: 'Secret unreadable reply.' });
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end('{}');
+        });
+        pointLlamaCppBackendAt(backend.url);
+        const chatName = 'nonstream-unreadable-chat';
+        await saveChatToTree(directories, ownerId, chatName, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, chatName);
+        const logged = [];
+        const realWarn = console.warn;
+        console.warn = (...args) => { logged.push(args.map(String).join(' ')); };
+        let answer;
+        try {
+            answer = await postGenerate(buildTestApp(), {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: `Question for ${chatName}?`, stream: false,
+            });
+        } finally {
+            console.warn = realWarn;
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+
+        const { status, data } = answer;
+        assert.equal(status, 200);
+        assert.equal(data.unexpected_field, 'Secret unreadable reply.', 'the answer still reaches the page unchanged');
+        assert.equal(data.assistant_node_id, undefined, 'nothing was stored, so no node is named');
+        assert.deepEqual(
+            data.warnings?.filter(w => w.kind === 'unreadable-reply').map(w => w.message),
+            ['The reply came back in a format SillyTavern can\'t read, so it wasn\'t saved.'],
+            'the answer carries the unreadable-reply warning',
+        );
+        const keyLines = logged.filter(line => line.includes('unexpected_field'));
+        assert.equal(keyLines.length, 1, `the answer's keys are logged once: ${JSON.stringify(logged)}`);
+        assert.equal(logged.some(line => line.includes('Secret unreadable reply.')), false, 'the answer\'s content is never logged');
+        const branchAfter = await loadBranch(directories, ownerId, chatName);
+        assert.deepEqual(
+            branchAfter.messages.slice(branchBefore.messages.length).map(m => ({ is_user: m.is_user, mes: m.mes })),
+            [{ is_user: true, mes: `Question for ${chatName}?` }],
+        );
+    });
+
     assert.deepEqual(nonStreamReplyFailures, [], 'non-streaming reply storage cases');
 
     // (c) is_impersonate: true - NEITHER the (spuriously passed) user_message NOR the generated

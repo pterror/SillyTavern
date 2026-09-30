@@ -1,6 +1,6 @@
 /**
  * @typedef {object} TokenizerWarning
- * @property {string} kind `fallback-copy`, `estimate`, `dropped`, `trim-estimate` or `license`.
+ * @property {string} kind `fallback-copy`, `estimate`, `dropped`, `trim-estimate`, `license` or `unreadable-reply`.
  * @property {string} key `api|type-or-source|url|model|tokenizer`.
  * @property {string} message Built by the server.
  * @property {string[]} [entries]

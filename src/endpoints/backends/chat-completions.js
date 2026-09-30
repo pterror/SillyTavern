@@ -74,7 +74,7 @@ import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js
 import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
-import { persistAssistantReply, replyTextAsPageShows } from '../../assistant-reply-persist.js';
+import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
 import { getEnabledServerTools, toOpenAIToolSchema } from '../../server-tools.js';
 import {
     TEXT_COMPLETION_MODELS,
@@ -4001,7 +4001,7 @@ router.post('/generate', async function (request, response) {
     // `buildRawActionChatCompletionRequest()` call, which requires them too.
     let pendingServerToolLoop = null;
 
-    // Per-request warnings for the screen (dropped entries, estimate trims, tokenizer fallbacks),
+    // Per-request warnings for the screen (dropped entries, estimate trims, tokenizer fallbacks, an unreadable reply),
     // covering every branch below and not gated on persistence. Sent as the stream's first frame
     // (`{control: {warnings}}`) or as the reply's `warnings`, only when non-empty - so a reply with
     // no warnings is byte-identical.
@@ -4834,7 +4834,10 @@ router.post('/generate', async function (request, response) {
                 // `/chat/completions` answers `choices[0].message.content`; a TEXT_COMPLETION_MODELS model
                 // (`isTextCompletion`) goes to `/completions`, which answers `choices[0].text`.
                 const generatedText = replyTextAsPageShows(json, 'openai');
-                const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
+                if (generatedText === null) {
+                    warnings.push(unreadableReplyWarning(json, `openai|${request.body.chat_completion_source}`));
+                }
+                const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText ?? '');
                 if (persisted) json.assistant_node_id = persisted.node_id;
             }
             if (warnings?.length) json.warnings = warnings;

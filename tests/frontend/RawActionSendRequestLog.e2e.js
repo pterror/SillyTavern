@@ -15,9 +15,10 @@ const MODEL = 'raw-action-log-model';
 
 /**
  * A mock llama.cpp server that logs every request it gets.
+ * @param {{ completion?: (n: number) => object }} [options] The body `/completion` answers with for the n-th reply.
  * @returns {Promise<{ url: string, log: { method: string, url: string, body: string }[], close: () => Promise<void> }>}
  */
-function startMockLlamaCpp() {
+function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` }) } = {}) {
     const log = [];
     let replies = 0;
     const server = http.createServer((req, res) => {
@@ -47,7 +48,7 @@ function startMockLlamaCpp() {
                 return json({ tokens });
             }
             if (path === '/completion') {
-                return json({ content: `Mock reply ${++replies}.` });
+                return json(completion(++replies));
             }
             if (path === '/health' || path === '/slots') {
                 return json({});
@@ -209,5 +210,23 @@ test.describe('raw-action send request log', () => {
         }
         // The second send's history was all in the first send's prompt, so none of it is tokenized again.
         expect(tokenized[1].filter(text => tokenized[0].includes(text))).toEqual([]);
+    });
+
+    test('a non-streaming llama.cpp answer with no readable reply shows that it was not saved', async ({ page }) => {
+        const unreadable = await startMockLlamaCpp({ completion: () => ({ unexpected_field: 'Secret unreadable reply.' }) });
+        try {
+            const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+            const avatar = await createCharacter(page, `RawActionUnreadable-${stamp}`, `Hello from the greeting ${stamp}.`);
+            await openCharacter(page, avatar);
+            await connectLlamaCpp(page, unreadable.url);
+            await page.waitForTimeout(SETTLE_MS);
+
+            await page.locator('#send_textarea').fill(`Unreadable question ${stamp}?`);
+            await page.locator('#send_but').click();
+            await expect(page.locator('#toast-container .toast-warning', { hasText: 'The reply came back in a format SillyTavern can\'t read, so it wasn\'t saved.' }))
+                .toHaveCount(1, { timeout: 15000 });
+        } finally {
+            await unreadable.close();
+        }
     });
 });

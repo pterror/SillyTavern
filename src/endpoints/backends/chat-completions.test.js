@@ -787,6 +787,55 @@ async function run() {
         }
     }
 
+    // (a-1b) an answer with no readable reply: nothing but the user message is stored, the answer carries
+    // the unreadable-reply warning, and the answer's keys are logged without its content.
+    {
+        const fakeBackend = await startFakeBackend((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ unexpected_field: 'Secret unreadable reply.' }));
+        });
+        pointBackendAt(fakeBackend.url);
+
+        const chatName = 'nonstream-unreadable-chat';
+        await saveChatToTree(directories, ownerId, chatName, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, chatName);
+        const logged = [];
+        const realWarn = console.warn;
+        console.warn = (...args) => { logged.push(args.map(String).join(' ')); };
+        let answer;
+        try {
+            answer = await postGenerate(buildTestApp(), {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Unreadable question, Rex?', stream: false,
+            });
+        } finally {
+            console.warn = realWarn;
+            fakeBackend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+
+        const { status, data } = answer;
+        assert.equal(status, 200);
+        assert.equal(data.unexpected_field, 'Secret unreadable reply.', 'the answer still reaches the page unchanged');
+        assert.equal(data.assistant_node_id, undefined, 'nothing was stored, so no node is named');
+        assert.deepEqual(
+            data.warnings?.filter(w => w.kind === 'unreadable-reply').map(w => w.message),
+            ['The reply came back in a format SillyTavern can\'t read, so it wasn\'t saved.'],
+            'the answer carries the unreadable-reply warning',
+        );
+        const keyLines = logged.filter(line => line.includes('unexpected_field'));
+        assert.equal(keyLines.length, 1, `the answer's keys are logged once: ${JSON.stringify(logged)}`);
+        assert.equal(logged.some(line => line.includes('Secret unreadable reply.')), false, 'the answer\'s content is never logged');
+        const branchAfter = await loadBranch(directories, ownerId, chatName);
+        assert.deepEqual(
+            branchAfter.messages.slice(branchBefore.messages.length).map(m => ({ is_user: m.is_user, mes: m.mes })),
+            [{ is_user: true, mes: 'Unreadable question, Rex?' }],
+        );
+    }
+
     // (a-2) a model no tokenizer is known for: bias entries needing ids are left out of the sent
     // logit_bias and listed in a `dropped` warning, on raw-action and profile sends alike; raw-id
     // entries still go through.
