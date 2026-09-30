@@ -1,4 +1,3 @@
-import util from 'node:util';
 import { Buffer } from 'node:buffer';
 
 import fetch from 'node-fetch';
