@@ -163,11 +163,12 @@ test.describe('dragging a tag in Manage Tags', () => {
         });
         await loadApp(page);
         await cutOffTagChanges(page);
-        // After the page booted, so the page doesn't hold it.
+        // After the page booted, so the page doesn't hold it. Manage Tags lists it all the same: its rows are the
+        // server's.
         await elsewhere(browser, other => createTag(other, z, 9004));
 
         await openTagManagement(page, 'manual', stamp);
-        await expect.poll(() => shownOrder(page)).toEqual([a, b, c]);
+        await expect.poll(() => shownOrder(page)).toEqual([a, b, c, z]);
         const writes = recordTagWrites(page);
 
         await drag(page, c, a);
@@ -176,7 +177,7 @@ test.describe('dragging a tag in Manage Tags', () => {
         expect(writes).toEqual([{ path: '/api/tags/move', body: { id: c, before: a } }]);
         expect((await api(page, '/api/tags/by-ids', { ids: [z] })).tags.map(tag => tag.id)).toEqual([z]);
         await expect.poll(() => pageHoldsServerOrders(page, [a, b, c]), { timeout: 30000 }).toBe(true);
-        expect(await shownOrder(page)).toEqual([c, a, b]);
+        expect(await shownOrder(page)).toEqual([c, a, b, z]);
         await expect(page.locator('#tag_sort_mode_select')).toHaveValue('manual');
     });
 
@@ -215,10 +216,11 @@ test.describe('dragging a tag in Manage Tags', () => {
         });
         await loadApp(page);
         await cutOffTagChanges(page);
-        await elsewhere(browser, other => api(other, '/api/tags/delete', { id: b }).then(() => {}));
 
         await openTagManagement(page, 'manual', stamp);
         await expect.poll(() => shownOrder(page)).toEqual([a, b, c]);
+        // Deleted once the rows are drawn, and the page doesn't hear of it: the row is still there to drop next to.
+        await elsewhere(browser, other => api(other, '/api/tags/delete', { id: b }).then(() => {}));
 
         await drag(page, c, b);
 
