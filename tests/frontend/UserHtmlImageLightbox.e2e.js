@@ -164,6 +164,30 @@ test.describe('Lightbox on images in user-written HTML', () => {
         await expect(page.locator('#regex_debugger_final_output')).toBeVisible();
     });
 
+    test('an image in the streaming display panel shows in the lightbox', async ({ page }) => {
+        await page.evaluate(async (image) => {
+            const { StreamingDisplay } = await import('/scripts/streaming-display.js');
+            const display = new StreamingDisplay().show({ label: 'Lightbox test' });
+            display.updateReasoning(`thinking words\n\n<img src="${image}" alt="in reasoning">`);
+            display.updateContent(`content words\n\n<img src="${image}" alt="in content">`);
+            window['lightboxTestDisplay'] = display;
+        }, IMAGE);
+        try {
+            for (const part of ['.streaming-display-reasoning-content', '.streaming-display-text-content']) {
+                const image = page.locator(`.streaming-display ${part} img`);
+                await expect(image).toBeVisible();
+                await expect(image).toHaveCSS('cursor', 'pointer');
+
+                await image.click();
+
+                await expectLightboxThenClose(page);
+            }
+        } finally {
+            await page.evaluate(() => window['lightboxTestDisplay'].hide({ instant: true }));
+        }
+        await expect(page.locator('.streaming-display')).toHaveCount(0);
+    });
+
     test.describe('STscript popup', () => {
         test('/popup: an image in the body and in the header shows in the lightbox', async ({ page }) => {
             await runScript(page, `/popup header="<img src='${IMAGE}' alt='in header' class='in_header'>" <img src="${IMAGE}" alt="in body" class="in_body"> popup words`);
@@ -266,6 +290,22 @@ test.describe('Lightbox on images in user-written HTML', () => {
 
             await expectLightboxThenClose(page);
             await expect(toast).toBeVisible();
+        });
+
+        test('/loader-show: an image in the title shows in the lightbox', async ({ page }) => {
+            await runScript(page, `/loader-show blocking=false toast=static title="<img src='${IMAGE}' alt='in loader title'>" message="loader words"`);
+            const toast = toastWith(page, 'loader words');
+            await expect(toast).toBeVisible();
+            try {
+                await expect(toast.locator('.toast-title img')).toHaveCSS('cursor', 'pointer');
+                await toast.locator('.toast-title img').click();
+
+                await expectLightboxThenClose(page);
+                await expect(toast).toBeVisible();
+            } finally {
+                await runScript(page, '/loader-hide');
+            }
+            await expect(toast).toHaveCount(0);
         });
 
         test('return=toast-html: an image in the returned value shows in the lightbox', async ({ page }) => {

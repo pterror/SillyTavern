@@ -328,6 +328,14 @@ function isOnLink(target, preview) {
     return target instanceof Element && $(target).closest('a[href]', preview).length > 0;
 }
 
+/**
+ * @param {EventTarget} target What was clicked.
+ * @returns {boolean} Whether the click landed on an image that opens the lightbox (image-lightbox.js).
+ */
+function isOnLightboxImage(target) {
+    return target instanceof HTMLImageElement && !target.closest('[data-result]');
+}
+
 /** @param {CharacterFieldEditorDeps} dependencies */
 export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
@@ -349,7 +357,7 @@ export function initCharacterFieldEditor(dependencies) {
     });
 
     $(document).on('dblclick', '.field_preview', function (event) {
-        if (isOnLink(event.target, this)) return;
+        if (isOnLink(event.target, this) || isOnLightboxImage(event.target)) return;
         beginEdit(String($(this).attr('data-for')));
     });
 
