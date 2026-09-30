@@ -1,5 +1,5 @@
 import { describe, test, expect, jest } from '@jest/globals';
-import { EntityStore, DictEntityStore } from '../public/scripts/entity-store.js';
+import { EntityStore, DictEntityStore, onAnyEntityStoreChange } from '../public/scripts/entity-store.js';
 
 describe('EntityStore', () => {
     function makeStore(initial = [{ id: 'a', name: 'Alpha' }, { id: 'b', name: 'Beta' }]) {
@@ -156,6 +156,35 @@ describe('EntityStore', () => {
         store.create({ id: 'a' });
         expect(l1).toHaveBeenCalledTimes(1);
         expect(l2).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('onAnyEntityStoreChange', () => {
+    test('hears a store being built, re-indexed, and its membership changes, but not an update or a reorder', () => {
+        const heard = [];
+        const stop = onAnyEntityStoreChange(store => heard.push(store));
+
+        const store = new EntityStore([{ id: 'a' }, { id: 'b' }], e => e.id);
+        expect(heard).toEqual([store]);
+
+        store.update('a', { name: 'Alpha' });
+        store.reorder(['b', 'a']);
+        expect(heard.length).toBe(1);
+
+        store.create({ id: 'c' });
+        store.remove('c');
+        expect(heard.length).toBe(3);
+
+        store.reindex();
+        expect(heard.length).toBe(4);
+
+        // A rebuilt store is heard without subscribing again.
+        const rebuilt = new EntityStore([], e => e.id);
+        expect(heard[4]).toBe(rebuilt);
+
+        stop();
+        store.reindex();
+        expect(heard.length).toBe(5);
     });
 });
 

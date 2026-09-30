@@ -17,7 +17,7 @@ import { groupCandidatesFilter, groupMembersFilter, selected_group } from './gro
 import { groups, groupsStore } from './group-store.js';
 import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, getFreeName, debounce, findChar, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
-import { EntityStore } from './entity-store.js';
+import { EntityStore, onAnyEntityStoreChange } from './entity-store.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -38,7 +38,7 @@ import { parseQueryTotal } from './character-repository.js';
 export {
     TAG_FOLDER_TYPES,
     TAG_FOLDER_DEFAULT_TYPE,
-    exportedTags as tags,
+    tags,
     filterByTagState,
     isBogusFolder,
     isBogusFolderOpen,
@@ -342,37 +342,45 @@ const TAG_FOLDER_DEFAULT_TYPE = 'NONE';
  */
 
 /**
- * The tag definitions this tab holds. Always the same array: a reload refills it in place.
+ * Upstream's export of the same name, and a plain array like upstream's, so it can be cloned, posted to a worker or
+ * put in IndexedDB. Here it is the tag definitions this tab holds. Always the same array: a reload refills it in
+ * place.
+ *
+ * Extensions change it directly, and a plain array can't report that. What they changed is found by comparing it
+ * with `tagsStore`'s index, which this file brings up to date in the same turn as each change it makes itself (see
+ * takeInTagsExportWrites()). That comparison runs when a settings save is asked for, which is how upstream's
+ * extensions get `tags` stored, and whenever `tag_map` is read or written. A tag put in is then created on the
+ * server, and a changed field is stored with the settings save itself (see storeTagChangesMadeThroughExport()). A
+ * tag taken out is not deleted: deleting a tag on the server also takes it off every character and group, which
+ * upstream's removal from this array doesn't, so a tag put back later would have lost them. It is put back here
+ * instead, with a warning.
  * @type {Tag[]}
  */
 const tags = [];
 
 /**
- * Upstream's export of the same name. Here it is the tags this tab holds. A tag put in through it is created on
- * the server once the writing code has finished its turn, and a changed field is stored with the next settings save
- * (see storeTagChangesMadeThroughExport()). A tag taken out through it is not deleted: deleting a tag on the server
- * also takes it off every character and group, which upstream's removal from this array doesn't, so a tag put back
- * later would have lost them. It is put back here instead, with a warning. Code in this file uses `tags` itself,
- * which sends nothing.
- * @type {Tag[]}
+ * A tag put into `tags` from outside this file is in the array but not in the index until it is taken in. Lookups
+ * by id find it all the same.
+ * @extends {EntityStore<Tag>}
  */
-const exportedTags = new Proxy(tags, {
-    set(target, property, value) {
-        noteTagsExportWrite();
-        const done = Reflect.set(target, property, value);
-        // Until the turn ends, lookups by id already find a tag put in.
-        if (isTagObject(value)) tagsStore.byId.set(value.id, value);
-        return done;
-    },
-    defineProperty(target, property, descriptor) {
-        noteTagsExportWrite();
-        return Reflect.defineProperty(target, property, descriptor);
-    },
-    deleteProperty(target, property) {
-        noteTagsExportWrite();
-        return Reflect.deleteProperty(target, property);
-    },
-});
+class TagStore extends EntityStore {
+    /** @param {Tag[]} array */
+    constructor(array) {
+        super(array, tag => tag.id);
+    }
+
+    /** @param {string} id @returns {Tag|undefined} */
+    get(id) {
+        const indexed = super.get(id);
+        if (indexed || this.array.length === this.byId.size) return indexed;
+        return this.array.find(tag => isTagObject(tag) && tag.id === id);
+    }
+
+    /** @param {string} id @returns {boolean} */
+    has(id) {
+        return this.get(id) !== undefined;
+    }
+}
 
 /**
  * Per-tag assignment count across every character and group, maintained incrementally (never by scanning
@@ -394,7 +402,7 @@ let expanded_tags_cache = [];
  * Wraps the same `tags` array in place, so other call sites reading `tags` directly keep working unchanged.
  * @type {EntityStore<Tag>}
  */
-let tagsStore = new EntityStore(tags, tag => tag.id);
+let tagsStore = new TagStore(tags);
 
 /**
  * Resolves an entity key (character avatar or group id) to that entity's own, resident `tag_ids` array -
@@ -483,6 +491,7 @@ function assignTagToKey(key, tagId) {
     const ids = resolveTagIdsArray(key);
     if (!ids || ids.includes(tagId)) return null;
     ids.push(tagId);
+    noteOwnTagIdsChange(ids, stored => stored.includes(tagId) ? stored : [...stored, tagId]);
     const wasFirstUse = !tagUsageCounts.has(tagId);
     tagUsageCounts.set(tagId, (tagUsageCounts.get(tagId) ?? 0) + 1);
     invalidateCharactersFuseIndex();
@@ -503,6 +512,7 @@ function unassignTagFromKey(key, tagId) {
     const idx = ids.indexOf(tagId);
     if (idx === -1) return null;
     ids.splice(idx, 1);
+    noteOwnTagIdsChange(ids, stored => stored.filter(id => id !== tagId));
     const wasLastUse = decrementTagUsage(tagId);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
@@ -522,6 +532,7 @@ function setKeyTagIds(key, tagIds) {
     for (const id of removedIds) decrementTagUsage(id);
     ids.length = 0;
     ids.push(...tagIds);
+    noteOwnTagIdsChange(ids, () => [...tagIds]);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     const tasks = [
@@ -537,6 +548,7 @@ function removeKeyTagIds(key) {
     if (!ids) return;
     const removedIds = [...ids];
     ids.length = 0;
+    noteOwnTagIdsChange(ids, () => []);
     for (const id of removedIds) decrementTagUsage(id);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
@@ -553,62 +565,231 @@ function decrementTagUsage(tagId) {
 }
 
 /**
- * Tag ids an extension wrote through `tag_map` for a key the page doesn't hold. The page doesn't know what the
- * server has for such a key, so a write to it only ever adds.
- * @type {Map<string, string[]>}
+ * Upstream's export of the same name: entity key to tag ids. A plain object of plain arrays like upstream's, so it
+ * can be cloned, posted to a worker or put in IndexedDB. Here it has an entry for each character and group the page
+ * holds and none for the rest of the library. Each of those entries is a getter and setter handing out the
+ * entity's own tag id array.
+ *
+ * Extensions change it directly. Reading or assigning an entry is noticed, and what changed in the arrays handed
+ * out is sent once the code that did it has finished its turn. A plain object can't report a key being added or
+ * deleted; those are found when a settings save is asked for, which is how upstream's extensions get `tag_map`
+ * stored, and whenever the characters or groups the page holds change. A change goes to the server as one assign
+ * or unassign per tag id that actually changed.
+ * @type {{[key: string]: string[]}}
  */
-const unheldTagMapEntries = new Map();
+const tag_map = {};
 
 /**
- * Tag id arrays written through `tag_map` that haven't been sent yet, each with its contents before the first
- * of those writes.
- * @type {Map<string[], {key: string, before: string[]}>}
+ * The getter of each entry of `tag_map` this file made, by key: the characters and groups the page held when it
+ * last looked. A key in here that `tag_map` no longer has, or has with something else in its place, was changed by
+ * an extension.
+ * @type {Map<string, () => string[]|undefined>}
  */
-const unsentTagMapWrites = new Map();
+const tagMapEntryGetters = new Map();
 
-/** @type {WeakMap<string[], string[]>} */
-const tagMapEntryViews = new WeakMap();
+/**
+ * The tag id arrays handed out through `tag_map`, each with the entity it belongs to and what it held when this
+ * file last wrote it. A difference from that is an extension's change.
+ * @type {Map<string[], {key: string, stored: string[]}>}
+ */
+const tagMapHandedOut = new Map();
 
-/** @param {string} key @returns {string[]|undefined} */
-function tagMapEntryIds(key) {
-    const held = resolveTagIdsArray(key);
-    if (held) {
-        unheldTagMapEntries.delete(key);
-        return held;
+/**
+ * For each key an extension gave `tag_map` that the page doesn't hold, the tag ids already sent for it. The page
+ * doesn't know what the server has for such a key, so its tags are only ever added.
+ * @type {Map<string, string[]>}
+ */
+const unheldTagMapSent = new Map();
+
+let tagExportTakeInQueued = false;
+let tagMapKeysToCheck = false;
+
+/**
+ * Records a change this file made to `ids` itself, so it isn't taken for an extension's.
+ * @param {string[]} ids
+ * @param {(stored: string[]) => string[]} change
+ */
+function noteOwnTagIdsChange(ids, change) {
+    const handed = tagMapHandedOut.get(ids);
+    if (handed) handed.stored = change(handed.stored);
+}
+
+/** @param {boolean} checkKeys - whether keys may have been added to `tag_map` or deleted from it */
+function queueTagExportTakeIn(checkKeys) {
+    tagMapKeysToCheck ||= checkKeys;
+    if (tagExportTakeInQueued) return;
+    tagExportTakeInQueued = true;
+    queueMicrotask(takeInTagExportWrites);
+}
+
+/**
+ * To call when `tags` or `tag_map` may have been changed from outside this file: what changed is found and sent
+ * once the calling code has finished its turn.
+ */
+export function noteTagExportsMayHaveChanged() {
+    queueTagExportTakeIn(true);
+}
+
+// groupsStore is rebuilt on every refetch, so a listener on the store itself would be lost.
+onAnyEntityStoreChange(store => {
+    if (store !== tagsStore) queueTagExportTakeIn(true);
+});
+
+function takeInTagExportWrites() {
+    tagExportTakeInQueued = false;
+    takeInTagsExportWrites();
+    takeInTagMapWrites();
+}
+
+function takeInTagMapWrites() {
+    // A tag put into `tags` has to exist on the server before it is assigned.
+    if (tagCreatesInFlight.size) {
+        Promise.allSettled([...tagCreatesInFlight]).then(takeInTagMapWrites);
+        return;
     }
-    return unheldTagMapEntries.get(key);
+    if (tagMapKeysToCheck) {
+        tagMapKeysToCheck = false;
+        takeInTagMapKeys();
+    }
+    sendTagMapChanges();
 }
 
 /** @param {string} key @param {string[]} ids */
-function noteTagMapWrite(key, ids) {
-    if (unsentTagMapWrites.has(ids)) return;
-    if (!unsentTagMapWrites.size) queueMicrotask(sendTagMapWrites);
-    unsentTagMapWrites.set(ids, { key, before: [...ids] });
+function noteTagIdsHandedOut(key, ids) {
+    if (!tagMapHandedOut.has(ids)) tagMapHandedOut.set(ids, { key, stored: [...ids] });
 }
 
 /**
- * Sends what was written through `tag_map` as one assign or unassign per tag id that actually changed. Runs once
- * the writing code has finished its turn, so a clear followed by a refill sends only the difference.
+ * Gives `tag_map` its entry for a character or group the page holds.
+ * @param {string} key
  */
-function sendTagMapWrites() {
-    // A tag pushed onto `tags` in the same turn has to exist on the server before it is assigned.
-    takeInTagsExportWrites();
-    if (tagCreatesInFlight.size) {
-        Promise.allSettled([...tagCreatesInFlight]).then(sendTagMapWrites);
-        return;
-    }
-    const writes = [...unsentTagMapWrites];
-    unsentTagMapWrites.clear();
+function defineTagMapEntry(key) {
+    const get = () => {
+        const ids = resolveTagIdsArray(key);
+        if (ids) {
+            noteTagIdsHandedOut(key, ids);
+            queueTagExportTakeIn(false);
+        }
+        return ids;
+    };
+    Object.defineProperty(tag_map, key, {
+        get,
+        set(value) {
+            const ids = resolveTagIdsArray(key);
+            if (!ids) {
+                // The page no longer holds it, so this is now a key an extension gave.
+                tagMapEntryGetters.delete(key);
+                Object.defineProperty(tag_map, key, { value, writable: true, enumerable: true, configurable: true });
+                queueTagExportTakeIn(true);
+                return;
+            }
+            const next = Array.isArray(value) ? [...value] : [];
+            noteTagIdsHandedOut(key, ids);
+            ids.length = 0;
+            ids.push(...next);
+            queueTagExportTakeIn(false);
+        },
+        enumerable: true,
+        configurable: true,
+    });
+    tagMapEntryGetters.set(key, get);
+}
+
+/**
+ * Takes in the keys an extension added to `tag_map`, replaced in it or deleted from it, then gives an entry to each
+ * character and group the page holds and drops the entries of those it no longer holds.
+ */
+function takeInTagMapKeys() {
     /** @type {(() => Promise<void>)[]} */
     const unheldSaves = [];
-    for (const [ids, { key, before }] of writes) {
+
+    for (const key of Object.getOwnPropertyNames(tag_map)) {
+        const ownGetter = tagMapEntryGetters.get(key);
+        if (ownGetter && Object.getOwnPropertyDescriptor(tag_map, key)?.get === ownGetter) continue;
+
+        const written = tag_map[key];
+        const wanted = (Array.isArray(written) ? written : []).filter(id => typeof id === 'string').filter(onlyUnique);
+        const held = resolveTagIdsArray(key);
+        if (!held) {
+            tagMapEntryGetters.delete(key);
+            let sent = unheldTagMapSent.get(key);
+            if (!sent) {
+                sent = [];
+                unheldTagMapSent.set(key, sent);
+            }
+            for (const id of wanted) {
+                if (sent.includes(id)) continue;
+                sent.push(id);
+                tagUsageCounts.set(id, (tagUsageCounts.get(id) ?? 0) + 1);
+                unheldSaves.push(queueTagSave(key, () => assignTagOnServer(key, id)));
+            }
+            continue;
+        }
+
+        unheldTagMapSent.delete(key);
+        if (ownGetter) {
+            // The extension could read what the entity had, so what it put in its place is the whole set.
+            noteTagIdsHandedOut(key, held);
+            held.length = 0;
+            held.push(...wanted);
+        } else {
+            // `tag_map` had no entry for it, so the extension never saw what the entity has: its tags only add.
+            for (const id of wanted) assignTagToKey(key, id);
+        }
+        defineTagMapEntry(key);
+    }
+
+    for (const key of [...tagMapEntryGetters.keys()]) {
+        if (Object.hasOwn(tag_map, key)) continue;
+        // Deleted by an extension, which in upstream leaves the entity with no tags.
+        tagMapEntryGetters.delete(key);
+        const held = resolveTagIdsArray(key);
+        if (held) {
+            noteTagIdsHandedOut(key, held);
+            held.length = 0;
+        }
+    }
+    for (const key of [...unheldTagMapSent.keys()]) {
+        if (!Object.hasOwn(tag_map, key)) unheldTagMapSent.delete(key);
+    }
+
+    const heldKeys = new Set();
+    for (const [key] of allTagIdsEntries()) {
+        heldKeys.add(key);
+        if (!tagMapEntryGetters.has(key)) defineTagMapEntry(key);
+    }
+    for (const key of [...tagMapEntryGetters.keys()]) {
+        if (heldKeys.has(key)) continue;
+        delete tag_map[key];
+        tagMapEntryGetters.delete(key);
+    }
+
+    if (unheldSaves.length) runWithConcurrency(unheldSaves, save => save());
+}
+
+/**
+ * Sends what an extension changed in the arrays handed out through `tag_map`, as one assign or unassign per tag id
+ * that actually changed, so a clear followed by a refill sends only the difference.
+ */
+function sendTagMapChanges() {
+    /** @type {(() => Promise<void>)[]} */
+    const unheldSaves = [];
+    for (const [ids, { key, stored }] of [...tagMapHandedOut]) {
+        const held = resolveTagIdsArray(key);
+        // The entity got another array, or the page no longer holds it: nothing reads this one any more.
+        if (held !== ids) tagMapHandedOut.delete(ids);
+
         const after = ids.filter(id => typeof id === 'string').filter(onlyUnique);
-        const added = after.filter(id => !before.includes(id));
-        if (resolveTagIdsArray(key)) {
-            const removed = before.filter(id => !after.includes(id));
-            // The assign and unassign below make the change themselves, from the contents before the write.
+        const added = after.filter(id => !stored.includes(id));
+        const removed = stored.filter(id => !after.includes(id));
+        if (!added.length && !removed.length) continue;
+
+        if (held === ids) {
+            // The assign and unassign below make the change themselves, from what the array held before it.
             ids.length = 0;
-            ids.push(...before);
+            ids.push(...stored);
+        }
+        if (held) {
             for (const id of added) assignTagToKey(key, id);
             for (const id of removed) unassignTagFromKey(key, id);
         } else {
@@ -620,92 +801,6 @@ function sendTagMapWrites() {
     }
     if (unheldSaves.length) runWithConcurrency(unheldSaves, save => save());
 }
-
-/**
- * @param {string} key @param {string[]} ids
- * @returns {string[]} `ids` as `tag_map` hands it out: an array whose changes are sent to the server
- */
-function tagMapEntryView(key, ids) {
-    let view = tagMapEntryViews.get(ids);
-    if (!view) {
-        view = new Proxy(ids, {
-            set(target, property, value) {
-                noteTagMapWrite(key, target);
-                return Reflect.set(target, property, value);
-            },
-            deleteProperty(target, property) {
-                noteTagMapWrite(key, target);
-                return Reflect.deleteProperty(target, property);
-            },
-        });
-        tagMapEntryViews.set(ids, view);
-    }
-    return view;
-}
-
-/** @param {string|symbol} key @param {any} value @returns {boolean} */
-function setTagMapEntry(key, value) {
-    if (typeof key !== 'string') return false;
-    const next = Array.isArray(value) ? [...value] : [];
-    let ids = tagMapEntryIds(key);
-    if (!ids) {
-        ids = [];
-        unheldTagMapEntries.set(key, ids);
-    }
-    noteTagMapWrite(key, ids);
-    ids.length = 0;
-    ids.push(...next);
-    return true;
-}
-
-/**
- * Upstream's export of the same name: entity key to tag ids. Here it is a view over the characters and groups the
- * page holds, so it has no entry for the rest of the library. Assigning or deleting an entry, or changing an
- * entry's array in place, is sent to the server as assigns and unassigns.
- * @type {{[key: string]: string[]}}
- */
-const tag_map = new Proxy({}, {
-    get(target, key) {
-        const ids = typeof key === 'string' ? tagMapEntryIds(key) : undefined;
-        return ids ? tagMapEntryView(/** @type {string} */ (key), ids) : Reflect.get(target, key);
-    },
-    has(target, key) {
-        return (typeof key === 'string' && tagMapEntryIds(key) !== undefined) || Reflect.has(target, key);
-    },
-    ownKeys() {
-        const keys = new Set(unheldTagMapEntries.keys());
-        for (const [key, ids] of allTagIdsEntries()) {
-            if (ids.length) keys.add(key);
-        }
-        return [...keys];
-    },
-    getOwnPropertyDescriptor(_target, key) {
-        const ids = typeof key === 'string' ? tagMapEntryIds(key) : undefined;
-        if (!ids) return undefined;
-        return { value: tagMapEntryView(/** @type {string} */ (key), ids), writable: true, enumerable: true, configurable: true };
-    },
-    set(_target, key, value) {
-        return setTagMapEntry(key, value);
-    },
-    defineProperty(_target, key, descriptor) {
-        return 'value' in descriptor && setTagMapEntry(key, descriptor.value);
-    },
-    deleteProperty(_target, key) {
-        if (typeof key !== 'string') return true;
-        const held = resolveTagIdsArray(key);
-        if (held) {
-            noteTagMapWrite(key, held);
-            held.length = 0;
-            return true;
-        }
-        const unheld = unheldTagMapEntries.get(key);
-        if (unheld) {
-            unsentTagMapWrites.delete(unheld);
-            unheldTagMapEntries.delete(key);
-        }
-        return true;
-    },
-});
 
 /**
  * What this tab last knew the server to store for each tag it holds, by id. `filter_state` belongs to this browser
@@ -747,6 +842,16 @@ function noteStoredTag(tag) {
     if (isTagObject(tag)) storedTagFields.set(tag.id, copyTagFields(tag));
 }
 
+/**
+ * Puts a tag the server stores into `tags`, indexed at once so it isn't taken for one an extension put in.
+ * @param {Tag} tag
+ */
+function addStoredTag(tag) {
+    tags.push(tag);
+    tagsStore.byId.set(tag.id, tag);
+    noteStoredTag(tag);
+}
+
 /** @param {string} id @param {Record<string, any>} fields - the fields the server now stores */
 function noteStoredTagFields(id, fields) {
     const stored = storedTagFields.get(id);
@@ -773,9 +878,6 @@ function tagFieldsChangedOnObject(tag) {
     return { patch, lacksStoredField };
 }
 
-/** @type {Tag[] | null} What `tags` held before the first write through the export in this turn. */
-let tagsBeforeExportWrites = null;
-
 /**
  * Tags put into `tags` through the export whose create the server hasn't stored yet.
  * @type {Map<string, Tag>}
@@ -787,38 +889,32 @@ const tagCreatesInFlight = new Set();
 /** @type {Set<string>} */
 const tagIdsBeingCreated = new Set();
 
-function noteTagsExportWrite() {
-    if (tagsBeforeExportWrites) return;
-    tagsBeforeExportWrites = [...tags];
-    queueMicrotask(takeInTagsExportWrites);
-}
-
 /**
- * Works out what the writes made through the export since the turn began added and took out. Sends a create for
- * each tag added, and puts back each tag taken out. A clear followed by a refill in one turn takes out only the
- * tags the refill left out.
+ * Works out what was put into `tags` and taken out of it from outside this file, by comparing it with `tagsStore`'s
+ * index: this file re-indexes in the same turn as each change it makes to `tags` itself, so a difference is someone
+ * else's. Sends a create for each tag added, and puts back each tag taken out. A clear followed by a refill takes
+ * out only the tags the refill left out.
  */
 function takeInTagsExportWrites() {
-    const before = tagsBeforeExportWrites;
-    if (!before) return;
-    tagsBeforeExportWrites = null;
-
-    const beforeIds = new Set();
-    for (const tag of before) {
-        if (isTagObject(tag)) beforeIds.add(tag.id);
+    const indexed = tagsStore.byId;
+    let differs = tags.length !== indexed.size;
+    for (let i = 0; !differs && i < tags.length; i++) {
+        differs = indexed.get(tags[i]?.id) !== tags[i];
     }
+    if (!differs) return;
+
     const afterIds = new Set();
     for (const tag of tags) {
         if (!isTagObject(tag)) continue;
         afterIds.add(tag.id);
-        if (!beforeIds.has(tag.id) && !storedTagFields.has(tag.id)) tagsAddedThroughExport.set(tag.id, tag);
+        if (!indexed.has(tag.id) && !storedTagFields.has(tag.id)) tagsAddedThroughExport.set(tag.id, tag);
     }
     /** @type {Tag[]} */
     const putBack = [];
-    for (const tag of before) {
-        if (!isTagObject(tag) || afterIds.has(tag.id)) continue;
-        tagsAddedThroughExport.delete(tag.id);
-        if (storedTagFields.has(tag.id) || tagIdsBeingCreated.has(tag.id)) putBack.push(tag);
+    for (const [id, tag] of indexed) {
+        if (!isTagObject(tag) || afterIds.has(id)) continue;
+        tagsAddedThroughExport.delete(id);
+        if (storedTagFields.has(id) || tagIdsBeingCreated.has(id)) putBack.push(tag);
     }
     for (const tag of putBack) tags.push(tag);
     if (putBack.length) {
@@ -959,7 +1055,8 @@ export async function storeTagChangesMadeThroughExport() {
 }
 
 async function storeTagExportChangesOnce() {
-    takeInTagsExportWrites();
+    tagMapKeysToCheck = true;
+    takeInTagExportWrites();
     sendTagsAddedThroughExport();
     if (tagCreatesInFlight.size) await Promise.allSettled([...tagCreatesInFlight]);
 
@@ -1022,6 +1119,7 @@ function removeTagIdLocally(tagId, { replaceWithId } = {}) {
             ids.push(replaceWithId);
             tagUsageCounts.set(replaceWithId, (tagUsageCounts.get(replaceWithId) ?? 0) + 1);
         }
+        noteOwnTagIdsChange(ids, () => [...ids]);
     }
     tagUsageCounts.delete(tagId);
     invalidateCharactersFuseIndex();
@@ -1060,7 +1158,7 @@ async function loadTagUsageCounts() {
  * keep indexing stale data and a fresh instance carries no subscribers of its own.
  */
 function rebuildTagStores() {
-    tagsStore = new EntityStore(tags, tag => tag.id);
+    tagsStore = new TagStore(tags);
 
     tagsStore.onChange(() => {
         invalidateTagsFuseIndex();
@@ -1294,8 +1392,7 @@ async function readTagDefinitionsFromServer(ids) {
                 if (local) {
                     takeServerTagFields(local, serverTag);
                 } else {
-                    tags.push(serverTag);
-                    noteStoredTag(serverTag);
+                    addStoredTag(serverTag);
                 }
                 changed = true;
             }
@@ -1434,6 +1531,9 @@ async function dropTagLocally(id, { replaceWithId } = {}) {
  * the new ids need that this tab doesn't have. Stops at the first failed request, keeping what it already applied.
  */
 async function rereadResidentEntityTagIds() {
+    // What an extension changed through `tag_map` is sent before the server's copy is read over it.
+    tagMapKeysToCheck = true;
+    takeInTagExportWrites();
     const keys = [];
     for (const [key] of allTagIdsEntries()) keys.push(key);
 
@@ -1467,6 +1567,7 @@ async function rereadResidentEntityTagIds() {
                 const added = serverIds.filter(tagId => !localSet.has(tagId));
                 const removed = ids.filter(tagId => !serverSet.has(tagId));
                 ids.splice(0, ids.length, ...serverIds);
+                noteOwnTagIdsChange(ids, () => [...serverIds]);
                 changedKeys.add(key);
                 for (const tagId of added) {
                     changedTagIds.add(tagId);
@@ -1974,6 +2075,7 @@ async function syncTagDefinitionsFromDigest(cachedTags) {
 
 /** @param {Tag[]} list */
 function setTagList(list) {
+    takeInTagsExportWrites();
     tags.length = 0;
     if (!Array.isArray(list)) return;
     for (const tag of list) tags.push(tag);
@@ -2582,8 +2684,7 @@ function mergeServerTagDefinitions(tagDefinitions) {
     let addedAny = false;
     for (const tag of tagDefinitions) {
         if (!tag || typeof tag.id !== 'string' || tagsStore.has(tag.id)) continue;
-        tags.push(tag);
-        noteStoredTag(tag);
+        addStoredTag(tag);
         addedAny = true;
     }
     if (addedAny) {
@@ -3628,8 +3729,7 @@ async function rereadTagDefinitions() {
         const local = tagsStore.get(serverTag.id);
         if (local === serverTag) continue;
         if (!local) {
-            tags.push(serverTag);
-            noteStoredTag(serverTag);
+            addStoredTag(serverTag);
             anyChanged = true;
             continue;
         }

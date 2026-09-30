@@ -2,7 +2,8 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 // `tag_map` is an upstream export of tags.js that extensions import, read and write. Here it covers the
-// characters and groups the page holds, and a write to it reaches the server as assigns and unassigns.
+// characters and groups the page holds, and a write to it reaches the server as assigns and unassigns. A key added
+// or deleted is found when a settings save is asked for, which is what upstream's extensions do after a write.
 
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
@@ -113,13 +114,14 @@ function recordWrites(page) {
 /**
  * Runs `fn` in the page with the exported `tag_map`, the way an extension module would use it.
  * @param {import('@playwright/test').Page} page
- * @param {string} fn Body of `(tag_map, arg) => ...`
+ * @param {string} fn Body of `(tag_map, arg, saveSettingsDebounced) => ...`
  * @param {any} [arg]
  */
 async function withTagMap(page, fn, arg) {
     return page.evaluate(async ({ fn, arg }) => {
         const { tag_map } = await import('/scripts/tags.js');
-        return new Function('tag_map', 'arg', fn)(tag_map, arg);
+        const { saveSettingsDebounced } = await import('/script.js');
+        return new Function('tag_map', 'arg', 'saveSettingsDebounced', fn)(tag_map, arg, saveSettingsDebounced);
     }, { fn, arg });
 }
 
@@ -161,7 +163,7 @@ test.describe('the tag_map export', () => {
         expect(seen.untagged).toEqual([]);
         expect(seen.missing).toBeUndefined();
         expect(seen.keys).toContain(fixture.tagged);
-        expect(seen.keys).not.toContain(fixture.untagged);
+        expect(seen.keys).toContain(fixture.untagged);
         expect(seen.entry).toEqual([fixture.tag]);
         expect(seen.json).toEqual([fixture.tag]);
     });
@@ -256,11 +258,62 @@ test.describe('the tag_map export', () => {
             const copy = JSON.parse(JSON.stringify(tag_map));
             Object.keys(tag_map).forEach(key => delete tag_map[key]);
             Object.assign(tag_map, copy);
+            saveSettingsDebounced();
         `);
 
         await page.waitForTimeout(NO_WRITE_SETTLE_MS);
         expect(writes).toEqual([]);
         expect(await serverTagsOf(page, fixture.card)).toEqual([fixture.tag]);
+    });
+
+    test('an entry deleted and given back with other tags sends only the difference', async ({ browser, page }) => {
+        const stamp = Date.now();
+        const fixture = await withSetupPage(browser, async (setup) => {
+            const stays = await createTag(setup, `tagmap-back-stays-${stamp}`);
+            const goes = await createTag(setup, `tagmap-back-goes-${stamp}`);
+            const comes = await createTag(setup, `tagmap-back-comes-${stamp}`);
+            const card = await createCharacter(setup, `TagMapBack-${stamp}`);
+            await api(setup, '/api/tags/assign', { id: card, tagId: stays });
+            await api(setup, '/api/tags/assign', { id: card, tagId: goes });
+            return { stays, goes, comes, card };
+        });
+        await loadApp(page);
+        const writes = recordWrites(page);
+
+        await withTagMap(page, `
+            delete tag_map[arg.card];
+            tag_map[arg.card] = [arg.stays, arg.comes];
+            saveSettingsDebounced();
+        `, fixture);
+
+        await expect.poll(() => serverTagsOf(page, fixture.card)).toEqual([fixture.stays, fixture.comes].sort());
+        expect([...writes].sort()).toEqual([
+            `/api/tags/assign ${JSON.stringify({ id: fixture.card, tagId: fixture.comes })}`,
+            `/api/tags/unassign ${JSON.stringify({ id: fixture.card, tagId: fixture.goes })}`,
+        ].sort());
+    });
+
+    test('a change to an array kept from an earlier turn is sent when a settings save is asked for', async ({ browser, page }) => {
+        const stamp = Date.now();
+        const fixture = await withSetupPage(browser, async (setup) => {
+            const pushed = await createTag(setup, `tagmap-kept-${stamp}`);
+            const card = await createCharacter(setup, `TagMapKept-${stamp}`);
+            return { pushed, card };
+        });
+        await loadApp(page);
+        const writes = recordWrites(page);
+
+        await page.evaluate(async ({ card, pushed }) => {
+            const { tag_map } = await import('/scripts/tags.js');
+            const { saveSettingsDebounced } = await import('/script.js');
+            const kept = tag_map[card];
+            await new Promise(resolve => setTimeout(resolve, 50));
+            kept.push(pushed);
+            saveSettingsDebounced();
+        }, fixture);
+
+        await expect.poll(() => serverTagsOf(page, fixture.card)).toEqual([fixture.pushed]);
+        expect(writes).toEqual([`/api/tags/assign ${JSON.stringify({ id: fixture.card, tagId: fixture.pushed })}`]);
     });
 
     test('deleting an entry the page holds unassigns its tags', async ({ browser, page }) => {
@@ -273,9 +326,11 @@ test.describe('the tag_map export', () => {
         });
         await loadApp(page);
 
-        await withTagMap(page, 'delete tag_map[arg.card];', fixture);
+        await withTagMap(page, 'delete tag_map[arg.card]; saveSettingsDebounced();', fixture);
 
         await expect.poll(() => serverTagsOf(page, fixture.card)).toEqual([]);
+        // The page still holds the character, so it has an entry again.
+        expect(await withTagMap(page, 'return tag_map[arg.card];', fixture)).toEqual([]);
     });
 
     test('a write for a character the page does not hold only adds', async ({ browser, page }) => {
@@ -294,11 +349,11 @@ test.describe('the tag_map export', () => {
         const before = await withTagMap(page, 'return tag_map[arg.card];', fixture);
         expect(before).toBeUndefined();
 
-        const readBack = await withTagMap(page, 'tag_map[arg.card] = [arg.added]; return [...tag_map[arg.card]];', fixture);
+        const readBack = await withTagMap(page, 'tag_map[arg.card] = [arg.added]; saveSettingsDebounced(); return [...tag_map[arg.card]];', fixture);
         expect(readBack).toEqual([fixture.added]);
         await expect.poll(() => serverTagsOf(page, fixture.card)).toEqual([fixture.kept, fixture.added].sort());
 
-        await withTagMap(page, 'delete tag_map[arg.card];', fixture);
+        await withTagMap(page, 'delete tag_map[arg.card]; saveSettingsDebounced();', fixture);
         await page.waitForTimeout(NO_WRITE_SETTLE_MS);
         expect(writes).toEqual([`/api/tags/assign ${JSON.stringify({ id: fixture.card, tagId: fixture.added })}`]);
         expect(await serverTagsOf(page, fixture.card)).toEqual([fixture.kept, fixture.added].sort());

@@ -2,8 +2,9 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 // `tags` is an upstream export of tags.js that extensions push to, splice and edit in place, and upstream stores it
-// with the settings. Here a tag put in is created on the server and a changed field is stored with the next settings
-// save, each as its own request about that one tag. A tag taken out is put back and named in a warning.
+// with the settings. Here a tag put in is created on the server as soon as a settings save is asked for, and a
+// changed field is stored with the save itself, each as its own request about that one tag. A tag taken out is put
+// back and named in a warning.
 
 /** @param {import('@playwright/test').Page} page */
 async function loadApp(page) {
@@ -98,14 +99,15 @@ function recordWrites(page) {
 /**
  * Runs `fn` in the page with the exported `tags` and `tag_map`, the way an extension module would use them.
  * @param {import('@playwright/test').Page} page
- * @param {string} fn Body of `async (tags, tag_map, arg) => ...`
+ * @param {string} fn Body of `async (tags, tag_map, arg, saveSettingsDebounced) => ...`
  * @param {any} [arg]
  */
 async function withTags(page, fn, arg) {
     return page.evaluate(async ({ fn, arg }) => {
         const { tags, tag_map } = await import('/scripts/tags.js');
+        const { saveSettingsDebounced } = await import('/script.js');
         const AsyncFunction = Object.getPrototypeOf(async () => { }).constructor;
-        return new AsyncFunction('tags', 'tag_map', 'arg', fn)(tags, tag_map, arg);
+        return new AsyncFunction('tags', 'tag_map', 'arg', 'saveSettingsDebounced', fn)(tags, tag_map, arg, saveSettingsDebounced);
     }, { fn, arg });
 }
 
@@ -145,7 +147,7 @@ test.describe('the tags export', () => {
         expect(result).toEqual({ same: true, isArray: true, holds: true, json: true });
     });
 
-    test('a pushed tag is created on the server without a settings save', async ({ page }) => {
+    test('a pushed tag is created on the server once a settings save is asked for', async ({ page }) => {
         const stamp = Date.now();
         const id = `tagsexp-push-${stamp}`;
         await loadApp(page);
@@ -156,12 +158,17 @@ test.describe('the tags export', () => {
             const { eventSource, eventTypes } = window['SillyTavern'].getContext();
             eventSource.on(eventTypes.SETTINGS_UPDATED, () => { window['__settingsUpdated']++; });
             tags.push({ id: arg, name: arg, color: '#112233', color2: '', folder_type: 'NONE' });
+            // Found by id before it has been taken in.
+            window['__foundAtOnce'] = window['SillyTavern'].getContext().getTagById(arg)?.id;
+            saveSettingsDebounced();
         `, id);
 
         await expect.poll(() => serverTag(page, id)).toMatchObject({ id, name: id, color: '#112233' });
         expect(writes.sent.filter(w => !w.includes(id))).toEqual([]);
         expect(writes.sent.map(w => w.split(' ')[0])).toEqual(['/api/tags/create']);
-        await expect.poll(() => page.evaluate(() => window['__settingsUpdated'])).toBe(1);
+        expect(await page.evaluate(() => window['__foundAtOnce'])).toBe(id);
+        // The settings save asked for may emit it as well.
+        await expect.poll(() => page.evaluate(() => window['__settingsUpdated'])).toBeGreaterThanOrEqual(1);
         // The server gave it a sort_order, and the page's copy has it.
         const stored = await serverTag(page, id);
         expect(typeof stored.sort_order).toBe('number');

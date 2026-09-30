@@ -17,6 +17,28 @@
  * @property {string} [newId] - the entity's id after the rename (for renamed)
  */
 
+/** @type {Set<(store: EntityStore<any>) => void>} */
+const anyStoreListeners = new Set();
+
+/**
+ * Calls `listener` with a store whenever which entities it holds may have changed: when it is built, re-indexed,
+ * or reports an entity created, removed or renamed, or a reset. For a consumer that has to follow a store which
+ * gets rebuilt, where a listener on the store itself would be lost.
+ * @param {(store: EntityStore<any>) => void} listener
+ * @returns {() => void} unsubscribe function
+ */
+export function onAnyEntityStoreChange(listener) {
+    anyStoreListeners.add(listener);
+    return () => anyStoreListeners.delete(listener);
+}
+
+/** @param {EntityStore<any>} store */
+function tellAnyStoreListeners(store) {
+    for (const listener of anyStoreListeners) {
+        listener(store);
+    }
+}
+
 /**
  * A generic store for a flat collection of uniquely-identified entities, backed by - and mutating in place -
  * an existing array.
@@ -31,6 +53,7 @@ export class EntityStore {
         this.byId = new Map(array.map(e => [getId(e), e]));
         /** @type {Set<(change: EntityChange<T>) => void>} */
         this.listeners = new Set();
+        tellAnyStoreListeners(this);
     }
 
     /** @param {string} id @returns {T|undefined} */
@@ -88,6 +111,7 @@ export class EntityStore {
     /** Re-syncs the id index without emitting a change; callers doing bulk ops should emit their own change afterward. */
     reindex() {
         this.byId = new Map(this.array.map(e => [this.getId(e), e]));
+        tellAnyStoreListeners(this);
     }
 
     /**
@@ -133,6 +157,7 @@ export class EntityStore {
         for (const listener of this.listeners) {
             listener(change);
         }
+        if (change.op !== 'updated' && change.op !== 'reordered') tellAnyStoreListeners(this);
         return change;
     }
 }
