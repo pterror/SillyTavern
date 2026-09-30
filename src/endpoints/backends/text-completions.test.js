@@ -4,6 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mock } from 'node:test';
 
 import express from 'express';
 
@@ -34,6 +35,28 @@ setConfigFilePath(path.join(__dirname, '..', '..', '..', 'config.yaml'));
 // port, and point a SECOND real `http` server (standing in for the text-completion backend) at it
 // via `server_urls.generic` in the settings fixture below - both real network I/O, no mocking
 // framework, matching this file's existing "real on-disk fixtures over mocks" convention.
+//
+// OpenRouter's server URL is fixed, so settings can't point it at a local backend; node-fetch is
+// rerouted instead. Needs --experimental-test-module-mocks.
+const canMockOpenRouter = typeof mock.module === 'function';
+/** @type {string|null} */
+let openRouterFakeBackendUrl = null;
+if (canMockOpenRouter) {
+    const realNodeFetch = (await import(path.join(__dirname, '..', '..', '..', 'node_modules', 'node-fetch', 'src', 'index.js'))).default;
+    mock.module('node-fetch', {
+        defaultExport: async (url, opts) => {
+            const target = new URL(url);
+            if (openRouterFakeBackendUrl && target.origin === 'https://openrouter.ai') {
+                return realNodeFetch(new URL(target.pathname + target.search, openRouterFakeBackendUrl), opts);
+            }
+            return realNodeFetch(url, opts);
+        },
+        namedExports: {},
+    });
+} else {
+    console.log('text-completions.test.js: node:test mock.module() is unavailable (run with --experimental-test-module-mocks) - skipping the OpenRouter /generate cases, which need it to redirect OpenRouter\'s fixed host to a local backend');
+}
+
 const { router, buildRawActionTextCompletionRequest } = await import('./text-completions.js');
 const { writeAllSettings } = await import('../../settings-store.js');
 const { writeSecret, deleteSecret, SECRET_KEYS } = await import('../secrets.js');
@@ -514,6 +537,99 @@ async function run() {
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].mes, 'Are you there, Rex?');
         assert.equal(branchAfter.messages[branchAfter.messages.length - 1].is_user, true);
     }
+
+    // Non-streaming raw-action sends on backends whose reply isn't `choices[0].text`: by the time the
+    // answer returns, both the user message and the reply are stored and the answer names the reply's node.
+    const nonStreamReplyFailures = [];
+    async function nonStreamReplyCase(name, fn) {
+        try {
+            await fn();
+            console.log(`  pass: ${name}`);
+        } catch (error) {
+            nonStreamReplyFailures.push(name);
+            console.log(`  FAIL: ${name}: ${error.message}`);
+        }
+    }
+
+    /**
+     * Sends one non-streaming raw-action message on a fresh branch and checks what is stored when the answer returns.
+     * @param {string} chatName
+     * @param {string} replyText The text the backend's answer carries.
+     */
+    async function assertNonStreamSendStored(chatName, replyText) {
+        await saveChatToTree(directories, ownerId, chatName, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, chatName);
+
+        const { status, data } = await postGenerate(buildTestApp(), {
+            owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+            type: 'normal', user_message: `Question for ${chatName}?`, stream: false,
+        });
+
+        assert.equal(status, 200);
+        assert.ok(JSON.stringify(data).includes(replyText), `the backend's reply reaches the page: ${JSON.stringify(data)}`);
+        const branchAfter = await loadBranch(directories, ownerId, chatName);
+        assert.deepEqual(
+            branchAfter.messages.slice(branchBefore.messages.length).map(m => ({ is_user: m.is_user, mes: m.mes })),
+            [{ is_user: true, mes: `Question for ${chatName}?` }, { is_user: false, mes: replyText }],
+            'the user message and the reply are both stored when the answer returns',
+        );
+        assert.equal(data.assistant_node_id, branchAfter.branch.leaf_id, 'the answer names the node the reply is stored at');
+    }
+
+    await nonStreamReplyCase('llama.cpp, non-streaming: `content` reply stored, assistant_node_id in the answer', async () => {
+        const backend = await startFakeBackend((req, res, body) => {
+            const json = (value) => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(value));
+            };
+            const route = (req.url ?? '').split('?')[0];
+            if (route === '/props') return json({ model_path: '/models/nonstream.gguf', build_info: 'b-nonstream', default_generation_settings: { n_ctx: 8192 } });
+            if (route === '/tokenize') return json({ tokens: String(JSON.parse(body || '{}').content ?? '').split(/(?=\s)/).filter(Boolean).map((_, i) => i) });
+            if (route === '/completion') return json({ content: 'Rex answers through llama.cpp.' });
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end('{}');
+        });
+        pointLlamaCppBackendAt(backend.url);
+        try {
+            await assertNonStreamSendStored('nonstream-llamacpp-chat', 'Rex answers through llama.cpp.');
+        } finally {
+            backend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    });
+
+    if (canMockOpenRouter) {
+        await nonStreamReplyCase('text-completion OpenRouter, non-streaming: `choices[0].message.content` reply stored, assistant_node_id in the answer', async () => {
+            const backend = await startFakeBackend((req, res) => {
+                const json = (value) => {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(value));
+                };
+                const route = (req.url ?? '').split('?')[0];
+                if (route === '/api/v1/models') return json({ data: [] });
+                if (route === '/api/v1/chat/completions') return json({ choices: [{ message: { role: 'assistant', content: 'Rex answers through OpenRouter.' } }] });
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end('{}');
+            });
+            const settings = buildSettingsFixture();
+            settings.textgenerationwebui_settings.type = 'openrouter';
+            settings.textgenerationwebui_settings.openrouter_model = 'test/openrouter-model';
+            writeAllSettings(directories, settings);
+            openRouterFakeBackendUrl = backend.url;
+            try {
+                await assertNonStreamSendStored('nonstream-openrouter-chat', 'Rex answers through OpenRouter.');
+            } finally {
+                openRouterFakeBackendUrl = null;
+                backend.server.close();
+                writeAllSettings(directories, buildSettingsFixture());
+            }
+        });
+    }
+
+    assert.deepEqual(nonStreamReplyFailures, [], 'non-streaming reply storage cases');
 
     // (c) is_impersonate: true - NEITHER the (spuriously passed) user_message NOR the generated
     // reply may ever land on the tree, even though the backend call succeeds and returns real text.

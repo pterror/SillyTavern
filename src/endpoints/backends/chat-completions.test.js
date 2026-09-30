@@ -742,6 +742,51 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex', 'the assistant message uses name2 (the character\'s display name), not name1');
     }
 
+    // (a-1) OpenAI with a text-completion model (TEXT_COMPLETION_MODELS) is sent to `/completions`, whose
+    // non-streaming answer carries the reply at `choices[0].text`: by the time the answer returns, both
+    // the user message and the reply are stored and the answer names the reply's node.
+    {
+        const requestedPaths = [];
+        const fakeBackend = await startFakeBackend((req, res) => {
+            requestedPaths.push((req.url ?? '').split('?')[0]);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ text: 'Rex answers as an instruct model.' }] }));
+        });
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'openai';
+        settings.oai_settings.openai_model = 'gpt-3.5-turbo-instruct';
+        settings.oai_settings.reverse_proxy = `${fakeBackend.url}/v1`;
+        writeAllSettings(directories, settings);
+
+        const chatName = 'nonstream-instruct-model-chat';
+        await saveChatToTree(directories, ownerId, chatName, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+        ]);
+        const branchBefore = await loadBranch(directories, ownerId, chatName);
+
+        try {
+            const { status, data } = await postGenerate(buildTestApp(), {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Instruct question, Rex?', stream: false,
+            });
+
+            assert.equal(status, 200);
+            assert.deepEqual(requestedPaths, ['/v1/completions'], 'a text-completion model is sent to /completions');
+            assert.equal(data.choices?.[0]?.text, 'Rex answers as an instruct model.', 'the backend\'s reply reaches the page');
+            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            assert.deepEqual(
+                branchAfter.messages.slice(branchBefore.messages.length).map(m => ({ is_user: m.is_user, mes: m.mes })),
+                [{ is_user: true, mes: 'Instruct question, Rex?' }, { is_user: false, mes: 'Rex answers as an instruct model.' }],
+                'the user message and the reply are both stored when the answer returns',
+            );
+            assert.equal(data.assistant_node_id, branchAfter.branch.leaf_id, 'the answer names the node the reply is stored at');
+        } finally {
+            fakeBackend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
     // (a-2) a model no tokenizer is known for: bias entries needing ids are left out of the sent
     // logit_bias and listed in a `dropped` warning, on raw-action and profile sends alike; raw-id
     // entries still go through.

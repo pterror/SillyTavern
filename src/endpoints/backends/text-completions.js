@@ -33,7 +33,7 @@ import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../t
 import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
-import { persistAssistantReply } from '../../assistant-reply-persist.js';
+import { persistAssistantReply, replyTextAsPageShows } from '../../assistant-reply-persist.js';
 
 export const router = express.Router();
 
@@ -1158,17 +1158,7 @@ router.post('/generate', async function (request, response) {
                 // continue/`continue_mag`/`editMessage()` and swipe/`addAlternatives()`+
                 // `selectDefaultChild()` rationale (unchanged from this route's own original design).
                 if (pendingAssistantPersist) {
-                    // Most api_types funneled through the shared `/v1/completions`-style URL above
-                    // return an OpenAI-completions-shaped `{choices: [{text, ...}]}` body (already
-                    // true of `data` here, INFERMATICAI's own remap included). Ollama is the one
-                    // exception reachable in this non-streaming branch: its real `/api/generate`
-                    // endpoint (see the `api_type === TEXTGEN_TYPES.OLLAMA` request-body construction
-                    // above, `url += '/api/generate'`) replies `{response: "...", done: true, ...}`
-                    // when `stream` is false, NOT `{choices: [...]}`.
-                    const generatedText = apiType === TEXTGEN_TYPES.OLLAMA
-                        ? (data?.response ?? '')
-                        : (data?.choices?.[0]?.text ?? '');
-
+                    const generatedText = replyTextAsPageShows(data, 'textgenerationwebui');
                     const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
                     if (persisted) {
                         data.assistant_node_id = persisted.node_id;

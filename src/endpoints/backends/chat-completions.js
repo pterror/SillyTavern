@@ -74,7 +74,7 @@ import { prepareOpenAIMessages } from '../../chat-completion-prepare-messages.js
 import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra, addAlternatives, selectDefaultChild } from '../../message-tree-db.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
-import { persistAssistantReply } from '../../assistant-reply-persist.js';
+import { persistAssistantReply, replyTextAsPageShows } from '../../assistant-reply-persist.js';
 import { getEnabledServerTools, toOpenAIToolSchema } from '../../server-tools.js';
 import {
     TEXT_COMPLETION_MODELS,
@@ -3941,15 +3941,14 @@ router.post('/generate', async function (request, response) {
     //
     // Streaming persistence status, precisely:
     // - The shared default/legacy inline dispatch block (search `forwardAndPersistCompactStream` below):
-    //   PERSISTS FOR REAL, for both streaming and non-streaming. This block always builds a real
-    //   OpenAI-Chat-Completions-shaped request (`/chat/completions`, `messages: [...]`) for every
-    //   raw-action call (re-verified: the raw-action branch below always produces real chat
-    //   messages, never a plain string prompt, so `isTextCompletion` - see that block's own
-    //   derivation - is never true for a raw-action request) - its streamed SSE chunks are therefore
-    //   genuinely OpenAI-chat-completions-delta-shaped (`data: {"choices":[{"delta":{"content":
-    //   "..."}}]}`), and `forwardAndPersistCompactStream()` tees the untouched byte pipe to accumulate
-    //   `choices[0].delta.content` per chunk, persisting the full text via the shared
-    //   `persistAssistantReply()` (../../assistant-reply-persist.js) once the stream ends.
+    //   PERSISTS FOR REAL, for both streaming and non-streaming. A raw-action request goes to
+    //   `/chat/completions` unless its model is in TEXT_COMPLETION_MODELS (`isTextCompletion`), which
+    //   sends it to `/completions` with a string prompt. Non-streaming, the reply is read the way the
+    //   page reads it (`replyTextAsPageShows()`), which covers both answer shapes. Streaming,
+    //   `forwardAndPersistCompactStream()` accumulates `choices[0].delta.content` per chunk and persists
+    //   the full text via the shared `persistAssistantReply()` (../../assistant-reply-persist.js) once
+    //   the stream ends; a `/completions` stream carries `choices[0].text` instead, so for those models
+    //   neither the page nor the store gets the streamed text.
     // - ALL 12 provider-`switch` functions dispatched below (sendClaudeRequest/sendMakerSuiteRequest
     //   (also used for VERTEXAI)/sendAI21Request/sendMistralAIRequest/sendCohereRequest/
     //   sendDeepSeekRequest/sendAimlapiRequest/sendXaiRequest/sendChutesRequest/sendMinimaxRequest/
@@ -4832,15 +4831,9 @@ router.post('/generate', async function (request, response) {
             // own original design; also shared, verbatim, with text-completions.js's own identical
             // persistence for its backend).
             if (pendingAssistantPersist) {
-                // This shared block only ever builds an OpenAI-Chat-Completions-shaped request
-                // (`/chat/completions`, `messages: [...]`) UNLESS `isTextCompletion` is true (a
-                // `/completions`-style legacy text-completion model routed through this same chat-
-                // completion source) - re-verified above (`isTextCompletion` derivation, `endpointUrl`
-                // branch, `textPrompt`/`convertTextCompletionPrompt` construction). The raw-action
-                // branch above always builds real chat messages (never a plain string prompt), so
-                // `isTextCompletion` is never true for it - only the real chat-shaped
-                // `{choices: [{message: {content}}]}` response is ever extracted here.
-                const generatedText = json?.choices?.[0]?.message?.content ?? '';
+                // `/chat/completions` answers `choices[0].message.content`; a TEXT_COMPLETION_MODELS model
+                // (`isTextCompletion`) goes to `/completions`, which answers `choices[0].text`.
+                const generatedText = replyTextAsPageShows(json, 'openai');
                 const persisted = await persistAssistantReply(pendingAssistantPersist, generatedText);
                 if (persisted) json.assistant_node_id = persisted.node_id;
             }
