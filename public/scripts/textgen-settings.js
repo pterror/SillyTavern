@@ -27,6 +27,7 @@ import { AbortReason } from './util/AbortReason.js';
 import { getSortableDelay, onlyUnique, arraysEqual, isObject } from './utils.js';
 import { setting_names } from './textgen-setting-names.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
+import { reportStoredHeader } from './stored-report.js';
 
 export const textgen_types = {
     OOBA: 'ooba',
@@ -1232,6 +1233,7 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         signal: signal,
     });
 
+    reportStoredHeader(response);
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);

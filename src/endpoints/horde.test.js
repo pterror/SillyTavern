@@ -615,6 +615,53 @@ async function run() {
         }
     }
 
+    // An error answer after the user message was stored still reports it: a failed Horde submit's
+    // `{ error }` answer carries `stored` and the X-ST-Stored header.
+    {
+        const chatName = 'horde-stored-error';
+        const failingCoordinator = http.createServer((req, res) => {
+            req.on('data', () => { });
+            req.on('end', () => {
+                res.writeHead(500, { 'Content-Type': 'text/plain' });
+                res.end('horde exploded');
+            });
+        });
+        await new Promise(resolve => failingCoordinator.listen(0, '127.0.0.1', resolve));
+        hordeFakeBackendUrl = `http://127.0.0.1:${failingCoordinator.address().port}`;
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        try {
+            await saveChatToTree(directories, ownerId, chatName, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+            ]);
+            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const ref = `ref-${chatName}`;
+            const res = await fetch(`http://127.0.0.1:${server.address().port}/api/horde/generate-text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref,
+                    trusted_workers: true, models: ['some-horde-model'],
+                }),
+            });
+            const text = await res.text();
+            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const added = branchAfter.messages.slice(branchBefore.messages.length);
+            assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
+            const stored = [{ ref, node_id: added[0].node_id }];
+            assert.deepEqual(JSON.parse(res.headers.get('X-ST-Stored') ?? 'null'), stored, `the X-ST-Stored header names the stored user message (status ${res.status}, body ${text})`);
+            assert.deepEqual(JSON.parse(text), { error: { message: 'horde exploded' }, stored });
+        } finally {
+            failingCoordinator.close();
+            hordeFakeBackendUrl = null;
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
     console.log('horde.test.js: all assertions passed');
 }
 

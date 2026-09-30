@@ -10,6 +10,7 @@ import { getMessageTimeStamp } from './RossAscends-mods.js';
 // owner for every chatOp*() below. See _currentOwner().
 import { selected_group, groupsStore } from './group-chats.js';
 import { t } from './i18n.js';
+import { setStoredAdopter } from './stored-report.js';
 
 // Without `noUncheckedIndexedAccess` (a project-wide tsconfig flag, out of scope to flip here since
 // it's shared by all 10 chat-strict files), `chat[i]` types as always-`ChatMessage`, never
@@ -89,6 +90,8 @@ export function adoptStored(stored) {
         }
     }
 }
+
+setStoredAdopter(adoptStored);
 
 // The only write path for messages; mutating a frozen message directly throws TypeError.
 /**

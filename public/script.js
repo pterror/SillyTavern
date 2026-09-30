@@ -284,6 +284,7 @@ import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { MessageFormatter } from './scripts/message-formatter.js';
 // Lives in message-formatting.js, isolated from this module's chat-store write access; re-exported for existing importers.
 import { messageFormatting } from './scripts/message-formatting.js';
+import { reportStoredHeader } from './scripts/stored-report.js';
 export { messageFormatting };
 // Lives in chat-store.js, the only module allowed to write messages; re-exported for existing importers.
 import {
@@ -5246,7 +5247,7 @@ export async function sendGenerationRequest(type, data, options = {}) {
         // differs (no client-resolved `prompt`/`params` at all - the server resolves those) even
         // though the submit-then-poll mechanics are shared (see that function's own doc comment).
         if (data.owner_id) {
-            return await generateHordeRawAction(data, abortController.signal, true, adoptStored);
+            return await generateHordeRawAction(data, abortController.signal, true);
         }
         return await generateHorde(data.prompt, data, abortController.signal, true);
     }
@@ -5259,11 +5260,17 @@ export async function sendGenerationRequest(type, data, options = {}) {
         signal: abortController.signal,
     });
 
+    // An error answer after the server stored the user message names it in this header, whatever its body.
+    reportStoredHeader(response);
     if (!response.ok) {
-        throw await response.json();
+        const error = await response.json();
+        adoptStored(error?.stored);
+        throw error;
     }
 
-    return await response.json();
+    const answer = await response.json();
+    adoptStored(answer?.stored);
+    return answer;
 }
 
 /**

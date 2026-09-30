@@ -4502,6 +4502,92 @@ async function run() {
         assert.deepEqual(failures, [], 'stored ref cases');
     }
 
+    // An error answer after the user message was stored still reports it: a body the route builds
+    // carries `stored`, and every error answer carries the X-ST-Stored header. A backend's own error
+    // passed on from a stream keeps its status and body exactly.
+    {
+        const failures = [];
+        const backendError = (_req, res) => {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('backend exploded');
+        };
+        const passedOn = (answer) => {
+            assert.equal(answer.status, 500, 'the backend\'s status is kept');
+            assert.equal(answer.text, 'backend exploded', 'the backend\'s body is kept exactly');
+        };
+        const cases = [
+            {
+                name: 'default block, non-streaming, backend error (200 error body)', stream: false, point: pointBackendAt, handler: backendError,
+                expect: (answer, stored) => {
+                    assert.equal(answer.status, 200);
+                    assert.deepEqual(JSON.parse(answer.text), { error: { message: 'Internal Server Error' }, quota_error: false, stored });
+                },
+            },
+            {
+                name: 'default block, non-streaming, backend unreachable (catch-all)', stream: false, point: pointBackendAt,
+                expect: (answer, stored) => assert.deepEqual(JSON.parse(answer.text).stored, stored),
+            },
+            { name: 'default block, streaming, backend error passed on', stream: true, point: pointBackendAt, handler: backendError, expect: passedOn },
+            { name: 'default block with a server tool, streaming, backend error passed on', stream: true, point: pointBackendAtWithToolsEnabled, handler: backendError, expect: passedOn, tool: true },
+            {
+                name: 'Claude, non-streaming, backend error (500)', stream: false, point: pointClaudeBackendAt, handler: backendError,
+                expect: (answer, stored) => {
+                    assert.equal(answer.status, 500);
+                    assert.deepEqual(JSON.parse(answer.text), { error: true, stored });
+                },
+            },
+            { name: 'Claude, streaming, backend error passed on', stream: true, point: pointClaudeBackendAt, handler: backendError, expect: passedOn },
+        ];
+        for (const { name, stream, point, handler, expect, tool } of cases) {
+            const chatName = `cc-stored-error-${name.replace(/\W+/g, '-')}`;
+            const backend = handler ? await startFakeBackend(handler) : null;
+            point(backend ? backend.url : 'http://127.0.0.1:9');
+            if (tool) {
+                registerServerTool({
+                    id: 'test-tool:stored_error', name: 'stored_error', description: 'Never called.',
+                    parameters: { type: 'object', properties: {} }, invoke: async () => 'unused',
+                });
+            }
+            const app = buildTestApp();
+            const server = app.listen(0, '127.0.0.1');
+            await new Promise(resolve => server.once('listening', resolve));
+            try {
+                await saveChatToTree(directories, ownerId, chatName, [
+                    { chat_metadata: {} },
+                    { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+                ]);
+                const branchBefore = await loadBranch(directories, ownerId, chatName);
+                const ref = `ref-${chatName}`;
+                const res = await fetch(`http://127.0.0.1:${server.address().port}/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                        type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream,
+                    }),
+                });
+                const answer = { status: res.status, headers: res.headers, text: await res.text() };
+                const branchAfter = await loadBranch(directories, ownerId, chatName);
+                const added = branchAfter.messages.slice(branchBefore.messages.length);
+                assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
+                const stored = [{ ref, node_id: added[0].node_id }];
+                assert.deepEqual(JSON.parse(answer.headers.get('X-ST-Stored') ?? 'null'), stored, `the X-ST-Stored header names the stored user message (status ${answer.status}, body ${answer.text})`);
+                expect(answer, stored);
+                console.log(`  pass: ${name}`);
+            } catch (error) {
+                failures.push(name);
+                console.log(`  FAIL: ${name}: ${error.message}`);
+            } finally {
+                if (tool) unregisterServerTool('test-tool:stored_error');
+                backend?.server.close();
+                server.closeAllConnections?.();
+                await new Promise(resolve => server.close(resolve));
+                writeAllSettings(directories, buildSettingsFixture());
+            }
+        }
+        assert.deepEqual(failures, [], 'stored error cases');
+    }
+
     console.log('chat-completions.test.js: all assertions passed');
 }
 

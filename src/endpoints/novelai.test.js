@@ -882,6 +882,49 @@ async function run() {
         }
     }
 
+    // An error answer after the user message was stored still reports it: NovelAI's own 500 carries
+    // `stored` and the X-ST-Stored header.
+    {
+        const chatName = 'novel-stored-error-nonstream';
+        const backend = await startFakeBackend((_req, res) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ message: 'backend exploded' }));
+        });
+        pointNovelBackendAt(backend.url);
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        try {
+            await saveChatToTree(directories, ownerId, chatName, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+            ]);
+            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const ref = `ref-${chatName}`;
+            const res = await fetch(`http://127.0.0.1:${server.address().port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, stream: false,
+                }),
+            });
+            const text = await res.text();
+            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const added = branchAfter.messages.slice(branchBefore.messages.length);
+            assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
+            const stored = [{ ref, node_id: added[0].node_id }];
+            assert.equal(res.status, 500);
+            assert.deepEqual(JSON.parse(res.headers.get('X-ST-Stored') ?? 'null'), stored, `the X-ST-Stored header names the stored user message (body ${text})`);
+            assert.deepEqual(JSON.parse(text), { error: { message: 'backend exploded' }, stored });
+        } finally {
+            backend.server.close();
+            pointNovelBackendAt(null);
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
     console.log('novelai.test.js: all assertions passed');
 }
 

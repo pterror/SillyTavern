@@ -1029,6 +1029,62 @@ async function run() {
         }
     }
 
+    // An error answer after the user message was stored still reports it: Kobold's own 400 carries
+    // `stored`, and every error answer carries the X-ST-Stored header. A backend's own error passed on
+    // from a stream keeps its status and body exactly.
+    for (const streaming of [false, true]) {
+        const chatName = `kobold-stored-error-${streaming ? 'stream' : 'nonstream'}`;
+        const backend = await startFakeBackend((req, res) => {
+            if (req.url === '/extra/generate/stream' || req.url === '/v1/generate') {
+                res.writeHead(500, { 'Content-Type': 'text/plain' });
+                return res.end('backend exploded');
+            }
+            res.writeHead(404);
+            res.end();
+        });
+        const settings = buildSettingsFixture();
+        settings.kai_settings.api_server = backend.url;
+        settings.kai_settings.streaming_kobold = streaming;
+        writeAllSettings(directories, settings);
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        try {
+            await saveChatToTree(directories, ownerId, chatName, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+            ]);
+            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const ref = `ref-${chatName}`;
+            const res = await fetch(`http://127.0.0.1:${server.address().port}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref, streaming,
+                }),
+            });
+            const text = await res.text();
+            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const added = branchAfter.messages.slice(branchBefore.messages.length);
+            assert.deepEqual(added.map(m => m.mes), [`Question for ${chatName}?`], 'only the user message was stored');
+            const stored = [{ ref, node_id: added[0].node_id }];
+            assert.deepEqual(JSON.parse(res.headers.get('X-ST-Stored') ?? 'null'), stored, `${streaming ? 'streaming' : 'non-streaming'}: the X-ST-Stored header names the stored user message (status ${res.status}, body ${text})`);
+            if (streaming) {
+                assert.equal(res.status, 500, 'the backend\'s status is kept');
+                assert.equal(text, 'backend exploded', 'the backend\'s body is kept exactly');
+            } else {
+                assert.equal(res.status, 400);
+                assert.deepEqual(JSON.parse(text), { error: { message: 'backend exploded' }, stored });
+            }
+        } finally {
+            backend.server.close();
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
     console.log('kobold.test.js: all assertions passed');
 }
 
