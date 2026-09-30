@@ -96,7 +96,7 @@ import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
 import { SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
-import { getTagMapSnapshot, tags, tagsStore, importTags } from './tags.js';
+import { tag_map, tags, tagsStore, importTags } from './tags.js';
 import { getTextGenServer, textgenerationwebui_settings } from './textgen-settings.js';
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
@@ -252,10 +252,7 @@ export function getContext() {
         getCurrentLocale,
         addLocaleData,
         tags,
-        // Lazy getter, same reason as characterId above: only paid for by callers that actually read it.
-        get tagMap() {
-            return getTagMapSnapshot();
-        },
+        tagMap: tag_map,
         getTagById,
         menuType: menu_type,
         createCharacterData: create_save,

@@ -57,7 +57,7 @@ export {
     removeTagFromMap,
     invalidateAssignedTagIdsCache,
     getAssignedTagIds,
-    getTagMapSnapshot,
+    tag_map,
     tagsStore,
     isTagAssignedToKey,
     mergeServerTagDefinitions,
@@ -406,10 +406,7 @@ function* allTagIdsEntries() {
 }
 
 /**
- * A fresh `{[key: string]: string[]}` snapshot of every resident entity's tag assignments - for external
- * consumers (getContext().tagMap, the tag backup file) that need a plain object rather than reading `tag_ids`
- * off each entity directly. Computed on demand, so it can never itself drift from the entities it was built
- * from - never held as standing state, only ever built fresh for the one caller that asked for it.
+ * The tag assignments of every resident entity as a plain object, for the tag backup file.
  * @returns {{[key: string]: string[]}}
  */
 function getTagMapSnapshot() {
@@ -527,6 +524,155 @@ function decrementTagUsage(tagId) {
     if (wasLastUse) tagUsageCounts.delete(tagId); else tagUsageCounts.set(tagId, count);
     return wasLastUse;
 }
+
+/**
+ * Tag ids an extension wrote through `tag_map` for a key the page doesn't hold. The page doesn't know what the
+ * server has for such a key, so a write to it only ever adds.
+ * @type {Map<string, string[]>}
+ */
+const unheldTagMapEntries = new Map();
+
+/**
+ * Tag id arrays written through `tag_map` that haven't been sent yet, each with its contents before the first
+ * of those writes.
+ * @type {Map<string[], {key: string, before: string[]}>}
+ */
+const unsentTagMapWrites = new Map();
+
+/** @type {WeakMap<string[], string[]>} */
+const tagMapEntryViews = new WeakMap();
+
+/** @param {string} key @returns {string[]|undefined} */
+function tagMapEntryIds(key) {
+    const held = resolveTagIdsArray(key);
+    if (held) {
+        unheldTagMapEntries.delete(key);
+        return held;
+    }
+    return unheldTagMapEntries.get(key);
+}
+
+/** @param {string} key @param {string[]} ids */
+function noteTagMapWrite(key, ids) {
+    if (unsentTagMapWrites.has(ids)) return;
+    if (!unsentTagMapWrites.size) queueMicrotask(sendTagMapWrites);
+    unsentTagMapWrites.set(ids, { key, before: [...ids] });
+}
+
+/**
+ * Sends what was written through `tag_map` as one assign or unassign per tag id that actually changed. Runs once
+ * the writing code has finished its turn, so a clear followed by a refill sends only the difference.
+ */
+function sendTagMapWrites() {
+    const writes = [...unsentTagMapWrites];
+    unsentTagMapWrites.clear();
+    /** @type {(() => Promise<void>)[]} */
+    const unheldSaves = [];
+    for (const [ids, { key, before }] of writes) {
+        const after = ids.filter(id => typeof id === 'string').filter(onlyUnique);
+        const added = after.filter(id => !before.includes(id));
+        if (resolveTagIdsArray(key)) {
+            const removed = before.filter(id => !after.includes(id));
+            // The assign and unassign below make the change themselves, from the contents before the write.
+            ids.length = 0;
+            ids.push(...before);
+            for (const id of added) assignTagToKey(key, id);
+            for (const id of removed) unassignTagFromKey(key, id);
+        } else {
+            for (const id of added) {
+                tagUsageCounts.set(id, (tagUsageCounts.get(id) ?? 0) + 1);
+                unheldSaves.push(queueTagSave(key, () => assignTagOnServer(key, id)));
+            }
+        }
+    }
+    if (unheldSaves.length) runWithConcurrency(unheldSaves, save => save());
+}
+
+/**
+ * @param {string} key @param {string[]} ids
+ * @returns {string[]} `ids` as `tag_map` hands it out: an array whose changes are sent to the server
+ */
+function tagMapEntryView(key, ids) {
+    let view = tagMapEntryViews.get(ids);
+    if (!view) {
+        view = new Proxy(ids, {
+            set(target, property, value) {
+                noteTagMapWrite(key, target);
+                return Reflect.set(target, property, value);
+            },
+            deleteProperty(target, property) {
+                noteTagMapWrite(key, target);
+                return Reflect.deleteProperty(target, property);
+            },
+        });
+        tagMapEntryViews.set(ids, view);
+    }
+    return view;
+}
+
+/** @param {string|symbol} key @param {any} value @returns {boolean} */
+function setTagMapEntry(key, value) {
+    if (typeof key !== 'string') return false;
+    const next = Array.isArray(value) ? [...value] : [];
+    let ids = tagMapEntryIds(key);
+    if (!ids) {
+        ids = [];
+        unheldTagMapEntries.set(key, ids);
+    }
+    noteTagMapWrite(key, ids);
+    ids.length = 0;
+    ids.push(...next);
+    return true;
+}
+
+/**
+ * Upstream's export of the same name: entity key to tag ids. Here it is a view over the characters and groups the
+ * page holds, so it has no entry for the rest of the library. Assigning or deleting an entry, or changing an
+ * entry's array in place, is sent to the server as assigns and unassigns.
+ * @type {{[key: string]: string[]}}
+ */
+const tag_map = new Proxy({}, {
+    get(target, key) {
+        const ids = typeof key === 'string' ? tagMapEntryIds(key) : undefined;
+        return ids ? tagMapEntryView(/** @type {string} */ (key), ids) : Reflect.get(target, key);
+    },
+    has(target, key) {
+        return (typeof key === 'string' && tagMapEntryIds(key) !== undefined) || Reflect.has(target, key);
+    },
+    ownKeys() {
+        const keys = new Set(unheldTagMapEntries.keys());
+        for (const [key, ids] of allTagIdsEntries()) {
+            if (ids.length) keys.add(key);
+        }
+        return [...keys];
+    },
+    getOwnPropertyDescriptor(_target, key) {
+        const ids = typeof key === 'string' ? tagMapEntryIds(key) : undefined;
+        if (!ids) return undefined;
+        return { value: tagMapEntryView(/** @type {string} */ (key), ids), writable: true, enumerable: true, configurable: true };
+    },
+    set(_target, key, value) {
+        return setTagMapEntry(key, value);
+    },
+    defineProperty(_target, key, descriptor) {
+        return 'value' in descriptor && setTagMapEntry(key, descriptor.value);
+    },
+    deleteProperty(_target, key) {
+        if (typeof key !== 'string') return true;
+        const held = resolveTagIdsArray(key);
+        if (held) {
+            noteTagMapWrite(key, held);
+            held.length = 0;
+            return true;
+        }
+        const unheld = unheldTagMapEntries.get(key);
+        if (unheld) {
+            unsentTagMapWrites.delete(unheld);
+            unheldTagMapEntries.delete(key);
+        }
+        return true;
+    },
+});
 
 /**
  * Removes `tagId` from every resident key, putting `replaceWithId` in its place when given. Sends nothing to the
