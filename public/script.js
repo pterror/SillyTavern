@@ -235,7 +235,7 @@ import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_set
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
-import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
+import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, showMediaLightbox } from './scripts/chats.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, handleFieldEditKey, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
 import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
 import { initPresetManager } from './scripts/preset-manager.js';
@@ -14175,6 +14175,19 @@ jQuery(async function () {
                 return false;
             });
         }
+    });
+
+    // Clicking a zoomed avatar opens its image in the lightbox. The control bar (drag handle, close) keeps its own behavior.
+    $(document).on('click', '.zoomed_avatar', function (e) {
+        if (e.target.closest('.panelControlBar')) {
+            return;
+        }
+        const image = this.querySelector('.zoomed_avatar_img');
+        const url = image?.getAttribute('src');
+        if (!url) {
+            return;
+        }
+        showMediaLightbox(url, image.alt || '');
     });
 
     document.addEventListener('click', function (e) {
