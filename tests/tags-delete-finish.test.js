@@ -184,7 +184,7 @@ describe('finishDeletedTags', () => {
         await assign('g2', 'x');
         await assign('g2', 'y');
         await assign('g3', 'z');
-        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         expect((await metadataDb.getAllTagUsage(directories))?.approximate).toEqual(['y']);
         const changesBefore = { c1: changeFieldsFor('c1.png').length, c2: changeFieldsFor('c2.png').length, c3: changeFieldsFor('c3.png').length };
 
@@ -221,7 +221,7 @@ describe('finishDeletedTags', () => {
         await assign('c1.png', 'x');
         await assign('c1.png', 'y');
         await assign('g1', 'x');
-        expect(await metadataDb.deleteTagDefinition(directories, 'x', null)).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 'x', null)).toMatchObject({ refused: [] });
 
         await metadataDb.finishDeletedTags(directories);
 
@@ -241,7 +241,7 @@ describe('finishDeletedTags', () => {
             db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('ghost.png', 'x');
             db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run('ghostgroup', 'x');
         });
-        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
         await metadataDb.finishDeletedTags(directories);
@@ -267,7 +267,7 @@ describe('finishDeletedTags', () => {
             insert.run('legacy.png', 'x');
             insert.run('ghost.png', 'x');
         });
-        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
         await metadataDb.finishDeletedTags(directories);
@@ -290,7 +290,7 @@ describe('finishDeletedTags', () => {
         await seedGroup('g1');
         await assign('c1.png', 'x');
         await assign('g1', 'x');
-        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
 
         // After the character batch commits, y is deleted into w, which moves x's mark onto w.
         let marked = false;
@@ -374,7 +374,7 @@ describe('finishDeletedTags over many batches', () => {
             const insert = db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)');
             for (const id of ['g00500.png', 'g01200.png']) insert.run(id, 'x');
         });
-        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
         /** @type {any[]} */
@@ -407,7 +407,7 @@ describe('finishDeletedTags over many batches', () => {
         await saveTags(['x', 'y']);
         await seedCharacterCopies(CHARACTERS, tagsOf);
         await seedGroupCopies(GROUPS, tagsOf);
-        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
 
         transactionCalls = 0;
         crashAtTransaction = 2;

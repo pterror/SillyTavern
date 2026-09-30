@@ -94,6 +94,7 @@ async function assign(id, tagId) {
 async function deleteTag(id, mergeInto) {
     const response = await post('/api/tags/delete', mergeInto === undefined ? { id } : { id, mergeInto });
     expect(response.status).toBe(200);
+    return response.json();
 }
 
 async function listedTagIds() {
@@ -159,26 +160,43 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
         });
     });
 
-    test('an unknown merge target, or the tag itself, deletes with no merge and warns naming it', async () => {
+    test('a delete answers what it did: no refusal, the tag merged into, and that tag\'s definition', async () => {
         await seedLibrary();
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await deleteTag('x', 'nope');
-        await deleteTag('z', 'z');
+        expect(await deleteTag('x', 'y')).toEqual({ result: 'ok', refused: [], mergedInto: 'y', target: { id: 'y', name: 'name-y' } });
+        expect(await deleteTag('d')).toEqual({ result: 'ok', refused: [], mergedInto: null, target: null });
+    });
+
+    test('an unknown merge target, the tag itself, or a target deleted with no merge: refused, nothing written', async () => {
+        await seedLibrary();
+        await deleteTag('d');
+        const before = (await (await post('/api/tags/manifest')).json()).hash;
+
+        expect(await deleteTag('x', 'nope')).toEqual({ result: 'ok', refused: [{ id: 'nope', reason: 'missing' }], mergedInto: null, target: null });
+        expect(await deleteTag('z', 'z')).toEqual({ result: 'ok', refused: [{ id: 'z', reason: 'same' }], mergedInto: null, target: null });
+        expect(await deleteTag('x', 'd')).toEqual({ result: 'ok', refused: [{ id: 'd', reason: 'deleted' }], mergedInto: null, target: null });
+
         await withDb((db) => {
             expect(Array.from(db.prepare('SELECT tag_id, merge_into FROM tag_deletions ORDER BY tag_id').iterate())).toEqual([
-                { tag_id: 'x', merge_into: null },
-                { tag_id: 'z', merge_into: null },
+                { tag_id: 'd', merge_into: null },
             ]);
         });
-        const messages = warn.mock.calls.map(args => args.join(' '));
-        expect(messages.some(m => m.includes('nope') && m.includes('x'))).toBe(true);
-        expect(messages.some(m => m.includes('z'))).toBe(true);
+        expect((await (await post('/api/tags/manifest')).json()).hash).toBe(before);
+        expect((await tagsFor(['c1.png', 'c2.png', 'g1']))).toEqual({ 'c1.png': ['x'], 'c2.png': ['x', 'y'], g1: ['x'] });
+    });
+
+    test('a merge target whose stored definition cannot be read: refused, nothing written', async () => {
+        await seedLibrary();
+        await withDb((db) => { db.prepare('UPDATE tags SET data = ? WHERE id = ?').run('{not json', 'y'); });
+        expect(await deleteTag('x', 'y')).toEqual({ result: 'ok', refused: [{ id: 'y', reason: 'unreadable' }], mergedInto: null, target: null });
+        await withDb((db) => {
+            expect(db.prepare('SELECT COUNT(*) AS n FROM tag_deletions').get()).toEqual({ n: 0 });
+        });
     });
 
     test('a marked merge target is followed to its own target', async () => {
         await seedLibrary();
         await deleteTag('y', 'z');
-        await deleteTag('x', 'y');
+        expect(await deleteTag('x', 'y')).toMatchObject({ refused: [], mergedInto: 'z', target: { id: 'z' } });
         await withDb((db) => {
             expect(db.prepare('SELECT merge_into FROM tag_deletions WHERE tag_id = ?').get('x')).toEqual({ merge_into: 'z' });
         });
@@ -200,7 +218,7 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
     test('a second delete keeps the first merge target', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
-        await deleteTag('x', 'z');
+        expect(await deleteTag('x', 'z')).toEqual({ result: 'ok', refused: [{ id: 'x', reason: 'deleted' }], mergedInto: null, target: null });
         await withDb((db) => {
             expect(db.prepare('SELECT merge_into FROM tag_deletions WHERE tag_id = ?').get('x')).toEqual({ merge_into: 'y' });
         });
@@ -209,7 +227,7 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
     test('deleting an id with no tags row writes nothing', async () => {
         await seedLibrary();
         const before = (await (await post('/api/tags/manifest')).json()).hash;
-        await deleteTag('ghost', 'y');
+        expect(await deleteTag('ghost', 'y')).toEqual({ result: 'ok', refused: [{ id: 'ghost', reason: 'missing' }], mergedInto: null, target: null });
         await withDb((db) => {
             expect(db.prepare('SELECT COUNT(*) AS n FROM tag_deletions').get()).toEqual({ n: 0 });
         });

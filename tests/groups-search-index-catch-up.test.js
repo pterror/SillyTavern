@@ -368,7 +368,7 @@ describe('tag renames', () => {
         const maintainer = await builtMaintainer();
         const version = await metadataDb.getGroupsVersion(directories);
 
-        expect(await metadataDb.deleteTagDefinition(directories, 't1', 't2')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't1', 't2')).toMatchObject({ refused: [] });
         expect(await metadataDb.getGroupsVersion(directories)).toBe(version);
         expect(await maintainer.tick()).toMatchObject({ changed: true, refreshed: 1 });
         expect(filesTagged('witchy')).toEqual([]);

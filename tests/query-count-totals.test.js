@@ -325,7 +325,7 @@ describe('/query totals while a tag is marked deleted', () => {
     async function seedMerged() {
         await seedLibrary();
         await fill();
-        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toMatchObject({ refused: [] });
     }
 
     test.each([
@@ -363,7 +363,7 @@ describe('/query totals while a tag is marked deleted', () => {
             await assign(id, 't2');
         }
         await fill();
-        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toMatchObject({ refused: [] });
         // total 2, t1 2, t2 2 -> bounds -2 and 0 -> midpoint -1 -> 0.
         expect(await jsonTotal({ tags: { exclude: ['t1'] } })).toEqual({ total: '~0', counted: false });
         expect(await binaryTotal({ tags: { exclude: ['t1'] }, includeGroups: true })).toEqual({ total: 0, approx: true, counted: false });
@@ -372,7 +372,7 @@ describe('/query totals while a tag is marked deleted', () => {
     test('a tag deleted with no target: included it matches nothing, excluded it excludes nothing, both exact, as the COUNT(*) statement has it', async () => {
         await seedLibrary();
         await fill();
-        expect(await metadataDb.deleteTagDefinition(directories, 't2')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't2')).toMatchObject({ refused: [] });
         const cases = [
             [{ tags: { include: ['t2'] } }, 0],
             [{ tags: { include: ['t2'] }, includeGroups: true }, 0],
@@ -391,7 +391,7 @@ describe('/query totals while a tag is marked deleted', () => {
     test('a tag no mark touches stays exact while another tag is marked', async () => {
         await seedLibrary();
         await fill();
-        expect(await metadataDb.deleteTagDefinition(directories, 't3', 't2')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't3', 't2')).toMatchObject({ refused: [] });
         expect(await jsonTotal({ tags: { include: ['t1'] }, includeGroups: true })).toEqual({ total: 5, counted: false });
         expect(await binaryTotal({ tags: { exclude: ['t1'] }, includeGroups: true })).toEqual({ total: 4, approx: false, counted: false });
     });
@@ -409,7 +409,7 @@ describe('/query approximate total form', () => {
         await assign('zephyr0.png', 't1');
         await assign('zephyr1.png', 't2');
         await fill();
-        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toMatchObject({ refused: [] });
         const { total } = await jsonTotal({ tags: { include: ['t1'] } });
         expect(typeof total).toBe(typeof searchTotal);
         expect(total).toMatch(/^~\d+$/);
@@ -593,7 +593,7 @@ describe('/query sampled estimates', () => {
 
     test('an included tag with merges, the only included tag: runs of its rows and each merged tag\'s, deduped, scaled by the sum', async () => {
         await seedBigStore();
-        expect(await metadataDb.deleteTagDefinition(directories, 't3', 't2')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't3', 't2')).toMatchObject({ refused: [] });
         const filter = { tags: { include: ['t2'], exclude: ['t1'] } };
         const expected = withRawDb(db => {
             const union = 'SELECT DISTINCT character_id AS id FROM character_tags WHERE tag_id IN (\'t2\', \'t3\')';
@@ -612,7 +612,7 @@ describe('/query sampled estimates', () => {
 
     test('an included tag with merges that another included tag can stand in for is not the one sampled', async () => {
         await seedBigStore();
-        expect(await metadataDb.deleteTagDefinition(directories, 't3', 't2')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't3', 't2')).toMatchObject({ refused: [] });
         await jsonTotal({ tags: { include: ['t1', 't2'] } });
         expect(new Set(sampleReads().map(record => record.params.tagId))).toEqual(new Set(['t1']));
     }, 60000);
@@ -620,7 +620,7 @@ describe('/query sampled estimates', () => {
     test('an included tag with merges on a store the sample covers whole is exact', async () => {
         await seedLibrary();
         await fill();
-        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toMatchObject({ refused: [] });
         expect(await jsonTotal({ tags: { include: ['t1'], exclude: ['t3'] } })).toEqual({ total: 5, counted: false });
         expect(await binaryTotal({ tags: { include: ['t1'], exclude: ['t3'] }, includeGroups: true })).toEqual({ total: 7, approx: false, counted: false });
     });
@@ -660,7 +660,7 @@ describe('/query with an id list and excluded tags', () => {
         expect(await query({ ids, tags: { include: ['t1'], exclude: ['t2'] }, includeGroups: true })).toEqual({ total: 2, rows: ['b.png', 'ga'] });
         expect(await query({ ids, tags: { exclude: ['t2'] }, includeGroups: true })).toEqual({ total: 4, rows: ['b.png', 'c.png', 'ga', 'gc'] });
 
-        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toMatchObject({ refused: [] });
         expect(await query({ ids, tags: { exclude: ['t1'] }, includeGroups: true })).toEqual({ total: 2, rows: ['c.png', 'gc'] });
         expect(await query({ ids, tags: { exclude: ['t2'] } })).toEqual({ total: 1, rows: ['c.png'] });
     });

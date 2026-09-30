@@ -529,7 +529,8 @@ function decrementTagUsage(tagId) {
 }
 
 /**
- * The in-memory half of removeTagIdEverywhere(): sends nothing to the server.
+ * Removes `tagId` from every resident key, putting `replaceWithId` in its place when given. Sends nothing to the
+ * server.
  * @param {string} tagId @param {{replaceWithId?: string}} [options]
  * @returns {string[]} Every key that had `tagId` removed
  */
@@ -548,25 +549,6 @@ function removeTagIdLocally(tagId, { replaceWithId } = {}) {
     tagUsageCounts.delete(tagId);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-    return affectedKeys;
-}
-
-/**
- * Removes `tagId` from every currently-resident key, optionally substituting another tag id in its place.
- * A genuine whole-corpus operation by nature (merging/deleting a tag has to touch everything that has it) -
- * unlike the getContext()/per-render call sites this session removed, this one only runs on a rare, explicit
- * user action (tag merge/delete), so the full scan here is the real cost of the operation, not a regression.
- * @param {string} tagId @param {{replaceWithId?: string}} [options]
- * @returns {string[]} Every key that had `tagId` removed
- */
-function removeTagIdEverywhere(tagId, { replaceWithId } = {}) {
-    const affectedKeys = removeTagIdLocally(tagId, { replaceWithId });
-    const tasks = [];
-    for (const key of affectedKeys) {
-        tasks.push(queueTagSave(key, () => unassignTagOnServer(key, tagId)));
-        if (replaceWithId) tasks.push(queueTagSave(key, () => assignTagOnServer(key, replaceWithId)));
-    }
-    runWithConcurrency(tasks, task => task());
     return affectedKeys;
 }
 
@@ -635,6 +617,7 @@ const TAG_REFUSAL_REASONS = {
     deleted: 'was deleted',
     missing: 'no longer exists',
     unreadable: 'stored copy is unreadable',
+    same: 'is the tag itself',
 };
 
 /**
@@ -864,15 +847,62 @@ async function replaceTagFromServer(id, serverTag) {
 }
 
 /**
- * Removes tag `id` from this tab only (the server already has no such tag), then re-reads the tags of every
- * resident entity so a merge target the server gave them in its place shows up.
- * @param {string} id
+ * Takes tag `fromId` out of every tag filter holding it. With `toId`, that tag takes its place and state, unless it
+ * already has a state of its own in that filter.
+ * @param {string} fromId
+ * @param {string} [toId]
+ * @returns {{ held: boolean, moved: boolean }} held: a filter held `fromId`. moved: every filter that did now holds
+ *   `toId` in the same state.
  */
-async function dropTagLocally(id) {
-    const needsFullRedraw = tagChangeAffectsCurrentView([id]);
-    const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithTag(id);
+function moveTagFilters(fromId, toId) {
+    let held = false;
+    let moved = true;
+    for (const helper of [groupCandidatesFilter, groupMembersFilter, entitiesFilter]) {
+        const { selected, excluded } = helper.getFilterData(FILTER_TYPES.TAG);
+        const storagePrefix = getFilterStorageKey(helper);
+        if (storagePrefix) accountStorage.removeItem(`${storagePrefix}_tag_${fromId}`);
 
-    removeTagIdLocally(id);
+        let changed = false;
+        for (const [state, list] of /** @type {[string, string[]][]} */ ([['SELECTED', selected], ['EXCLUDED', excluded]])) {
+            if (!Array.isArray(list)) continue;
+            const index = list.indexOf(fromId);
+            if (index === -1) continue;
+            list.splice(index, 1);
+            changed = true;
+            if (!toId || selected?.includes(toId) || excluded?.includes(toId)) {
+                moved = false;
+                continue;
+            }
+            list.push(toId);
+            if (storagePrefix) accountStorage.setItem(`${storagePrefix}_tag_${toId}`, state);
+            const target = tagsStore.get(toId);
+            if (target && isMainCharacterList(helper)) target.filter_state = state;
+        }
+        if (changed) {
+            held = true;
+            helper.setFilterData(FILTER_TYPES.TAG, { selected, excluded });
+        }
+    }
+    return { held, moved: held && moved };
+}
+
+/**
+ * Removes tag `id` from this tab only (the server already has no such tag), then re-reads the tags of every
+ * resident entity so what the server gave them in its place shows up.
+ * @param {string} id
+ * @param {{ replaceWithId?: string }} [options] - replaceWithId: the tag the server merged `id` into. Resident
+ *   entities and tag filters get it in `id`'s place at once, ahead of the re-read.
+ * @returns {Promise<{ held: boolean, moved: boolean }>} what became of the tag filters on `id` (moveTagFilters())
+ */
+async function dropTagLocally(id, { replaceWithId } = {}) {
+    const needsFullRedraw = tagChangeAffectsCurrentView(replaceWithId ? [id, replaceWithId] : [id]);
+    const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithTag(id);
+    const hadUse = (tagUsageCounts.get(id) ?? 0) > 0;
+
+    removeTagIdLocally(id, { replaceWithId });
+    // Cards this tab doesn't hold carried it too, and now carry the merge target.
+    if (replaceWithId && hadUse && !(tagUsageCounts.get(replaceWithId) > 0)) tagUsageCounts.set(replaceWithId, 1);
+    const filters = moveTagFilters(id, replaceWithId);
 
     if (tagsStore.has(id)) {
         let write = 0;
@@ -903,6 +933,7 @@ async function dropTagLocally(id) {
     applyCharacterTagsToMessageDivs();
 
     await rereadResidentEntityTagIds();
+    return filters;
 }
 
 /**
@@ -977,15 +1008,12 @@ async function rereadResidentEntityTagIds() {
 }
 
 /**
- * Merge target chosen in the delete dialog, per tag id, for persistTagChange() to send with that tag's delete.
- * @type {Map<string, string | null>}
- */
-const tagDeleteMergeTargets = new Map();
-
-/**
- * Deletes one tag definition on the server by id. The server gives `mergeInto` to every entity carrying the tag.
+ * Asks the server to delete one tag definition by id, giving `mergeInto` to every entity carrying the tag. Changes
+ * nothing in this tab.
  * @param {string} id
  * @param {string | null} mergeInto
+ * @returns {Promise<{ refused: { id: string, reason: string }[], mergedInto: string | null, target: Tag | null } | null>}
+ *   the server's answer (see /api/tags/delete), or null if the request failed
  */
 async function deleteTagOnServer(id, mergeInto) {
     try {
@@ -1000,9 +1028,11 @@ async function deleteTagOnServer(id, mergeInto) {
             throw new Error(`Failed to delete tag: ${response.statusText}`);
         }
 
-        await refreshTagsManifestCache();
+        const { refused, mergedInto, target } = await response.json();
+        return { refused: refused ?? [], mergedInto: mergedInto ?? null, target: target ?? null };
     } catch (error) {
         console.error(`Error deleting tag ${id}:`, error);
+        return null;
     }
 }
 
@@ -1019,12 +1049,9 @@ function persistTagChange(change) {
         case 'updated':
             editTagOnServer(change.id, change.patch, change.entity);
             break;
-        case 'removed': {
-            const mergeInto = tagDeleteMergeTargets.get(change.id) ?? null;
-            tagDeleteMergeTargets.delete(change.id);
-            deleteTagOnServer(change.id, mergeInto);
+        case 'removed':
+            deleteTagOnServer(change.id, null);
             break;
-        }
     }
 }
 
@@ -3614,29 +3641,43 @@ async function onTagDeleteClick() {
     const mergeSelect = popupContent.find('#merge_tag_select').addBack('#merge_tag_select');
     const mergeTagId = mergeSelect.val() ? String(mergeSelect.val()) : null;
 
-    // Snapshotted before removeTagIdEverywhere() strips the tag - a row carrying it now is exactly a row whose
-    // pills need repainting once it's gone (or replaced by the merge target).
-    const needsFullRedraw = tagChangeAffectsCurrentView(mergeTagId ? [id, mergeTagId] : [id]);
-    const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithTag(id);
+    const title = t`Delete Tag`;
+    // The name the picker showed: this tab may have dropped the tag since.
+    const mergeTagName = mergeTagId ? (otherTags.find(x => x.id === mergeTagId)?.name ?? mergeTagId) : null;
 
-    removeTagIdEverywhere(id, { replaceWithId: mergeTagId });
-
-    tagDeleteMergeTargets.set(id, mergeTagId);
-    tagsStore.remove(id);
-    $(`.tag[id="${id}"]`).remove();
-    $(`.tag_view_item[id="${id}"]`).remove();
-
-    toastr.success(`'${tag.name}' deleted${mergeTagId ? ` and merged into '${tagsStore.get(mergeTagId).name}'` : ''}`, 'Delete Tag');
-
-    printTagFilters(tag_filter_type.character);
-    printTagFilters(tag_filter_type.group_members_list);
-    printTagFilters(tag_filter_type.group_candidates_list);
-    if (needsFullRedraw) {
-        printCharactersDebounced();
-    } else {
-        updateEntityRowTags(affectedRowKeys);
+    const answer = await deleteTagOnServer(id, mergeTagId);
+    if (!answer) {
+        toastr.error(t`'${tag.name}' could not be deleted.`, title);
+        return;
     }
-    applyCharacterTagsToMessageDivs();
+
+    const refusal = answer.refused[0];
+    if (refusal) {
+        const reason = TAG_REFUSAL_REASONS[refusal.reason] ?? refusal.reason;
+        if (refusal.id === mergeTagId) {
+            toastr.warning(t`'${tag.name}' was not deleted: '${mergeTagName}', the tag to merge it into, ${reason}.`, title);
+        } else {
+            toastr.warning(t`'${tag.name}' ${reason}.`, title);
+        }
+        await resyncRefusedTag(refusal.id);
+        return;
+    }
+
+    const { mergedInto, target } = answer;
+    if (target) mergeServerTagDefinitions([target]);
+    const filters = await dropTagLocally(id, { replaceWithId: mergedInto ?? undefined });
+    await eventSource.emit(event_types.SETTINGS_UPDATED);
+
+    const lines = [mergedInto ? t`'${tag.name}' deleted and merged into '${target.name}'.` : t`'${tag.name}' deleted.`];
+    if (mergedInto && mergedInto !== mergeTagId) {
+        lines.push(t`'${mergeTagName}' had itself been merged into '${target.name}'.`);
+    }
+    if (filters.held) {
+        if (filters.moved) lines.push(t`The filter on it now filters by '${target.name}'.`);
+        else if (mergedInto) lines.push(t`The filter on it was removed: '${target.name}' keeps its own.`);
+        else lines.push(t`The filter on it was removed.`);
+    }
+    toastr.success(lines.join(' '), title);
 }
 
 function onTagRenameInput() {

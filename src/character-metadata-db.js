@@ -5588,45 +5588,57 @@ export async function pruneUnusedTags(directories, limit) {
 }
 
 /**
+ * @typedef {object} TagDeleteResult
+ * @property {{ id: string, reason: 'deleted' | 'missing' | 'same' | 'unreadable' }[]} refused - Why nothing was
+ *   written, naming the tag the reason is about: `tagId` itself, or its merge target.
+ * @property {string | null} mergedInto - The tag every entity carrying `tagId` now reads as carrying instead.
+ * @property {object | null} target - `mergedInto`'s stored definition.
+ */
+
+/**
  * Marks a tag definition deleted, merging into `mergeInto` when given. Its tags row and tag rows stay until the
  * migration worker's batched pass removes them; every read treats it as deleted from now on.
- * - No tags row for `tagId`, or already marked: writes nothing (a marked tag keeps its first merge target).
- * - `mergeInto` marked itself: its own merge target is used, so no mark ever points at another mark.
- * - `mergeInto` unknown, or `tagId` itself: deleted with no merge, and a warning names it.
+ * Refused, with nothing written:
+ * - `tagId` already marked ('deleted': it keeps its first merge target), or with no tags row ('missing').
+ * - `mergeInto` is `tagId` ('same'), was deleted with no merge target ('deleted'), has no tags row ('missing'), or
+ *   its stored definition can't be read ('unreadable'). A delete asked for with a merge never deletes unmerged.
+ * `mergeInto` marked with a merge target of its own: that target is used, so no mark ever points at another mark.
  * Tags that merged into `tagId` move onto its merge target. Each marked tag whose resolved name changed is logged in
  * tag_name_changes, so the search index re-indexes the entities carrying it.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string} tagId
  * @param {string | null} [mergeInto]
- * @returns {Promise<'ok' | null>}
+ * @returns {Promise<TagDeleteResult | null>}
  */
 export async function deleteTagDefinition(directories, tagId, mergeInto = null) {
     const entry = await getEntry(directories);
     if (!entry) return null;
     if (typeof tagId !== 'string' || !tagId) return null;
 
-    // An object, not lets: TypeScript doesn't see the callback's assignments and narrows lets to their initial values.
-    /** @type {{ warning: string | null, changed: boolean }} */
-    const result = { warning: null, changed: false };
+    /** @type {TagDeleteResult} */
+    const result = { refused: [], mergedInto: null, target: null };
+    /** @param {string} id @param {TagDeleteResult['refused'][number]['reason']} reason */
+    const refuse = (id, reason) => { result.refused = [{ id, reason }]; };
     entry.db.transaction(() => {
-        result.warning = null;
-        result.changed = false;
-        if (!entry.db.get('SELECT 1 FROM tags WHERE id = @id', { id: tagId })) return;
-        if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tagId })) return;
+        result.refused = [];
+        result.mergedInto = null;
+        result.target = null;
+        if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id: tagId })) return refuse(tagId, 'deleted');
+        if (!entry.db.get('SELECT 1 FROM tags WHERE id = @id', { id: tagId })) return refuse(tagId, 'missing');
 
         /** @type {string | null} */
         let target = null;
         if (typeof mergeInto === 'string' && mergeInto) {
+            if (mergeInto === tagId) return refuse(mergeInto, 'same');
             const targetMark = /** @type {{ merge_into: string | null } | undefined} */ (entry.db.get('SELECT merge_into FROM tag_deletions WHERE tag_id = @id', { id: mergeInto }));
-            if (mergeInto === tagId) {
-                result.warning = `Tag ${tagId} was deleted with itself as its merge target; deleted it with no merge.`;
-            } else if (targetMark) {
-                target = targetMark.merge_into ?? null;
-                if (target === null) result.warning = `Tag ${tagId}'s merge target ${mergeInto} was already deleted with no merge target; deleted ${tagId} with no merge.`;
-            } else if (entry.db.get('SELECT 1 FROM tags WHERE id = @id', { id: mergeInto })) {
-                target = mergeInto;
-            } else {
-                result.warning = `Tag ${tagId}'s merge target ${mergeInto} doesn't exist; deleted ${tagId} with no merge.`;
+            if (targetMark && targetMark.merge_into === null) return refuse(mergeInto, 'deleted');
+            target = targetMark ? targetMark.merge_into : mergeInto;
+            const targetRow = /** @type {{ data: string } | undefined} */ (entry.db.get('SELECT data FROM tags WHERE id = @id', { id: target }));
+            if (!targetRow) return refuse(mergeInto, 'missing');
+            try {
+                result.target = JSON.parse(targetRow.data);
+            } catch {
+                return refuse(mergeInto, 'unreadable');
             }
         }
 
@@ -5641,11 +5653,10 @@ export async function deleteTagDefinition(directories, tagId, mergeInto = null) 
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
         }
         updateTagsHashSync(entry.db);
-        result.changed = true;
+        result.mergedInto = target;
     });
-    if (result.warning !== null) console.warn(color.yellow(`[character-metadata] ${result.warning}`));
-    if (result.changed) entry.tagCache = null;
-    return 'ok';
+    if (!result.refused.length) entry.tagCache = null;
+    return result;
 }
 
 // The same bound streamRows() pages the other migration passes by.

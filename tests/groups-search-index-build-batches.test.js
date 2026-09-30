@@ -118,7 +118,7 @@ async function seed() {
     expect(await metadataDb.assignEntityTag(directories, '1001', 't1')).toBe('ok');
     expect(await metadataDb.assignEntityTag(directories, '1001', 't2')).toBe('ok');
     expect(await metadataDb.assignEntityTag(directories, '1002', 't1')).toBe('ok');
-    expect(await metadataDb.deleteTagDefinition(directories, 't2')).toBe('ok');
+    expect(await metadataDb.deleteTagDefinition(directories, 't2')).toMatchObject({ refused: [] });
 
     writeGroupFile('noid.json', JSON.stringify({ name: 'Nobody', members: ['ghost.png'], chats: [] }));
     writeGroupFile('broken.json', '{ not json');
