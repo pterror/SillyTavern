@@ -671,11 +671,15 @@ async function createTagOnServer(tag) {
 }
 
 /**
+ * Upstream keeps tags in the settings, so extensions hear of a stored tag change through SETTINGS_UPDATED; it is
+ * emitted here once the server has stored one.
  * @param {string} id
  * @param {Partial<Tag>} patch - only the changed fields
  * @param {Tag} tag - for its name in a refusal warning
+ * @param {() => void} [applyStored] - run once the server has stored the patch, before this tab's copy is cached
+ * @returns {Promise<'stored' | 'refused' | 'failed'>} 'refused': this tab's copy has been made to match the server's.
  */
-async function editTagOnServer(id, patch, tag) {
+async function editTagOnServer(id, patch, tag, applyStored) {
     try {
         const response = await fetch('/api/tags/edit', {
             method: 'POST',
@@ -689,11 +693,18 @@ async function editTagOnServer(id, patch, tag) {
         }
 
         const { refused } = await response.json();
+        if (!refused?.length) applyStored?.();
         await refreshTagsManifestCache();
         warnRefusedTags(refused, tag, 'Editing Tag');
-        if (refused?.length) await resyncRefusedTag(id);
+        if (refused?.length) {
+            await resyncRefusedTag(id);
+            return 'refused';
+        }
+        await eventSource.emit(event_types.SETTINGS_UPDATED);
+        return 'stored';
     } catch (error) {
         console.error(`Error editing tag ${id}:`, error);
+        return 'failed';
     }
 }
 
@@ -3476,12 +3487,7 @@ function appendViewTagToList(list, tag, count) {
     const hideToggle = template.find('.eye-toggle');
     drawTagHideToggle(hideToggle, tag);
 
-    hideToggle.on('click', () => {
-        tag.is_hidden_on_character_card = !tag.is_hidden_on_character_card;
-        drawTagHideToggle(hideToggle, tag);
-        redrawRowsAfterTagHiddenChange(tag.id);
-        saveSettingsDebounced('power_user');
-    });
+    hideToggle.on('click', () => onTagHideToggleClick(tag.id));
 
     list.append(template);
 
@@ -3500,6 +3506,36 @@ function appendViewTagToList(list, tag, count) {
     });
 
     updateDrawTagFolder(template, tag);
+}
+
+/** Tags whose hide flip is on its way to the server. */
+const tagHideFlipsInFlight = new Set();
+
+/**
+ * The tag's copy here is changed only once the server has stored the flip.
+ * @param {string} id
+ */
+async function onTagHideToggleClick(id) {
+    const tag = tagsStore.get(id);
+    if (!tag || tagHideFlipsInFlight.has(id)) return;
+    const hidden = !tag.is_hidden_on_character_card;
+
+    tagHideFlipsInFlight.add(id);
+    let outcome;
+    try {
+        outcome = await editTagOnServer(id, { is_hidden_on_character_card: hidden }, tag, () => {
+            const current = tagsStore.get(id);
+            if (!current) return;
+            current.is_hidden_on_character_card = hidden;
+            TAG_FIELD_REDRAWS.is_hidden_on_character_card(current);
+        });
+    } finally {
+        tagHideFlipsInFlight.delete(id);
+    }
+
+    if (outcome === 'failed') {
+        toastr.error(t`Check the server connection and try again.`, t`Tag could not be saved`);
+    }
 }
 
 /** @param {JQuery<HTMLElement>} hideToggle @param {Tag} tag */
