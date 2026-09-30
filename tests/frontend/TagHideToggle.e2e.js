@@ -149,6 +149,7 @@ test.describe('Manage Tags hide toggle', () => {
         const writes = recordWrites(page);
         const eventsBefore = await page.evaluate(() => window['__settingsUpdated']);
         await page.keyboard.type('x');
+        await page.keyboard.press('Enter');
         await expect.poll(() => page.evaluate(() => window['__settingsUpdated'])).toBeGreaterThan(eventsBefore);
         expect(writes.filter(write => !write.startsWith('/api/tags/edit '))).toEqual([]);
     });

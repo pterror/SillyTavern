@@ -22,7 +22,11 @@ async function openNewCharacter(page) {
  * @param {string} tag
  */
 async function addTag(page, tag) {
-    await page.locator('#tagInput').fill(tag);
+    // The chat that opens with the character takes the focus when it has loaded; text filled before that is lost.
+    await expect(async () => {
+        await page.locator('#tagInput').fill(tag);
+        await expect(page.locator('#tagInput')).toHaveValue(tag, { timeout: 500 });
+    }).toPass({ timeout: 30000 });
     await page.locator('.ui-autocomplete .ui-menu-item').getByText(tag, { exact: true }).click();
 }
 

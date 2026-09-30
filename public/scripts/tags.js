@@ -464,30 +464,76 @@ function isTagAssignedToKey(key, tagId) {
 }
 
 /**
- * Assigns `tagId` to `key`, persisting it server-side and invalidating whatever depends on it - the direct
- * replacement for what a maintained relation store's assign op + change listeners used to do together.
- * @param {string} key @param {string} tagId
- * @returns {{wasFirstUse: boolean}?} null if `key` doesn't resolve, or it already had `tagId` (no-op)
+ * The last tag save started for each entity key, so the saves of one entity reach the server in the order they were
+ * made: an assign and an unassign of the same tag sent side by side could land in either order.
+ * @type {Map<string, Promise<void>>}
  */
+const tagSaveChains = new Map();
+
+/** Tag saves started and not yet answered. */
+let tagSavesPending = 0;
+
+/**
+ * Assigns and unassigns the server did not store, kept until every pending save is answered so they are reported
+ * together.
+ * @type {{ key: string, tagId: string, assign: boolean }[]}
+ */
+const tagSavesNotStored = [];
+
 /**
  * Marks a local tag change on `key` as unsaved right away (see tag-fetch-stamps.js), and returns the task that
- * saves it.
+ * saves it. The task waits for the saves queued for `key` before it.
  * @param {string} key
- * @param {() => Promise<void>} save
+ * @param {() => Promise<unknown>} save
  * @returns {() => Promise<void>}
  */
 function queueTagSave(key, save) {
     const saved = beginLocalTagChange(key);
+    tagSavesPending++;
+    const before = tagSaveChains.get(key) ?? Promise.resolve();
+    /** @type {() => void} */
+    let finished;
+    const done = /** @type {Promise<void>} */ (new Promise(resolve => { finished = () => resolve(); }));
+    tagSaveChains.set(key, done);
     return async () => {
         try {
+            await before;
             await save();
         } finally {
             saved();
+            finished();
+            if (tagSaveChains.get(key) === done) tagSaveChains.delete(key);
+            if (--tagSavesPending === 0) reportTagSavesNotStored();
         }
     };
 }
 
-function assignTagToKey(key, tagId) {
+/**
+ * Tells the user which assigns and unassigns the server did not store, then re-reads the tags of the entities they
+ * were for. Each has already been undone in this tab, which stands if the re-read fails too.
+ */
+function reportTagSavesNotStored() {
+    const notStored = tagSavesNotStored.splice(0);
+    if (!notStored.length) return;
+
+    const nameOfKey = (/** @type {string} */ key) => charactersStore.get(key)?.name ?? groupsStore.get(key)?.name ?? key;
+    const lines = notStored.map(({ key, tagId, assign }) => {
+        const tagName = escapeHtml(String(tagsStore.get(tagId)?.name ?? tagId));
+        const entityName = escapeHtml(String(nameOfKey(key)));
+        return assign ? t`'${tagName}' was not added to ${entityName}` : t`'${tagName}' was not removed from ${entityName}`;
+    });
+    toastr.error(lines.join('<br />'), t`Tags could not be saved`, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
+
+    rereadResidentEntityTagIds(notStored.map(x => x.key).filter(onlyUnique))
+        .catch(error => console.error('Could not re-read tags after a failed save:', error));
+}
+
+/**
+ * Gives `key` the tag in this tab only.
+ * @param {string} key @param {string} tagId
+ * @returns {{wasFirstUse: boolean}?} null if `key` doesn't resolve, or it already had `tagId`
+ */
+function assignTagLocally(key, tagId) {
     const ids = resolveTagIdsArray(key);
     if (!ids || ids.includes(tagId)) return null;
     ids.push(tagId);
@@ -496,17 +542,15 @@ function assignTagToKey(key, tagId) {
     tagUsageCounts.set(tagId, (tagUsageCounts.get(tagId) ?? 0) + 1);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-    queueTagSave(key, () => assignTagOnServer(key, tagId))();
     return { wasFirstUse };
 }
 
 /**
- * Unassigns `tagId` from `key`, persisting it server-side and invalidating whatever depends on it - the direct
- * replacement for what a maintained relation store's unassign op + change listeners used to do together.
+ * Takes the tag off `key` in this tab only.
  * @param {string} key @param {string} tagId
- * @returns {{wasLastUse: boolean}?} null if `key` doesn't resolve, or it didn't have `tagId` (no-op)
+ * @returns {{wasLastUse: boolean}?} null if `key` doesn't resolve, or it didn't have `tagId`
  */
-function unassignTagFromKey(key, tagId) {
+function unassignTagLocally(key, tagId) {
     const ids = resolveTagIdsArray(key);
     if (!ids) return null;
     const idx = ids.indexOf(tagId);
@@ -516,8 +560,82 @@ function unassignTagFromKey(key, tagId) {
     const wasLastUse = decrementTagUsage(tagId);
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-    queueTagSave(key, () => unassignTagOnServer(key, tagId))();
     return { wasLastUse };
+}
+
+/**
+ * Redraws everything that shows the tags of `key` after tag `tagId` was put on it or taken off it outside a user
+ * action's own redraw.
+ * @param {string} key @param {string} tagId
+ * @param {boolean} usageFlipped - whether the tag went between used and unused as a whole
+ */
+function redrawTagsOfKey(key, tagId, usageFlipped) {
+    redrawAfterTagChange([tagId], new Set([key]), new Map([[tagId, usageFlipped]]));
+    if (getTagKey() === key) {
+        if (selected_group) applyTagsOnGroupSelect(); else applyTagsOnCharacterSelect();
+    }
+    applyCharacterTagsToMessageDivs();
+}
+
+/**
+ * Sends the assign of `tagId` to `key`. If the server doesn't store it, the tag is taken off `key` in this tab
+ * again and the failure is reported once every pending save is answered.
+ * @param {string} key @param {string} tagId
+ * @returns {() => Promise<void>}
+ */
+function queueAssignSave(key, tagId) {
+    return queueTagSave(key, async () => {
+        if (await assignTagOnServer(key, tagId)) return;
+        tagSavesNotStored.push({ key, tagId, assign: true });
+        if (!resolveTagIdsArray(key)) {
+            // An entity this tab doesn't hold, given the tag through `tag_map`: it is sent again with the next take-in.
+            decrementTagUsage(tagId);
+            const sent = unheldTagMapSent.get(key);
+            if (sent?.includes(tagId)) sent.splice(sent.indexOf(tagId), 1);
+            return;
+        }
+        const undone = unassignTagLocally(key, tagId);
+        if (undone) redrawTagsOfKey(key, tagId, undone.wasLastUse);
+    });
+}
+
+/**
+ * Sends the unassign of `tagId` from `key`. If the server doesn't store it, the tag is put back on `key` in this
+ * tab and the failure is reported once every pending save is answered.
+ * @param {string} key @param {string} tagId
+ * @returns {() => Promise<void>}
+ */
+function queueUnassignSave(key, tagId) {
+    return queueTagSave(key, async () => {
+        if (await unassignTagOnServer(key, tagId)) return;
+        tagSavesNotStored.push({ key, tagId, assign: false });
+        // The tag may be gone from this tab by now, deleted along with its assignments.
+        if (!tagsStore.has(tagId)) return;
+        const undone = assignTagLocally(key, tagId);
+        if (undone) redrawTagsOfKey(key, tagId, undone.wasFirstUse);
+    });
+}
+
+/**
+ * Assigns `tagId` to `key` in this tab at once and sends it to the server.
+ * @param {string} key @param {string} tagId
+ * @returns {{wasFirstUse: boolean}?} null if `key` doesn't resolve, or it already had `tagId` (no-op)
+ */
+function assignTagToKey(key, tagId) {
+    const change = assignTagLocally(key, tagId);
+    if (change) queueAssignSave(key, tagId)();
+    return change;
+}
+
+/**
+ * Unassigns `tagId` from `key` in this tab at once and sends it to the server.
+ * @param {string} key @param {string} tagId
+ * @returns {{wasLastUse: boolean}?} null if `key` doesn't resolve, or it didn't have `tagId` (no-op)
+ */
+function unassignTagFromKey(key, tagId) {
+    const change = unassignTagLocally(key, tagId);
+    if (change) queueUnassignSave(key, tagId)();
+    return change;
 }
 
 /** Replaces the full set of tag ids for `key`, persisting exactly the delta server-side. No-op if `key` doesn't resolve. */
@@ -536,8 +654,8 @@ function setKeyTagIds(key, tagIds) {
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     const tasks = [
-        ...addedIds.map(tagId => queueTagSave(key, () => assignTagOnServer(key, tagId))),
-        ...removedIds.map(tagId => queueTagSave(key, () => unassignTagOnServer(key, tagId))),
+        ...addedIds.map(tagId => queueAssignSave(key, tagId)),
+        ...removedIds.map(tagId => queueUnassignSave(key, tagId)),
     ];
     runWithConcurrency(tasks, task => task());
 }
@@ -553,7 +671,7 @@ function removeKeyTagIds(key) {
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
     // Usually redundant with the server's own deletion cascade, but harmless (unassign tolerates unknown ids).
-    runWithConcurrency(removedIds.map(tagId => queueTagSave(key, () => unassignTagOnServer(key, tagId))), task => task());
+    runWithConcurrency(removedIds.map(tagId => queueUnassignSave(key, tagId)), task => task());
 }
 
 /** @param {string} tagId @returns {boolean} whether that was the tag's last use */
@@ -721,7 +839,7 @@ function takeInTagMapKeys() {
                 if (sent.includes(id)) continue;
                 sent.push(id);
                 tagUsageCounts.set(id, (tagUsageCounts.get(id) ?? 0) + 1);
-                unheldSaves.push(queueTagSave(key, () => assignTagOnServer(key, id)));
+                unheldSaves.push(queueAssignSave(key, id));
             }
             continue;
         }
@@ -795,7 +913,7 @@ function sendTagMapChanges() {
         } else {
             for (const id of added) {
                 tagUsageCounts.set(id, (tagUsageCounts.get(id) ?? 0) + 1);
-                unheldSaves.push(queueTagSave(key, () => assignTagOnServer(key, id)));
+                unheldSaves.push(queueAssignSave(key, id));
             }
         }
     }
@@ -1166,15 +1284,8 @@ function rebuildTagStores() {
         invalidateGroupsFuseIndex();
     });
 
-    tagsStore.onChange(persistTagChange);
-
     storedTagFields.clear();
     for (const tag of tags) noteStoredTag(tag);
-    tagsStore.onChange(change => {
-        if (change.op === 'created') noteStoredTag(change.entity);
-        if (change.op === 'updated') noteStoredTagFields(change.id, change.patch);
-        if (change.op === 'removed') storedTagFields.delete(change.id);
-    });
 }
 
 /** Refreshes the client-side tags cache so the next boot's freshness check can hit it. */
@@ -1214,6 +1325,13 @@ function warnRefusedTags(refused, tag, title) {
     toastr.warning(`Tag not saved:<br />${lines.join('<br />')}`, title, { escapeHtml: false });
 }
 
+/**
+ * Asks the server to create `tag`, which this tab doesn't have yet, and puts it into `tags` once the server has
+ * stored it.
+ * @param {Tag} tag
+ * @returns {Promise<'stored' | 'refused' | 'failed'>} 'refused': the user has been told why. If the server already
+ *   has a tag with that id, this tab now has the server's copy of it.
+ */
 async function createTagOnServer(tag) {
     try {
         const response = await fetch('/api/tags/create', {
@@ -1228,12 +1346,83 @@ async function createTagOnServer(tag) {
         }
 
         const { refused } = await response.json();
+        const reason = refused?.[0]?.reason;
+        if (!reason || reason === 'exists') {
+            addStoredTag(tag);
+            invalidateTagsFuseIndex();
+            invalidateCharactersFuseIndex();
+            invalidateGroupsFuseIndex();
+        }
         await refreshTagsManifestCache();
-        warnRefusedTags(refused, tag, 'Creating Tag');
-        if (refused?.length) await resyncRefusedTag(tag.id);
+        if (!reason) return 'stored';
+        warnRefusedTags(refused, tag, t`Creating Tag`);
+        if (reason === 'exists') await resyncRefusedTag(tag.id);
+        return 'refused';
     } catch (error) {
         console.error(`Error creating tag ${tag?.id}:`, error);
+        return 'failed';
     }
+}
+
+/**
+ * Field edits made in this tab's own UI that the server hasn't answered yet, by `${id}\n${field}`. `wanted` is the
+ * latest value asked for.
+ * @type {Map<string, { wanted: any }>}
+ */
+const tagFieldEditsInFlight = new Map();
+
+/**
+ * Stores `value` as `field` of tag `id`, for an edit made in this tab's own UI. The tag's copy here takes the value
+ * only once the server has stored it. A value given while an earlier one is on its way replaces any other waiting
+ * and is sent once that one is answered, so edits of one field reach the server in order and one at a time.
+ * @param {string} id
+ * @param {string} field
+ * @param {any} value
+ * @param {(stored: any) => void} [onStored] - run with each value the server stored, before it is drawn
+ * @returns {Promise<'stored' | 'refused' | 'failed' | 'unchanged' | 'waiting'>} what became of the last value sent.
+ *   'unchanged': the tag already had the value, so nothing was sent. 'refused': the user has been told why and this
+ *   tab's copy has been made to match the server's. 'failed' is the caller's to tell. 'waiting': an earlier call is
+ *   still sending and will send this value after; that call gets the outcome.
+ */
+async function storeTagField(id, field, value, onStored) {
+    const key = `${id}\n${field}`;
+    const inFlight = tagFieldEditsInFlight.get(key);
+    if (inFlight) {
+        inFlight.wanted = value;
+        return 'waiting';
+    }
+
+    const state = { wanted: value };
+    tagFieldEditsInFlight.set(key, state);
+    try {
+        /** @type {'stored' | 'refused' | 'failed' | 'unchanged'} */
+        let outcome = 'unchanged';
+        for (;;) {
+            const tag = tagsStore.get(id);
+            const sending = state.wanted;
+            if (!tag || sameTagValue(sending, tag[field])) return outcome;
+            outcome = await editTagOnServer(id, { [field]: sending }, tag, () => {
+                const current = tagsStore.get(id);
+                if (!current) return;
+                current[field] = sending;
+                noteStoredTagFields(id, { [field]: sending });
+                onStored?.(sending);
+                TAG_FIELD_REDRAWS[field]?.(current);
+            });
+            if (outcome !== 'stored') return outcome;
+        }
+    } finally {
+        tagFieldEditsInFlight.delete(key);
+    }
+}
+
+/**
+ * @param {string} id
+ * @param {string} notSaved - what was not saved, as a sentence
+ */
+function tellTagEditFailed(id, notSaved) {
+    const name = tagsStore.get(id)?.name ?? id;
+    toastr.error(`${escapeHtml(String(name))}: ${escapeHtml(notSaved)}<br />${t`Check the server connection and try again.`}`, t`Tag could not be saved`, { escapeHtml: false });
 }
 
 /**
@@ -1301,7 +1490,7 @@ const TAG_FIELD_REDRAWS = {
     /** @param {Tag} tag */
     name: (tag) => {
         $(`.tag[id="${tag.id}"] .tag_name`).text(tag.name);
-        $(`.tag_view_item[id="${tag.id}"] .tag_view_name`).text(tag.name);
+        drawTagViewName($(`.tag_view_item[id="${tag.id}"] .tag_view_name`), tag);
     },
     /** @param {Tag} tag */
     color: (tag) => redrawTagColorField(tag, 'color', 'background-color'),
@@ -1507,9 +1696,8 @@ async function dropTagLocally(id, { replaceWithId } = {}) {
         await refreshTagsManifestCache();
     }
 
-    // An unsaved rename in the removed row has no tag left to go to; left dirty, the row's focusout would reprint
-    // the list while it is being removed.
-    $(`.tag_view_item[id="${id}"] .tag_view_name`).removeAttr('dirty');
+    // An unsaved name has no tag left to go to.
+    writeTagNameDraft(id, null);
     $(`.tag[id="${id}"]`).remove();
     $(`.tag_view_item[id="${id}"]`).remove();
     printTagFilters(tag_filter_type.character);
@@ -1529,13 +1717,18 @@ async function dropTagLocally(id, { replaceWithId } = {}) {
 /**
  * Replaces each resident entity's tag ids with the server's where they differ, and fetches any tag definition
  * the new ids need that this tab doesn't have. Stops at the first failed request, keeping what it already applied.
+ * @param {string[]} [onlyKeys] - the entities to re-read; every resident one when left out
  */
-async function rereadResidentEntityTagIds() {
+async function rereadResidentEntityTagIds(onlyKeys) {
     // What an extension changed through `tag_map` is sent before the server's copy is read over it.
     tagMapKeysToCheck = true;
     takeInTagExportWrites();
     const keys = [];
-    for (const [key] of allTagIdsEntries()) keys.push(key);
+    if (onlyKeys) {
+        keys.push(...onlyKeys.filter(key => resolveTagIdsArray(key)));
+    } else {
+        for (const [key] of allTagIdsEntries()) keys.push(key);
+    }
 
     /** @type {Set<string>} */
     const changedTagIds = new Set();
@@ -1631,27 +1824,7 @@ async function deleteTagOnServer(id, mergeInto) {
 }
 
 /**
- * Translates one tagsStore EntityChange into the matching /api/tags/create|edit|delete network call - the
- * tagsStore.onChange subscriber registered in rebuildTagStores().
- * @param {import('./entity-store.js').EntityChange} change
- */
-function persistTagChange(change) {
-    switch (change.op) {
-        case 'created':
-            createTagOnServer(change.entity);
-            break;
-        case 'updated':
-            editTagOnServer(change.id, change.patch, change.entity);
-            break;
-        case 'removed':
-            deleteTagOnServer(change.id, null);
-            break;
-    }
-}
-
-/**
- * Runs `worker` over `items` in fixed-size chunks, awaiting each chunk before starting the next - bounded
- * concurrency for the bulk-fanout ops in persistTagMapChange() below.
+ * Runs `worker` over `items` in fixed-size chunks, awaiting each chunk before starting the next.
  * @template T
  * @param {T[]} items
  * @param {(item: T) => Promise<any>} worker
@@ -1666,12 +1839,12 @@ async function runWithConcurrency(items, worker, chunkSize = 8) {
 }
 
 /**
- * Fire-and-forget as far as retry/rollback goes. Patches the row on completion because this races a
- * concurrent `/api/characters/query` re-render: a non-resident row (common under `lazyLoadCharacters`) has
- * no other source of truth and would otherwise permanently show as untagged if the redraw wins the race.
+ * Patches the row on completion because this races a concurrent `/api/characters/query` re-render: a non-resident
+ * row (common under `lazyLoadCharacters`) has no other source of truth and would otherwise permanently show as
+ * untagged if the redraw wins the race.
  * @param {string} id Character avatar or group id (an entity key)
  * @param {string} tagId
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} whether the server stored it
  */
 async function assignTagOnServer(id, tagId) {
     try {
@@ -1685,17 +1858,19 @@ async function assignTagOnServer(id, tagId) {
             throw new Error(`Failed to assign tag: ${response.statusText}`);
         }
         updateEntityRowTags([id]);
+        return true;
     } catch (error) {
         console.error(`Error assigning tag ${tagId} to ${id}:`, error);
+        return false;
     }
 }
 
 /**
- * Same fire-and-forget/race-patching behavior as assignTagOnServer(). Unassigning an unknown/already-untagged
- * id is a harmless server-side no-op, so this is also safe to call redundantly.
+ * Same race-patching behavior as assignTagOnServer(). Unassigning an unknown/already-untagged id is a harmless
+ * server-side no-op, so this is also safe to call redundantly.
  * @param {string} id Character avatar or group id (an entity key)
  * @param {string} tagId
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} whether the server stored it
  */
 async function unassignTagOnServer(id, tagId) {
     try {
@@ -1709,8 +1884,10 @@ async function unassignTagOnServer(id, tagId) {
             throw new Error(`Failed to unassign tag: ${response.statusText}`);
         }
         updateEntityRowTags([id]);
+        return true;
     } catch (error) {
         console.error(`Error unassigning tag ${tagId} from ${id}:`, error);
+        return false;
     }
 }
 
@@ -2631,24 +2808,30 @@ function findTag(request, resolve, listSelector) {
  * @returns {boolean} <c>false</c>, to keep the input clear
  */
 function selectTag(event, ui, listSelector, { tagListOptions = {} } = {}) {
-    let tagName = ui.item.value;
-    let tag = getTag(tagName);
+    const tagName = ui.item.value;
 
-    // create new tag if it doesn't exist
-    if (!tag) {
-        tag = createNewTag(tagName);
-    }
+    // Optional, check for multiple character ids being present.
+    const characterData = event.target.closest('#bulk_tags_div')?.dataset.characters;
+    // Settled now: a new tag is added once the server has stored it, and another entity may be open by then.
+    const entityIds = characterData ? JSON.parse(characterData).characterIds : getTagKey();
 
     // unfocus and clear the input
     $(event.target).val('').trigger('input');
 
-    // Optional, check for multiple character ids being present.
-    const characterData = event.target.closest('#bulk_tags_div')?.dataset.characters;
-    const characterIds = characterData ? JSON.parse(characterData).characterIds : null;
+    /** @param {Tag} tag */
+    const add = (tag) => {
+        addTagsToEntity(tag, entityIds, { tagListSelector: listSelector, tagListOptions: tagListOptions });
+        applyCharacterTagsToMessageDivs();
+    };
 
-    addTagsToEntity(tag, characterIds, { tagListSelector: listSelector, tagListOptions: tagListOptions });
-
-    applyCharacterTagsToMessageDivs();
+    const existing = getTag(tagName);
+    if (existing) {
+        add(existing);
+    } else {
+        createNewTag(tagName).then(tag => {
+            if (tag) add(tag);
+        });
+    }
 
     // need to return false to keep the input clear
     return false;
@@ -2674,8 +2857,7 @@ function getExistingTags(newTags) {
 /**
  * Merges tag definitions the server resolved on the client's behalf into the local `tagsStore`, for any id
  * this client doesn't already have a definition for - otherwise a server-minted tag would render invisible
- * until some unrelated future refetch pulled it in. Bypasses `tagsStore.create()`, which would send the server
- * a create for a tag it already has.
+ * until some unrelated future refetch pulled it in.
  * @param {object[]} tagDefinitions
  */
 function mergeServerTagDefinitions(tagDefinitions) {
@@ -2717,7 +2899,8 @@ async function importTags(character, { importSetting = null, suppressSuccessToas
         return;
     }
 
-    const tagsToImport = tagNamesToImport.map(tag => getTag(tag, { createNew: true }));
+    const tagsToImport = await createNewTags(tagNamesToImport);
+    if (!tagsToImport.length) return false;
     const added = addTagsToEntity(tagsToImport, character.avatar);
     const tagNames = tagsToImport.map(x => escapeHtml(x.name)).join(', ');
 
@@ -2843,41 +3026,83 @@ async function showTagImportPopup(character, existingTags, newTags, folderTags) 
 
 /**
  * Gets a tag from the tags array based on the provided tag name (insensitive soft matching)
- * Optionally creates the tag if it doesn't exist
  *
  * @param {string} tagName - The name of the tag to search for
- * @param {object} [options={}] - Optional parameters
- * @param {boolean} [options.createNew=false] - Whether to create the tag if it doesn't exist
  * @returns {Tag?} The tag object that matches the provided tag name, or undefined if no match is found
  */
-function getTag(tagName, { createNew = false } = {}) {
-    let tag = tags.find(t => equalsIgnoreCaseAndAccents(t.name, tagName));
-    if (!tag && createNew) {
-        tag = createNewTag(tagName);
-    }
-    return tag;
+function getTag(tagName) {
+    return tags.find(t => equalsIgnoreCaseAndAccents(t.name, tagName));
 }
 
 /**
- * Creates a new tag with default properties and a randomly generated id
+ * Creates of tags by name that the server hasn't answered yet, so a second request for a name waits for the first
+ * instead of making another tag with it.
+ * @type {{ name: string, created: Promise<Tag | null> }[]}
+ */
+const tagNamesBeingCreated = [];
+
+/**
+ * Gets the tag for each name, creating those no tag in this tab has. A new tag is in `tags` only once the server
+ * has stored it. Names that could not be created are left out, and listed to the user in one message.
  *
- * Does **not** trigger a save, so it's up to the caller to do that
+ * @param {string[]} tagNames
+ * @returns {Promise<Tag[]>} one tag per name that has a tag now, in the order given
+ */
+async function createNewTags(tagNames) {
+    let storedAny = false;
+    /** @type {string[]} */
+    const failedNames = [];
+
+    const results = await Promise.all(tagNames.map(async (tagName) => {
+        const existing = getTag(tagName);
+        if (existing) return existing;
+
+        const inFlight = tagNamesBeingCreated.find(x => equalsIgnoreCaseAndAccents(x.name, tagName));
+        if (inFlight) return inFlight.created;
+
+        const entry = { name: tagName, created: /** @type {Promise<Tag | null>} */ (null) };
+        entry.created = (async () => {
+            const tag = newTag(tagName);
+            const outcome = await createTagOnServer(tag);
+            if (outcome === 'failed') failedNames.push(tagName);
+            if (outcome !== 'stored') return null;
+            storedAny = true;
+            console.debug('Created new tag', tag.name, 'with id', tag.id);
+            return tag;
+        })().finally(() => removeFromArray(tagNamesBeingCreated, entry));
+        tagNamesBeingCreated.push(entry);
+        return entry.created;
+    }));
+
+    if (failedNames.length) {
+        toastr.error(
+            `${failedNames.map(name => escapeHtml(name)).join('<br />')}<br />${t`Check the server connection and try again.`}`,
+            t`Tags could not be created`,
+            { escapeHtml: false },
+        );
+    }
+    // Upstream's callers save the settings after creating a tag, which is how extensions hear of it.
+    if (storedAny) await eventSource.emit(event_types.SETTINGS_UPDATED);
+
+    return results.filter(Boolean);
+}
+
+/**
+ * Creates a tag named `tagName` with default properties and a randomly generated id. The tag is in `tags` only once
+ * the server has stored it.
  *
  * @param {string} tagName - name of the tag
- * @returns {Tag} the newly created tag, or the existing tag if it already exists (with a logged warning)
+ * @returns {Promise<Tag | null>} the new tag, or the tag that already has the name (with a warning). null if it could
+ *   not be created, which the user has been told.
  */
-function createNewTag(tagName) {
+async function createNewTag(tagName) {
     const existing = getTag(tagName);
     if (existing) {
         toastr.warning(`Cannot create new tag. A tag with the name already exists:<br />${escapeHtml(existing.name)}`, 'Creating Tag', { escapeHtml: false });
         return existing;
     }
-
-    const tag = newTag(tagName);
-    // Fuse-index invalidation is handled by the tagsStore.onChange subscriber (rebuildTagStores()).
-    tagsStore.create(tag);
-    console.debug('Created new tag', tag.name, 'with id', tag.id);
-    return tag;
+    const [tag] = await createNewTags([tagName]);
+    return tag ?? null;
 }
 
 /**
@@ -3691,7 +3916,6 @@ async function moveTagOnServer(id, placement, mode) {
 
     let changed = false;
     for (const { id: writtenId, sort_order } of answer.written ?? []) {
-        // Set on the object itself: tagsStore.update() would send the server its own value back as an edit.
         const tag = tagsStore.get(writtenId);
         if (!tag || tag.sort_order === sort_order) continue;
         tag.sort_order = sort_order;
@@ -4021,15 +4245,17 @@ async function onTagsPruneClick() {
         failed = true;
     }
 
-    // Already deleted server-side: drop them from memory without tagsStore.remove(), which would send a
-    // per-tag /api/tags/delete.
+    // Already deleted server-side, so they only need dropping here.
     if (prunedIds.size) {
         let write = 0;
         for (const tag of tags) {
             if (!prunedIds.has(tag.id)) tags[write++] = tag;
         }
         tags.length = write;
-        for (const id of prunedIds) storedTagFields.delete(id);
+        for (const id of prunedIds) {
+            storedTagFields.delete(id);
+            writeTagNameDraft(id, null);
+        }
         tagsStore.reindex();
         invalidateTagsFuseIndex();
         invalidateCharactersFuseIndex();
@@ -4050,9 +4276,10 @@ async function onTagsPruneClick() {
     }
 }
 
-function onTagCreateClick() {
+async function onTagCreateClick() {
     const tagName = getFreeName('New Tag', tags.map(x => x.name));
-    const tag = createNewTag(tagName);
+    const tag = await createNewTag(tagName);
+    if (!tag) return;
     printViewTagList($('#tag_view_list .tag_view_list_tags'));
 
     const tagElement = ($('#tag_view_list .tag_view_list_tags')).find(`.tag_view_item[id="${tag.id}"]`);
@@ -4077,7 +4304,7 @@ function appendViewTagToList(list, tag, count) {
     const template = VIEW_TAG_TEMPLATE.clone();
     template.attr('id', tag.id);
     template.find('.tag_view_counter_value').text(count);
-    template.find('.tag_view_name').text(tag.name);
+    drawTagViewName(template.find('.tag_view_name'), tag);
     template.find('.tag_view_name').addClass('tag');
 
     template.find('.tag_view_name').css('background-color', tag.color);
@@ -4139,34 +4366,14 @@ function appendViewTagToList(list, tag, count) {
     updateDrawTagFolder(template, tag);
 }
 
-/** Tags whose hide flip is on its way to the server. */
-const tagHideFlipsInFlight = new Set();
-
-/**
- * The tag's copy here is changed only once the server has stored the flip.
- * @param {string} id
- */
+/** @param {string} id */
 async function onTagHideToggleClick(id) {
     const tag = tagsStore.get(id);
-    if (!tag || tagHideFlipsInFlight.has(id)) return;
+    if (!tag) return;
     const hidden = !tag.is_hidden_on_character_card;
-
-    tagHideFlipsInFlight.add(id);
-    let outcome;
-    try {
-        outcome = await editTagOnServer(id, { is_hidden_on_character_card: hidden }, tag, () => {
-            const current = tagsStore.get(id);
-            if (!current) return;
-            current.is_hidden_on_character_card = hidden;
-            noteStoredTagFields(id, { is_hidden_on_character_card: hidden });
-            TAG_FIELD_REDRAWS.is_hidden_on_character_card(current);
-        });
-    } finally {
-        tagHideFlipsInFlight.delete(id);
-    }
-
+    const outcome = await storeTagField(id, 'is_hidden_on_character_card', hidden);
     if (outcome === 'failed') {
-        toastr.error(t`Check the server connection and try again.`, t`Tag could not be saved`);
+        tellTagEditFailed(id, hidden ? t`It was not hidden on character cards.` : t`It was not shown on character cards.`);
     }
 }
 
@@ -4186,20 +4393,15 @@ function redrawRowsAfterTagHiddenChange(tagId) {
     }
 }
 
-function onTagAsFolderClick() {
-    const element = $(this).closest('.tag_view_item');
-    const id = element.attr('id');
+async function onTagAsFolderClick() {
+    const id = $(this).closest('.tag_view_item').attr('id');
     const tag = tagsStore.get(id);
+    if (!tag) return;
 
     const types = Object.keys(TAG_FOLDER_TYPES);
     const currentTypeIndex = types.indexOf(tag.folder_type);
-    tagsStore.update(id, { folder_type: types[(currentTypeIndex + 1) % types.length] });
-
-    updateDrawTagFolder(element, tag);
-    // Folder type/membership is list-structural (moves rows between folders, or creates/empties one) whenever
-    // "Tags as folders" is on - not a single row's own display, so a full reprint is the correct amount of work
-    // here, not an over-triggering one.
-    printCharactersDebounced();
+    const outcome = await storeTagField(id, 'folder_type', types[(currentTypeIndex + 1) % types.length]);
+    if (outcome === 'failed') tellTagEditFailed(id, t`Its folder type was not changed.`);
 }
 
 function updateDrawTagFolder(element, tag) {
@@ -4285,15 +4487,112 @@ async function onTagDeleteClick() {
     toastr.success(lines.join(' '), title);
 }
 
+const TAG_NAME_DRAFT_KEY_PREFIX = 'TagNameDraft:';
+
+/**
+ * A name typed into a tag's row in Manage Tags that the server hasn't stored, kept so it survives a reload. In plain
+ * localStorage, not accountStorage, whose write is a debounced network save that may not land before a reload.
+ * @param {string} id
+ * @returns {string | null} null if the tag has no unsaved name
+ */
+function readTagNameDraft(id) {
+    try {
+        return localStorage.getItem(TAG_NAME_DRAFT_KEY_PREFIX + id);
+    } catch {
+        return null;
+    }
+}
+
+/** @param {string} id @param {string | null} name - null: the tag has no unsaved name any more */
+function writeTagNameDraft(id, name) {
+    try {
+        if (name === null) localStorage.removeItem(TAG_NAME_DRAFT_KEY_PREFIX + id);
+        else localStorage.setItem(TAG_NAME_DRAFT_KEY_PREFIX + id, name);
+    } catch (error) {
+        console.error(`Could not keep the unsaved name of tag ${id}:`, error);
+    }
+}
+
+/**
+ * Draws a tag's name field in Manage Tags: its unsaved name if it has one, marked as unsaved, else its stored name.
+ * Text the field already shows is not set again, which would move the cursor.
+ * @param {JQuery<HTMLElement>} nameElement
+ * @param {Tag} tag
+ */
+function drawTagViewName(nameElement, tag) {
+    const draft = readTagNameDraft(tag.id);
+    const unsaved = draft !== null && draft !== tag.name;
+    const shown = unsaved ? draft : tag.name;
+    if (nameElement.text() !== shown) nameElement.text(shown);
+    nameElement.toggleClass('tag_view_name_unsaved', unsaved);
+    if (unsaved) {
+        nameElement.attr('title', t`This name is not saved yet. Click it and press Enter to save it.`);
+    } else {
+        nameElement.removeAttr('title');
+    }
+}
+
+/** Typing only changes the field: the name is sent when the field is left or Enter is pressed (commitTagRename()). */
 function onTagRenameInput() {
     const id = $(this).closest('.tag_view_item').attr('id');
-    const newName = $(this).text();
-    // Fuse-index invalidation is handled by the tagsStore.onChange subscriber (rebuildTagStores()).
-    tagsStore.update(id, { name: newName });
-    $(this).attr('dirty', '');
-    $(`.tag[id="${id}"] .tag_name`).text(newName);
+    const tag = tagsStore.get(id);
+    if (!tag) return;
+    const typed = $(this).text();
+    writeTagNameDraft(id, typed === tag.name ? null : typed);
+    drawTagViewName($(this), tag);
+}
+
+/** @param {JQuery.KeyDownEvent} evt */
+function onTagRenameKeydown(evt) {
+    // An Enter that confirms an input method's composition is not the user finishing the name.
+    if (evt.key !== 'Enter' || evt.originalEvent?.isComposing) return;
+    evt.preventDefault();
+    const nameElement = /** @type {HTMLElement} */ (evt.currentTarget);
+    if (document.activeElement === nameElement) nameElement.blur();
+    else commitTagRename(nameElement);
+}
+
+/**
+ * Sends the name typed into a tag's row in Manage Tags. If it isn't stored, the field keeps what was typed, marked
+ * as unsaved, and leaving the field or pressing Enter in it sends it again.
+ * @param {HTMLElement} nameElement
+ * @param {HTMLElement} [focusMovedTo] - where the focus went when the field was left
+ */
+async function commitTagRename(nameElement, focusMovedTo) {
+    const id = $(nameElement).closest('.tag_view_item').attr('id');
+    const tag = tagsStore.get(id);
+    if (!tag) return;
+    const name = readTagNameDraft(id);
+    if (name === null) return;
+
+    const outcome = await storeTagField(id, 'name', name, (stored) => {
+        // Typed further since this name was sent: that text is still unsaved.
+        if (readTagNameDraft(id) === stored) writeTagNameDraft(id, null);
+    });
+    if (outcome === 'failed') {
+        tellTagEditFailed(id, t`It was not renamed. The new name is kept in its field: press Enter there to try again.`);
+        return;
+    }
+    if (outcome !== 'stored') return;
 
     applyCharacterTagsToMessageDivs();
+
+    // Reprint in the new order, unless a name is being typed: a reprint would take the cursor out of it.
+    const list = $('#tag_view_list .tag_view_list_tags');
+    if (!list.length || $(document.activeElement).is('.tag_view_name')) return;
+    const focusWasInList = !!focusMovedTo && list[0].contains(focusMovedTo) && list[0].contains(document.activeElement);
+    const oldOrder = $('#tag_view_list .tag_view_item').map((_, el) => el.id).get();
+
+    printViewTagList(list);
+
+    // The reprint removed the element that had the focus; tab navigation goes on from the renamed tag.
+    if (focusWasInList) $(`#tag_view_list .tag_view_item[id="${id}"] .tag_view_name`)[0]?.focus();
+
+    const newOrder = $('#tag_view_list .tag_view_item').map((_, el) => el.id).get();
+    const orderChanged = !oldOrder.every((id, index) => id === newOrder[index]);
+    if (orderChanged) {
+        flashHighlight($(`#tag_view_list .tag_view_item[id="${id}"]`));
+    }
 }
 
 /**
@@ -4312,13 +4611,34 @@ function onTagColorize(evt, colorField, cssProperty) {
     if (isDefaultColor) newColor = '';
 
     // The picker also fires `change` when it is first given its colour, in its own `rgba(...)` spelling.
-    const storedColor = tagsStore.get(id)?.[colorField] ?? '';
-    if (isSameCssColor(storedColor, newColor)) return;
+    const waiting = tagFieldEditsInFlight.get(`${id}\n${colorField}`);
+    const currentColor = waiting ? waiting.wanted : (tagsStore.get(id)?.[colorField] ?? '');
+    if (isSameCssColor(currentColor, newColor)) return;
 
+    // The row previews the colour being picked; the tag takes it everywhere else once the server has stored it.
     $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
-    tagsStore.update(id, { [colorField]: newColor });
+    storeTagColor(id, colorField, newColor);
+}
 
-    debouncedTagColoring(id, cssProperty, newColor);
+/**
+ * @param {string} id
+ * @param {'color'|'color2'} colorField
+ * @param {string} newColor
+ */
+async function storeTagColor(id, colorField, newColor) {
+    const outcome = await storeTagField(id, colorField, newColor);
+    if (outcome !== 'refused' && outcome !== 'failed') return;
+
+    // Not stored: the row and its picker go back to the colour the server has.
+    const tag = tagsStore.get(id);
+    if (!tag) return;
+    TAG_FIELD_REDRAWS[colorField](tag);
+    const picker = $(`.tag_view_item[id="${id}"] .tag_view_color_picker[data-value="${colorField}"] toolcool-color-picker`);
+    if (picker.length) {
+        // @ts-ignore
+        picker[0].color = tag[colorField] || picker.attr('data-default-color');
+    }
+    if (outcome === 'failed') tellTagEditFailed(id, t`Its colour was not changed.`);
 }
 
 /**
@@ -4345,8 +4665,6 @@ function applyTagColoring(tagId, cssProperty, newColor) {
     $(`.tag[id="${tagId}"]`).css(cssProperty, newColor);
     $(`.bogus_folder_select[tagid="${tagId}"] .avatar`).css(cssProperty, newColor);
 }
-
-const debouncedTagColoring = debounce(applyTagColoring, debounce_timeout.quick);
 
 function onTagListHintClick() {
     $(this).toggleClass('selected');
@@ -4521,32 +4839,28 @@ function registerTagsSlashCommands() {
      * @param {string} tagName - The name of the tag
      * @param {object} options - Optional arguments
      * @param {boolean} [options.allowCreate=false] - Whether a new tag should be created if no tag with the name exists
-     * @returns {Tag?} The tag, or null if not found
+     * @returns {Promise<Tag?>} The tag, or null if not found, or if it could not be created (the user has been told)
      */
-    function paraGetTag(tagName, { allowCreate = false } = {}) {
+    async function paraGetTag(tagName, { allowCreate = false } = {}) {
         if (!tagName) {
             toastr.warning('Tag name must be provided.');
             return null;
         }
-        let tag = getTag(tagName);
-        if (allowCreate && !tag) {
-            tag = createNewTag(tagName);
-        }
-        if (!tag) {
-            toastr.warning(`Tag ${tagName} not found.`);
-            return null;
-        }
-        return tag;
+        const tag = getTag(tagName);
+        if (tag) return tag;
+        if (allowCreate) return createNewTag(tagName);
+        toastr.warning(`Tag ${tagName} not found.`);
+        return null;
     }
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tag-add',
         returns: 'true/false - Whether the tag was added or was assigned already',
-        /** @param {{name: string}} namedArgs @param {string} tagName @returns {string} */
-        callback: ({ name }, tagName) => {
+        /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
+        callback: async ({ name }, tagName) => {
             const key = searchCharByName(name);
             if (!key) return 'false';
-            const tag = paraGetTag(tagName, { allowCreate: true });
+            const tag = await paraGetTag(tagName, { allowCreate: true });
             if (!tag) return 'false';
             const result = addTagsToEntity(tag, key);
             printCharacters();
@@ -4589,11 +4903,11 @@ function registerTagsSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tag-remove',
         returns: 'true/false - Whether the tag was removed or wasn\'t assigned already',
-        /** @param {{name: string}} namedArgs @param {string} tagName @returns {string} */
-        callback: ({ name }, tagName) => {
+        /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
+        callback: async ({ name }, tagName) => {
             const key = searchCharByName(name);
             if (!key) return 'false';
-            const tag = paraGetTag(tagName);
+            const tag = await paraGetTag(tagName);
             if (!tag) return 'false';
             const result = removeTagFromEntity(tag, key);
             printCharacters();
@@ -4635,11 +4949,11 @@ function registerTagsSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tag-exists',
         returns: 'true/false - Whether the given tag name is assigned to the character',
-        /** @param {{name: string}} namedArgs @param {string} tagName @returns {string} */
-        callback: ({ name }, tagName) => {
+        /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
+        callback: async ({ name }, tagName) => {
             const key = searchCharByName(name);
             if (!key) return 'false';
-            const tag = paraGetTag(tagName);
+            const tag = await paraGetTag(tagName);
             if (!tag) return 'false';
             return String(isTagAssignedToKey(key, tag.id));
         },
@@ -5112,35 +5426,16 @@ export function initTags() {
     $(document).on('click', '.tag_delete', onTagDeleteClick);
     $(document).on('click', '.tag_as_folder', onTagAsFolderClick);
     $(document).on('input', '.tag_view_name', onTagRenameInput);
+    $(document).on('keydown', '.tag_view_name', onTagRenameKeydown);
+    $(document).on('focusout', '.tag_view_name', (evt) => {
+        commitTagRename(evt.target, evt.relatedTarget instanceof HTMLElement ? evt.relatedTarget : undefined);
+    });
     $(document).on('click', '.tag_view_create', onTagCreateClick);
     $(document).on('click', '.tag_view_backup', onTagsBackupClick);
     $(document).on('click', '.tag_view_restore', onBackupRestoreClick);
     $(document).on('click', '.tag_view_prune', onTagsPruneClick);
     eventSource.on(event_types.CHARACTER_DUPLICATED, copyTags);
     eventSource.makeFirst(event_types.CHAT_CHANGED, () => selected_group ? applyTagsOnGroupSelect() : applyTagsOnCharacterSelect());
-
-    $(document).on('focusout', '#tag_view_list .tag_view_name', (evt) => {
-        // Reorder/reprint tags, but only if the name actually has changed
-        if (!$(evt.target).is('[dirty]')) return;
-
-        // Remember the order, so we can flash highlight if it changed after reprinting
-        const tagId = ($(evt.target).closest('.tag_view_item')).attr('id');
-        const oldOrder = $('#tag_view_list .tag_view_item').map((_, el) => el.id).get();
-
-        printViewTagList($('#tag_view_list .tag_view_list_tags'));
-
-        // If the new focus would've been inside the now redrawn tag list, we should at least move back the focus to the current name
-        // Otherwise tab-navigation gets a bit weird
-        if (evt.relatedTarget instanceof HTMLElement && $(evt.relatedTarget).closest('#tag_view_list')) {
-            $(`#tag_view_list .tag_view_item[id="${tagId}"] .tag_view_name`)[0]?.focus();
-        }
-
-        const newOrder = $('#tag_view_list .tag_view_item').map((_, el) => el.id).get();
-        const orderChanged = !oldOrder.every((id, index) => id === newOrder[index]);
-        if (orderChanged) {
-            flashHighlight($(`#tag_view_list .tag_view_item[id="${tagId}"]`));
-        }
-    });
 
     registerTagsSlashCommands();
     restoreSavedTagFilters();
