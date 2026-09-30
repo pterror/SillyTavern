@@ -32,7 +32,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { getCachedTags, setCachedTags } from './tags-cache.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, digestsEqual } from './hash-utils.js';
-import { beginLocalTagChange } from './tag-fetch-stamps.js';
+import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { parseQueryTotal } from './character-repository.js';
 
 export {
@@ -574,9 +574,52 @@ function queueTagSave(key, save) {
             saved();
             finished();
             if (tagSaveChains.get(key) === done) tagSaveChains.delete(key);
-            if (--tagSavesPending === 0) reportTagSavesNotStored();
+            if (--tagSavesPending === 0) {
+                reportTagSavesNotStored();
+                rereadEntitiesLeftWaiting();
+            }
         }
     };
+}
+
+/**
+ * Assigns of a tag the server turned out not to have any more, because someone else deleted it: the entity got the
+ * tag it was merged into (`assigned`), nothing (null), or the tag's id with no tag behind it (`tagId`). Kept until
+ * every pending save is answered so they are reported together.
+ * @type {{ key: string, tagId: string, tagName: string, assigned: string | null }[]}
+ */
+const tagAssignsNotAsAsked = [];
+
+/** @param {string} key @returns {string} the name of the character or group, or `key` when this tab doesn't hold it */
+function nameOfKey(key) {
+    return charactersStore.get(key)?.name ?? groupsStore.get(key)?.name ?? key;
+}
+
+/**
+ * Tells the user which assigns named a tag that was deleted, and what the entity got instead. Drops those tags
+ * from this tab and re-reads the entities' tags first, so this tab shows what the server has and the message can
+ * name the tag they got.
+ */
+async function reportTagAssignsNotAsAsked() {
+    const notAsAsked = tagAssignsNotAsAsked.splice(0);
+    if (!notAsAsked.length) return;
+
+    for (const { tagId, assigned } of notAsAsked) {
+        if (!tagsStore.has(tagId)) continue;
+        if (assigned !== null && assigned !== tagId) await dropTagLocally(tagId, { replaceWithId: assigned });
+        else await resyncRefusedTag(tagId);
+    }
+    await rereadResidentEntityTagIds(notAsAsked.map(x => x.key).filter(onlyUnique));
+
+    const lines = notAsAsked.map(({ key, tagId, tagName, assigned }) => {
+        const tag = escapeHtml(tagName);
+        const entityName = escapeHtml(String(nameOfKey(key)));
+        if (assigned === null) return t`'${tag}' was not added to ${entityName}: the tag was deleted.`;
+        if (assigned === tagId) return t`'${tag}' was deleted, so it does not show on ${entityName}.`;
+        const target = escapeHtml(String(tagsStore.get(assigned)?.name ?? assigned));
+        return t`'${tag}' was deleted and merged into '${target}', so ${entityName} got '${target}'.`;
+    });
+    toastr.warning(lines.join('<br />'), t`Tag was deleted`, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
 }
 
 /**
@@ -584,10 +627,10 @@ function queueTagSave(key, save) {
  * were for. Each has already been undone in this tab, which stands if the re-read fails too.
  */
 function reportTagSavesNotStored() {
+    reportTagAssignsNotAsAsked().catch(error => console.error('Could not report assigns of deleted tags:', error));
     const notStored = tagSavesNotStored.splice(0);
     if (!notStored.length) return;
 
-    const nameOfKey = (/** @type {string} */ key) => charactersStore.get(key)?.name ?? groupsStore.get(key)?.name ?? key;
     const lines = notStored.map(({ key, tagId, assign }) => {
         const tagName = escapeHtml(String(tagsStore.get(tagId)?.name ?? tagId));
         const entityName = escapeHtml(String(nameOfKey(key)));
@@ -656,11 +699,25 @@ function redrawTagsOfKey(key, tagId, usageFlipped) {
  */
 function queueAssignSave(key, tagId) {
     return queueTagSave(key, async () => {
-        if (await assignTagOnServer(key, tagId)) return;
-        tagSavesNotStored.push({ key, tagId, assign: true });
+        const answer = await assignTagOnServer(key, tagId);
+        if (answer?.assigned === tagId) {
+            // A tag this tab took for stored, that the server has no definition of: it was deleted. The assignment is
+            // stored all the same, so it is not undone here.
+            if (!answer.defined && storedTagFields.has(tagId)) {
+                tagAssignsNotAsAsked.push({ key, tagId, tagName: String(tagsStore.get(tagId)?.name ?? tagId), assigned: tagId });
+            }
+            return;
+        }
+        if (answer) {
+            tagAssignsNotAsAsked.push({ key, tagId, tagName: String(tagsStore.get(tagId)?.name ?? tagId), assigned: answer.assigned });
+        } else {
+            tagSavesNotStored.push({ key, tagId, assign: true });
+        }
         if (!resolveTagIdsArray(key)) {
-            // An entity this tab doesn't hold, given the tag through `tag_map`: it is sent again with the next take-in.
+            // An entity this tab doesn't hold, given the tag through `tag_map`: a failed assign is sent again with the
+            // next take-in.
             decrementTagUsage(tagId);
+            if (answer) return;
             const sent = unheldTagMapSent.get(key);
             if (sent?.includes(tagId)) sent.splice(sent.indexOf(tagId), 1);
             return;
@@ -1818,9 +1875,27 @@ async function dropTagLocally(id, { replaceWithId } = {}) {
 }
 
 /**
+ * Entities whose re-read tags were not taken because a tag save of this tab's for them was unanswered, or was
+ * answered after the read began. They are re-read once every pending save is answered.
+ * @type {Set<string>}
+ */
+const tagRereadsWaiting = new Set();
+
+/** Re-reads the entities a re-read left out while this tab's own tag saves for them were pending. */
+function rereadEntitiesLeftWaiting() {
+    if (!tagRereadsWaiting.size) return;
+    const keys = [...tagRereadsWaiting];
+    tagRereadsWaiting.clear();
+    rereadResidentEntityTagIds(keys).catch(error => console.error('Could not re-read tags after saving:', error));
+}
+
+/**
  * Replaces each resident entity's tag ids with the server's where they differ, and fetches any tag definition
  * the new ids need that this tab doesn't have. Stops at the first failed request, keeping what it already applied.
+ * An entity with a tag save of this tab's still unanswered keeps what it shows and is re-read once the saves are
+ * answered.
  * @param {string[]} [onlyKeys] - the entities to re-read; every resident one when left out
+ * @returns {Promise<boolean>} false if a request failed
  */
 async function rereadResidentEntityTagIds(onlyKeys) {
     // What an extension changed through `tag_map` is sent before the server's copy is read over it.
@@ -1844,18 +1919,23 @@ async function rereadResidentEntityTagIds(onlyKeys) {
 
     try {
         for (let i = 0; i < keys.length; i += TAG_READ_MAX_IDS) {
+            const fetchStamp = tagFetchStamp();
             const answer = await postTagsRead('/api/tags/for', { ids: keys.slice(i, i + TAG_READ_MAX_IDS) });
             if (!answer) {
                 console.error('Could not re-read the tags of resident characters and groups');
-                return;
+                return false;
             }
             for (const [key, serverIds] of Object.entries(answer)) {
                 if (!Array.isArray(serverIds)) continue;
+                const ids = resolveTagIdsArray(key);
+                if (!ids) continue;
+                if (!isFetchedTagIdsCurrent(key, fetchStamp)) {
+                    tagRereadsWaiting.add(key);
+                    continue;
+                }
                 for (const tagId of serverIds) {
                     if (!tagsStore.has(tagId)) unknownTagIds.add(tagId);
                 }
-                const ids = resolveTagIdsArray(key);
-                if (!ids) continue;
                 if (ids.length === serverIds.length && ids.every((tagId, i) => tagId === serverIds[i])) continue;
 
                 const serverSet = new Set(serverIds);
@@ -1864,6 +1944,8 @@ async function rereadResidentEntityTagIds(onlyKeys) {
                 const removed = ids.filter(tagId => !serverSet.has(tagId));
                 ids.splice(0, ids.length, ...serverIds);
                 noteOwnTagIdsChange(ids, () => [...serverIds]);
+                // The same tags in another order draw the same.
+                if (!added.length && !removed.length) continue;
                 changedKeys.add(key);
                 for (const tagId of added) {
                     changedTagIds.add(tagId);
@@ -1884,17 +1966,75 @@ async function rereadResidentEntityTagIds(onlyKeys) {
             const answer = await postTagsRead('/api/tags/by-ids', { ids: toFetch.slice(i, i + TAG_READ_MAX_IDS) });
             if (!answer || !Array.isArray(answer.tags)) {
                 console.error('Could not read the definitions of tags resident characters and groups now carry');
-                return;
+                return false;
             }
             mergeServerTagDefinitions(answer.tags);
         }
+        return true;
     } finally {
         if (changedKeys.size) {
             invalidateCharactersFuseIndex();
             invalidateGroupsFuseIndex();
             redrawAfterTagChange([...changedTagIds], changedKeys, usageFlips);
+            const openKey = getTagKey();
+            if (openKey !== null && changedKeys.has(String(openKey))) {
+                if (selected_group) applyTagsOnGroupSelect(); else applyTagsOnCharacterSelect();
+            }
+            applyCharacterTagsToMessageDivs();
         }
+        if (tagSavesPending === 0) rereadEntitiesLeftWaiting();
     }
+}
+
+/**
+ * Where this tab's characters' and groups' tags are current to in the server's two logs (/api/tags/assignment-changes).
+ * null: not known, so the next ask is answered with a re-read.
+ * @type {{ sinceSeq: number, sinceGroupsVersion: number } | null}
+ */
+let entityTagChangesCursor = null;
+let entityTagChangesAskQueued = false;
+/** @type {Promise<void>} */
+let entityTagChangesChain = Promise.resolve();
+
+/**
+ * Brings the tags of the characters and groups this tab holds up to the server's: asks which entities' tags may
+ * have changed past this tab's cursors, page by page, and re-reads those it holds. When the server can't say, or more
+ * log rows remain than this tab holds entities, re-reads the tags of everything it holds instead. A failed request
+ * leaves the cursors where they were, so the next ask covers the same changes.
+ */
+async function takeInEntityTagChanges() {
+    for (;;) {
+        const page = await postTagsRead('/api/tags/assignment-changes', entityTagChangesCursor ?? {});
+        if (!page || typeof page.seq !== 'number' || typeof page.groupsVersion !== 'number') return;
+
+        const rowsLeft = (page.endSeq - page.seq) + (page.endGroupsVersion - page.groupsVersion);
+        if (page.reset || (page.hasMore && rowsLeft > charactersStore.getAll().length + groupsStore.getAll().length)) {
+            // The logs' ends as read before the tags are, so nothing written while they are read is missed.
+            if (await rereadResidentEntityTagIds()) {
+                entityTagChangesCursor = { sinceSeq: page.endSeq, sinceGroupsVersion: page.endGroupsVersion };
+            }
+            return;
+        }
+
+        const held = (Array.isArray(page.ids) ? page.ids : []).filter(key => typeof key === 'string' && resolveTagIdsArray(key));
+        if (held.length && !await rereadResidentEntityTagIds(held)) return;
+        entityTagChangesCursor = { sinceSeq: page.seq, sinceGroupsVersion: page.groupsVersion };
+        if (!page.hasMore) return;
+    }
+}
+
+/**
+ * The tags of characters or groups may have changed on the server (a character change message or 'groups-changed' on
+ * the changes stream), or the stream is back after a break that may have swallowed such a message. Any number of
+ * calls while one ask is waiting its turn make one ask.
+ */
+export function onEntityTagsChanged() {
+    if (!tagsLoadedOnce || entityTagChangesAskQueued) return;
+    entityTagChangesAskQueued = true;
+    entityTagChangesChain = entityTagChangesChain.then(() => {
+        entityTagChangesAskQueued = false;
+        return takeInEntityTagChanges();
+    }).catch(error => console.error('Error taking in tag assignment changes:', error));
 }
 
 /**
@@ -1947,7 +2087,8 @@ async function runWithConcurrency(items, worker, chunkSize = 8) {
  * untagged if the redraw wins the race.
  * @param {string} id Character avatar or group id (an entity key)
  * @param {string} tagId
- * @returns {Promise<boolean>} whether the server stored it
+ * @returns {Promise<{ assigned: string | null, defined: boolean } | null>} null if the request failed; else the
+ *   server's answer (see /api/tags/assign): the tag the entity got, and whether the server has a tag with that id
  */
 async function assignTagOnServer(id, tagId) {
     try {
@@ -1960,11 +2101,12 @@ async function assignTagOnServer(id, tagId) {
         if (!response.ok) {
             throw new Error(`Failed to assign tag: ${response.statusText}`);
         }
+        const answer = await response.json();
         updateEntityRowTags([id]);
-        return true;
+        return { assigned: answer.assigned ?? null, defined: answer.defined !== false };
     } catch (error) {
         console.error(`Error assigning tag ${tagId} to ${id}:`, error);
-        return false;
+        return null;
     }
 }
 
@@ -2423,10 +2565,15 @@ async function loadTagDefinitionsFromServer() {
             cache: 'no-cache',
         });
         if (manifestResponse.ok) {
-            const { hash, changesSeq } = await manifestResponse.json();
+            const { hash, changesSeq, assignmentChanges } = await manifestResponse.json();
             manifestHash = hash;
             // Read before the definitions are, so nothing that changes while they load is missed.
             tagChangesSeq = typeof changesSeq === 'number' ? changesSeq : null;
+            // Only the first one, read before the characters and groups are: a later one would skip what changed
+            // since this tab last asked.
+            if (!entityTagChangesCursor && typeof assignmentChanges?.seq === 'number' && typeof assignmentChanges?.groupsVersion === 'number') {
+                entityTagChangesCursor = { sinceSeq: assignmentChanges.seq, sinceGroupsVersion: assignmentChanges.groupsVersion };
+            }
             if (hash !== null && hash !== undefined) {
                 const cached = await getCachedTags();
                 if (cached && cached.hash === hash) {
@@ -2826,11 +2973,16 @@ function updateEntityRowTags(keys) {
             ? $(`#rm_print_characters_block .character_select[data-avatar="${CSS.escape(String(key))}"]`)
             : $(`#rm_print_characters_block .group_select[data-grid="${CSS.escape(String(key))}"]`);
 
-        if (!$row.length) {
-            continue; // Row isn't currently rendered (different page, filtered out, etc) - nothing to patch.
+        if ($row.length) {
+            printTagList($row.find('.tags'), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
         }
 
-        printTagList($row.find('.tags'), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
+        // The group editor's member and candidate rows of the character.
+        if (isCharacter) {
+            $(`.group_member[data-avatar="${CSS.escape(String(key))}"] .tags`).each((_, element) => {
+                printTagList($(element), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
+            });
+        }
     }
 }
 

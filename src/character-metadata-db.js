@@ -91,7 +91,12 @@ function insertChange(db, id, op, fields) {
  */
 function insertGroupChange(db, groupId, fileName = null) {
     db.run('INSERT INTO group_changes (group_id, file_name) VALUES (@groupId, @fileName)', { groupId, fileName });
+    characterChangeEmitter.emit(GROUP_CHANGES_EVENT);
 }
+
+// Emitted on characterChangeEmitter when a group_changes row was added, inside the write's transaction. Like 'change'
+// it names no store: every client asks, and one whose store has nothing new is answered with nothing.
+export const GROUP_CHANGES_EVENT = 'group-changes';
 
 /** Connections whose groups version read has already failed and been logged, so it's logged once each. */
 const loggedGroupsVersionFailures = new WeakSet();
@@ -3800,6 +3805,103 @@ export async function getTagChangesSeq(directories) {
     return Number(row.seq);
 }
 
+/**
+ * @typedef {object} EntityTagChangesPage
+ * @property {number} seq The characters change log (changes) cursor to ask from next.
+ * @property {number} groupsVersion The groups version log (group_changes) cursor to ask from next.
+ * @property {number} endSeq Where the characters change log ends.
+ * @property {number} endGroupsVersion Where the groups version log ends.
+ * @property {boolean} reset The caller can't be told what changed: it has no usable cursor, or a log no longer
+ *   reaches back to it. It re-reads the tags of what it holds; `seq` and `groupsVersion` are the logs' ends.
+ * @property {string[]} ids The characters and groups whose tags may have changed.
+ * @property {boolean} hasMore Rows remain past the cursors.
+ */
+
+/**
+ * The ends of the two logs getEntityTagChangesSince() reads: the cursors a client that is about to read its
+ * characters and groups asks from afterwards.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{ seq: number, groupsVersion: number | null } | null>} null when the store is unavailable;
+ *   groupsVersion null when it can't be read.
+ */
+export async function getEntityTagChangesEnd(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const row = /** @type {{ seq: number }} */ (entry.db.get('SELECT COALESCE(MAX(seq), 0) AS seq FROM changes'));
+    return { seq: Number(row.seq), groupsVersion: readGroupsVersionSync(entry.db) };
+}
+
+/**
+ * One page of which characters and groups may have had their tags changed past the caller's cursors: at most `limit`
+ * log rows, from the characters change log (rows that wrote tag_ids or a whole record) and then the groups version
+ * log (every row that names a group). An entity is listed once. Deleted characters are left out.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ sinceSeq: unknown, sinceGroupsVersion: unknown }} cursors Anything but two non-negative integers asks
+ *   only for the logs' ends.
+ * @param {{ limit: number }} options
+ * @returns {Promise<EntityTagChangesPage | null>} null when the store is unavailable.
+ */
+export async function getEntityTagChangesSince(directories, { sinceSeq, sinceGroupsVersion }, { limit }) {
+    if (!Number.isInteger(limit) || limit <= 0) {
+        throw new TypeError('getEntityTagChangesSince() requires a positive integer limit');
+    }
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const bounds = /** @type {{ minSeq: number | null, maxSeq: number | null, minVersion: number | null }} */ (entry.db.get(
+        'SELECT (SELECT MIN(seq) FROM changes) AS minSeq, (SELECT MAX(seq) FROM changes) AS maxSeq, (SELECT MIN(version) FROM group_changes) AS minVersion'));
+    const endSeq = bounds.maxSeq !== null ? Number(bounds.maxSeq) : 0;
+    const endGroupsVersion = readGroupsVersionSync(entry.db) ?? 0;
+    /** @type {EntityTagChangesPage} */
+    const reset = { seq: endSeq, groupsVersion: endGroupsVersion, endSeq, endGroupsVersion, reset: true, ids: [], hasMore: false };
+    const isCursor = (/** @type {unknown} */ value) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+    if (!isCursor(sinceSeq) || !isCursor(sinceGroupsVersion)) return reset;
+    const seq = /** @type {number} */ (sinceSeq);
+    const groupsVersion = /** @type {number} */ (sinceGroupsVersion);
+    if (seq > endSeq || groupsVersion > endGroupsVersion) return reset;
+    if (bounds.minSeq !== null && seq < Number(bounds.minSeq) - 1) return reset;
+    if (bounds.minVersion !== null && groupsVersion < Number(bounds.minVersion) - 1) return reset;
+
+    /** @type {Set<string>} */
+    const ids = new Set();
+    let lastSeq = seq;
+    let lastGroupsVersion = groupsVersion;
+    let read = 0;
+    let hasMore = false;
+    // Each LIMIT is one more than what is left of the page: reaching the extra row means more remain.
+    for (const row of /** @type {Generator<ChangeRow>} */ (entry.db.iterate('SELECT seq, id, op, fields FROM changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [seq, limit + 1]))) {
+        if (read === limit) {
+            hasMore = true;
+            break;
+        }
+        read++;
+        lastSeq = Number(row.seq);
+        if (row.op === 'delete') {
+            ids.delete(row.id);
+            continue;
+        }
+        let fields = null;
+        try {
+            fields = row.fields === null ? null : JSON.parse(row.fields);
+        } catch {
+            fields = null;
+        }
+        if (!Array.isArray(fields) || fields.includes('tag_ids')) ids.add(row.id);
+    }
+    if (!hasMore) {
+        for (const row of /** @type {Generator<{ version: number, group_id: string | null }>} */ (entry.db.iterate('SELECT version, group_id FROM group_changes WHERE version > ? ORDER BY version ASC LIMIT ?', [groupsVersion, limit - read + 1]))) {
+            if (read === limit) {
+                hasMore = true;
+                break;
+            }
+            read++;
+            lastGroupsVersion = Number(row.version);
+            if (row.group_id !== null) ids.add(row.group_id);
+        }
+    }
+    return { seq: lastSeq, groupsVersion: lastGroupsVersion, endSeq, endGroupsVersion, reset: false, ids: [...ids], hasMore };
+}
+
 /** Ids of the characters carrying any of `tagIds`, in batches, each id once. `tagIds` goes into one IN (...), so
  * the caller bounds it (search-index passes one tag-name-change page).
  * @param {import('./users.js').UserDirectoryList} directories
@@ -4025,11 +4127,27 @@ function patchPendingRowTagIds(pending) {
  * @returns {Promise<'ok' | 'not_found' | null>}
  */
 export async function assignEntityTag(directories, id, tagId) {
+    const answer = await assignEntityTagReporting(directories, id, tagId);
+    return answer === null ? null : answer.result;
+}
+
+/**
+ * assignEntityTag(), also saying which tag the entity got.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {string} tagId
+ * @returns {Promise<{ result: 'ok' | 'not_found', assigned: string | null, reason: 'merged' | 'deleted' | null, defined: boolean } | null>}
+ *   assigned: the tag the entity got, or null when nothing was assigned. reason, when that isn't `tagId`: 'merged'
+ *   (it is being deleted with a merge target, which the entity got), 'deleted' (it is being deleted with none), or
+ *   null for an entity that doesn't exist. defined: whether a stored tag has the assigned id; an id none has is
+ *   assigned all the same, as card imports and upstream's tag_map do, and shows nowhere until a tag has it.
+ */
+export async function assignEntityTagReporting(directories, id, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return null;
 
     const type = tagEntityTypeOf(id);
-    if (type === null) return 'not_found';
+    if (type === null) return { result: 'not_found', assigned: null, reason: null, defined: false };
 
     // A marked tag is now its merge target, so that is what gets assigned.
     const resolvedTagId = resolveTagId(tagId, readTagDeletionsSync(entry.db));
@@ -4038,8 +4156,9 @@ export async function assignEntityTag(directories, id, tagId) {
             ? entry.batch?.pending.has(id) === true || !!entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })
             : !!entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id });
         if (exists) warnDeletedTagsNotAssigned(id, [tagId]);
-        return exists ? 'ok' : 'not_found';
+        return { result: exists ? 'ok' : 'not_found', assigned: null, reason: exists ? 'deleted' : null, defined: false };
     }
+    const reason = resolvedTagId === tagId ? null : 'merged';
     tagId = resolvedTagId;
 
     if (type === 'character') flushBufferedRow(entry, id);
@@ -4068,7 +4187,8 @@ export async function assignEntityTag(directories, id, tagId) {
             result.found = true;
         }
     });
-    return result.found ? 'ok' : 'not_found';
+    if (!result.found) return { result: 'not_found', assigned: null, reason: null, defined: false };
+    return { result: 'ok', assigned: tagId, reason, defined: !!entry.db.get('SELECT 1 FROM tags WHERE id = @tagId', { tagId }) };
 }
 
 /**

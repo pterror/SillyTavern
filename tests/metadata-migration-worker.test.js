@@ -247,6 +247,24 @@ describe('createMetadataMigrationCoordinator()', () => {
         await done;
     });
 
+    test('a batch that wrote groups version rows is handed to onGroupChangesLogged; one that did not is not', async () => {
+        const onGroupChangesLogged = jest.fn();
+        const { coordinator, workers } = fakeSetup({ onGroupChangesLogged });
+        const done = coordinator.start(directories);
+        await flush();
+
+        workers[0].emit('message', { type: 'batch', changed: false, tagDefinitionsChanged: false, tagChangesLogged: false, groupChangesLogged: true });
+        await flush();
+        expect(onGroupChangesLogged).toHaveBeenCalledTimes(1);
+
+        workers[0].emit('message', { type: 'batch', changed: true, tagDefinitionsChanged: false, tagChangesLogged: false, groupChangesLogged: false });
+        await flush();
+        expect(onGroupChangesLogged).toHaveBeenCalledTimes(1);
+
+        workers[0].emit('exit', 0);
+        await done;
+    });
+
     test('the chat stats a worker queued are counted on this thread after each batch and once it has exited', async () => {
         const onChatStatsMayBeQueued = jest.fn();
         const { coordinator, workers } = fakeSetup({ onChatStatsMayBeQueued });

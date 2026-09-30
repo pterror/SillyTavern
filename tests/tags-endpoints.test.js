@@ -153,7 +153,7 @@ describe('POST /api/tags/assign and /api/tags/unassign', () => {
 
         const assignResponse = await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
         expect(assignResponse.status).toBe(200);
-        expect(await assignResponse.json()).toEqual({ result: 'ok' });
+        expect(await assignResponse.json()).toEqual({ result: 'ok', assigned: 'tag1', reason: null, defined: false });
 
         let forResponse = await postJson('/api/tags/for', { ids: ['Alice.png'] });
         expect((await forResponse.json())['Alice.png']).toEqual(['tag1']);

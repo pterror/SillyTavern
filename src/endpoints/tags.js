@@ -1,7 +1,7 @@
 import express from 'express';
 
 import {
-    assignEntityTag,
+    assignEntityTagReporting,
     unassignEntityTag,
     copyEntityTags,
     moveEntityTags,
@@ -20,6 +20,8 @@ import {
     getTagsHash,
     getTagChangesSince,
     getTagChangesSeq,
+    getEntityTagChangesSince,
+    getEntityTagChangesEnd,
     getTagsDigest,
     getTagsBucketMembers,
     getTagDefinitionsByIds,
@@ -404,12 +406,15 @@ router.post('/by-ids', async (request, response) => {
 /**
  * Freshness check for the client's tags cache; only changes when definitions change, not assignments. `changesSeq`
  * is where the tag change log ends at the definitions `hash` covers: the cursor to give /changes next.
+ * `assignmentChanges` is `{ seq, groupsVersion }`, the cursors to give /assignment-changes next by a client that
+ * reads its characters and groups after this answer; null when the store is unavailable.
  */
 router.post('/manifest', async (request, response) => {
     try {
         const hash = await getTagsHash(request.user.directories);
         const changesSeq = await getTagChangesSeq(request.user.directories);
-        response.send({ hash, changesSeq });
+        const assignmentChanges = await getEntityTagChangesEnd(request.user.directories);
+        response.send({ hash, changesSeq, assignmentChanges });
     } catch (err) {
         console.error('Could not get tags revision', err);
         response.sendStatus(500);
@@ -433,6 +438,27 @@ router.post('/changes', async (request, response) => {
         response.send(page);
     } catch (err) {
         console.error('Could not read tag changes', err);
+        response.sendStatus(500);
+    }
+});
+
+/**
+ * `{ sinceSeq, sinceGroupsVersion }` → one page of which characters and groups may have had their tags changed past
+ * those cursors: `{ seq, groupsVersion, endSeq, endGroupsVersion, reset, ids, hasMore }` (EntityTagChangesPage). At
+ * most TAG_CHANGES_PAGE_SIZE log rows per answer. The client reads the tags of the listed entities it holds with
+ * /for. `reset` tells it to re-read the tags of everything it holds instead; missing or unusable cursors always
+ * answer that, with the cursors to go on from.
+ */
+router.post('/assignment-changes', async (request, response) => {
+    try {
+        const { sinceSeq, sinceGroupsVersion } = request.body ?? {};
+        const page = await getEntityTagChangesSince(request.user.directories, { sinceSeq, sinceGroupsVersion }, { limit: TAG_CHANGES_PAGE_SIZE });
+        if (page === null) {
+            return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        }
+        response.send(page);
+    } catch (err) {
+        console.error('Could not read tag assignment changes', err);
         response.sendStatus(500);
     }
 });
@@ -481,6 +507,12 @@ router.post('/for-all', async (request, response) => {
     }
 });
 
+/**
+ * `{ id, tagId }` → `{ result: 'ok', assigned, reason, defined }`. `assigned` is the tag the entity got: `tagId`
+ * (reason null); or the tag `tagId` was merged into, when it is being deleted with a merge target ('merged'); or
+ * null, and nothing was assigned, when it is being deleted with no merge target ('deleted'). `defined` is false
+ * when no stored tag has the assigned id: the assignment is stored, and shows nowhere until a tag has that id.
+ */
 router.post('/assign', async (request, response) => {
     try {
         const { id, tagId } = request.body;
@@ -488,15 +520,15 @@ router.post('/assign', async (request, response) => {
             return response.status(400).send({ error: 'id and tagId are required non-empty strings' });
         }
 
-        const result = await assignEntityTag(request.user.directories, id, tagId);
-        if (result === null) {
+        const answer = await assignEntityTagReporting(request.user.directories, id, tagId);
+        if (answer === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
-        if (result === 'not_found') {
+        if (answer.result === 'not_found') {
             return response.status(404).send({ error: 'Character or group not found' });
         }
 
-        response.send({ result: 'ok' });
+        response.send({ result: 'ok', assigned: answer.assigned, reason: answer.reason, defined: answer.defined });
     } catch (err) {
         console.error('Could not assign tag', err);
         response.sendStatus(500);
