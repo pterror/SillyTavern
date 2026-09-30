@@ -5440,6 +5440,44 @@ export async function createTagDefinition(directories, rawTag) {
 }
 
 /**
+ * editTagDefinition()'s write, inside the caller's transaction.
+ * @param {MetadataDbEntry} entry
+ * @param {string} id
+ * @param {Record<string, unknown>} patch
+ * @returns {{ refused: 'deleted' | 'missing' | 'unreadable' | null, written: boolean }}
+ */
+function editTagSync(entry, id, patch) {
+    if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id })) return { refused: 'deleted', written: false };
+    const oldRow = /** @type {{ data: string } | undefined} */ (entry.db.get('SELECT data FROM tags WHERE id = @id', { id }));
+    if (!oldRow) return { refused: 'missing', written: false };
+    /** @type {unknown} */
+    let oldParsed;
+    try {
+        oldParsed = JSON.parse(oldRow.data);
+    } catch {
+        oldParsed = undefined;
+    }
+    if (oldParsed === null || typeof oldParsed !== 'object' || Array.isArray(oldParsed)) return { refused: 'unreadable', written: false };
+    const old = /** @type {Record<string, unknown>} */ (oldParsed);
+    const { sort_order: patchedOrder, ...rest } = patch;
+    const queueOrder = Object.hasOwn(patch, 'sort_order') && !tagSortOrdersSettledSync(entry.db);
+    if (queueOrder) queueTagSortOrderValueSync(entry.db, id, patchedOrder);
+    const merged = /** @type {TagDefinitionInput} */ ({ ...old, ...(queueOrder ? rest : patch), id });
+    if (JSON.stringify(merged) === JSON.stringify(old)) return { refused: null, written: false };
+
+    entry.db.run(
+        `UPDATE tags SET data = @data, name_key = @nameKey, sort_order = @sortOrder, folder_type = @folderType, is_folder = @isFolder
+            WHERE id = @id`,
+        tagRowParams(merged),
+    );
+    if ((old.name ?? '') !== (merged.name ?? '')) {
+        entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
+    }
+    updateTagsHashSync(entry.db);
+    return { refused: null, written: true };
+}
+
+/**
  * Fields the patch doesn't name keep their stored values, so a stale tab can't revert another tab's edit. Stored
  * data that isn't a JSON object is refused as 'unreadable', since merging into it would lose it. Whenever moves
  * queue (tagSortOrdersSettledSync()), a patched sort_order isn't written but queued as a value entry, applied in
@@ -5458,53 +5496,16 @@ export async function editTagDefinition(directories, id, rawPatch) {
     const patch = /** @type {Record<string, unknown>} */ (rawPatch);
     if (Object.hasOwn(patch, 'id') && patch.id !== id) return null;
 
-    /** @type {TagWriteResult & { written: boolean }} */
-    const result = { refused: [], written: false };
+    /** @type {{ outcome: ReturnType<typeof editTagSync> }} */
+    const state = { outcome: { refused: null, written: false } };
+    // A transaction that hits busy is rolled back and rerun, so the outcome is the last run's.
     entry.db.transaction(() => {
-        // Reset here: a transaction that hits busy is rolled back and rerun.
-        result.refused = [];
-        result.written = false;
-        if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id })) {
-            result.refused.push({ id, reason: 'deleted' });
-            return;
-        }
-        const oldRow = /** @type {{ data: string } | undefined} */ (entry.db.get('SELECT data FROM tags WHERE id = @id', { id }));
-        if (!oldRow) {
-            result.refused.push({ id, reason: 'missing' });
-            return;
-        }
-        /** @type {unknown} */
-        let oldParsed;
-        try {
-            oldParsed = JSON.parse(oldRow.data);
-        } catch {
-            oldParsed = undefined;
-        }
-        if (oldParsed === null || typeof oldParsed !== 'object' || Array.isArray(oldParsed)) {
-            result.refused.push({ id, reason: 'unreadable' });
-            return;
-        }
-        const old = /** @type {Record<string, unknown>} */ (oldParsed);
-        const { sort_order: patchedOrder, ...rest } = patch;
-        const queueOrder = Object.hasOwn(patch, 'sort_order') && !tagSortOrdersSettledSync(entry.db);
-        if (queueOrder) queueTagSortOrderValueSync(entry.db, id, patchedOrder);
-        const merged = /** @type {TagDefinitionInput} */ ({ ...old, ...(queueOrder ? rest : patch), id });
-        if (JSON.stringify(merged) === JSON.stringify(old)) return;
-
-        entry.db.run(
-            `UPDATE tags SET data = @data, name_key = @nameKey, sort_order = @sortOrder, folder_type = @folderType, is_folder = @isFolder
-                WHERE id = @id`,
-            tagRowParams(merged),
-        );
-        if ((old.name ?? '') !== (merged.name ?? '')) {
-            entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
-        }
-        updateTagsHashSync(entry.db);
-        result.written = true;
+        state.outcome = editTagSync(entry, id, patch);
     });
-    if (result.refused.length > 0 && result.refused[0].reason === 'deleted') warnStaleDeletedTagSave([id]);
-    if (result.written) entry.tagCache = null;
-    return { refused: result.refused };
+    const { refused, written } = state.outcome;
+    if (refused === 'deleted') warnStaleDeletedTagSave([id]);
+    if (written) entry.tagCache = null;
+    return { refused: refused === null ? [] : [{ id, reason: refused }] };
 }
 
 // A deleted tag's id is never reused (a new tag always gets a new id), so a save naming one is a stale copy.
@@ -6774,20 +6775,207 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
 }
 
 /**
- * Adds a tag backup's assignments to what each character or group already has. Never removes an assignment, and
- * writes nothing for a key that already has every tag listed for it. A tag id with no definition is assigned as it
- * is.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {Record<string, unknown>} tagMap Entity id -> tag ids to add.
- * @returns {Promise<{ missingKeys: string[], deletedTagIds: { key: string, tagIds: string[] }[], failedKeys: { key: string, message: string }[] } | null>}
- *   missingKeys are neither a character nor a group; deletedTagIds were deleted with no merge target; failedKeys
- *   couldn't be read. None of the three was written.
+ * @typedef {object} TagRestoreDefinitions
+ * @property {string[]} createdTagIds
+ * @property {string[]} updatedTagIds Stored tags whose definition "Overwrite" changed.
+ * @property {string[]} invalidTags As JSON, each entry of the backup's tags that isn't an object with a non-empty
+ *   string id and name. Not restored.
+ * @property {{ id: string, name: string, existingId: string }[]} keptTags Backup tags not applied under "Keep
+ *   Existing": stored tag `existingId` is the same tag, by id or else by name.
+ * @property {{ id: string, name: string }[]} namesTaken Overwritten except for the name, which another tag has.
+ * @property {{ id: string, name: string }[]} unreadableTags Not overwritten: the stored data isn't a JSON object.
  */
-export async function restoreTagAssignments(directories, tagMap) {
+
+/**
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} nameKey
+ * @param {string} exceptId '' for none.
+ * @returns {string | null} The first tag by rowid with the name key and no deletion mark, as getTag() takes the
+ *   first in its array.
+ */
+function liveTagIdByNameKeySync(db, nameKey, exceptId) {
+    const row = /** @type {{ id: string } | undefined} */ (db.get(
+        `SELECT t.id FROM tags t
+         WHERE t.name_key = @nameKey AND t.id != @exceptId AND NOT EXISTS (SELECT 1 FROM tag_deletions d WHERE d.tag_id = t.id)
+         ORDER BY t.rowid LIMIT 1`,
+        { nameKey, exceptId },
+    ));
+    return row?.id ?? null;
+}
+
+/**
+ * Brings a backup's tag definitions into `tags`, in batches. A backup tag is the stored tag with its id, else the
+ * first live one with its name, and is created when there is neither. An id under a deletion mark can't be reused,
+ * so its tag is created under a new id: what a restore gives must not depend on how far finishDeletedTags() has got.
+ * `overwrite` writes the backup's fields onto the stored tag as editTagDefinition() does, leaving out a name another
+ * live tag has. A created tag gets its order as in importSettingsTagDefinitions(). Needs tagNameKeysReady().
+ * @param {MetadataDbEntry} entry
+ * @param {unknown[]} tags
+ * @param {boolean} overwrite
+ * @returns {Promise<{ definitions: TagRestoreDefinitions, actualIds: Map<string, string> }>} actualIds: backup tag
+ *   id -> the id its tag has in `tags`, where the two differ.
+ */
+async function restoreTagDefinitions(entry, tags, overwrite) {
+    /** @type {TagRestoreDefinitions} */
+    const definitions = { createdTagIds: [], updatedTagIds: [], invalidTags: [], keptTags: [], namesTaken: [], unreadableTags: [] };
+    /** @type {Map<string, string>} */
+    const actualIds = new Map();
+    /** @type {(TagDefinitionInput & { name: string })[]} */
+    const ordered = [];
+    /** @type {(TagDefinitionInput & { name: string })[]} */
+    const orderless = [];
+    for (const raw of tags) {
+        const tag = /** @type {(TagDefinitionInput & { name: string }) | null} */ (raw);
+        if (!tag || typeof tag !== 'object' || Array.isArray(tag) || typeof tag.id !== 'string' || !tag.id || typeof tag.name !== 'string' || !tag.name) {
+            definitions.invalidTags.push(String(JSON.stringify(raw)));
+            continue;
+        }
+        (Object.hasOwn(tag, 'sort_order') ? ordered : orderless).push(tag);
+    }
+    orderless.sort((a, b) => compareNameKeys(tagDefinitionNameKey(a), tagDefinitionNameKey(b)));
+    const sequence = [...ordered, ...orderless];
+
+    const emptyBatch = () => ({
+        created: /** @type {string[]} */ ([]),
+        updated: /** @type {string[]} */ ([]),
+        kept: /** @type {TagRestoreDefinitions['keptTags']} */ ([]),
+        namesTaken: /** @type {TagRestoreDefinitions['namesTaken']} */ ([]),
+        unreadable: /** @type {TagRestoreDefinitions['unreadableTags']} */ ([]),
+        actualIds: /** @type {[string, string][]} */ ([]),
+    });
+    for (let i = 0; i < sequence.length; i += SETTINGS_TAGS_IMPORT_BATCH_SIZE) {
+        if (i > 0) await delay(TAG_MAP_IMPORT_BATCH_PAUSE_MS);
+        const batch = sequence.slice(i, i + SETTINGS_TAGS_IMPORT_BATCH_SIZE);
+        const state = { done: emptyBatch() };
+        entry.db.transaction(() => {
+            // Reset here: a transaction that hits busy is rolled back and rerun.
+            const done = emptyBatch();
+            state.done = done;
+            const settled = tagSortOrdersSettledSync(entry.db);
+            let next = nextTagSortOrderSync(entry);
+
+            for (const source of batch) {
+                const { id, name } = source;
+                const nameKey = tagNameKey(name);
+                const marked = entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @id', { id }) !== undefined;
+                /** @type {string | null} */
+                let existingId = null;
+                if (!marked && entry.db.get('SELECT 1 FROM tags WHERE id = @id', { id })) existingId = id;
+                else if (nameKey) existingId = liveTagIdByNameKeySync(entry.db, nameKey, '');
+
+                if (existingId !== null) {
+                    if (existingId !== id) done.actualIds.push([id, existingId]);
+                    if (!overwrite) {
+                        done.kept.push({ id, name, existingId });
+                        continue;
+                    }
+                    /** @type {Record<string, unknown>} */
+                    const patch = { ...source };
+                    delete patch.id;
+                    if (existingId === id && nameKey) {
+                        const stored = /** @type {{ name_key: string }} */ (entry.db.get('SELECT name_key FROM tags WHERE id = @id', { id }));
+                        if (stored.name_key !== nameKey && liveTagIdByNameKeySync(entry.db, nameKey, id) !== null) {
+                            delete patch.name;
+                            done.namesTaken.push({ id, name });
+                        }
+                    }
+                    const outcome = editTagSync(entry, existingId, patch);
+                    if (outcome.refused === 'unreadable') done.unreadable.push({ id: existingId, name });
+                    else if (outcome.written) done.updated.push(existingId);
+                    const patchedOrder = Object.hasOwn(patch, 'sort_order') ? tagDerivedColumns(patch).sortOrder : null;
+                    if (patchedOrder !== null && patchedOrder >= next) next = patchedOrder + 1;
+                    continue;
+                }
+
+                const newId = marked ? crypto.randomUUID() : id;
+                if (newId !== id) done.actualIds.push([id, newId]);
+                const tag = { ...source, id: newId };
+                const assignOrder = !Object.hasOwn(tag, 'sort_order');
+                if (assignOrder) tag.sort_order = next;
+                const params = tagRowParams(tag);
+                entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
+                if (params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
+                if (!assignOrder && !settled) queueTagSortOrderValueSync(entry.db, newId, tag.sort_order);
+                done.created.push(newId);
+            }
+            if (done.created.length > 0) updateTagsHashSync(entry.db);
+        });
+        const { done } = state;
+        definitions.createdTagIds.push(...done.created);
+        definitions.updatedTagIds.push(...done.updated);
+        definitions.keptTags.push(...done.kept);
+        definitions.namesTaken.push(...done.namesTaken);
+        definitions.unreadableTags.push(...done.unreadable);
+        for (const [backupId, actualId] of done.actualIds) actualIds.set(backupId, actualId);
+        if (done.created.length > 0 || done.updated.length > 0) entry.tagCache = null;
+    }
+    return { definitions, actualIds };
+}
+
+/**
+ * @typedef {object} TagRestoreAssignments
+ * @property {{ key: string, value: string }[]} invalidKeys tag_map keys whose value isn't a list, with it as JSON.
+ * @property {string[]} missingKeys Neither a character nor a group.
+ * @property {{ key: string, tagIds: unknown[] }[]} undefinedTagIds Per known key, the listed ids no tag has.
+ * @property {{ key: string, tagIds: string[] }[]} deletedTagIds Per known key, the listed ids of tags deleted with
+ *   no merge target that the backup has no definition for.
+ * @property {{ key: string, message: string }[]} failedKeys Keys whose stored data couldn't be read.
+ */
+
+/**
+ * Restores a tag backup: its definitions first (restoreTagDefinitions()), then its assignments, so no assignment
+ * names a tag that isn't there. Assignments are added to what each character or group already has; none is removed,
+ * and a key that already has every tag listed for it isn't written. Everything not restored is in the result.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ tags: unknown[], tagMap: Record<string, unknown>, overwrite: boolean }} backup
+ * @returns {Promise<(TagRestoreDefinitions & TagRestoreAssignments) | 'names-not-ready' | null>} 'names-not-ready',
+ *   with nothing written, until fillTagNameKeysIfNeeded() has run: a backup tag can't be matched by name before.
+ */
+export async function restoreTagBackup(directories, { tags, tagMap, overwrite }) {
     const entry = await getEntry(directories);
     if (!entry) return null;
-    const imported = await importTagMap(entry, tagMap, { label: 'tag backup restore', writeBuffered: true });
-    return { missingKeys: imported.droppedKeys, deletedTagIds: imported.notAssigned, failedKeys: imported.failed };
+    if (!tagNameKeysReady(entry)) return 'names-not-ready';
+
+    const { definitions, actualIds } = await restoreTagDefinitions(entry, tags, overwrite);
+
+    /** @type {TagRestoreAssignments['invalidKeys']} */
+    const invalidKeys = [];
+    /** @type {Record<string, string[]>} */
+    const toAssign = {};
+    /** @type {Map<string, unknown[]>} */
+    const notTagIds = new Map();
+    for (const [key, value] of Object.entries(tagMap)) {
+        if (!Array.isArray(value)) {
+            invalidKeys.push({ key, value: String(JSON.stringify(value)) });
+            continue;
+        }
+        /** @type {string[]} */
+        const tagIds = [];
+        /** @type {unknown[]} */
+        const others = [];
+        for (const tagId of value) {
+            if (typeof tagId === 'string' && tagId !== '') tagIds.push(actualIds.get(tagId) ?? tagId);
+            else others.push(tagId);
+        }
+        if (others.length > 0) notTagIds.set(key, others);
+        if (tagIds.length > 0 || others.length > 0) toAssign[key] = tagIds;
+    }
+
+    const imported = await importTagMap(entry, toAssign, { label: 'tag backup restore', requireDefinitions: true, writeBuffered: true });
+    const missing = new Set(imported.droppedKeys);
+    /** @type {Map<string, unknown[]>} */
+    const undefinedByKey = new Map(imported.undefinedTagIds.map(u => [u.key, /** @type {unknown[]} */ (u.tagIds)]));
+    for (const [key, others] of notTagIds) {
+        if (!missing.has(key)) undefinedByKey.set(key, [...(undefinedByKey.get(key) ?? []), ...others]);
+    }
+    return {
+        ...definitions,
+        invalidKeys,
+        missingKeys: imported.droppedKeys,
+        undefinedTagIds: [...undefinedByKey].map(([key, tagIds]) => ({ key, tagIds })),
+        deletedTagIds: imported.notAssigned,
+        failedKeys: imported.failed,
+    };
 }
 
 // A card's own `data.tags` array is user-authored free text, not a curated tag set - ROOT/TAVERN are structural

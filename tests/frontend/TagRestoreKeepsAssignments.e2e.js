@@ -2,7 +2,8 @@ import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 // Restoring a tag backup adds the backup's assignments. It must never remove a tag a character already has on the
-// server, whether or not this page has loaded the character or holds a current copy of it.
+// server, whether or not this page has loaded the character or holds a current copy of it. The backup's tag
+// definitions are stored by the restore itself.
 
 /**
  * Loads the app and waits for APP_READY.
@@ -100,17 +101,31 @@ async function openTagManagement(page) {
 }
 
 /**
- * Restores `backup` through the Manage Tags popup, keeping existing tag definitions, and waits for the result toast.
+ * Restores `backup` through the Manage Tags popup and waits for the result toast.
  * @param {import('@playwright/test').Page} page
  * @param {{ tags: object[], tag_map: Record<string, unknown> }} backup
+ * @param {object} [options]
+ * @param {boolean} [options.overwrite] Answers the prompt with "Overwrite" instead of "Keep Existing".
  */
-async function restoreBackup(page, backup) {
+async function restoreBackup(page, backup, { overwrite = false } = {}) {
     const chooserPromise = page.waitForEvent('filechooser');
     await page.locator('#tag_view_list .tag_view_restore').click();
     const chooser = await chooserPromise;
     await chooser.setFiles({ name: 'tags_backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
-    await page.locator('dialog.popup', { hasText: 'You have existing tags' }).locator('.popup-button-cancel').click();
+    await page.locator('dialog.popup', { hasText: 'You have existing tags' }).locator(overwrite ? '.popup-button-ok' : '.popup-button-cancel').click();
     await expect(page.locator('.toast', { hasText: /Tags restored/ }).first()).toBeVisible({ timeout: 15000 });
+}
+
+/** @param {import('@playwright/test').Page} page @param {string} id @returns {Promise<any>} The stored tag, or undefined. */
+async function serverTag(page, id) {
+    return (await api(page, '/api/tags/by-ids', { ids: [id] })).tags.find(tag => tag.id === id);
+}
+
+/** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<{ id: string, color: string }[]>} */
+async function pageTagsNamed(page, name) {
+    return page.evaluate(name => window['SillyTavern'].getContext().tags
+        .filter(tag => tag.name === name)
+        .map(tag => ({ id: tag.id, color: tag.color })), name);
 }
 
 /**
@@ -211,5 +226,61 @@ test.describe('Tag restore adds to what a character already has', () => {
         await expect(report).toContainText(`Tag map key ${missingKey} does not exist as character or group.`);
         await expect(report).toContainText(`Tag map key ${fixture.card}: not assigned, no such tag: "${undefinedTag}".`);
         expect(await serverTagsOf(page, fixture.card)).toEqual([fixture.added]);
+    });
+});
+
+test.describe('Tag restore stores the backup\'s tag definitions', () => {
+    test.setTimeout(180000);
+
+    test('a tag only the backup has is stored by the restore and is there after a reload', async ({ browser, page }) => {
+        const stamp = Date.now();
+        const card = await withSetupPage(browser, setup => createCharacter(setup, `TagRestoreNewTag-${stamp}`));
+        const id = `tag-restore-new-${stamp}`;
+        const name = `new-${stamp}`;
+
+        await loadApp(page);
+        const wholeListSaves = [];
+        page.on('request', request => { if (request.url().endsWith('/api/tags/save')) wholeListSaves.push(request.url()); });
+        await openTagManagement(page);
+        await restoreBackup(page, { tags: [{ ...tagDefinition(id, name), color: 'rgba(17, 34, 51, 1)' }], tag_map: { [card]: [id] } });
+
+        expect((await serverTag(page, id)).color).toBe('rgba(17, 34, 51, 1)');
+        expect(await serverTagsOf(page, card)).toEqual([id]);
+        expect(await pageTagsNamed(page, name)).toEqual([{ id, color: 'rgba(17, 34, 51, 1)' }]);
+        await expect.poll(() => residentTagsOf(page, card), { timeout: 15000 }).toEqual([id]);
+        await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"]`)).toBeVisible();
+
+        await page.reload();
+        await loadApp(page);
+        expect(await pageTagsNamed(page, name)).toEqual([{ id, color: 'rgba(17, 34, 51, 1)' }]);
+        expect(await residentTagsOf(page, card)).toEqual([id]);
+        expect(wholeListSaves).toEqual([]);
+    });
+
+    test('Overwrite: a backup tag named like an existing one updates that tag instead of adding a second', async ({ browser, page }) => {
+        const stamp = Date.now();
+        const name = `same-name-${stamp}`;
+        const fixture = await withSetupPage(browser, async (setup) => {
+            const existing = await createTag(setup, name);
+            const tagged = await createCharacter(setup, `TagRestoreSameNameTagged-${stamp}`);
+            const untagged = await createCharacter(setup, `TagRestoreSameNameUntagged-${stamp}`);
+            await api(setup, '/api/tags/assign', { id: tagged, tagId: existing });
+            return { existing, tagged, untagged };
+        });
+        const backupId = `tag-restore-backup-copy-${stamp}`;
+
+        await loadApp(page);
+        expect(await pageTagsNamed(page, `same-name-${stamp}`)).toEqual([{ id: fixture.existing, color: '' }]);
+        await openTagManagement(page);
+        await restoreBackup(page, {
+            tags: [{ ...tagDefinition(backupId, `same-name-${stamp}`), color: 'rgba(68, 85, 102, 1)' }],
+            tag_map: { [fixture.untagged]: [backupId] },
+        }, { overwrite: true });
+
+        expect(await serverTag(page, backupId)).toBeUndefined();
+        expect((await serverTag(page, fixture.existing)).color).toBe('rgba(68, 85, 102, 1)');
+        expect(await serverTagsOf(page, fixture.tagged)).toEqual([fixture.existing]);
+        expect(await serverTagsOf(page, fixture.untagged)).toEqual([fixture.existing]);
+        expect(await pageTagsNamed(page, `same-name-${stamp}`)).toEqual([{ id: fixture.existing, color: 'rgba(68, 85, 102, 1)' }]);
     });
 });

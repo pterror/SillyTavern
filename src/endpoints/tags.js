@@ -4,7 +4,7 @@ import {
     assignEntityTag,
     unassignEntityTag,
     setEntityTagIdsMany,
-    restoreTagAssignments,
+    restoreTagBackup,
     getEntityTagIdsForMany,
     getAllEntityTagAssignments,
     getAllTagUsage,
@@ -537,29 +537,34 @@ router.post('/assign-many', async (request, response) => {
 });
 
 /**
- * Adds a tag backup's assignments: `tagMap` maps entity ids to the tag ids to add. Nothing already assigned is
- * removed. The answer lists everything that was not written.
+ * `{ tags, tagMap, overwrite }` (a tag backup's `tags` and `tag_map`, and whether the backup's settings replace
+ * those of tags that already exist) → everything restoreTagBackup() did not restore, plus `createdTagIds` and
+ * `updatedTagIds`. 503 with reason 'tag-names-not-indexed', and nothing written, until tag names can be looked up.
  */
-router.post('/restore-assignments', async (request, response) => {
+router.post('/restore', async (request, response) => {
     try {
-        const { tagMap } = request.body;
+        const { tags, tagMap, overwrite } = request.body ?? {};
+        if (!Array.isArray(tags)) {
+            return response.status(400).send({ error: 'tags must be an array' });
+        }
         if (typeof tagMap !== 'object' || tagMap === null || Array.isArray(tagMap)) {
             return response.status(400).send({ error: 'tagMap must be an object' });
         }
-        for (const [id, tagIds] of Object.entries(tagMap)) {
-            if (!id || !Array.isArray(tagIds) || !tagIds.every(t => typeof t === 'string' && t)) {
-                return response.status(400).send({ error: 'tagMap must map non-empty entity ids to arrays of non-empty string tag ids' });
-            }
+        if (typeof overwrite !== 'boolean') {
+            return response.status(400).send({ error: 'overwrite must be a boolean' });
         }
 
-        const result = await restoreTagAssignments(request.user.directories, tagMap);
+        const result = await restoreTagBackup(request.user.directories, { tags, tagMap, overwrite });
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+        if (result === 'names-not-ready') {
+            return response.status(503).send({ error: 'Tag names are still being indexed', reason: 'tag-names-not-indexed' });
         }
 
         response.send(result);
     } catch (err) {
-        console.error('Could not restore tag assignments', err);
+        console.error('Could not restore the tag backup', err);
         response.sendStatus(500);
     }
 });
