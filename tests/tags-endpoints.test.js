@@ -145,6 +145,30 @@ describe('POST /api/tags/by-ids', () => {
         const response = await postJson('/api/tags/by-ids', { ids: [...idsOf(500), 'tag0', 'tag499', 'tag0'] });
         expect(response.status).toBe(200);
     });
+
+    test('gone lists the ids no tag has: never stored, or deleted', async () => {
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'kept', name: 'Kept' }, { id: 'deleted', name: 'Deleted' }]);
+        await metadataDb.deleteTagDefinition(directories, 'deleted', null);
+
+        const body = await (await postJson('/api/tags/by-ids', { ids: ['kept', 'deleted', 'never'] })).json();
+        expect(body.tags.map(tag => tag.id)).toEqual(['kept']);
+        expect(body.gone.sort()).toEqual(['deleted', 'never']);
+    });
+
+    test('a tag whose stored definition cannot be read is in neither tags nor gone', async () => {
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'broken', name: 'Broken' }]);
+        const Database = (await import('better-sqlite3')).default;
+        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        try {
+            db.prepare('UPDATE tags SET data = ? WHERE id = ?').run('{not json', 'broken');
+        } finally {
+            db.close();
+        }
+        metadataDb.disposeMetadataStores();
+
+        const body = await (await postJson('/api/tags/by-ids', { ids: ['broken'] })).json();
+        expect(body).toEqual({ tags: [], gone: [] });
+    });
 });
 
 describe('POST /api/tags/assign and /api/tags/unassign', () => {

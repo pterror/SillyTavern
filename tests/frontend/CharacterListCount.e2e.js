@@ -128,8 +128,10 @@ test.describe('character list count', () => {
             await setSearchTerm(page, 'zq');
             await expect.poll(() => navigatorText(page)).toMatch(/\.\. 40$/);
 
-            // The filter bar starts collapsed.
-            await page.locator(`#rm_characters_block .rm_tag_filter [id="${TAG_ID}"]`).dispatchEvent('click');
+            // The bar reads the used tags once it shows them.
+            const showTags = page.locator('#rm_characters_block .rm_tag_filter .showTagList');
+            if (!(await showTags.evaluate(el => el.classList.contains('selected')))) await showTags.click();
+            await page.locator(`#rm_characters_block .rm_tag_filter [id="${TAG_ID}"]`).click();
 
             await expect.poll(() => navigatorText(page)).toBe('1-5 .. 5');
         });

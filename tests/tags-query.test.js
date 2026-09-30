@@ -250,6 +250,35 @@ function recordedPlans() {
 }
 
 describe('POST /api/tags/query', () => {
+    test('ifHash: the answer carries its hash, and is only "unchanged" while the page is what the hash was made of', async () => {
+        await seed(mixedTags());
+        await makeReady();
+        const ask = { sort: { field: 'alphabetical' }, filter: { used: true }, pageSize: 5 };
+
+        const plain = await query(ask);
+        expect(plain.body).not.toHaveProperty('hash');
+
+        const first = await query({ ...ask, ifHash: '' });
+        expect(first.status).toBe(200);
+        expect(first.body.rows).toEqual(plain.body.rows);
+        expect(first.body.cursor).toBe(plain.body.cursor);
+        expect(typeof first.body.hash).toBe('string');
+
+        expect((await query({ ...ask, ifHash: first.body.hash })).body).toEqual({ unchanged: true, hash: first.body.hash });
+
+        // A rename of a tag on the page changes the page.
+        const renamed = first.body.rows[0];
+        await metadataDb.editTagDefinition(directories, renamed.id, { color: '#123456' });
+        const after = await query({ ...ask, ifHash: first.body.hash });
+        expect(after.body.unchanged).toBeUndefined();
+        expect(after.body.hash).not.toBe(first.body.hash);
+        expect(after.body.rows.find(tag => tag.id === renamed.id).color).toBe('#123456');
+
+        // Another page size or cursor is another page.
+        expect((await query({ ...ask, pageSize: 6, ifHash: after.body.hash })).body.unchanged).toBeUndefined();
+        expect((await query({ ...ask, ifHash: 7 })).status).toBe(400);
+    });
+
     describe.each([['indexed path', true], ['today\'s path', false]])('%s', (_, ready) => {
         test('every sort and filter pages through exactly the expected order, following cursors', async () => {
             await seed(mixedTags());

@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 // Things upstream exports around tags that extensions can call: `renameTagKey` and `loadTagsSettings(settings)` from
 // tags.js, `accountStorage.getState()`, and the `filter_state` field of a tag object. Upstream keeps all of it in the
@@ -261,9 +261,13 @@ test.describe('upstream tag exports', () => {
         });
         await loadApp(page);
         expect(await filterStateOf(page, fixture.tag)).toBe('UNDEFINED');
+        // The bar reads the used tags once it is on screen and shows them.
+        await openCharacterManagementDrawer(page);
+        const showTags = page.locator('#rm_characters_block .rm_tag_filter .showTagList');
+        if (!(await showTags.evaluate(el => el.classList.contains('selected')))) await showTags.click();
         const writes = recordWrites(page);
 
-        await page.locator(`#rm_characters_block .rm_tag_filter [id="${fixture.tag}"]`).dispatchEvent('click');
+        await page.locator(`#rm_characters_block .rm_tag_filter [id="${fixture.tag}"]`).click();
         await expect.poll(() => filterStateOf(page, fixture.tag)).toBe('SELECTED');
         expect(await savedFilterOf(page, fixture.tag)).toBe('SELECTED');
 

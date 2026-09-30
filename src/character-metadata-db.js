@@ -5526,6 +5526,29 @@ export async function getTagDefinitionsByIds(directories, ids) {
 }
 
 /**
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {unknown[]} ids
+ * @returns {Promise<string[] | null>} the ids no tag has: never stored, deleted, or marked deleted. A tag whose
+ *   stored definition can't be parsed still has its id. null when the store is unavailable.
+ */
+export async function getGoneTagIds(directories, ids) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const wanted = Array.isArray(ids) ? [...new Set(ids.map(String))] : [];
+    const present = new Set();
+    const CHUNK = 500;
+    for (let i = 0; i < wanted.length; i += CHUNK) {
+        const slice = wanted.slice(i, i + CHUNK);
+        const placeholders = slice.map(() => '?').join(',');
+        for (const row of (/** @type {Generator<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM tags WHERE id IN (${placeholders}) AND ${NOT_MARKED_DELETED_SQL}`, slice)))) {
+            present.add(row.id);
+        }
+    }
+    return wanted.filter(id => !present.has(id));
+}
+
+/**
  * getTagDefinitions()'s definitions, limited to `ids`: a tag marked deleted is left out, and a definition that
  * can't be parsed throws.
  * @param {import('./users.js').UserDirectoryList} directories

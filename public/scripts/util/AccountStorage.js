@@ -54,6 +54,19 @@ class AccountStorage {
     }
 
     /**
+     * @param {string} prefix
+     * @returns {string[]} The keys getItem() can read that start with `prefix`.
+     */
+    keysWithPrefix(prefix) {
+        const keys = [];
+        for (let i = 0; i < globalThis.localStorage.length; i++) {
+            const key = globalThis.localStorage.key(i);
+            if (key !== null && key.startsWith(prefix)) keys.push(key);
+        }
+        return keys;
+    }
+
+    /**
      * @returns {Record<string, string>} A copy of every key getItem() can read: the whole of this browser's localStorage.
      */
     getState() {

@@ -188,6 +188,23 @@ function getFilterStorageKey(filterHelper) {
 }
 
 /**
+ * Keeps the name of a tag a list is filtered by next to the saved filter, so the filter can still be named to the
+ * user when the tag was deleted while this browser had no tab open to see it.
+ * @param {string} storagePrefix
+ * @param {string} tagId
+ * @param {string} state The filter's state; a state that filters nothing drops the name.
+ * @param {string} [name]
+ */
+function saveTagFilterName(storagePrefix, tagId, state, name) {
+    const key = `${storagePrefix}_tagname_${tagId}`;
+    if (state !== 'SELECTED' && state !== 'EXCLUDED') {
+        accountStorage.removeItem(key);
+    } else if (typeof name === 'string') {
+        accountStorage.setItem(key, name);
+    }
+}
+
+/**
  * Checks if the given filter helper is the main character list filter.
  * @param {FilterHelper} filterHelper - The filter helper to check
  * @returns {boolean} True if this is the main character list
@@ -245,6 +262,7 @@ function takeInTagFilterState(tag) {
     if (!Object.hasOwn(FILTER_STATES, state)) return;
 
     accountStorage.setItem(`${getFilterStorageKey(entitiesFilter)}_tag_${tag.id}`, state);
+    saveTagFilterName(getFilterStorageKey(entitiesFilter), tag.id, state, tag.name);
     $(CHARACTER_FILTER_SELECTOR).find('.tag:not(.actionable)').filter((_, element) => element.id === tag.id)
         .each((_, element) => { toggleTagThreeState($(element), { stateOverride: state }); });
     const { selected, excluded } = entitiesFilter.getFilterData(FILTER_TYPES.TAG);
@@ -577,6 +595,7 @@ function queueTagSave(key, save) {
             if (--tagSavesPending === 0) {
                 reportTagSavesNotStored();
                 rereadEntitiesLeftWaiting();
+                refreshUsedTagBars();
             }
         }
     };
@@ -1603,6 +1622,7 @@ async function editTagOnServer(id, patch, tag, applyStored) {
             return 'refused';
         }
         await eventSource.emit(event_types.SETTINGS_UPDATED);
+        refreshUsedTagBars();
         return 'stored';
     } catch (error) {
         console.error(`Error editing tag ${id}:`, error);
@@ -1612,6 +1632,32 @@ async function editTagOnServer(id, patch, tag, applyStored) {
 
 /** At most this many distinct ids per /api/tags/for and /api/tags/by-ids request; more is a 400. */
 const TAG_READ_MAX_IDS = 500;
+
+/**
+ * One read of /api/tags/query.
+ * @param {object} body
+ * @returns {Promise<{ rows?: Tag[], cursor?: string | null, more?: boolean, counts?: Record<string, number>, approximate?: string[], hash?: string, unchanged?: boolean } | 'invalid-cursor' | null>}
+ *   null if the request failed. 'invalid-cursor': the server no longer takes the cursor. `unchanged` (only with
+ *   `ifHash` in the body): the page is what it was, and the answer has no rows.
+ */
+async function postTagQuery(body) {
+    try {
+        const response = await fetch('/api/tags/query', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+            cache: 'no-cache',
+        });
+        if (response.status === 400 && (await response.clone().json().catch(() => null))?.reason === 'invalid-cursor') return 'invalid-cursor';
+        if (!response.ok) throw new Error(response.statusText);
+        const answer = await response.json();
+        if (answer?.unchanged !== true && !Array.isArray(answer?.rows)) throw new Error('no rows in the answer');
+        return answer;
+    } catch (error) {
+        console.error('Error reading a page of tags:', error);
+        return null;
+    }
+}
 
 /**
  * @param {string} path
@@ -1785,7 +1831,10 @@ function moveTagFilters(fromId, toId) {
     for (const helper of [groupCandidatesFilter, groupMembersFilter, entitiesFilter]) {
         const { selected, excluded } = helper.getFilterData(FILTER_TYPES.TAG);
         const storagePrefix = getFilterStorageKey(helper);
-        if (storagePrefix) accountStorage.removeItem(`${storagePrefix}_tag_${fromId}`);
+        if (storagePrefix) {
+            accountStorage.removeItem(`${storagePrefix}_tag_${fromId}`);
+            accountStorage.removeItem(`${storagePrefix}_tagname_${fromId}`);
+        }
 
         let changed = false;
         for (const [state, list] of /** @type {[string, string[]][]} */ ([['SELECTED', selected], ['EXCLUDED', excluded]])) {
@@ -1799,8 +1848,11 @@ function moveTagFilters(fromId, toId) {
                 continue;
             }
             list.push(toId);
-            if (storagePrefix) accountStorage.setItem(`${storagePrefix}_tag_${toId}`, state);
             const target = tagsStore.get(toId);
+            if (storagePrefix) {
+                accountStorage.setItem(`${storagePrefix}_tag_${toId}`, state);
+                saveTagFilterName(storagePrefix, toId, state, target?.name);
+            }
             if (target && isMainCharacterList(helper)) setTagFilterState(target, state);
         }
         if (changed) {
@@ -1858,6 +1910,7 @@ async function dropTagsLocally(drops) {
         $(`.tag[id="${id}"]`).remove();
         $(`.tag_view_item[id="${id}"]`).remove();
     }
+    refreshUsedTagBars();
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
@@ -2022,14 +2075,19 @@ async function takeInEntityTagChanges() {
                 entityTagChangesCursor = { sinceSeq: page.endSeq, sinceGroupsVersion: page.endGroupsVersion };
             }
             refreshViewTagList();
+            refreshUsedTagBars();
             return;
         }
 
         const held = (Array.isArray(page.ids) ? page.ids : []).filter(key => typeof key === 'string' && resolveTagIdsArray(key));
         if (held.length && !await rereadResidentEntityTagIds(held)) return;
         entityTagChangesCursor = { sinceSeq: page.seq, sinceGroupsVersion: page.groupsVersion };
-        // Manage Tags shows counts, which cover the characters and groups this tab doesn't hold too.
-        if (Array.isArray(page.ids) && page.ids.length) refreshViewTagList();
+        // Manage Tags shows counts and the filter bars the used tags, which cover the characters and groups this tab
+        // doesn't hold too.
+        if (Array.isArray(page.ids) && page.ids.length) {
+            refreshViewTagList();
+            refreshUsedTagBars();
+        }
         if (!page.hasMore) return;
     }
 }
@@ -2298,7 +2356,13 @@ function chooseBogusFolder(source, tagId, remove = false) {
     // Instead of manually updating the filter conditions, we just "click" on the filter tag
     // We search inside which filter block we are located in and use that one
     const FILTER_SELECTOR = ($(source).closest('#rm_characters_block') ?? $(source).closest('#rm_group_chats_block')).find('.rm_tag_filter');
-    const tagElement = $(FILTER_SELECTOR).find(`.tag[id=${tagId}]`);
+    let tagElement = $(FILTER_SELECTOR).find(`.tag[id=${tagId}]`);
+    // The bar draws a page of the used tags, which this folder's tag may not be on.
+    const tag = tagsStore.get(tagId);
+    if (!tagElement.length && tag) {
+        appendTagToList($(FILTER_SELECTOR), tag, { isFilter: true, isGeneralList: true });
+        tagElement = $(FILTER_SELECTOR).find(`.tag[id=${tagId}]`);
+    }
 
     toggleTagThreeState(tagElement, { stateOverride: !remove ? FILTER_STATES.SELECTED : DEFAULT_FILTER_STATE, simulateClick: true });
 }
@@ -3680,6 +3744,7 @@ function onTagFilterClick(listElement) {
     if (storagePrefix && existingTag) {
         const storageKey = `${storagePrefix}_tag_${tagId}`;
         accountStorage.setItem(storageKey, state);
+        saveTagFilterName(storagePrefix, tagId, state, existingTag.name);
     }
 
     // Apply all tag filters by reading from DOM state (this triggers the filter helper update)
@@ -3720,21 +3785,17 @@ function loadFilterStatesForContext(filterHelper, storagePrefix) {
     }
 
     // Load regular tag filter states
+    // Found from the saved keys, not from the tags this tab holds: a saved filter doesn't depend on its tag having
+    // been read.
     const tagFilterData = filterHelper.getFilterData(FILTER_TYPES.TAG);
-    for (const tag of tags) {
-        const storageKey = `${storagePrefix}_tag_${tag.id}`;
+    const keyPrefix = `${storagePrefix}_tag_`;
+    for (const storageKey of accountStorage.keysWithPrefix(keyPrefix)) {
+        const tagId = storageKey.slice(keyPrefix.length);
         const state = readState(storageKey);
-
-        if (state) {
-            if (state === 'SELECTED') {
-                if (!tagFilterData.selected.includes(tag.id)) {
-                    tagFilterData.selected.push(tag.id);
-                }
-            } else if (state === 'EXCLUDED') {
-                if (!tagFilterData.excluded.includes(tag.id)) {
-                    tagFilterData.excluded.push(tag.id);
-                }
-            }
+        if (state === 'SELECTED' && !tagFilterData.selected.includes(tagId)) {
+            tagFilterData.selected.push(tagId);
+        } else if (state === 'EXCLUDED' && !tagFilterData.excluded.includes(tagId)) {
+            tagFilterData.excluded.push(tagId);
         }
     }
     filterHelper.setFilterData(FILTER_TYPES.TAG, tagFilterData, true);
@@ -3792,43 +3853,376 @@ function runTagFilters(listElement) {
     const tagIds = [...($(listElement).find('.tag.selected:not(.actionable)').map((_, el) => $(el).attr('id')))];
     const excludedTagIds = [...($(listElement).find('.tag.excluded:not(.actionable)').map((_, el) => $(el).attr('id')))];
     const filterHelper = getFilterHelper($(listElement));
-    setFilterDataFromUser(filterHelper, FILTER_TYPES.TAG, { excluded: excludedTagIds, selected: tagIds });
+    // A filter whose tag has no pill here (its definition isn't read yet, or can't be) is not one the pills can
+    // speak for: it stays as it is.
+    const drawn = new Set($(listElement).find('.tag:not(.actionable)').map((_, el) => $(el).attr('id')).get());
+    const current = filterHelper.getFilterData(FILTER_TYPES.TAG);
+    const undrawn = (/** @type {string[]} */ ids) => (Array.isArray(ids) ? ids : []).filter(id => !drawn.has(id));
+    setFilterDataFromUser(filterHelper, FILTER_TYPES.TAG, {
+        excluded: [...excludedTagIds, ...undrawn(current?.excluded)],
+        selected: [...tagIds, ...undrawn(current?.selected)],
+    });
+}
+
+/** How many used tags a filter bar draws until it is expanded, and how many the first read asks for. */
+const USED_TAG_BAR_FIRST = 50;
+/** How many more used tags a click on a bar's "more" pill reads. */
+const USED_TAG_BAR_MORE = 100;
+/** After a read for the filter bars failed, redraws don't ask again for this long. A click on the pill that says so does. */
+const USED_TAG_BAR_RETRY_MS = 10000;
+
+/**
+ * @typedef {object} UsedTagChunk One answer of /api/tags/query for the filter bars.
+ * @property {string | null} from The cursor it was read from.
+ * @property {number} size The page size asked for.
+ * @property {string[]} ids The tags on it, in the server's order.
+ * @property {string | null} cursor Where the next chunk starts; null at the end of the list.
+ * @property {string} hash The server's hash of the answer, sent back so an unchanged chunk isn't downloaded again.
+ */
+
+/**
+ * The tags some character or group carries, as far as they have been read, in the tag sort mode. The three filter
+ * bars draw the same list, so it is read once for all of them, and only while one of them is on screen.
+ */
+const usedTagBar = {
+    /** @type {string | null} The tag_sort_mode `chunks` are in. */
+    sort: null,
+    /** @type {UsedTagChunk[]} */
+    chunks: [],
+    /** The server may have something else by now. */
+    stale: true,
+    /** The next read also reads one chunk past the last. */
+    wantMore: false,
+    queued: false,
+    /** When the last read failed, 0 if it didn't. */
+    failedAt: 0,
+    /** @type {Promise<void>} */
+    chain: Promise.resolve(),
+};
+
+/** @returns {Tag[]} the used tags read so far, in the server's order */
+function usedTagsRead() {
+    const seen = new Set();
+    const list = [];
+    for (const chunk of usedTagBar.chunks) {
+        for (const id of chunk.ids) {
+            const tag = seen.has(id) ? null : tagsStore.get(id);
+            if (!tag) continue;
+            seen.add(id);
+            list.push(tag);
+        }
+    }
+    return list;
+}
+
+/** @returns {boolean} whether a filter bar that shows its tags is on screen */
+function isUsedTagBarOnScreen() {
+    return [
+        [tag_filter_type.character, CHARACTER_FILTER_SELECTOR],
+        [tag_filter_type.group_candidates_list, GROUP_FILTER_SELECTOR],
+        [tag_filter_type.group_members_list, GROUP_MEMBERS_FILTER_SELECTOR],
+    ].some(([type, selector]) => getTagFilterVisibility(Number(type)) && $(String(selector)).is(':visible'));
+}
+
+function printAllTagFilters() {
+    printTagFilters(tag_filter_type.character);
+    printTagFilters(tag_filter_type.group_members_list);
+    printTagFilters(tag_filter_type.group_candidates_list);
 }
 
 /**
- * Cache of the last-rendered tag-pill set per filter type, so printTagFilters() - which runs on every render -
- * can skip rebuilding the (potentially thousands of) pills when nothing changed, and diff-patch small deltas.
- * @type {Map<string, { ids: Set<string>, inactiveIds: Set<string> }>}
+ * Reads the used tags again, chunk by chunk as far as they were read before, and one chunk further when asked to.
+ * @returns {Promise<boolean>} whether what the bars draw may have changed
+ */
+async function readUsedTags() {
+    const sort = power_user.tag_sort_mode;
+    let old = usedTagBar.sort === sort ? usedTagBar.chunks : [];
+    const sizes = old.length ? old.map(chunk => chunk.size) : [USED_TAG_BAR_FIRST];
+    if (usedTagBar.wantMore && old.length) sizes.push(USED_TAG_BAR_MORE);
+    const hadFailed = usedTagBar.failedAt !== 0;
+    usedTagBar.stale = false;
+    usedTagBar.wantMore = false;
+
+    let changed = usedTagBar.sort !== sort;
+    let restarted = false;
+    /** @type {UsedTagChunk[]} */
+    const chunks = [];
+    /** @type {string | null} */
+    let cursor = null;
+    for (let i = 0; i < sizes.length; i++) {
+        const before = old[i]?.from === cursor && old[i].size === sizes[i] ? old[i] : null;
+        const answer = await postTagQuery({
+            filter: { used: true },
+            sort: { field: sort },
+            pageSize: sizes[i],
+            cursor,
+            ifHash: before?.hash ?? '',
+        });
+        if (answer === 'invalid-cursor' && !restarted) {
+            // The manual order the cursors were made in is being rewritten: read from the start.
+            restarted = true;
+            old = [];
+            chunks.length = 0;
+            cursor = null;
+            i = -1;
+            continue;
+        }
+        if (!answer || answer === 'invalid-cursor' || typeof answer.hash !== 'string') {
+            usedTagBar.stale = true;
+            usedTagBar.failedAt = Date.now();
+            return !hadFailed;
+        }
+        if (answer.unchanged && before) {
+            chunks.push(before);
+        } else {
+            const rows = (answer.rows ?? []).filter(isTagObject);
+            mergeServerTagDefinitions(rows.filter(row => !tagIdsBeingCreated.has(row.id)));
+            chunks.push({ from: cursor, size: sizes[i], ids: rows.map(row => row.id), cursor: answer.cursor ?? null, hash: answer.hash });
+            changed = true;
+        }
+        cursor = chunks[chunks.length - 1].cursor;
+        if (cursor === null) break;
+    }
+
+    if (chunks.length !== usedTagBar.chunks.length) changed = true;
+    usedTagBar.sort = sort;
+    usedTagBar.chunks = chunks;
+    usedTagBar.failedAt = 0;
+    return changed || hadFailed;
+}
+
+/**
+ * Reads the used tags if what is held is stale, in another sort mode, or a further chunk was asked for, and a bar is
+ * on screen to draw them. Any number of calls while one read is waiting its turn make one read.
+ */
+function readUsedTagsIfNeeded() {
+    if (usedTagBar.queued) return;
+    if (!usedTagBar.stale && !usedTagBar.wantMore && usedTagBar.sort === power_user.tag_sort_mode) return;
+    if (usedTagBar.failedAt && Date.now() - usedTagBar.failedAt < USED_TAG_BAR_RETRY_MS) return;
+    if (!isUsedTagBarOnScreen()) return;
+
+    usedTagBar.queued = true;
+    usedTagBar.chain = usedTagBar.chain.then(async () => {
+        usedTagBar.queued = false;
+        if (await readUsedTags()) printAllTagFilters();
+    }).catch(error => console.error('Error reading the used tags for the filter bars:', error));
+}
+
+const readUsedTagsSoon = debounce(() => readUsedTagsIfNeeded(), debounce_timeout.standard);
+
+/** Which tags are used, their order or what they look like may have changed on the server. */
+function refreshUsedTagBars() {
+    usedTagBar.stale = true;
+    usedTagBar.failedAt = 0;
+    readUsedTagsSoon();
+}
+
+/** A bar coming on screen reads the used tags if they are stale: they are not read for a bar nobody sees. */
+function watchTagFilterBars() {
+    const observer = new IntersectionObserver((entries) => {
+        if (entries.some(entry => entry.isIntersecting)) readUsedTagsIfNeeded();
+    });
+    for (const selector of [CHARACTER_FILTER_SELECTOR, GROUP_FILTER_SELECTOR, GROUP_MEMBERS_FILTER_SELECTOR]) {
+        const bar = document.querySelector(selector);
+        if (bar) observer.observe(bar);
+    }
+}
+
+/** The click on a bar's "more" pill: draws the used tags already read that the bar leaves out, or reads further. */
+function onUsedTagBarMoreClick(_filterHelper, event) {
+    event.stopPropagation();
+    const bar = $(this).closest('.rm_tag_filter');
+    const wasExpanded = bar.hasClass('tags-expanded');
+    bar.addClass('tags-expanded');
+    if (!wasExpanded && usedTagsRead().length > USED_TAG_BAR_FIRST) {
+        printAllTagFilters();
+        return;
+    }
+    usedTagBar.wantMore = true;
+    readUsedTagsIfNeeded();
+}
+
+/** The click on the pill that says the tags could not be loaded. */
+function onUsedTagBarRetryClick(_filterHelper, event) {
+    event.stopPropagation();
+    usedTagBar.failedAt = 0;
+    savedFilterTagReads.failedAt = 0;
+    usedTagBar.stale = true;
+    readUsedTagsIfNeeded();
+    readSavedFilterTagsIfNeeded();
+}
+
+/**
+ * The saved tag filters whose tag this tab doesn't hold are read by id, so each has a pill.
+ */
+const savedFilterTagReads = {
+    /** @type {Set<string>} Ids of tags the server has but can't read the definition of: not asked for again. */
+    unreadable: new Set(),
+    reading: false,
+    /** When the last read failed, 0 if it didn't. */
+    failedAt: 0,
+};
+
+/**
+ * Reads the tags of saved filters this tab doesn't hold. A filter is removed only when the server says its tag is
+ * gone, never because the tag is unused or a read failed.
+ */
+function readSavedFilterTagsIfNeeded() {
+    const reads = savedFilterTagReads;
+    if (reads.reading) return;
+    if (reads.failedAt && Date.now() - reads.failedAt < USED_TAG_BAR_RETRY_MS) return;
+
+    /** @type {Set<string>} */
+    const ids = new Set();
+    for (const helper of [groupCandidatesFilter, groupMembersFilter, entitiesFilter]) {
+        const data = helper.getFilterData(FILTER_TYPES.TAG);
+        for (const id of [...(data?.selected ?? []), ...(data?.excluded ?? [])]) {
+            if (!tagsStore.has(id) && !reads.unreadable.has(id) && !tagIdsBeingCreated.has(id)) ids.add(id);
+        }
+    }
+    if (!ids.size) return;
+
+    reads.reading = true;
+    readSavedFilterTags([...ids])
+        .catch(error => {
+            console.error('Error reading the tags of saved filters:', error);
+            reads.failedAt = Date.now();
+        })
+        .finally(() => { reads.reading = false; });
+}
+
+/** @param {string[]} ids */
+async function readSavedFilterTags(ids) {
+    const reads = savedFilterTagReads;
+    /** @type {string[]} */
+    const gone = [];
+    let failed = false;
+    for (let i = 0; i < ids.length && !failed; i += TAG_READ_MAX_IDS) {
+        const slice = ids.slice(i, i + TAG_READ_MAX_IDS);
+        const answer = await postTagsRead('/api/tags/by-ids', { ids: slice });
+        if (!answer || !Array.isArray(answer.tags) || !Array.isArray(answer.gone)) {
+            failed = true;
+            break;
+        }
+        mergeServerTagDefinitions(answer.tags);
+        const goneHere = new Set(answer.gone.map(String));
+        for (const id of slice) {
+            if (goneHere.has(id)) gone.push(id);
+            else if (!tagsStore.has(id)) reads.unreadable.add(id);
+        }
+    }
+    reads.failedAt = failed ? Date.now() : 0;
+    removeGoneTagFilters(gone);
+    printAllTagFilters();
+}
+
+/**
+ * Removes the saved filters on tags the server says are gone, and tells the user which.
+ * @param {string[]} goneIds
+ */
+function removeGoneTagFilters(goneIds) {
+    if (!goneIds.length) return;
+    const gone = new Set(goneIds);
+    const bars = /** @type {[FilterHelper, string][]} */ ([
+        [entitiesFilter, t`the character list`],
+        [groupCandidatesFilter, t`the characters to add to a group`],
+        [groupMembersFilter, t`a group's members`],
+    ]);
+    /** @type {string[]} */
+    const lines = [];
+    for (const [helper, barName] of bars) {
+        const data = helper.getFilterData(FILTER_TYPES.TAG);
+        const storagePrefix = getFilterStorageKey(helper);
+        let removedAny = false;
+        /** @param {string[]} list */
+        const kept = (list) => (Array.isArray(list) ? list : []).filter(id => {
+            if (!gone.has(id)) return true;
+            removedAny = true;
+            const name = accountStorage.getItem(`${storagePrefix}_tagname_${id}`);
+            lines.push(name !== null
+                ? t`'${escapeHtml(name)}', which filtered ${barName}`
+                : t`a tag whose name was not kept (id ${escapeHtml(id)}), which filtered ${barName}`);
+            accountStorage.removeItem(`${storagePrefix}_tag_${id}`);
+            accountStorage.removeItem(`${storagePrefix}_tagname_${id}`);
+            return false;
+        });
+        // New lists, so the helper sees the change and the list it filters is drawn again.
+        const next = { selected: kept(data?.selected), excluded: kept(data?.excluded) };
+        if (removedAny) helper.setFilterData(FILTER_TYPES.TAG, next);
+    }
+    if (!lines.length) return;
+    toastr.warning(
+        `${t`These tags no longer exist, so the filters on them were removed:`}<br />${lines.join('<br />')}`,
+        t`Tag filters removed`,
+        { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 },
+    );
+}
+
+/**
+ * @param {Tag[]} shown The used tags a bar draws.
+ * @param {FilterHelper} filterHelper The bar's filter.
+ * @returns {Tag[]} `shown`, followed by the tags the bar is filtered by that aren't among them: a filter always has
+ *   a pill, which is how it is seen and cleared.
+ */
+function withSavedFilterTags(shown, filterHelper) {
+    const data = filterHelper.getFilterData(FILTER_TYPES.TAG);
+    const storagePrefix = getFilterStorageKey(filterHelper);
+    const shownIds = new Set(shown.map(tag => tag.id));
+    /** @type {Tag[]} */
+    const extra = [];
+    for (const [state, ids] of /** @type {[string, string[]][]} */ ([['SELECTED', data?.selected], ['EXCLUDED', data?.excluded]])) {
+        for (const id of Array.isArray(ids) ? ids : []) {
+            const tag = tagsStore.get(id);
+            if (!tag) continue;
+            // The name kept with the filter follows a rename.
+            if (storagePrefix) saveTagFilterName(storagePrefix, id, state, tag.name);
+            if (shownIds.has(id)) continue;
+            shownIds.add(id);
+            extra.push(tag);
+        }
+    }
+    return extra.length ? [...shown, ...extra.sort(compareTagsForSort)] : shown;
+}
+
+/**
+ * What each filter bar last drew, so printTagFilters(), which runs on every render, redraws the pills only when they
+ * differ.
+ * @type {Map<number, string>}
  */
 const tagFilterRenderCache = new Map();
 
-/**
- * Above this many changed pills, fall back to a full rebuild instead of diff-patching.
- */
-const TAG_FILTER_DIFF_PATCH_MAX_DELTA = 25;
-
 function printTagFilters(type = tag_filter_type.character) {
-    removeMissingTagFilters();
+    readUsedTagsIfNeeded();
+    readSavedFilterTagsIfNeeded();
 
     let FILTER_SELECTOR;
+    let filterHelper;
     switch (type) {
-        case tag_filter_type.character:
-            FILTER_SELECTOR = CHARACTER_FILTER_SELECTOR;
-            break;
         case tag_filter_type.group_candidates_list:
             FILTER_SELECTOR = GROUP_FILTER_SELECTOR;
+            filterHelper = groupCandidatesFilter;
             break;
         case tag_filter_type.group_members_list:
             FILTER_SELECTOR = GROUP_MEMBERS_FILTER_SELECTOR;
+            filterHelper = groupMembersFilter;
             break;
+        case tag_filter_type.character:
         default:
             FILTER_SELECTOR = CHARACTER_FILTER_SELECTOR;
+            filterHelper = entitiesFilter;
             break;
     }
 
-    // Done before touching the DOM, so we can bail out below without having already torn down existing pills.
-    let tagsToDisplay;
+    const $filterContainer = $(FILTER_SELECTOR);
+    const expanded = $filterContainer.hasClass('tags-expanded');
+    const used = usedTagsRead();
+    const moreToRead = usedTagBar.chunks.length > 0 && usedTagBar.chunks[usedTagBar.chunks.length - 1].cursor !== null;
+
+    let tagsToDisplay = withSavedFilterTags(expanded ? used : used.slice(0, USED_TAG_BAR_FIRST), filterHelper);
     let inactiveTags = [];
+    /** @type {'more' | 'failed' | null} */
+    let tail = usedTagBar.failedAt || savedFilterTagReads.failedAt ? 'failed'
+        : (moreToRead || (!expanded && used.length > USED_TAG_BAR_FIRST)) ? 'more' : null;
 
     if (isGroupContext(type)) {
         // CAUTION: when called by openGroupById, the selected_group variable might not yet be updated
@@ -3836,24 +4230,14 @@ function printTagFilters(type = tag_filter_type.character) {
         const visibleAvatars = getVisibleAvatarsForGroupContext(type, currentGroup);
 
         if (visibleAvatars.length > 0) {
-            const activeCharacterTagIds = visibleAvatars
-                .map(avatar => getTagIdsForKey(avatar))
-                .flat()
-                .filter(onlyUnique);
-
-            const allCharacterTagIds = getAssignedTagIds();
-            const activeCharacterTagIdSet = new Set(activeCharacterTagIds);
-            tagsToDisplay = tags.filter(x => allCharacterTagIds.has(x.id)).sort(compareTagsForSort);
-
+            const activeCharacterTagIdSet = new Set(visibleAvatars.flatMap(avatar => getTagIdsForKey(avatar)));
             inactiveTags = tagsToDisplay
                 .filter(x => !activeCharacterTagIdSet.has(x.id))
                 .map(x => x.id);
         } else {
             tagsToDisplay = [];
+            tail = null;
         }
-    } else {
-        const characterTagIds = getAssignedTagIds();
-        tagsToDisplay = tags.filter(x => characterTagIds.has(x.id)).sort(compareTagsForSort);
     }
 
     let actionTags = Object.values(ACTIONABLE_TAGS);
@@ -3865,10 +4249,7 @@ function printTagFilters(type = tag_filter_type.character) {
 
     const inListActionTags = Object.values(InListActionable);
 
-    // Remove just the action/inList pills by known id instead of $(FILTER_SELECTOR).empty(), which would also
-    // wipe the (potentially huge) real tag pill list this whole function exists to avoid rebuilding.
-    const $filterContainer = $(FILTER_SELECTOR);
-
+    // Only the action pills are removed and drawn again here; the tag pills are printBigTagFilterList()'s.
     const actionAndInListTags = [...actionTags, ...inListActionTags];
     for (const tag of actionAndInListTags) {
         $filterContainer.find(`.tag[id="${tag.id}"]`).remove();
@@ -3884,7 +4265,7 @@ function printTagFilters(type = tag_filter_type.character) {
         $filterContainer.find(`.tag[id="${tag.id}"]`).prependTo($filterContainer);
     }
 
-    printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags);
+    printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags, tail);
 
     const bogusDrilldown = $filterContainer.siblings('.rm_tag_bogus_drilldown');
     bogusDrilldown.empty();
@@ -3899,87 +4280,35 @@ function printTagFilters(type = tag_filter_type.character) {
 }
 
 /**
- * Prints (or incrementally patches) the "big" block of real tag filter pills - full rebuild when nothing
- * changed or the container is within the default cap, diff-patch only when expanded and the delta is small.
+ * Draws a filter bar's tag pills, in the order given, unless they are what the bar drew last.
  * @param {tag_filter_type} type
  * @param {string} FILTER_SELECTOR
- * @param {Tag[]} tagsToDisplay - already sorted via compareTagsForSort
+ * @param {Tag[]} tagsToDisplay
  * @param {string[]} inactiveTags - ids of tags in tagsToDisplay that should be marked inactive
+ * @param {'more' | 'failed' | null} tail - the pill after the tags: more can be shown, or they could not be loaded
  */
-function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags) {
-    const newIds = new Set(tagsToDisplay.map(t => t.id));
-    const newInactiveIds = new Set(inactiveTags);
-    const cached = tagFilterRenderCache.get(type);
-
-    // Resolved once and reused below, rather than re-run per pill in a loop of up to thousands.
+function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags, tail) {
     const $container = $(FILTER_SELECTOR);
+    const drawn = JSON.stringify([tagsToDisplay.map(tag => tag.id), inactiveTags, tail]);
+    // Folder pills can need drawing again for other reasons than which tags are shown, so with folders on the bar
+    // is always drawn again.
+    if (!power_user.bogus_folders && tagFilterRenderCache.get(type) === drawn && $container.find('.tag:not(.actionable)').length) return;
 
-    const fullRebuild = () => {
-        // printTagList({empty: false, ...}) only appends, so stale pills from tagsToDisplay must be cleared here.
-        if (cached) {
-            for (const id of cached.ids) {
-                $container.find(`.tag[id="${id}"]`).remove();
-            }
-        }
-        printTagList($container, { empty: false, tags: tagsToDisplay, tagOptions: { isFilter: true, isGeneralList: true }, inactiveTags: inactiveTags });
-        tagFilterRenderCache.set(type, { ids: newIds, inactiveIds: newInactiveIds });
-    };
-
-    // Case 1: nothing changed. Bogus folders aren't covered by this cache (tag-as-folder pills can need
-    // re-rendering for reasons other than membership/inactive changes), so always fall through there.
-    if (cached && !power_user.bogus_folders) {
-        let sameInactive = cached.inactiveIds.size === newInactiveIds.size;
-        if (sameInactive) for (const id of newInactiveIds) if (!cached.inactiveIds.has(id)) { sameInactive = false; break; }
-        let sameIds = sameInactive && cached.ids.size === newIds.size;
-        if (sameIds) for (const id of newIds) if (!cached.ids.has(id)) { sameIds = false; break; }
-
-        if (sameIds && sameInactive) {
-            return;
-        }
+    $container.find('.tag:not(.actionable)').remove();
+    const inactive = new Set(inactiveTags);
+    for (const tag of tagsToDisplay) {
+        appendTagToList($container, tag, { isFilter: true, isGeneralList: true, isInactive: inactive.has(tag.id), skipExistsCheck: true });
     }
-
-    const isExpanded = $container.hasClass('tags-expanded');
-
-    // Case 2: capped, cheap regardless - let printTagList do its normal thing (also handles the mandatory-tag/
-    // placeholder bookkeeping we don't want to reimplement here).
-    if (!isExpanded || power_user.bogus_folders || !cached) {
-        fullRebuild();
-        return;
+    if (tail === 'more') {
+        /** @type {Tag} */
+        const pill = { id: `placeholder_${uuidv4()}`, name: '...', title: t`More tags are not displayed.` + '\n\n' + t`Click to show more.`, color: 'transparent', class: 'placeholder-expander', action: onUsedTagBarMoreClick };
+        appendTagToList($container, pill, { skipExistsCheck: true });
+    } else if (tail === 'failed') {
+        /** @type {Tag} */
+        const pill = { id: `placeholder_${uuidv4()}`, name: t`Tags could not be loaded. Try again`, color: 'transparent', class: 'placeholder-expander', action: onUsedTagBarRetryClick };
+        appendTagToList($container, pill, { skipExistsCheck: true });
     }
-
-    const toRemove = [...cached.ids].filter(id => !newIds.has(id));
-    const toAdd = tagsToDisplay.filter(t => !cached.ids.has(t.id));
-    const toToggleInactive = tagsToDisplay.filter(t => cached.ids.has(t.id) && cached.inactiveIds.has(t.id) !== newInactiveIds.has(t.id));
-
-    // Case 3 only for small deltas - see TAG_FILTER_DIFF_PATCH_MAX_DELTA doc.
-    if (toRemove.length + toAdd.length + toToggleInactive.length > TAG_FILTER_DIFF_PATCH_MAX_DELTA) {
-        fullRebuild();
-        return;
-    }
-
-    for (const id of toRemove) {
-        $container.find(`.tag[id="${id}"]`).remove();
-    }
-
-    for (const tag of toAdd) {
-        appendTagToList($container, tag, { isFilter: true, isGeneralList: true, isInactive: newInactiveIds.has(tag.id), skipExistsCheck: true });
-        // appendTagToList always appends at the end - move it to its correct sorted position by finding the
-        // next tag (in sort order) that's already present as a pill, and inserting just before that one.
-        const sortedIndex = tagsToDisplay.indexOf(tag);
-        for (let i = sortedIndex + 1; i < tagsToDisplay.length; i++) {
-            const $next = $container.find(`.tag[id="${tagsToDisplay[i].id}"]`);
-            if ($next.length) {
-                $container.find(`.tag[id="${tag.id}"]`).insertBefore($next);
-                break;
-            }
-        }
-    }
-
-    for (const tag of toToggleInactive) {
-        $container.find(`.tag[id="${tag.id}"]`).toggleClass('tag-absent', newInactiveIds.has(tag.id));
-    }
-
-    tagFilterRenderCache.set(type, { ids: newIds, inactiveIds: newInactiveIds });
+    tagFilterRenderCache.set(type, drawn);
 }
 
 /**
@@ -4151,6 +4480,7 @@ async function onViewTagsListClick() {
         power_user.tag_sort_mode = newMode;
         saveSettingsDebounced('power_user.tag_sort_mode');
         reloadViewTagList();
+        refreshUsedTagBars();
     });
 
     const $search = html.find('#tag_view_search');
@@ -4268,6 +4598,8 @@ async function moveTagOnServer(id, placement, mode) {
         viewTagList.endCursor = undefined;
     }
 
+    refreshUsedTagBars();
+
     // A queued move has written no sort_order yet; the tag changes feed brings the order once it is applied.
     if (answer.queued) return;
 
@@ -4348,6 +4680,7 @@ async function rereadTagDefinitions() {
     if (sortOrderChanged) redrawAfterTagSortOrderChange();
     await refreshTagsManifestCache();
     refreshViewTagList();
+    refreshUsedTagBars();
     return true;
 }
 
@@ -4383,7 +4716,10 @@ async function takeInTagChanges() {
         await dropTagsLocally(drops);
         if (sortOrderChanged) redrawAfterTagSortOrderChange();
         if (anyChanged) await refreshTagsManifestCache();
-        if (anyChanged || drops.length) refreshViewTagList();
+        if (anyChanged || drops.length) {
+            refreshViewTagList();
+            refreshUsedTagBars();
+        }
         tagChangesSeq = page.seq;
         if (!page.hasMore) return;
     }
@@ -4591,6 +4927,7 @@ async function onTagRestoreFileSelect(e) {
     // known small set, so there's no smaller-than-full update to target here.
     printCharactersDebounced();
     refreshViewTagList();
+    refreshUsedTagBars();
 }
 
 function onBackupRestoreClick() {
@@ -5098,6 +5435,7 @@ function onTagListHintClick() {
 
     const isSelected = $(this).hasClass('selected');
     setTagFilterVisibility(filterType, isSelected);
+    readUsedTagsIfNeeded();
     console.debug('show_tag_filters for type', filterType, ':', isSelected);
 }
 
@@ -5330,22 +5668,7 @@ function setViewTagStatus(state, kind) {
  */
 async function queryViewTags(state, { cursor = null, pageSize, ids, counts = true }) {
     const filter = ids ? { ids } : state.contains ? { contains: state.contains } : {};
-    try {
-        const response = await fetch('/api/tags/query', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ filter, sort: { field: state.sort }, pageSize, cursor, counts }),
-            cache: 'no-cache',
-        });
-        if (response.status === 400 && (await response.clone().json().catch(() => null))?.reason === 'invalid-cursor') return 'invalid-cursor';
-        if (!response.ok) throw new Error(response.statusText);
-        const answer = await response.json();
-        if (!Array.isArray(answer?.rows)) throw new Error('no rows in the answer');
-        return answer;
-    } catch (error) {
-        console.error('Error reading tags for Manage Tags:', error);
-        return null;
-    }
+    return postTagQuery({ filter, sort: { field: state.sort }, pageSize, cursor, counts });
 }
 
 /**
@@ -5715,46 +6038,6 @@ async function showOwnTagInViewList(id, { scrollTo = false } = {}) {
     const row = rowOf();
     if (scrollTo) row[0]?.scrollIntoView({ block: 'nearest' });
     if (row.length && row.index() !== placeBefore) flashHighlight(row);
-}
-
-function removeMissingTagFilters() {
-    const tagIds = new Set(tags.map(tag => tag.id));
-    const assignedTagIds = getAssignedTagIds();
-    // Filter lists only print tags that are assigned to at least one entity. A filter on an unassigned
-    // tag therefore has no element to toggle, and "Clear all filters" can't reset it either, because it
-    // works by clicking the printed elements. Drop those filters instead of leaving them stuck.
-    const isUnclearable = (tagId) => !tagIds.has(tagId) || !assignedTagIds.has(tagId);
-
-    for (const helper of [groupCandidatesFilter, groupMembersFilter, entitiesFilter]) {
-        const { selected, excluded } = helper.getFilterData(FILTER_TYPES.TAG);
-        const storagePrefix = getFilterStorageKey(helper);
-        let anyRemoved = false;
-
-        for (const tagIdList of [selected, excluded]) {
-            if (!Array.isArray(tagIdList)) {
-                continue;
-            }
-
-            for (let i = tagIdList.length - 1; i >= 0; i--) {
-                if (!isUnclearable(tagIdList[i])) {
-                    continue;
-                }
-
-                if (storagePrefix) {
-                    accountStorage.removeItem(`${storagePrefix}_tag_${tagIdList[i]}`);
-                }
-                const tag = tagsStore.get(tagIdList[i]);
-                if (tag && isMainCharacterList(helper)) setTagFilterState(tag, DEFAULT_FILTER_STATE);
-
-                tagIdList.splice(i, 1);
-                anyRemoved = true;
-            }
-        }
-
-        if (anyRemoved) {
-            helper.setFilterData(FILTER_TYPES.TAG, { selected, excluded });
-        }
-    }
 }
 
 function registerTagsSlashCommands() {
@@ -6363,4 +6646,5 @@ export function initTags() {
 
     registerTagsSlashCommands();
     restoreSavedTagFilters();
+    watchTagFilterBars();
 }
