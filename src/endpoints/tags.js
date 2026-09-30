@@ -311,8 +311,12 @@ const MAX_QUERY_PAGE_SIZE = 500;
 const QUERY_MAX_IDS = 500;
 
 /**
- * One page of tag definitions: `{ filter: { search, name, ids, used, folders }, sort: { field }, pageSize, cursor }`
- * → `{ rows, cursor, more }`. `sort.field` is a tag_sort_mode value, manual by default. `cursor` is the one a
+ * One page of tag definitions:
+ * `{ filter: { search, name, contains, ids, used, folders }, sort: { field }, pageSize, cursor, counts }`
+ * → `{ rows, cursor, more }`. `search` is a prefix of the name and `contains` text anywhere in it, both ignoring case
+ * and accents. With `counts: true` the answer also has `counts: { [id]: n }`, how many characters and groups carry
+ * each row's tag, and `approximate`, the ids whose count may be too high while a merge is unfinished.
+ * `sort.field` is a tag_sort_mode value, manual by default. `cursor` is the one a
  * previous page returned, for the same sort; a manual one is refused (400 invalid-cursor) once the manual order it
  * was made in is no longer the one read, i.e. when a tag reorder pass starts or starts draining. `more` means the server's work cap cut the page short and `cursor`
  * carries on; otherwise a null `cursor` is the end.
@@ -330,6 +334,12 @@ router.post('/query', async (request, response) => {
         }
         if (filter.name !== undefined && typeof filter.name !== 'string') {
             return response.status(400).send({ error: true, reason: 'invalid-name' });
+        }
+        if (filter.contains !== undefined && typeof filter.contains !== 'string') {
+            return response.status(400).send({ error: true, reason: 'invalid-contains' });
+        }
+        if (body.counts !== undefined && typeof body.counts !== 'boolean') {
+            return response.status(400).send({ error: true, reason: 'invalid-counts' });
         }
         for (const flag of ['used', 'folders']) {
             if (filter[flag] !== undefined && typeof filter[flag] !== 'boolean') {
@@ -361,6 +371,8 @@ router.post('/query', async (request, response) => {
             sort: sortField,
             search: filter.search?.trim() || undefined,
             name: filter.name,
+            contains: filter.contains?.trim() || undefined,
+            counts: body.counts === true,
             ids,
             used: filter.used === true,
             folders: filter.folders === true,

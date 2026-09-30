@@ -9144,6 +9144,9 @@ export function decodeTagQueryCursor(cursor, sort) {
  * @property {TagQuerySort} sort
  * @property {string} [search] A prefix of the folded name (tagNameKey()); empty is no search.
  * @property {string} [name] An exact name, matched as name_key = tagNameKey(name).
+ * @property {string} [contains] Text the folded name holds anywhere; empty is no filter. No index covers it, so
+ *   every row a walk reads is checked and counts toward TAG_QUERY_WORK_CAP.
+ * @property {boolean} [counts] Also answer how many characters and groups carry each tag on the page.
  * @property {string[]} [ids] At most TAG_QUERY_ID_CHUNK distinct ids; the caller enforces it.
  * @property {boolean} [used] Only tags with usage_count > 0.
  * @property {boolean} [folders] Only folder tags (is_folder = 1).
@@ -9156,20 +9159,26 @@ export function decodeTagQueryCursor(cursor, sort) {
  * @property {object[]} rows Tag definitions (parsed data), in the sort's order.
  * @property {string | null} cursor Where the next page starts; null once the order is walked to its end.
  * @property {boolean} more The work cap stopped the walk: the page may be short and the cursor carries on.
+ * @property {Record<string, number>} [counts] With `counts`: for each row's id, how many characters and groups
+ *   carry the tag (tagCountsForIdsSync()).
+ * @property {string[]} [approximate] With `counts`: the ids whose count may be too high.
  */
 
 /**
- * Byte-level name_key tests for a search prefix or an exact name, as SQLite compares them.
+ * Byte-level name_key tests for a search prefix, an exact name or text held anywhere, as SQLite compares them.
  * @param {TagQueryParams} params
  */
 function tagNameMatchers(params) {
     const exact = typeof params.name === 'string' ? Buffer.from(tagNameKey(params.name), 'utf8') : null;
     const prefix = typeof params.search === 'string' && params.search !== '' ? Buffer.from(tagNameKey(params.search), 'utf8') : null;
+    const containsKey = typeof params.contains === 'string' ? tagNameKey(params.contains) : '';
+    const contains = containsKey !== '' ? Buffer.from(containsKey, 'utf8') : null;
     /** @param {string} key */
     const matches = (key) => {
         const bytes = Buffer.from(key, 'utf8');
         if (exact && !bytes.equals(exact)) return false;
         if (prefix && (bytes.length < prefix.length || !bytes.subarray(0, prefix.length).equals(prefix))) return false;
+        if (contains && !bytes.includes(contains)) return false;
         return true;
     };
     return { exact, prefix, matches };
@@ -9728,9 +9737,72 @@ export async function queryTags(directories, params) {
         const made = params.after.pass ?? null;
         if (made?.id !== pass?.id || made?.mode !== pass?.mode) return 'invalid-cursor';
     }
-    if (!tagQueryColumnsReady(entry)) return queryTagsFromList(directories, entry, params, pass);
-    if (params.ids) return queryTagsByIds(entry, params, pass);
-    return queryTagsIndexed(entry, params, pass);
+    /** @type {TagQueryResult | null} */
+    let result;
+    if (!tagQueryColumnsReady(entry)) result = await queryTagsFromList(directories, entry, params, pass);
+    else if (params.ids) result = queryTagsByIds(entry, params, pass);
+    else result = queryTagsIndexed(entry, params, pass);
+    if (result === null || params.counts !== true) return result;
+    const ids = result.rows.map(tag => /** @type {{ id?: unknown }} */ (tag).id).filter(id => typeof id === 'string');
+    return { ...result, ...tagCountsForIdsSync(entry, ids) };
+}
+
+/**
+ * How many characters and groups carry each of `ids`, counted as prune judges a tag in use (UNUSED_TAGS_WHERE): the
+ * tag's own tag_usage count, plus that of each marked tag merging into it, plus the batch-import rows not yet
+ * flushed that carry it. So a count of 0 is exactly a tag prune would delete.
+ *
+ * An entity carrying both a tag and a marked tag merging into it counts twice until the migration worker merges its
+ * rows; finding the overlap would read every row of the marked tag. Such a tag is listed in `approximate`, as
+ * getAllTagUsage() lists it.
+ * @param {MetadataDbEntry} entry
+ * @param {string[]} ids Distinct ids of tags that aren't marked; at most a page of them.
+ * @returns {{ counts: Record<string, number>, approximate: string[] }}
+ */
+function tagCountsForIdsSync(entry, ids) {
+    /** @type {Record<string, number>} */
+    const counts = Object.fromEntries(ids.map(id => [id, 0]));
+    /** @type {string[]} */
+    const approximate = [];
+    for (let i = 0; i < ids.length; i += TAG_QUERY_ID_CHUNK) {
+        const slice = ids.slice(i, i + TAG_QUERY_ID_CHUNK);
+        const marks = slice.map(() => '?').join(',');
+        for (const row of /** @type {Generator<{ tag_id: string, count: number }>} */ (entry.db.iterate(`SELECT tag_id, count FROM tag_usage WHERE tag_id IN (${marks}) LIMIT ${slice.length}`, slice))) {
+            counts[row.tag_id] += Number(row.count);
+        }
+        const merging = `SELECT d.merge_into AS id, SUM(u.count) AS n FROM tag_deletions d JOIN tag_usage u ON u.tag_id = d.tag_id
+            WHERE d.merge_into IN (${marks}) GROUP BY d.merge_into LIMIT ${slice.length}`;
+        for (const row of /** @type {Generator<{ id: string, n: number }>} */ (entry.db.iterate(merging, slice))) {
+            if (!(row.n > 0)) continue;
+            counts[row.id] += Number(row.n);
+            approximate.push(row.id);
+        }
+    }
+
+    const pending = entry.batch?.pending;
+    if (!pending || pending.size === 0 || ids.length === 0) return { counts, approximate };
+    // The marks of the buffer's own tag ids, by primary key: a buffered row carrying a marked tag carries its target.
+    const buffered = [...new Set([...pending.values()].flatMap(row => row.tagIds))];
+    /** @type {Map<string, string | null>} */
+    const targets = new Map();
+    for (let i = 0; i < buffered.length; i += TAG_QUERY_ID_CHUNK) {
+        const slice = buffered.slice(i, i + TAG_QUERY_ID_CHUNK);
+        const sql = `SELECT tag_id, merge_into FROM tag_deletions WHERE tag_id IN (${slice.map(() => '?').join(',')}) LIMIT ${slice.length}`;
+        for (const row of /** @type {Generator<{ tag_id: string, merge_into: string | null }>} */ (entry.db.iterate(sql, slice))) {
+            targets.set(row.tag_id, row.merge_into ?? null);
+        }
+    }
+    const wanted = new Set(ids);
+    for (const [avatar, row] of pending) {
+        const carried = new Set(row.tagIds.map(id => targets.has(id) ? targets.get(id) : id));
+        for (const id of carried) {
+            if (typeof id !== 'string' || !wanted.has(id)) continue;
+            // A buffered row written over a stored character: tag_usage already counts the stored assignment.
+            if (entry.db.get('SELECT 1 FROM character_tags WHERE character_id = @avatar AND tag_id = @id', { avatar, id })) continue;
+            counts[id]++;
+        }
+    }
+    return { counts, approximate };
 }
 
 // Builds entry's tag cache from a full table scan once, then reuses/mutates the same Maps for the process's life
