@@ -221,6 +221,32 @@ describe('createMetadataMigrationCoordinator()', () => {
         await done;
     });
 
+    test('a batch that logged tag changes is handed to onTagChangesLogged, after the tag cache is cleared', async () => {
+        /** @type {string[]} */
+        const calls = [];
+        const onTagChangesLogged = jest.fn(() => { calls.push('logged'); });
+        const onTagDefinitionsChanged = jest.fn(async () => {
+            await flush();
+            calls.push('cache-cleared');
+        });
+        const { coordinator, workers } = fakeSetup({ onTagChangesLogged, onTagDefinitionsChanged });
+        const done = coordinator.start(directories);
+        await flush();
+
+        workers[0].emit('message', { type: 'batch', changed: false, tagDefinitionsChanged: true, tagChangesLogged: true });
+        await flush();
+        await flush();
+        expect(calls).toEqual(['cache-cleared', 'logged']);
+        expect(onTagChangesLogged).toHaveBeenCalledWith(directories);
+
+        workers[0].emit('message', { type: 'batch', changed: true, tagDefinitionsChanged: false, tagChangesLogged: false });
+        await flush();
+        expect(onTagChangesLogged).toHaveBeenCalledTimes(1);
+
+        workers[0].emit('exit', 0);
+        await done;
+    });
+
     test('the chat stats a worker queued are counted on this thread after each batch and once it has exited', async () => {
         const onChatStatsMayBeQueued = jest.fn();
         const { coordinator, workers } = fakeSetup({ onChatStatsMayBeQueued });

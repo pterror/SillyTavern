@@ -193,7 +193,7 @@ import {
     tag_import_setting,
     applyCharacterTagsToMessageDivs,
     removeEntityTags,
-    onTagOrderSettled,
+    onTagsChanged,
     storeTagChangesMadeThroughExport,
     noteTagExportsMayHaveChanged,
 } from './scripts/tags.js';
@@ -981,8 +981,8 @@ function setupCharacterChangeStream() {
                 toastr.warning(tagMoveFailedText(message));
                 return;
             }
-            if (message?.type === 'tag-order-settled') {
-                onTagOrderSettled();
+            if (message?.type === 'tags-changed' || message?.type === 'tag-order-settled') {
+                onTagsChanged();
                 return;
             }
             if (message?.type === 'character-index-failed') {
@@ -1004,7 +1004,7 @@ function setupCharacterChangeStream() {
             hadError = false;
             onCharacterChangeMessage();
             onSearchIndexUpdated();
-            onTagOrderSettled({ onlyIfAwaited: true });
+            onTagsChanged();
         };
         source.onerror = () => {
             hadError = true;

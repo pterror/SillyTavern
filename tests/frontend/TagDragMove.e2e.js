@@ -47,6 +47,14 @@ async function elsewhere(browser, work) {
 }
 
 /**
+ * Keeps the page from hearing of tag changes made elsewhere, as a tab whose live updates are down is.
+ * @param {import('@playwright/test').Page} page
+ */
+async function cutOffTagChanges(page) {
+    await page.route('**/api/tags/changes', route => route.fulfill({ status: 500 }));
+}
+
+/**
  * @param {import('@playwright/test').Page} page
  * @param {string} id Also the tag's name.
  * @param {number} sortOrder
@@ -145,7 +153,7 @@ function recordTagWrites(page) {
 test.describe('dragging a tag in Manage Tags', () => {
     test.setTimeout(180000);
 
-    test('Manual: sends one move, and a tag made in another tab is still there', async ({ browser, page }) => {
+    test('Manual: sends one move, and a tag made in another tab this one has not heard of is still there', async ({ browser, page }) => {
         const stamp = `dragm${Date.now()}`;
         const [a, b, c, z] = ['a', 'b', 'c', 'z'].map(letter => `${stamp}-${letter}`);
         await elsewhere(browser, async (other) => {
@@ -154,6 +162,7 @@ test.describe('dragging a tag in Manage Tags', () => {
             await createTag(other, c, 9003);
         });
         await loadApp(page);
+        await cutOffTagChanges(page);
         // After the page booted, so the page doesn't hold it.
         await elsewhere(browser, other => createTag(other, z, 9004));
 
@@ -205,6 +214,7 @@ test.describe('dragging a tag in Manage Tags', () => {
             await createTag(other, c, 9203);
         });
         await loadApp(page);
+        await cutOffTagChanges(page);
         await elsewhere(browser, other => api(other, '/api/tags/delete', { id: b }).then(() => {}));
 
         await openTagManagement(page, 'manual', stamp);
