@@ -177,11 +177,11 @@ describe('a group row whose id ends in .png is never read as a group', () => {
         expect(allSql('SELECT group_id FROM group_tags')).toEqual([]);
     });
 
-    test('/api/tags/assign-many on a .png id with only a group row reports not_found, and writes nothing', async () => {
+    test('/api/tags/copy to a .png id with only a group row is a 404, and writes nothing', async () => {
+        await seedCharacter('Alice.png');
         await seedGroup('Bob.png');
-        const { status, body } = await post('/api/tags/assign-many', { tagIdsByEntity: { 'Bob.png': ['tag1'] } });
-        expect(status).toBe(200);
-        expect(body.result).toEqual({ 'Bob.png': 'not_found' });
+        expect((await post('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' })).status).toBe(200);
+        expect((await post('/api/tags/copy', { from: 'Alice.png', to: 'Bob.png' })).status).toBe(404);
         expect(allSql('SELECT group_id FROM group_tags')).toEqual([]);
     });
 });
@@ -196,12 +196,12 @@ describe('an id not ending in .png is always a group', () => {
         expect((await post('/api/tags/for', { ids: ['legacy-group'] })).body).toEqual({ 'legacy-group': [] });
     });
 
-    test('assign-many on a legacy non-digit group and a digit group', async () => {
+    test('copy from a legacy non-digit group to a digit group', async () => {
         await seedGroup('legacy-group');
         await seedGroup('1001');
-        const { body } = await post('/api/tags/assign-many', { tagIdsByEntity: { 'legacy-group': ['a'], 1001: ['b'] } });
-        expect(body.result).toEqual({ 'legacy-group': 'ok', 1001: 'ok' });
-        expect((await post('/api/tags/for', { ids: ['legacy-group', '1001'] })).body).toEqual({ 'legacy-group': ['a'], 1001: ['b'] });
+        expect((await post('/api/tags/assign', { id: 'legacy-group', tagId: 'a' })).status).toBe(200);
+        expect((await post('/api/tags/copy', { from: 'legacy-group', to: '1001' })).status).toBe(200);
+        expect((await post('/api/tags/for', { ids: ['legacy-group', '1001'] })).body).toEqual({ 'legacy-group': ['a'], 1001: ['a'] });
     });
 
     test('a character row whose id doesn\'t end in .png is not assignable or readable as a character', async () => {

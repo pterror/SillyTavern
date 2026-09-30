@@ -35,7 +35,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -3468,6 +3468,12 @@ async function duplicateOneCharacter(request, avatarUrl) {
     const rawData = await readCardContent(request.user.directories, path.basename(filename));
     if (rawData !== undefined) {
         await fireMetadataUpsertHook(request.user.directories, newAvatar, rawData);
+        try {
+            await copyEntityTags(request.user.directories, path.basename(filename), newAvatar);
+        } catch (err) {
+            // The duplicate stands; the page's own copy request for it reports the failure.
+            console.error(`Could not copy tags from ${path.basename(filename)} to ${newAvatar}`, err);
+        }
     }
 
     return { ok: true, newAvatar };

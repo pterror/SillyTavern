@@ -4405,29 +4405,27 @@ function onClearAllFiltersClick(filterHelper) {
 }
 
 /**
- * Copies one character's tag assignments onto its duplicate, server-side. `CHARACTER_DUPLICATED` fires before
- * the duplicate is resident (its caller reloads the character list only after awaiting this), so this can't
- * go through the resident-entity tag helpers (which only resolve keys of currently-resident entities) - it posts straight to
- * the bulk tag-assignment endpoint instead. The reload right after picks it up via `newAvatar`'s own fresh
- * `tag_ids`.
+ * Asks the server to add the original's tags to its duplicate.
  * @param {{oldAvatar: string, newAvatar: string}} data Event data
  */
 async function copyTags(data) {
-    const tagIds = getTagIdsForKey(data.oldAvatar);
-    if (!tagIds.length) return;
     try {
-        const response = await fetch('/api/tags/assign-many', {
+        const response = await fetch('/api/tags/copy', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ tagIdsByEntity: { [data.newAvatar]: tagIds } }),
+            body: JSON.stringify({ from: data.oldAvatar, to: data.newAvatar }),
             cache: 'no-cache',
         });
         if (!response.ok) {
-            throw new Error(`Failed to copy tags: ${response.statusText}`);
+            throw new Error(`Failed to copy tags: ${response.status}`);
         }
     } catch (error) {
         console.error(`Error copying tags from ${data.oldAvatar} to ${data.newAvatar}:`, error);
+        toastr.error(t`Tags could not be copied to the duplicate.`);
+        return;
     }
+    // The duplicate is usually not held yet; one that is takes the server's tags.
+    if (resolveTagIdsArray(data.newAvatar) !== undefined) await rereadResidentEntityTagIds();
 }
 
 /**
