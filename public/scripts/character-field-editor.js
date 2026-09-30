@@ -319,6 +319,15 @@ function toggleMaximize(button) {
         .attr('data-i18n', maximize ? '[title]Restore' : '[title]Expand the editor');
 }
 
+/**
+ * @param {EventTarget} target What was clicked.
+ * @param {Element} preview The field preview the click landed in.
+ * @returns {boolean} Whether the click landed on a link inside the preview.
+ */
+function isOnLink(target, preview) {
+    return target instanceof Element && $(target).closest('a[href]', preview).length > 0;
+}
+
 /** @param {CharacterFieldEditorDeps} dependencies */
 export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
@@ -339,12 +348,14 @@ export function initCharacterFieldEditor(dependencies) {
         toggleMaximize(this);
     });
 
-    $(document).on('dblclick', '.field_preview', function () {
+    $(document).on('dblclick', '.field_preview', function (event) {
+        if (isOnLink(event.target, this)) return;
         beginEdit(String($(this).attr('data-for')));
     });
 
-    $(document).on('click', '.field_preview', function () {
+    $(document).on('click', '.field_preview', function (event) {
         if (!deps.power_user.click_to_edit) return;
+        if (isOnLink(event.target, this)) return;
         if (window.getSelection().toString()) return;
         beginEdit(String($(this).attr('data-for')));
     });

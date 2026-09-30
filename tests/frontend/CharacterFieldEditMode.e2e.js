@@ -165,7 +165,7 @@ async function getAutoSaveTimeout(page) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @param {'auto_save_msg_edits'} key
+ * @param {'auto_save_msg_edits' | 'click_to_edit'} key
  * @param {boolean} value
  * @returns {Promise<boolean>} The previous value.
  */
@@ -694,6 +694,42 @@ test.describe('character field edit mode', () => {
                     });
                 });
             });
+
+            for (const clickToEdit of [true, false]) {
+                test(`clicking a link in the preview stays in the preview (click to edit ${clickToEdit ? 'on' : 'off'})`, async ({ page }) => {
+                    await withCharacter(page, field, 'plain words\n\n[the link](https://example.invalid/page)', async () => {
+                        await openInfoTab(page, field.tab);
+                        const previous = await setPowerUserSetting(page, 'click_to_edit', clickToEdit);
+                        try {
+                            // The link must not leave the page under test; the app's own handlers still run.
+                            await page.evaluate(() => document.addEventListener('click', (event) => {
+                                if (event.target instanceof Element && event.target.closest('a')) event.preventDefault();
+                            }, true));
+                            const f = fieldLocators(page, field.id);
+                            const link = f.preview.locator('a[href]');
+                            await expect(link).toHaveText('the link');
+
+                            await link.click();
+                            await expectPreviewMode(page, field);
+                            await link.dblclick();
+                            await expectPreviewMode(page, field);
+
+                            // Outside the link the preview still opens the editor.
+                            const words = f.preview.getByText('plain words');
+                            if (clickToEdit) {
+                                await words.click();
+                            } else {
+                                await words.dblclick();
+                            }
+                            await expectEditMode(page, field);
+                            await f.cancel.click();
+                            await expectPreviewMode(page, field);
+                        } finally {
+                            await setPowerUserSetting(page, 'click_to_edit', previous);
+                        }
+                    });
+                });
+            }
 
             test('an empty field shows the placeholder hint', async ({ page }) => {
                 await withCharacter(page, field, '', async () => {
