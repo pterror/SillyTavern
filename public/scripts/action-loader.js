@@ -1,4 +1,5 @@
 import { t } from './i18n.js';
+import { addImageLightbox } from './image-lightbox.js';
 import { stopGeneration } from '../script.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 
@@ -147,6 +148,8 @@ export class ActionLoaderHandle {
             tapToDismiss: false,
             escapeHtml: false,
         });
+        // Only the title is HTML; the message is set as text above.
+        if (this.#toast) addImageLightbox(this.#toast);
     }
 
     #clearToast() {

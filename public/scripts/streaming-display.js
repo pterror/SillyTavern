@@ -5,6 +5,7 @@
 
 import { SVGInject } from '../lib.js';
 import { t } from './i18n.js';
+import { addImageLightbox } from './image-lightbox.js';
 import { animation_duration, messageFormatting } from '/script.js';
 
 /** CSS class prefix */
@@ -145,6 +146,7 @@ export class StreamingDisplay {
 
         this.#reasoningContent = document.createElement('div');
         this.#reasoningContent.classList.add(`${CSS_PREFIX}-reasoning-content`);
+        addImageLightbox(this.#reasoningContent);
         this.#reasoningSection.appendChild(this.#reasoningContent);
 
         contentContainer.appendChild(this.#reasoningSection);
@@ -155,6 +157,7 @@ export class StreamingDisplay {
 
         this.#textContent = document.createElement('div');
         this.#textContent.classList.add(`${CSS_PREFIX}-text-content`, 'mes_text'); // reuses chat message formatting styles
+        addImageLightbox(this.#textContent);
         this.#textSection.appendChild(this.#textContent);
 
         contentContainer.appendChild(this.#textSection);

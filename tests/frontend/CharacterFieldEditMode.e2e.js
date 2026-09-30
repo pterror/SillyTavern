@@ -767,6 +767,31 @@ test.describe('character field edit mode', () => {
                 });
             }
 
+            for (const clickToEdit of [true, false]) {
+                test(`double-clicking an image in the preview stays in the preview (click to edit ${clickToEdit ? 'on' : 'off'})`, async ({ page }) => {
+                    await withCharacter(page, field, 'plain words\n\n![the image](/img/ai4.png)', async () => {
+                        await openInfoTab(page, field.tab);
+                        const previous = await setPowerUserSetting(page, 'click_to_edit', clickToEdit);
+                        try {
+                            const f = fieldLocators(page, field.id);
+                            const image = f.preview.locator('img');
+                            await expect(image).toBeVisible();
+
+                            await image.dblclick();
+                            await page.keyboard.press('Escape');
+                            await expect(page.locator('.img_enlarged_container')).toHaveCount(0);
+                            await expectPreviewMode(page, field);
+
+                            await image.dispatchEvent('dblclick');
+                            await expectPreviewMode(page, field);
+
+                        } finally {
+                            await setPowerUserSetting(page, 'click_to_edit', previous);
+                        }
+                    });
+                });
+            }
+
             test('an empty field shows the placeholder hint', async ({ page }) => {
                 await withCharacter(page, field, '', async () => {
                     await openInfoTab(page, field.tab);
