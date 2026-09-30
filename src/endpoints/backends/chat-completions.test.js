@@ -1768,6 +1768,52 @@ async function run() {
         assert.equal(assistantMsg.name, 'Rex');
     }
 
+    // (i-1b) STREAMING raw-action, OpenAI with a text-completion model (TEXT_COMPLETION_MODELS): it is sent
+    // to `/completions`, whose stream carries `choices[0].text` chunks. The reply reaches the page, is
+    // stored, and its node id is the stream's last frame.
+    {
+        const chatName = 'stream-instruct-model-chat';
+        await saveChatToTree(directories, ownerId, chatName, [
+            { chat_metadata: {} },
+            { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+        ]);
+
+        const chunks = ['Rex ', 'answers ', 'as an ', 'instruct model, ', 'streamed.'];
+        const requestedPaths = [];
+        const fakeBackend = await startFakeBackend((req, res) => {
+            requestedPaths.push((req.url ?? '').split('?')[0]);
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(chunks.map(text => `data: ${JSON.stringify({ choices: [{ text, index: 0 }] })}\n\n`).join('') + 'data: [DONE]\n\n');
+        });
+        const settings = buildSettingsFixture();
+        settings.oai_settings.chat_completion_source = 'openai';
+        settings.oai_settings.openai_model = 'gpt-3.5-turbo-instruct';
+        settings.oai_settings.reverse_proxy = `${fakeBackend.url}/v1`;
+        writeAllSettings(directories, settings);
+
+        const branchBefore = await loadBranch(directories, ownerId, chatName);
+        try {
+            const { status, bodyBytes } = await postGenerateStream(buildTestApp(), {
+                owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                type: 'normal', user_message: 'Instruct question, streamed?', stream: true,
+            });
+
+            assert.equal(status, 200);
+            assert.deepEqual(requestedPaths, ['/v1/completions'], 'a text-completion model is sent to /completions');
+            const nodeId = assertStreamCarriesAssistantNodeId(bodyBytes, chunks.join(''));
+            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            assert.deepEqual(
+                branchAfter.messages.slice(branchBefore.messages.length).map(m => ({ is_user: m.is_user, mes: m.mes })),
+                [{ is_user: true, mes: 'Instruct question, streamed?' }, { is_user: false, mes: chunks.join('') }],
+                'the user message and the streamed reply are both stored',
+            );
+            assert.equal(nodeId, branchAfter.branch.leaf_id, 'the stream names the node the reply is stored at');
+        } finally {
+            fakeBackend.server.close();
+            writeAllSettings(directories, buildSettingsFixture());
+        }
+    }
+
     // (i-2) STREAMING raw-action, is_swipe: true - same SSE teeing, but must land as a real SIBLING
     // alternative (addAlternatives() + selectDefaultChild()), exactly like the non-streaming swipe
     // case (e) above - proving persistAssistantReply() drives the streaming path through the exact
