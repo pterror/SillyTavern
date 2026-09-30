@@ -32,11 +32,9 @@ jest.unstable_mockModule('../public/scripts/message-formatter.js', () => ({
     MessageFormatter: { stage: {}, runStage: (_stage, text) => text },
 }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
-    fixMarkdown: (text) => text,
     power_user: {
         user_prompt_bias: '',
         show_user_prompt_bias: true,
-        auto_fix_generated_markdown: false,
         encode_tags: false,
         reasoning: { prefix: '', suffix: '' },
         allow_name2_display: false,

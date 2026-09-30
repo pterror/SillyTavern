@@ -2,8 +2,8 @@ import { describe, test, expect, jest, beforeAll } from '@jest/globals';
 import { Marked } from 'marked';
 import showdown from 'showdown';
 
-// A URL ending in `_` keeps the `_` in its link, for bare URLs and `<...>` autolinks, alone and mid-sentence.
-// Other trailing punctuation stays out of a bare URL's link, as GFM's extended-autolink rule says.
+// Emphasis renders as CommonMark says and nothing rewrites the text first: a space next to a nested `*` or `_`
+// stays, and a lone or unclosed `*` or `"` stays as written, with none added.
 // Checked on both marked processors and through messageFormatting (the chat render path). messageFormatting's
 // DOM-bound and app-wide imports are replaced; DOMPurify needs a window, so sanitize is the identity here.
 
@@ -45,50 +45,46 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 }));
 
 let renderMarkdown;
-let renderMarkdownLiteralTags;
 let messageFormatting;
 
 beforeAll(async () => {
-    ({ renderMarkdown, renderMarkdownLiteralTags } = await import('../public/scripts/marked-processor.js'));
+    ({ renderMarkdown } = await import('../public/scripts/marked-processor.js'));
     ({ messageFormatting } = await import('../public/scripts/message-formatting.js'));
 });
 
-const URL = 'https://example.com/foo_';
-const LINK = `<a href="${URL}">${URL}</a>`;
-
-const underscoreCases = [
-    ['bare URL alone', `${URL}`, `<p>${LINK}</p>`],
-    ['bare URL mid-sentence', `see ${URL} here`, `<p>see ${LINK} here</p>`],
-    ['autolinked URL alone', `<${URL}>`, `<p>${LINK}</p>`],
-    ['autolinked URL mid-sentence', `see <${URL}> here`, `<p>see ${LINK} here</p>`],
-    ['bare URL with `_` then a full stop', `see ${URL}.`, `<p>see ${LINK}.</p>`],
-    ['bare www URL', 'see www.example.com/foo_ here', '<p>see <a href="http://www.example.com/foo_">www.example.com/foo_</a> here</p>'],
+const emphasis = [
+    ['italics holding bold', '*a **b** a*', '<p><em>a <strong>b</strong> a</em></p>'],
+    ['bold followed by punctuation', '*a **b**, a*', '<p><em>a <strong>b</strong>, a</em></p>'],
+    ['bold at the end', '*a **b***', '<p><em>a <strong>b</strong></em></p>'],
+    ['bold at the start', '***b** a*', '<p><em><strong>b</strong> a</em></p>'],
+    ['underscore italics', '_a **b** a_', '<p><em>a <strong>b</strong> a</em></p>'],
+    ['underscore bold', '*a __b__ a*', '<p><em>a <strong>b</strong> a</em></p>'],
+    ['bold holding italics', '**a *b* a**', '<p><strong>a <em>b</em> a</strong></p>'],
+    ['side by side', '*a* **b** *a*', '<p><em>a</em> <strong>b</strong> <em>a</em></p>'],
+    ['line break after the bold', '*a **b**\na*', '<p><em>a <strong>b</strong><br>a</em></p>'],
+    ['line break before the bold', '*a\n**b** a*', '<p><em>a<br><strong>b</strong> a</em></p>'],
 ];
 
-const punctuationCases = ['.', ',', '!', '?', ':', ';', '*', '~', '\'', '"'].map((mark) => [
-    mark,
-    `see https://example.com/foo${mark} here`,
-    'https://example.com/foo',
-]);
+const literal = [
+    ['spaced asterisks', 'a * b * c', '<p>a * b * c</p>'],
+    ['a lone asterisk', '2 * 3', '<p>2 * 3</p>'],
+    ['an unclosed asterisk', 'say *unclosed', '<p>say *unclosed</p>'],
+];
+
+const quoted = [
+    ['quotes around italics', '"*a **b** a*"', '<p><q>&quot;<em>a <strong>b</strong> a</em>&quot;</q></p>'],
+    ['italics around quotes', '*"a **b** a"*', '<p><em><q>&quot;a <strong>b</strong> a&quot;</q></em></p>'],
+    ['an unclosed quote', 'say "unclosed', '<p>say &quot;unclosed</p>'],
+];
 
 describe('renderMarkdown', () => {
-    test.each(underscoreCases)('%s', (_name, input, expected) => {
+    test.each([...emphasis, ...literal])('%s', (_name, input, expected) => {
         expect(String(renderMarkdown(input)).trim()).toBe(expected);
     });
-
-    test.each(punctuationCases)('trailing %s stays out of the link', (_mark, input, href) => {
-        expect(String(renderMarkdown(input))).toContain(`<a href="${href}">${href}</a>`);
-    });
 });
 
-describe('renderMarkdownLiteralTags', () => {
-    test.each(underscoreCases)('%s', (_name, input, expected) => {
-        expect(renderMarkdownLiteralTags(input).trim()).toBe(expected);
-    });
-});
-
-describe('messageFormatting', () => {
-    test.each(underscoreCases)('%s', (_name, input, expected) => {
-        expect(messageFormatting(input, 'Alice', false, false, -1)).toBe(expected);
+describe.each([['a character message', false], ['a user message', true]])('messageFormatting, %s', (_kind, isUser) => {
+    test.each([...emphasis, ...literal, ...quoted])('%s', (_name, input, expected) => {
+        expect(messageFormatting(input, 'Alice', false, isUser, -1)).toBe(expected);
     });
 });

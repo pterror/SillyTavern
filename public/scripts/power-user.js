@@ -50,7 +50,7 @@ import { getTagsList, tag_import_setting, tag_sort_mode, tags, getAssignedTagIds
 import { tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 
-import { countOccurrences, debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
+import { debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isTrueBoolean, onlyUnique, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
 import { compareByRandomSeed, getRandomSortSeed, mintRandomSortSeed, rerollRandomSortSeed } from './random-sort.js';
 import { characterRepository, buildCharacterQuery } from './character-repository.js';
@@ -200,7 +200,6 @@ export const power_user = {
     auto_swipe_blacklist: [],
     auto_swipe_blacklist_threshold: 2,
     auto_scroll_chat_to_bottom: true,
-    auto_fix_generated_markdown: true,
     send_on_enter: send_on_enter_options.AUTO,
     console_log_prompts: false,
     request_token_probabilities: false,
@@ -362,6 +361,16 @@ export const power_user = {
     media_display: MEDIA_DISPLAY.LIST,
     image_overswipe: IMAGE_OVERSWIPE.GENERATE,
 };
+
+// Upstream's Auto-fix Markdown setting. Nothing here rewrites message text, so it always reads as off. A write
+// (an extension, or a settings file that still carries it) is accepted and ignored, and it is not enumerable,
+// so it is never saved.
+Object.defineProperty(power_user, 'auto_fix_generated_markdown', {
+    get: () => false,
+    set: () => {},
+    enumerable: false,
+    configurable: false,
+});
 
 // #region Persona store (persona_data + power_user.personas/persona_descriptions compat views)
 
@@ -611,61 +620,13 @@ export function collapseNewlines(x) {
 }
 
 /**
- * Fix formatting problems in markdown.
+ * Does nothing: returns the text as it was given. Kept for extensions that call it.
  * @param {string} text Text to be processed.
- * @param {boolean} forDisplay Whether the text is being processed for display.
- * @returns {string} Processed text.
- * @example
- * "^example * text*\n" // "^example *text*\n"
- *  "^*example * text\n"// "^*example* text\n"
- * "^example *text *\n" // "^example *text*\n"
- * "^* example * text\n" // "^*example* text\n"
- * // take note that the side you move the asterisk depends on where its pairing is
- * // i.e. both of the following strings have the same broken asterisk ' * ',
- * // but you move the first to the left and the second to the right, to match the non-broken asterisk
- * "^example * text*\n" // "^*example * text\n"
- * // and you HAVE to handle the cases where multiple pairs of asterisks exist in the same line
- * "^example * text* * harder problem *\n" // "^example *text* *harder problem*\n"
+ * @param {boolean} [forDisplay] Unused.
+ * @returns {string} The same text.
  */
 export function fixMarkdown(text, forDisplay) {
-    // Find pairs of formatting characters and capture the text in between them
-    const format = /([*_]{1,2})([^\n]*?)\1/gm;
-    let matches = [];
-    let match;
-    while ((match = format.exec(text)) !== null) {
-        matches.push(match);
-    }
-
-    // Iterate through the matches and replace adjacent spaces immediately beside formatting characters
-    let newText = text;
-    for (let i = matches.length - 1; i >= 0; i--) {
-        let matchText = matches[i][0];
-        let replacementText = matchText.replace(/(\*|_)([\t \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]+)|([\t \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]+)(\*|_)/g, '$1$4');
-        newText = newText.slice(0, matches[i].index) + replacementText + newText.slice(matches[i].index + matchText.length);
-    }
-
-    // Don't auto-fix asterisks if this is a message clean-up procedure.
-    // It botches the continue function. Apply this to display only.
-    if (!forDisplay) {
-        return newText;
-    }
-
-    const splitText = newText.split('\n');
-
-    // Fix asterisks, and quotes that are not paired
-    for (let index = 0; index < splitText.length; index++) {
-        const line = splitText[index];
-        const charsToCheck = ['*', '"'];
-        for (const char of charsToCheck) {
-            if (line.includes(char) && isOdd(countOccurrences(line, char))) {
-                splitText[index] = line.trimEnd() + char;
-            }
-        }
-    }
-
-    newText = splitText.join('\n');
-
-    return newText;
+    return text;
 }
 
 function switchHotswap() {
@@ -1972,7 +1933,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#console_log_prompts').prop('checked', power_user.console_log_prompts);
     $('#request_token_probabilities').prop('checked', power_user.request_token_probabilities);
     $('#show_group_chat_queue').prop('checked', power_user.show_group_chat_queue);
-    $('#auto_fix_generated_markdown').prop('checked', power_user.auto_fix_generated_markdown);
     $('#auto_scroll_chat_to_bottom').prop('checked', power_user.auto_scroll_chat_to_bottom);
     $('#bogus_folders').prop('checked', power_user.bogus_folders);
     $('#zoomed_avatar_magnification').prop('checked', power_user.zoomed_avatar_magnification);
@@ -4171,12 +4131,6 @@ jQuery(() => {
             power_user.auto_swipe_blacklist_threshold = number;
             saveSettingsDebounced('power_user.auto_swipe_blacklist_threshold');
         }
-    });
-
-    $('#auto_fix_generated_markdown').on('input', function () {
-        power_user.auto_fix_generated_markdown = !!$(this).prop('checked');
-        reloadCurrentChat();
-        saveSettingsDebounced('power_user.auto_fix_generated_markdown');
     });
 
     $('#console_log_prompts').on('input', function () {
