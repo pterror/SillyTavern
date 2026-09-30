@@ -739,6 +739,7 @@ test.describe('character field edit mode', () => {
                         try {
                             const f = fieldLocators(page, field.id);
                             const image = f.preview.locator('img');
+                            await expect(image).toHaveCSS('cursor', 'pointer');
                             await expect(image).toBeVisible();
                             const enlarged = page.locator('.img_enlarged_container img.img_enlarged');
 

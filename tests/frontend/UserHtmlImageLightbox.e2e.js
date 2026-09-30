@@ -107,6 +107,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
                     await message.locator('.mes_reasoning_details').evaluate(el => el.setAttribute('open', ''));
                     const image = message.locator('.mes_reasoning img');
                     await expect(image).toBeVisible();
+                    await expect(image).toHaveCSS('cursor', 'pointer');
 
                     await image.click();
 
@@ -122,6 +123,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
         test('an image in the bias shows in the lightbox', async ({ page }) => {
             const image = page.locator('#chat .mes').last().locator('.mes_bias img');
             await expect(image).toBeVisible();
+            await expect(image).toHaveCSS('cursor', 'pointer');
 
             await image.click();
 
@@ -154,6 +156,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
         await page.locator('#regex_debugger_run_test').click();
         const image = page.locator('#regex_debugger_final_output .mes .mes_text img');
         await expect(image).toBeVisible();
+        await expect(image).toHaveCSS('cursor', 'pointer');
 
         await image.click();
 
@@ -168,6 +171,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
             await expect(popup).toBeVisible();
 
             for (const selector of ['img.in_body', 'h3 img.in_header']) {
+                await expect(popup.locator(selector)).toHaveCSS('cursor', 'pointer');
                 await popup.locator(selector).click();
                 await expectLightboxThenClose(page);
                 await expect(popup).toBeVisible();
@@ -181,6 +185,8 @@ test.describe('Lightbox on images in user-written HTML', () => {
             await runScript(page, `/popup <img src="${IMAGE}" alt="button" data-result="1"> control words`);
             const popup = openPopup(page, 'control words');
             await expect(popup).toBeVisible();
+            // Not a lightbox image, so it gets no pointer from the lightbox rule.
+            await expect(popup.locator('.popup-content img')).not.toHaveCSS('cursor', 'pointer');
 
             await popup.locator('.popup-content img').click();
 
@@ -193,6 +199,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
             const popup = openPopup(page, 'buttons words');
             await expect(popup).toBeVisible();
 
+            await expect(popup.locator('.popup-content img')).toHaveCSS('cursor', 'pointer');
             await popup.locator('.popup-content img').click();
 
             await expectLightboxThenClose(page);
@@ -206,6 +213,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
             const popup = openPopup(page, 'input words');
             await expect(popup).toBeVisible();
 
+            await expect(popup.locator('.popup-content img')).toHaveCSS('cursor', 'pointer');
             await popup.locator('.popup-content img').click();
 
             await expectLightboxThenClose(page);
@@ -219,6 +227,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
             const popup = openPopup(page, 'returned words');
             await expect(popup).toBeVisible();
 
+            await expect(popup.locator('.popup-content img')).toHaveCSS('cursor', 'pointer');
             await popup.locator('.popup-content img').click();
 
             await expectLightboxThenClose(page);
@@ -234,6 +243,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
             const toast = toastWith(page, 'toast words');
             await expect(toast).toBeVisible();
 
+            await expect(toast.locator('img')).toHaveCSS('cursor', 'pointer');
             await toast.locator('img').click();
 
             await expectLightboxThenClose(page);
@@ -251,6 +261,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
             const toast = toastWith(page, 'titled words');
             await expect(toast).toBeVisible();
 
+            await expect(toast.locator('.toast-title img')).toHaveCSS('cursor', 'pointer');
             await toast.locator('.toast-title img').click();
 
             await expectLightboxThenClose(page);
@@ -262,6 +273,7 @@ test.describe('Lightbox on images in user-written HTML', () => {
             const toast = toastWith(page, 'returned words');
             await expect(toast).toBeVisible();
 
+            await expect(toast.locator('img')).toHaveCSS('cursor', 'pointer');
             await toast.locator('img').click();
 
             await expectLightboxThenClose(page);

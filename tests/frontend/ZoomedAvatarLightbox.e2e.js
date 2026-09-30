@@ -50,6 +50,7 @@ test.describe('Zoomed avatar lightbox', () => {
         const zoomedImage = page.locator('.zoomed_avatar[forChar] .zoomed_avatar_img');
         await expect(zoomedImage).toHaveAttribute('src', /.+/);
         const src = await zoomedImage.getAttribute('src');
+        await expect(zoomedImage).toHaveCSS('cursor', 'pointer');
 
         await zoomedImage.click();
 
