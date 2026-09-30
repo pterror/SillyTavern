@@ -575,6 +575,46 @@ async function run() {
         }
     }
 
+    // `stored`: the node the user message was stored at, under the `user_message_ref` the page sent, in
+    // the stream's first control frame.
+    {
+        const chatName = 'horde-stored-ref';
+        const fakeCoordinator = await startFakeHordeCoordinator({ jobId: 'task-stored-ref', pendingReplies: 0, finalText: 'Stored reply.' });
+        hordeFakeBackendUrl = fakeCoordinator.url;
+        const app = buildTestApp();
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        try {
+            await saveChatToTree(directories, ownerId, chatName, [
+                { chat_metadata: {} },
+                { name: 'Rex', is_user: false, mes: `Hello there, ${chatName}.`, send_date: 1, extra: {} },
+            ]);
+            const branchBefore = await loadBranch(directories, ownerId, chatName);
+            const ref = `ref-${chatName}`;
+            const res = await fetch(`http://127.0.0.1:${server.address().port}/api/horde/generate-text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner_id: ownerId, character_avatar: avatar, node_id: branchBefore.branch.leaf_id,
+                    type: 'normal', user_message: `Question for ${chatName}?`, user_message_ref: ref,
+                    trusted_workers: true, models: ['some-horde-model'],
+                }),
+            });
+            const decoder = new CompactStreamDecoder();
+            const events = [...decoder.push(new Uint8Array(await res.arrayBuffer())), ...decoder.flush()];
+            assert.ok('control' in events[0] && events[0].control.stored, `the first frame is the stored control frame: ${JSON.stringify(events[0])}`);
+            const branchAfter = await loadBranch(directories, ownerId, chatName);
+            const userNode = branchAfter.messages[branchBefore.messages.length];
+            assert.equal(userNode?.mes, `Question for ${chatName}?`);
+            assert.deepEqual(events[0].control.stored, [{ ref, node_id: userNode.node_id }], 'the user message\'s ref is echoed with the node it was stored at');
+        } finally {
+            fakeCoordinator.server.close();
+            hordeFakeBackendUrl = null;
+            server.closeAllConnections?.();
+            await new Promise(resolve => server.close(resolve));
+        }
+    }
+
     console.log('horde.test.js: all assertions passed');
 }
 

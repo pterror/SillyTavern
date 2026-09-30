@@ -75,6 +75,7 @@ import { getAncestorPath, appendMessages, editMessage, sanitizeUserMessageExtra,
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
+import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { getEnabledServerTools, toOpenAIToolSchema } from '../../server-tools.js';
 import {
     TEXT_COMPLETION_MODELS,
@@ -84,7 +85,7 @@ import {
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
-import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume } from './llamacpp-compact-stream.js';
+import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -474,7 +475,7 @@ async function sendClaudeRequest(request, response, persist, warnings = null, on
             }
             if (warnings?.length) reply.warnings = warnings;
 
-            return response.send(reply);
+            return response.send(withStoredMessages(reply, response));
         }
     } catch (error) {
         console.error(color.red(`Error communicating with Claude: ${error}\n${divider}`));
@@ -860,7 +861,7 @@ async function sendMakerSuiteRequest(request, response, persist, warnings = null
             }
             if (warnings?.length) reply.warnings = warnings;
 
-            return response.send(reply);
+            return response.send(withStoredMessages(reply, response));
         }
     } catch (error) {
         console.error(`Error communicating with ${apiName} API:`, error);
@@ -967,7 +968,7 @@ async function sendAI21Request(request, response, persist, warnings = null, onDi
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with AI21 API: ', error);
@@ -1087,7 +1088,7 @@ async function sendMistralAIRequest(request, response, persist, warnings = null,
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with MistralAI API: ', error);
@@ -1237,7 +1238,7 @@ async function sendCohereRequest(request, response, persist, warnings = null, on
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with Cohere API: ', error);
@@ -1388,7 +1389,7 @@ async function sendDeepSeekRequest(request, response, persist, warnings = null, 
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with DeepSeek API: ', error);
@@ -1526,7 +1527,7 @@ async function sendXaiRequest(request, response, persist, warnings = null, onDis
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with xAI API: ', error);
@@ -1661,7 +1662,7 @@ async function sendAimlapiRequest(request, response, persist, warnings = null, o
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with AI/ML API: ', error);
@@ -1804,7 +1805,7 @@ async function sendElectronHubRequest(request, response, persist, warnings = nul
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with Electron Hub: ', error);
@@ -1938,7 +1939,7 @@ async function sendChutesRequest(request, response, persist, warnings = null, on
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with Chutes: ', error);
@@ -2053,7 +2054,7 @@ async function sendMinimaxRequest(request, response, persist, warnings = null, o
             }
             if (warnings?.length) generateResponseJson.warnings = warnings;
 
-            return response.send(generateResponseJson);
+            return response.send(withStoredMessages(generateResponseJson, response));
         }
     } catch (error) {
         console.error('Error communicating with MiniMax: ', error);
@@ -2176,7 +2177,7 @@ async function sendAzureOpenAIRequest(request, response, persist, warnings = nul
             }
             if (warnings?.length) json.warnings = warnings;
 
-            return response.send(json);
+            return response.send(withStoredMessages(json, response));
         }
 
         const text = await fetchResponse.text();
@@ -3125,6 +3126,7 @@ async function forwardAndPersistCompactStream(fetchResponse, response, persist, 
     const generationRecord = createGenerationRecord(generationId);
     const { writer: initialWriter, stopKeepalive } = createResumableWriter(createChatCompactStreamWriter(response), generationRecord);
     let writer = initialWriter;
+    writeStoredMessagesFrame(writer, response);
     if (warnings?.length) {
         writer.write(encodeControlFrame({ warnings }));
     }
@@ -3382,6 +3384,7 @@ async function forwardAndPersistCompactStreamWithServerTools(fetchResponse, resp
     response.setHeader('X-Generation-Id', generationId);
 
     const { writer } = createResumableWriter(createChatCompactStreamWriter(response), createGenerationRecord(generationId));
+    writeStoredMessagesFrame(writer, response);
     if (warnings?.length) {
         writer.write(encodeControlFrame({ warnings }));
     }
@@ -4195,13 +4198,12 @@ router.post('/generate', async function (request, response) {
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
             if (!isToolResult && !skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
-                const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-                    { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
-                ]);
-                if (!appendResult.ok) {
-                    console.error('Failed to persist user message onto the tree:', appendResult.reason);
-                } else if (appendResult.node_ids?.length) {
-                    replyAnchorNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
+                const userNodeId = await storeUserMessage(response, {
+                    directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
+                    message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+                });
+                if (userNodeId) {
+                    replyAnchorNodeId = userNodeId;
                 }
             }
 
@@ -4794,10 +4796,10 @@ router.post('/generate', async function (request, response) {
                 // `pending_tool_calls` hand-off shape - there is no pending tool call for the client to
                 // resolve, only "this generation produced nothing".
                 if (roundResult.ok === 'aborted') {
-                    return response.send({ aborted: true });
+                    return response.send(withStoredMessages({ aborted: true }, response));
                 }
                 if (roundResult.ok === 'pending') {
-                    return response.send({ pending_tool_calls: roundResult.pendingToolCalls });
+                    return response.send(withStoredMessages({ pending_tool_calls: roundResult.pendingToolCalls }, response));
                 }
                 if (!roundResult.ok) {
                     return response.status(roundResult.status).send({ error: true, message: roundResult.message });
@@ -4845,7 +4847,7 @@ router.post('/generate', async function (request, response) {
             }
             if (warnings?.length) json.warnings = warnings;
 
-            return response.send(json);
+            return response.send(withStoredMessages(json, response));
         } else {
             const responseText = await fetchResponse.text();
             const errorData = tryParse(responseText);

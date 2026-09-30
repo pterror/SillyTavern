@@ -3277,7 +3277,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
                             // below are how a raw-action tool-calling round's outcome actually reaches
                             // the client.
                         } else if ('control' in event) {
-                            if (event.control?.tool_call_handoff) {
+                            if (event.control?.stored) {
+                                state.stored = event.control.stored;
+                            } else if (event.control?.tool_call_handoff) {
                                 state.toolCallHandoff = event.control.tool_call_handoff;
                             } else if (event.control?.tool_call_aborted) {
                                 state.toolCallAborted = true;

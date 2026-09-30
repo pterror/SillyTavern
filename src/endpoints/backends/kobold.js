@@ -11,7 +11,8 @@ import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, rememberRemoteTokenization } from '../../backend-status.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
-import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
+import { getAncestorPath, sanitizeUserMessageExtra } from '../../message-tree-db.js';
+import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply } from '../../assistant-reply-persist.js';
@@ -245,13 +246,12 @@ router.post('/generate', async function (request, response_generate) {
         const skipPersistence = isImpersonate || type === 'quiet';
         let replyAnchorNodeId = built.anchorNodeId;
         if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
-            const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-                { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
-            ]);
-            if (!appendResult.ok) {
-                console.error('Failed to persist user message onto the tree:', appendResult.reason);
-            } else if (appendResult.node_ids?.length) {
-                replyAnchorNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
+            const userNodeId = await storeUserMessage(response_generate, {
+                directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
+                message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+            });
+            if (userNodeId) {
+                replyAnchorNodeId = userNodeId;
             }
         }
         const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
@@ -437,7 +437,7 @@ router.post('/generate', async function (request, response_generate) {
                     data.warnings = warnings;
                 }
 
-                return response_generate.send(data);
+                return response_generate.send(withStoredMessages(data, response_generate));
             }
         } catch (error) {
             // response

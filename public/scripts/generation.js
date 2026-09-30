@@ -26,7 +26,7 @@ import { setFloatingPrompt } from './authors-note.js';
 import { getCfgPrompt, getGuidanceScale } from './cfg-scale.js';
 import { oai_settings, openai_messages_count, prepareOpenAIMessages, setOpenAIMessageExamples, setOpenAIMessages } from './chat-completion-settings.js';
 import { clearDraft } from './chat-draft.js';
-import { ensureOpeningRow, healDirtyMessages, updateMessage } from './chat-store.js';
+import { ensureOpeningRow, healDirtyMessages, updateMessage, storeRefOf, adoptStored } from './chat-store.js';
 import { appendFileContent, hasPendingFileAttachment } from './chats.js';
 import { GENERATION_TYPE_TRIGGERS, inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { collectMessageTitles, isSystemChatItem } from './core-chat-predicates.js';
@@ -1042,6 +1042,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // See JUDGMENT CALL above this gate (`!hasPendingFileAttachment()` removal) for the
                 // full rationale - a forwarded REFERENCE, not a re-upload.
                 user_message_extra: userMessageExtra,
+                // The server echoes this with the node it stores the user message at (`stored`).
+                user_message_ref: userMessageText !== undefined ? storeRefOf(sentUserMessage) : undefined,
                 // Kobold-only: mirrors the EXACT real condition getKoboldGenerationData() (public/
                 // scripts/kai-settings.js) and its server-side port createKoboldGenerationData()
                 // (src/kobold-generation-data.js) both use for their own `streaming` field -
@@ -1379,6 +1381,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 // cutover, chat-completion's server-side pipeline actually inlines `.media` too, not
                 // just `.files`.
                 user_message_extra: userMessageExtra,
+                // The server echoes this with the node it stores the user message at (`stored`).
+                user_message_ref: userMessageText !== undefined ? storeRefOf(sentUserMessage) : undefined,
                 // Chunk (c) - see this block's own comment on `clientToolsPayload` immediately above.
                 client_tools: clientToolsPayload,
                 // THIS TASK - see this block's own comment on `stealthToolNamesPayload` immediately above.
@@ -2528,6 +2532,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             // present for the raw-action tool-calling hand-off case; a normal response has neither).
             /** @type {any} */
             const data = await sendGenerationRequest(type, generate_data, { jsonSchema: jsonSchema ?? undefined });
+            adoptStored(data?.stored);
             // Chunk (c): the raw-action chat-completion route can now hand a tool call off to the
             // client instead of returning a normal generation result (`{choices: [...]}`) - see
             // `buildRawActionChatCompletionRequest()`'s own doc comment (server-tools.js/

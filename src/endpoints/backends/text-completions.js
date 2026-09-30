@@ -15,7 +15,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame, encodeControlFrame } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
@@ -30,7 +30,8 @@ import { fetchTextgenStatus, rememberRemoteTokenization } from '../../backend-st
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { assembleTextCompletionPrompt, buildItemizationBreakdown } from '../../text-completion-prompt-orchestrator.js';
-import { getAncestorPath, appendMessages, sanitizeUserMessageExtra } from '../../message-tree-db.js';
+import { getAncestorPath, sanitizeUserMessageExtra } from '../../message-tree-db.js';
+import { storeUserMessage, withStoredMessages } from '../../stored-messages.js';
 import { readCardContent } from '../characters.js';
 import { getGroupsByIds } from '../groups.js';
 import { persistAssistantReply, replyTextAsPageShows, unreadableReplyWarning } from '../../assistant-reply-persist.js';
@@ -73,6 +74,7 @@ async function parseOllamaStream(jsonStream, request, response, persist, itemiza
         response.setHeader('X-Generation-Id', generationId);
         const generationRecord = createGenerationRecord(generationId);
         const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
+        writeStoredMessagesFrame(initialWriter, response);
         if (itemization) {
             initialWriter.write(encodeControlFrame({ itemization }));
         }
@@ -207,6 +209,7 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
     const generationRecord = createGenerationRecord(generationId);
     const { writer: initialWriter, stopKeepalive } = createResumableWriter(createBackpressureWriter(response), generationRecord);
     let writer = initialWriter;
+    writeStoredMessagesFrame(writer, response);
     if (itemization) {
         writer.write(encodeControlFrame({ itemization }));
     }
@@ -883,13 +886,12 @@ router.post('/generate', async function (request, response) {
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
             if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
-                const appendResult = await appendMessages(directories, ownerId, built.anchorNodeId, [
-                    { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
-                ]);
-                if (!appendResult.ok) {
-                    console.error('Failed to persist user message onto the tree:', appendResult.reason);
-                } else if (appendResult.node_ids?.length) {
-                    replyAnchorNodeId = appendResult.node_ids[appendResult.node_ids.length - 1];
+                const userNodeId = await storeUserMessage(response, {
+                    directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
+                    message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+                });
+                if (userNodeId) {
+                    replyAnchorNodeId = userNodeId;
                 }
             }
 
@@ -1179,7 +1181,7 @@ router.post('/generate', async function (request, response) {
                     data.warnings = warnings;
                 }
 
-                return response.send(data);
+                return response.send(withStoredMessages(data, response));
             } else {
                 const text = await completionsReply.text();
                 const errorBody = { error: true, status: completionsReply.status, response: text };
