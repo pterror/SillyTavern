@@ -806,6 +806,53 @@ async function resyncRefusedTag(id) {
 }
 
 /**
+ * Makes `local` hold the server's definition, in place. filter_state belongs to this browser, not to the stored
+ * definition, so `local` keeps its own.
+ * @param {Tag} local
+ * @param {Tag} serverTag
+ */
+function takeServerTagFields(local, serverTag) {
+    const hadFilterState = Object.hasOwn(local, 'filter_state');
+    const filterState = local.filter_state;
+    for (const key of Object.keys(local)) {
+        if (!Object.hasOwn(serverTag, key)) delete local[key];
+    }
+    Object.assign(local, serverTag);
+    if (hadFilterState) local.filter_state = filterState; else delete local.filter_state;
+}
+
+/**
+ * Reads the definitions of `ids` from the server into `tags`: a tag this tab has takes the server's fields, one it
+ * doesn't is added. Draws nothing.
+ * @param {string[]} ids
+ * @returns {Promise<boolean>} false if a read failed; what was read before it is kept.
+ */
+async function readTagDefinitionsFromServer(ids) {
+    let changed = false;
+    try {
+        for (let i = 0; i < ids.length; i += TAG_READ_MAX_IDS) {
+            const answer = await postTagsRead('/api/tags/by-ids', { ids: ids.slice(i, i + TAG_READ_MAX_IDS) });
+            if (!answer || !Array.isArray(answer.tags)) return false;
+            for (const serverTag of answer.tags) {
+                if (!serverTag || typeof serverTag.id !== 'string') continue;
+                const local = tagsStore.get(serverTag.id);
+                if (local) takeServerTagFields(local, serverTag); else tags.push(serverTag);
+                changed = true;
+            }
+            // Per chunk: the next chunk's tagsStore.get() must see the tags this one added.
+            tagsStore.reindex();
+        }
+        return true;
+    } finally {
+        if (changed) {
+            invalidateTagsFuseIndex();
+            invalidateCharactersFuseIndex();
+            invalidateGroupsFuseIndex();
+        }
+    }
+}
+
+/**
  * @param {string} id
  * @param {Tag} serverTag
  */
@@ -814,13 +861,7 @@ async function replaceTagFromServer(id, serverTag) {
     if (!local) return;
 
     const old = { ...local };
-    // filter_state belongs to this browser, not to the stored definition.
-    const hadFilterState = Object.hasOwn(local, 'filter_state');
-    for (const key of Object.keys(local)) {
-        if (!Object.hasOwn(serverTag, key)) delete local[key];
-    }
-    Object.assign(local, serverTag);
-    if (hadFilterState) local.filter_state = old.filter_state; else delete local.filter_state;
+    takeServerTagFields(local, serverTag);
 
     invalidateTagsFuseIndex();
     invalidateCharactersFuseIndex();
@@ -3021,9 +3062,42 @@ function compareTagsForSort(a, b, counts = null) {
 }
 
 /**
- * The backup's tag definitions are merged into `tags` here. Its assignments are sent to the server, which adds them
- * to what each character or group already has; the resident copies are then re-read from the server.
+ * @param {object} result - the answer of /api/tags/restore
+ * @returns {string[]} one line per thing the restore did not apply
  */
+function tagRestoreReportLines(result) {
+    const lines = [];
+    for (const json of result.invalidTags) {
+        lines.push(`Tag object is invalid: ${json}.`);
+    }
+    for (const { id, name, existingId } of result.keptTags) {
+        lines.push(existingId === id ? `Tag '${name}' with id ${id} already exists.` : `Tag with name '${name}' already exists.`);
+    }
+    for (const { id, name } of result.namesTaken) {
+        lines.push(`Tag with id ${id} was not renamed to '${name}': another tag already has that name. Its other settings were restored.`);
+    }
+    for (const { id, name } of result.unreadableTags) {
+        lines.push(`Tag '${name}' with id ${id} was not overwritten: its stored copy is unreadable.`);
+    }
+    for (const { key, value } of result.invalidKeys) {
+        lines.push(`Tag map for key ${key} is invalid: ${value}.`);
+    }
+    for (const key of result.missingKeys) {
+        lines.push(`Tag map key ${key || JSON.stringify(key)} does not exist as character or group.`);
+    }
+    for (const { key, tagIds } of result.undefinedTagIds) {
+        lines.push(`Tag map key ${key}: not assigned, no such tag: ${tagIds.map(tagId => JSON.stringify(tagId)).join(', ')}.`);
+    }
+    for (const { key, tagIds } of result.deletedTagIds) {
+        lines.push(`Tag map key ${key}: not assigned, the tag was deleted: ${tagIds.join(', ')}.`);
+    }
+    for (const { key, message } of result.failedKeys) {
+        lines.push(`Tag map key ${key}: nothing assigned, its stored data couldn't be read: ${message}.`);
+    }
+    return lines;
+}
+
+/** Sends the chosen backup to the server, which restores it, then reads back what the restore changed. */
 async function onTagRestoreFileSelect(e) {
     const file = e.target.files[0];
 
@@ -3031,6 +3105,7 @@ async function onTagRestoreFileSelect(e) {
         return;
     }
 
+    $('#tag_view_restore_input').val('');
     const data = await parseJsonFile(file);
 
     if (!data) {
@@ -3051,94 +3126,31 @@ async function onTagRestoreFileSelect(e) {
         overwrite = result === POPUP_RESULT.AFFIRMATIVE;
     }
 
-    const warnings = [];
-    /** @type {Map<string, string>} Map import tag ids with existing ids on overwrite */
-    const idToActualTagIdMap = new Map();
-
-    // Import tags
-    for (const tag of data.tags) {
-        if (!tag.id || !tag.name) {
-            warnings.push(`Tag object is invalid: ${JSON.stringify(tag)}.`);
-            continue;
+    /** @type {any} */
+    let result = null;
+    try {
+        const response = await fetch('/api/tags/restore', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ tags: data.tags, tagMap: data.tag_map, overwrite }),
+            cache: 'no-cache',
+        });
+        if (response.status === 503 && (await response.clone().json().catch(() => null))?.reason === 'tag-names-not-indexed') {
+            toastr.warning('Tag names are still being indexed after an update. Nothing was restored. Try again in a moment.', 'Tag Restore');
+            return;
         }
-
-        // Check against both existing id (direct match) and tag with the same name, which is not allowed.
-        let existingTag = tagsStore.get(tag.id);
-        if (existingTag && !overwrite) {
-            warnings.push(`Tag '${tag.name}' with id ${tag.id} already exists.`);
-            continue;
+        if (!response.ok) {
+            throw new Error(`Failed to restore the tag backup: ${response.statusText}`);
         }
-        existingTag = getTag(tag.name);
-        if (existingTag && !overwrite) {
-            warnings.push(`Tag with name '${tag.name}' already exists.`);
-            // Remember the tag id, so we can still import the tag map entries for this
-            idToActualTagIdMap.set(tag.id, existingTag.id);
-            continue;
-        }
-
-        if (existingTag) {
-            // On overwrite, we remove and re-add the tag
-            removeFromArray(tags, existingTag);
-            // And remember the ID if it was different, so we can update the tag map accordingly
-            if (existingTag.id !== tag.id) {
-                idToActualTagIdMap.set(existingTag.id, tag.id);
-            }
-        }
-
-        tags.push(tag);
+        result = await response.json();
+    } catch (error) {
+        console.error('Error restoring the tag backup:', error);
+        toastr.error('The restore failed. Part of the backup may have been restored. Restoring it again is safe.', 'Tag Restore');
     }
 
-    const definedTagIds = new Set(tags.map(tag => String(tag.id)));
-    /** @type {Record<string, string[]>} The tag ids the backup adds, per character or group. */
-    const tagMap = {};
-
-    for (const [key, tagIds] of Object.entries(data.tag_map)) {
-        if (!Array.isArray(tagIds)) {
-            warnings.push(`Tag map for key ${key} is invalid: ${JSON.stringify(tagIds)}.`);
-            continue;
-        }
-
-        const backupTagIds = tagIds
-            .map(tagId => (idToActualTagIdMap.has(tagId)) ? idToActualTagIdMap.get(tagId) : tagId)
-            .filter(onlyUnique);
-        const undefinedTagIds = backupTagIds.filter(tagId => !definedTagIds.has(String(tagId)));
-        if (undefinedTagIds.length) {
-            warnings.push(`Tag map key ${key}: not assigned, no such tag: ${undefinedTagIds.map(tagId => JSON.stringify(tagId)).join(', ')}.`);
-        }
-        const toAdd = backupTagIds.filter(tagId => definedTagIds.has(String(tagId))).map(String);
-        if (!toAdd.length) continue;
-        if (!key) {
-            warnings.push(`Tag map key ${JSON.stringify(key)} does not exist as character or group.`);
-            continue;
-        }
-        tagMap[key] = toAdd;
-    }
-
-    if (Object.keys(tagMap).length) {
-        try {
-            const response = await fetch('/api/tags/restore-assignments', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ tagMap }),
-                cache: 'no-cache',
-            });
-            if (!response.ok) {
-                throw new Error(`Failed to persist restored tag assignments: ${response.statusText}`);
-            }
-            const result = await response.json();
-            for (const key of result.missingKeys) {
-                warnings.push(`Tag map key ${key} does not exist as character or group.`);
-            }
-            for (const { key, tagIds } of result.deletedTagIds) {
-                warnings.push(`Tag map key ${key}: not assigned, the tag was deleted: ${tagIds.join(', ')}.`);
-            }
-            for (const { key, message } of result.failedKeys) {
-                warnings.push(`Tag map key ${key}: nothing assigned, its stored data couldn't be read: ${message}.`);
-            }
-        } catch (error) {
-            console.error('Error persisting restored tag assignments:', error);
-            warnings.push('Could not save the restored tag assignments to the server. Some or all of them were not assigned.');
-        }
+    const warnings = result ? tagRestoreReportLines(result) : [];
+    if (result && !await readTagDefinitionsFromServer([...result.createdTagIds, ...result.updatedTagIds])) {
+        warnings.push('Could not read the restored tags back from the server. Reload the page to see them.');
     }
 
     if (warnings.length) {
@@ -3147,16 +3159,14 @@ async function onTagRestoreFileSelect(e) {
             onclick: () => Popup.show.text('Tag Restore Warnings', `<samp class="justifyLeft">${DOMPurify.sanitize(warnings.join('\n'))}<samp>`, { allowVerticalScrolling: true }),
         });
         console.warn(`TAG RESTORE REPORT\n====================\n${warnings.join('\n')}`);
-    } else {
+    } else if (result) {
         toastr.success('Tags restored successfully.', 'Tag Restore');
     }
 
-    tagsStore.reindex();
     await rereadResidentEntityTagIds();
     await invalidateAssignedTagIdsCache();
-    invalidateTagsFuseIndex();
+    await refreshTagsManifestCache();
 
-    $('#tag_view_restore_input').val('');
     // A restore can touch an arbitrary number of tags across an arbitrary number of characters/groups - not a
     // known small set, so there's no smaller-than-full update to target here.
     printCharactersDebounced();
