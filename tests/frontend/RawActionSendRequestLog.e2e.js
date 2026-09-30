@@ -15,11 +15,11 @@ const MODEL = 'raw-action-log-model';
 
 /**
  * A mock llama.cpp server that logs every request it gets.
- * @param {{ completion?: (n: number) => object | null }} [options] The body `/completion` answers with for the n-th reply;
- * null answers with a 500 error instead.
+ * @param {{ completion?: (n: number) => object | null, streamDelayMs?: number }} [options] The body `/completion` answers with
+ * for the n-th reply (null answers with a 500 error instead), and how long a streamed reply takes to finish.
  * @returns {Promise<{ url: string, log: { method: string, url: string, body: string }[], close: () => Promise<void> }>}
  */
-function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` }) } = {}) {
+function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` }), streamDelayMs = 0 } = {}) {
     const log = [];
     let replies = 0;
     const server = http.createServer((req, res) => {
@@ -57,7 +57,8 @@ function startMockLlamaCpp({ completion = n => ({ content: `Mock reply ${n}.` })
                 if (JSON.parse(body || '{}').stream) {
                     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
                     res.write(`data: ${JSON.stringify({ ...answer, stop: false })}\n\n`);
-                    return res.end(`data: ${JSON.stringify({ content: '', stop: true })}\n\n`);
+                    const end = () => res.end(`data: ${JSON.stringify({ content: '', stop: true })}\n\n`);
+                    return streamDelayMs ? void setTimeout(end, streamDelayMs) : end();
                 }
                 return json(answer);
             }
@@ -254,7 +255,6 @@ test.describe('raw-action send request log', () => {
             const browser = recordApiRequests(page);
             const first = `First question ${stamp}?`;
             await send(page, first, 2);
-            await page.waitForTimeout(SETTLE_MS);
             await send(page, `Second question ${stamp}?`, 4);
             await page.waitForTimeout(SETTLE_MS);
 
@@ -457,4 +457,155 @@ test.describe('raw-action send request log', () => {
             expect(nodeId).toBe(stored[0].node_id);
         });
     }
+
+    test('a send clicked after a streamed reply shows the button again, while the previous send is still finishing, goes out', async ({ page }) => {
+        const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        const avatar = await createCharacter(page, `RawActionEarlySend-${stamp}`, `Hello from the greeting ${stamp}.`);
+        await openCharacter(page, avatar);
+        await connectLlamaCpp(page, mock.url);
+        // @ts-ignore
+        await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+        await page.waitForTimeout(SETTLE_MS);
+
+        await page.locator('#send_textarea').fill(`First question ${stamp}?`);
+        const second = `Second question ${stamp}?`;
+        // Clicks Send the moment the button is shown again while the send lock is still held, as a user
+        // clicking right after the reply appears would.
+        const clickedInWindow = await page.evaluate(async (second) => {
+            const { userInputGenerateMutex } = await import('/script.js');
+            document.querySelector('#send_but').click();
+            const deadline = performance.now() + 30000;
+            while (performance.now() < deadline) {
+                const shown = getComputedStyle(document.querySelector('#send_but')).display !== 'none';
+                const replied = document.querySelector('#chat .mes[mesid="2"] .mes_text')?.textContent.includes('Mock reply');
+                if (replied && shown && document.body.dataset.generating === undefined && userInputGenerateMutex.isBusy) {
+                    $('#send_textarea').val(second)[0].dispatchEvent(new Event('input', { bubbles: true }));
+                    document.querySelector('#send_but').click();
+                    return true;
+                }
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+            return false;
+        }, second);
+        expect(clickedInWindow).toBe(true);
+
+        await expect(page.locator('#chat .mes[mesid="3"] .mes_text')).toContainText(second, { timeout: 15000 });
+        await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('Mock reply', { timeout: 15000 });
+        await expect(page.locator('#send_textarea')).toHaveValue('');
+    });
+
+    /**
+     * Sends a first streamed message, then holds the send lock as the finishing send does after the reply
+     * shows the button again, so the page stays in that gap until `release` is called.
+     * @param {import('@playwright/test').Page} page
+     */
+    async function sendAndHoldGap(page, text) {
+        await send(page, text, 2);
+        await page.evaluate(async () => {
+            const { userInputGenerateMutex } = await import('/script.js');
+            while (userInputGenerateMutex.isBusy) await new Promise(resolve => setTimeout(resolve, 10));
+            userInputGenerateMutex.isBusy = true;
+        });
+    }
+    const releaseGap = (page) => page.evaluate(async () => {
+        const { userInputGenerateMutex } = await import('/script.js');
+        userInputGenerateMutex.isBusy = false;
+    });
+    const isQueued = (page) => page.locator('#send_but').evaluate(button => button.classList.contains('send_queued'));
+
+    for (const [name, action] of [['a second click cancels it', 'click'], ['Enter keeps it queued', 'enter']]) {
+        test(`a send in the gap shows as queued, and ${name}`, async ({ page }) => {
+            const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+            const avatar = await createCharacter(page, `RawActionQueued-${stamp}`, `Hello from the greeting ${stamp}.`);
+            await openCharacter(page, avatar);
+            await connectLlamaCpp(page, mock.url);
+            // @ts-ignore
+            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.waitForTimeout(SETTLE_MS);
+            await sendAndHoldGap(page, `First question ${stamp}?`);
+
+            const second = `Second question ${stamp}?`;
+            await page.locator('#send_textarea').fill(second);
+            await page.locator('#send_but').click();
+            expect(await isQueued(page)).toBe(true);
+            await expect(page.locator('#send_but')).toHaveAttribute('title', 'Send queued - click to cancel');
+
+            if (action === 'click') {
+                await page.locator('#send_but').click();
+                expect(await isQueued(page)).toBe(false);
+                await releaseGap(page);
+                await page.waitForTimeout(SETTLE_MS);
+                await expect(page.locator('#chat .mes[mesid="3"]')).toHaveCount(0);
+                await expect(page.locator('#send_textarea')).toHaveValue(second);
+            } else {
+                await page.locator('#send_textarea').press('Enter');
+                expect(await isQueued(page)).toBe(true);
+                await releaseGap(page);
+                await expect(page.locator('#chat .mes[mesid="3"] .mes_text')).toContainText(second, { timeout: 15000 });
+                await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('Mock reply', { timeout: 15000 });
+                await page.waitForTimeout(SETTLE_MS);
+                await expect(page.locator('#chat .mes[mesid="5"]')).toHaveCount(0);
+                expect(await isQueued(page)).toBe(false);
+            }
+        });
+    }
+
+    test('a send queued in the gap is cancelled by a chat change, with a toast, and its text stays in that chat\'s draft', async ({ page }) => {
+        const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        const avatar = await createCharacter(page, `RawActionQueuedA-${stamp}`, `Hello from the greeting ${stamp}.`);
+        const other = await createCharacter(page, `RawActionQueuedB-${stamp}`, `Hello from the other greeting ${stamp}.`);
+        await openCharacter(page, avatar);
+        await connectLlamaCpp(page, mock.url);
+        // @ts-ignore
+        await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+        await page.waitForTimeout(SETTLE_MS);
+        await sendAndHoldGap(page, `First question ${stamp}?`);
+
+        const second = `Second question ${stamp}?`;
+        await page.locator('#send_textarea').fill(second);
+        await page.locator('#send_but').click();
+        expect(await isQueued(page)).toBe(true);
+
+        const generateCalls = [];
+        page.on('request', request => { if (request.url().includes('/generate')) generateCalls.push(request.url()); });
+        await openCharacter(page, other);
+        await expect(page.locator('#toast-container .toast', { hasText: 'The queued send was cancelled because the chat changed.' })).toHaveCount(1, { timeout: 10000 });
+        expect(await isQueued(page)).toBe(false);
+        await releaseGap(page);
+        await page.waitForTimeout(SETTLE_MS);
+        expect(generateCalls).toEqual([]);
+
+        await openCharacter(page, avatar);
+        await expect(page.locator('#send_textarea')).toHaveValue(second);
+        await expect(page.locator('#chat .mes[mesid="3"]')).toHaveCount(0);
+    });
+
+    test('Enter during a generation does nothing, as before', async ({ page }) => {
+        const slow = await startMockLlamaCpp({ streamDelayMs: 3000 });
+        try {
+            const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+            const avatar = await createCharacter(page, `RawActionEnterDuring-${stamp}`, `Hello from the greeting ${stamp}.`);
+            await openCharacter(page, avatar);
+            await connectLlamaCpp(page, slow.url);
+            // @ts-ignore
+            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.waitForTimeout(SETTLE_MS);
+
+            await page.locator('#send_textarea').fill(`First question ${stamp}?`);
+            await page.locator('#send_but').click();
+            await expect(page.locator('body')).toHaveAttribute('data-generating', 'true', { timeout: 10000 });
+            const second = `Second question ${stamp}?`;
+            await page.locator('#send_textarea').fill(second);
+            await page.locator('#send_textarea').press('Enter');
+            expect(await isQueued(page)).toBe(false);
+
+            await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('Mock reply', { timeout: 30000 });
+            await expect(page.locator('body')).not.toHaveAttribute('data-generating', 'true', { timeout: 30000 });
+            await page.waitForTimeout(SETTLE_MS);
+            await expect(page.locator('#chat .mes[mesid="3"]')).toHaveCount(0);
+            await expect(page.locator('#send_textarea')).toHaveValue(second);
+        } finally {
+            await slow.close();
+        }
+    });
 });

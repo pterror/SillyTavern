@@ -1013,6 +1013,11 @@ body .panelControlBar {
     order: 2;
 }
 
+/* A send waiting for the previous one to finish; a click cancels it. */
+#send_but.send_queued {
+    opacity: 0.5;
+}
+
 #mes_continue {
     order: 1;
 }
