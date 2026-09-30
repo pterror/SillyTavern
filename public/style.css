@@ -5807,7 +5807,7 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     opacity: 0.5;
 }
 
-.tab-title.token-count-zero {
+.tab-title.tab-empty {
     opacity: 0.5;
 }
 

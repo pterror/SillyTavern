@@ -237,6 +237,7 @@ import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, showMediaLightbox } from './scripts/chats.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, handleFieldEditKey, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
+import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
 import { initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
@@ -1348,6 +1349,7 @@ async function firstLoadInit() {
         onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
         onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
     });
+    initCharInfoTabDimming(() => greetingPagerState.greetings.some((greeting, i) => i !== greetingPagerState.index && greeting !== ''));
     initDefaultSlashCommands();
     initTextGenModels();
     initOpenAI();
@@ -8855,6 +8857,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     $('#depth_prompt_role').val(characterFormValue(character, '#depth_prompt_role'));
     $('#talkativeness_slider').val(characterFormValue(character, '#talkativeness_slider'));
     $('#mes_example_textarea').val(characterFormValue(character, '#mes_example_textarea'));
+    refreshCharInfoTabDimming();
     $('#selected_chat_pole').val(character.chat);
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
     $('#create_date_pole').val(timestampToMoment(character.create_date).toISOString());
@@ -8950,6 +8953,7 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#depth_prompt_depth').val(create_save.depth_prompt_depth);
     $('#depth_prompt_role').val(create_save.depth_prompt_role);
     $('#mes_example_textarea').val(create_save.mes_example);
+    refreshCharInfoTabDimming();
     autosizeTextareas(document.getElementById('form_create'));
     $('#character_json_data').val('');
     setFormBaseline('#character_json_data', String($('#character_json_data').val()));
