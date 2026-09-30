@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 import express from 'express';
 
 import {
@@ -25,6 +27,7 @@ import {
     getTagsDigest,
     getTagsBucketMembers,
     getTagDefinitionsByIds,
+    getGoneTagIds,
     queryTags,
     decodeTagQueryCursor,
     TAG_QUERY_SORTS,
@@ -327,7 +330,7 @@ const QUERY_MAX_IDS = 500;
 
 /**
  * One page of tag definitions:
- * `{ filter: { search, name, contains, ids, used, folders }, sort: { field }, pageSize, cursor, counts }`
+ * `{ filter: { search, name, contains, ids, used, folders }, sort: { field }, pageSize, cursor, counts, ifHash }`
  * → `{ rows, cursor, more }`. `search` is a prefix of the name and `contains` text anywhere in it, both ignoring case
  * and accents. With `counts: true` the answer also has `counts: { [id]: n }`, how many characters and groups carry
  * each row's tag, and `approximate`, the ids whose count may be too high while a merge is unfinished.
@@ -335,6 +338,9 @@ const QUERY_MAX_IDS = 500;
  * previous page returned, for the same sort; a manual one is refused (400 invalid-cursor) once the manual order it
  * was made in is no longer the one read, i.e. when a tag reorder pass starts or starts draining. `more` means the server's work cap cut the page short and `cursor`
  * carries on; otherwise a null `cursor` is the end.
+ *
+ * With `ifHash` (a string, empty when the client holds no copy of this page) the answer also has `hash`, and is
+ * only `{ unchanged: true, hash }` when `ifHash` is the hash of what would be answered now.
  */
 router.post('/query', async (request, response) => {
     try {
@@ -355,6 +361,9 @@ router.post('/query', async (request, response) => {
         }
         if (body.counts !== undefined && typeof body.counts !== 'boolean') {
             return response.status(400).send({ error: true, reason: 'invalid-counts' });
+        }
+        if (body.ifHash !== undefined && typeof body.ifHash !== 'string') {
+            return response.status(400).send({ error: true, reason: 'invalid-if-hash' });
         }
         for (const flag of ['used', 'folders']) {
             if (filter[flag] !== undefined && typeof filter[flag] !== 'boolean') {
@@ -400,6 +409,10 @@ router.post('/query', async (request, response) => {
         if (result === 'invalid-cursor') {
             return response.status(400).send({ error: true, reason: 'invalid-cursor' });
         }
+        if (body.ifHash !== undefined) {
+            const hash = crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex');
+            return response.send(hash === body.ifHash ? { unchanged: true, hash } : { ...result, hash });
+        }
         response.send(result);
     } catch (err) {
         console.error('Could not query tag definitions', err);
@@ -410,8 +423,9 @@ router.post('/query', async (request, response) => {
 const BY_IDS_MAX_IDS = 500;
 
 /**
- * The definitions for a named set of ids. More than BY_IDS_MAX_IDS distinct ids is a 400 rather than a truncated
- * answer, which would read as those tags not existing.
+ * `{ ids }` → `{ tags, gone }`: the definitions for a named set of ids, and the ids among them no tag has (never
+ * stored, deleted, or marked deleted). An id in neither is a tag whose stored definition can't be read. More than
+ * BY_IDS_MAX_IDS distinct ids is a 400 rather than a truncated answer, which would read as those tags not existing.
  */
 router.post('/by-ids', async (request, response) => {
     try {
@@ -420,10 +434,11 @@ router.post('/by-ids', async (request, response) => {
             return response.status(400).send({ error: `at most ${BY_IDS_MAX_IDS} distinct ids per request` });
         }
         const tags = await getTagDefinitionsByIds(request.user.directories, ids);
-        if (tags === null) {
+        const gone = tags === null ? null : await getGoneTagIds(request.user.directories, ids);
+        if (tags === null || gone === null) {
             return response.send({ tags: null });
         }
-        response.send({ tags });
+        response.send({ tags, gone });
     } catch (err) {
         console.error('Could not read tag definitions by id', err);
         response.sendStatus(500);
