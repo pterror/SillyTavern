@@ -2401,6 +2401,8 @@ export function initChatUtilities() {
 
     $(document).on('click', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {
         if (!power_user.click_to_edit) return;
+        // A click on a link follows the link and leaves the message as it is.
+        if ($(event.target).closest('a[href]', this).length) return;
         if (window.getSelection().toString()) return;
         if ($('.edit_textarea').length) return;
         $(this).closest('.mes').find('.mes_edit').trigger('click');
