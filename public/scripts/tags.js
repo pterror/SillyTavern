@@ -3488,17 +3488,41 @@ function onTagRenameInput() {
  * @param {string} cssProperty - The CSS property to apply the color to
  */
 function onTagColorize(evt, colorField, cssProperty) {
-    const isDefaultColor = $(evt.target).data('default-color') === evt.detail.rgba;
+    const isDefaultColor = isSameCssColor(String($(evt.target).data('default-color') ?? ''), evt.detail.rgba);
     $(evt.target).closest('.tag_view_color_picker').find('.link_icon').toggle(!isDefaultColor);
 
     const id = $(evt.target).closest('.tag_view_item').attr('id');
     let newColor = evt.detail.rgba;
     if (isDefaultColor) newColor = '';
 
+    // The picker also fires `change` when it is first given its colour, in its own `rgba(...)` spelling.
+    const storedColor = tagsStore.get(id)?.[colorField] ?? '';
+    if (isSameCssColor(storedColor, newColor)) return;
+
     $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
     tagsStore.update(id, { [colorField]: newColor });
 
     debouncedTagColoring(id, cssProperty, newColor);
+}
+
+/**
+ * Whether two CSS colour strings are the same colour, whatever notation each is written in. An empty string is
+ * "no colour" and only equals another empty string.
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function isSameCssColor(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    const context = document.createElement('canvas').getContext('2d');
+    const canonical = (color) => {
+        // An invalid colour leaves fillStyle at whatever it was, so reset it to a known value first.
+        context.fillStyle = '#000000';
+        context.fillStyle = color;
+        return context.fillStyle;
+    };
+    return canonical(a) === canonical(b);
 }
 
 function applyTagColoring(tagId, cssProperty, newColor) {
