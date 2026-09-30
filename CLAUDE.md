@@ -14,7 +14,7 @@ Subagents run only the tests covering what they changed, never the full suite. E
 
 ## Compat
 
-Nothing that works in upstream SillyTavern (the upstream/staging branch) may break here. That covers every function upstream exports, with its parameters and what they mean; every event and what it carries; every server route; and every third-party extension. Never modify a third-party extension. Where upstream accepts an argument, accept the same values and handle them the same way.
+Nothing that works in upstream SillyTavern (the upstream/staging branch) may break here. That covers every function upstream exports, with its parameters and what they mean; every event and what it carries; every server route; and every third-party extension. Never modify a third-party extension. Where upstream accepts an argument, accept the same values and handle them the same way. Compat covers what code and data depend on: those exports, events, routes, stored data and extensions. How the app behaves for the user is not bound to upstream: behavior should be maximally intuitive.
 
 ## Client
 
