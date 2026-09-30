@@ -52,6 +52,20 @@ class AccountStorage {
 
         globalThis.localStorage.removeItem(key);
     }
+
+    /**
+     * @returns {Record<string, string>} A copy of every key getItem() can read: the whole of this browser's localStorage.
+     */
+    getState() {
+        /** @type {Record<string, string>} */
+        const state = {};
+        for (let i = 0; i < globalThis.localStorage.length; i++) {
+            const key = globalThis.localStorage.key(i);
+            const value = key === null ? null : globalThis.localStorage.getItem(key);
+            if (value !== null) state[key] = value;
+        }
+        return state;
+    }
 }
 
 export const accountStorage = new AccountStorage();
