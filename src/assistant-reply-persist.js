@@ -1,6 +1,36 @@
 import { appendMessages, addAlternatives, selectDefaultChild, editMessage } from './message-tree-db.js';
 
 /**
+ * The reply text in a non-streaming answer, read exactly as the page's `extractMessageFromData()`
+ * (public/script.js) reads it for `api`, so the stored reply is the text the page shows. Where the page
+ * would throw on the answer's shape and show nothing, this returns `''`.
+ * @param {any} data The answer body sent to the page.
+ * @param {'textgenerationwebui'|'openai'} api
+ * @returns {string}
+ */
+export function replyTextAsPageShows(data, api) {
+    function getResult() {
+        if (typeof data === 'string') {
+            return data;
+        }
+        switch (api) {
+            case 'textgenerationwebui':
+                return data.choices?.[0]?.text ?? data.choices?.[0]?.message?.content ?? data.content ?? data.response ?? data[0]?.content ?? '';
+            case 'openai':
+                return data?.content?.filter(p => p.type === 'text')?.map(p => p.text)?.join('\n\n') ?? data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? data?.text ?? data?.message?.content?.[0]?.text ?? data?.message?.tool_plan ?? '';
+            default:
+                return '';
+        }
+    }
+    try {
+        const result = getResult();
+        return Array.isArray(result) ? result.map(x => x.text).filter(x => x).join('') : result;
+    } catch {
+        return '';
+    }
+}
+
+/**
  * Persists a raw-action `/generate` request's ASSISTANT reply onto the message tree, once the
  * full generated text is known.
  *
