@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
-import { characterChangeEmitter, clearTagCache, kickChatStatsReconcile, reportTagMoveFailed, waitForMetadataBootChain } from './character-metadata-db.js';
+import { characterChangeEmitter, clearTagCache, kickChatStatsReconcile, reportTagMoveFailed, reportTagOrderSettled, waitForMetadataBootChain } from './character-metadata-db.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { color, getConfigFilePath } from './util.js';
 
@@ -66,6 +66,7 @@ function spawnMigrationWorker(workerData) {
  * @param {(directories: import('./users.js').UserDirectoryList) => Promise<void>} [options.onTagDefinitionsChanged]
  * @param {() => void} [options.onChanged]
  * @param {(directories: import('./users.js').UserDirectoryList, payload: import('./character-metadata-db.js').TagMoveFailedPayload) => void} [options.onTagMoveFailed]
+ * @param {(directories: import('./users.js').UserDirectoryList) => void} [options.onTagOrderSettled]
  * @param {(directories: import('./users.js').UserDirectoryList) => void} [options.onChatStatsMayBeQueued]
  */
 export function createMetadataMigrationCoordinator({
@@ -74,6 +75,7 @@ export function createMetadataMigrationCoordinator({
     onTagDefinitionsChanged = clearTagCache,
     onChanged = () => characterChangeEmitter.emit('change'),
     onTagMoveFailed = (directories, payload) => reportTagMoveFailed(directories.root, payload),
+    onTagOrderSettled = directories => reportTagOrderSettled(directories.root),
     onChatStatsMayBeQueued = kickChatStatsReconcile,
 } = {}) {
     /** @type {Map<string, WorkerEntry>} */
@@ -99,6 +101,12 @@ export function createMetadataMigrationCoordinator({
             }
             case 'tag-move-failed': {
                 onTagMoveFailed(directories, msg.payload);
+                return;
+            }
+            case 'tag-order-settled': {
+                // First, so a client that re-reads the tags on this message isn't answered from the old cache.
+                await onTagDefinitionsChanged(directories);
+                onTagOrderSettled(directories);
                 return;
             }
             case 'error': {

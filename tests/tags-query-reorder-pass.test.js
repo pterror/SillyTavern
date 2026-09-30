@@ -320,7 +320,7 @@ describe('POST /api/tags/query manual, during a reorder pass', () => {
         const [[id, side, anchor], ...rest] = moves;
         expect(await metadataDb.reorderTagDefinitions(directories, id, { [side]: anchor }, mode)).toEqual({ refused: [], queued: true });
         for (const [tag, where, to] of rest) {
-            expect(await metadataDb.moveTagDefinition(directories, tag, { [where]: to })).toEqual({ refused: [], queued: true });
+            expect(await metadataDb.moveTagDefinition(directories, tag, { [where]: to })).toEqual({ refused: [], written: [], queued: true });
         }
         const shown = (await queryAll({ pageSize: 2 })).ids;
         expect(shown).toEqual(applied(MODE_ORDERS[mode], moves));

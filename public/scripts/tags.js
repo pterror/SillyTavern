@@ -630,31 +630,6 @@ async function refreshTagsManifestCache() {
     }
 }
 
-/**
- * POSTs the whole tag *definitions* array to the server, for a real bulk edit (e.g. a manual reorder that
- * touches every tag's sort_order). Assignments are persisted separately (see persistTagMapChange()).
- */
-async function saveTagsNow() {
-    try {
-        const response = await fetch('/api/tags/save', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ tags }),
-            cache: 'no-cache',
-        });
-
-        if (!response.ok) {
-            throw new Error(`Failed to save tags: ${response.statusText}`);
-        }
-
-        await refreshTagsManifestCache();
-    } catch (error) {
-        console.error('Error saving tags:', error);
-    }
-}
-
-const saveTagsDebounced = debounce(saveTagsNow, debounce_timeout.relaxed);
-
 const TAG_REFUSAL_REASONS = {
     exists: 'already exists',
     deleted: 'was deleted',
@@ -1021,9 +996,8 @@ async function deleteTagOnServer(id, mergeInto) {
 }
 
 /**
- * Translates one tagsStore EntityChange into the matching /api/tags/create|edit|delete|save network call - the
- * tagsStore.onChange subscriber registered in rebuildTagStores(). `reset` covers real bulk edits (e.g. a
- * manual drag reorder that touches every tag's sort_order), where a whole-array save is the actual operation.
+ * Translates one tagsStore EntityChange into the matching /api/tags/create|edit|delete network call - the
+ * tagsStore.onChange subscriber registered in rebuildTagStores().
  * @param {import('./entity-store.js').EntityChange} change
  */
 function persistTagChange(change) {
@@ -1040,9 +1014,6 @@ function persistTagChange(change) {
             deleteTagOnServer(change.id, mergeInto);
             break;
         }
-        case 'reset':
-            saveTagsDebounced();
-            break;
     }
 }
 
@@ -2063,8 +2034,8 @@ function getExistingTags(newTags) {
 /**
  * Merges tag definitions the server resolved on the client's behalf into the local `tagsStore`, for any id
  * this client doesn't already have a definition for - otherwise a server-minted tag would render invisible
- * until some unrelated future refetch pulled it in. Bypasses `tagsStore.create()` since these are already
- * persisted server-side, so its own `saveTagsDebounced` write would be redundant.
+ * until some unrelated future refetch pulled it in. Bypasses `tagsStore.create()`, which would send the server
+ * a create for a tag it already has.
  * @param {object[]} tagDefinitions
  */
 function mergeServerTagDefinitions(tagDefinitions) {
@@ -2984,32 +2955,195 @@ function redrawAfterTagSortOrderChange() {
     updateEntityRowTags(getAllRenderedEntityKeys());
 }
 
-function makeTagListDraggable(tagContainer) {
-    const onTagsSort = () => {
-        // Direct field mutation per tag (can touch every tag in the list), followed by one tagsStore.reset()
-        // so subscribers fire once for the whole drag instead of once per tag.
-        tagContainer.find('.tag_view_item').each(function (i, tagElement) {
-            const id = $(tagElement).attr('id');
-            const tag = tagsStore.get(id);
-            tag.sort_order = i;
+/** @param {string} id */
+function tagNameForWarning(id) {
+    return tagsStore.get(id)?.name ?? id;
+}
+
+/**
+ * The warning for a tag move the server refused. Says what public/script.js's tagMoveFailedText() says for the same
+ * refusal of a queued move.
+ * @param {string} id The moved tag.
+ * @param {string} anchorId
+ * @param {{ id: string, reason: string }} refusal
+ */
+function tagMoveRefusedText(id, anchorId, refusal) {
+    const tag = tagNameForWarning(id);
+    const anchor = tagNameForWarning(anchorId);
+    const prefix = `Couldn't move tag "${tag}" next to "${anchor}": `;
+    const refused = tagNameForWarning(refusal.id);
+    switch (refusal.reason) {
+        case 'deleted':
+        case 'missing': return `${prefix}"${refused}" was deleted.`;
+        case 'unreadable': return `${prefix}the stored data of "${refused}" couldn't be read.`;
+        case 'unordered': return `${prefix}"${anchor}" is too far into the tags with no order.`;
+        case 'no-room': return `${prefix}there was no room left in the order.`;
+        default: return `${prefix}${refusal.reason}.`;
+    }
+}
+
+// Tag moves go to the server one at a time, in the order made: each anchor means a place in the order the move
+// before it left. A re-read of the tags joins the same chain, so it never lands in the middle of a move.
+let tagOrderChain = Promise.resolve();
+
+// A move the server queued has written no sort_order yet; 'tag-order-settled' on the changes stream says when it has.
+let tagOrderAwaitsSettle = false;
+
+/** Redraws Manage Tags' list, if it is open, unless it already shows the tags in the order a redraw would. */
+function redrawViewTagListIfStale() {
+    const tagContainer = $('#tag_view_list .tag_view_list_tags');
+    if (!tagContainer.length) return;
+    const shown = tagContainer.find('.tag_view_item').map((_, el) => el.id).get();
+    const wanted = getViewTagListTags().sortedTags.map(tag => tag.id);
+    if (shown.length === wanted.length && shown.every((id, i) => id === wanted[i])) return;
+    printViewTagList(tagContainer);
+}
+
+/**
+ * Sends one reorder as an action and shows the server's answer. In Manual the tag is moved; in another sort mode the
+ * server first makes that mode's order the manual one, then moves it.
+ * @param {string} id The moved tag.
+ * @param {{ before: string } | { after: string }} placement The tag it was put next to.
+ * @param {string} mode The tag sort mode the move was made in.
+ */
+async function moveTagOnServer(id, placement, mode) {
+    const manual = mode === tag_sort_mode.MANUAL;
+    const anchorId = 'before' in placement ? placement.before : placement.after;
+    let answer;
+    try {
+        const response = await fetch(manual ? '/api/tags/move' : '/api/tags/reorder', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(manual ? { id, ...placement } : { id, ...placement, mode }),
+            cache: 'no-cache',
         });
-        tagsStore.reset();
-
-        // If tags were dragged manually, we have to disable auto sorting
-        if (power_user.tag_sort_mode !== tag_sort_mode.MANUAL) {
-            power_user.tag_sort_mode = tag_sort_mode.MANUAL;
-            $('#tag_sort_mode_select').val(tag_sort_mode.MANUAL);
-            toastr.info('Switched to Manual sorting mode.');
+        if (!response.ok) {
+            throw new Error(`Failed to move tag: ${response.statusText}`);
         }
+        answer = await response.json();
+    } catch (error) {
+        console.error(`Error moving tag ${id}:`, error);
+        toastr.error(`Couldn't move tag "${tagNameForWarning(id)}": the request failed. The order is unchanged.`, 'Moving Tag');
+        redrawViewTagListIfStale();
+        return;
+    }
 
-        redrawAfterTagSortOrderChange();
+    if (answer.refused?.length) {
+        toastr.warning(answer.refused.map(r => escapeHtml(tagMoveRefusedText(id, anchorId, r))).join('<br />'), 'Moving Tag', { escapeHtml: false });
+        redrawViewTagListIfStale();
+        for (const refusal of answer.refused) {
+            if (refusal.reason === 'deleted' || refusal.reason === 'missing') await resyncRefusedTag(refusal.id);
+        }
+        return;
+    }
+
+    if (!manual && power_user.tag_sort_mode !== tag_sort_mode.MANUAL) {
+        power_user.tag_sort_mode = tag_sort_mode.MANUAL;
+        $('#tag_sort_mode_select').val(tag_sort_mode.MANUAL);
+        toastr.info('Switched to Manual sorting mode.');
         saveSettingsDebounced('power_user.tag_sort_mode');
-    };
+    }
 
+    if (answer.queued) {
+        tagOrderAwaitsSettle = true;
+        return;
+    }
+
+    let changed = false;
+    for (const { id: writtenId, sort_order } of answer.written ?? []) {
+        // Set on the object itself: tagsStore.update() would send the server its own value back as an edit.
+        const tag = tagsStore.get(writtenId);
+        if (!tag || tag.sort_order === sort_order) continue;
+        tag.sort_order = sort_order;
+        changed = true;
+    }
+    if (changed) {
+        redrawAfterTagSortOrderChange();
+        await refreshTagsManifestCache();
+    }
+    redrawViewTagListIfStale();
+}
+
+/**
+ * Makes this tab's tag definitions match the server's, in place: `tags` stays the same array and a tag that
+ * is still there stays the same object. Only what differs is downloaded, unless most of it does.
+ * @returns {Promise<boolean>} false if the server couldn't be read; nothing is changed then.
+ */
+async function rereadTagDefinitions() {
+    /** @type {Tag[] | null} */
+    let serverTags = await syncTagDefinitionsFromDigest(tags);
+    if (serverTags === tags) return true;
+    if (!serverTags) {
+        const answer = await postTagsRead('/api/tags/get', {});
+        if (!answer || !Array.isArray(answer.tags)) return false;
+        serverTags = answer.tags;
+    }
+
+    const serverIds = new Set();
+    let sortOrderChanged = false;
+    let anyChanged = false;
+    for (const serverTag of serverTags) {
+        if (!serverTag || typeof serverTag.id !== 'string') continue;
+        serverIds.add(serverTag.id);
+        const local = tagsStore.get(serverTag.id);
+        if (local === serverTag) continue;
+        if (!local) {
+            tags.push(serverTag);
+            anyChanged = true;
+            continue;
+        }
+        const old = { ...local };
+        takeServerTagFields(local, serverTag);
+        for (const [field, redraw] of Object.entries(TAG_FIELD_REDRAWS)) {
+            if (old[field] === local[field]) continue;
+            anyChanged = true;
+            if (field === 'sort_order') sortOrderChanged = true; else redraw(local);
+        }
+    }
+    tagsStore.reindex();
+    if (anyChanged) {
+        invalidateTagsFuseIndex();
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+        applyCharacterTagsToMessageDivs();
+    }
+    for (const id of tags.map(tag => tag.id).filter(id => !serverIds.has(id))) {
+        await dropTagLocally(id);
+    }
+    if (sortOrderChanged) redrawAfterTagSortOrderChange();
+    await refreshTagsManifestCache();
+    redrawViewTagListIfStale();
+    return true;
+}
+
+/**
+ * The server has applied every queued tag move ('tag-order-settled' on the changes stream), or the stream is back
+ * after a break that may have swallowed that message: re-reads the tags, whose sort_order values it rewrote.
+ * @param {object} [options]
+ * @param {boolean} [options.onlyIfAwaited=false] Do nothing unless this tab has a queued move of its own out.
+ */
+export function onTagOrderSettled({ onlyIfAwaited = false } = {}) {
+    if (onlyIfAwaited && !tagOrderAwaitsSettle) return;
+    tagOrderChain = tagOrderChain.then(async () => {
+        if (await rereadTagDefinitions()) tagOrderAwaitsSettle = false;
+    }).catch(error => console.error('Error re-reading tags after a reorder:', error));
+}
+
+function makeTagListDraggable(tagContainer) {
     // @ts-ignore
     $(tagContainer).sortable({
         delay: getSortableDelay(),
-        stop: () => onTagsSort(),
+        // 'update', not 'stop': a row dropped back where it was changed nothing, so nothing is sent.
+        update: (_event, ui) => {
+            const id = ui.item.attr('id');
+            const next = ui.item.next('.tag_view_item').attr('id');
+            const previous = ui.item.prev('.tag_view_item').attr('id');
+            const placement = next ? { before: next } : previous ? { after: previous } : null;
+            if (!id || !placement) return;
+            const mode = power_user.tag_sort_mode;
+            tagOrderChain = tagOrderChain.then(() => moveTagOnServer(id, placement, mode))
+                .catch(error => console.error(`Error moving tag ${id}:`, error));
+        },
         handle: '.drag-handle',
     });
 }
@@ -3634,12 +3768,10 @@ export function removeEntityTags(key) {
 }
 
 /**
- * Prints the tag list in the view tags popup.
- * @param {JQuery<HTMLElement>} tagContainer Container element
- * @param {boolean} empty Whether to empty the container before printing
+ * The tags Manage Tags lists under its search box's term, in the current sort mode's order, with each tag's count.
+ * @returns {{ sortedTags: Tag[], counts: Map<string, number> }}
  */
-function printViewTagList(tagContainer, empty = true) {
-    if (empty) tagContainer.empty();
+function getViewTagListTags() {
     const counts = new Map(tags.map(tag => [tag.id, 0]));
     for (const [, tagIds] of allTagIdsEntries()) {
         for (const tagId of tagIds) {
@@ -3648,7 +3780,17 @@ function printViewTagList(tagContainer, empty = true) {
     }
     const searchTerm = $('#tag_view_search').val()?.toString().trim() ?? '';
     const matchingTags = searchTerm ? tags.filter(tag => includesIgnoreCaseAndAccents(tag.name, searchTerm)) : tags;
-    const sortedTags = sortTags(matchingTags, counts).slice(0, FIND_TAG_RESULT_LIMIT);
+    return { sortedTags: sortTags(matchingTags, counts).slice(0, FIND_TAG_RESULT_LIMIT), counts };
+}
+
+/**
+ * Prints the tag list in the view tags popup.
+ * @param {JQuery<HTMLElement>} tagContainer Container element
+ * @param {boolean} empty Whether to empty the container before printing
+ */
+function printViewTagList(tagContainer, empty = true) {
+    if (empty) tagContainer.empty();
+    const { sortedTags, counts } = getViewTagListTags();
     for (const tag of sortedTags) {
         const count = counts.get(tag.id) || 0;
         appendViewTagToList(tagContainer, tag, count);

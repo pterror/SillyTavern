@@ -3020,6 +3020,17 @@ function tagMoveFailedText({ tagId, tagName, anchorId, anchorName, refusedId, re
     }
 }
 
+// Emitted on characterChangeEmitter as (root) when the queued tag moves have all been applied and no reorder pass is
+// left: the stored sort_order values are final again.
+export const TAG_ORDER_SETTLED_EVENT = 'tag-order-settled';
+
+/**
+ * @param {string} root The store's directories.root.
+ */
+export function reportTagOrderSettled(root) {
+    characterChangeEmitter.emit(TAG_ORDER_SETTLED_EVENT, root);
+}
+
 /**
  * Hands a queued tag move's failure to whoever listens for TAG_MOVE_FAILED_EVENT, or logs it when none takes it.
  * @param {string} root The store's directories.root.
@@ -7927,9 +7938,10 @@ function tagOrderRowsSync(db, s, r, direction, inclusive, skip, limit) {
  * @param {Record<string, unknown>} tag moved's data.
  * @param {TagMoveRow & { sort_order: number }} anchor
  * @param {'before' | 'after'} side
+ * @param {TagSortOrderWrite[]} written Gets an entry per row written.
  * @returns {number | 'no-room'} The rows written; 0 when the tag is already in that place.
  */
-function placeTagNextToSync(db, moved, tag, anchor, side) {
+function placeTagNextToSync(db, moved, tag, anchor, side, written) {
     const a = anchor.sort_order;
     const neighbour = tagOrderRowsSync(db, a, anchor.rowid, side === 'before' ? 'down' : 'up', false, null, 1).at(0);
     if (neighbour?.rowid === moved.rowid) return 0;
@@ -7945,6 +7957,7 @@ function placeTagNextToSync(db, moved, tag, anchor, side) {
     }
     if (value !== undefined) {
         writeTagSortOrderSync(db, moved.rowid, tag, value);
+        written.push({ id: moved.id, sort_order: value });
         return 1;
     }
 
@@ -7973,6 +7986,7 @@ function placeTagNextToSync(db, moved, tag, anchor, side) {
                 // Stored data under a sort_order is always an object: tagDerivedColumns() gives any other NULL.
                 const rowTag = row === moved ? tag : /** @type {Record<string, unknown>} */ (parseTagObject(row.data));
                 writeTagSortOrderSync(db, row.rowid, rowTag, values[i]);
+                written.push({ id: row.id, sort_order: values[i] });
                 rows++;
             });
             return rows;
@@ -7990,9 +8004,10 @@ function placeTagNextToSync(db, moved, tag, anchor, side) {
  * @param {number} movedRowid
  * @param {{ unwritable: string[], replaced: string[] }} logs Get, once numbered, a line per row left in the tail
  *   because its data isn't a JSON object, and one per row whose present sort_order (which had no order) was replaced.
+ * @param {TagSortOrderWrite[]} written Gets an entry per row written.
  * @returns {'unordered' | 'no-room' | number} The rows written, once numbered.
  */
-function numberTagTailThroughSync(db, anchor, movedRowid, logs) {
+function numberTagTailThroughSync(db, anchor, movedRowid, logs, written) {
     const rows = /** @type {TagMoveRow[]} */ ([...db.iterate(`SELECT ${TAG_MOVE_ROW_COLUMNS} FROM tags INDEXED BY tags_unordered_name_key
         WHERE sort_order IS NULL AND name_key < @k ORDER BY name_key, rowid LIMIT @limit`, { k: anchor.name_key, limit: TAG_QUERY_WORK_CAP })]);
     if (rows.length < TAG_QUERY_WORK_CAP) {
@@ -8019,6 +8034,7 @@ function numberTagTailThroughSync(db, anchor, movedRowid, logs) {
     targets.forEach(({ rowid, id, tag }, i) => {
         if (tag.sort_order !== undefined) logs.replaced.push(`  ${tagWarningLabel(id, tag)}: ${JSON.stringify(tag.sort_order)}`);
         writeTagSortOrderSync(db, rowid, tag, values[i]);
+        written.push({ id, sort_order: values[i] });
     });
     logs.unwritable.push(...skipped);
     return targets.length;
@@ -8026,10 +8042,13 @@ function numberTagTailThroughSync(db, anchor, movedRowid, logs) {
 
 /** @typedef {{ unwritable: string[], replaced: string[] }} TagTailLogs */
 
+/** @typedef {{ id: string, sort_order: number }} TagSortOrderWrite A row a move wrote, with the sort_order now stored. */
+
 /**
  * @typedef {object} TagMoveOutcome
  * @property {{ id: string, reason: TagWriteRefusalReason }[]} refused
  * @property {number} rows The tags rows written.
+ * @property {TagSortOrderWrite[]} written One entry per row written; a row written twice has two, the last one current.
  * @property {TagTailLogs | null} logs Set once the tail was numbered.
  * @property {string | null} noRoom The log line for a 'no-room' refusal.
  * @property {boolean} rollback Whether the rows written must be rolled back: the tail was numbered, then the move
@@ -8137,7 +8156,7 @@ function readTagMoveSync(db, id, anchorId) {
 function moveTagSync(db, id, anchorId, side) {
     const read = readTagMoveSync(db, id, anchorId);
     /** @type {TagMoveOutcome} */
-    const result = { refused: read.refused, rows: 0, logs: null, noRoom: null, rollback: false };
+    const result = { refused: read.refused, rows: 0, written: [], logs: null, noRoom: null, rollback: false };
     const anchorTag = read.anchor ? parseTagObject(read.anchor.data) : null;
     if (read.anchor && read.anchor.sort_order === null && !anchorTag) result.refused.push({ id: anchorId, reason: 'unreadable' });
     if (result.refused.length > 0) return result;
@@ -8162,7 +8181,7 @@ function moveTagSync(db, id, anchorId, side) {
         }
         /** @type {TagTailLogs} */
         const logs = { unwritable: [], replaced: [] };
-        const outcome = numberTagTailThroughSync(db, anchorRow, movedRow.rowid, logs);
+        const outcome = numberTagTailThroughSync(db, anchorRow, movedRow.rowid, logs, result.written);
         if (outcome === 'unordered') {
             result.refused.push({ id: anchorId, reason: 'unordered' });
             return result;
@@ -8176,9 +8195,10 @@ function moveTagSync(db, id, anchorId, side) {
         anchorRow = /** @type {TagMoveRow} */ (db.get(`SELECT ${TAG_MOVE_ROW_COLUMNS} FROM tags WHERE rowid = @r`, { r: anchorRow.rowid }));
     }
 
-    const outcome = placeTagNextToSync(db, movedRow, tag, /** @type {TagMoveRow & { sort_order: number }} */ (anchorRow), side);
+    const outcome = placeTagNextToSync(db, movedRow, tag, /** @type {TagMoveRow & { sort_order: number }} */ (anchorRow), side, result.written);
     if (outcome === 'no-room') {
         noRoom();
+        result.written = [];
         if (result.rows > 0) {
             result.rows = 0;
             result.logs = null;
@@ -8217,7 +8237,9 @@ function warnTagTailNumbering(logs) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {unknown} id
  * @param {unknown} placement `{ before: anchorId }` or `{ after: anchorId }`.
- * @returns {Promise<(TagWriteResult & { queued?: true }) | null>} queued is set when the move was queued.
+ * @returns {Promise<(TagWriteResult & { written: TagSortOrderWrite[], queued?: true }) | null>} written: every row
+ *   the move wrote, with the sort_order now stored; empty when refused, queued or already in place. queued is set
+ *   when the move was queued.
  */
 export async function moveTagDefinition(directories, id, placement) {
     const entry = await getEntry(directories);
@@ -8229,14 +8251,14 @@ export async function moveTagDefinition(directories, id, placement) {
     const { db } = entry;
 
     /** @type {TagMoveOutcome} */
-    let result = { refused: [], rows: 0, logs: null, noRoom: null, rollback: false };
+    let result = { refused: [], rows: 0, written: [], logs: null, noRoom: null, rollback: false };
     const state = { queued: false };
     try {
         db.transaction(() => {
             // Reset here: a transaction that hits busy is rolled back and rerun.
             state.queued = false;
             if (!tagSortOrdersSettledSync(db)) {
-                result = { refused: readTagMoveSync(db, id, anchorId).refused, rows: 0, logs: null, noRoom: null, rollback: false };
+                result = { refused: readTagMoveSync(db, id, anchorId).refused, rows: 0, written: [], logs: null, noRoom: null, rollback: false };
                 if (result.refused.length > 0) return;
                 db.run('INSERT INTO tag_pending_moves (tag_id, side, anchor_id) VALUES (@id, @side, @anchorId)', { id, side, anchorId });
                 state.queued = true;
@@ -8252,7 +8274,9 @@ export async function moveTagDefinition(directories, id, placement) {
     if (result.noRoom !== null) console.warn(color.yellow(result.noRoom));
     warnTagTailNumbering(result.logs);
     if (result.rows > 0) entry.tagCache = null;
-    return state.queued ? { refused: result.refused, queued: true } : { refused: result.refused };
+    if (state.queued) return { refused: result.refused, written: [], queued: true };
+    // A row the tail numbered and the window then respread has two entries; the later one is what is stored.
+    return { refused: result.refused, written: [...new Map(result.written.map(w => [w.id, w])).values()] };
 }
 
 /**
@@ -8338,13 +8362,15 @@ function tagNameSync(db, id) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {{ batches: number, rowsChanged: number }} totals Gets a batch per entry and the rows it wrote.
  * @param {number | null} [passId]
- * @returns {Promise<'done' | 'held'>} done: the table was found empty (and, with `passId`, the pass cleared); held:
- *   stopped by the pass record.
+ * @returns {Promise<'done' | 'held'>} done: the table was found empty (and, with `passId`, the pass cleared), and
+ *   reportTagOrderSettled() was called if this call applied an entry or ran for a pass; held: stopped by the pass
+ *   record.
  */
 async function drainTagPendingMoves(entry, directories, totals, passId = null) {
     const { db } = entry;
     // So a store with nothing queued runs no transaction; each transaction below still reads its own entry.
     if (passId === null && !db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return 'done';
+    let entries = 0;
     for (;;) {
         /** @type {'done' | 'held'} */
         let stop = 'done';
@@ -8414,7 +8440,13 @@ async function drainTagPendingMoves(entry, directories, totals, passId = null) {
             const { seq } = /** @type {NonNullable<typeof pending>} */ (pending);
             db.transaction(() => db.run('DELETE FROM tag_pending_moves WHERE seq = @seq', { seq }));
         }
-        if (!pending) return stop;
+        if (!pending) {
+            // A pass rewrote every tag's sort_order even when its entries were all dropped.
+            const outcome = /** @type {'done' | 'held'} */ (stop);
+            if (outcome === 'done' && (passId !== null || entries > 0)) reportTagOrderSettled(directories.root);
+            return outcome;
+        }
+        entries++;
         if (rows > 0) warnTagTailNumbering(/** @type {TagMoveOutcome | null} */ (moved)?.logs ?? null);
         for (const payload of failures) reportTagMoveFailed(directories.root, payload);
         if (rows > 0) entry.tagCache = null;

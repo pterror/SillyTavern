@@ -333,7 +333,7 @@ describe('POST /api/tags/query manual, with moves pending', () => {
         ]);
         for (const [id, side, anchor] of moves) {
             expect(await metadataDb.moveTagDefinition(directories, id, { [side]: anchor })).toEqual(
-                id === anchor ? { refused: [{ id, reason: 'same' }] } : { refused: [], queued: true });
+                id === anchor ? { refused: [{ id, reason: 'same' }], written: [] } : { refused: [], written: [], queued: true });
         }
         expect(live().prepare('SELECT COUNT(*) FROM tag_pending_moves').pluck().get()).toBe(7);
         const shown = (await queryAll({ pageSize: 2 })).ids;

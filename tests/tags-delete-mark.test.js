@@ -84,7 +84,7 @@ async function seedGroup(id) {
 }
 
 async function saveTags(ids) {
-    await post('/api/tags/save', { tags: ids.map(id => ({ id, name: `name-${id}` })) });
+    await metadataDb.saveTagDefinitions(directories, ids.map(id => ({ id, name: `name-${id}` })));
 }
 
 async function assign(id, tagId) {
@@ -424,11 +424,11 @@ describe('usage counts', () => {
 });
 
 describe('writes that name a marked tag', () => {
-    test('/save and /edit skip a marked id and warn naming it', async () => {
+    test('saveTagDefinitions and /edit skip a marked id and warn naming it', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await post('/api/tags/save', { tags: ['x', 'y', 'z', 'd'].map(id => ({ id, name: `name-${id}` })) });
+        await metadataDb.saveTagDefinitions(directories, ['x', 'y', 'z', 'd'].map(id => ({ id, name: `name-${id}` })));
         const edited = await post('/api/tags/edit', { id: 'x', patch: { name: 'renamed' } });
         expect(await edited.json()).toEqual({ result: 'ok', refused: [{ id: 'x', reason: 'deleted' }] });
         expect(await listedTagIds()).toEqual(['d', 'y', 'z']);

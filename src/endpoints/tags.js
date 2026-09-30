@@ -9,7 +9,6 @@ import {
     getAllEntityTagAssignments,
     getAllTagUsage,
     streamTagDefinitionBatches,
-    saveTagDefinitions,
     createTagDefinition,
     editTagDefinition,
     moveTagDefinition,
@@ -30,26 +29,6 @@ import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.
 import { writeBackpressured } from '../util.js';
 
 export const router = express.Router();
-
-/** Replaces tag *definitions* only; assignments go through `/assign`/`/unassign`. */
-router.post('/save', async function (request, response) {
-    try {
-        if (!Array.isArray(request.body?.tags)) {
-            return response.status(400).send({ error: 'tags must be an array' });
-        }
-
-        const result = await saveTagDefinitions(request.user.directories, request.body.tags);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
-
-        // Search indexes follow renames through the logs saveTagDefinitions() writes, so no explicit invalidation is needed here.
-        response.send({ result: 'ok' });
-    } catch (err) {
-        console.error('Could not save tag definitions', err);
-        response.status(500).send({ error: 'Could not save tag definitions' });
-    }
-});
 
 /** `{ tag }` → `{ result, refused: [{ id, reason: 'deleted' | 'exists' }] }`. */
 router.post('/create', async (request, response) => {
@@ -103,9 +82,10 @@ router.post('/edit', async (request, response) => {
 
 /**
  * `{ id, before }` or `{ id, after }` → `{ result, refused: [{ id, reason: 'same' | 'deleted' | 'missing' |
- * 'unreadable' | 'unordered' | 'no-room' }], queued }`. Puts tag `id` right before or after the anchor tag (by id)
- * in the manual order. queued: the move arrived before the tag sort_order fill finished or while a reorder pass is
- * recorded, and is applied when that pass ends (moveTagDefinition()).
+ * 'unreadable' | 'unordered' | 'no-room' }], written: [{ id, sort_order }], queued }`. Puts tag `id` right before or
+ * after the anchor tag (by id) in the manual order. written: every tag the move wrote, with the sort_order now
+ * stored. queued: the move arrived before the tag sort_order fill finished or while a reorder pass is recorded, and
+ * is applied when that pass ends (moveTagDefinition()); the changes stream says when ('tag-order-settled').
  */
 router.post('/move', async (request, response) => {
     try {
@@ -128,7 +108,7 @@ router.post('/move', async (request, response) => {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
 
-        response.send({ result: 'ok', refused: result.refused, queued: result.queued === true });
+        response.send({ result: 'ok', refused: result.refused, written: result.written, queued: result.queued === true });
     } catch (err) {
         console.error('Could not move tag definition', err);
         response.status(500).send({ error: 'Could not move tag definition' });
@@ -212,8 +192,8 @@ router.post('/prune', async (request, response) => {
 });
 
 /**
- * Deletes one tag definition by id, instead of replacing the whole set via `/save`. `mergeInto`, when given, is the
- * tag every entity carrying the deleted one gets instead, as upstream's delete-and-merge does.
+ * Deletes one tag definition by id. `mergeInto`, when given, is the tag every entity carrying the deleted one gets
+ * instead, as upstream's delete-and-merge does.
  */
 router.post('/delete', async (request, response) => {
     try {

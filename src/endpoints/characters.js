@@ -35,7 +35,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, TAG_MOVE_FAILED_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2992,7 +2992,9 @@ router.post('/changes', async function (request, response) {
  * the groups version the groups index now covers; each null
  * when that index's position isn't known), and a `{ type: 'tag-move-failed', tagId, tagName,
  * anchorId, anchorName, refusedId, reason }` message when a tag move queued for this user couldn't be applied
- * (reportTagMoveFailed(); the client shows it as a warning), and a `{ type: 'character-index-failed', id, name,
+ * (reportTagMoveFailed(); the client shows it as a warning), and a `{ type: 'tag-order-settled' }` message when this
+ * user's queued tag moves have all been applied (reportTagOrderSettled(); the client re-reads its tags), and a
+ * `{ type: 'character-index-failed', id, name,
  * error, retryInMs, keptEntry }` message when one of this user's cards couldn't be put in their characters search
  * index (a CharacterIndexFailure; the client shows it as a warning). Also carries the former
  * `/api/browser-heartbeat` job (touches browser-presence on connect/ping) - merged in because the browser's
@@ -3042,6 +3044,12 @@ router.get('/changes/stream', function (request, response) {
     };
     characterChangeEmitter.on(TAG_MOVE_FAILED_EVENT, onTagMoveFailed);
 
+    const onTagOrderSettled = (settledRoot) => {
+        if (settledRoot !== root) return;
+        response.write(`data: ${JSON.stringify({ type: 'tag-order-settled' })}\n\n`);
+    };
+    characterChangeEmitter.on(TAG_ORDER_SETTLED_EVENT, onTagOrderSettled);
+
     const onCharacterIndexFailed = (failedHandle, warning) => {
         if (failedHandle !== handle) return;
         response.write(`data: ${JSON.stringify({ type: 'character-index-failed', ...warning })}\n\n`);
@@ -3052,6 +3060,7 @@ router.get('/changes/stream', function (request, response) {
         characterChangeEmitter.off('change', onChange);
         characterChangeEmitter.off('search-index-updated', onSearchIndexUpdated);
         characterChangeEmitter.off(TAG_MOVE_FAILED_EVENT, onTagMoveFailed);
+        characterChangeEmitter.off(TAG_ORDER_SETTLED_EVENT, onTagOrderSettled);
         characterChangeEmitter.off(CHARACTER_INDEX_FAILED_EVENT, onCharacterIndexFailed);
         onChange.cancel();
         clearInterval(presenceInterval);

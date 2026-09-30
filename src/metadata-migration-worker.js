@@ -12,6 +12,7 @@ import { setConfigFilePath } from './util.js';
  *   { type: 'batch', changed, tagDefinitionsChanged }   a batch committed that wrote change rows (changed) and/or
  *                                                     tag definitions (tagDefinitionsChanged).
  *   { type: 'tag-move-failed', payload }               a queued tag move couldn't be applied (reportTagMoveFailed()).
+ *   { type: 'tag-order-settled' }                      the queued tag moves are all applied (reportTagOrderSettled()).
  *   { type: 'error', message }
  * Requests from the coordinator: { type: 'close' }: stop before the next pass, then exit.
  */
@@ -57,6 +58,9 @@ metadataDb.characterChangeEmitter.on(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, (
 metadataDb.characterChangeEmitter.on(metadataDb.TAG_MOVE_FAILED_EVENT, (root, payload, ack) => {
     post({ type: 'tag-move-failed', payload });
     ack.delivered = true;
+});
+metadataDb.characterChangeEmitter.on(metadataDb.TAG_ORDER_SETTLED_EVENT, () => {
+    post({ type: 'tag-order-settled' });
 });
 
 let closing = false;

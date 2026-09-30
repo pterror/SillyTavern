@@ -223,7 +223,7 @@ describe('POST /api/tags/reorder', () => {
         await openStore({ filled: false });
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
-        expect(await metadataDb.moveTagDefinition(directories, 'a', { after: 'x' })).toEqual({ refused: [], queued: true });
+        expect(await metadataDb.moveTagDefinition(directories, 'a', { after: 'x' })).toEqual({ refused: [], written: [], queued: true });
         expect(await post('reorder', { id: 'x', before: 'a', mode: 'alphabetical' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: true } });
         expect(pass()).toEqual({ id: 1, mode: 'alphabetical', at: null });
         expect(pending()).toEqual([
@@ -236,7 +236,7 @@ describe('POST /api/tags/reorder', () => {
         await openStore();
         await recordPass();
         live().prepare('UPDATE meta SET value = ? WHERE key = ?').run(JSON.stringify({ id: 1, mode: 'alphabetical', at: { walked: 'somewhere' } }), 'tag_reorder_pass');
-        expect(await metadataDb.moveTagDefinition(directories, 'a', { after: 'x' })).toEqual({ refused: [], queued: true });
+        expect(await metadataDb.moveTagDefinition(directories, 'a', { after: 'x' })).toEqual({ refused: [], written: [], queued: true });
         expect(await post('reorder', { id: 'a', before: 'x', mode: 'by_entries' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: true } });
         expect(pass()).toEqual({ id: 2, mode: 'by_entries', at: null });
         expect(pending()).toEqual([
@@ -292,7 +292,7 @@ describe('while a reorder pass is recorded', () => {
         await recordPass();
         live().prepare('DELETE FROM tag_pending_moves').run();
         const before = rows();
-        expect(await post('move', { id: 'a', after: 'x' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: true } });
+        expect(await post('move', { id: 'a', after: 'x' })).toEqual({ status: 200, body: { result: 'ok', refused: [], written: [], queued: true } });
         expect(pending()).toEqual([{ tag_id: 'a', side: 'after', anchor_id: 'x', value: null }]);
         expect(rows()).toEqual(before);
     });
@@ -302,7 +302,7 @@ describe('while a reorder pass is recorded', () => {
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
         insertTag('n', { name: 'N' });
-        expect(await metadataDb.moveTagDefinition(directories, 'x', { before: 'a' })).toEqual({ refused: [], queued: true });
+        expect(await metadataDb.moveTagDefinition(directories, 'x', { before: 'a' })).toEqual({ refused: [], written: [], queued: true });
         expect((await post('reorder', { id: 'a', before: 'x', mode: 'alphabetical' })).body.queued).toBe(true);
         await metadataDb.fillTagSortOrdersIfNeeded(directories);
         expect(column('n')).toBe(6);
@@ -370,7 +370,7 @@ describe('with no reorder pass recorded, while moves queue', () => {
         insertTag('a', { sort_order: 1 });
         insertTag('b', { sort_order: 3 });
         insertTag('x', { sort_order: 5 });
-        expect(await post('move', { id: 'x', after: 'a' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: true } });
+        expect(await post('move', { id: 'x', after: 'a' })).toEqual({ status: 200, body: { result: 'ok', refused: [], written: [], queued: true } });
         expect(await post('edit', { id: 'x', patch: { name: 'X', sort_order: 10 } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
         expect(data('x')).toEqual({ id: 'x', name: 'X', sort_order: 5 });
         expect(column('x')).toBe(5);

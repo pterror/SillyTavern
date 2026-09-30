@@ -254,6 +254,27 @@ describe('createMetadataMigrationCoordinator()', () => {
         await done;
     });
 
+    test('a tag-order-settled message clears the tag cache, then is handed to onTagOrderSettled', async () => {
+        /** @type {string[]} */
+        const calls = [];
+        const onTagOrderSettled = jest.fn(() => { calls.push('settled'); });
+        const onTagDefinitionsChanged = jest.fn(async () => {
+            await new Promise(resolve => setImmediate(resolve));
+            calls.push('cache cleared');
+        });
+        const { coordinator, workers } = fakeSetup({ onTagOrderSettled, onTagDefinitionsChanged });
+        const done = coordinator.start(directories);
+        await flush();
+
+        workers[0].emit('message', { type: 'tag-order-settled' });
+        await flush();
+        expect(calls).toEqual(['cache cleared', 'settled']);
+        expect(onTagOrderSettled).toHaveBeenCalledWith(directories);
+
+        workers[0].emit('exit', 0);
+        await done;
+    });
+
     test('dispose() asks the worker to close, and terminates it if it has not exited in time', async () => {
         const { coordinator, workers } = fakeSetup();
         const done = coordinator.start(directories);
