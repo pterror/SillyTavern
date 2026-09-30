@@ -1686,6 +1686,11 @@ textarea.autoSetHeight {
     opacity: 0.5;
 }
 
+/* A default only: :where() keeps the specificity at a bare `img`, so any other rule still wins. */
+:where(#char-info-panel) img {
+    max-width: 100%;
+}
+
 /* The drawer's backdrop-filter makes it the containing block, so this fills the drawer. */
 .char_info_tab_panel.maximized {
     position: fixed;
