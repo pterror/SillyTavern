@@ -186,7 +186,7 @@ const bytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'u
  * The expected ids, computed from the rows directly: upstream's compareTagsForSort, with ties by rowid and names
  * compared as SQLite's BINARY does.
  * @param {string} sort
- * @param {{ used?: boolean, folders?: boolean, search?: string, name?: string, ids?: string[] }} filter
+ * @param {{ used?: boolean, folders?: boolean, search?: string, name?: string, contains?: string, ids?: string[] }} filter
  */
 function expected(sort, filter) {
     const rows = [...live().prepare(`SELECT t.rowid AS r, t.id, t.data, COALESCE(u.count, 0) AS count FROM tags t
@@ -199,6 +199,7 @@ function expected(sort, filter) {
         && (!filter.folders || t.folder)
         && (!filter.search || Buffer.from(t.k).subarray(0, Buffer.byteLength(tagNameKey(filter.search.trim()))).equals(Buffer.from(tagNameKey(filter.search.trim()))))
         && (filter.name === undefined || t.k === tagNameKey(filter.name))
+        && (!filter.contains?.trim() || Buffer.from(t.k).includes(Buffer.from(tagNameKey(filter.contains.trim()))))
         && (!filter.ids || filter.ids.includes(t.id)));
     items.sort((a, b) => {
         let d = 0;
@@ -229,6 +230,14 @@ const FILTERS = [
     { name: 'nope' },
     { ids: ['t005', 't001', 't040', 'missing', 't033', 'nameless'] },
     { ids: ['t005', 't001', 't040', 't033'], search: 'a', folders: true },
+    { contains: 'lph' },
+    { contains: ' ETA ' },
+    { contains: 'ÁLP', used: true },
+    { contains: 'a', folders: true },
+    { contains: 'a 1', search: 'al' },
+    { contains: '   ' },
+    { contains: 'zzz' },
+    { ids: ['t005', 't001', 't040', 't033', 't013'], contains: 'a' },
 ];
 
 /** EXPLAIN QUERY PLAN of every statement recorded, as text. */
@@ -270,6 +279,73 @@ describe('POST /api/tags/query', () => {
         });
     });
 
+    describe.each([['indexed path', true], ['today\'s path', false]])('counts, %s', (_, ready) => {
+        test('counts are given only when asked, for the rows on the page, from tag_usage', async () => {
+            await seed(mixedTags());
+            if (ready) await makeReady();
+            const usage = new Map(live().prepare('SELECT tag_id, count FROM tag_usage').all().map(row => [row.tag_id, row.count]));
+            for (const sort of SORTS) {
+                const plain = await query({ sort: { field: sort }, pageSize: 7 });
+                expect(plain.body).not.toHaveProperty('counts');
+                expect(plain.body).not.toHaveProperty('approximate');
+
+                let cursor = null;
+                do {
+                    const { body } = await query({ sort: { field: sort }, pageSize: 7, counts: true, cursor });
+                    const ids = body.rows.map(t => t.id);
+                    // A tag never assigned has no tag_usage row, and one assigned then unassigned has one at 0.
+                    expect(body.counts).toEqual(Object.fromEntries(ids.map(id => [id, usage.get(id) ?? 0])));
+                    expect(body.approximate).toEqual([]);
+                    cursor = body.cursor;
+                } while (cursor !== null);
+            }
+        });
+
+        test('a marked tag\'s count goes to the tag it merges into, which is listed as approximate', async () => {
+            await metadataDb.ensureSchemaMigrated(directories);
+            await metadataDb.saveTagDefinitions(directories, [{ id: 'source', name: 'Source' }, { id: 'target', name: 'Target' }, { id: 'other', name: 'Other' }]);
+            const assign = live().prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)');
+            assign.run('a.png', 'source');
+            assign.run('b.png', 'source');
+            assign.run('a.png', 'target');
+            assign.run('a.png', 'other');
+            await metadataDb.deleteTagDefinition(directories, 'source', 'target');
+            if (ready) await makeReady();
+
+            const { body } = await query({ sort: { field: 'alphabetical' }, counts: true });
+            expect(body.rows.map(t => t.id)).toEqual(['other', 'target']);
+            expect(body.counts).toEqual({ other: 1, target: 3 });
+            expect(body.approximate).toEqual(['target']);
+        });
+
+        test('a batch-import row not yet flushed counts, once, and a count of 0 is a tag prune would delete', async () => {
+            await metadataDb.ensureSchemaMigrated(directories);
+            await metadataDb.saveTagDefinitions(directories, [{ id: 'buffered', name: 'Buffered' }, { id: 'both', name: 'Both' }, { id: 'unused', name: 'Unused' }]);
+            const card = name => JSON.stringify({ name, data: { name, tags: [], extensions: {} } });
+            await metadataDb.upsertCharacterFromWrite(directories, 'Stored.png', card('Stored'));
+            expect(await metadataDb.assignEntityTag(directories, 'Stored.png', 'both')).toBe('ok');
+            if (ready) await makeReady();
+
+            await metadataDb.beginBatchImport(directories);
+            await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'), null, null, { fromImport: true });
+            expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'buffered')).toBe('ok');
+            expect(await metadataDb.assignEntityTag(directories, 'Bob.png', 'both')).toBe('ok');
+            // Imported again over its stored row: tag_usage already counts the stored assignment.
+            await metadataDb.upsertCharacterFromWrite(directories, 'Stored.png', card('Stored'), null, null, { fromImport: true });
+            expect(await metadataDb.assignEntityTag(directories, 'Stored.png', 'both')).toBe('ok');
+
+            const { body } = await query({ sort: { field: 'alphabetical' }, counts: true });
+            expect(body.counts).toEqual({ both: 2, buffered: 1, unused: 0 });
+            expect(body.approximate).toEqual([]);
+            const unused = await (await fetch(`${baseUrl}/api/tags/unused-count`, { method: 'POST' })).json();
+            expect(unused.count).toBe(1);
+
+            await metadataDb.endBatchImport(directories);
+            const after = await query({ sort: { field: 'alphabetical' }, counts: true });
+            expect(after.body.counts).toEqual({ both: 2, buffered: 1, unused: 0 });
+        });
+    });
+
     test('the sort defaults to manual and the page size to 50, clamped to 500', async () => {
         const tags = Array.from({ length: 620 }, (_, i) => ({ id: `p${String(i).padStart(4, '0')}`, name: `P ${619 - i}`, sort_order: i % 5 === 0 ? undefined : 1000 - i }));
         await seed(tags);
@@ -289,6 +365,8 @@ describe('POST /api/tags/query', () => {
             { sort: { field: 'random' } },
             { filter: { search: 3 } },
             { filter: { name: ['a'] } },
+            { filter: { contains: 3 } },
+            { counts: 'yes' },
             { filter: { used: 'yes' } },
             { filter: { folders: 1 } },
             { filter: { ids: 't001' } },
@@ -391,6 +469,14 @@ describe('POST /api/tags/query', () => {
         for (const sort of ['manual', 'by_entries']) {
             const all = await queryAll({ sort: { field: sort }, filter: { search: 'zz' }, pageSize: 50 });
             expect(all.ids).toEqual(expected(sort, { search: 'zz' }));
+            expect(all.capped).toBeGreaterThan(0);
+        }
+
+        // Text anywhere in the name is checked row by row in every sort, alphabetical included.
+        for (const sort of SORTS) {
+            const all = await queryAll({ sort: { field: sort }, filter: { contains: 'folder' }, pageSize: 50 });
+            expect(all.ids).toEqual(expected(sort, { contains: 'folder' }));
+            expect(all.ids).toHaveLength(5);
             expect(all.capped).toBeGreaterThan(0);
         }
     });
