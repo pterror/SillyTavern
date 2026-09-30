@@ -89,6 +89,7 @@ function live() {
 
 afterEach(() => {
     metadataDb.characterChangeEmitter.removeAllListeners(metadataDb.TAG_MOVE_FAILED_EVENT);
+    metadataDb.characterChangeEmitter.removeAllListeners(metadataDb.TAG_ORDER_SETTLED_EVENT);
     jest.restoreAllMocks();
     liveDb?.close();
     liveDb = null;
@@ -190,8 +191,13 @@ async function moveWritingNothing(id, placement) {
 /** @param {string} id @param {{ before?: string, after?: string }} placement */
 async function move(id, placement) {
     const hash = await metadataDb.getTagsHash(directories);
+    const before = rows();
     const result = await metadataDb.moveTagDefinition(directories, id, placement);
-    expect(result).toEqual({ refused: [] });
+    // written: exactly the rows the move changed, each with the sort_order now stored.
+    expect(result.refused).toEqual([]);
+    expect(result.queued).toBeUndefined();
+    expect([...result.written].sort((a, b) => a.id.localeCompare(b.id)))
+        .toEqual(changedIds(before, rows()).map(changedId => ({ id: changedId, sort_order: dataOrder(changedId) })));
     expect(columnMismatches()).toEqual([]);
     expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
     return result;
@@ -203,15 +209,15 @@ const warnings = spy => spy.mock.calls.map(args => String(args[0])).join('\n');
 describe('moveTagDefinition: refusals write nothing', () => {
     test('a tag as its own anchor is refused as same, and nothing else is checked', async () => {
         await openStore();
-        expect(await moveWritingNothing('ghost', { before: 'ghost' })).toEqual({ refused: [{ id: 'ghost', reason: 'same' }] });
+        expect(await moveWritingNothing('ghost', { before: 'ghost' })).toEqual({ refused: [{ id: 'ghost', reason: 'same' }], written: [] });
     });
 
     test('a missing tag and a missing anchor are both listed', async () => {
         await openStore();
         insertTag('a', { sort_order: 1 });
-        expect(await moveWritingNothing('x', { after: 'y' })).toEqual({ refused: [{ id: 'x', reason: 'missing' }, { id: 'y', reason: 'missing' }] });
-        expect(await moveWritingNothing('x', { after: 'a' })).toEqual({ refused: [{ id: 'x', reason: 'missing' }] });
-        expect(await moveWritingNothing('a', { before: 'y' })).toEqual({ refused: [{ id: 'y', reason: 'missing' }] });
+        expect(await moveWritingNothing('x', { after: 'y' })).toEqual({ refused: [{ id: 'x', reason: 'missing' }, { id: 'y', reason: 'missing' }], written: [] });
+        expect(await moveWritingNothing('x', { after: 'a' })).toEqual({ refused: [{ id: 'x', reason: 'missing' }], written: [] });
+        expect(await moveWritingNothing('a', { before: 'y' })).toEqual({ refused: [{ id: 'y', reason: 'missing' }], written: [] });
     });
 
     test('a deleted tag and a deleted anchor are both listed and logged as stale; a marked id with no row is only deleted', async () => {
@@ -223,10 +229,10 @@ describe('moveTagDefinition: refusals write nothing', () => {
         markDeleted('b');
         markDeleted('gone');
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        expect(await moveWritingNothing('a', { before: 'b' })).toEqual({ refused: [{ id: 'a', reason: 'deleted' }, { id: 'b', reason: 'deleted' }] });
+        expect(await moveWritingNothing('a', { before: 'b' })).toEqual({ refused: [{ id: 'a', reason: 'deleted' }, { id: 'b', reason: 'deleted' }], written: [] });
         expect(warnings(warn)).toContain('a, b');
-        expect(await moveWritingNothing('gone', { after: 'c' })).toEqual({ refused: [{ id: 'gone', reason: 'deleted' }] });
-        expect(await moveWritingNothing('c', { after: 'gone' })).toEqual({ refused: [{ id: 'gone', reason: 'deleted' }] });
+        expect(await moveWritingNothing('gone', { after: 'c' })).toEqual({ refused: [{ id: 'gone', reason: 'deleted' }], written: [] });
+        expect(await moveWritingNothing('c', { after: 'gone' })).toEqual({ refused: [{ id: 'gone', reason: 'deleted' }], written: [] });
     });
 
     test('a marked tag whose data isn\'t an object is only deleted', async () => {
@@ -235,7 +241,7 @@ describe('moveTagDefinition: refusals write nothing', () => {
         insertTag('a', { sort_order: 1 });
         markDeleted('bad');
         jest.spyOn(console, 'warn').mockImplementation(() => {});
-        expect(await moveWritingNothing('bad', { before: 'a' })).toEqual({ refused: [{ id: 'bad', reason: 'deleted' }] });
+        expect(await moveWritingNothing('bad', { before: 'a' })).toEqual({ refused: [{ id: 'bad', reason: 'deleted' }], written: [] });
     });
 
     test('a tag whose data isn\'t an object is unreadable, and the anchor is still checked', async () => {
@@ -243,16 +249,16 @@ describe('moveTagDefinition: refusals write nothing', () => {
         insertTag('bad', '{not json');
         insertTag('arr', '[1]');
         insertTag('a', { sort_order: 1 });
-        expect(await moveWritingNothing('bad', { before: 'a' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }] });
-        expect(await moveWritingNothing('bad', { before: 'y' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }, { id: 'y', reason: 'missing' }] });
-        expect(await moveWritingNothing('bad', { after: 'arr' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }, { id: 'arr', reason: 'unreadable' }] });
+        expect(await moveWritingNothing('bad', { before: 'a' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }], written: [] });
+        expect(await moveWritingNothing('bad', { before: 'y' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }, { id: 'y', reason: 'missing' }], written: [] });
+        expect(await moveWritingNothing('bad', { after: 'arr' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }, { id: 'arr', reason: 'unreadable' }], written: [] });
     });
 
     test('an anchor without a sort_order whose data isn\'t an object is unreadable', async () => {
         await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('arr', '[1]');
-        expect(await moveWritingNothing('a', { after: 'arr' })).toEqual({ refused: [{ id: 'arr', reason: 'unreadable' }] });
+        expect(await moveWritingNothing('a', { after: 'arr' })).toEqual({ refused: [{ id: 'arr', reason: 'unreadable' }], written: [] });
     });
 
     test('an anchor in the tail past the work cap is unordered', async () => {
@@ -264,9 +270,9 @@ describe('moveTagDefinition: refusals write nothing', () => {
             insertTag('last', { name: 'Zzz' });
             insertTag('first', { name: 'Aaa' });
         })();
-        expect(await moveWritingNothing('x', { before: 'last' })).toEqual({ refused: [{ id: 'last', reason: 'unordered' }] });
+        expect(await moveWritingNothing('x', { before: 'last' })).toEqual({ refused: [{ id: 'last', reason: 'unordered' }], written: [] });
         // 'first' and t000000..t019998 are the cap's rows, numbered 2.. after x's 1.
-        expect(await moveWritingNothing('x', { after: `t${String(cap - 1).padStart(6, '0')}` })).toEqual({ refused: [{ id: `t${String(cap - 1).padStart(6, '0')}`, reason: 'unordered' }] });
+        expect(await moveWritingNothing('x', { after: `t${String(cap - 1).padStart(6, '0')}` })).toEqual({ refused: [{ id: `t${String(cap - 1).padStart(6, '0')}`, reason: 'unordered' }], written: [] });
         await move('x', { after: `t${String(cap - 2).padStart(6, '0')}` });
         expect(dataOrder('first')).toBe(2);
         expect(dataOrder(`t${String(cap - 2).padStart(6, '0')}`)).toBe(cap + 1);
@@ -280,7 +286,7 @@ describe('moveTagDefinition: refusals write nothing', () => {
         insertTag('x', { sort_order: 1 });
         insertTag('b', { name: 'B' });
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        expect(await moveWritingNothing('x', { before: 'b' })).toEqual({ refused: [{ id: 'x', reason: 'no-room' }] });
+        expect(await moveWritingNothing('x', { before: 'b' })).toEqual({ refused: [{ id: 'x', reason: 'no-room' }], written: [] });
         expect(warnings(warn)).toContain('x (x) before b (B)');
     });
 });
@@ -291,9 +297,9 @@ describe('moveTagDefinition: already in place writes nothing', () => {
         insertTag('a', { sort_order: 1 });
         insertTag('b', { sort_order: 2 });
         insertTag('c', { sort_order: 2 });
-        expect(await moveWritingNothing('a', { before: 'b' })).toEqual({ refused: [] });
-        expect(await moveWritingNothing('b', { after: 'a' })).toEqual({ refused: [] });
-        expect(await moveWritingNothing('c', { after: 'b' })).toEqual({ refused: [] });
+        expect(await moveWritingNothing('a', { before: 'b' })).toEqual({ refused: [], written: [] });
+        expect(await moveWritingNothing('b', { after: 'a' })).toEqual({ refused: [], written: [] });
+        expect(await moveWritingNothing('c', { after: 'b' })).toEqual({ refused: [], written: [] });
     });
 
     test('in the tail, before the anchor', async () => {
@@ -301,7 +307,7 @@ describe('moveTagDefinition: already in place writes nothing', () => {
         insertTag('a', { sort_order: 1 });
         insertTag('b', { name: 'B' });
         insertTag('c', { name: 'C' });
-        expect(await moveWritingNothing('b', { before: 'c' })).toEqual({ refused: [] });
+        expect(await moveWritingNothing('b', { before: 'c' })).toEqual({ refused: [], written: [] });
     });
 });
 
@@ -498,9 +504,9 @@ describe('POST /api/tags/move', () => {
         await openStore();
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
-        expect(await post({ id: 'x', before: 'a' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: false } });
+        expect(await post({ id: 'x', before: 'a' })).toEqual({ status: 200, body: { result: 'ok', refused: [], written: [{ id: 'x', sort_order: dataOrder('x') }], queued: false } });
         expect(dataOrder('x')).toBe(0);
-        expect(await post({ id: 'x', after: 'nope' })).toEqual({ status: 200, body: { result: 'ok', refused: [{ id: 'nope', reason: 'missing' }], queued: false } });
+        expect(await post({ id: 'x', after: 'nope' })).toEqual({ status: 200, body: { result: 'ok', refused: [{ id: 'nope', reason: 'missing' }], written: [], queued: false } });
     });
 });
 
@@ -521,7 +527,7 @@ function insertPendingValue(tagId, sortOrder) {
 
 /** @param {string} id @param {{ before?: string, after?: string }} placement */
 async function queue(id, placement) {
-    expect(await metadataDb.moveTagDefinition(directories, id, placement)).toEqual({ refused: [], queued: true });
+    expect(await metadataDb.moveTagDefinition(directories, id, placement)).toEqual({ refused: [], written: [], queued: true });
 }
 
 /**
@@ -577,12 +583,12 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
         insertTag('arr', '[1]');
         markDeleted('d');
         jest.spyOn(console, 'warn').mockImplementation(() => {});
-        expect(await moveWritingNothing('a', { before: 'a' })).toEqual({ refused: [{ id: 'a', reason: 'same' }] });
-        expect(await moveWritingNothing('d', { before: 'a' })).toEqual({ refused: [{ id: 'd', reason: 'deleted' }] });
-        expect(await moveWritingNothing('a', { after: 'd' })).toEqual({ refused: [{ id: 'd', reason: 'deleted' }] });
-        expect(await moveWritingNothing('nope', { after: 'a' })).toEqual({ refused: [{ id: 'nope', reason: 'missing' }] });
-        expect(await moveWritingNothing('a', { after: 'nope' })).toEqual({ refused: [{ id: 'nope', reason: 'missing' }] });
-        expect(await moveWritingNothing('bad', { after: 'a' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }] });
+        expect(await moveWritingNothing('a', { before: 'a' })).toEqual({ refused: [{ id: 'a', reason: 'same' }], written: [] });
+        expect(await moveWritingNothing('d', { before: 'a' })).toEqual({ refused: [{ id: 'd', reason: 'deleted' }], written: [] });
+        expect(await moveWritingNothing('a', { after: 'd' })).toEqual({ refused: [{ id: 'd', reason: 'deleted' }], written: [] });
+        expect(await moveWritingNothing('nope', { after: 'a' })).toEqual({ refused: [{ id: 'nope', reason: 'missing' }], written: [] });
+        expect(await moveWritingNothing('a', { after: 'nope' })).toEqual({ refused: [{ id: 'nope', reason: 'missing' }], written: [] });
+        expect(await moveWritingNothing('bad', { after: 'a' })).toEqual({ refused: [{ id: 'bad', reason: 'unreadable' }], written: [] });
         expect(pending()).toEqual([]);
         await queue('a', { after: 'arr' });
         expect(pending()).toEqual([{ tag_id: 'a', side: 'after', anchor_id: 'arr', value: null }]);
@@ -598,12 +604,12 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         })).json();
-        expect(await post({ id: 'x', before: 'a' })).toEqual({ result: 'ok', refused: [], queued: true });
+        expect(await post({ id: 'x', before: 'a' })).toEqual({ result: 'ok', refused: [], written: [], queued: true });
         expect(dataOrder('x')).toBe(5);
         await metadataDb.fillTagSortOrdersIfNeeded(directories);
         expect(pending()).toEqual([]);
         expect(dataOrder('x')).toBe(0);
-        expect(await post({ id: 'x', after: 'a' })).toEqual({ result: 'ok', refused: [], queued: false });
+        expect(await post({ id: 'x', after: 'a' })).toEqual({ result: 'ok', refused: [], written: [{ id: 'x', sort_order: dataOrder('x') }], queued: false });
         expect(dataOrder('x')).toBe(1.5);
     });
 });
@@ -637,6 +643,32 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         expect([dataOrder('x'), dataOrder('z'), dataOrder('y')]).toEqual([2.5, 2.75, 4]);
         expect(columnMismatches()).toEqual([]);
         expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
+    });
+
+    test('says the order is settled once, after the last queued move is applied', async () => {
+        await openStore({ filled: false });
+        insertTag('a', { sort_order: 1 });
+        insertTag('b', { sort_order: 2 });
+        insertTag('x', { sort_order: 10 });
+        await queue('x', { after: 'a' });
+        await queue('b', { before: 'a' });
+        /** @type {{ root: string, pending: number }[]} */
+        const settled = [];
+        metadataDb.characterChangeEmitter.on(metadataDb.TAG_ORDER_SETTLED_EVENT, root => settled.push({ root, pending: pending().length }));
+        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        expect(settled).toEqual([{ root: directories.root, pending: 0 }]);
+        expect(displayOrder()).toEqual(['b', 'a', 'x']);
+    });
+
+    test('doesn\'t say the order is settled when nothing was queued', async () => {
+        await openStore({ filled: false });
+        insertTag('a', { sort_order: 1 });
+        insertTag('x', {});
+        const settled = jest.fn();
+        metadataDb.characterChangeEmitter.on(metadataDb.TAG_ORDER_SETTLED_EVENT, settled);
+        await metadataDb.fillTagSortOrdersIfNeeded(directories);
+        expect(dataOrder('x')).toBe(2);
+        expect(settled).not.toHaveBeenCalled();
     });
 
     test('a move whose tag was deleted or is gone is dropped with no warning', async () => {

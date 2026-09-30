@@ -196,6 +196,25 @@ describe('runTagReorderPassIfNeeded', () => {
         expect(meta('tag_reorder_pass_last_id')).toBe('1');
     });
 
+    test('says the order is settled once, when the pass clears its record, even if its one queued move was dropped', async () => {
+        await openStore();
+        insertTag('b', { name: 'B', sort_order: 1 });
+        insertTag('a', { name: 'A', sort_order: 2 });
+        queueMove('gone', 'after', 'a');
+        record(1, 'alphabetical');
+        /** @type {{ root: string, passRecorded: boolean }[]} */
+        const settled = [];
+        const onSettled = root => settled.push({ root, passRecorded: pass() !== undefined });
+        metadataDb.characterChangeEmitter.on(metadataDb.TAG_ORDER_SETTLED_EVENT, onSettled);
+        try {
+            await metadataDb.runTagReorderPassIfNeeded(directories);
+        } finally {
+            metadataDb.characterChangeEmitter.off(metadataDb.TAG_ORDER_SETTLED_EVENT, onSettled);
+        }
+        expect(manualOrder()).toEqual(['a', 'b']);
+        expect(settled).toEqual([{ root: directories.root, passRecorded: false }]);
+    });
+
     test('by_entries: numbers in (usage_count DESC, name_key, rowid) order', async () => {
         await openStore();
         insertTag('a', { sort_order: 1 }, 1);
@@ -375,7 +394,7 @@ describe('runTagReorderPassIfNeeded', () => {
         expect(pass()).toBeUndefined();
         expect(pendingCount()).toBe(0);
 
-        expect(await metadataDb.moveTagDefinition(directories, 'c', { after: 'a' })).toEqual({ refused: [] });
+        expect(await metadataDb.moveTagDefinition(directories, 'c', { after: 'a' })).toEqual({ refused: [], written: [{ id: 'c', sort_order: expect.any(Number) }] });
         expect(manualOrder()).toEqual(['a', 'c', 'd']);
     });
 

@@ -72,7 +72,7 @@ async function seedCharacter(avatar) {
 }
 
 async function saveTags(ids) {
-    await post('/api/tags/save', { tags: ids.map(id => ({ id, name: id })) });
+    await metadataDb.saveTagDefinitions(directories, ids.map(id => ({ id, name: id })));
 }
 
 async function tagIds() {

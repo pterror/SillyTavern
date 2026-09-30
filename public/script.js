@@ -194,6 +194,7 @@ import {
     tag_import_setting,
     applyCharacterTagsToMessageDivs,
     removeEntityTags,
+    onTagOrderSettled,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
@@ -977,6 +978,10 @@ function setupCharacterChangeStream() {
                 toastr.warning(tagMoveFailedText(message));
                 return;
             }
+            if (message?.type === 'tag-order-settled') {
+                onTagOrderSettled();
+                return;
+            }
             if (message?.type === 'character-index-failed') {
                 toastr.warning(characterIndexFailedText(message));
                 return;
@@ -996,6 +1001,7 @@ function setupCharacterChangeStream() {
             hadError = false;
             onCharacterChangeMessage();
             onSearchIndexUpdated();
+            onTagOrderSettled({ onlyIfAwaited: true });
         };
         source.onerror = () => {
             hadError = true;

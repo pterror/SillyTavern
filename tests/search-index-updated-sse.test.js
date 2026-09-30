@@ -218,6 +218,21 @@ test('a tag move failure for the stream\'s store is written as data: {"type":"ta
     expect(characterChangeEmitter.listenerCount(TAG_MOVE_FAILED_EVENT)).toBe(0);
 });
 
+test('a settled tag order for the stream\'s store is written as data: {"type":"tag-order-settled"}; another store\'s isn\'t', async () => {
+    const { characterChangeEmitter, reportTagOrderSettled, TAG_ORDER_SETTLED_EVENT } = await import('../src/character-metadata-db.js');
+    const stream = await openStream('sse-user-tag-order');
+    try {
+        reportTagOrderSettled(`${tempDir}-other`);
+        reportTagOrderSettled(tempDir);
+        expect(await stream.nextMessage(1000)).toBe(true);
+        expect(stream.messages).toEqual([`data: ${JSON.stringify({ type: 'tag-order-settled' })}`]);
+    } finally {
+        stream.close();
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(characterChangeEmitter.listenerCount(TAG_ORDER_SETTLED_EVENT)).toBe(0);
+});
+
 test('a character index failure for the stream\'s handle is written as data: {"type":"character-index-failed",...}; another handle\'s isn\'t', async () => {
     const { characterChangeEmitter } = await import('../src/character-metadata-db.js');
     const { CHARACTER_INDEX_FAILED_EVENT } = await import('../src/endpoints/search-index-coordinator.js');

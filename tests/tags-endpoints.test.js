@@ -128,7 +128,7 @@ describe('POST /api/tags/by-ids', () => {
     const idsOf = count => Array.from({ length: count }, (_, i) => `tag${i}`);
 
     test('answers 500 distinct ids', async () => {
-        await postJson('/api/tags/save', { tags: [{ id: 'tag0', name: 'Funny' }, { id: 'tag499', name: 'Serious' }] });
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag0', name: 'Funny' }, { id: 'tag499', name: 'Serious' }]);
         const response = await postJson('/api/tags/by-ids', { ids: idsOf(500) });
         expect(response.status).toBe(200);
         const { tags } = await response.json();
@@ -216,29 +216,25 @@ describe('GET /api/tags/usage', () => {
     });
 });
 
-describe('POST /api/tags/save and /api/tags/get (tag definitions - tags.json is gone entirely, owner decision)', () => {
-    test('save then get round-trips tag definitions through the sqlite store, no tags.json file involved', async () => {
-        const response = await postJson('/api/tags/save', { tags: [{ id: 'tag1', name: 'Funny' }] });
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ result: 'ok' });
+describe('POST /api/tags/get (tag definitions - tags.json is gone entirely, owner decision)', () => {
+    test('get answers the definitions in the sqlite store, no tags.json file involved', async () => {
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
 
         expect(fs.existsSync(path.join(tempDir, 'tags.json'))).toBe(false);
 
         const got = await (await postJson('/api/tags/get', {})).json();
         expect(got).toEqual({ tags: [{ id: 'tag1', name: 'Funny' }] });
     });
+});
 
-    test('save is a full replace of definitions, not additive', async () => {
-        await postJson('/api/tags/save', { tags: [{ id: 'tag1', name: 'Funny' }] });
-        await postJson('/api/tags/save', { tags: [{ id: 'tag2', name: 'Serious' }] });
+describe('POST /api/tags/save', () => {
+    test('there is no route that replaces the stored tags with a posted list', async () => {
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
+
+        expect((await postJson('/api/tags/save', { tags: [{ id: 'tag2', name: 'Serious' }] })).status).toBe(404);
 
         const got = await (await postJson('/api/tags/get', {})).json();
-        expect(got).toEqual({ tags: [{ id: 'tag2', name: 'Serious' }] });
-    });
-
-    test('save 400s when tags is missing or not an array (no more tag_map field accepted at all)', async () => {
-        expect((await postJson('/api/tags/save', {})).status).toBe(400);
-        expect((await postJson('/api/tags/save', { tags: 'nope' })).status).toBe(400);
+        expect(got).toEqual({ tags: [{ id: 'tag1', name: 'Funny' }] });
     });
 });
 
@@ -247,7 +243,7 @@ describe('POST /api/tags/manifest (freshness signature - tags_hash replaces tags
         const before = (await (await postJson('/api/tags/manifest', {})).json()).hash;
 
         await new Promise(resolve => setTimeout(resolve, 2));
-        await postJson('/api/tags/save', { tags: [{ id: 'tag1', name: 'Funny' }] });
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
         const afterSave = (await (await postJson('/api/tags/manifest', {})).json()).hash;
         expect(afterSave).not.toBe(before);
 

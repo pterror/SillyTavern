@@ -74,7 +74,7 @@ describe('POST /api/tags/delete while the server is running', () => {
     test('asks for the finishing pass, which finishes the delete and clears the approximate flag with no restart', async () => {
         // The store's boot chain has finished, and no boot migration run was ever started.
         await Promise.all(await metadataDb.initializeMetadataStores([directories]));
-        await post('/api/tags/save', { tags: [{ id: 'x', name: 'name-x' }, { id: 'y', name: 'name-y' }] });
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'x', name: 'name-x' }, { id: 'y', name: 'name-y' }]);
         for (const avatar of ['c1.png', 'c2.png']) {
             await metadataDb.upsertCharacterFromWrite(directories, avatar, cardJson(avatar.replace(/\.png$/, '')));
         }
