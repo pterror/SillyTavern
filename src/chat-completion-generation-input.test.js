@@ -637,7 +637,13 @@ async function run() {
         const viaNodeId = await resolveChatCompletionGenerationInput(directories, {
             avatar, ownerId, nodeId: mainLeafId,
         });
-        assert.deepEqual(viaNodeId.macroContext.chat, input.macroContext.chat, 'an explicit node_id resolves the exact same chat history as the equivalent explicit branch_name');
+        // Only a load by chat name hides that chat's own label; a node id names no chat.
+        const withoutBookmarkLink = chat => chat.map(m => {
+            const extra = { ...m.extra };
+            delete extra.bookmark_link;
+            return { ...m, extra };
+        });
+        assert.deepEqual(withoutBookmarkLink(viaNodeId.macroContext.chat), withoutBookmarkLink(input.macroContext.chat), 'an explicit node_id resolves the exact same chat history as the equivalent explicit branch_name');
         assert.equal(viaNodeId.resolvedNodeId, mainLeafId, 'resolvedNodeId echoes back the given node_id');
         assert.equal(viaNodeId.chatResolutionAmbiguous, false);
 
