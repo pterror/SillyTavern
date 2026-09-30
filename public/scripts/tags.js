@@ -32,7 +32,6 @@ import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { getCachedTags, setCachedTags } from './tags-cache.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, digestsEqual } from './hash-utils.js';
-import { checkCharactersExistOrNull } from './character-existence-check.js';
 import { beginLocalTagChange } from './tag-fetch-stamps.js';
 import { parseQueryTotal } from './character-repository.js';
 
@@ -3022,10 +3021,8 @@ function compareTagsForSort(a, b, counts = null) {
 }
 
 /**
- * Deliberately still direct `tags`/entity `tag_ids` mutations rather than per-item store ops: this bulk, rare,
- * all-or-nothing operation has its own id-remapping logic (idToActualTagIdMap) and persists every entity's
- * assignments in one request (see setEntityTagIdsMany() server-side, POSTed to below) instead of one
- * assign/unassign call per tag per entity.
+ * The backup's tag definitions are merged into `tags` here. Its assignments are sent to the server, which adds them
+ * to what each character or group already has; the resident copies are then re-read from the server.
  */
 async function onTagRestoreFileSelect(e) {
     const file = e.target.files[0];
@@ -3091,68 +3088,56 @@ async function onTagRestoreFileSelect(e) {
         tags.push(tag);
     }
 
-    const tagMapKeys = Object.keys(data.tag_map);
-    // A failed check (null) must not be read as "none exist" - fail open rather than mass-warning below.
-    const characterKeyExistence = await checkCharactersExistOrNull(tagMapKeys);
-    if (characterKeyExistence === null) {
-        toastr.error(t`Could not verify character existence against the server. Tag map keys could not be validated this run.`, 'Tag Restore');
-    }
+    const definedTagIds = new Set(tags.map(tag => String(tag.id)));
+    /** @type {Record<string, string[]>} The tag ids the backup adds, per character or group. */
+    const tagMap = {};
 
-    /** @type {Record<string, string[]>} Full desired tag id list per entity, for the bulk assign-many request. */
-    const tagIdsByEntity = {};
-
-    for (const key of tagMapKeys) {
-        const tagIds = data.tag_map[key];
-
+    for (const [key, tagIds] of Object.entries(data.tag_map)) {
         if (!Array.isArray(tagIds)) {
             warnings.push(`Tag map for key ${key} is invalid: ${JSON.stringify(tagIds)}.`);
             continue;
         }
 
-        // Verify that the key points to a valid character or group.
-        const characterExists = characterKeyExistence === null ? true : characterKeyExistence[key] === true;
-        const groupExists = groups.some(x => String(x.id) === String(key));
-
-        if (!characterExists && !groupExists) {
-            warnings.push(`Tag map key ${key} does not exist as character or group.`);
+        const backupTagIds = tagIds
+            .map(tagId => (idToActualTagIdMap.has(tagId)) ? idToActualTagIdMap.get(tagId) : tagId)
+            .filter(onlyUnique);
+        const undefinedTagIds = backupTagIds.filter(tagId => !definedTagIds.has(String(tagId)));
+        if (undefinedTagIds.length) {
+            warnings.push(`Tag map key ${key}: not assigned, no such tag: ${undefinedTagIds.map(tagId => JSON.stringify(tagId)).join(', ')}.`);
+        }
+        const toAdd = backupTagIds.filter(tagId => definedTagIds.has(String(tagId))).map(String);
+        if (!toAdd.length) continue;
+        if (!key) {
+            warnings.push(`Tag map key ${JSON.stringify(key)} does not exist as character or group.`);
             continue;
         }
-
-        // Get existing tag ids for this key or empty array.
-        const existingTagIds = getTagIdsForKey(key);
-
-        // Merge existing and new tag ids. Replace the ones mapped to a new id. Remove duplicates. Drop tags
-        // that don't exist.
-        const combinedTags = existingTagIds.concat(tagIds)
-            .map(tagId => (idToActualTagIdMap.has(tagId)) ? idToActualTagIdMap.get(tagId) : tagId)
-            .filter(onlyUnique)
-            .filter(tagId => tags.some(y => String(y.id) === String(tagId)));
-
-        tagIdsByEntity[key] = combinedTags;
-
-        // Reflect immediately for whichever of these are currently resident - an entity that isn't loaded yet
-        // picks this up from the server on its next fetch, same as any other tag change.
-        const liveTagIds = resolveTagIdsArray(key);
-        if (liveTagIds) {
-            liveTagIds.length = 0;
-            liveTagIds.push(...combinedTags);
-        }
+        tagMap[key] = toAdd;
     }
 
-    if (Object.keys(tagIdsByEntity).length) {
+    if (Object.keys(tagMap).length) {
         try {
-            const response = await fetch('/api/tags/assign-many', {
+            const response = await fetch('/api/tags/restore-assignments', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ tagIdsByEntity }),
+                body: JSON.stringify({ tagMap }),
                 cache: 'no-cache',
             });
             if (!response.ok) {
                 throw new Error(`Failed to persist restored tag assignments: ${response.statusText}`);
             }
+            const result = await response.json();
+            for (const key of result.missingKeys) {
+                warnings.push(`Tag map key ${key} does not exist as character or group.`);
+            }
+            for (const { key, tagIds } of result.deletedTagIds) {
+                warnings.push(`Tag map key ${key}: not assigned, the tag was deleted: ${tagIds.join(', ')}.`);
+            }
+            for (const { key, message } of result.failedKeys) {
+                warnings.push(`Tag map key ${key}: nothing assigned, its stored data couldn't be read: ${message}.`);
+            }
         } catch (error) {
             console.error('Error persisting restored tag assignments:', error);
-            warnings.push('Could not save restored tag assignments to the server; they may be lost on reload.');
+            warnings.push('Could not save the restored tag assignments to the server. Some or all of them were not assigned.');
         }
     }
 
@@ -3167,6 +3152,7 @@ async function onTagRestoreFileSelect(e) {
     }
 
     tagsStore.reindex();
+    await rereadResidentEntityTagIds();
     await invalidateAssignedTagIdsCache();
     invalidateTagsFuseIndex();
 

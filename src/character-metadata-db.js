@@ -6593,14 +6593,21 @@ const TAG_MAP_IMPORT_BATCH_PAUSE_MS = 10;
  * @param {string} [options.label] Names the import in its warnings.
  * @param {boolean} [options.requireDefinitions] Leaves out, and returns in `undefinedTagIds`, the tag ids (after
  *   merge-target resolution) that have no `tags` row when their batch runs.
- * @returns {Promise<{ droppedKeys: string[], undefinedTagIds: { key: string, tagIds: string[] }[], failedKeys: number, batches: number, rowsChanged: number }>}
- *   rowsChanged counts the keys whose assignments or shallow_json changed.
+ * @param {boolean} [options.writeBuffered] Counts a character still in the batch-import buffer as known, writing its
+ *   row to the table first, as assignEntityTag() does.
+ * @returns {Promise<{ droppedKeys: string[], undefinedTagIds: { key: string, tagIds: string[] }[], notAssigned: { key: string, tagIds: string[] }[], failed: { key: string, message: string }[], failedKeys: number, batches: number, rowsChanged: number }>}
+ *   rowsChanged counts the keys whose assignments or shallow_json changed. notAssigned lists, per known key, the tag
+ *   ids deleted with no merge target.
  */
-async function importTagMap(entry, tagMap, { label = 'tags.json migration', requireDefinitions = false } = {}) {
+async function importTagMap(entry, tagMap, { label = 'tags.json migration', requireDefinitions = false, writeBuffered = false } = {}) {
     /** @type {string[]} */
     const droppedKeys = [];
     /** @type {{ key: string, tagIds: string[] }[]} */
     const undefinedTagIds = [];
+    /** @type {{ key: string, tagIds: string[] }[]} */
+    const notAssigned = [];
+    /** @type {{ key: string, message: string }[]} */
+    const failed = [];
     let failedKeys = 0;
     let batches = 0;
     let rowsChanged = 0;
@@ -6659,6 +6666,8 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
         let batchNotAssigned = new Map();
         /** @type {{ key: string, tagIds: string[] }[]} */
         let batchUndefined = [];
+        /** @type {{ id: string, row: PendingRow }[]} */
+        let batchFlushed = [];
         entry.db.transaction(() => {
             // Reset here: a transaction that hits busy is rolled back and rerun.
             batchDropped = [];
@@ -6666,6 +6675,14 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
             batchChanged = 0;
             batchNotAssigned = new Map();
             batchUndefined = [];
+            batchFlushed = [];
+            if (writeBuffered) {
+                for (const [key, rawTagIds] of batch) {
+                    if (!Array.isArray(rawTagIds) || tagEntityTypeOf(key) !== 'character') continue;
+                    const row = writeBufferedRowSync(entry, key);
+                    if (row) batchFlushed.push({ id: key, row });
+                }
+            }
             const deletions = readTagDeletionsSync(entry.db);
             /** @type {Set<string> | null} */
             const definedTagIds = requireDefinitions ? new Set() : null;
@@ -6738,7 +6755,12 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
         rowsChanged += batchChanged;
         droppedKeys.push(...batchDropped);
         undefinedTagIds.push(...batchUndefined);
-        for (const [key, tagIds] of batchNotAssigned) warnDeletedTagsNotAssigned(key, tagIds);
+        for (const { id, row } of batchFlushed) dropFromBuffer(entry, id, row);
+        for (const [key, tagIds] of batchNotAssigned) {
+            warnDeletedTagsNotAssigned(key, tagIds);
+            notAssigned.push({ key, tagIds });
+        }
+        failed.push(...batchFailed);
         failedKeys += batchFailed.length;
         if (batchFailed.length > 0) {
             console.warn(color.yellow(`[character-metadata] ${label}: ${batchFailed.length} tag_map key(s) failed and were left as they are:\n${batchFailed.map(f => `  ${f.key}: ${f.message}`).join('\n')}`));
@@ -6748,7 +6770,24 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
         }
     }
 
-    return { droppedKeys, undefinedTagIds, failedKeys, batches, rowsChanged };
+    return { droppedKeys, undefinedTagIds, notAssigned, failed, failedKeys, batches, rowsChanged };
+}
+
+/**
+ * Adds a tag backup's assignments to what each character or group already has. Never removes an assignment, and
+ * writes nothing for a key that already has every tag listed for it. A tag id with no definition is assigned as it
+ * is.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {Record<string, unknown>} tagMap Entity id -> tag ids to add.
+ * @returns {Promise<{ missingKeys: string[], deletedTagIds: { key: string, tagIds: string[] }[], failedKeys: { key: string, message: string }[] } | null>}
+ *   missingKeys are neither a character nor a group; deletedTagIds were deleted with no merge target; failedKeys
+ *   couldn't be read. None of the three was written.
+ */
+export async function restoreTagAssignments(directories, tagMap) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const imported = await importTagMap(entry, tagMap, { label: 'tag backup restore', writeBuffered: true });
+    return { missingKeys: imported.droppedKeys, deletedTagIds: imported.notAssigned, failedKeys: imported.failed };
 }
 
 // A card's own `data.tags` array is user-authored free text, not a curated tag set - ROOT/TAVERN are structural
