@@ -123,6 +123,7 @@ test.describe('A refused tag save', () => {
         const name = page.locator(`#tag_view_list .tag_view_item[id="${fixture.deleted}"] .tag_view_name`);
         await name.click();
         await name.pressSequentially('x');
+        await page.keyboard.press('Enter');
         await reread;
 
         await expect.poll(() => pageTag(page, fixture.deleted), { timeout: 30000 }).toBeNull();

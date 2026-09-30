@@ -359,3 +359,9 @@
     width: var(--avatar-base-width);
     justify-content: center;
 }
+
+.tag_view_name.tag_view_name_unsaved {
+    outline: 1px dashed var(--warning);
+    outline-offset: 1px;
+    font-style: italic;
+}
