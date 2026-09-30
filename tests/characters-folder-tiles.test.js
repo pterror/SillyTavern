@@ -207,7 +207,7 @@ describe('POST /api/characters/folder-tiles', () => {
         await tag('Other.png', ['open', 'shut2']);
         expect(await tiles({ tiles: ['open'], filter: {} })).toMatchObject([{ count: 3, hidden: 2 }]);
 
-        expect(await metadataDb.deleteTagDefinition(directories, 'shut2')).toBe('ok');
+        expect(await metadataDb.deleteTagDefinition(directories, 'shut2')).toMatchObject({ refused: [] });
         expect(await tiles({ tiles: ['open', 'shut2'], filter: {} })).toMatchObject([{ count: 4, hidden: 1 }, { id: 'shut2', missing: true }]);
     });
 

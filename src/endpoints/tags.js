@@ -192,8 +192,11 @@ router.post('/prune', async (request, response) => {
 });
 
 /**
- * Deletes one tag definition by id. `mergeInto`, when given, is the tag every entity carrying the deleted one gets
- * instead, as upstream's delete-and-merge does.
+ * `{ id, mergeInto? }` → `{ result, refused: [{ id, reason: 'deleted' | 'missing' | 'same' | 'unreadable' }],
+ * mergedInto, target }`. Deletes one tag definition by id. `mergeInto`, when given, is the tag every entity carrying
+ * the deleted one gets instead, as upstream's delete-and-merge does. refused: nothing was deleted; each entry names
+ * the tag its reason is about, `id` or `mergeInto`. mergedInto: the tag the entities got, which is not `mergeInto`
+ * when that one had itself been merged into another; null with no merge. target: mergedInto's definition.
  */
 router.post('/delete', async (request, response) => {
     try {
@@ -210,11 +213,13 @@ router.post('/delete', async (request, response) => {
         if (result === null) {
             return response.status(503).send({ error: 'Character metadata store is unavailable' });
         }
-        // Not awaited: the pass moves the deleted tag's rows onto its merge target in a worker, after this responds.
-        requestMetadataMigrationPass(request.user.directories, 'finishDeletedTags')
-            .catch(err => console.error('Could not run the deleted tag finishing pass', err));
+        if (!result.refused.length) {
+            // Not awaited: the pass moves the deleted tag's rows onto its merge target in a worker, after this responds.
+            requestMetadataMigrationPass(request.user.directories, 'finishDeletedTags')
+                .catch(err => console.error('Could not run the deleted tag finishing pass', err));
+        }
 
-        response.send({ result: 'ok' });
+        response.send({ result: 'ok', refused: result.refused, mergedInto: result.mergedInto, target: result.target });
     } catch (err) {
         console.error('Could not delete tag definition', err);
         response.status(500).send({ error: 'Could not delete tag definition' });
