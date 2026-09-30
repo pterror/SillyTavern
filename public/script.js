@@ -2024,6 +2024,59 @@ export const reloadCurrentChat = reloadChatMutex.update.bind(reloadChatMutex);
 
 export const userInputGenerateMutex = new SimpleMutex(sendTextareaMessage);
 
+// A send asked for after a reply has shown the Send button again but while the previous send is still
+// finishing (the lock is held until Generate() returns) would otherwise be dropped by the lock. It is kept
+// instead, one at a time, and runs once the page is idle; the input is read then, so the latest text goes.
+const QUEUED_SEND_POLL_MS = 50;
+/** @type {{ chatId: string|undefined, timer: ReturnType<typeof setInterval> } | null} */
+let queuedSend = null;
+
+/**
+ * Sends what is in the input, as the Send button and Enter do. In the gap after a reply, while the previous
+ * send still holds the lock, the send is queued instead of dropped: the button shows "send queued", a click on
+ * it cancels, Enter leaves it queued, and a chat change cancels it with a toast.
+ * @param {'button'|'enter'} source
+ */
+export async function requestTextareaSend(source) {
+    if (queuedSend) {
+        if (source === 'button') cancelQueuedSend();
+        return;
+    }
+    const inGap = userInputGenerateMutex.isBusy && !isGenerating() && $('#send_but').is(':visible');
+    if (!inGap) {
+        await userInputGenerateMutex.update();
+        return;
+    }
+    // Keeps the text in this chat's draft, in case a chat change cancels the send.
+    flushDraftSave();
+    queuedSend = {
+        chatId: getCurrentChatId(),
+        timer: setInterval(() => {
+            const idle = !userInputGenerateMutex.isBusy && !isGenerating() && swipeState === SWIPE_STATE.NONE && !isExecutingCommandsFromChatInput;
+            if (!idle) return;
+            clearQueuedSend();
+            userInputGenerateMutex.update();
+        }, QUEUED_SEND_POLL_MS),
+    };
+    $('#send_but').addClass('send_queued').attr('title', t`Send queued - click to cancel`);
+}
+
+function clearQueuedSend() {
+    if (!queuedSend) return;
+    clearInterval(queuedSend.timer);
+    queuedSend = null;
+    $('#send_but').removeClass('send_queued').attr('title', t`Send a message`);
+}
+
+/**
+ * @param {string} [reason] Shown as a toast when set.
+ */
+function cancelQueuedSend(reason) {
+    if (!queuedSend) return;
+    clearQueuedSend();
+    if (reason) toastr.info(reason);
+}
+
 /**
  * Reloads the current chat unsafely, without mutex protection.
  * Use `reloadCurrentChat` instead to ensure thread safety.
@@ -12724,6 +12777,9 @@ jQuery(async function () {
 
     // Restores the draft for whatever chat just became current; no-op when none exists for this exact context.
     eventSource.on(event_types.CHAT_CHANGED, () => {
+        if (queuedSend && queuedSend.chatId !== getCurrentChatId()) {
+            cancelQueuedSend(t`The queued send was cancelled because the chat changed. Your text is kept as that chat's draft.`);
+        }
         const context = getCurrentDraftContext();
         if (!context) {
             return;
@@ -12785,7 +12841,7 @@ jQuery(async function () {
     });
 
     $('#send_but').on('click', async function () {
-        await userInputGenerateMutex.update();
+        await requestTextareaSend('button');
     });
 
     //menu buttons setup

@@ -9,7 +9,7 @@ import {
     selectCharacterByAvatar,
     menu_type,
     substituteParams,
-    userInputGenerateMutex,
+    requestTextareaSend,
     doNavbarIconClick,
     frontDrawer,
     keepOneRightPanelOpen,
@@ -1078,7 +1078,7 @@ export function initRossMods() {
             const sendOnEnter = shouldSendOnEnter();
             if (!event.isComposing && !event.shiftKey && !event.ctrlKey && !event.altKey && event.key == 'Enter' && sendOnEnter) {
                 event.preventDefault();
-                userInputGenerateMutex.update();
+                requestTextareaSend('enter');
                 return;
             }
         }
@@ -1151,7 +1151,7 @@ export function initRossMods() {
                     if (shouldSendOnEnter()) {
                         console.debug('Sending with Ctrl+Enter');
                         event.preventDefault();
-                        userInputGenerateMutex.update();
+                        requestTextareaSend('enter');
                     } else {
                         console.debug('Text area is not empty, but send on enter is disabled');
                     }
