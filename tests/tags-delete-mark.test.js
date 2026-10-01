@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, afterEach, jest } from '@j
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { storedTagDefinitions, tagCounts } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -97,16 +98,8 @@ async function deleteTag(id, mergeInto) {
     return response.json();
 }
 
-/** Every stored tag definition not marked deleted, in creation order. */
-async function storedTagDefinitions() {
-    /** @type {any[]} */
-    const tags = [];
-    for await (const batch of /** @type {AsyncGenerator<object[]>} */ (await metadataDb.streamTagDefinitionBatches(directories))) tags.push(...batch);
-    return tags;
-}
-
 async function listedTagIds() {
-    return (await storedTagDefinitions()).map(t => t.id).sort();
+    return (await storedTagDefinitions(metadataDb, directories)).map(t => t.id).sort();
 }
 
 async function tagsFor(ids) {
@@ -385,11 +378,11 @@ describe('tag filters read a marked tag as its merge target', () => {
 });
 
 describe('usage counts', () => {
-    test('getAllTagUsage adds x into y, leaves x out, and lists y as approximate', async () => {
+    test('a count adds x into y, leaves x out, and lists y as approximate', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         await deleteTag('d');
-        const { counts, approximate } = await metadataDb.getAllTagUsage(directories);
+        const { counts, approximate } = await tagCounts(metadataDb, directories, ['x', 'y', 'z', 'd']);
         expect(counts.x).toBeUndefined();
         expect(counts.d).toBeUndefined();
         expect(counts.y).toBe(5);
@@ -399,7 +392,7 @@ describe('usage counts', () => {
 
     test('with nothing merging, the approximate list is empty', async () => {
         await seedLibrary();
-        expect((await metadataDb.getAllTagUsage(directories)).approximate).toEqual([]);
+        expect((await tagCounts(metadataDb, directories, ['x', 'y', 'z', 'd'])).approximate).toEqual([]);
     });
 
     test('unused-tag count and prune leave marked tags alone and keep a target used only through x', async () => {

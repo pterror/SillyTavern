@@ -279,7 +279,7 @@ describe('POST /api/tags/query', () => {
         expect((await query({ ...ask, ifHash: 7 })).status).toBe(400);
     });
 
-    describe.each([['indexed path', true], ['today\'s path', false]])('restCount, %s', (_, ready) => {
+    describe.each([['indexed path', true]])('restCount, %s', (_, ready) => {
         test('a full page with more after it answers how many match after it; others answer no rest', async () => {
             await seed(mixedTags());
             if (ready) await makeReady();
@@ -302,7 +302,7 @@ describe('POST /api/tags/query', () => {
         });
     });
 
-    describe.each([['indexed path', true], ['today\'s path', false]])('%s', (_, ready) => {
+    describe.each([['indexed path', true]])('%s', (_, ready) => {
         test('every sort and filter pages through exactly the expected order, following cursors', async () => {
             await seed(mixedTags());
             if (ready) await makeReady();
@@ -331,7 +331,7 @@ describe('POST /api/tags/query', () => {
         });
     });
 
-    describe.each([['indexed path', true], ['today\'s path', false]])('counts, %s', (_, ready) => {
+    describe.each([['indexed path', true]])('counts, %s', (_, ready) => {
         test('counts are given only when asked, for the rows on the page, from tag_usage', async () => {
             await seed(mixedTags());
             if (ready) await makeReady();
@@ -436,22 +436,17 @@ describe('POST /api/tags/query', () => {
         expect((await query({ filter: { ids: [...ids, ...ids] } })).status).toBe(200);
     });
 
-    for (const sort of SORTS) {
-        test(`a ${sort} cursor from today's path carries on on the indexed path once the fill is done`, async () => {
-            await seed(mixedTags());
-            expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(false);
-            const firstPage = await query({ sort: { field: sort }, pageSize: 23 });
-            await makeReady();
-            const ids = firstPage.body.rows.map(t => t.id);
-            let cursor = firstPage.body.cursor;
-            while (cursor !== null) {
-                const page = await query({ sort: { field: sort }, pageSize: 23, cursor });
-                ids.push(...page.body.rows.map(t => t.id));
-                cursor = page.body.cursor;
-            }
-            expect(ids).toEqual(expected(sort, {}));
-        });
-    }
+    test('before the one-time fill, it answers 503 tag-query-not-ready', async () => {
+        await seed(mixedTags());
+        expect(await metadataDb.areTagQueryColumnsReady(directories)).toBe(false);
+        for (const body of [{}, { filter: { ids: ['x0'] } }, { counts: true }, { restCount: true }]) {
+            const response = await query(body);
+            expect({ body, status: response.status, reason: response.body.reason }).toEqual({ body, status: 503, reason: 'tag-query-not-ready' });
+        }
+        await makeReady();
+        expect((await query({})).status).toBe(200);
+    });
+
 
     test('every indexed read goes through its index in order, with no sort step and no scan of the table', async () => {
         await seed(mixedTags());

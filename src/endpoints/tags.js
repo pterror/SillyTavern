@@ -329,6 +329,9 @@ const QUERY_REST_COUNT_MAX = 10000;
  * With `restCount: true`, a full page that has a next page also answers `rest: { count, more }`: how many tags
  * match after it, counted up to QUERY_REST_COUNT_MAX under the same work cap. `more` means there may be more than
  * `count`. A page cut short by the work cap (`more`) or with no next page has no `rest`.
+ *
+ * 503 with reason 'tag-query-not-ready' until the one-time pass after an update has filled the tag columns the
+ * query reads.
  */
 router.post('/query', async (request, response) => {
     try {
@@ -398,6 +401,9 @@ router.post('/query', async (request, response) => {
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
         }
+        if (result === 'not-ready') {
+            return response.status(503).send({ error: true, reason: 'tag-query-not-ready' });
+        }
         if (result === 'invalid-cursor') {
             return response.status(400).send({ error: true, reason: 'invalid-cursor' });
         }
@@ -405,7 +411,7 @@ router.post('/query', async (request, response) => {
             const restAfter = decodeTagQueryCursor(result.cursor, sortField);
             const rest = restAfter === null ? null : await queryTags(request.user.directories,
                 { ...params, counts: false, pageSize: QUERY_REST_COUNT_MAX, after: restAfter });
-            if (rest && rest !== 'invalid-cursor') {
+            if (rest && rest !== 'invalid-cursor' && rest !== 'not-ready') {
                 result = { ...result, rest: { count: rest.rows.length, more: rest.cursor !== null } };
             }
         }

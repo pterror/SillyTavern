@@ -4,6 +4,7 @@ import { Worker } from 'node:worker_threads';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { storedTagDefinitions } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -373,7 +374,7 @@ describe('metadata-migration-worker.js', () => {
         await coordinatorModule.createMetadataMigrationCoordinator().start(directories);
         const { tagIds } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Carol.png');
 
-        const betas = (await metadataDb.getTagDefinitions(directories) ?? []).filter(tag => /** @type {any} */ (tag).name === 'Beta');
+        const betas = (await storedTagDefinitions(metadataDb, directories)).filter(tag => /** @type {any} */ (tag).name === 'Beta');
         expect(betas).toHaveLength(1);
         expect(tagIds).toEqual([/** @type {any} */ (betas[0]).id]);
     });

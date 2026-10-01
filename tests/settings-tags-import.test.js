@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { storedTagDefinitions } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -80,7 +81,7 @@ function metaValue(key) {
 
 /** @returns {Promise<Record<string, any>>} Stored definitions by id. */
 async function definitionsById() {
-    return Object.fromEntries((await metadataDb.getTagDefinitions(directories)).map(t => [t.id, t]));
+    return Object.fromEntries((await storedTagDefinitions(metadataDb, directories)).map(t => [t.id, t]));
 }
 
 /** @param {jest.SpiedFunction<any>[]} spies */

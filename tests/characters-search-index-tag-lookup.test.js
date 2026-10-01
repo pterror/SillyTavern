@@ -2,6 +2,7 @@ import { describe, test, expect, jest, beforeAll, beforeEach, afterEach } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { storedTagDefinitions } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let actualMetadataDb;
@@ -20,9 +21,6 @@ let searchCoordinator;
 
 /** @type {import('@jest/globals').jest.Mock} */
 let getTagDefinitionsByIdsSpy;
-// Loads every tag definition, which a tick must never do.
-/** @type {import('@jest/globals').jest.Mock} */
-let getTagDefinitionsSpy;
 
 let tempDir;
 let charactersDir;
@@ -80,7 +78,6 @@ async function rebuiltMaintainer(tantivy) {
     maintainer = searchIndex.createCharacterIndexMaintainer(directories, recordingTantivy);
     expect(await maintainer.rebuild()).not.toBeNull();
     getTagDefinitionsByIdsSpy.mockClear();
-    getTagDefinitionsSpy.mockClear();
     indexedDocs = [];
     return maintainer;
 }
@@ -101,11 +98,9 @@ beforeAll(async () => {
 
     actualMetadataDb = await import('../src/character-metadata-db.js');
     getTagDefinitionsByIdsSpy = jest.fn((...args) => actualMetadataDb.getTagDefinitionsByIds(...args));
-    getTagDefinitionsSpy = jest.fn((...args) => actualMetadataDb.getTagDefinitions(...args));
     jest.unstable_mockModule('../src/character-metadata-db.js', () => ({
         ...actualMetadataDb,
         getTagDefinitionsByIds: getTagDefinitionsByIdsSpy,
-        getTagDefinitions: getTagDefinitionsSpy,
     }));
 
     searchIndex = await import('../src/endpoints/characters-search-index.js');
@@ -132,7 +127,6 @@ beforeEach(() => {
     maintainer = null;
     indexedDocs = [];
     getTagDefinitionsByIdsSpy.mockClear();
-    getTagDefinitionsSpy.mockClear();
 });
 
 afterEach(async () => {
@@ -159,7 +153,6 @@ describe('characters-search-index.js: a catch-up tick looks up only its batches\
         expect(result.deletes).toBe(0);
 
         expect(requestedTagIds()).toEqual([]);
-        expect(getTagDefinitionsSpy).not.toHaveBeenCalled();
     }, 20000);
 
     test('a tick reads only the tags of the characters in its batch', async () => {
@@ -179,7 +172,6 @@ describe('characters-search-index.js: a catch-up tick looks up only its batches\
 
         // Not Ben's tag-charlie.
         expect(requestedTagIds().sort()).toEqual(['tag-alpha', 'tag-bravo']);
-        expect(getTagDefinitionsSpy).not.toHaveBeenCalled();
     }, 20000);
 
     test('a tick indexes the same tag names that resolving against every tag definition gives', async () => {
@@ -191,7 +183,7 @@ describe('characters-search-index.js: a catch-up tick looks up only its batches\
         await setUpLibrary();
         await rebuiltMaintainer(tantivy);
 
-        const everyTagById = new Map((await actualMetadataDb.getTagDefinitions(directories) ?? []).map(tag => [tag.id, tag]));
+        const everyTagById = new Map((await storedTagDefinitions(actualMetadataDb, directories)).map(tag => [tag.id, tag]));
         const assignments = await actualMetadataDb.getEntityTagIdsForMany(directories, ['Ann.png'], { type: 'character' });
         const namesBefore = (assignments?.['Ann.png'] ?? []).map(id => everyTagById.get(id)?.name).filter(Boolean).join(' ');
         expect(namesBefore).toBe('Alpha Bravo');

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, afterEach } from '@jest/gl
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { storedTagUsageRows } from './tag-store-reads.js';
 
 /** @type {import('express').Router} */
 let router;
@@ -210,7 +211,7 @@ describe('POST /api/tags/assign and /api/tags/unassign', () => {
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
 
-        expect((await metadataDb.getAllTagUsage(directories)).counts.tag1).toBe(1);
+        expect((await storedTagUsageRows(directories)).tag1).toBe(1);
     });
 
     test('assign 404s for an id that is neither a known character nor a known group', async () => {
@@ -241,7 +242,7 @@ describe('tag usage counts', () => {
     test('reflect assign/unassign as a live {tagId: count} aggregate', async () => {
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
-        const counts = async () => (await metadataDb.getAllTagUsage(directories)).counts;
+        const counts = () => storedTagUsageRows(directories);
 
         expect(await counts()).toEqual({});
 

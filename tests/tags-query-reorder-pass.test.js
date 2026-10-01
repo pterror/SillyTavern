@@ -205,7 +205,7 @@ function record(id, mode, at = null) {
 const clearRecord = () => live().prepare('DELETE FROM meta WHERE key = ?').run('tag_reorder_pass');
 
 describe('POST /api/tags/query manual, during a reorder pass', () => {
-    describe.each([['indexed path', true], ['today\'s path', false]])('%s', (_, ready) => {
+    describe.each([['indexed path', true]])('%s', (_, ready) => {
         beforeEach(async () => {
             await seed();
             if (ready) await makeReady();
