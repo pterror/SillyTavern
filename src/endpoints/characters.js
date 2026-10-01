@@ -36,6 +36,7 @@ import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
 import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
+import { TagMergeBacklogError } from '../tag-deletions.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2783,9 +2784,19 @@ async function handleQuery(request, response) {
         if ('hashes' in reply) return sendHashQueryResponse(response, reply.hashes);
         return response.status(reply.status).send(reply.body);
     } catch (err) {
+        if (err instanceof TagMergeBacklogError) return sendTagMergeBacklog(response);
         console.error('[characters/query] Query failed:', err);
         return response.status(500).send({ error: true });
     }
+}
+
+/**
+ * A read naming a tag that too many deleted tags are still merging into (TagMergeBacklogError): refused until
+ * finishDeletedTags() catches up, which it does in the background.
+ * @param {import('express').Response} response
+ */
+function sendTagMergeBacklog(response) {
+    return response.status(503).send({ error: true, reason: 'tag-merge-backlog', message: 'Deleted tags are still being merged. Try again in a moment.' });
 }
 
 router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
@@ -2922,6 +2933,7 @@ router.post('/folder-tiles', async function (request, response) {
         }
         return response.send({ tiles: results });
     } catch (err) {
+        if (err instanceof TagMergeBacklogError) return sendTagMergeBacklog(response);
         console.error('[characters/folder-tiles] Failed:', err);
         return response.status(500).send({ error: true });
     }
@@ -2999,6 +3011,7 @@ router.post('/find', async function (request, response) {
         if (result === 'names-not-ready') return response.status(503).send({ error: true, reason: 'names-not-ready' });
         return response.send(result);
     } catch (err) {
+        if (err instanceof TagMergeBacklogError) return sendTagMergeBacklog(response);
         console.error('[characters/find] Lookup failed:', err);
         return response.status(500).send({ error: true });
     }

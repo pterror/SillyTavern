@@ -126,6 +126,7 @@ describe('POST /api/tags/by-names', () => {
 
 describe('POST /api/tags/create', () => {
     test('answers the stored definition, with the place in the manual order the server gave it', async () => {
+        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await create('a', 'A');
         const { body } = await post('/api/tags/create', { tag: { id: 'b', name: 'B' } });
         expect(body).toEqual({ result: 'ok', refused: [], tag: { id: 'b', name: 'B', sort_order: 2 } });
