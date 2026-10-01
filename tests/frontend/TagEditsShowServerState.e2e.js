@@ -70,8 +70,8 @@ async function storedTag(page, id) {
  * @returns {Promise<Record<string, any> | null>} the tag as the page holds it
  */
 function pageTag(page, id) {
-    return page.evaluate(id => {
-        const tag = window['SillyTavern'].getContext().tags.find(tag => tag.id === id);
+    return page.evaluate(async id => {
+        const tag = (await import('/scripts/tags.js')).tagsStore.getAll().find(tag => tag.id === id);
         return tag ? { ...tag } : null;
     }, id);
 }
@@ -153,14 +153,14 @@ test.describe('Tag edits show what the server stored', () => {
         await openTagManagement(page);
         const rows = page.locator('#tag_view_list .tag_view_item');
         const rowsBefore = await rows.count();
-        const tagsBefore = await page.evaluate(() => window['SillyTavern'].getContext().tags.length);
+        const tagsBefore = await page.evaluate(async () => (await import('/scripts/tags.js')).tagsStore.getAll().length);
 
         await page.route('**/api/tags/create', route => route.fulfill(FAIL));
         await page.locator('#tag_view_list .tag_view_create').click();
         await expect(page.locator('.toast-error', { hasText: 'Tags could not be created' })).toBeVisible();
         await expect(page.locator('.toast-success', { hasText: 'Tag created' })).toHaveCount(0);
         expect(await rows.count()).toBe(rowsBefore);
-        expect(await page.evaluate(() => window['SillyTavern'].getContext().tags.length)).toBe(tagsBefore);
+        expect(await page.evaluate(async () => (await import('/scripts/tags.js')).tagsStore.getAll().length)).toBe(tagsBefore);
         await page.unroute('**/api/tags/create');
 
         const creates = recordRequests(page, '/api/tags/create');
@@ -332,14 +332,14 @@ test.describe('Tag edits show what the server stored', () => {
         await expect(page.locator('.toast-error', { hasText: 'Tags could not be created' })).toBeVisible();
         await expect(page.locator('#tagList .tag')).toHaveCount(0);
         expect(await pageCharacterTagIds(page, avatar)).toEqual([]);
-        expect(await page.evaluate(name => window['SillyTavern'].getContext().tags.some(tag => tag.name === name), tagName)).toBe(false);
+        expect(await page.evaluate(async name => (await import('/scripts/tags.js')).tagsStore.getAll().some(tag => tag.name === name), tagName)).toBe(false);
         expect(assigns).toEqual([]);
         await page.unroute('**/api/tags/create');
 
         const assigned = page.waitForResponse(response => response.url().endsWith('/api/tags/assign'));
         await pickInTagInput(page, tagName);
         await assigned;
-        const id = await page.evaluate(name => window['SillyTavern'].getContext().tags.find(tag => tag.name === name).id, tagName);
+        const id = await page.evaluate(async name => (await import('/scripts/tags.js')).tagsStore.getAll().find(tag => tag.name === name).id, tagName);
         await expect(page.locator(`#tagList .tag[id="${id}"]`)).toHaveCount(1);
         expect(await storedCharacterTagIds(page, avatar)).toEqual([id]);
         expect((await storedTag(page, id)).name).toBe(tagName);

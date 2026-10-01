@@ -46,7 +46,7 @@ import {
     updateBindModelTemplatesState,
 } from './instruct-mode.js';
 
-import { getTagsList, tag_import_setting, tag_sort_mode, tags, getHeldAssignedTagIds, searchUsedTagOptions, refreshTagsDrawerUnderlayClip, findUsedTagIdByName } from './tags.js';
+import { getTagsList, tag_import_setting, tag_sort_mode, tagsStore, getHeldAssignedTagIds, searchUsedTagOptions, refreshTagsDrawerUnderlayClip, findUsedTagIdByName } from './tags.js';
 import { tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 
@@ -2576,7 +2576,7 @@ export function fuzzySearchTags(searchValue, fuzzySearchCaches = null) {
         { name: 'name', weight: 1 },
     ];
 
-    const fuse = getPersistentFuseIndex(fuzzySearchCategories.tags, tags, keys);
+    const fuse = getPersistentFuseIndex(fuzzySearchCategories.tags, tagsStore.getAll(), keys);
     const results = fuse.search(searchValue);
 
     if (fuzzySearchCaches) {
@@ -3194,7 +3194,7 @@ function randomTagEnumProvider() {
     const toOption = tag => new SlashCommandEnumValue(tag.name, null, enumTypes.enum, enumIcons.tag);
     const provider = () => {
         const held = getHeldAssignedTagIds();
-        return tags.filter(tag => held.has(tag.id)).map(toOption);
+        return tagsStore.getAll().filter(tag => held.has(tag.id)).map(toOption);
     };
     provider.enumSearchProvider = searchUsedTagOptions(toOption);
     return provider;

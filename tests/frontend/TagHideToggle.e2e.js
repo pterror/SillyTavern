@@ -133,7 +133,7 @@ test.describe('Manage Tags hide toggle', () => {
         await expect(toggle).toHaveClass(/fa-eye(\s|$)/);
         await page.unroute('**/api/tags/edit');
         expect(await storedHidden(page, id)).toBe(false);
-        expect(await page.evaluate(id => window['SillyTavern'].getContext().tags.find(tag => tag.id === id).is_hidden_on_character_card, id)).toBe(false);
+        expect(await page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.getAll().find(tag => tag.id === id).is_hidden_on_character_card, id)).toBe(false);
     });
 
     test('a stored rename tells extensions', async ({ browser, page }) => {

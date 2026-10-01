@@ -71,15 +71,15 @@ async function createCharacter(page, name) {
  * @returns {Promise<Record<string, any> | null>} This tab's copy of the tag, or null when it has none.
  */
 async function heldTag(page, id) {
-    return page.evaluate((id) => {
-        const tag = window['SillyTavern'].getContext().tags.find(t => t.id === id);
+    return page.evaluate(async (id) => {
+        const tag = (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id);
         return tag ? JSON.parse(JSON.stringify(tag)) : null;
     }, id);
 }
 
 /** @param {import('@playwright/test').Page} page @param {string} id @returns {Promise<number>} */
 async function heldCount(page, id) {
-    return page.evaluate(id => window['SillyTavern'].getContext().tags.filter(t => t.id === id).length, id);
+    return page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.getAll().filter(t => t.id === id).length, id);
 }
 
 /** @param {import('@playwright/test').Page} page */
@@ -135,20 +135,20 @@ test.describe('tag changes from another tab', () => {
         try {
             const id = 'tag-other-tabs-lifecycle';
             await openTagManagement(page);
-            await page.evaluate(() => { window['__tagsArray'] = window['SillyTavern'].getContext().tags; });
+            await page.evaluate(async () => { window['__tagsArray'] = (await import('/scripts/tags.js')).tagsStore.getAll(); });
 
             await api(other, '/api/tags/create', tagBody(id, 1000));
             await expect.poll(() => heldTag(page, id), { timeout: 15000 }).toMatchObject({ id, name: id });
             await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"]`)).toBeVisible();
-            await page.evaluate((id) => { window['__tagObject'] = window['SillyTavern'].getContext().tags.find(t => t.id === id); }, id);
+            await page.evaluate(async (id) => { window['__tagObject'] = (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id); }, id);
 
             await api(other, '/api/tags/edit', { id, patch: { name: 'renamed elsewhere', color: '#112233', is_hidden_on_character_card: true } });
             await expect.poll(() => heldTag(page, id), { timeout: 15000 })
                 .toMatchObject({ name: 'renamed elsewhere', color: '#112233', is_hidden_on_character_card: true });
             await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"] .tag_view_name`)).toHaveText('renamed elsewhere');
-            // The same array and the same object: what an extension holds stays current.
-            expect(await page.evaluate((id) => {
-                const { tags } = window['SillyTavern'].getContext();
+            // The same array and the same object: what anything holding them holds stays current.
+            expect(await page.evaluate(async (id) => {
+                const tags = (await import('/scripts/tags.js')).tagsStore.getAll();
                 return tags === window['__tagsArray'] && tags.find(t => t.id === id) === window['__tagObject'];
             }, id)).toBe(true);
 
@@ -195,7 +195,7 @@ test.describe('tag changes from another tab', () => {
         const row = page.locator('#tag_view_list .tag_view_item').filter({ has: page.locator('.tag_view_name', { hasText: /^New Tag/ }) }).first();
         await expect(row).toBeVisible({ timeout: 10000 });
         const id = await row.getAttribute('id');
-        await page.evaluate((id) => { window['__tagObject'] = window['SillyTavern'].getContext().tags.find(t => t.id === id); }, id);
+        await page.evaluate(async (id) => { window['__tagObject'] = (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id); }, id);
 
         const name = page.locator(`#tag_view_list .tag_view_item[id="${id}"] .tag_view_name`);
         await name.click();
@@ -207,7 +207,7 @@ test.describe('tag changes from another tab', () => {
         // The feed was asked, and found this tab already current.
         expect(paths).toContain('/api/tags/changes');
         expect(await heldCount(page, id)).toBe(1);
-        expect(await page.evaluate(id => window['SillyTavern'].getContext().tags.find(t => t.id === id) === window['__tagObject'], id)).toBe(true);
+        expect(await page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id) === window['__tagObject'], id)).toBe(true);
         expect(await heldTag(page, id)).toMatchObject({ name: 'own rename' });
         await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"]`)).toHaveCount(1);
         // No whole re-read of the tags was needed for it.
@@ -228,7 +228,7 @@ test.describe('tag changes from another tab', () => {
             const answer = await api(other, '/api/tags/move', { id: ids[2], before: ids[0] });
             expect(answer.refused).toEqual([]);
 
-            const heldOrder = () => page.evaluate(ids => window['SillyTavern'].getContext().tags
+            const heldOrder = () => page.evaluate(async ids => (await import('/scripts/tags.js')).tagsStore.getAll()
                 .filter(tag => ids.includes(tag.id)).sort((a, b) => a.sort_order - b.sort_order).map(tag => tag.id), ids);
             await expect.poll(heldOrder, { timeout: 15000 }).toEqual([ids[2], ids[0], ids[1]]);
         } finally {
@@ -279,7 +279,7 @@ test.describe('tag changes from another tab', () => {
             await selectCharacter(page, holder);
             await expect.poll(() => heldTag(page, id), { timeout: 15000 }).toMatchObject({ id });
 
-            await page.evaluate((id) => { window['SillyTavern'].getContext().tags.find(t => t.id === id).color2 = '#abcdef'; }, id);
+            await page.evaluate(async (id) => { (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id).color2 = '#abcdef'; }, id);
             await api(other, '/api/tags/edit', { id, patch: { name: 'renamed elsewhere' } });
             await expect.poll(() => heldTag(page, id), { timeout: 15000 }).toMatchObject({ name: 'renamed elsewhere', color2: '#abcdef' });
 

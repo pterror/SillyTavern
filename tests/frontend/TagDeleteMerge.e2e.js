@@ -162,7 +162,7 @@ async function pageTagIds(page, key) {
 
 /** @param {import('@playwright/test').Page} page @returns {Promise<string[]>} */
 async function pageTagDefinitionIds(page) {
-    return page.evaluate(() => window['SillyTavern'].getContext().tags.map(t => t.id));
+    return page.evaluate(async () => (await import('/scripts/tags.js')).tagsStore.getAll().map(t => t.id));
 }
 
 test.describe('Deleting a tag from the tag manager', () => {

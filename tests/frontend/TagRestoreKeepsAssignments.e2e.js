@@ -125,7 +125,7 @@ async function serverTag(page, id) {
 
 /** @param {import('@playwright/test').Page} page @param {string} name @returns {Promise<{ id: string, color: string }[]>} */
 async function pageTagsNamed(page, name) {
-    return page.evaluate(name => window['SillyTavern'].getContext().tags
+    return page.evaluate(async name => (await import('/scripts/tags.js')).tagsStore.getAll()
         .filter(tag => tag.name === name)
         .map(tag => ({ id: tag.id, color: tag.color })), name);
 }

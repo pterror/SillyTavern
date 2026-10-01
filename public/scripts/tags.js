@@ -37,7 +37,7 @@ import { characterRepository, parseQueryTotal } from './character-repository.js'
 export {
     TAG_FOLDER_TYPES,
     TAG_FOLDER_DEFAULT_TYPE,
-    tags,
+    exportedTags as tags,
     filterByTagState,
     isBogusFolder,
     isBogusFolderOpen,
@@ -429,25 +429,38 @@ const TAG_FOLDER_DEFAULT_TYPE = 'NONE';
  */
 
 /**
- * Upstream's export of the same name, and a plain array like upstream's, so it can be cloned, posted to a worker or
- * put in IndexedDB. Here it is the tag definitions this tab holds. Always the same array: a reload refills it in
- * place.
- *
- * Extensions change it directly, and a plain array can't report that. What they changed is found by comparing it
- * with `tagsStore`'s index, which this file brings up to date in the same turn as each change it makes itself (see
- * takeInTagsExportWrites()). That comparison runs when a settings save is asked for, which is how upstream's
- * extensions get `tags` stored, and whenever `tag_map` is read or written. A tag put in is then created on the
- * server, and a changed field is stored with the settings save itself (see storeTagChangesMadeThroughExport()). A
- * tag taken out is not deleted: deleting a tag on the server also takes it off every character and group, which
- * upstream's removal from this array doesn't, so a tag put back later would have lost them. It is put back here
- * instead, with a warning.
+ * The tag definitions this tab holds: those something on screen or a held character or group needs (see
+ * sweepHeldTags()). Always the same array.
  * @type {Tag[]}
  */
 const tags = [];
 
 /**
- * A tag put into `tags` from outside this file is in the array but not in the index until it is taken in. Lookups
- * by id find it all the same.
+ * Upstream's export `tags`, and a plain array like upstream's, so it can be cloned, posted to a worker or put in
+ * IndexedDB. Here it holds the tags of the characters and groups extensions are shown (the current character, or the
+ * open group and its members, as `tag_map` and `getContext().characters` do), and the tags an extension put into it.
+ * Always the same array: it is refilled in place, with the same objects `tags` holds.
+ *
+ * Extensions change it directly, and a plain array can't report that. What they changed is found by comparing it
+ * with exportedIndex, what this file last put in it (see takeInTagsExportWrites()). That comparison runs when a
+ * settings save is asked for, which is how upstream's extensions get `tags` stored, whenever `tag_map` is read or
+ * written, and before every refill. A tag put in is then created on the server, and a changed field is stored with
+ * the settings save itself (see storeTagChangesMadeThroughExport()). A tag taken out is not deleted: deleting a tag
+ * on the server also takes it off every character and group, which upstream's removal from this array doesn't, so a
+ * tag put back later would have lost them. It is put back instead, with a warning.
+ * @type {Tag[]}
+ */
+const exportedTags = [];
+
+/**
+ * What this file last put in `exportedTags`, by id. A difference from it is an extension's change.
+ * @type {Map<string, Tag>}
+ */
+const exportedIndex = new Map();
+
+/**
+ * A tag an extension put into the exported `tags` is not in the index until it is taken in. Lookups by id find it all
+ * the same.
  * @extends {EntityStore<Tag>}
  */
 class TagStore extends EntityStore {
@@ -459,7 +472,9 @@ class TagStore extends EntityStore {
     /** @param {string} id @returns {Tag|undefined} */
     get(id) {
         const indexed = super.get(id);
-        if (indexed || this.array.length === this.byId.size) return indexed;
+        if (indexed) return indexed;
+        const exported = exportedTags.find(tag => isTagObject(tag) && tag.id === id);
+        if (exported || this.array.length === this.byId.size) return exported;
         return this.array.find(tag => isTagObject(tag) && tag.id === id);
     }
 
@@ -955,6 +970,8 @@ let tagMapKeysToCheck = false;
 function noteOwnTagIdsChange(ids, change) {
     const handed = tagMapHandedOut.get(ids);
     if (handed) handed.stored = change(handed.stored);
+    // Which tags the exported `tags` holds may change with it.
+    queueTagExportTakeIn(false);
 }
 
 /** @param {boolean} checkKeys - whether keys may have been added to `tag_map` or deleted from it */
@@ -1000,6 +1017,46 @@ function takeInTagExportWrites() {
     tagExportTakeInQueued = false;
     takeInTagsExportWrites();
     takeInTagMapWrites();
+    refillExportedTags();
+}
+
+/**
+ * Takes tags the server no longer has out of the exported `tags`, after taking in what an extension changed in it, so
+ * their going is not taken for an extension removing them.
+ * @param {Set<string>} ids
+ */
+function dropFromExportedTags(ids) {
+    takeInTagsExportWrites();
+    let write = 0;
+    for (const tag of exportedTags) {
+        if (!isTagObject(tag) || !ids.has(tag.id)) exportedTags[write++] = tag;
+    }
+    exportedTags.length = write;
+    for (const id of ids) {
+        exportedIndex.delete(id);
+        tagIdsPutInByExtension.delete(id);
+    }
+}
+
+/**
+ * Refills the exported `tags` in place with what it holds now (see exportedTags), after taking in what an extension
+ * changed in it.
+ */
+function refillExportedTags() {
+    takeInTagsExportWrites();
+    /** @type {Set<string>} */
+    const wanted = new Set(tagIdsPutInByExtension);
+    for (const key of exposedTagKeys()) {
+        for (const id of resolveTagIdsArray(key) ?? []) wanted.add(id);
+    }
+    const next = tags.filter(tag => isTagObject(tag) && wanted.has(tag.id));
+    if (next.length === exportedTags.length && next.every((tag, i) => exportedTags[i] === tag)) return;
+    exportedTags.length = 0;
+    exportedIndex.clear();
+    for (const tag of next) {
+        exportedTags.push(tag);
+        exportedIndex.set(tag.id, tag);
+    }
 }
 
 function takeInTagMapWrites() {
@@ -1209,6 +1266,7 @@ function addStoredTag(tag) {
     noteStoredTag(tag);
     showSavedTagFilterState(tag);
     scheduleTagSweep();
+    queueTagExportTakeIn(false);
 }
 
 /**
@@ -1281,6 +1339,7 @@ function sweepHeldTags() {
     invalidateTagsFuseIndex();
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
+    refillExportedTags();
 }
 
 /** @param {string} id @param {Record<string, any>} fields - the fields the server now stores */
@@ -1321,34 +1380,45 @@ const tagCreatesInFlight = new Set();
 const tagIdsBeingCreated = new Set();
 
 /**
- * Works out what was put into `tags` and taken out of it from outside this file, by comparing it with `tagsStore`'s
- * index: this file re-indexes in the same turn as each change it makes to `tags` itself, so a difference is someone
- * else's. Sends a create for each tag added, and puts back each tag taken out. A clear followed by a refill takes
- * out only the tags the refill left out.
+ * Works out what an extension put into the exported `tags` and took out of it, by comparing it with exportedIndex,
+ * what this file last put in. A tag put in joins the held tags and, unless the server has it, is created. A tag taken
+ * out is put back. A clear followed by a refill takes out only the tags the refill left out, and a tag put back as a
+ * new object with the same id takes that object's place.
  */
 function takeInTagsExportWrites() {
-    const indexed = tagsStore.byId;
-    let differs = tags.length !== indexed.size;
-    for (let i = 0; !differs && i < tags.length; i++) {
-        differs = indexed.get(tags[i]?.id) !== tags[i];
+    let differs = exportedTags.length !== exportedIndex.size;
+    for (let i = 0; !differs && i < exportedTags.length; i++) {
+        differs = exportedIndex.get(exportedTags[i]?.id) !== exportedTags[i];
     }
     if (!differs) return;
 
     const afterIds = new Set();
-    for (const tag of tags) {
+    let heldChanged = false;
+    for (const tag of exportedTags) {
         if (!isTagObject(tag)) continue;
         afterIds.add(tag.id);
-        if (!indexed.has(tag.id)) tagIdsPutInByExtension.add(tag.id);
-        if (!indexed.has(tag.id) && !storedTagFields.has(tag.id)) tagsAddedThroughExport.set(tag.id, tag);
+        if (exportedIndex.get(tag.id) === tag) continue;
+        tagIdsPutInByExtension.add(tag.id);
+        const held = tagsStore.byId.get(tag.id);
+        if (held !== tag) {
+            if (held) {
+                const at = tags.indexOf(held);
+                if (at !== -1) tags[at] = tag; else tags.push(tag);
+            } else {
+                tags.push(tag);
+            }
+            heldChanged = true;
+        }
+        if (!storedTagFields.has(tag.id)) tagsAddedThroughExport.set(tag.id, tag);
     }
     /** @type {Tag[]} */
     const putBack = [];
-    for (const [id, tag] of indexed) {
-        if (!isTagObject(tag) || afterIds.has(id)) continue;
+    for (const [id, tag] of exportedIndex) {
+        if (afterIds.has(id)) continue;
         tagsAddedThroughExport.delete(id);
         if (storedTagFields.has(id) || tagIdsBeingCreated.has(id)) putBack.push(tag);
     }
-    for (const tag of putBack) tags.push(tag);
+    for (const tag of putBack) exportedTags.push(tag);
     if (putBack.length) {
         toastr.warning(
             `${putBack.map(tag => `'${escapeHtml(String(tag.name ?? tag.id))}'`).join(', ')}<br />${t`Delete a tag in Manage Tags.`}`,
@@ -1357,10 +1427,16 @@ function takeInTagsExportWrites() {
         );
     }
 
-    tagsStore.reindex();
-    invalidateTagsFuseIndex();
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
+    exportedIndex.clear();
+    for (const tag of exportedTags) {
+        if (isTagObject(tag)) exportedIndex.set(tag.id, tag);
+    }
+    if (heldChanged) {
+        tagsStore.reindex();
+        invalidateTagsFuseIndex();
+        invalidateCharactersFuseIndex();
+        invalidateGroupsFuseIndex();
+    }
     sendTagsAddedThroughExport();
 }
 
@@ -2025,6 +2101,7 @@ async function dropTagsLocally(drops) {
             if (!dropped.has(tag.id)) tags[write++] = tag;
         }
         tags.length = write;
+        dropFromExportedTags(dropped);
         tagsStore.reindex();
         invalidateTagsFuseIndex();
         invalidateCharactersFuseIndex();
@@ -2661,8 +2738,9 @@ function loadTagsSettings(settings) {
     if (!givenTags && !givenMap) return loadTagsFromServer();
 
     if (givenTags) {
-        tags.length = 0;
-        for (const tag of givenTags) tags.push(tag);
+        // As an extension's clear and refill of the exported `tags`.
+        exportedTags.length = 0;
+        for (const tag of givenTags) exportedTags.push(tag);
     }
     if (givenMap) {
         for (const [key, ids] of Object.entries(givenMap)) {
@@ -5332,6 +5410,7 @@ async function onTagsPruneClick() {
             if (!prunedIds.has(tag.id)) tags[write++] = tag;
         }
         tags.length = write;
+        dropFromExportedTags(prunedIds);
         for (const id of prunedIds) {
             storedTagFields.delete(id);
             writeTagNameDraft(id, null);

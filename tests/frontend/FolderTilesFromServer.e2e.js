@@ -57,7 +57,7 @@ async function createUnheldFolder(page, id, name) {
     });
     const avatar = await createCharacter(page, `FolderTile-${id}`);
     await api(page, '/api/tags/assign', { id: avatar, tagId: id });
-    expect(await page.evaluate(id => window['SillyTavern'].getContext().tags.some(tag => tag.id === id), id)).toBe(false);
+    expect(await page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.getAll().some(tag => tag.id === id), id)).toBe(false);
 }
 
 /**

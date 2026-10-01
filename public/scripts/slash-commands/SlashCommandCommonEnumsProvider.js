@@ -5,7 +5,7 @@ import { extension_settings } from '../extensions.js';
 import { getGroupMembersResident } from '../group-chats.js';
 import { groups } from '../group-store.js';
 import { personaStore } from '../power-user.js';
-import { searchCharByName, getTagsList, tags, getHeldAssignedTagIds, searchUsedTagOptions, searchTagOptions } from '../tags.js';
+import { searchCharByName, getTagsList, tagsStore, getHeldAssignedTagIds, searchUsedTagOptions, searchTagOptions } from '../tags.js';
 import { onlyUniqueJson, sortIgnoreCaseAndAccents } from '../utils.js';
 import { world_names } from '../world-info.js';
 import { SlashCommandClosure } from './SlashCommandClosure.js';
@@ -266,7 +266,7 @@ export const commonEnumProviders = {
         const toOption = tag => new SlashCommandEnumValue(tag.name, null, enumTypes.command, enumIcons.tag);
         const provider = () => {
             const assignedTags = mode === 'assigned' ? getHeldAssignedTagIds() : new Set();
-            return tags.filter(tag => mode === 'all' || (mode === 'assigned' && assignedTags.has(tag.id))).map(toOption);
+            return tagsStore.getAll().filter(tag => mode === 'all' || (mode === 'assigned' && assignedTags.has(tag.id))).map(toOption);
         };
         // The list above covers only what the page holds; the autocomplete also asks the server with what was typed.
         provider.enumSearchProvider = mode === 'assigned' ? searchUsedTagOptions(toOption) : searchTagOptions(toOption);
@@ -287,7 +287,7 @@ export const commonEnumProviders = {
             if (charName instanceof SlashCommandClosure) throw new Error('Argument \'name\' does not support closures');
             const key = searchCharByName(substituteParams(charName), { suppressLogging: true });
             const assigned = key ? getTagsList(key) : [];
-            return tags.filter(it => mode === 'all' || mode === 'existing' && assigned.includes(it) || mode === 'not-existing' && !assigned.includes(it))
+            return tagsStore.getAll().filter(it => mode === 'all' || mode === 'existing' && assigned.includes(it) || mode === 'not-existing' && !assigned.includes(it))
                 .map(toOption);
         };
         // The list above covers only the tags the page holds; for any tag, the autocomplete also asks the server.

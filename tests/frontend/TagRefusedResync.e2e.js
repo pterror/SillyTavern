@@ -83,8 +83,8 @@ async function openTagManagement(page) {
 
 /** @param {import('@playwright/test').Page} page @param {string} id */
 function pageTag(page, id) {
-    return page.evaluate(id => {
-        const tag = window['SillyTavern'].getContext().tags.find(t => t.id === id);
+    return page.evaluate(async id => {
+        const tag = (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id);
         return tag ? { name: tag.name, filter_state: tag.filter_state } : null;
     }, id);
 }
