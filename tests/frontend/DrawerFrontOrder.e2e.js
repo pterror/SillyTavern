@@ -8,6 +8,47 @@ async function awaitAppReady(page) {
     }));
 }
 
+/**
+ * Clicks a control (through its own handler; it may be styled out of view) and waits until the server has saved
+ * the given power_user key.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} key
+ * @param {() => Promise<void>} change
+ */
+async function changeAndAwaitSave(page, key, change) {
+    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
+        && response.ok()
+        && (response.request().postData() ?? '').includes(key));
+    await change();
+    await saved;
+}
+
+/**
+ * Puts back the power_user defaults these tests change. The data root is shared by the worker's later tests, which
+ * expect the defaults: fullscreen character info left saved, for one, covers the chat whenever a character is opened.
+ * Pins live in this browser's storage, which each test starts fresh, so they need nothing.
+ * @param {import('@playwright/test').Page} page
+ */
+async function restoreDrawerDefaults(page) {
+    for (const { panel, cls, toggle, key, on } of [
+        { panel: '#char-info-panel', cls: 'charInfoFullscreen', toggle: '#charInfoFullscreenToggle', key: 'charInfoFullscreen', on: false },
+        { panel: '#right-nav-panel', cls: 'galleryFullscreen', toggle: '#galleryFullscreenToggle', key: 'charGalleryFullscreen', on: true },
+    ]) {
+        if (await page.locator(panel).evaluate((el, c) => el.classList.contains(c), cls) !== on) {
+            await changeAndAwaitSave(page, key, () => page.locator(toggle).evaluate(el => el.click()));
+        }
+    }
+    if (Number(await page.locator('#chat_width_max').inputValue()) !== 120) {
+        await changeAndAwaitSave(page, 'chat_width_max', () => setSettingInput(page, '#chat_width_max', 120));
+    }
+    if (Number(await page.locator('#chat_width_slider').inputValue()) !== 50) {
+        await changeAndAwaitSave(page, 'chat_width', () => dragChatWidthSlider(page, 50));
+    }
+    await setStackedDrawers(page, false);
+}
+
+test.afterEach(async ({ page }) => restoreDrawerDefaults(page));
+
 // Pins are toggled through the checkbox's own click handler; the checkbox itself is styled out of view.
 async function setPin(page, pinId, pinned) {
     const pin = page.locator(pinId);
