@@ -229,7 +229,7 @@ describe('runTagReorderPassIfNeeded', () => {
         expect(pass()).toBeUndefined();
     });
 
-    test('a tag already holding its number only gets the stamp; tags_hash is updated once the order changed', async () => {
+    test('a tag already holding its number only gets the stamp; one holding another number takes the pass\'s', async () => {
         await openStore();
         insertTag('a', { sort_order: 0 });
         record(1, 'alphabetical');
@@ -241,13 +241,10 @@ describe('runTagReorderPassIfNeeded', () => {
         insertTag('b', { sort_order: 1 });
         record(2, 'alphabetical');
         await metadataDb.runTagReorderPassIfNeeded(directories);
-        const hash = await metadataDb.getTagsHash(directories);
         live().prepare('UPDATE tags SET data = json_set(data, \'$.sort_order\', 7), sort_order = 7 WHERE id = ?').run('b');
-        live().prepare('UPDATE meta SET value = ? WHERE key = ?').run('stale', 'tags_hash');
         record(3, 'alphabetical');
         await metadataDb.runTagReorderPassIfNeeded(directories);
         expect(column('b')).toBe(1);
-        expect(await metadataDb.getTagsHash(directories)).toBe(hash);
     });
 
     test('a tag whose data isn\'t an object is stamped without a sort_order and still takes its number; a replaced orderless value is logged', async () => {

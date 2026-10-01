@@ -282,19 +282,18 @@ describe('POST /api/tags/save', () => {
     });
 });
 
-describe('POST /api/tags/manifest (freshness signature - tags_hash replaces tags.json\'s old mtime)', () => {
-    test('advances after a definitions save, but not on assign/unassign', async () => {
-        const before = (await (await postJson('/api/tags/manifest', {})).json()).hash;
+describe('POST /api/tags/manifest', () => {
+    test('changesSeq advances after a definitions write, but not on assign/unassign', async () => {
+        const before = (await (await postJson('/api/tags/manifest', {})).json()).changesSeq;
 
-        await new Promise(resolve => setTimeout(resolve, 2));
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
-        const afterSave = (await (await postJson('/api/tags/manifest', {})).json()).hash;
-        expect(afterSave).not.toBe(before);
+        await metadataDb.createTagDefinition(directories, { id: 'tag1', name: 'Funny' });
+        const afterSave = (await (await postJson('/api/tags/manifest', {})).json()).changesSeq;
+        expect(afterSave).toBeGreaterThan(before);
 
         await seedCharacter('Alice.png');
-        await new Promise(resolve => setTimeout(resolve, 2));
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
-        const afterAssign = (await (await postJson('/api/tags/manifest', {})).json()).hash;
-        expect(afterAssign).toBe(afterSave);
+        const afterAssign = await (await postJson('/api/tags/manifest', {})).json();
+        expect(afterAssign.changesSeq).toBe(afterSave);
+        expect(afterAssign).not.toHaveProperty('hash');
     });
 });

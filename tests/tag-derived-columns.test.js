@@ -568,7 +568,7 @@ describe('editTagDefinition', () => {
         await openStore();
         await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A', color: 'red' });
         const seq = await metadataDb.getCurrentTagNameChangeSeq(directories);
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         const watcher = watchWrites();
         try {
             for (const patch of [{}, { name: 'A' }, { id: 'a', color: 'red' }]) {
@@ -579,17 +579,17 @@ describe('editTagDefinition', () => {
             watcher.close();
         }
         expect(await metadataDb.getCurrentTagNameChangeSeq(directories)).toBe(seq);
-        expect(await metadataDb.getTagsHash(directories)).toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);
     });
 
-    test('a name change updates name_key and the tags hash and is logged in tag_name_changes; other fields aren\'t logged', async () => {
+    test('a name change updates name_key and is logged in tag_changes and tag_name_changes; other fields aren\'t logged in tag_name_changes', async () => {
         await openStore();
         await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' });
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         const before = await metadataDb.getCurrentTagNameChangeSeq(directories);
         await metadataDb.editTagDefinition(directories, 'a', { name: 'Élan' });
         expect(withRawDb(db => db.prepare('SELECT name_key FROM tags WHERE id = ?').get('a'))).toEqual({ name_key: 'elan' });
-        expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).not.toBe(changesSeq);
         const page = await metadataDb.getTagNameChangesSince(directories, before, { limit: 100 });
         expect(page?.tagIds).toEqual(['a']);
 

@@ -3500,49 +3500,6 @@ export async function getTagUsageCount(directories, tagId) {
     return row ? Number(row.count) : 0;
 }
 
-// Content hash of all tag definitions, the freshness signature replacing tags.json's mtime.
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function updateTagsHashSync(db) {
-    db.run(
-        'INSERT INTO meta (key, value) VALUES (\'tags_hash\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        { value: computeTagsHashSync(db) },
-    );
-}
-
-/**
- * updateTagsHashSync() that writes nothing when the stored hash is already current.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function updateTagsHashIfChangedSync(db) {
-    db.run(
-        'INSERT INTO meta (key, value) VALUES (\'tags_hash\', @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE value IS NOT excluded.value',
-        { value: computeTagsHashSync(db) },
-    );
-}
-
-/**
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @returns {string}
- */
-function computeTagsHashSync(db) {
-    const rows = (/** @type {TagRow[]} */ (db.all(`SELECT id, data FROM tags WHERE ${NOT_MARKED_DELETED_SQL} ORDER BY id`)));
-    const content = rows.map(r => r.id + '\0' + r.data).join('\0');
-    return crypto.createHash('sha256').update(content).digest('hex');
-}
-
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<string | null>}
- */
-export async function getTagsHash(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    const row = (/** @type {{ value: string } | undefined} */ (entry.db.get('SELECT value FROM meta WHERE key = \'tags_hash\'')));
-    return row ? row.value : null;
-}
-
 // General-purpose key/value accessor pair over the meta table.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
@@ -4174,8 +4131,6 @@ export async function assignEntityTagReporting(directories, id, tagId) {
         result.found = false;
         if (type === 'character' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
             entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
-            // No updateTagsHashSync() here: this only touches character_tags, never the tags table that hashes, so
-            // it would be a full O(library-wide tag count) scan for zero signal.
             const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
             if (charRow) {
                 const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id })), r => r.tag_id);
@@ -5719,7 +5674,6 @@ export async function saveTagDefinitions(directories, tagsArray) {
                 entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: tag.id });
             }
         }
-        updateTagsHashSync(entry.db);
         logTagChangesSync(entry, null);
     });
     warnStaleDeletedTagSave(skipped);
@@ -5808,7 +5762,6 @@ export async function createTagDefinition(directories, rawTag, { freeName = fals
         if (assignOrder) tag.sort_order = nextTagSortOrderSync(entry);
         entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
         if (!assignOrder && !tagSortOrdersSettledSync(entry.db)) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
-        updateTagsHashSync(entry.db);
         logTagChangesSync(entry, [id]);
     });
     if (!names.ready) return 'names-not-ready';
@@ -5873,7 +5826,6 @@ function editTagSync(entry, id, patch) {
     if ((old.name ?? '') !== (merged.name ?? '')) {
         entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
     }
-    updateTagsHashSync(entry.db);
     logTagChangesSync(entry, [id]);
     return { refused: null, written: true };
 }
@@ -5970,7 +5922,6 @@ export async function pruneUnusedTags(directories, limit) {
         const ids = JSON.stringify(deleted);
         entry.db.run('DELETE FROM tags WHERE id IN (SELECT value FROM json_each(@ids))', { ids });
         entry.db.run('DELETE FROM tag_usage WHERE tag_id IN (SELECT value FROM json_each(@ids))', { ids });
-        updateTagsHashSync(entry.db);
         logTagChangesSync(entry, deleted);
     });
     return deleted;
@@ -6041,7 +5992,6 @@ export async function deleteTagDefinition(directories, tagId, mergeInto = null) 
         for (const id of [tagId, ...movedIds]) {
             entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
         }
-        updateTagsHashSync(entry.db);
         logTagChangesSync(entry, [tagId]);
         result.mergedInto = target;
     });
@@ -6140,7 +6090,6 @@ async function finishDeletedTag(entry, tagId, totals) {
             db.run('DELETE FROM tags WHERE id = @tagId', { tagId });
             db.run('DELETE FROM tag_usage WHERE tag_id = @tagId', { tagId });
             db.run('DELETE FROM tag_deletions WHERE tag_id = @tagId', { tagId });
-            updateTagsHashIfChangedSync(db);
             state.outcome = 'finished';
         });
         if (state.outcome === 'rows') continue;
@@ -6630,7 +6579,6 @@ export async function migrateTagsJsonIfNeeded(directories) {
             insertedDefinitions += entry.db.run(`INSERT OR IGNORE INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag)).changes;
         }
         if (insertedDefinitions > 0) {
-            updateTagsHashSync(entry.db);
             logTagChangesSync(entry, null);
         }
     });
@@ -6695,7 +6643,6 @@ function seedDefaultTagsIfPendingSync(entry, settings) {
         for (const tag of tags) {
             entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams({ ...tag, sort_order: next++ }));
         }
-        updateTagsHashSync(entry.db);
         logTagChangesSync(entry, null);
         outcome.seeded = true;
     });
@@ -6795,7 +6742,6 @@ async function importSettingsTagDefinitions(entry, label, tags) {
                 batchInserted.push(id);
             }
             if (batchInserted.length > 0) {
-                updateTagsHashSync(entry.db);
                 logTagChangesSync(entry, null);
             }
         });
@@ -6990,8 +6936,7 @@ const TAG_MAP_IMPORT_BATCH_PAUSE_MS = 10;
 
 // Imports a `{[id]: tagId[]}` map into character_tags/group_tags in batches of keys, one transaction each,
 // pausing between them. Each key is looked for only in its own type's table (tagEntityTypeOf()); keys not found
-// there are returned in `droppedKeys`. Leaves tags_hash alone:
-// a tag_map import never changes `tags`. A key whose reads or parsing throw is left as it is and listed in a
+// there are returned in `droppedKeys`. A key whose reads or parsing throw is left as it is and listed in a
 // warning; a write that throws rolls back its whole batch and fails the import.
 /**
  * @param {MetadataDbEntry} entry
@@ -7305,7 +7250,6 @@ async function restoreTagDefinitions(entry, tags, overwrite) {
                 done.created.push(newId);
             }
             if (done.created.length > 0) {
-                updateTagsHashSync(entry.db);
                 logTagChangesSync(entry, done.created);
             }
         });
@@ -7696,7 +7640,6 @@ export async function backfillCardTagsIfNeeded(directories) {
                 }
             };
         },
-        finish: () => updateTagsHashIfChangedSync(entry.db),
     });
 
     console.log(color.cyan(`[character-metadata] Card-tags backfill: ${newDefinitions} new tag definitions, ${newAssignments} new assignments.`));
@@ -7753,7 +7696,6 @@ export async function fillTagNameKeysIfNeeded(directories) {
             const held = /** @type {{ character_id: string, name: string, only_existing: number }[]} */ ([...entry.db.iterate('SELECT character_id, name, only_existing FROM tag_names_held ORDER BY character_id, name LIMIT @limit', { limit: HELD_TAG_NAMES_BATCH_SIZE })]);
             /** @type {Set<string>} */
             const assignedTo = new Set();
-            let created = 0;
             for (const { character_id: characterId, name, only_existing: onlyExisting } of held) {
                 entry.db.run('DELETE FROM tag_names_held WHERE character_id = @characterId AND name = @name', { characterId, name });
                 drained++;
@@ -7762,13 +7704,12 @@ export async function fillTagNameKeysIfNeeded(directories) {
                     continue;
                 }
                 const resolved = resolveCardTagNamesSync(entry.db, [name], { ready: true, onlyExisting: !!onlyExisting });
-                created += writeResolvedCardTagsSync(entry, characterId, resolved, !!onlyExisting);
+                writeResolvedCardTagsSync(entry, characterId, resolved, !!onlyExisting);
                 if (resolved.tagIds.length > 0) assignedTo.add(characterId);
             }
             for (const characterId of assignedTo) {
                 syncShallowTagIdsFromTable(entry.db, characterId);
             }
-            if (created > 0) updateTagsHashSync(entry.db);
         });
         if (dropped.length > 0) {
             console.warn(color.yellow(`[character-metadata] Held card tag names whose character no longer exists, not assigned:\n${dropped.map(d => `  ${d.character_id}: ${d.name}`).join('\n')}`));
@@ -8266,7 +8207,6 @@ export async function fillTagSortOrdersIfNeeded(directories) {
             if (state.done) {
                 db.run(UPSERT_META_VALUE_SQL, { key: TAG_SORT_ORDERS_FILLED_FLAG, value: String(Date.now()) });
                 db.run('DELETE FROM meta WHERE key = @key', { key: TAG_SORT_ORDERS_FILL_AT_KEY });
-                updateTagsHashIfChangedSync(db);
             } else {
                 saveAt({ phase: 'ties', s: state.s });
             }
@@ -8542,8 +8482,8 @@ function readTagMoveSync(db, id, anchorId) {
 }
 
 /**
- * Moves tag `id` right before or after `anchorId` in the manual order, inside the caller's transaction, and updates
- * the tags hash when it wrote. A refusal writes nothing, except that a move refused after numbering the tail comes
+ * Moves tag `id` right before or after `anchorId` in the manual order, inside the caller's transaction. A refusal
+ * writes nothing, except that a move refused after numbering the tail comes
  * back with `rollback` set, and the caller must roll its transaction back.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} id
@@ -8605,7 +8545,6 @@ function moveTagSync(db, id, anchorId, side) {
         return result;
     }
     result.rows += outcome;
-    if (result.rows > 0) updateTagsHashSync(db);
     return result;
 }
 
@@ -8828,7 +8767,6 @@ async function drainTagPendingMoves(entry, directories, totals, passId = null) {
                         failures = [{ tagId, tagName: null, anchorId: null, anchorName: null, refusedId: tagId, reason: 'unreadable' }];
                     } else if (row && tag && !(Object.hasOwn(tag, 'sort_order') && JSON.stringify(tag.sort_order) === JSON.stringify(value))) {
                         writeTagSortOrderSync(db, row.rowid, tag, value);
-                        updateTagsHashSync(db);
                         rows = 1;
                     }
                 }
@@ -9016,7 +8954,6 @@ export async function runTagReorderPassIfNeeded(directories) {
                 }
                 if (page.length < TAG_REORDER_PASS_BATCH_SIZE) {
                     next = { phase: 'drain' };
-                    updateTagsHashIfChangedSync(db);
                 }
             }
 
@@ -9894,15 +9831,14 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
         flushed = undefined;
         resolved = resolveCardTagNamesSync(entry.db, names, { ready: tagNameKeysReady(entry), onlyExisting });
         flushed = writeBufferedRowOverExistingSync(entry, avatar);
-        // Only rehash when a new tag definition was actually minted; a pure re-assignment doesn't change tags_hash.
         if (pending && !flushed && resolved.held.length === 0) {
             // Tag definitions go straight to the tags table; the row's assignments wait in the buffer (below).
-            if (createCardTagsSync(entry, resolved).length > 0) updateTagsHashSync(entry.db);
+            createCardTagsSync(entry, resolved);
             return;
         }
         // Held names are resolved against the characters table, so the row can't stay in the buffer.
         if (pending && !flushed) flushed = writeBufferedRowSync(entry, avatar);
-        if (writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting) > 0) updateTagsHashSync(entry.db);
+        writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting);
         if (resolved.tagIds.length > 0) syncShallowTagIdsFromTable(entry.db, avatar);
     });
     dropFromBuffer(entry, avatar, flushed);

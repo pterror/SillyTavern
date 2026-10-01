@@ -179,18 +179,18 @@ function changedIds(before, after) {
  */
 async function moveWritingNothing(id, placement) {
     const before = rows();
-    const hash = await metadataDb.getTagsHash(directories);
+    const changesSeq = await metadataDb.getTagChangesSeq(directories);
     runSql = [];
     const result = await metadataDb.moveTagDefinition(directories, id, placement);
     expect(runSql).toEqual([]);
     expect(rows()).toEqual(before);
-    expect(await metadataDb.getTagsHash(directories)).toBe(hash);
+    expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);
     return result;
 }
 
 /** @param {string} id @param {{ before?: string, after?: string }} placement */
 async function move(id, placement) {
-    const hash = await metadataDb.getTagsHash(directories);
+    const changesSeq = await metadataDb.getTagChangesSeq(directories);
     const before = rows();
     const result = await metadataDb.moveTagDefinition(directories, id, placement);
     // written: exactly the rows the move changed, each with the sort_order now stored.
@@ -199,7 +199,7 @@ async function move(id, placement) {
     expect([...result.written].sort((a, b) => a.id.localeCompare(b.id)))
         .toEqual(changedIds(before, rows()).map(changedId => ({ id: changedId, sort_order: dataOrder(changedId) })));
     expect(columnMismatches()).toEqual([]);
-    expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
+    expect(await metadataDb.getTagChangesSeq(directories)).not.toBe(changesSeq);
     return result;
 }
 
@@ -550,14 +550,14 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
         const before = rows();
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         runSql = [];
         await queue('x', { before: 'a' });
         expect(runSql).toHaveLength(1);
         expect(runSql[0]).toMatch(/^INSERT INTO tag_pending_moves\b/);
         expect(pending()).toEqual([{ tag_id: 'x', side: 'before', anchor_id: 'a', value: null }]);
         expect(rows()).toEqual(before);
-        expect(await metadataDb.getTagsHash(directories)).toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);
     });
 
     test('while the flag is set but a queued move is left, the move is queued after it', async () => {
@@ -627,7 +627,7 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         await queue('z', { after: 'x' });
         await queue('y', { before: 'a' });
         await queue('y', { after: 'c' });
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         let changedEvents = 0;
         const onChanged = () => changedEvents++;
         metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, onChanged);
@@ -642,7 +642,7 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         expect(displayOrder()).toEqual(['a', 'b', 'x', 'z', 'c', 'y']);
         expect([dataOrder('x'), dataOrder('z'), dataOrder('y')]).toEqual([2.5, 2.75, 4]);
         expect(columnMismatches()).toEqual([]);
-        expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).not.toBe(changesSeq);
     });
 
     test('says the order is settled once, after the last queued move is applied', async () => {
@@ -803,7 +803,7 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         insertPendingValue('bad', 2);
         const reports = listenForMoveFailures(false);
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         await metadataDb.fillTagSortOrdersIfNeeded(directories);
         expect(pending()).toEqual([]);
         expect(dataOrder('x')).toBe(7.5);
@@ -813,7 +813,7 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
             { tagId: 'bad', tagName: null, anchorId: null, anchorName: null, refusedId: 'bad', reason: 'unreadable' },
         ]);
         expect(warnings(warn)).toContain('[character-metadata] Couldn\'t set the order of tag "bad": its stored data couldn\'t be read.');
-        expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).not.toBe(changesSeq);
     });
 
     test('a sort_order entry equal to the tag\'s writes nothing but its own removal', async () => {
@@ -821,12 +821,12 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         insertTag('a', { sort_order: 1 });
         insertPendingValue('a', 1);
         const before = rows();
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         runSql = [];
         await metadataDb.fillTagSortOrdersIfNeeded(directories);
         expect(runSql).toEqual([expect.stringMatching(/^DELETE FROM tag_pending_moves\b/)]);
         expect(rows()).toEqual(before);
-        expect(await metadataDb.getTagsHash(directories)).toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);
     });
 });
 

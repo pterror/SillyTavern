@@ -1681,27 +1681,19 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
         expect(await metadataDb.getTagDefinitions(directories)).toEqual([{ id: 'tag2', name: 'Serious' }]);
     });
 
-    test('getTagsHash advances on a definitions save, but not on assign/unassign', async () => {
-        const before = await metadataDb.getTagsHash(directories);
-        expect(before).toBe(null);
+    test('the tag change log advances on a definitions write, but not on assign/unassign', async () => {
+        const before = await metadataDb.getTagChangesSeq(directories);
 
-        await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
-        const afterSave = await metadataDb.getTagsHash(directories);
-        expect(afterSave).not.toBe(before);
+        await metadataDb.createTagDefinition(directories, { id: 'tag1', name: 'Funny' });
+        const afterSave = await metadataDb.getTagChangesSeq(directories);
+        expect(afterSave).toBeGreaterThan(/** @type {number} */ (before));
 
-        // assignEntityTag()/unassignEntityTag() deliberately do NOT touch getTagsHash() (see their own doc
-        // comments) - it hashes the `tags` (definitions) table, which an assignment never writes to, so it's
-        // provably unchanged either way. Regression coverage for the perf fix: a hot per-assign O(library-wide
-        // tag count) SELECT+hash used to run here for a value that could never have moved.
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
-        await new Promise(resolve => setTimeout(resolve, 2));
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
-        const afterAssign = await metadataDb.getTagsHash(directories);
-        expect(afterAssign).toBe(afterSave);
+        expect(await metadataDb.getTagChangesSeq(directories)).toBe(afterSave);
 
         await metadataDb.unassignEntityTag(directories, 'Bob.png', 'tag1');
-        const afterUnassign = await metadataDb.getTagsHash(directories);
-        expect(afterUnassign).toBe(afterSave);
+        expect(await metadataDb.getTagChangesSeq(directories)).toBe(afterSave);
     });
 
     test('a seed after a rename finds the tag by its new name', async () => {

@@ -385,12 +385,12 @@ describe('fillTagSortOrdersIfNeeded', () => {
         expect(dataOrder('a')).toBe(1);
     });
 
-    test('tells the main process after each batch that wrote, and updates tags_hash once done', async () => {
+    test('tells the main process after each batch that wrote, and logs the change once done', async () => {
         await openStore();
         insertTag('a', { name: 'A' });
         insertTag('b', { sort_order: 3 });
         insertTag('c', { sort_order: 3 });
-        const hashBefore = await metadataDb.getTagsHash(directories);
+        const changesSeqBefore = await metadataDb.getTagChangesSeq(directories);
         let events = 0;
         const onChanged = () => { events++; };
         metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, onChanged);
@@ -400,7 +400,7 @@ describe('fillTagSortOrdersIfNeeded', () => {
             metadataDb.characterChangeEmitter.off(metadataDb.TAG_CHANGES_EVENT, onChanged);
         }
         expect(events).toBe(2);
-        expect(await metadataDb.getTagsHash(directories)).not.toBe(hashBefore);
+        expect(await metadataDb.getTagChangesSeq(directories)).not.toBe(changesSeqBefore);
     });
 
     test('reads tags only through an index, never a table scan or a sort', async () => {
