@@ -1,7 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
-// Bulk favorite acts on the selected avatars through the server, not on the page's copies: a selected
+// Bulk favorite is one server action over the selection, not a write from the page's copies: a selected
 // character the page doesn't hold is flipped too, from what the server has stored.
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -60,16 +60,21 @@ async function storedFav(page, avatar) {
  * Runs the bulk favorite action on the given avatars, as the context menu does.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} avatars
- * @returns {Promise<object[]>} the bodies sent to /api/characters/fav
+ * @returns {Promise<{ url: string, body: any }[]>} the requests sent to /api/characters/fav and /api/characters/bulk/run
  */
 async function bulkFavorite(page, avatars) {
     const sent = [];
     page.on('request', request => {
-        if (request.url().endsWith('/api/characters/fav')) sent.push(request.postDataJSON());
+        if (/\/api\/characters\/(fav|bulk\/run)$/.test(request.url())) sent.push({ url: new URL(request.url()).pathname, body: request.postDataJSON() });
     });
     await page.evaluate(async (avatars) => {
         const { characterGroupOverlay } = await import('./script.js');
-        characterGroupOverlay.selectedCharacters.push(...avatars);
+        characterGroupOverlay.selectState();
+        for (const avatar of avatars) {
+            const row = document.createElement('div');
+            row.setAttribute('data-avatar', avatar);
+            characterGroupOverlay.toggleSingleCharacter(row);
+        }
         await characterGroupOverlay.handleContextMenuFavorite();
     }, avatars);
     return sent;
@@ -92,17 +97,18 @@ test.describe('bulk favorite', () => {
 
         const sent = await bulkFavorite(page, [notFav, alreadyFav]);
 
-        expect(sent).toEqual([{ bulk: [{ avatar: notFav, toggle: true }, { avatar: alreadyFav, toggle: true }] }]);
+        expect(sent.map(entry => entry.url)).toEqual(['/api/characters/bulk/run']);
+        expect(sent[0].body.action).toBe('fav');
         expect(await storedFav(page, notFav)).toBe(true);
         expect(await storedFav(page, alreadyFav)).toBe(false);
     });
 
-    test('names every character the server could not update', async ({ page }) => {
+    test('names every selected character that no longer exists, and still flips the rest', async ({ page }) => {
         const stamp = Date.now();
         const avatar = await createUnheldCharacter(page, `BulkFavC ${stamp}`);
         const missing = `Missing ${stamp}.png`;
 
-        const toast = expect(page.locator('.toast-error', { hasText: missing })).toBeVisible();
+        const toast = expect(page.locator('.toast-warning', { hasText: missing })).toBeVisible();
         await bulkFavorite(page, [avatar, missing]);
         await toast;
 

@@ -670,6 +670,160 @@ export async function convertCharacterToPersona(characterId = null) {
 }
 
 /**
+ * Asks about one character of a bulk conversion the way a file manager asks about a file that already exists: this
+ * one, or every one like it from here on.
+ * @param {string} title
+ * @param {string} text Plain text; escaped here.
+ * @param {string} yesText
+ * @param {string} noText
+ * @param {string} yesAllText
+ * @param {string} noAllText
+ * @returns {Promise<'yes'|'no'|'yesAll'|'noAll'|'cancel'>}
+ */
+async function askForOneOfMany(title, text, yesText, noText, yesAllText, noAllText) {
+    const content = `<h3>${escapeHtml(title)}</h3><p>${escapeHtml(text)}</p>`;
+    const result = await callGenericPopup(content, POPUP_TYPE.TEXT, '', {
+        okButton: false,
+        cancelButton: t`Cancel`,
+        customButtons: [
+            { text: yesText, result: POPUP_RESULT.CUSTOM1 },
+            { text: noText, result: POPUP_RESULT.CUSTOM2 },
+            { text: yesAllText, result: POPUP_RESULT.CUSTOM3 },
+            { text: noAllText, result: POPUP_RESULT.CUSTOM4 },
+        ],
+    });
+    switch (result) {
+        case POPUP_RESULT.CUSTOM1: return 'yes';
+        case POPUP_RESULT.CUSTOM2: return 'no';
+        case POPUP_RESULT.CUSTOM3: return 'yesAll';
+        case POPUP_RESULT.CUSTOM4: return 'noAll';
+        default: return 'cancel';
+    }
+}
+
+/**
+ * Converts many characters to personas. Nothing is asked up front: a character whose persona already exists, or whose
+ * description uses `{{char}}`/`{{user}}`, asks about itself when it comes up, with a choice that settles every later
+ * one like it. Settings are saved once, at the end.
+ * @param {AsyncIterable<string[]>} avatarBatches The characters, a batch of avatars at a time.
+ * @param {(done: number) => void} [onProgress] Called after each batch with how many were looked at.
+ * @returns {Promise<{ converted: number, skipped: number, failed: string[], cancelled: boolean }>} `failed` names
+ *   each character that couldn't be converted (by avatar when its card couldn't be read).
+ */
+export async function convertCharactersToPersonas(avatarBatches, onProgress) {
+    /** @type {boolean|null} Overwrite every later existing persona (true), skip them all (false), or ask (null). */
+    let overwriteAll = null;
+    /** @type {boolean|null} The same for swapping macros. */
+    let swapAll = null;
+    let converted = 0;
+    let skipped = 0;
+    let seen = 0;
+    /** @type {string[]} */
+    const failed = [];
+    /** @type {string|undefined} */
+    let lastCreated;
+
+    for await (const avatars of avatarBatches) {
+        let cards;
+        try {
+            cards = await characterRepository.fullMany(avatars);
+        } catch (error) {
+            console.error('Could not read the characters to convert:', error);
+            failed.push(...avatars);
+            seen += avatars.length;
+            onProgress?.(seen);
+            continue;
+        }
+        for (const avatar of avatars) {
+            seen++;
+            const character = cards.get(avatar);
+            if (!character) {
+                failed.push(avatar);
+                continue;
+            }
+            const name = character.name;
+            let description = String(character.description ?? '');
+            const overwriteName = `${name} (Persona).png`;
+
+            if (personaStore.has(overwriteName)) {
+                let overwrite = overwriteAll;
+                if (overwrite === null) {
+                    const answer = await askForOneOfMany(t`Persona already exists`,
+                        t`${name} already exists as a persona.`,
+                        t`Overwrite`, t`Skip`, t`Overwrite all`, t`Skip all`);
+                    if (answer === 'cancel') return finish(true);
+                    if (answer === 'yesAll') overwriteAll = true;
+                    if (answer === 'noAll') overwriteAll = false;
+                    overwrite = answer === 'yes' || answer === 'yesAll';
+                }
+                if (!overwrite) {
+                    skipped++;
+                    continue;
+                }
+            }
+
+            if (description.includes('{{char}}') || description.includes('{{user}}')) {
+                let swap = swapAll;
+                if (swap === null) {
+                    const answer = await askForOneOfMany(t`Persona Description Macros`,
+                        t`${name}'s description uses {{char}} or {{user}}. Swap them in the persona description?`,
+                        t`Swap`, t`Keep as is`, t`Swap all`, t`Keep all as is`);
+                    if (answer === 'cancel') return finish(true);
+                    if (answer === 'yesAll') swapAll = true;
+                    if (answer === 'noAll') swapAll = false;
+                    swap = answer === 'yes' || answer === 'yesAll';
+                }
+                if (swap) {
+                    description = description.replace(/{{char}}/gi, '{{personaChar}}').replace(/{{user}}/gi, '{{personaUser}}');
+                    description = description.replace(/{{personaUser}}/gi, '{{char}}').replace(/{{personaChar}}/gi, '{{user}}');
+                }
+            }
+
+            const response = await fetch('/api/avatars/from-character', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatar, overwrite_name: overwriteName }),
+            });
+            if (!response.ok) {
+                failed.push(name);
+                continue;
+            }
+
+            const record = {
+                name: name,
+                description: description,
+                position: persona_description_positions.IN_PROMPT,
+                depth: DEFAULT_DEPTH,
+                role: DEFAULT_ROLE,
+                lorebook: '',
+                title: '',
+                connections: [],
+            };
+            if (personaStore.has(overwriteName)) {
+                personaStore.update(overwriteName, record);
+            } else {
+                personaStore.create(overwriteName, record);
+            }
+            converted++;
+            lastCreated = overwriteName;
+            await eventSource.emit(event_types.PERSONA_CREATED, { avatarId: overwriteName, name, description, title: '' });
+        }
+        onProgress?.(seen);
+    }
+    return finish(false);
+
+    /** @param {boolean} cancelled */
+    async function finish(cancelled) {
+        if (converted > 0) {
+            saveSettingsDebounced('power_user.persona_data');
+            await getUserAvatars(true, lastCreated);
+            setPersonaDescription();
+        }
+        return { converted, skipped, failed, cancelled };
+    }
+}
+
+/**
  * Counts the number of tokens in a persona description.
  */
 const countPersonaDescriptionTokens = debounce(async () => {

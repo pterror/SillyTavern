@@ -67,6 +67,11 @@ export const event_types = {
     // TODO: Naming convention is inconsistent with other events
     CHARACTER_DELETED: 'characterDeleted',
     CHARACTER_DUPLICATED: 'character_duplicated',
+    /**
+     * A bulk action from the character list finished: `{ action, done, failed }`. Characters an extension can see
+     * also get their own CHARACTER_DELETED / CHARACTER_DUPLICATED; the rest are only counted here.
+     */
+    CHARACTERS_BULK_EDITED: 'characters_bulk_edited',
     CHARACTER_RENAMED: 'character_renamed',
     CHARACTER_RENAMED_IN_PAST_CHAT: 'character_renamed_in_past_chat',
     /** @deprecated The event is aliased to STREAM_TOKEN_RECEIVED. */
