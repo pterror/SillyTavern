@@ -289,7 +289,7 @@ describe('POST /api/tags/query manual, during a reorder pass', () => {
                 ['manual', 'pass', 1.5, 'apple', 1, 0, 0],
                 ['manual', 'pass', 1, 5, 1, 0, 0],
                 ['manual', 'pass', 1, 'apple', 1, 2, 0],
-                ['manual', 'pass', 1, 'apple', 1, 0, -1],
+                ['manual', 'pass', 1, 'apple', 1, 0, 'x'],
                 ['manual', 'pass', 1, 'apple', 1, 0],
                 ['alphabetical', 'pass', 1, 'apple', 1, 0, 0],
             ]) {
