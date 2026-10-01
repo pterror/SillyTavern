@@ -9,7 +9,6 @@ import {
     moveEntityTags,
     restoreTagBackup,
     getEntityTagIdsForMany,
-    getAllEntityTagAssignments,
     streamTagDefinitionBatches,
     streamEntityTagAssignmentBatches,
     createTagDefinition,
@@ -655,20 +654,6 @@ router.post('/for', async (request, response) => {
         response.send(result);
     } catch (err) {
         console.error('Could not resolve tags for entities', err);
-        response.sendStatus(500);
-    }
-});
-
-/** Bulk read of every entity-to-tag assignment, for callers that want the whole map up front. */
-router.post('/for-all', async (request, response) => {
-    try {
-        const result = await getAllEntityTagAssignments(request.user.directories);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
-        response.send(result);
-    } catch (err) {
-        console.error('Could not load all tag assignments', err);
         response.sendStatus(500);
     }
 });

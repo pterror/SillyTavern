@@ -134,14 +134,6 @@ describe('a group row whose id ends in .png is never read as a group', () => {
         expect(body).toEqual({ 'Alice.png': ['char-tag'] });
     });
 
-    test('/api/tags/for-all maps the id to the character\'s tags only', async () => {
-        await seedCollision();
-        const { status, body } = await post('/api/tags/for-all', {});
-        expect(status).toBe(200);
-        const entityIndex = body.avatars.indexOf('Alice.png');
-        expect(body.map[entityIndex].map(i => body.tagIds[i]).sort()).toEqual(['char-tag']);
-    });
-
     test('/api/groups/batch serves the .png group with no tags', async () => {
         await seedCollision();
         const { status, body } = await post('/api/groups/batch', { ids: ['Alice.png'] });
