@@ -173,6 +173,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {{ pending: Map<string, PendingRow> } | null} batch Non-null while batch-import mode is active
  * @property {Promise<void> | null} bootstrapPromise
  * @property {boolean} [tagNameKeysReady] Set once tagNameKeysReady() is true, which stays true.
+ * @property {boolean} [tagFolderUsageIndex] Set once the tags_folder_usage_count index is found, which stays.
  * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
  */
 
@@ -7645,6 +7646,7 @@ const TAG_QUERY_INDEXES_SQL = `
     CREATE INDEX IF NOT EXISTS tags_sort_order ON tags(sort_order);
     CREATE INDEX IF NOT EXISTS tags_unordered_name_key ON tags(name_key) WHERE sort_order IS NULL;
     CREATE INDEX IF NOT EXISTS tags_usage_count ON tags(usage_count DESC, name_key);
+    CREATE INDEX IF NOT EXISTS tags_folder_usage_count ON tags(is_folder, usage_count DESC, name_key);
     CREATE INDEX IF NOT EXISTS tags_folder_sort_order ON tags(is_folder, sort_order);
     CREATE INDEX IF NOT EXISTS tags_folder_unordered_name_key ON tags(is_folder, name_key) WHERE sort_order IS NULL;
     CREATE INDEX IF NOT EXISTS tags_folder_name_key ON tags(is_folder, name_key);
@@ -7669,9 +7671,9 @@ export async function fillTagDerivedColumnsIfNeeded(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
     const { db } = entry;
-    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
-
+    // Every run, so a store filled before an index was added gets it here, in the worker.
     db.exec(TAG_QUERY_INDEXES_SQL);
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
 
     const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILL_UPTO_KEY }));
     /** @type {number | null} */
@@ -7750,6 +7752,19 @@ function tagQueryColumnsReady(entry) {
     if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return false;
     if (!tagNameKeysReady(entry)) return false;
     entry.tagQueryColumnsReady = true;
+    return true;
+}
+
+/**
+ * Whether the tags_folder_usage_count index exists. A store filled before it was added gets it from the next
+ * fillTagDerivedColumnsIfNeeded() run; until then a most-used walk of folders checks is_folder per row.
+ * @param {MetadataDbEntry} entry
+ * @returns {boolean}
+ */
+function tagFolderUsageIndexReady(entry) {
+    if (entry.tagFolderUsageIndex === true) return true;
+    if (!entry.db.get('SELECT 1 FROM sqlite_master WHERE type = \'index\' AND name = \'tags_folder_usage_count\'')) return false;
+    entry.tagFolderUsageIndex = true;
     return true;
 }
 
@@ -9104,18 +9119,20 @@ function tagNameMatchers(params) {
  * The phases a sort walks for a filter set, each through the index tags-paging D11 lists for it. A filter the
  * index doesn't fix is checked per row.
  * @param {TagQuerySort} sort
- * @param {{ used: boolean, folders: boolean }} filter
+ * @param {{ used: boolean, folders: boolean, folderUsageIndex?: boolean }} filter folderUsageIndex: the
+ *   tags_folder_usage_count index exists, so a most-used walk of folders reads only folder tags.
  * @returns {TagWalkPhase[]}
  */
-function tagWalkPhases(sort, { used, folders }) {
+function tagWalkPhases(sort, { used, folders, folderUsageIndex = false }) {
     const folderWhere = folders ? ['is_folder = 1'] : [];
     if (sort === 'by_entries') {
+        const byFolder = folders && folderUsageIndex;
         return [{
             phase: 1,
-            index: 'tags_usage_count',
-            where: used ? ['usage_count > 0'] : [],
+            index: byFolder ? 'tags_folder_usage_count' : 'tags_usage_count',
+            where: [...(byFolder ? folderWhere : []), ...(used ? ['usage_count > 0'] : [])],
             keys: [{ column: 'usage_count', desc: true }, { column: 'name_key' }],
-            coversFolders: false,
+            coversFolders: byFolder,
             coversUsed: used,
         }];
     }
@@ -9440,7 +9457,7 @@ function queryTagsIndexed(entry, params, pass) {
     const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, pass) : null;
     const emitBefore = tagOverlayEmitter(order, tagOverlayPageItems(overlay, params, names, order), rows, pageSize, encode);
 
-    for (const phase of tagWalkPhases(order, { used, folders })) {
+    for (const phase of tagWalkPhases(order, { used, folders, folderUsageIndex: folders && tagFolderUsageIndexReady(entry) })) {
         if (walkAfter !== null && walkAfter.phase > phase.phase) continue;
         const leadsWithName = phase.keys[0].column === 'name_key';
         let phaseDone = false;
