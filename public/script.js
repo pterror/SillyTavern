@@ -14476,7 +14476,7 @@ jQuery(async function () {
         }
     });
 
-    initDrawerStack(onDrawerVisibilityChanged);
+    initDrawerStack(onDrawerVisibilityChanged, content => frontDrawer(content.id));
 
     $('#charInfoFullscreenToggle').on('click', () => {
         const panel = document.getElementById('char-info-panel');
