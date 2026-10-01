@@ -82,7 +82,7 @@ describe('change-log seq bounds read without scanning the log', () => {
         await metadataDb.ensureSchemaMigrated(directories);
         recordedGets.length = 0;
 
-        await metadataDb.getTagNameChangesSince(directories, 0);
+        await metadataDb.getTagNameChangesSince(directories, 0, { limit: 1 });
 
         const details = planOfTheOnlyRecordedGet();
         expect(details).not.toContainEqual(expect.stringMatching(/\bSCAN tag_name_changes\b/));

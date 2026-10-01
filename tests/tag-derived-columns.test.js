@@ -590,7 +590,7 @@ describe('editTagDefinition', () => {
         await metadataDb.editTagDefinition(directories, 'a', { name: 'Élan' });
         expect(withRawDb(db => db.prepare('SELECT name_key FROM tags WHERE id = ?').get('a'))).toEqual({ name_key: 'elan' });
         expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
-        const page = await metadataDb.getTagNameChangesSince(directories, before);
+        const page = await metadataDb.getTagNameChangesSince(directories, before, { limit: 100 });
         expect(page?.tagIds).toEqual(['a']);
 
         const afterRename = await metadataDb.getCurrentTagNameChangeSeq(directories);

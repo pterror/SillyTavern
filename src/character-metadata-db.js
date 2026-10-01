@@ -3700,14 +3700,17 @@ export async function getDueCharacterIndexRetries(directories, now, limit) {
 
 // Tag ids whose *name* changed since sinceSeq - mirrors getChangesSince()'s truncation handling.
 /**
- * With `limit`, reads at most that many log rows past sinceSeq: `seq` is then the last row read (pass it back as
- * sinceSeq for the next page) and `hasMore` says whether rows remain.
+ * Reads at most `limit` log rows past sinceSeq: `seq` is the last row read (pass it back as sinceSeq for the next
+ * page) and `hasMore` says whether rows remain.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {number} sinceSeq
- * @param {{ limit?: number }} [options]
- * @returns {Promise<{ seq: number, tagIds: string[], truncated: boolean, hasMore?: boolean } | null>}
+ * @param {{ limit: number }} options
+ * @returns {Promise<{ seq: number, tagIds: string[], truncated: boolean, hasMore: boolean } | null>}
  */
-export async function getTagNameChangesSince(directories, sinceSeq, { limit } = {}) {
+export async function getTagNameChangesSince(directories, sinceSeq, { limit }) {
+    if (!Number.isInteger(limit) || limit <= 0) {
+        throw new TypeError('getTagNameChangesSince() needs a positive integer limit');
+    }
     const entry = await getEntry(directories);
     if (!entry) return null;
 
@@ -3716,32 +3719,25 @@ export async function getTagNameChangesSince(directories, sinceSeq, { limit } = 
     const minSeq = bounds?.minSeq != null ? Number(bounds.minSeq) : undefined;
     const maxSeq = bounds?.maxSeq != null ? Number(bounds.maxSeq) : 0;
 
-    const truncated = minSeq !== undefined && numericSince < minSeq - 1;
-    const paged = Number.isInteger(limit) && limit > 0;
-    if (truncated) {
-        return paged ? { seq: maxSeq, tagIds: [], truncated: true, hasMore: false } : { seq: maxSeq, tagIds: [], truncated: true };
+    if (minSeq !== undefined && numericSince < minSeq - 1) {
+        return { seq: maxSeq, tagIds: [], truncated: true, hasMore: false };
     }
 
-    if (paged) {
-        /** @type {Set<string>} */
-        const tagIds = new Set();
-        let lastSeq = null;
-        let hasMore = false;
-        let read = 0;
-        for (const row of /** @type {Generator<TagNameChangeRow>} */ (entry.db.iterate('SELECT seq, tag_id FROM tag_name_changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [numericSince, limit + 1]))) {
-            if (read === limit) {
-                hasMore = true;
-                break;
-            }
-            read++;
-            lastSeq = Number(row.seq);
-            tagIds.add(row.tag_id);
+    /** @type {Set<string>} */
+    const tagIds = new Set();
+    let lastSeq = null;
+    let hasMore = false;
+    let read = 0;
+    for (const row of /** @type {Generator<TagNameChangeRow>} */ (entry.db.iterate('SELECT seq, tag_id FROM tag_name_changes WHERE seq > ? ORDER BY seq ASC LIMIT ?', [numericSince, limit + 1]))) {
+        if (read === limit) {
+            hasMore = true;
+            break;
         }
-        return { seq: lastSeq ?? maxSeq, tagIds: [...tagIds], truncated: false, hasMore };
+        read++;
+        lastSeq = Number(row.seq);
+        tagIds.add(row.tag_id);
     }
-
-    const rows = (/** @type {{ tag_id: string }[]} */ (entry.db.all('SELECT DISTINCT tag_id FROM tag_name_changes WHERE seq > ?', [numericSince])));
-    return { seq: maxSeq, tagIds: rows.map(row => row.tag_id), truncated: false };
+    return { seq: lastSeq ?? maxSeq, tagIds: [...tagIds], truncated: false, hasMore };
 }
 
 /**
@@ -5677,67 +5673,6 @@ export async function streamEntityTagAssignmentBatches(directories) {
             }
         }
     })();
-}
-
-/**
- * Every entity-to-tag assignment across both tables. Returned compactly: `avatars`/`tagIds` intern each unique
- * id/tag string to an integer index, and `map[i]` lists the tag-id indices assigned to `avatars[i]`.
- * @returns {Promise<{avatars: string[], tagIds: string[], map: number[][]} | null>}
- * @param {import('./users.js').UserDirectoryList} directories
- */
-export async function getAllEntityTagAssignments(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    const characterRows = (/** @type {{ character_id: string, tag_id: string }[]} */ (entry.db.all('SELECT character_id, tag_id FROM character_tags')));
-
-    // Yield to the event loop between the two scans, same as getEntityTagIdsForMany() does between chunks, so
-    // this full-table read can't starve other requests behind it.
-    await new Promise(resolve => setImmediate(resolve));
-
-    const groupRows = (/** @type {{ group_id: string, tag_id: string }[]} */ (entry.db.all('SELECT group_id, tag_id FROM group_tags')));
-
-    /** @type {Map<string, number>} */
-    const avatarIndex = new Map();
-    /** @type {Map<string, number>} */
-    const tagIdIndex = new Map();
-    /** @type {number[][]} */
-    const map = [];
-
-    const deletions = readTagDeletionsSync(entry.db);
-    /** @param {string} entityId @param {string} rowTagId */
-    const addAssignment = (entityId, rowTagId) => {
-        const tagId = resolveTagId(rowTagId, deletions);
-        if (tagId === null) return;
-        let entityIdx = avatarIndex.get(entityId);
-        if (entityIdx === undefined) {
-            entityIdx = avatarIndex.size;
-            avatarIndex.set(entityId, entityIdx);
-            map.push([]);
-        }
-        let tagIdx = tagIdIndex.get(tagId);
-        if (tagIdx === undefined) {
-            tagIdx = tagIdIndex.size;
-            tagIdIndex.set(tagId, tagIdx);
-        }
-        // A marked tag and its merge target on one entity are one tag.
-        if (deletions.size && map[entityIdx].includes(tagIdx)) return;
-        map[entityIdx].push(tagIdx);
-    };
-
-    for (const row of characterRows) {
-        addAssignment(row.character_id, row.tag_id);
-    }
-    for (const row of groupRows) {
-        if (tagEntityTypeOf(row.group_id) !== 'group') continue;
-        addAssignment(row.group_id, row.tag_id);
-    }
-
-    return {
-        avatars: [...avatarIndex.keys()],
-        tagIds: [...tagIdIndex.keys()],
-        map,
-    };
 }
 
 /**

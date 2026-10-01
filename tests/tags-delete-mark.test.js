@@ -244,7 +244,7 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
         await seedLibrary();
         const before = await metadataDb.getCurrentTagNameChangeSeq(directories);
         await deleteTag('x', 'y');
-        const page = await metadataDb.getTagNameChangesSince(directories, before);
+        const page = await metadataDb.getTagNameChangesSince(directories, before, { limit: 100 });
         expect(page.tagIds).toEqual(['x']);
     });
 
@@ -253,7 +253,7 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
         await deleteTag('x', 'y');
         const before = await metadataDb.getCurrentTagNameChangeSeq(directories);
         await deleteTag('y', 'z');
-        const page = await metadataDb.getTagNameChangesSince(directories, before);
+        const page = await metadataDb.getTagNameChangesSince(directories, before, { limit: 100 });
         expect(page.tagIds.sort()).toEqual(['x', 'y']);
     });
 });
@@ -296,17 +296,6 @@ describe('entity tag lists read a marked tag as its merge target', () => {
         expect(await tagsFor(['c1.png', 'c2.png', 'c3.png', 'c4.png', 'c5.png', 'g1', 'g2'])).toEqual({
             'c1.png': ['y'], 'c2.png': ['y'], 'c3.png': ['y'], 'c4.png': ['z'], 'c5.png': [], g1: ['y'], g2: ['z'],
         });
-    });
-
-    test('/for-all', async () => {
-        await seedLibrary();
-        await deleteTag('x', 'y');
-        const { avatars, tagIds, map } = await (await post('/api/tags/for-all')).json();
-        const byEntity = Object.fromEntries(avatars.map((a, i) => [a, map[i].map(t => tagIds[t]).sort()]));
-        expect(byEntity['c1.png']).toEqual(['y']);
-        expect(byEntity['c2.png']).toEqual(['y']);
-        expect(byEntity.g1).toEqual(['y']);
-        expect(tagIds).not.toContain('x');
     });
 
     test('getCharacterTagIdsByIds, getCharacterTagIds, getGroupTagIds', async () => {
