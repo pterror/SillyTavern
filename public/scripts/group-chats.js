@@ -83,7 +83,7 @@ import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore, exposedGroups, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
 import { eventSource, event_types } from './events.js';
-import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
+import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, heldTagsForIds, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget, updateMessage } from './chat-store.js';
 import { provisionalNodeId } from './node-identity.js';
 import { FILTER_TYPES, FILTER_STATES, FilterHelper, isFilterState } from './filters.js';
@@ -1081,7 +1081,7 @@ export function getGroupBlock(group) {
     // getTagsList() lookup, which prioritizes a resident-entity lookup a group id can never satisfy.
     const tagsElement = template.find('.tags');
     const rowTags = Array.isArray(group.tag_ids)
-        ? group.tag_ids.map(tagId => tagsStore.get(tagId)).filter(Boolean).sort(compareTagsForSort)
+        ? heldTagsForIds(group.tag_ids).sort(compareTagsForSort)
         : [];
     printTagList(tagsElement, { forEntityOrKey: group.id, tags: () => rowTags, tagOptions: { isCharacterList: true } });
 

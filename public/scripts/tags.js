@@ -7,7 +7,7 @@ import {
     menu_type,
     buildAvatarList,
 } from '../script.js';
-import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, setFilterDataFromUser, getUnheldRowTagIds, setUnheldRowTagIds } from './character-list.js';
+import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, setFilterDataFromUser, getUnheldRowTagIds, setUnheldRowTagIds, redrawUnheldRows } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { characters, charactersStore, exposedCharacters, exposedGroups, onExposedEntitiesChange } from './character-store.js';
@@ -2856,7 +2856,7 @@ function createTagMapFromList(listElement, key) {
  * @returns {Tag[]}
  */
 function tagIdsToTagList(tagIds, sort) {
-    const list = tagIds.map(x => tagsStore.get(x)).filter(x => x);
+    const list = heldTagsForIds(tagIds);
     if (sort) list.sort(compareTagsForSort);
     return list;
 }
@@ -3557,6 +3557,91 @@ export async function readTagsForIds(ids) {
         if (tag) found.set(id, tag);
     }
     return { tags: found, gone };
+}
+
+/**
+ * Ids of tags the server has no readable definition for (no tag has the id, or its stored copy can't be read). A draw
+ * that meets one doesn't ask for it again.
+ * @type {Set<string>}
+ */
+const tagIdsWithoutDefinition = new Set();
+
+/**
+ * Tag ids something on screen was drawn without, because this tab has no definition for them yet. Read together once
+ * the turn that drew them has finished.
+ * @type {Set<string>}
+ */
+const missingTagIds = new Set();
+let missingTagReadQueued = false;
+/** @type {Promise<void>} */
+let missingTagReads = Promise.resolve();
+
+/**
+ * The definitions this tab holds of `tagIds`, in that order. An id it has none for is read from the server: every
+ * draw in the same turn joins one request, and what was drawn is drawn again once the definitions arrive.
+ * @param {string[]} tagIds
+ * @returns {Tag[]}
+ */
+export function heldTagsForIds(tagIds) {
+    /** @type {Tag[]} */
+    const found = [];
+    for (const id of tagIds) {
+        const tag = tagsStore.get(id);
+        if (tag) found.push(tag);
+        else noteMissingTagDefinition(id);
+    }
+    return found;
+}
+
+/** @param {string} id */
+function noteMissingTagDefinition(id) {
+    if (typeof id !== 'string' || id === '' || tagIdsWithoutDefinition.has(id)) return;
+    missingTagIds.add(id);
+    if (missingTagReadQueued) return;
+    missingTagReadQueued = true;
+    queueMicrotask(() => {
+        missingTagReads = missingTagReads.then(readMissingTagDefinitions)
+            .catch(error => console.error('Could not read the definitions of tags on screen:', error));
+    });
+}
+
+/** Reads the definitions noteMissingTagDefinition() collected, and draws again what shows tags. */
+async function readMissingTagDefinitions() {
+    missingTagReadQueued = false;
+    const ids = [...missingTagIds].filter(id => !tagsStore.has(id));
+    missingTagIds.clear();
+    let readAny = false;
+    for (let i = 0; i < ids.length; i += TAG_READ_MAX_IDS) {
+        const chunk = ids.slice(i, i + TAG_READ_MAX_IDS);
+        const answer = await postTagsRead('/api/tags/by-ids', { ids: chunk });
+        // Not marked: the next draw asks again.
+        if (!answer || !Array.isArray(answer.tags)) break;
+        const answered = new Set(answer.tags.filter(isTagObject).map(tag => tag.id));
+        for (const id of chunk) {
+            if (!answered.has(id)) tagIdsWithoutDefinition.add(id);
+        }
+        if (answered.size) {
+            mergeServerTagDefinitions(answer.tags);
+            readAny = true;
+        }
+    }
+    if (readAny) redrawTagsOnScreen();
+}
+
+/**
+ * Draws again everything on screen that shows the tags of a character or group: the list's rows, the group editor's
+ * member rows, the open character's or group's tag list and the chat's messages.
+ */
+function redrawTagsOnScreen() {
+    const keys = new Set(getAllRenderedEntityKeys());
+    document.querySelectorAll('.group_member[data-avatar]').forEach(el => keys.add(el.getAttribute('data-avatar')));
+    const unheldRows = getUnheldRowTagIds();
+    updateEntityRowTags([...keys].filter(key => !unheldRows.has(key)));
+    redrawUnheldRows();
+    if (getTagKey() !== null) {
+        if (selected_group) applyTagsOnGroupSelect(); else applyTagsOnCharacterSelect();
+    }
+    applyCharacterTagsToMessageDivs();
 }
 
 /** The order tag suggestions and pickers list tags in: the tag sort mode's. */
@@ -4692,7 +4777,7 @@ export function applyTagsOnCharacterSelect(chid = null) {
     // If we are in create window, we cannot simply redraw, as there are no real persisted tags. Grab them, and pass them in
     if (menu_type === 'create') {
         const currentTagIds = $('#tagList').find('.tag').map((_, el) => $(el).attr('id')).get();
-        const currentTags = tags.filter(x => currentTagIds.includes(x.id));
+        const currentTags = heldTagsForIds(currentTagIds);
         printTagList($('#tagList'), { forEntityOrKey: undefined, tags: currentTags, tagOptions: { removable: true } });
         return;
     }
@@ -4705,7 +4790,7 @@ export function applyTagsOnGroupSelect(groupId = null) {
     // If we are in create window, we explicitly have to tell the system to print for the new group, not the one selected in the background
     if (menu_type === 'group_create') {
         const currentTagIds = $('#groupTagList').find('.tag').map((_, el) => $(el).attr('id')).get();
-        const currentTags = tags.filter(x => currentTagIds.includes(x.id));
+        const currentTags = heldTagsForIds(currentTagIds);
         printTagList($('#groupTagList'), { forEntityOrKey: undefined, tags: currentTags, tagOptions: { removable: true } });
         return;
     }
@@ -6677,17 +6762,6 @@ export function applyCharacterTagsToMessageDivs({ mesIds = [] } = {}) {
             }
         });
 
-        const tagsList = tags;
-
-        if (!tagsList?.length) {
-            return;
-        }
-
-        const tagNamesById = tagsList.reduce((acc, tag) => {
-            acc[tag.id] = tag.name;
-            return acc;
-        }, {});
-
         const characterTagsCache = new Map();
 
         // Iterate each message div
@@ -6705,9 +6779,7 @@ export function applyCharacterTagsToMessageDivs({ mesIds = [] } = {}) {
             if (!tagsForCharacter) {
                 const tagIds = getTagIdsForKey(avatarFileName);
                 if (tagIds?.length) {
-                    const tagNames = tagIds
-                        .map(id => tagNamesById[id])
-                        .filter(Boolean);
+                    const tagNames = heldTagsForIds(tagIds).map(tag => tag.name).filter(Boolean);
 
                     if (tagNames.length) {
                         tagsForCharacter = {

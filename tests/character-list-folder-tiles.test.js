@@ -80,6 +80,7 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     applyTagsOnCharacterSelect: noop,
     applyTagsOnGroupSelect: noop,
     tagsStore: {},
+    heldTagsForIds: () => [],
     isTagAssignedToKey: () => { throw new Error('the tiles never read tag assignments in the browser'); },
     // Stands in for the server's folder tag query (tested in tags-query.test.js and FolderTilesFromServer.e2e.js):
     // the client list's folders in sort_order, bounded like the real one.

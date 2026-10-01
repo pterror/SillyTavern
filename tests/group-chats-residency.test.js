@@ -167,6 +167,7 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     tag_filter_type: {},
     removeEntityTags: jest.fn(),
     tagsStore: {},
+    heldTagsForIds: () => [],
     compareTagsForSort: jest.fn(),
 }));
 
