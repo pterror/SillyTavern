@@ -127,6 +127,18 @@ async function filterStateOf(page, id) {
     return withTagsModule(page, 'return tagsModule.tags.find(tag => tag.id === arg)?.filter_state;', id);
 }
 
+/**
+ * Opens `avatar`: extensions are shown the tags of the current character (`tags`, D17).
+ * @param {import('@playwright/test').Page} page @param {string} avatar @param {string[]} tagIds - shown once opened
+ */
+async function selectCharacter(page, avatar, tagIds) {
+    await page.evaluate(async (avatar) => {
+        const { selectCharacterByAvatar } = await import('/script.js');
+        await selectCharacterByAvatar(avatar);
+    }, avatar);
+    await expect.poll(() => withTagsModule(page, 'return arg.filter(id => !tagsModule.tags.some(tag => tag.id === id));', tagIds)).toEqual([]);
+}
+
 /** @param {import('@playwright/test').Page} page @param {string} id @returns {Promise<string | null>} */
 async function savedFilterOf(page, id) {
     return page.evaluate(id => localStorage.getItem(`CharacterList_tag_${id}`), id);
@@ -232,6 +244,7 @@ test.describe('upstream tag exports', () => {
             return { had, leftOut, card, added: `tagcompat-load-added-${stamp}` };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card, [fixture.leftOut]);
         const writes = recordWrites(page);
 
         const atOnce = await withTagsModule(page, `
@@ -268,6 +281,7 @@ test.describe('upstream tag exports', () => {
             return { tag, card };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card, [fixture.tag]);
         expect(await filterStateOf(page, fixture.tag)).toBe('UNDEFINED');
         // The bar reads the used tags once it is on screen and shows them.
         await openCharacterManagementDrawer(page);
@@ -281,6 +295,7 @@ test.describe('upstream tag exports', () => {
 
         await page.reload();
         await loadApp(page);
+        await selectCharacter(page, fixture.card, [fixture.tag]);
         expect(await filterStateOf(page, fixture.tag)).toBe('SELECTED');
         await expect(page.locator(`#rm_characters_block .rm_tag_filter [id="${fixture.tag}"]`)).toHaveClass(/selected/);
         // The stored tag is every browser's: the click changed nothing on it.
@@ -297,6 +312,7 @@ test.describe('upstream tag exports', () => {
             return { tag, card };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card, [fixture.tag]);
         const writes = recordWrites(page);
 
         await withTagsModule(page, `
@@ -314,6 +330,7 @@ test.describe('upstream tag exports', () => {
 
         await page.reload();
         await loadApp(page);
+        await selectCharacter(page, fixture.card, [fixture.tag]);
         expect(await filterStateOf(page, fixture.tag)).toBe('EXCLUDED');
     });
 
@@ -327,12 +344,37 @@ test.describe('upstream tag exports', () => {
         const id = await withTagsModule(page, `
             const context = window['SillyTavern'].getContext();
             await context.executeSlashCommandsWithOptions('/tag-add name="' + arg.charName + '" ' + arg.tagName);
-            return tagsModule.tags.find(tag => tag.name === arg.tagName)?.id;
+            return tagsModule.tagsStore.getAll().find(tag => tag.name === arg.tagName)?.id;
         `, { charName, tagName });
 
         expect(typeof id).toBe('string');
         await expect.poll(() => serverTag(page, id)).toMatchObject({ id, name: tagName });
         expect(Object.hasOwn(await serverTag(page, id), 'filter_state')).toBe(false);
-        expect(await filterStateOf(page, id)).toBe('UNDEFINED');
+        // No filter is saved for it in this browser.
+        expect(await savedFilterOf(page, id)).toBeNull();
+    });
+});
+
+test.describe('what the tags export holds', () => {
+    test('the current character\'s tags, not every tag the page holds', async ({ browser, page }) => {
+        const stamp = Date.now();
+        const fixture = await withOtherTab(browser, async (setup) => {
+            const mine = await createTag(setup, `tagcompat-d17-mine-${stamp}`);
+            const other = await createTag(setup, `tagcompat-d17-other-${stamp}`);
+            const card = await createCharacter(setup, `TagCompatD17-${stamp}`);
+            const otherCard = await createCharacter(setup, `TagCompatD17Other-${stamp}`);
+            await api(setup, '/api/tags/assign', { id: card, tagId: mine });
+            await api(setup, '/api/tags/assign', { id: otherCard, tagId: other });
+            return { mine, other, card, otherCard };
+        });
+        await loadApp(page);
+        await selectCharacter(page, fixture.otherCard, [fixture.other]);
+        await selectCharacter(page, fixture.card, [fixture.mine]);
+
+        const seen = await withTagsModule(page, `
+            const ids = window['SillyTavern'].getContext().tags.map(tag => tag.id);
+            return { mine: ids.includes(arg.mine), other: ids.includes(arg.other) };
+        `, fixture);
+        expect(seen).toEqual({ mine: true, other: false });
     });
 });

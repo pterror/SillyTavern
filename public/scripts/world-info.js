@@ -15,7 +15,7 @@ import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { getTokenCountAsync, getTokenCountWithAnswer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
 import { power_user, personaStore } from './power-user.js';
-import { findTagsByNames, getTagKeyForEntity, readTagsForIds, searchTagsByName } from './tags.js';
+import { findTagsByNames, getTagKeyForEntity, readTagsForIds, searchTagsByName, tagsStore } from './tags.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS } from './constants.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -1582,7 +1582,7 @@ function registerWorldInfoSlashCommands() {
                 const found = await findTagsByNames(tagNames);
                 const tagIds = [
                     ...[...found.values()].filter((tag) => tag && tagNames.includes(tag.name)),
-                    ...getContext().tags.filter((tag) => tagNames.includes(tag.name)),
+                    ...tagsStore.getAll().filter((tag) => tagNames.includes(tag.name)),
                 ].map((tag) => tag.id).filter(onlyUnique);
                 createCharacterFilterFieldObjectIfNeeded(entry);
                 entry.characterFilter.tags = tagIds;

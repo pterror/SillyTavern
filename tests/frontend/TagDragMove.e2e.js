@@ -85,7 +85,7 @@ async function serverManualOrder(page, ids) {
  */
 async function pageHoldsServerOrders(page, ids) {
     const { tags } = await api(page, '/api/tags/by-ids', { ids });
-    const held = await page.evaluate(ids => Object.fromEntries(window['SillyTavern'].getContext().tags
+    const held = await page.evaluate(async ids => Object.fromEntries((await import('/scripts/tags.js')).tagsStore.getAll()
         .filter(tag => ids.includes(tag.id)).map(tag => [tag.id, tag.sort_order])), ids);
     return tags.every(tag => held[tag.id] === tag.sort_order);
 }

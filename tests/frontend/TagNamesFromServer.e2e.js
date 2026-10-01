@@ -52,7 +52,7 @@ async function createUnheldTags(page, list) {
             tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 },
         })));
     }
-    const held = await page.evaluate(ids => window['SillyTavern'].getContext().tags.filter(tag => ids.includes(tag.id)).length, list.map(x => x.id));
+    const held = await page.evaluate(async ids => (await import('/scripts/tags.js')).tagsStore.getAll().filter(tag => ids.includes(tag.id)).length, list.map(x => x.id));
     expect(held).toBe(0);
 }
 
@@ -217,7 +217,7 @@ test.describe('tag names are looked up on the server', () => {
         expect(creates[0].tag).not.toHaveProperty('sort_order');
         const created = (await api(page, '/api/tags/by-names', { names: [newName] })).tags[0].tag;
         await expect.poll(async () => (await serverTagsOf(page, avatar)).sort()).toEqual([`imported-${stamp}`, created.id].sort());
-        const pageOrder = await page.evaluate(id => window['SillyTavern'].getContext().tags.find(tag => tag.id === id)?.sort_order, created.id);
+        const pageOrder = await page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.getAll().find(tag => tag.id === id)?.sort_order, created.id);
         expect(typeof created.sort_order).toBe('number');
         expect(pageOrder).toBe(created.sort_order);
     });
@@ -284,7 +284,7 @@ test.describe('tag names are looked up on the server', () => {
             expect((await saved).postDataJSON().data.characterFilter.tags).toEqual([`lore-${stamp}`]);
 
             // Picking it from the search didn't make the page hold it.
-            expect(await page.evaluate(id => window['SillyTavern'].getContext().tags.some(tag => tag.id === id), `lore-${stamp}`)).toBe(false);
+            expect(await page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.getAll().some(tag => tag.id === id), `lore-${stamp}`)).toBe(false);
             const again = await openEntry();
             const choices = again.locator('select[name="characterFilter"] + .select2-container .select2-selection__choice');
             await expect(choices).toHaveCount(1);
