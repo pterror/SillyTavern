@@ -11,6 +11,7 @@ import {
     getEntityTagIdsForMany,
     getAllEntityTagAssignments,
     streamTagDefinitionBatches,
+    streamEntityTagAssignmentBatches,
     createTagDefinition,
     editTagDefinition,
     moveTagDefinition,
@@ -279,6 +280,65 @@ router.post('/get', async (request, response) => {
         await writeBackpressured(response, ']}');
     } catch (err) {
         console.error('[tags/get] Streaming response failed mid-flight; ending the connection:', err);
+    }
+    response.end();
+});
+
+/**
+ * The tag backup file: `{ tags: [...every tag definition], tag_map: { key: [tag ids] } }`, streamed. Every character
+ * and group the store has is in it, whatever any page holds. A tag being deleted is left out of `tags`, and an
+ * assignment of it reads as its merge target.
+ */
+router.post('/backup', async (request, response) => {
+    let definitions;
+    let assignments;
+    try {
+        definitions = await streamTagDefinitionBatches(request.user.directories);
+        assignments = await streamEntityTagAssignmentBatches(request.user.directories);
+        if (definitions === null || assignments === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+    } catch (err) {
+        console.error('Could not start the tag backup', err);
+        return response.sendStatus(500);
+    }
+
+    // Past the first write, a failure can't un-send the 200 and partial body, so it logs and ends the connection
+    // without the closing brackets: the file then doesn't parse, and a restore refuses it.
+    response.set('Content-Type', 'application/json');
+    response.status(200);
+    try {
+        await writeBackpressured(response, '{"tags":[');
+        let wroteAny = false;
+        for await (const batch of definitions) {
+            for (const tag of batch) {
+                await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify(tag));
+                wroteAny = true;
+            }
+        }
+        await writeBackpressured(response, '],"tag_map":{');
+        /** @type {{ key: string, tagIds: string[] } | null} */
+        let pending = null;
+        let wroteKey = false;
+        const writeEntity = async (/** @type {{ key: string, tagIds: string[] }} */ entity) => {
+            if (!entity.tagIds.length) return;
+            await writeBackpressured(response, (wroteKey ? ',' : '') + JSON.stringify(entity.key) + ':' + JSON.stringify(entity.tagIds));
+            wroteKey = true;
+        };
+        for await (const batch of assignments) {
+            for (const entity of batch) {
+                if (pending && pending.key === entity.key) {
+                    for (const id of entity.tagIds) if (!pending.tagIds.includes(id)) pending.tagIds.push(id);
+                    continue;
+                }
+                if (pending) await writeEntity(pending);
+                pending = entity;
+            }
+        }
+        if (pending) await writeEntity(pending);
+        await writeBackpressured(response, '}}');
+    } catch (err) {
+        console.error('[tags/backup] Streaming response failed mid-flight; ending the connection:', err);
     }
     response.end();
 });

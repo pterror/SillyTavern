@@ -5628,6 +5628,57 @@ export async function getTagDefinitionsForIds(directories, ids) {
     return definitions;
 }
 
+/** Assignment rows per batch of streamEntityTagAssignmentBatches(). */
+const TAG_ASSIGNMENT_BATCH_ROWS = 1000;
+
+/**
+ * Every character's and group's tag ids, for the tag backup file: character_tags then group_tags, each in key order,
+ * one keyset page at a time. A tag being deleted reads as its merge target, or is left out when it has none. An
+ * entity's rows can span two batches: consecutive batches of the same key continue the same entity.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<AsyncGenerator<{ key: string, tagIds: string[] }[], void, undefined> | null>} null when the store is
+ *   unavailable.
+ */
+export async function streamEntityTagAssignmentBatches(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const db = entry.db;
+    const tables = [
+        { table: 'character_tags', column: 'character_id' },
+        { table: 'group_tags', column: 'group_id' },
+    ];
+    return (async function* () {
+        for (const { table, column } of tables) {
+            /** @type {{ e: string, t: string } | null} */
+            let after = null;
+            for (;;) {
+                const sql = after
+                    ? `SELECT ${column} AS e, tag_id AS t FROM ${table} WHERE (${column}, tag_id) > (@e, @t) ORDER BY ${column}, tag_id LIMIT @limit`
+                    : `SELECT ${column} AS e, tag_id AS t FROM ${table} ORDER BY ${column}, tag_id LIMIT @limit`;
+                const rows = /** @type {{ e: string, t: string }[]} */ (Array.from(db.iterate(sql, { ...(after ?? {}), limit: TAG_ASSIGNMENT_BATCH_ROWS })));
+                if (!rows.length) break;
+                const deletions = readTagDeletionsSync(db);
+                /** @type {{ key: string, tagIds: string[] }[]} */
+                const batch = [];
+                for (const row of rows) {
+                    const tagId = resolveTagId(row.t, deletions);
+                    if (tagId === null) continue;
+                    /** @type {{ key: string, tagIds: string[] } | undefined} */
+                    let last = batch.at(-1);
+                    if (last === undefined || last.key !== row.e) {
+                        last = { key: row.e, tagIds: [] };
+                        batch.push(last);
+                    }
+                    if (!last.tagIds.includes(tagId)) last.tagIds.push(tagId);
+                }
+                yield batch;
+                if (rows.length < TAG_ASSIGNMENT_BATCH_ROWS) break;
+                after = { e: rows[rows.length - 1].e, t: rows[rows.length - 1].t };
+            }
+        }
+    })();
+}
+
 /**
  * Every entity-to-tag assignment across both tables. Returned compactly: `avatars`/`tagIds` intern each unique
  * id/tag string to an integer index, and `map[i]` lists the tag-id indices assigned to `avatars[i]`.
