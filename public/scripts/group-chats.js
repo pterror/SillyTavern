@@ -81,7 +81,7 @@ import {
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore, setCharacterId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
+import { charactersStore, exposedGroups, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget, updateMessage } from './chat-store.js';
@@ -100,7 +100,8 @@ export {
     hideMutedSprites,
     is_group_generating,
     group_generation_id,
-    groups,
+    // Upstream's export; extensions are shown only the open group.
+    exposedGroups as groups,
     saveGroupField,
     generateGroupWrapper,
     deleteGroup,
@@ -851,6 +852,7 @@ async function getFirstCharacterMessage(character) {
 
 function resetSelectedGroup() {
     selected_group = null;
+    setExposedGroupId(null);
     is_group_generating = false;
 }
 
@@ -1592,6 +1594,7 @@ async function deleteGroup(id) {
     if (response.ok) {
         await clearChat();
         selected_group = null;
+        setExposedGroupId(null);
         removeEntityTags(id);
         resetChatState();
         await printMessages();
@@ -2337,6 +2340,7 @@ export async function openGroupById(groupId) {
             await clearChat({ clearData: true });
             cancelTtsPlay();
             selected_group = groupId;
+            setExposedGroupId(groupId);
             setEditedMessageId(undefined);
             updateChatMetadata({}, true);
             await getGroupChat(groupId);

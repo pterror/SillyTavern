@@ -5702,7 +5702,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                 const tagKey = getTagKeyForEntity(getCurrentCharacter()?.avatar);
 
                 if (tagKey) {
-                    const tagMapEntry = context.tagMap[tagKey];
+                    const tagMapEntry = charactersStore.get(tagKey)?.tag_ids ?? [];
 
                     if (Array.isArray(tagMapEntry)) {
                         // If tag map intersects with the tag exclusion list, skip

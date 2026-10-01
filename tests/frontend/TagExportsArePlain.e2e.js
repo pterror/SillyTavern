@@ -77,6 +77,12 @@ test.describe('the tags and tag_map exports', () => {
             return { tag, card };
         });
         await loadApp(page);
+        // The current character is the one `tag_map` has an entry for.
+        await page.evaluate(async (card) => {
+            const { selectCharacterByAvatar } = await import('/script.js');
+            await selectCharacterByAvatar(card);
+        }, fixture.card);
+        await expect.poll(() => page.evaluate(card => Object.hasOwn(window['SillyTavern'].getContext().tagMap, card), fixture.card)).toBe(true);
 
         const results = await page.evaluate(async ({ tag, card }) => {
             const { tags, tag_map } = await import('/scripts/tags.js');

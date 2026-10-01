@@ -152,7 +152,10 @@ test.describe('tag changes from another tab', () => {
 
             await loadApp(page);
             await openCharacterManagementDrawer(page);
-            const heldIds = () => page.evaluate(avatar => window['SillyTavern'].getContext().tagMap[avatar] ?? null, avatar);
+            const heldIds = () => page.evaluate(async (avatar) => {
+                const { charactersStore } = await import('/scripts/character-store.js');
+                return charactersStore.get(avatar)?.tag_ids ?? null;
+            }, avatar);
             await expect.poll(heldIds, { timeout: 15000 }).toEqual([from]);
 
             await api(other, '/api/tags/delete', { id: from, mergeInto: into });

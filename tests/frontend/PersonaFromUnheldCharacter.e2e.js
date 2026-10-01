@@ -60,7 +60,10 @@ test.describe('convertCharacterToPersona', () => {
         await page.route('**/api/characters/changes', route => route.fulfill({ status: 500 }));
         const name = `PersonaUnheld ${Date.now()}`;
         const avatar = await createCharacter(page, name, 'A quiet librarian.');
-        const held = await page.evaluate(avatar => window['SillyTavern'].getContext().characters.some(c => c.avatar === avatar), avatar);
+        const held = await page.evaluate(async (avatar) => {
+            const { charactersStore } = await import('./scripts/character-store.js');
+            return charactersStore.has(avatar);
+        }, avatar);
         expect(held).toBe(false);
 
         const result = await convert(page, avatar, `${name} (Persona).png`);
@@ -73,10 +76,13 @@ test.describe('convertCharacterToPersona', () => {
     test('takes an index into getContext().characters, as upstream does', async ({ page }) => {
         const name = `PersonaIndex ${Date.now()}`;
         const avatar = await createCharacter(page, name, 'Keeps the lighthouse.');
-        await page.evaluate(async () => {
+        // Extensions are shown the current character, so that is the one an index can name.
+        await page.evaluate(async (avatar) => {
             const { getCharacters } = await import('./scripts/character-list.js');
             await getCharacters();
-        });
+            const { selectCharacterByAvatar } = await import('./script.js');
+            await selectCharacterByAvatar(avatar);
+        }, avatar);
         const index = await page.evaluate(avatar => window['SillyTavern'].getContext().characters.findIndex(c => c.avatar === avatar), avatar);
         expect(index).toBeGreaterThanOrEqual(0);
 

@@ -159,7 +159,10 @@ test.describe('Tag prune keeps tags that are in use', () => {
         });
 
         await loadApp(page);
-        expect(await page.evaluate(a => window['SillyTavern'].getContext().characters.some(c => c.avatar === a), fixture.hiddenCard)).toBe(false);
+        expect(await page.evaluate(async (a) => {
+            const { charactersStore } = await import('/scripts/character-store.js');
+            return charactersStore.has(a);
+        }, fixture.hiddenCard)).toBe(false);
         expect((await serverTagUsage(page))[fixture.hiddenTag]).toBe(1);
 
         await openTagManagement(page);
@@ -201,8 +204,9 @@ test.describe('Tag prune keeps tags that are in use', () => {
         await other.close();
 
         // Wait for this page to sync the assignment onto its own copy of the card, so what's left is prune itself.
-        await expect.poll(() => page.evaluate(({ card, tag }) => {
-            const c = window['SillyTavern'].getContext().characters.find(x => x.avatar === card);
+        await expect.poll(() => page.evaluate(async ({ card, tag }) => {
+            const { charactersStore } = await import('/scripts/character-store.js');
+            const c = charactersStore.get(card);
             return Boolean(c?.tag_ids?.includes(tag));
         }, fixture), { timeout: 30000 }).toBe(true);
 
@@ -224,8 +228,9 @@ test.describe('Tag prune keeps tags that are in use', () => {
         await page.route('**/api/tags/usage', route => route.fulfill({ status: 500, body: 'unavailable' }));
         await loadApp(page);
         // The card and its tag assignment are resident here; only the usage aggregate is missing.
-        expect(await page.evaluate(({ card, tag }) => {
-            const c = window['SillyTavern'].getContext().characters.find(x => x.avatar === card);
+        expect(await page.evaluate(async ({ card, tag }) => {
+            const { charactersStore } = await import('/scripts/character-store.js');
+            const c = charactersStore.get(card);
             return Boolean(c?.tag_ids?.includes(tag));
         }, fixture)).toBe(true);
 

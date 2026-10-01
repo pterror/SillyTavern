@@ -2,7 +2,8 @@ import { substituteParams, extension_prompt_roles, extension_prompt_types, name2
 import { chat_metadata, chat } from '../chat-state.js';
 import { characters } from '../character-store.js';
 import { extension_settings } from '../extensions.js';
-import { getGroupMembersResident, groups } from '../group-chats.js';
+import { getGroupMembersResident } from '../group-chats.js';
+import { groups } from '../group-store.js';
 import { personaStore } from '../power-user.js';
 import { searchCharByName, getTagsList, tags, getAssignedTagIds } from '../tags.js';
 import { onlyUniqueJson, sortIgnoreCaseAndAccents } from '../utils.js';

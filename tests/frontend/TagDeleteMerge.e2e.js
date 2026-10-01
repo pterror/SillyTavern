@@ -153,7 +153,11 @@ async function countSettingsUpdated(page) {
 
 /** @param {import('@playwright/test').Page} page @param {string} key @returns {Promise<string[]>} */
 async function pageTagIds(page, key) {
-    return page.evaluate(key => [...(window['SillyTavern'].getContext().tagMap[key] ?? [])], key);
+    return page.evaluate(async (key) => {
+        const { charactersStore } = await import('/scripts/character-store.js');
+        const { groupsStore } = await import('/scripts/group-store.js');
+        return [...((charactersStore.get(key) ?? groupsStore.get(key))?.tag_ids ?? [])];
+    }, key);
 }
 
 /** @param {import('@playwright/test').Page} page @returns {Promise<string[]>} */

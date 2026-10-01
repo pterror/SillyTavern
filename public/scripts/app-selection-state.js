@@ -1,4 +1,4 @@
-import { characters, charactersStore } from './character-store.js';
+import { characters, charactersStore, exposedCharacters } from './character-store.js';
 import { groupsStore } from './group-store.js';
 
 /** @type {string?} */
@@ -31,7 +31,7 @@ function resolveEntityKey(entityOrKey) {
     if (typeof x === 'object' && x !== null && 'id' in x) x = x.id;
     let character;
     if (!character && characters.indexOf(x) >= 0) character = x;
-    if (!character && !isNaN(parseInt(entityOrKey))) character = characters[x];
+    if (!character && !isNaN(parseInt(entityOrKey))) character = exposedCharacters[x];
     if (!character) character = charactersStore.get(x);
     if (character) x = character.avatar;
     return x && (charactersStore.has(x) || groupsStore.has(x)) ? x : undefined;

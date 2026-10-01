@@ -31,9 +31,9 @@ import { characters, charactersStore, setCharacterId } from './character-store.j
 import { eventSource, event_types } from './events.js';
 import { isMobile, initMovingUI, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
 import {
-    groups,
     resetSelectedGroup,
 } from './group-chats.js';
+import { groups } from './group-store.js';
 import {
     chatOpDegraft,
     chatOpEndPath,

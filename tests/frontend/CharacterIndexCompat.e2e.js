@@ -68,6 +68,12 @@ async function deleteCharacters(page, avatars) {
     await page.evaluate(async (avatars) => {
         // @ts-ignore
         const headers = SillyTavern.getContext().getRequestHeaders();
+        // @ts-ignore
+        for (const id of window.__idxGroups ?? []) {
+            await fetch('/api/groups/delete', { method: 'POST', headers, body: JSON.stringify({ id }) });
+        }
+        // @ts-ignore
+        window.__idxGroups = [];
         for (const avatar of avatars) {
             await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
         }
@@ -104,6 +110,43 @@ async function indexOf(page, avatar) {
     expect(typeof characterId).toBe('string');
     expect(characterId).toMatch(/^(0|[1-9]\d*)$/);
     return characterId;
+}
+
+/**
+ * Opens a new group of these characters. Extensions are shown only the current character or the open group's
+ * members, so this is how a test gets an index into `getContext().characters` naming a character that isn't the
+ * current one. {@link deleteCharacters} deletes the group too.
+ * @param {import('@playwright/test').Page} page
+ * @param {string[]} avatars
+ * @returns {Promise<{groupId: string, indices: Record<string, string>}>} The group, and each avatar's index string.
+ */
+async function openGroupOf(page, avatars) {
+    const groupId = await page.evaluate(async ({ members, name }) => {
+        // @ts-ignore
+        const ctx = SillyTavern.getContext();
+        const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name, members }) });
+        if (!response.ok) throw new Error(`group create failed: ${response.status}`);
+        const id = String((await response.json()).id);
+        const { groupsStore, openGroupById } = await import('/scripts/group-chats.js');
+        await ctx.getCharacters({ silentGroups: true });
+        groupsStore.reportCreated(id);
+        await openGroupById(id);
+        // @ts-ignore
+        (window.__idxGroups ??= []).push(id);
+        return id;
+    }, { members: avatars, name: `IdxGroup-${stamp()}` });
+    await expect.poll(() => page.evaluate(() => {
+        // @ts-ignore
+        return SillyTavern.getContext().groupId;
+    })).toBe(groupId);
+    const indices = await page.evaluate((avatars) => Object.fromEntries(avatars.map(avatar => {
+        // @ts-ignore
+        return [avatar, String(SillyTavern.getContext().characters.findIndex(character => character.avatar === avatar))];
+    })), avatars);
+    for (const avatar of avatars) {
+        expect(indices[avatar]).toMatch(/^(0|[1-9]\d*)$/);
+    }
+    return { groupId, indices };
 }
 
 /**
@@ -218,8 +261,7 @@ test.describe('positional character parameters (#1-#8)', () => {
             for (const name of ['chat-a', 'chat-b', 'chat-c', 'chat-keep']) {
                 await saveChat(page, target, name);
             }
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
             const calls = [['chat-a', index], ['chat-b', Number(index)], ['chat-c', target]];
@@ -242,8 +284,7 @@ test.describe('positional character parameters (#1-#8)', () => {
     test('#2 getCharacterAvatar returns the same avatar URL for an index string, a number and an avatar', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxAvatar', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
             const urls = await page.evaluate(async ({ refs }) => {
@@ -268,8 +309,7 @@ test.describe('positional character parameters (#1-#8)', () => {
                 const { getOneCharacter } = await import('/script.js');
                 await getOneCharacter(avatar);
             }, { avatar: target, chubPath });
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
             const sources = await page.evaluate(async ({ refs }) => {
@@ -288,8 +328,7 @@ test.describe('positional character parameters (#1-#8)', () => {
         try {
             await saveChat(page, target, 'past-one');
             await saveChat(page, target, 'past-two');
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
             const lists = await page.evaluate(async ({ refs }) => {
@@ -365,8 +404,7 @@ test.describe('positional character parameters (#1-#8)', () => {
     test('#6 select_selected_character opens the editor on the same character for an index string, a number and an avatar', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxEditor', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
             const targetName = (await fetchStoredCharacter(page, target)).body.name;
 
@@ -457,8 +495,7 @@ test.describe('positional character parameters (#1-#8)', () => {
     test('#7 unshallowCharacter loads the same shallow character for an index string, a number and an avatar', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxUnshallow', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
             const gets = recordPosts(page, '/api/characters/get');
 
@@ -483,8 +520,7 @@ test.describe('positional character parameters (#1-#8)', () => {
     test('#8 updateRemoteChatName updates the same character\'s pointer for an index string, a number and an avatar', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxRemoteName', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
             const calls = [['pointer-by-index-string', index], ['pointer-by-number', Number(index)], ['pointer-by-avatar', target]];
@@ -527,8 +563,6 @@ test.describe('#10 Generate force_chid', () => {
             groupsStore.reportCreated(String(data.id));
             return String(data.id);
         }, { members: [first, second], name: `IdxGroup-${stamp()}` });
-        const firstIndex = await indexOf(page, first);
-        const secondIndex = await indexOf(page, second);
         await page.evaluate(async (groupId) => {
             // @ts-ignore
             const ctx = SillyTavern.getContext();
@@ -547,6 +581,10 @@ test.describe('#10 Generate force_chid', () => {
             // @ts-ignore
             return SillyTavern.getContext().groupId;
         })).toBe(groupId);
+        const [firstIndex, secondIndex] = await page.evaluate((avatars) => avatars.map(avatar => {
+            // @ts-ignore
+            return String(SillyTavern.getContext().characters.findIndex(character => character.avatar === avatar));
+        }), [first, second]);
         await expectIndexNames(page, firstIndex, first);
         await expectIndexNames(page, secondIndex, second);
         return { first, second, firstIndex, secondIndex, groupId };
@@ -694,8 +732,7 @@ test.describe('#11/#12 getCharacterCardFields and getCharacterCardFieldsLazy', (
     test('chid as an index string, a number or an avatar, and avatar, give the same character\'s fields', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxFields', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
             const expected = (await fetchStoredCharacter(page, target)).body.description;
             expect(expected).toMatch(/^description 1 /);
@@ -729,8 +766,7 @@ test.describe('#11/#12 getCharacterCardFields and getCharacterCardFieldsLazy', (
     test('chid and avatar naming different characters give no character\'s fields, with one warning naming both', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxFieldsMismatch', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
             const warnings = collectWarnings(page);
@@ -797,8 +833,7 @@ test.describe('#13 renameGroupOrCharacterChat', () => {
         const [current, target] = await createCharacters(page, 'IdxRename', 2);
         try {
             await saveChat(page, target, 'name-0');
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
             const renames = recordPosts(page, '/api/chats/rename');
 
@@ -841,8 +876,7 @@ test.describe('#13 renameGroupOrCharacterChat', () => {
         try {
             await saveChat(page, target, 'kept');
             await saveChat(page, current, 'kept');
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
             const renames = recordPosts(page, '/api/chats/rename');
             const warnings = collectWarnings(page);
@@ -870,8 +904,7 @@ test.describe('writeExtensionField index branch', () => {
     test('an index string, a number and an avatar write the same character\'s field; only the index forms warn', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxExtField', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
             const merges = recordPosts(page, '/api/characters/merge-attributes');
 
@@ -982,8 +1015,7 @@ test.describe('emitted indices: GENERATION_STARTED and GENERATION_AFTER_COMMANDS
     test('force_chid is carried as passed: a number, an index string, an avatar string, null, not passed, options omitted', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxGenEvents', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
             const cases = [
@@ -1005,8 +1037,7 @@ test.describe('emitted indices: GENERATION_STARTED and GENERATION_AFTER_COMMANDS
     test('force_avatar is carried next to force_chid, with and without it', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxGenEventsAvatar', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
 
             expect(await generationPayloads(page, { options: { force_chid: Number(index), force_avatar: target } })).toEqual(expectedPayloads(Number(index), target));
@@ -1069,9 +1100,13 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
     test('an index is emitted as passed; an avatar emits this_chid for the current character and undefined otherwise', async ({ page }) => {
         const [current, target] = await createCharacters(page, 'IdxEditorEvent', 2);
         try {
-            const index = await indexOf(page, target);
-            await selectCharacter(page, current);
+            const index = (await openGroupOf(page, [current, target])).indices[target];
             await expectIndexNames(page, index, target);
+            // A member opened in the editor is the current character while the group stays open.
+            await page.evaluate(async (avatar) => {
+                const { setCharacterId } = await import('/scripts/character-store.js');
+                setCharacterId(avatar);
+            }, current);
             const currentIndex = await currentCharacterId(page);
             await expectIndexNames(page, currentIndex, current);
             await recordEditorOpened(page);
@@ -1129,7 +1164,6 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
             return String(data.id);
         }, { members: [first, second], name: `IdxEditorEventPeek-${stamp()}` });
         try {
-            const secondIndex = await indexOf(page, second);
             await page.evaluate(async (groupId) => {
                 const { openGroupById } = await import('/scripts/group-chats.js');
                 await openGroupById(groupId);
@@ -1138,6 +1172,10 @@ test.describe('emitted indices: CHARACTER_EDITOR_OPENED (step 12)', () => {
                 // @ts-ignore
                 return SillyTavern.getContext().groupId;
             })).toBe(groupId);
+            const secondIndex = await page.evaluate((avatar) => {
+                // @ts-ignore
+                return String(SillyTavern.getContext().characters.findIndex(character => character.avatar === avatar));
+            }, second);
             await expectIndexNames(page, secondIndex, second);
             await recordEditorOpened(page);
 
@@ -1209,14 +1247,17 @@ test.describe('emitted indices: CHARACTER_DELETED id (step 13)', () => {
     test('handleDeleteCharacter with an index string, a number or [n] emits the index as a number', async ({ page }) => {
         const [bystander, byIndexString, byNumber, byArray] = await createCharacters(page, 'IdxDeletedEvent', 4);
         try {
-            await selectCharacter(page, bystander);
             await recordDeleted(page);
 
-            // Each deletion shifts later indices, so each index is read just before its call.
+            // Each deletion can shift later indices, so each index is read just before its call.
             const refs = [[byIndexString, (index) => index], [byNumber, (index) => Number(index)], [byArray, (index) => [Number(index)]]];
             for (const [avatar, toRef] of refs) {
-                const index = await indexOf(page, avatar);
-                await selectCharacter(page, bystander);
+                // A delete closes the group, so each call gets a group of its own.
+                await openGroupOf(page, [bystander, avatar]);
+                const index = await page.evaluate((avatar) => {
+                    // @ts-ignore
+                    return String(SillyTavern.getContext().characters.findIndex(character => character.avatar === avatar));
+                }, avatar);
                 await expectIndexNames(page, index, avatar);
                 await deleteVia(page, toRef(index));
                 expect((await fetchStoredCharacter(page, avatar)).ok).toBe(false);
@@ -1805,10 +1846,11 @@ test.describe('getEntitiesList (step 10)', () => {
                 const first = await snapshotList(page);
                 expect(first.rows).toHaveLength(PAGE_SIZE);
                 expect(first.results).toEqual(FLAG_COMBINATIONS.map(() => first.rows));
-                const loaded = await page.evaluate(() => {
-                    // @ts-ignore
-                    const ctx = SillyTavern.getContext();
-                    return ctx.characters.length + ctx.groups.length;
+                // Every character and group the page holds, not just the ones extensions are shown.
+                const loaded = await page.evaluate(async () => {
+                    const { characters } = await import('/scripts/character-store.js');
+                    const { groups } = await import('/scripts/group-store.js');
+                    return characters.length + groups.length;
                 });
                 expect(loaded).toBeGreaterThan(PAGE_SIZE);
 
