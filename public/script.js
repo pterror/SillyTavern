@@ -256,7 +256,7 @@ import { initDynamicStyles } from './scripts/dynamic-styles.js';
 import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-textareas.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
-import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, updateDrawerStack } from './scripts/drawer-stack.js';
+import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, updateDrawerStack, bringChatForward } from './scripts/drawer-stack.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
 import { ToolManager } from './scripts/tool-calling.js';
@@ -12603,6 +12603,11 @@ function doDrawerOpenClick() {
  * @returns {Promise<void>}
  */
 export async function doNavbarIconClick() {
+    // The chat has no drawer to open or close; its icon only brings it forward.
+    if ($(this).parent().is('#chat-button')) {
+        bringChatForward();
+        return;
+    }
     const icon = $(this).find('.drawer-icon');
     const drawer = $(this).parent().find('.drawer-content');
     const drawerWasOpenAlready = $(this).parent().find('.drawer-content').hasClass('openDrawer');

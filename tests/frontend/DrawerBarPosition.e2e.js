@@ -285,10 +285,14 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
 
             // The window is taller than the chat is wide, so the icons spread over exactly the chat's width.
             expect(sheld.width).toBeLessThan(VIEWPORT.height);
-            const group = await page.locator('#top-settings-holder > .drawer').evaluateAll(drawers => ({
-                top: drawers[0].getBoundingClientRect().top,
-                bottom: drawers[drawers.length - 1].getBoundingClientRect().bottom,
-            }));
+            // The shown icons only: the chat's icon is there with stacked drawers on alone.
+            const group = await page.locator('#top-settings-holder > .drawer').evaluateAll(all => {
+                const drawers = all.filter(d => d.getBoundingClientRect().height > 0);
+                return {
+                    top: drawers[0].getBoundingClientRect().top,
+                    bottom: drawers[drawers.length - 1].getBoundingClientRect().bottom,
+                };
+            });
             expect(group.bottom - group.top).toBeCloseTo(sheld.width, 0);
             expect((group.top + group.bottom) / 2).toBeCloseTo(VIEWPORT.height / 2, 0);
 
