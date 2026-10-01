@@ -1826,6 +1826,28 @@ export async function setCharacterFav(directories, avatar, fav) {
     return true;
 }
 
+/**
+ * Flips fav from what is stored, so the caller needs no copy of the character to know its current state.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} avatar
+ * @returns {Promise<boolean|null>} The stored value after the flip, or `null` if no character has this avatar.
+ */
+export async function toggleCharacterFav(directories, avatar) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    flushBufferedRow(entry, avatar);
+    const existing = (/** @type {{ shallow_json: string, fav: number } | undefined} */ (entry.db.get('SELECT shallow_json, fav FROM characters WHERE id = @id', { id: avatar })));
+    if (!existing) return null;
+
+    const next = !existing.fav;
+    const shallow = JSON.parse(existing.shallow_json);
+    setShallowFav(shallow, next);
+
+    writeShallowJson(entry.db, avatar, shallow, ['fav'], { fav: next ? 1 : 0 });
+    return next;
+}
+
 // Mirrors setCharacterFav(): DB column + shallow_json mirror, no card file write.
 /**
  * @param {import('./users.js').UserDirectoryList} directories

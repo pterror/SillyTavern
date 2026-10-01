@@ -9,7 +9,6 @@ import { getCharacters, characterToEntity } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { event_types, eventSource } from './events.js';
-import { normalizeFav } from './hash-utils.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
@@ -17,6 +16,7 @@ import { convertCharacterToPersona } from './personas.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting, clearEntityTags, redrawAfterTagChange } from './tags.js';
 import { t } from './i18n.js';
+import { escapeHtml } from './utils.js';
 
 /**
  * Static object representing the actions of the
@@ -40,8 +40,7 @@ class CharacterContextMenu {
      * @returns {Promise<any>}
      */
     static duplicate = async (avatar) => {
-        const character = CharacterContextMenu.#getCharacter(avatar);
-        const body = { avatar_url: character.avatar };
+        const body = { avatar_url: avatar };
 
         const result = await fetch('/api/characters/duplicate', {
             method: 'POST',
@@ -94,13 +93,10 @@ class CharacterContextMenu {
      * @returns {Promise<void>}
      */
     static favorite = async (avatar) => {
-        const character = CharacterContextMenu.#getCharacter(avatar);
-        const newFavState = !normalizeFav(character.fav);
-
         const favResponse = await fetch('/api/characters/fav', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar: character.avatar, fav: newFavState }),
+            body: JSON.stringify({ avatar, toggle: true }),
         });
 
         if (!favResponse.ok) {
@@ -108,10 +104,23 @@ class CharacterContextMenu {
             return;
         }
 
-        character.fav = newFavState;
-        if (character.data?.extensions) character.data.extensions.fav = newFavState;
+        const { fav } = await favResponse.json();
+        CharacterContextMenu.#applyFav(avatar, fav);
+    };
+
+    /**
+     * Shows a stored fav value on the held copy, if any, and on the character's list row.
+     * @param {string} avatar
+     * @param {boolean} fav
+     */
+    static #applyFav = (avatar, fav) => {
+        const character = charactersStore.get(avatar);
+        if (character) {
+            character.fav = fav;
+            if (character.data?.extensions) character.data.extensions.fav = fav;
+        }
         const element = document.querySelector(`[data-avatar="${CSS.escape(avatar)}"]`);
-        element?.classList.toggle('is_fav');
+        element?.classList.toggle('is_fav', fav);
     };
 
     /**
@@ -123,13 +132,10 @@ class CharacterContextMenu {
     static favoriteBulk = async (avatars) => {
         if (avatars.length === 0) return;
 
-        const characters = avatars.map(avatar => CharacterContextMenu.#getCharacter(avatar)).filter(Boolean);
-        const bulk = characters.map(character => ({ avatar: character.avatar, fav: !normalizeFav(character.fav) }));
-
         const favResponse = await fetch('/api/characters/fav', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ bulk }),
+            body: JSON.stringify({ bulk: avatars.map(avatar => ({ avatar, toggle: true })) }),
         });
 
         if (!favResponse.ok) {
@@ -138,19 +144,18 @@ class CharacterContextMenu {
         }
 
         const data = await favResponse.json();
-        const okAvatars = new Set((data.results ?? []).filter(entry => entry.ok).map(entry => entry.avatar));
+        const stored = new Map((data.results ?? []).filter(entry => entry.ok).map(entry => [entry.avatar, entry.fav]));
 
-        for (const character of characters) {
-            if (!okAvatars.has(character.avatar)) {
-                toastr.error(t`Failed to update favorite status for ${character.avatar}.`);
+        const failed = [];
+        for (const avatar of avatars) {
+            if (!stored.has(avatar)) {
+                failed.push(avatar);
                 continue;
             }
-
-            const newFavState = !normalizeFav(character.fav);
-            character.fav = newFavState;
-            if (character.data?.extensions) character.data.extensions.fav = newFavState;
-            const element = document.querySelector(`[data-avatar="${CSS.escape(character.avatar)}"]`);
-            element?.classList.toggle('is_fav');
+            CharacterContextMenu.#applyFav(avatar, stored.get(avatar));
+        }
+        if (failed.length) {
+            toastr.error(t`Failed to update favorite status for:` + `<br />${failed.map(escapeHtml).join('<br />')}`, '', { escapeHtml: false });
         }
     };
 
@@ -174,8 +179,6 @@ class CharacterContextMenu {
     static delete = async (characterKey, deleteChats = false) => {
         await deleteCharacter(characterKey, { deleteChats: deleteChats });
     };
-
-    static #getCharacter = (avatar) => charactersStore.get(avatar) ?? null;
 
     /**
      * Show the context menu at the given position
