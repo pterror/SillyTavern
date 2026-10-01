@@ -11378,6 +11378,155 @@ export async function checkCharactersExist(directories, ids) {
     return result;
 }
 
+/** Rows findCharacterMatches() reads at most before it answers with what it found and `capped: true`. */
+export const FIND_CHARACTER_WORK_CAP = 20000;
+
+/**
+ * The library-wide half of the client's findChar(): the characters findChar() would match if every character were
+ * held, without the current-character preference, which the client applies from what it holds. Same rules: an
+ * avatar key (with or without `.png`) wins; otherwise the name is compared as compareIgnoreCaseAndAccents() does
+ * (`insensitive`) or exactly; with `tags`, a character must carry a tag of each name, compared exactly. No name
+ * matches every character. Upstream returns the first match in its array, which is in avatar order; so is this.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ name?: string | null, allowAvatar?: boolean, insensitive?: boolean, tags?: string[] | null }} query
+ * @returns {Promise<{ ids: string[], capped: boolean } | 'names-not-ready' | null>} at most two ids, the first being
+ *   findChar()'s answer and a second meaning "more than one matched". `capped` when the work cap stopped the search
+ *   before it could rule out a match. null when the store is unavailable.
+ */
+export async function findCharacterMatches(directories, { name = null, allowAvatar = true, insensitive = true, tags = null }) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const db = entry.db;
+    const pending = entry.batch?.pending ?? new Map();
+    const tagNames = Array.isArray(tags) && tags.length > 0 ? tags.map(String) : null;
+
+    /** @type {Set<string>[]} for each wanted tag name, the ids of the live tags with exactly that name */
+    let wantedTagIds = [];
+    if (tagNames) {
+        if (!tagNameKeysReady(entry)) return 'names-not-ready';
+        wantedTagIds = tagNames.map(tagName => {
+            const ids = new Set();
+            for (const row of /** @type {Iterable<{ id: string, data: string }>} */ (db.iterate(`SELECT id, data FROM tags WHERE name_key = ? AND ${NOT_MARKED_DELETED_SQL}`, [tagNameKey(tagName)]))) {
+                try {
+                    if (JSON.parse(row.data)?.name == tagName) ids.add(row.id);
+                } catch {
+                    // An unparseable definition has no name to match.
+                }
+            }
+            return ids;
+        });
+        if (wantedTagIds.some(ids => ids.size === 0)) return { ids: [], capped: false };
+    }
+    const deletions = tagNames ? readTagDeletionsSync(db) : new Map();
+
+    /**
+     * @param {string[]} ids
+     * @returns {string[]} the ids among `ids` carrying every wanted tag, in the order given
+     */
+    const withWantedTags = (ids) => {
+        if (!tagNames || ids.length === 0) return ids;
+        /** @type {Map<string, string[]>} */
+        const tagIdsOf = new Map(ids.map(id => [id, pending.get(id)?.tagIds ? [...pending.get(id).tagIds] : []]));
+        const stored = ids.filter(id => !pending.has(id));
+        for (let i = 0; i < stored.length; i += BATCH_FLUSH_SIZE) {
+            const chunk = stored.slice(i, i + BATCH_FLUSH_SIZE);
+            for (const row of /** @type {Iterable<{ character_id: string, tag_id: string }>} */ (db.iterate(`SELECT character_id, tag_id FROM character_tags WHERE character_id IN (${chunk.map(() => '?').join(', ')})`, chunk))) {
+                tagIdsOf.get(row.character_id)?.push(row.tag_id);
+            }
+        }
+        return ids.filter(id => {
+            const carried = new Set(resolveTagIds(tagIdsOf.get(id) ?? [], deletions));
+            return wantedTagIds.every(wanted => [...wanted].some(tagId => carried.has(tagId)));
+        });
+    };
+
+    const hasName = typeof name === 'string' && name !== '';
+    const nameKey = hasName ? tagNameKey(name) : null;
+    // compareIgnoreCaseAndAccents() compares an empty string as it is.
+    /** @param {string} candidate */
+    const nameMatches = (candidate) => (insensitive && candidate !== '' ? tagNameKey(candidate) === nameKey : candidate === name);
+
+    if (allowAvatar && hasName) {
+        const avatars = name.endsWith('.png') ? [name] : [name, `${name}.png`];
+        for (const avatar of avatars) {
+            const exists = pending.has(avatar) || Boolean(db.get('SELECT 1 FROM characters WHERE id = @id', { id: avatar }));
+            if (exists && withWantedTags([avatar]).length > 0) return { ids: [avatar], capped: false };
+        }
+    }
+
+    /** @type {string[]} */
+    const found = [];
+    for (const [id, { row }] of pending) {
+        if (!hasName || nameMatches(row.name)) found.push(id);
+    }
+    const fromPending = withWantedTags(found);
+    found.length = 0;
+    found.push(...fromPending);
+
+    let read = 0;
+    let capped = false;
+    /** @type {string[]} */
+    let batch = [];
+    const flush = () => {
+        for (const id of withWantedTags(batch)) {
+            if (!pending.has(id)) found.push(id);
+        }
+        batch = [];
+    };
+
+    let sql;
+    let params;
+    if (hasName) {
+        // name_fold folds a superset of what compareIgnoreCaseAndAccents() does, so every match is among these rows.
+        sql = 'SELECT id, name FROM characters WHERE name_fold = ? ORDER BY id';
+        params = [foldName(name)];
+    } else if (tagNames) {
+        const firstIds = [...wantedTagIds[0]];
+        for (const [tagId, mergeInto] of deletions) {
+            if (mergeInto !== null && wantedTagIds[0].has(mergeInto)) firstIds.push(tagId);
+        }
+        sql = `SELECT DISTINCT character_id AS id FROM character_tags WHERE tag_id IN (${firstIds.map(() => '?').join(', ')}) ORDER BY character_id`;
+        params = firstIds;
+    } else {
+        sql = 'SELECT id, name FROM characters ORDER BY id';
+        params = [];
+    }
+
+    for (const row of /** @type {Iterable<{ id: string, name: string | null }>} */ (db.iterate(sql, params))) {
+        if (read >= FIND_CHARACTER_WORK_CAP) {
+            capped = true;
+            break;
+        }
+        read++;
+        if (!hasName || nameMatches(String(row.name))) batch.push(row.id);
+        if (batch.length >= BATCH_FLUSH_SIZE) flush();
+        if (found.length >= 2) break;
+    }
+    flush();
+
+    found.sort();
+    return { ids: found.slice(0, 2), capped: capped && found.length < 2 };
+}
+
+/**
+ * The groups whose name compares equal to `name` as compareIgnoreCaseAndAccents() does, in id order.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} name
+ * @returns {Promise<string[] | null>} at most two ids; null when the store is unavailable.
+ */
+export async function findGroupMatches(directories, name) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const key = tagNameKey(String(name));
+    /** @type {string[]} */
+    const found = [];
+    for (const row of /** @type {Iterable<{ id: string, name: string }>} */ (entry.db.iterate('SELECT id, name FROM groups WHERE name_fold = ? ORDER BY id', [foldName(name)]))) {
+        if (tagNameKey(String(row.name)) === key) found.push(row.id);
+        if (found.length >= 2) break;
+    }
+    return found;
+}
+
 /** @returns {Promise<number | null>} The change log's current high-water mark, or `null` if unavailable. */
 /**
  * @param {import('./users.js').UserDirectoryList} directories

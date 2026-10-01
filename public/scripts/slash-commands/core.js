@@ -22,7 +22,7 @@ import { slashCommandReturnHelper } from './SlashCommandReturnHelper.js';
 import { SlashCommandScope } from './SlashCommandScope.js';
 import { textgen_types } from '../textgen-settings.js';
 import { accountStorage } from '../util/AccountStorage.js';
-import { canUseNegativeLookbehind, debounce, delay, findChar, isTrueBoolean } from '../utils.js';
+import { canUseNegativeLookbehind, debounce, delay, findCharAsync, isTrueBoolean } from '../utils.js';
 
 let parserInstance;
 /**
@@ -210,9 +210,9 @@ export async function sendMessageAs(args, text) {
     const isSystem = bias && !removeMacros(mesText).length;
     const compact = isTrueBoolean(args?.compact);
 
-    const character = findChar({ name: name });
+    const character = await findCharAsync({ name: name });
 
-    const avatarCharacter = args.avatar ? findChar({ name: args.avatar }) : character;
+    const avatarCharacter = args.avatar ? await findCharAsync({ name: args.avatar }) : character;
     if (args.avatar && !avatarCharacter) {
         toastr.warning(t`Character for avatar ${args.avatar} not found`);
         return '';

@@ -5,7 +5,7 @@ import { t } from '../../i18n.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';
 import { commonEnumProviders } from '../SlashCommandCommonEnumsProvider.js';
 import { SlashCommandEnumValue } from '../SlashCommandEnumValue.js';
-import { findChar } from '../../utils.js';
+import { findCharAsync } from '../../utils.js';
 
 /**
  * Copium for running group actions when the member is offscreen.
@@ -166,7 +166,7 @@ async function addGroupMemberCallback(_, name) {
         return '';
     }
 
-    const character = findChar({ name: name, preferCurrentChar: false });
+    const character = await findCharAsync({ name: name, preferCurrentChar: false });
     if (!character) {
         console.warn(`WARN: No character found for argument ${name}`);
         return '';

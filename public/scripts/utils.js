@@ -2678,11 +2678,46 @@ export function findPersona({ name = null, allowAvatar = true, insensitive = tru
 }
 
 /**
+ * findChar()'s match tests.
+ * @param {{ name?: string?, allowAvatar?: boolean, insensitive?: boolean, filteredByTags?: string[]? }} options
+ */
+function findCharMatchers({ name = null, allowAvatar = true, insensitive = true, filteredByTags = null }) {
+    const matches = (char) => !name || (allowAvatar && char.avatar === name) || (insensitive ? equalsIgnoreCaseAndAccents(char.name, name) : char.name === name);
+    const hasTagFilter = Array.isArray(filteredByTags) && filteredByTags.length > 0;
+    const tagsMatch = (char) => {
+        if (!hasTagFilter || !char) return true;
+        const charTags = getTagsList(char.avatar, false);
+        return filteredByTags.every(tagName => charTags.some(x => x.name == tagName));
+    };
+    return { matches, tagsMatch, hasTagFilter };
+}
+
+/**
+ * findChar()'s preference for the current character, or the current group's members: the first of them matching.
+ * @param {{ name?: string?, allowAvatar?: boolean, insensitive?: boolean, filteredByTags?: string[]?, quiet?: boolean }} options
+ * @returns {Character|undefined}
+ */
+export function findCurrentCharMatch({ name = null, allowAvatar = true, insensitive = true, filteredByTags = null, quiet = false }) {
+    const { matches, tagsMatch } = findCharMatchers({ name, allowAvatar, insensitive, filteredByTags });
+    const currentCharacter = getCurrentCharacter();
+    /** @type {any[]} */
+    const currentChars = selected_group
+        ? (groupsStore.get(selected_group)?.members ?? []).map(member => charactersStore.get(member)).filter(char => char && tagsMatch(char))
+        : (currentCharacter && tagsMatch(currentCharacter) ? [currentCharacter] : []);
+
+    const preferredCharSearch = currentChars.filter(matches);
+    if (preferredCharSearch.length > 1) {
+        if (!quiet) toastr.warning(t`Multiple characters found for given conditions.`);
+        else console.warn(t`Multiple characters found for given conditions. Returning the first match.`);
+    }
+    return preferredCharSearch[0];
+}
+
+/**
  * Finds a character by name, with optional filtering and precedence for avatars.
  *
- * Stays resident-only (does not hit the server) - `findChar()` has many call sites, several of which are
- * synchronous (e.g. world-info.js's field editor calls it inside a sync `.map()`), so making it async would
- * ripple out further than this function's scope.
+ * Answers only from the characters the page holds, since it must answer at once. `findCharAsync()` asks the server
+ * for the rest of the library.
  * @param {object} [options={}] - The options for the search
  * @param {string?} [options.name=null] - The name to search for
  * @param {boolean} [options.allowAvatar=true] - Whether to allow searching by avatar
@@ -2693,29 +2728,12 @@ export function findPersona({ name = null, allowAvatar = true, insensitive = tru
  * @returns {Character?} - The found character or null if not found
  */
 export function findChar({ name = null, allowAvatar = true, insensitive = true, filteredByTags = null, preferCurrentChar = true, quiet = false } = {}) {
-    const matches = (char) => !name || (allowAvatar && char.avatar === name) || (insensitive ? equalsIgnoreCaseAndAccents(char.name, name) : char.name === name);
+    const { matches, tagsMatch, hasTagFilter } = findCharMatchers({ name, allowAvatar, insensitive, filteredByTags });
 
-    const hasTagFilter = Array.isArray(filteredByTags) && filteredByTags.length > 0;
-    const tagsMatch = (char) => {
-        if (!hasTagFilter || !char) return true;
-        const charTags = getTagsList(char.avatar, false);
-        return filteredByTags.every(tagName => charTags.some(x => x.name == tagName));
-    };
-
-    // `currentChars` is computed lazily so `preferCurrentChar: false` skips it entirely.
     if (preferCurrentChar) {
-        /** @type {any[]} */
-        const currentChars = selected_group
-            ? (groupsStore.get(selected_group)?.members ?? []).map(member => charactersStore.get(member)).filter(tagsMatch)
-            : characters.filter(char => tagsMatch(char) && getCurrentCharacter()?.avatar === char.avatar);
-
-        const preferredCharSearch = currentChars.filter(matches);
-        if (preferredCharSearch.length > 1) {
-            if (!quiet) toastr.warning(t`Multiple characters found for given conditions.`);
-            else console.warn(t`Multiple characters found for given conditions. Returning the first match.`);
-        }
-        if (preferredCharSearch.length) {
-            return preferredCharSearch[0];
+        const current = findCurrentCharMatch({ name, allowAvatar, insensitive, filteredByTags, quiet });
+        if (current) {
+            return current;
         }
     }
 
@@ -2736,6 +2754,63 @@ export function findChar({ name = null, allowAvatar = true, insensitive = true, 
     return matchingCharacters[0] || null;
 }
 
+
+/**
+ * findChar() over the whole library: the same options, rules and answer, for a character the page may not hold.
+ * The current character or group's members are preferred from what the page holds; the rest is the server's
+ * `/api/characters/find`. A miss is `null`. If the server can't answer, it answers as findChar() does from what the
+ * page holds, and says so in the console.
+ * @param {object} [options={}]
+ * @param {string?} [options.name=null] - The name to search for
+ * @param {boolean} [options.allowAvatar=true] - Whether to allow searching by avatar
+ * @param {boolean} [options.insensitive=true] - Whether the search should be case insensitive
+ * @param {string[]?} [options.filteredByTags=null] - Tags to filter characters by (AND'd together)
+ * @param {boolean} [options.preferCurrentChar=true] - Whether to prefer the current character(s)
+ * @param {boolean} [options.quiet=false] - Whether to suppress warnings
+ * @returns {Promise<Character?>}
+ */
+export async function findCharAsync({ name = null, allowAvatar = true, insensitive = true, filteredByTags = null, preferCurrentChar = true, quiet = false } = {}) {
+    if (preferCurrentChar) {
+        const current = findCurrentCharMatch({ name, allowAvatar, insensitive, filteredByTags, quiet });
+        if (current) {
+            return current;
+        }
+    }
+
+    const tags = Array.isArray(filteredByTags) && filteredByTags.length > 0 ? filteredByTags : null;
+    /** @type {{ ids: string[], capped: boolean }} */
+    let answer;
+    try {
+        const response = await fetch('/api/characters/find', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name, allowAvatar, insensitive, tags }),
+        });
+        if (!response.ok) {
+            throw new Error(`/api/characters/find failed with ${response.status}`);
+        }
+        answer = await response.json();
+    } catch (error) {
+        console.warn('findCharAsync: the server could not be asked, so only the characters this page holds were searched.', error);
+        return findChar({ name, allowAvatar, insensitive, filteredByTags, preferCurrentChar: false, quiet });
+    }
+
+    if (answer.ids.length > 1) {
+        if (!quiet) toastr.warning(t`Multiple characters found for given conditions.`);
+        else console.warn(t`Multiple characters found for given conditions. Returning the first match.`);
+    }
+    if (answer.capped) {
+        const message = t`The search stopped before it had checked every character, so a matching character may have been missed.`;
+        if (!quiet) toastr.warning(message);
+        else console.warn(message);
+    }
+    if (answer.ids.length === 0) {
+        return null;
+    }
+    // Imported when used: character-repository.js imports script.js, which imports this module.
+    const { characterRepository } = await import('./character-repository.js');
+    return (await characterRepository.get(answer.ids[0])) ?? null;
+}
 
 /**
  * Compares two arrays for equality

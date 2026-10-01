@@ -11,7 +11,7 @@ import { SlashCommandClosure } from '../SlashCommandClosure.js';
 import { commonEnumProviders, enumIcons } from '../SlashCommandCommonEnumsProvider.js';
 import { SlashCommandEnumValue, enumTypes } from '../SlashCommandEnumValue.js';
 import { getTokenCountAsync, trimCurrentTokens } from '../../tokenizers.js';
-import { findChar, isFalseBoolean, isTrueBoolean } from '../../utils.js';
+import { findCharAsync, isFalseBoolean, isTrueBoolean } from '../../utils.js';
 import { resolveVariable } from '../../variables.js';
 
 async function trimTokensCallback(arg, value) {
@@ -117,7 +117,7 @@ async function generateCallback(args, value) {
 
         setEphemeralStopStrings(resolveVariable(args?.stop));
         const name = args?.name;
-        const char = name ? findChar({ name: name }) : null;
+        const char = name ? await findCharAsync({ name: name }) : null;
         /** @type {import('../../../script.js').GenerateQuietPromptParams} */
         const params = {
             quietPrompt: value,

@@ -103,11 +103,18 @@ jest.unstable_mockModule('../public/scripts/hash-utils.js', () => ({
     getStringHash: jest.fn(),
 }));
 
+const repositoryGetMock = jest.fn(async (id) => ({ avatar: id, name: `name of ${id}` }));
+jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
+    characterRepository: { get: repositoryGetMock },
+}));
+
 /** @type {typeof import('../public/scripts/utils.js').findChar} */
 let findChar;
+/** @type {typeof import('../public/scripts/utils.js').findCharAsync} */
+let findCharAsync;
 
 beforeAll(async () => {
-    ({ findChar } = await import('../public/scripts/utils.js'));
+    ({ findChar, findCharAsync } = await import('../public/scripts/utils.js'));
 });
 
 /** Replaces the resident character set + tag lookup for a test. */
@@ -274,5 +281,66 @@ describe('findChar() preferCurrentChar', () => {
 
         // Current char doesn't carry the required tag, so it must not win by preference - the tagged match wins.
         expect(findChar({ name: 'Shared', filteredByTags: ['red'] })).toBe(other);
+    });
+});
+
+describe('findCharAsync()', () => {
+    /** @param {number} status @param {any} body */
+    function serverAnswers(status, body) {
+        global.fetch = jest.fn(async () => ({ ok: status >= 200 && status < 300, status, json: async () => body }));
+    }
+
+    test('the current character is preferred without asking the server', async () => {
+        const current = { avatar: 'cur.png', name: 'Cur' };
+        setCharacters([current]);
+        getCurrentCharacterMock.mockReturnValue(current);
+        serverAnswers(200, { ids: ['other.png'], capped: false });
+
+        expect(await findCharAsync({ name: 'Cur' })).toBe(current);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('asks the server with the same options and resolves its first match', async () => {
+        serverAnswers(200, { ids: ['a.png'], capped: false });
+
+        const found = await findCharAsync({ name: 'Sam', insensitive: false, filteredByTags: ['Hero'], preferCurrentChar: false });
+        expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({ name: 'Sam', allowAvatar: true, insensitive: false, tags: ['Hero'] });
+        expect(repositoryGetMock).toHaveBeenCalledWith('a.png');
+        expect(found).toEqual({ avatar: 'a.png', name: 'name of a.png' });
+        expect(global.toastr.warning).not.toHaveBeenCalled();
+    });
+
+    test('a miss is null', async () => {
+        serverAnswers(200, { ids: [], capped: false });
+        expect(await findCharAsync({ name: 'Nobody' })).toBeNull();
+    });
+
+    test('two matches warn, or only log when quiet', async () => {
+        serverAnswers(200, { ids: ['a.png', 'b.png'], capped: false });
+        expect((await findCharAsync({ name: 'Sam' }))?.avatar).toBe('a.png');
+        expect(global.toastr.warning).toHaveBeenCalledTimes(1);
+
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        await findCharAsync({ name: 'Sam', quiet: true });
+        expect(global.toastr.warning).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
+    });
+
+    test('a search the server cut short says so', async () => {
+        serverAnswers(200, { ids: [], capped: true });
+        expect(await findCharAsync({ filteredByTags: ['Hero'] })).toBeNull();
+        expect(global.toastr.warning).toHaveBeenCalledWith(expect.stringContaining('may have been missed'));
+    });
+
+    test('when the server cannot answer, it searches the characters the page holds', async () => {
+        const held = { avatar: 'held.png', name: 'Held' };
+        setCharacters([held]);
+        serverAnswers(503, { error: true });
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        expect(await findCharAsync({ name: 'held' })).toBe(held);
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
     });
 });

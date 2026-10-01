@@ -35,7 +35,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2952,6 +2952,39 @@ router.post('/exists', async function (request, response) {
         return response.send(result);
     } catch (err) {
         console.error('[characters/exists] Existence check failed:', err);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * findChar()'s library-wide lookup: `{ name?, allowAvatar?, insensitive?, tags? }` answers `{ ids, capped }` from
+ * findCharacterMatches(); `{ type: 'group', name }` answers `{ ids }` from findGroupMatches().
+ */
+router.post('/find', async function (request, response) {
+    try {
+        const body = request.body ?? {};
+        const name = body.name ?? null;
+        if (name !== null && typeof name !== 'string') return response.sendStatus(400);
+        if (body.type === 'group') {
+            if (!name) return response.sendStatus(400);
+            const ids = await findGroupMatches(request.user.directories, name);
+            if (ids === null) return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+            return response.send({ ids });
+        }
+        if (body.type !== undefined && body.type !== 'character') return response.sendStatus(400);
+        const tags = body.tags ?? null;
+        if (tags !== null && (!Array.isArray(tags) || tags.some(tag => typeof tag !== 'string'))) return response.sendStatus(400);
+        const result = await findCharacterMatches(request.user.directories, {
+            name,
+            allowAvatar: body.allowAvatar !== false,
+            insensitive: body.insensitive !== false,
+            tags,
+        });
+        if (result === null) return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+        if (result === 'names-not-ready') return response.status(503).send({ error: true, reason: 'names-not-ready' });
+        return response.send(result);
+    } catch (err) {
+        console.error('[characters/find] Lookup failed:', err);
         return response.status(500).send({ error: true });
     }
 });

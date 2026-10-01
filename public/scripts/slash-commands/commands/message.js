@@ -17,7 +17,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '
 import { commonEnumProviders, enumIcons } from '../SlashCommandCommonEnumsProvider.js';
 import { SlashCommandEnumValue, enumTypes } from '../SlashCommandEnumValue.js';
 import { slashCommandReturnHelper } from '../SlashCommandReturnHelper.js';
-import { delay, equalsIgnoreCaseAndAccents, findChar, findPersona, isTrueBoolean, stringToRange, trimToEndSentence, trimToStartSentence, waitUntilCondition } from '../../utils.js';
+import { delay, equalsIgnoreCaseAndAccents, findCharAsync, findPersona, isTrueBoolean, stringToRange, trimToEndSentence, trimToStartSentence, waitUntilCondition } from '../../utils.js';
 import { COMMENT_NAME_DEFAULT, NARRATOR_NAME_DEFAULT, NARRATOR_NAME_KEY, generateSystemMessage, getNameAndAvatarForMessage, sendMessageAs, sendNarratorMessage } from '../core.js';
 
 function trimStartCallback(_, value) {
@@ -143,7 +143,7 @@ async function askCharacter(args, text) {
     // restoreCharacter runs, since it's only called back after the async Generate() below.
     const prevAvatar = getCurrentCharacter()?.avatar;
 
-    const character = findChar({ name: args?.name });
+    const character = await findCharAsync({ name: args?.name });
     if (!character) {
         toastr.error(t`Character not found.`);
         return '';
@@ -296,7 +296,7 @@ async function goToCharacterCallback(_, name) {
         return;
     }
 
-    const character = findChar({ name: name });
+    const character = await findCharAsync({ name: name });
     if (character) {
         await openChat(character.avatar);
         setActiveCharacter(character.avatar);
@@ -520,7 +520,7 @@ async function messageNameCallback(args, name) {
             updates.original_avatar = default_avatar;
         }
     } else {
-        const character = findChar({ name: name });
+        const character = await findCharAsync({ name: name });
         if (character) {
             const characterInfo = getNameAndAvatarForMessage(character, name);
             updates.name = newName = characterInfo.name;

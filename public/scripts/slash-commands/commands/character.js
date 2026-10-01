@@ -15,7 +15,7 @@ import { SlashCommandClosure } from '../SlashCommandClosure.js';
 import { commonEnumMatchProviders, commonEnumProviders } from '../SlashCommandCommonEnumsProvider.js';
 import { SlashCommandEnumValue, enumTypes } from '../SlashCommandEnumValue.js';
 import { slashCommandReturnHelper } from '../SlashCommandReturnHelper.js';
-import { findChar, isFalseBoolean, isTrueBoolean, resolveAvatarData, waitUntilCondition } from '../../utils.js';
+import { findCharAsync, isFalseBoolean, isTrueBoolean, resolveAvatarData, waitUntilCondition } from '../../utils.js';
 import { normalizeFav } from '../../hash-utils.js';
 import { validateArrayArgString } from '../core.js';
 
@@ -168,7 +168,7 @@ async function createCharacterCallback(args) {
 async function updateCharacterCallback(args) {
     let character;
     if (args.char) {
-        character = findChar({ name: args.char });
+        character = await findCharAsync({ name: args.char });
         if (!character) {
             toastr.warning(t`Character "${args.char}" not found`);
             return '';
@@ -338,7 +338,7 @@ async function updateCharacterCallback(args) {
 async function duplicateCharacterCallback(args) {
     let targetAvatar = null;
     if (args.char) {
-        const character = findChar({ name: args.char });
+        const character = await findCharAsync({ name: args.char });
         if (!character) {
             toastr.warning(t`Character "${args.char}" not found`);
             return '';
@@ -369,7 +369,7 @@ async function duplicateCharacterCallback(args) {
 async function getCharacterDataCallback(args) {
     let character;
     if (args.char) {
-        character = findChar({ name: args.char });
+        character = await findCharAsync({ name: args.char });
         if (!character) {
             toastr.warning(t`Character "${args.char}" not found`);
             return '';
@@ -434,7 +434,7 @@ async function getCharacterDataCallback(args) {
 async function deleteCharacterCallback(args) {
     let character;
     if (args.char) {
-        character = findChar({ name: args.char });
+        character = await findCharAsync({ name: args.char });
         if (!character) {
             toastr.warning(t`Character "${args.char}" not found`);
             return 'false';
@@ -477,7 +477,7 @@ async function deleteMessagesByNameCallback(_, name) {
         return;
     }
 
-    const character = findChar({ name: name });
+    const character = await findCharAsync({ name: name });
     name = character?.name || name;
 
     const messagesToDelete = [];
@@ -708,12 +708,12 @@ export function registerCharacterCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'char-find',
         aliases: ['findchar'],
-        callback: (args, name) => {
+        callback: async (args, name) => {
             if (typeof name !== 'string') throw new Error(t`name must be a string`);
             if (args.preferCurrent instanceof SlashCommandClosure || Array.isArray(args.preferCurrent)) throw new Error(t`preferCurrent cannot be a closure or array`);
             if (args.quiet instanceof SlashCommandClosure || Array.isArray(args.quiet)) throw new Error(t`quiet cannot be a closure or array`);
 
-            const char = findChar({ name: name, filteredByTags: validateArrayArgString(args.tag, 'tag'), preferCurrentChar: !isFalseBoolean(args.preferCurrent), quiet: isTrueBoolean(args.quiet) });
+            const char = await findCharAsync({ name: name, filteredByTags: validateArrayArgString(args.tag, 'tag'), preferCurrentChar: !isFalseBoolean(args.preferCurrent), quiet: isTrueBoolean(args.quiet) });
             return char?.avatar ?? '';
         },
         returns: t`the avatar key (unique identifier) of the character`,
