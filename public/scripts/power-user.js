@@ -46,7 +46,7 @@ import {
     updateBindModelTemplatesState,
 } from './instruct-mode.js';
 
-import { getTagsList, tag_import_setting, tag_sort_mode, tags, getAssignedTagIds, refreshTagsDrawerUnderlayClip, findUsedTagIdByName } from './tags.js';
+import { getTagsList, tag_import_setting, tag_sort_mode, tags, getHeldAssignedTagIds, searchUsedTagOptions, refreshTagsDrawerUnderlayClip, findUsedTagIdByName } from './tags.js';
 import { tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 
@@ -3189,6 +3189,17 @@ async function getRandomCharacterAvatar(tagName) {
     return rows?.[0]?.avatar;
 }
 
+/** `/random`'s tag suggestions: used tags, the held ones at once, the rest from the server as they are typed. */
+function randomTagEnumProvider() {
+    const toOption = tag => new SlashCommandEnumValue(tag.name, null, enumTypes.enum, enumIcons.tag);
+    const provider = () => {
+        const held = getHeldAssignedTagIds();
+        return tags.filter(tag => held.has(tag.id)).map(toOption);
+    };
+    provider.enumSearchProvider = searchUsedTagOptions(toOption);
+    return provider;
+}
+
 async function doRandomChat(_, tagName) {
     resetSelectedGroup();
     const avatar = await getRandomCharacterAvatar(tagName);
@@ -4675,10 +4686,7 @@ jQuery(() => {
             SlashCommandArgument.fromProps({
                 description: 'optional tag name',
                 typeList: [ARGUMENT_TYPE.STRING],
-                enumProvider: () => {
-                    const assignedTagIds = getAssignedTagIds();
-                    return tags.filter(tag => assignedTagIds.has(tag.id)).map(tag => new SlashCommandEnumValue(tag.name, null, enumTypes.enum, enumIcons.tag));
-                },
+                enumProvider: randomTagEnumProvider(),
             }),
         ],
         helpString: 'Start a new chat with a random character. If an argument is provided, only considers characters that have the specified tag.',

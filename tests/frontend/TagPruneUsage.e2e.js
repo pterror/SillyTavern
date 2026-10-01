@@ -64,12 +64,10 @@ async function serverTagIds(page) {
     return tags.map(t => t.id);
 }
 
-/** @param {import('@playwright/test').Page} page @returns {Promise<Record<string, number>>} */
-async function serverTagUsage(page) {
-    return page.evaluate(async () => {
-        const headers = window['SillyTavern'].getContext().getRequestHeaders();
-        return (await fetch('/api/tags/usage', { headers })).json();
-    });
+/** @param {import('@playwright/test').Page} page @param {string} tagId @returns {Promise<number|undefined>} */
+async function serverTagUsage(page, tagId) {
+    const { counts } = await api(page, '/api/tags/query', { filter: { ids: [tagId] }, counts: true });
+    return counts?.[tagId];
 }
 
 /**
@@ -163,7 +161,7 @@ test.describe('Tag prune keeps tags that are in use', () => {
             const { charactersStore } = await import('/scripts/character-store.js');
             return charactersStore.has(a);
         }, fixture.hiddenCard)).toBe(false);
-        expect((await serverTagUsage(page))[fixture.hiddenTag]).toBe(1);
+        expect(await serverTagUsage(page, fixture.hiddenTag)).toBe(1);
 
         await openTagManagement(page);
 
@@ -216,28 +214,24 @@ test.describe('Tag prune keeps tags that are in use', () => {
         expect(await serverTagIds(page)).toContain(fixture.tag);
     });
 
-    test('keeps tags in use when the usage-count fetch failed at boot', async ({ browser, page }) => {
+    test('boot reads no usage counts, and prune keeps a tag in use', async ({ browser, page }) => {
         const stamp = Date.now();
         const fixture = await withSetupPage(browser, async (setup) => {
-            const tag = await createTag(setup, `usage-failed-${stamp}`);
-            const card = await createCharacter(setup, `TagPruneUsageFailed-${stamp}`);
+            const tag = await createTag(setup, `usage-boot-${stamp}`);
+            const card = await createCharacter(setup, `TagPruneUsageBoot-${stamp}`);
             await api(setup, '/api/tags/assign', { id: card, tagId: tag });
             return { tag, card };
         });
 
-        await page.route('**/api/tags/usage', route => route.fulfill({ status: 500, body: 'unavailable' }));
+        const usageReads = [];
+        page.on('request', request => {
+            if (new URL(request.url()).pathname === '/api/tags/usage') usageReads.push(request.url());
+        });
         await loadApp(page);
-        // The card and its tag assignment are resident here; only the usage aggregate is missing.
-        expect(await page.evaluate(async ({ card, tag }) => {
-            const { charactersStore } = await import('/scripts/character-store.js');
-            const c = charactersStore.get(card);
-            return Boolean(c?.tag_ids?.includes(tag));
-        }, fixture)).toBe(true);
-
         await openTagManagement(page);
         await pruneAndAccept(page);
 
-        await page.unroute('**/api/tags/usage');
+        expect(usageReads).toEqual([]);
         expect(await serverTagIds(page)).toContain(fixture.tag);
     });
 });

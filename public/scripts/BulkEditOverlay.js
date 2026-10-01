@@ -399,7 +399,7 @@ class BulkTagPopupHandler {
 
         $('#bulkTagList').empty();
 
-        redrawAfterTagChange([...clearedTagIds], affectedKeys, new Map([...clearedTagIds].map(id => [id, true])));
+        redrawAfterTagChange([...clearedTagIds], affectedKeys);
     }
 
     /**
@@ -417,7 +417,7 @@ class BulkTagPopupHandler {
 
         $('#bulkTagList').empty();
 
-        redrawAfterTagChange(mutualTags.map(tag => tag.id), affectedKeys, new Map(mutualTags.map(tag => [tag.id, true])));
+        redrawAfterTagChange(mutualTags.map(tag => tag.id), affectedKeys);
     }
 }
 

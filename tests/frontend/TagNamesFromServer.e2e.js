@@ -174,6 +174,32 @@ test.describe('tag names are looked up on the server', () => {
         expect(creates).toEqual([]);
     });
 
+    test('/random suggests a used tag the page doesn\'t hold, and only used ones', async ({ page }) => {
+        const stamp = `${Date.now()}`;
+        await page.route('**/api/characters/changes', route => route.fulfill({ status: 500 }));
+        await createUnheldTags(page, [
+            { id: `random-used-${stamp}`, name: `Randomused ${stamp}` },
+            { id: `random-unused-${stamp}`, name: `Randomunused ${stamp}` },
+        ]);
+        const avatar = await page.evaluate(async (name) => {
+            const headers = window['SillyTavern'].getContext().getRequestHeaders({ omitContentType: true });
+            const form = new FormData();
+            form.set('ch_name', name);
+            const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
+            if (!response.ok) throw new Error(`create failed: ${response.status}`);
+            return response.text();
+        }, `TagNamesRandom-${stamp}`);
+        await api(page, '/api/tags/assign', { id: avatar, tagId: `random-used-${stamp}` });
+
+        const input = page.locator('#send_textarea');
+        await input.click();
+        await input.pressSequentially(`/random ${stamp}`);
+        // An optional argument's options show when asked for.
+        await input.press('Control+Space');
+        await expect(page.locator('.autoComplete .item', { hasText: `Randomused ${stamp}` })).toBeVisible();
+        await expect(page.locator('.autoComplete .item', { hasText: `Randomunused ${stamp}` })).toHaveCount(0);
+    });
+
     test('importing a card\'s tags adds the existing tag by name and creates only the new one, ordered by the server', async ({ page }) => {
         const stamp = `${Date.now()}`;
         const avatar = await openNewCharacter(page, `TagNamesImport-${stamp}`);

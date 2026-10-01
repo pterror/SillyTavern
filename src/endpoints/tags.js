@@ -10,7 +10,6 @@ import {
     restoreTagBackup,
     getEntityTagIdsForMany,
     getAllEntityTagAssignments,
-    getAllTagUsage,
     streamTagDefinitionBatches,
     createTagDefinition,
     editTagDefinition,
@@ -728,18 +727,3 @@ router.post('/restore', async (request, response) => {
     }
 });
 
-router.get('/usage', async (request, response) => {
-    try {
-        const result = await getAllTagUsage(request.user.directories);
-        if (result === null) {
-            return response.status(503).send({ error: 'Character metadata store is unavailable' });
-        }
-
-        // The ids whose count may be too high (see getAllTagUsage()), as a JSON array, so the body stays {id: count}.
-        response.set('X-Tag-Usage-Approximate', JSON.stringify(result.approximate));
-        response.send(result.counts);
-    } catch (err) {
-        console.error('Could not get tag usage', err);
-        response.sendStatus(500);
-    }
-});
