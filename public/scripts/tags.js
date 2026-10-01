@@ -763,6 +763,71 @@ async function readEntityTagIds(key) {
 }
 
 /**
+ * The tag ids of characters and groups, held or not: held ones' own `tag_ids`, the rest from the server.
+ * @param {string[]} keys
+ * @returns {Promise<Map<string, string[]> | null>} by key; a key the server doesn't know has no entry. null if the
+ *   server could not be asked.
+ */
+export async function readEntitiesTagIds(keys) {
+    /** @type {Map<string, string[]>} */
+    const found = new Map();
+    const unheld = [];
+    for (const key of new Set(keys)) {
+        const held = resolveTagIdsArray(key);
+        if (held) found.set(key, [...held]);
+        else unheld.push(key);
+    }
+    for (let i = 0; i < unheld.length; i += TAG_READ_MAX_IDS) {
+        const answer = await postTagsRead('/api/tags/for', { ids: unheld.slice(i, i + TAG_READ_MAX_IDS) });
+        if (!answer) return null;
+        for (const [key, ids] of Object.entries(answer)) {
+            if (Array.isArray(ids)) found.set(key, ids.filter(id => typeof id === 'string'));
+        }
+    }
+    return found;
+}
+
+/**
+ * Puts tags on, or takes them off, characters and groups, held or not. A held one changes here at once and is saved
+ * as addTagsToEntity() and removeTagFromEntity() save; one this tab doesn't hold is changed on the server only.
+ * @param {string[]} keys
+ * @param {string[]} tagIds
+ * @param {boolean} assign
+ * @returns {Promise<void>} settled once every save is answered
+ */
+export async function saveTagsOnKeys(keys, tagIds, assign) {
+    /** @type {Set<string>} */
+    const heldKeys = new Set();
+    /** @type {(() => Promise<boolean>)[]} */
+    const heldSaves = [];
+    const unheldKeys = [];
+    for (const key of new Set(keys)) {
+        if (!resolveTagIdsArray(key)) {
+            unheldKeys.push(key);
+            continue;
+        }
+        for (const tagId of tagIds) {
+            const changed = assign ? assignTagLocally(key, tagId) : unassignTagLocally(key, tagId);
+            if (!changed) continue;
+            heldKeys.add(key);
+            heldSaves.push(assign ? queueAssignSave(key, tagId) : queueUnassignSave(key, tagId));
+        }
+    }
+    if (heldKeys.size) {
+        redrawAfterTagChange(tagIds, heldKeys);
+        const openKey = getTagKey();
+        if (openKey !== null && heldKeys.has(String(openKey))) {
+            if (selected_group) applyTagsOnGroupSelect(); else applyTagsOnCharacterSelect();
+        }
+        applyCharacterTagsToMessageDivs();
+    }
+    await Promise.all([
+        runWithConcurrency(heldSaves, save => save()),
+        runWithConcurrency(unheldKeys, key => saveTagsOnUnheldKey(key, tagIds, assign)),
+    ]);
+}
+
+/**
  * Puts tags on, or takes them off, a character or group this tab doesn't hold, on the server only, one tag at a
  * time. The character list's page is drawn again once the saves are answered.
  * @param {string} key
@@ -3165,10 +3230,20 @@ function findTag(request, resolve, listSelector) {
  * @param {*} listSelector - The selector of the list to print/add to
  * @param {object} param1 - Optional parameters for this method call
  * @param {PrintTagListOptions} [param1.tagListOptions] - Optional parameters for printing the tag list. Can be set to be consistent with the expected behavior of tags in the list that was defined before.
+ * @param {((tag: Tag) => void) | null} [param1.onTagChosen] - Given, the chosen tag (created first if it is new) goes
+ *   to it instead of being put on an entity.
  * @returns {boolean} <c>false</c>, to keep the input clear
  */
-function selectTag(event, ui, listSelector, { tagListOptions = {} } = {}) {
+function selectTag(event, ui, listSelector, { tagListOptions = {}, onTagChosen = null } = {}) {
     const tagName = ui.item.value;
+
+    if (onTagChosen) {
+        $(event.target).val('').trigger('input');
+        createNewTags([tagName]).then(([tag]) => {
+            if (tag) onTagChosen(tag);
+        });
+        return false;
+    }
 
     // Optional, check for multiple character ids being present.
     const characterData = event.target.closest('#bulk_tags_div')?.dataset.characters;
@@ -4615,13 +4690,16 @@ export function applyTagsOnGroupSelect(groupId = null) {
  * @param {string} inputSelector - the selector for the tag input control
  * @param {string} listSelector - the selector for the list of the tags modified by the input control
  * @param {PrintTagListOptions} [tagListOptions] - Optional parameters for printing the tag list. Can be set to be consistent with the expected behavior of tags in the list that was defined before.
+ * @param {object} [options]
+ * @param {((tag: Tag) => void) | null} [options.onTagChosen] - Given, a chosen tag goes to it instead of being put on
+ *   the open character or group; the caller adds it where it belongs.
  */
-export function createTagInput(inputSelector, listSelector, tagListOptions = {}) {
+export function createTagInput(inputSelector, listSelector, tagListOptions = {}, { onTagChosen = null } = {}) {
     $(inputSelector)
         // @ts-ignore
         .autocomplete({
             source: (i, o) => findTag(i, o, listSelector),
-            select: (e, u) => selectTag(e, u, listSelector, { tagListOptions: tagListOptions }),
+            select: (e, u) => selectTag(e, u, listSelector, { tagListOptions: tagListOptions, onTagChosen }),
             minLength: 0,
         })
         .on('focus', onTagInputFocus); // <== show tag list on click

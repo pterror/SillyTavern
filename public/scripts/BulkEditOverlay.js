@@ -14,7 +14,7 @@ import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
 import { convertCharacterToPersona } from './personas.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
-import { createTagInput, getTagKeyForEntity, getTagsList, printTagList, compareTagsForSort, removeTagFromMap, importTags, tag_import_setting, clearEntityTags, redrawAfterTagChange } from './tags.js';
+import { createTagInput, printTagList, compareTagsForSort, importTags, tag_import_setting, readEntitiesTagIds, readTagsForIds, saveTagsOnKeys, tagsStore } from './tags.js';
 import { t } from './i18n.js';
 import { escapeHtml } from './utils.js';
 
@@ -293,11 +293,17 @@ class BulkTagPopupHandler {
     };
 
     /**
+     * The tag ids of each selected character, as last read: a held one's own, the rest the server's.
+     * @type {Map<string, string[]>}
+     */
+    tagIdsByKey = new Map();
+
+    /**
      * Append and show the tag control
      *
      * @param {string[]} characterIds - The characters that are shown inside the popup
      */
-    show(characterIds) {
+    async show(characterIds) {
         // shallow copy character ids persistently into this tooltip
         this.characterIds = characterIds.slice();
 
@@ -308,42 +314,69 @@ class BulkTagPopupHandler {
 
         document.body.insertAdjacentHTML('beforeend', this.#getHtml());
 
-        const entities = this.characterIds.map(avatar => characterToEntity(charactersStore.get(avatar))).filter(entity => entity.item !== undefined);
+        const { characterRepository } = await import('./character-repository.js');
+        const characters = await characterRepository.getMany(this.characterIds);
+        const entities = this.characterIds.map(avatar => characterToEntity(characters.get(avatar))).filter(entity => entity.item !== undefined);
         buildAvatarList($('#bulk_tags_avatars_block'), entities);
 
-        // Print the tag list with all mutuable tags, marking them as removable. That is the initial fill
-        printTagList($('#bulkTagList'), { tags: () => this.getMutualTags(), tagOptions: { removable: true } });
-
-        // Tag input with resolvable list for the mutual tags to get redrawn, so that newly added tags get sorted correctly
-        createTagInput('#bulkTagInput', '#bulkTagList', { tags: () => this.getMutualTags(), tagOptions: { removable: true } });
+        const listOptions = { tags: () => this.getMutualTags(), tagOptions: { removable: true, removeAction: tag => this.removeTag(tag) } };
+        createTagInput('#bulkTagInput', '#bulkTagList', listOptions, { onTagChosen: tag => this.addTag(tag) });
 
         document.querySelector('#bulk_tag_popup_reset').addEventListener('click', this.resetTags.bind(this));
         document.querySelector('#bulk_tag_popup_remove_mutual').addEventListener('click', this.removeMutual.bind(this));
         document.querySelector('#bulk_tag_popup_cancel').addEventListener('click', this.hide.bind(this));
         document.querySelector('#bulk_tag_popup_import_all_tags').addEventListener('click', this.importAllTags.bind(this));
         document.querySelector('#bulk_tag_popup_import_existing_tags').addEventListener('click', this.importExistingTags.bind(this));
+
+        await this.refresh();
+    }
+
+    /**
+     * Reads the selected characters' tags again, and the definitions of their mutual tags, and draws the mutual tags.
+     */
+    async refresh() {
+        const read = await readEntitiesTagIds(this.characterIds);
+        if (!read) {
+            toastr.error(t`The server could not be asked which tags they have.`, t`Tags could not be read`);
+            return;
+        }
+        this.tagIdsByKey = read;
+        await readTagsForIds(this.getMutualTagIds());
+        printTagList($('#bulkTagList'), { empty: 'always', tags: () => this.getMutualTags(), tagOptions: { removable: true, removeAction: tag => this.removeTag(tag) } });
     }
 
     /**
      * Import existing tags for all selected characters
      */
     async importExistingTags() {
-        for (const characterId of this.characterIds) {
-            await importTags(charactersStore.get(characterId), { importSetting: tag_import_setting.ONLY_EXISTING });
-        }
-
-        $('#bulkTagList').empty();
+        await this.importTagsWith(tag_import_setting.ONLY_EXISTING);
     }
 
     /**
      * Import all tags for all selected characters
      */
     async importAllTags() {
-        for (const characterId of this.characterIds) {
-            await importTags(charactersStore.get(characterId), { importSetting: tag_import_setting.ALL });
-        }
+        await this.importTagsWith(tag_import_setting.ALL);
+    }
 
-        $('#bulkTagList').empty();
+    /** @param {string} importSetting */
+    async importTagsWith(importSetting) {
+        const { characterRepository } = await import('./character-repository.js');
+        for (const characterId of this.characterIds) {
+            const character = charactersStore.get(characterId) ?? await characterRepository.full(characterId);
+            if (character) await importTags(character, { importSetting });
+        }
+        await this.refresh();
+    }
+
+    /**
+     * The ids of the tags every selected character has.
+     * @returns {string[]}
+     */
+    getMutualTagIds() {
+        const lists = this.characterIds.map(key => this.tagIdsByKey.get(key) ?? []);
+        if (!lists.length) return [];
+        return lists.reduce((mutual, ids) => mutual.filter(id => ids.includes(id)));
     }
 
     /**
@@ -355,20 +388,20 @@ class BulkTagPopupHandler {
         if (this.characterIds.length == 0) {
             return [];
         }
-
-        if (this.characterIds.length === 1) {
-            // Just use tags of the single character
-            return getTagsList(getTagKeyForEntity(this.characterIds[0]));
-        }
-
-        // Find mutual tags for multiple characters
-        const allTags = this.characterIds.map(cid => getTagsList(getTagKeyForEntity(cid)));
-        const mutualTags = allTags.reduce((mutual, characterTags) =>
-            mutual.filter(tag => characterTags.some(cTag => cTag.id === tag.id)),
-        );
-
-        this.currentMutualTags = mutualTags.sort(compareTagsForSort);
+        this.currentMutualTags = this.getMutualTagIds().map(id => tagsStore.get(id)).filter(Boolean).sort(compareTagsForSort);
         return this.currentMutualTags;
+    }
+
+    /** @param {import('./tags.js').Tag} tag */
+    async addTag(tag) {
+        await saveTagsOnKeys(this.characterIds, [tag.id], true);
+        await this.refresh();
+    }
+
+    /** @param {import('./tags.js').Tag} tag */
+    async removeTag(tag) {
+        await saveTagsOnKeys(this.characterIds, [tag.id], false);
+        await this.refresh();
     }
 
     /**
@@ -386,38 +419,17 @@ class BulkTagPopupHandler {
     /**
      * Empty the tag map for the given characters
      */
-    resetTags() {
-        const affectedKeys = new Set();
-        const clearedTagIds = new Set();
-        for (const characterId of this.characterIds) {
-            const key = getTagKeyForEntity(characterId);
-            if (!key) continue;
-            affectedKeys.add(key);
-            for (const tag of getTagsList(key)) clearedTagIds.add(tag.id);
-            clearEntityTags(key);
-        }
-
-        $('#bulkTagList').empty();
-
-        redrawAfterTagChange([...clearedTagIds], affectedKeys);
+    async resetTags() {
+        await Promise.all(this.characterIds.map(key => saveTagsOnKeys([key], this.tagIdsByKey.get(key) ?? [], false)));
+        await this.refresh();
     }
 
     /**
      * Remove the mutual tags for all given characters
      */
-    removeMutual() {
-        const mutualTags = this.getMutualTags();
-        const affectedKeys = new Set(this.characterIds.map(characterId => getTagKeyForEntity(characterId)).filter(Boolean));
-
-        for (const characterId of this.characterIds) {
-            for (const tag of mutualTags) {
-                removeTagFromMap(tag.id, characterId.toString());
-            }
-        }
-
-        $('#bulkTagList').empty();
-
-        redrawAfterTagChange(mutualTags.map(tag => tag.id), affectedKeys);
+    async removeMutual() {
+        await saveTagsOnKeys(this.characterIds, this.getMutualTagIds(), false);
+        await this.refresh();
     }
 }
 
