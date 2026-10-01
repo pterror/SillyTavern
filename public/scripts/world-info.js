@@ -7,7 +7,7 @@ import { chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
 import { eventSource, event_types } from './events.js';
-import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';
+import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findCharAsync, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, logSlashCommandWarn, addLongPressEvent, escapeHtml, setInfoBlock, clearInfoBlock } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
 import { isMobile } from './RossAscends-mods.js';
@@ -1256,7 +1256,7 @@ function registerWorldInfoSlashCommands() {
         if (context.groupId && !characterIdentifier) throw new Error('This command is not available in groups without providing a character name');
         type = String(type ?? '').trim().toLowerCase() || 'primary';
         characterIdentifier = String(characterIdentifier ?? '') || context.characterAvatar || null;
-        const character = findChar({ name: characterIdentifier });
+        const character = await findCharAsync({ name: characterIdentifier });
         if (!character) {
             toastr.error(t`Character not found.`);
             logSlashCommandWarn('getCharBookCallback: Character not found', { type, name, create }, { characterIdentifier });
@@ -1570,8 +1570,8 @@ function registerWorldInfoSlashCommands() {
             case 'characterFilterNames':
                 createCharacterFilterFieldObjectIfNeeded(entry);
                 charNames = parseStringArray(value);
-                entry.characterFilter.names = charNames
-                    .map((name) => getCharaFilename(null, { manualAvatarKey: findChar({ name, allowAvatar: true, preferCurrentChar: false, quiet: true })?.avatar }))
+                entry.characterFilter.names = (await Promise.all(charNames.map(name => findCharAsync({ name, allowAvatar: true, preferCurrentChar: false, quiet: true }))))
+                    .map((character) => getCharaFilename(null, { manualAvatarKey: character?.avatar }))
                     .filter(Boolean)
                     .filter(onlyUnique);
                 setWIOriginalDataValue(data, uid, 'character_filter', entry.characterFilter);

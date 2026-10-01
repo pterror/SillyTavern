@@ -7,7 +7,7 @@ import { eventSource, event_types } from '../../events.js';
 import { dragElement, isMobile } from '../../RossAscends-mods.js';
 import { getContext, getApiUrl, modules, extension_settings, ModuleWorkerWrapper, doExtrasFetch, renderExtensionTemplateAsync } from '../../extensions.js';
 import { loadMovingUIState, performFuzzySearch, power_user } from '../../power-user.js';
-import { onlyUnique, debounce, getCharaFilename, trimToEndSentence, trimToStartSentence, waitUntilCondition, findChar, isFalseBoolean, includesIgnoreCaseAndAccents } from '../../utils.js';
+import { onlyUnique, debounce, getCharaFilename, trimToEndSentence, trimToStartSentence, waitUntilCondition, findChar, findCharAsync, isFalseBoolean, includesIgnoreCaseAndAccents } from '../../utils.js';
 import { hideMutedSprites, selected_group } from '../../group-chats.js';
 import { isJsonSchemaSupported } from '../../textgen-settings.js';
 import { debounce_timeout } from '../../constants.js';
@@ -945,7 +945,7 @@ async function uploadSpriteCommand({ name, label, folder = null, spriteName = nu
     }
 
     name = name || getLastCharacterMessage().original_avatar || getLastCharacterMessage().name;
-    const char = findChar({ name });
+    const char = await findCharAsync({ name });
 
     if (!folder) {
         folder = spriteFolderNameFromCharacter(char);
