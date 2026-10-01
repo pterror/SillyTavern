@@ -46,16 +46,62 @@ const exposedListeners = new Set();
 export let this_chid;
 
 /**
- * The avatars of the characters extensions are shown. The one place that decides it: today the current character
- * and the open group's members. The coming compat setting adds up to N more here, the most recently used.
+ * The "keep recently used characters" setting: how many characters to keep beyond the current one (0 = off), and
+ * which, most recently used first. Set by power-user.js through {@link setRecentCharacters}.
+ */
+let recentLimit = 0;
+/** @type {string[]} */
+let recentAvatars = [];
+
+/**
+ * The avatars of the characters extensions are shown, and the page keeps holding. The one place that decides it:
+ * the open group's members, the current character, and with the setting on, the recently used ones.
  * @returns {string[]}
  */
 function exposedAvatars() {
     const group = openGroupId !== null ? groupsStore.get(openGroupId) : undefined;
     // Members first, in member order, so a member's index doesn't move when one of them is opened in the editor.
     const avatars = Array.isArray(group?.members) ? [...new Set(group.members)] : [];
-    if (this_avatar !== undefined && !avatars.includes(this_avatar)) avatars.push(this_avatar);
-    return avatars;
+    const seen = new Set(avatars);
+    const rest = [];
+    for (const avatar of [this_avatar, ...recentAvatars]) {
+        if (avatar === undefined || seen.has(avatar)) continue;
+        seen.add(avatar);
+        rest.push(avatar);
+    }
+    // By avatar, not by recency, so a character's index only moves when the set itself changes.
+    rest.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return [...avatars, ...rest];
+}
+
+/**
+ * Sets the "keep recently used characters" setting's characters. Ones the page doesn't hold yet are shown once
+ * they're taken in; ones dropped from the list are let go of like any other.
+ * @param {number} limit How many to keep; 0 turns it off.
+ * @param {string[]} avatars Most recently used first.
+ */
+export function setRecentCharacters(limit, avatars) {
+    recentLimit = Math.max(0, Math.trunc(Number(limit)) || 0);
+    // The current character is the most recently used one, so it counts toward the number.
+    const ordered = this_avatar !== undefined ? [this_avatar, ...avatars] : avatars;
+    recentAvatars = recentLimit > 0 ? [...new Set(ordered)].slice(0, recentLimit) : [];
+    refreshExposed();
+}
+
+/**
+ * @returns {string[]} The setting's characters, most recently used first; empty when it's off.
+ */
+export function getRecentCharacters() {
+    return [...recentAvatars];
+}
+
+/**
+ * Puts a character first among the recently used, when the setting is on.
+ * @param {string|undefined} avatar
+ */
+function noteRecentlyUsed(avatar) {
+    if (recentLimit === 0 || avatar === undefined || recentAvatars[0] === avatar) return;
+    recentAvatars = [avatar, ...recentAvatars.filter(a => a !== avatar)].slice(0, recentLimit);
 }
 
 /**
@@ -204,6 +250,7 @@ export function setCharacterId(value) {
             console.error('Invalid character ID type:', value);
             break;
     }
+    noteRecentlyUsed(this_avatar);
     refreshExposed();
 }
 

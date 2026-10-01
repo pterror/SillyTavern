@@ -6,6 +6,7 @@ jest.unstable_mockModule('../public/script.js', () => ({ selectCharacterByAvatar
 const {
     characters, charactersStore, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH, selectCharacterById,
     exposedCharacters, exposedGroups, setExposedGroupId, setCharacterId, onExposedEntitiesChange, holdCharacter,
+    setRecentCharacters, getRecentCharacters,
 } = await import('../public/scripts/character-store.js');
 const { setGroups, rebuildGroupsStoreCore } = await import('../public/scripts/group-store.js');
 
@@ -24,6 +25,7 @@ function loadGroups(groupList) {
 }
 
 beforeEach(() => {
+    setRecentCharacters(0, []);
     setCharacterId(undefined);
     loadGroups([party]);
     setExposedGroupId('party');
@@ -261,5 +263,80 @@ describe('what extensions are shown', () => {
         unsubscribe();
         setCharacterId('alpha.png');
         expect(listener).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('keep recently used characters', () => {
+    beforeEach(() => {
+        setExposedGroupId(null);
+    });
+
+    test('off, only the current character is shown, whatever was recently used', () => {
+        setRecentCharacters(0, ['alpha.png', 'gamma.png']);
+        setCharacterId('delta.png');
+        expect(exposedCharacters).toEqual([delta]);
+        expect(getRecentCharacters()).toEqual([]);
+    });
+
+    test('on, the recently used characters the page holds are shown too, in avatar order', () => {
+        setCharacterId('gamma.png');
+        setRecentCharacters(3, ['gamma.png', 'delta.png', 'alpha.png', '3.png']);
+        expect(getRecentCharacters()).toEqual(['gamma.png', 'delta.png', 'alpha.png']);
+        expect(exposedCharacters).toEqual([alpha, delta, gamma]);
+        expect(resolveCharacterRef(2)).toBe(gamma);
+    });
+
+    test('the current character counts toward the number, as the most recently used', () => {
+        setCharacterId('delta.png');
+        setRecentCharacters(2, ['alpha.png', 'gamma.png']);
+        expect(getRecentCharacters()).toEqual(['delta.png', 'alpha.png']);
+        expect(exposedCharacters).toEqual([alpha, delta]);
+    });
+
+    test('a recently used character the page does not hold is shown once it is held', () => {
+        charactersStore.remove('delta.png');
+        setRecentCharacters(2, ['alpha.png', 'delta.png']);
+        expect(exposedCharacters).toEqual([alpha]);
+        charactersStore.create(delta);
+        expect(exposedCharacters).toEqual([alpha, delta]);
+    });
+
+    test('selecting a character puts it first, and past the number the least recently used one drops', () => {
+        setRecentCharacters(2, ['alpha.png', 'gamma.png']);
+        setCharacterId('delta.png');
+        expect(getRecentCharacters()).toEqual(['delta.png', 'alpha.png']);
+        expect(exposedCharacters).toEqual([alpha, delta]);
+    });
+
+    test('a group\'s members come first, then the current and recently used characters', () => {
+        loadGroups([{ id: 'pair', name: 'Pair', members: ['gamma.png', 'alpha.png'] }]);
+        setExposedGroupId('pair');
+        setRecentCharacters(2, ['delta.png', 'alpha.png']);
+        expect(exposedCharacters).toEqual([gamma, alpha, delta]);
+    });
+
+    test('lowering the number or turning it off lets go of the characters dropped', () => {
+        jest.useFakeTimers();
+        try {
+            setCharacterId('alpha.png');
+            setRecentCharacters(3, ['alpha.png', 'gamma.png', 'delta.png']);
+            jest.advanceTimersByTime(5000);
+            expect(charactersStore.has('gamma.png')).toBe(true);
+            expect(charactersStore.has('delta.png')).toBe(true);
+            expect(charactersStore.has('3.png')).toBe(false);
+
+            setRecentCharacters(2, getRecentCharacters());
+            expect(exposedCharacters).toEqual([alpha, gamma]);
+            jest.advanceTimersByTime(5000);
+            expect(charactersStore.has('delta.png')).toBe(false);
+
+            setRecentCharacters(0, getRecentCharacters());
+            expect(exposedCharacters).toEqual([alpha]);
+            jest.advanceTimersByTime(5000);
+            expect(charactersStore.has('gamma.png')).toBe(false);
+            expect(charactersStore.has('alpha.png')).toBe(true);
+        } finally {
+            jest.useRealTimers();
+        }
     });
 });
