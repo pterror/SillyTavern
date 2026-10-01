@@ -1139,10 +1139,11 @@ function getGroupAvatar(group) {
     const memberAvatars = [];
     if (group && Array.isArray(group.members) && group.members.length) {
         for (const member of group.members) {
-            const memberEntity = charactersStore.get(member);
-            if (memberEntity && memberEntity.avatar !== 'none') {
-                const avatar = getThumbnailUrl('avatar', memberEntity.avatar);
-                memberAvatars.push(avatar);
+            // The page holds only some characters, and a member is its avatar key: drawn from the key itself. A
+            // member stored by display name (old group data) has no image name to draw from.
+            const memberAvatar = charactersStore.get(member)?.avatar ?? (/\.(png|webp|jpe?g|gif)$/i.test(member) ? member : undefined);
+            if (memberAvatar && memberAvatar !== 'none') {
+                memberAvatars.push(getThumbnailUrl('avatar', memberAvatar));
             }
             if (memberAvatars.length === 4) {
                 break;

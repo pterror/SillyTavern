@@ -3207,7 +3207,12 @@ async function doRandomChat(_, tagName) {
         toastr.error('No characters found');
         return;
     }
-    setCharacterId(avatar);
+    const character = await characterRepository.get(avatar);
+    if (!character) {
+        toastr.error('No characters found');
+        return;
+    }
+    setCharacterId(character);
     setActiveCharacter(avatar);
     setActiveGroup(null);
     await delay(1);

@@ -8,7 +8,7 @@ import {
 
 import { animation_duration, getCurrentCharacter, processDroppedFiles, user_avatar } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore } from './character-store.js';
+import { characters, charactersStore, resolveCharacterRef } from './character-store.js';
 import { isMobile } from './RossAscends-mods.js';
 import { collapseNewlines, power_user, personaStore } from './power-user.js';
 import { debounce_timeout } from './constants.js';
@@ -1319,10 +1319,16 @@ export function getAudioDurationFromDataURL(dataUrl) {
  * @param {string?} [options.manualAvatarKey=null] - Manually take the following avatar key, instead of using the avatar param to determine the name
  * @returns {string?} The filename of the character avatar without extension, or null if the avatar doesn't resolve to a real character
  */
+function fileNameOfCharacterRef(ref) {
+    const resolved = resolveCharacterRef(ref)?.avatar;
+    if (resolved !== undefined) return resolved;
+    return typeof ref === 'string' && ref !== '' && !/^\d+$/.test(ref) ? ref : undefined;
+}
+
 export function getCharaFilename(avatar = null, { manualAvatarKey = null } = {}) {
-    // An explicitly-given avatar that doesn't resolve to a real character yields undefined - distinct from
-    // "no avatar given", which falls back to the currently selected character.
-    const fileName = manualAvatarKey ?? (avatar !== null ? (charactersStore.has(avatar) ? avatar : undefined) : getCurrentCharacter()?.avatar);
+    // An avatar key is used as given: the page holds only some characters, so it can't tell here whether one
+    // exists. An index (upstream's form) resolves through getContext().characters; one that misses yields undefined.
+    const fileName = manualAvatarKey ?? (avatar !== null ? fileNameOfCharacterRef(avatar) : getCurrentCharacter()?.avatar);
 
     return fileName?.replace(/\.[^/.]+$/, '') ?? null;
 }

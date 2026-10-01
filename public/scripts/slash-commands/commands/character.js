@@ -146,11 +146,8 @@ async function createCharacterCallback(args) {
 
         const shouldSelect = !isFalseBoolean(args.select);
         if (shouldSelect) {
-            const newCharacter = charactersStore.get(avatarKey);
-            if (newCharacter) {
-                // selectCharacterByAvatar handles group reset and active character setting
-                await selectCharacterByAvatar(avatarKey);
-            }
+            // selectCharacterByAvatar handles group reset and active character setting, and reads the new character
+            await selectCharacterByAvatar(avatarKey);
         }
 
         toastr.success(t`Character "${name}" created successfully`);
@@ -317,7 +314,10 @@ async function updateCharacterCallback(args) {
 
         // The character is looked up fresh by avatar (stable identity), since the reference
         // can change across the awaits above (avatar upload, getOneCharacter refresh)
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: charactersStore.get(character.avatar) } });
+        // A character the page doesn't hold is read from the server, so the event carries the edited character.
+        const edited = charactersStore.get(character.avatar)
+            ?? await (await import('../../character-repository.js')).characterRepository.full(character.avatar);
+        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: edited } });
 
         if (character.avatar === getCurrentCharacter()?.avatar) {
             select_selected_character(character.avatar, { switchMenu: false });
@@ -354,10 +354,7 @@ async function duplicateCharacterCallback(args) {
 
     const shouldSelect = isTrueBoolean(args.select);
     if (shouldSelect) {
-        const newCharacter = charactersStore.get(newAvatarKey);
-        if (newCharacter) {
-            await selectCharacterByAvatar(newAvatarKey);
-        }
+        await selectCharacterByAvatar(newAvatarKey);
     }
 
     return newAvatarKey;
