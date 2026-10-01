@@ -352,10 +352,10 @@ describe('while a reorder pass is recorded', () => {
     test('a create with its own sort_order writes it and queues it too; one without gets max+1 and queues nothing', async () => {
         await openStore();
         await recordPass();
-        expect(await post('create', { tag: { id: 'n', name: 'N', sort_order: 3 } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
+        expect(await post('create', { tag: { id: 'n', name: 'N', sort_order: 3 } })).toEqual({ status: 200, body: { result: 'ok', refused: [], tag: data('n') } });
         expect([data('n').sort_order, column('n')]).toEqual([3, 3]);
-        expect(await post('create', { tag: { id: 'm', name: 'M', sort_order: null } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
-        expect(await post('create', { tag: { id: 'o', name: 'O' } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
+        expect(await post('create', { tag: { id: 'm', name: 'M', sort_order: null } })).toEqual({ status: 200, body: { result: 'ok', refused: [], tag: data('m') } });
+        expect(await post('create', { tag: { id: 'o', name: 'O' } })).toEqual({ status: 200, body: { result: 'ok', refused: [], tag: data('o') } });
         expect(data('o').sort_order).toBe(6);
         expect(pending().slice(1)).toEqual([
             { tag_id: 'n', side: null, anchor_id: null, value: '3' },
@@ -387,8 +387,8 @@ describe('with no reorder pass recorded, while moves queue', () => {
     test('before the sort_order fill has finished, a create with its own sort_order writes it and queues it; the fill keeps it', async () => {
         await openStore({ filled: false });
         insertTag('a', { sort_order: 3 });
-        expect(await post('create', { tag: { id: 'n', name: 'N', sort_order: 3 } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
-        expect(await post('create', { tag: { id: 'o', name: 'O' } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
+        expect(await post('create', { tag: { id: 'n', name: 'N', sort_order: 3 } })).toEqual({ status: 200, body: { result: 'ok', refused: [], tag: data('n') } });
+        expect(await post('create', { tag: { id: 'o', name: 'O' } })).toEqual({ status: 200, body: { result: 'ok', refused: [], tag: data('o') } });
         expect([data('n').sort_order, column('n')]).toEqual([3, 3]);
         expect(data('o').sort_order).toBe(4);
         expect(pending()).toEqual([{ tag_id: 'n', side: null, anchor_id: null, value: '3' }]);

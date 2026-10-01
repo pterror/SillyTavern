@@ -34,7 +34,10 @@ async function createUnheldCharacter(page, name) {
         if (!response.ok) throw new Error(`create failed: ${response.status}`);
         return response.text();
     }, name);
-    expect(await page.evaluate(avatar => window['SillyTavern'].getContext().characters.some(c => c.avatar === avatar), avatar)).toBe(false);
+    expect(await page.evaluate(async (avatar) => {
+        const { charactersStore } = await import('./scripts/character-store.js');
+        return charactersStore.has(avatar);
+    }, avatar)).toBe(false);
     await expect.poll(() => page.evaluate(async ({ name }) => {
         const { getRequestHeaders } = await import('./script.js');
         const response = await fetch('/api/characters/query', {
