@@ -162,3 +162,52 @@ describe('search after a tag is deleted', () => {
         expect(sorted.groups.map(g => g.id)).toEqual(['gx']);
     }, 20000);
 });
+
+describe('search with more deleted tags merging into a tag than the index is handed', () => {
+    /** Marks `count` deleted tags as merging into `target`, as deleteTagDefinition() leaves them before they finish. */
+    async function markMergingInto(target, count) {
+        const Database = (await import('better-sqlite3')).default;
+        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
+        try {
+            const insert = db.prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, ?)');
+            db.transaction(() => {
+                for (let i = 0; i < count; i++) insert.run(`gone-${String(i).padStart(5, '0')}`, target);
+            })();
+        } finally {
+            db.close();
+        }
+    }
+
+    test('the index leaves the tags to SQL, which keeps the right characters', async () => {
+        if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+        const { TANTIVY_MERGED_IDS_LIMIT } = await import('../src/tag-deletions.js');
+        const handle = 'tag-delete-left-to-sql';
+        await setUp(handle);
+        await metadataDb.deleteTagDefinition(directories, 'tag-x', 'tag-y');
+        await markMergingInto('tag-y', TANTIVY_MERGED_IDS_LIMIT + 1);
+
+        const tags = { include: ['tag-y'] };
+        // Ben doesn't carry the tag, but the index no longer applies it: SQL does.
+        const hits = await searchIndex.searchCharacterIds(handle, directories, 'Ben', 1, { tags });
+        expect(hits.tagsLeftToSql).toBe(true);
+        expect(hits.ids).toEqual(['Ben.png']);
+        expect(await searchIndex.searchCharacterIdsSorted(handle, directories, 'Ben', 'name', 'asc', 0, 10, { tags })).toBeNull();
+        expect(await metadataDb.filterCharacterIdsByTags(directories, ['Ben.png', 'Ann.png'], tags)).toEqual(['Ann.png']);
+        expect(await metadataDb.filterCharacterIdsByTags(directories, ['Ben.png', 'Ann.png'], { exclude: ['tag-y'] })).toEqual(['Ben.png']);
+    }, 20000);
+
+    test('at the limit the index still takes the tags', async () => {
+        if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
+        const { TANTIVY_MERGED_IDS_LIMIT } = await import('../src/tag-deletions.js');
+        const handle = 'tag-delete-at-limit';
+        await setUp(handle);
+        await metadataDb.deleteTagDefinition(directories, 'tag-x', 'tag-y');
+        await markMergingInto('tag-y', TANTIVY_MERGED_IDS_LIMIT - 1);
+
+        const tags = { include: ['tag-y'] };
+        expect((await searchIndex.searchCharacterIds(handle, directories, 'Ann', undefined, { tags })).ids).toEqual(['Ann.png']);
+        const ben = await searchIndex.searchCharacterIds(handle, directories, 'Ben', undefined, { tags });
+        expect(ben.tagsLeftToSql).toBe(false);
+        expect(ben.ids).toEqual([]);
+    }, 20000);
+});

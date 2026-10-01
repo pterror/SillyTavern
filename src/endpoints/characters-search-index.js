@@ -14,7 +14,7 @@ import { getSearchIndex, rebuildSearchIndex, startSearchWorker, CHARACTERS_INDEX
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 import { timePhase } from '../search-timing.js';
-import { expandTagFilter } from '../tag-deletions.js';
+import { searchIndexTagFilter } from '../tag-deletions.js';
 import { getBusyWaitMs } from './sqlite-engine.js';
 
 // Mirrors fuzzySearchCharacters() (public/scripts/power-user.js) so ranking is consistent client/server.
@@ -891,19 +891,20 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}
     if (!tantivyIndex) {
         return { hits: [], total: 0, backend: 'unavailable', position: null };
     }
-    const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+    const tagFilter = tags ? searchIndexTagFilter(tags, await getTagDeletions(directories)) : null;
     // Nothing below awaits, so the reader can't move between here and the search.
     const position = tantivyIndex.position ?? null;
-    if (expandedTags?.none) {
+    if (tagFilter?.none) {
         return { hits: [], total: 0, backend: 'tantivy', position };
     }
+    const tagsLeftToSql = tagFilter?.leftToSql ?? false;
     const query = timePhase('chars_query_build', () => {
         const { tantivy } = engine;
         const { schema } = tantivyIndex;
         let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
         if (!q) return null;
         q = withFavFilter(tantivy, schema, q, fav);
-        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, expandedTags) : null;
+        const tagQuery = tags && !tagFilter?.leftToSql ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, tagFilter?.expanded) : null;
         if (tagQuery) {
             q = tantivy.Query.booleanQuery([
                 { occur: tantivy.Occur.Must, query: q },
@@ -927,9 +928,10 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}
     if (!query) {
         return { hits: [], total: 0, backend: 'tantivy', position };
     }
-    const boundedMaxRows = Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
+    // With the tags left to SQL, a capped list could be filled with hits the tags rule out, so every match is returned.
+    const boundedMaxRows = !tagsLeftToSql && Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
     const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'chars' });
-    return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, score: r.score }))), total, backend: 'tantivy', position };
+    return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, score: r.score }))), total, backend: 'tantivy', position, tagsLeftToSql };
 }
 
 // A matched id that can no longer be resolved (deleted, or corrupt) is logged and dropped.
@@ -949,8 +951,8 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
 
 // Id-only counterpart to searchCharacters() - no per-hit disk read, for a caller that resolves rows itself.
 export async function searchCharacterIds(handle, directories, searchTerm, maxRows, filter = {}) {
-    const { hits, total, backend, position } = await runIdSearch(handle, directories, searchTerm, maxRows, filter);
-    return timePhase('chars_ids', () => ({ ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend, position }));
+    const { hits, total, backend, position, tagsLeftToSql = false } = await runIdSearch(handle, directories, searchTerm, maxRows, filter);
+    return timePhase('chars_ids', () => ({ ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend, position, tagsLeftToSql }));
 }
 
 // fav_name_sort_key is encoded so ascending order gives favorites-first-then-alpha, whatever order was asked for.
@@ -960,7 +962,8 @@ export function tantivySortOrder(sortField, sortOrder) {
 
 /**
  * One window of the matches in fast-field order. `hits[].order` is tantivy's sort value (see fastFieldOrderValue()).
- * Returns null when sortField has no fast-field equivalent; caller uses the SQL sort path for those. `position`
+ * Returns null when sortField has no fast-field equivalent, or the index can't take the tag filter
+ * (searchIndexTagFilter()'s leftToSql); caller uses the SQL sort path for those. `position`
  * is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
  * @param {{ fav?: boolean, tags?: object, excludeIds?: string[], ids?: string[] }} [filter]
  * @returns {Promise<{ hits: { id: string, order: number }[], total: number, backend: string, position: import('./search-index-coordinator.js').SearchIndexPosition | null } | null>}
@@ -975,10 +978,12 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
 
     const tantivyIndex = await timePhase('chars_index_get', () => getSearchIndex(handle, directories, 'characters'));
     if (!tantivyIndex) return { hits: [], total: 0, backend: 'unavailable', position: null };
-    const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+    const tagFilter = tags ? searchIndexTagFilter(tags, await getTagDeletions(directories)) : null;
+    // The index can't take these tags; the caller's SQL path applies them.
+    if (tagFilter?.leftToSql) return null;
     // Nothing below awaits, so the reader can't move between here and the search.
     const position = tantivyIndex.position ?? null;
-    if (expandedTags?.none) return { hits: [], total: 0, backend: 'tantivy', position };
+    if (tagFilter?.none) return { hits: [], total: 0, backend: 'tantivy', position };
 
     const query = timePhase('chars_query_build', () => {
         const { tantivy } = engine;
@@ -986,7 +991,7 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
         let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
         if (!q) return null;
         q = withFavFilter(tantivy, schema, q, fav);
-        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, expandedTags) : null;
+        const tagQuery = tags && !tagFilter?.leftToSql ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, tagFilter?.expanded) : null;
         if (tagQuery) {
             q = tantivy.Query.booleanQuery([
                 { occur: tantivy.Occur.Must, query: q },

@@ -404,9 +404,6 @@ router.post('/query', async (request, response) => {
         if (result === 'not-ready') {
             return response.status(503).send({ error: true, reason: 'tag-query-not-ready' });
         }
-        if (result === 'order-settling') {
-            return response.status(503).send({ error: true, reason: 'tag-order-settling' });
-        }
         if (result === 'invalid-cursor') {
             return response.status(400).send({ error: true, reason: 'invalid-cursor' });
         }

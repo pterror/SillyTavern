@@ -12,7 +12,7 @@ import { getSearchIndex, GROUPS_INDEX_VERSION_META_KEY, GROUPS_INDEX_TAG_NAME_CH
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { timePhase } from '../search-timing.js';
 import { color } from '../util.js';
-import { expandTagFilter } from '../tag-deletions.js';
+import { searchIndexTagFilter } from '../tag-deletions.js';
 
 /** Fast full-content group search, mirroring characters-search-index.js. The index is maintained by the same
  * per-handle search index worker (search-index-coordinator.js). */
@@ -418,19 +418,20 @@ async function runGroupSearch(handle, directories, searchTerm, maxRows, filter =
         if (!tantivyIndex) {
             return { results: [], total: 0, backend: 'unavailable', position: null };
         }
-        const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+        const tagFilter = tags ? searchIndexTagFilter(tags, await getTagDeletions(directories)) : null;
         // Nothing below awaits, so the reader can't move between here and the search.
         const position = groupsPositionOf(tantivyIndex);
-        if (expandedTags?.none) {
+        if (tagFilter?.none) {
             return { results: [], total: 0, backend: 'tantivy', position };
         }
+        const tagsLeftToSql = tagFilter?.leftToSql ?? false;
         const query = timePhase('groups_query_build', () => {
             const { tantivy } = engine;
             const { schema } = tantivyIndex;
             let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
             if (!q) return null;
             q = withFavFilter(tantivy, schema, q, fav);
-            const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, expandedTags) : null;
+            const tagQuery = tags && !tagsLeftToSql ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, tagFilter?.expanded) : null;
             if (tagQuery) {
                 q = tantivy.Query.booleanQuery([
                     { occur: tantivy.Occur.Must, query: q },
@@ -442,10 +443,11 @@ async function runGroupSearch(handle, directories, searchTerm, maxRows, filter =
         if (!query) {
             return { results: [], total: 0, backend: 'tantivy', position };
         }
-        const boundedMaxRows = Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
+        // With the tags left to SQL, a capped list could be filled with hits the tags rule out, so every match is returned.
+        const boundedMaxRows = tagsLeftToSql ? undefined : Number.isFinite(maxRows) ? maxRows : DEFAULT_TANTIVY_MAX_ROWS;
         const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'groups' });
         const items = timePhase('groups_ids', () => results.map(r => ({ item: JSON.parse(r.raw), score: r.score })));
-        return { results: items, total, backend: 'tantivy', position };
+        return { results: items, total, backend: 'tantivy', position, tagsLeftToSql };
     }
 
     return { results: [], total: 0, backend: 'unavailable', position: null };
@@ -508,7 +510,8 @@ function groupSortValue(group, sortField) {
  * fastFieldOrderValue(), ties by exact sort value in `order`, then by id. A user's groups are few, so all of them are read and sorted here.
  * @param {'asc'|'desc'} order The order tantivy sorts characters in (tantivySortOrder()).
  * @param {{ fav?: boolean, tags?: object, excludeIds?: string[], ids?: string[] }} [filter]
- * @returns {Promise<{ groups: { id: string, order: number }[], backend: 'tantivy' | 'unavailable', position: import('./search-index-coordinator.js').GroupsIndexPosition | null }>}
+ * Null when the index can't take the tag filter (searchIndexTagFilter()'s leftToSql); the caller's SQL path applies it.
+ * @returns {Promise<{ groups: { id: string, order: number }[], backend: 'tantivy' | 'unavailable', position: import('./search-index-coordinator.js').GroupsIndexPosition | null } | null>}
  * `position` is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
  */
 export async function searchGroupsSorted(handle, directories, searchTerm, sortField, order, filter = {}) {
@@ -521,10 +524,12 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
     if (!tantivyIndex) {
         return { groups: [], backend: 'unavailable', position: null };
     }
-    const expandedTags = tags ? expandTagFilter(tags, await getTagDeletions(directories)) : null;
+    const tagFilter = tags ? searchIndexTagFilter(tags, await getTagDeletions(directories)) : null;
+    // The index can't take these tags; the caller's SQL path applies them.
+    if (tagFilter?.leftToSql) return null;
     // Nothing below awaits, so the reader can't move between here and the search.
     const position = groupsPositionOf(tantivyIndex);
-    if (expandedTags?.none) {
+    if (tagFilter?.none) {
         return { groups: [], backend: 'tantivy', position };
     }
     const query = timePhase('groups_query_build', () => {
@@ -533,7 +538,7 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
         let q = buildTantivyQuery(tantivy, schema, searchTerm, TANTIVY_FIELD_WEIGHTS, TANTIVY_FIELD_LABELS);
         if (!q) return null;
         q = withFavFilter(tantivy, schema, q, fav);
-        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, expandedTags) : null;
+        const tagQuery = tags ? buildTagFilterQuery(tantivy, schema, tags, TAG_IDS_FIELD, tagFilter?.expanded) : null;
         if (tagQuery) {
             q = tantivy.Query.booleanQuery([
                 { occur: tantivy.Occur.Must, query: q },
@@ -566,12 +571,13 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
  * running a separate id-only query, since group counts are small enough not to need that.
  * @returns {Promise<{ ids: string[], scoresById: Map<string, number>, total: number, backend: 'tantivy' | 'unavailable', position: import('./search-index-coordinator.js').GroupsIndexPosition | null }>} */
 export async function searchGroupIds(handle, directories, searchTerm, maxRows, filter = {}) {
-    const { results, total, backend, position } = await runGroupSearch(handle, directories, searchTerm, maxRows, filter);
+    const { results, total, backend, position, tagsLeftToSql = false } = await runGroupSearch(handle, directories, searchTerm, maxRows, filter);
     return timePhase('groups_ids', () => ({
         ids: results.map(r => r.item.id),
         scoresById: new Map(results.map(r => [r.item.id, r.score])),
         total,
         backend,
         position,
+        tagsLeftToSql,
     }));
 }

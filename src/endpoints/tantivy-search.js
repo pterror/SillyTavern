@@ -261,8 +261,8 @@ export function buildExcludeIdsQuery(tantivy, schema, excludeIds) {
 /**
  * tantivy's booleanQuery does not implicitly match-all, so with only excluded tags the query gets an explicit
  * Query.allQuery() Must clause as its positive base.
- * @param {import('../tag-deletions.js').ExpandedTagFilter | null} [expanded] expandTagFilter()'s form of `tags`, used
- * in its place when a deleted tag touches the filter. Its `none` is the caller's to handle.
+ * @param {{ include: string[][], exclude: string[], mode: 'and' | 'or' } | null} [expanded] tantivyTagFilter()'s form of
+ * `tags`, used in its place when a deleted tag touches the filter.
  * @returns {import('@oxdev03/node-tantivy-binding').Query | null} null if the tags object produces no constraints
  */
 export function buildTagFilterQuery(tantivy, schema, tags, fieldName, expanded = null) {
@@ -291,7 +291,7 @@ export function buildTagFilterQuery(tantivy, schema, tags, fieldName, expanded =
 
 /**
  * buildTagFilterQuery() for an expanded filter: an included group matches a document carrying any of its ids.
- * @param {import('../tag-deletions.js').ExpandedTagFilter} expanded
+ * @param {{ include: string[][], exclude: string[], mode: 'and' | 'or' }} expanded
  * @returns {import('@oxdev03/node-tantivy-binding').Query | null}
  */
 function buildExpandedTagFilterQuery(tantivy, schema, { include, exclude, mode }, fieldName) {
