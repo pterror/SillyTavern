@@ -504,6 +504,39 @@ const ESTIMATED_CASES = ESTIMATED_TAG_SHAPES.flatMap(([label, tags]) => FAV_VALU
     filter: { tags, ...(fav === undefined ? {} : { fav }), ...(includeGroups ? { includeGroups } : {}) },
 }))));
 
+describe('/query search with more marked tags merging into a filtered tag than the index is handed', () => {
+    test('the search sort keeps the tagged hits in rank order and pages them; nothing is refused', async () => {
+        const { TANTIVY_MERGED_IDS_LIMIT } = await import('../src/tag-deletions.js');
+        for (let i = 0; i < 8; i++) await seedCharacterWithFile(`zephyr${i}.png`, `Zephyr ${i}`);
+        await saveTags(['t1', 't2']);
+        await assign('zephyr2.png', 't1');
+        await assign('zephyr5.png', 't2');
+        await fill();
+        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toMatchObject({ refused: [] });
+        withRawDb(db => {
+            const insert = db.prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, ?)');
+            db.transaction(() => {
+                for (let i = 0; i < TANTIVY_MERGED_IDS_LIMIT; i++) insert.run(`gone-${String(i).padStart(5, '0')}`, 't1');
+            })();
+        });
+
+        const pages = [];
+        for (const page of [1, 2, 3]) {
+            const response = await postJson({ filter: { search: 'zephyr', tags: { include: ['t1'] } }, sort: { field: 'search' }, page, pageSize: 1, want: ['rows', 'total'] });
+            expect(response.status).toBe(200);
+            const body = await response.json();
+            expect(body.total).toBe(2);
+            pages.push(body.rows.map(row => row.avatar));
+        }
+        expect(pages.flat().sort()).toEqual(['zephyr2.png', 'zephyr5.png']);
+        expect(pages[2]).toEqual([]);
+
+        const byName = await postJson({ filter: { search: 'zephyr', tags: { include: ['t1'] } }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10, want: ['rows', 'total'] });
+        expect(byName.status).toBe(200);
+        expect((await byName.json()).rows.map(row => row.avatar)).toEqual(['zephyr2.png', 'zephyr5.png']);
+    }, 20000);
+});
+
 describe('/query sampled estimates', () => {
     test('each estimated shape, with and without groups, sends ~ and a value within tolerance of the COUNT(*) total, reading at most the sample budget', async () => {
         await seedBigStore();
@@ -591,7 +624,7 @@ describe('/query sampled estimates', () => {
         expect(Math.max(...slices)).toBeLessThanOrEqual(0.25 * ids.size);
     }, 60000);
 
-    test('an included tag with merges, the only included tag: runs of its rows and each merged tag\'s, deduped, scaled by the sum', async () => {
+    test('an included tag with merges, the only included tag: runs of its rows and its merged tags\', deduped, scaled by the sum', async () => {
         await seedBigStore();
         expect(await metadataDb.deleteTagDefinition(directories, 't3', 't2')).toMatchObject({ refused: [] });
         const filter = { tags: { include: ['t2'], exclude: ['t1'] } };
@@ -605,8 +638,10 @@ describe('/query sampled estimates', () => {
         const { total, counted } = await jsonTotal(filter);
         expect(counted).toBe(false);
         expect(Math.abs(approxValue(total) - expected)).toBeLessThanOrEqual(TOLERANCE(expected));
-        const tagsRead = new Set(sampleReads().map(record => record.params.tagId));
-        expect([...tagsRead].sort()).toEqual(['t2', 't3']);
+        // One population: t2's rows and those of the marks merging into it, matched in the query, not listed.
+        const reads = sampleReads();
+        expect([...new Set(reads.map(record => record.params.tagId))]).toEqual(['t2']);
+        expect(reads.every(record => record.sql.includes('merge_into = @tagId'))).toBe(true);
         expect(sampledRows()).toBeLessThanOrEqual(SAMPLE_BUDGET);
     }, 60000);
 

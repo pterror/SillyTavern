@@ -20,7 +20,7 @@ import { isReadOnlyMode } from './read-only-mode.js';
 import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
-import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS, MAX_MERGING_INTO, TagMergeBacklogError } from './tag-deletions.js';
+import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
 import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
@@ -5292,12 +5292,12 @@ function readTagDeletionsSync(db) {
         any: true,
         has: (tagId) => lookUp(tagId) !== undefined,
         get: (tagId) => lookUp(tagId),
-        mergingInto: (target) => {
+        hasMergingInto: (target) => Boolean(db.get('SELECT 1 FROM tag_deletions WHERE merge_into = @target LIMIT 1', { target })),
+        mergingIntoUpTo: (target, limit) => {
             const rows = /** @type {{ tag_id: string }[]} */ (db.readBounded(
                 'SELECT tag_id FROM tag_deletions WHERE merge_into = @target ORDER BY tag_id LIMIT @limit',
-                { target, limit: MAX_MERGING_INTO + 1 }, MAX_MERGING_INTO + 1));
-            if (rows.length > MAX_MERGING_INTO) throw new TagMergeBacklogError(target);
-            return rows.map(row => row.tag_id);
+                { target, limit: limit + 1 }, limit + 1));
+            return rows.length > limit ? null : rows.map(row => row.tag_id);
         },
     };
 }
@@ -9258,20 +9258,6 @@ function parseTagQueryRow(row) {
 }
 
 /**
- * Most queued moves the manual order is shown with. A queue only grows while the order is unsettled (a reorder pass
- * or the one-time fill), and drainTagPendingMoves() empties it once that ends.
- */
-const MAX_PENDING_TAG_MOVES_SHOWN = 2000;
-
-/** More than MAX_PENDING_TAG_MOVES_SHOWN moves are queued, so the manual order isn't shown until fewer are. */
-class TagOrderSettlingError extends Error {
-    constructor() {
-        super(`More than ${MAX_PENDING_TAG_MOVES_SHOWN} tag moves are queued`);
-        this.name = 'TagOrderSettlingError';
-    }
-}
-
-/**
  * @typedef {object} TagPendingOverlay
  * @property {Map<string, TagQueryPosition>} keys The manual place of every tag a pending entry placed or gave a
  *   value; its own row's place no longer counts.
@@ -9289,8 +9275,8 @@ class TagOrderSettlingError extends Error {
  * Under a reorder pass, places are the pass mode's. A value lands next to the tag the walk numbers with it, which
  * can't be found without counting rows, so a value entry leaves its tag at its own place in the mode's order
  * (tag-actions D24).
- * Reads at most MAX_PENDING_TAG_MOVES_SHOWN entries; with more queued it throws TagOrderSettlingError, and the manual
- * order can't be shown until the drain has applied enough of them.
+ * The entries are streamed; what is kept is one place per tag they name (and the rows of those tags), so it is as
+ * large as the set of tags moved while the order is unsettled, and the drain empties it once that ends.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {TagQueryPass | null} pass
  * @returns {TagPendingOverlay | null} null when nothing is pending.
@@ -9298,19 +9284,17 @@ class TagOrderSettlingError extends Error {
 function readTagPendingOverlaySync(db, pass) {
     const order = pass?.mode ?? 'manual';
     if (!db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return null;
-    /** @type {{ tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, value: string | null }[]} */
-    const entries = /** @type {any[]} */ (db.readBounded(
-        'SELECT tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq LIMIT @limit',
-        { limit: MAX_PENDING_TAG_MOVES_SHOWN + 1 }, MAX_PENDING_TAG_MOVES_SHOWN + 1));
-    if (entries.length > MAX_PENDING_TAG_MOVES_SHOWN) throw new TagOrderSettlingError();
-    const ids = [...new Set(entries.flatMap(e => e.anchor_id === null ? [e.tag_id] : [e.tag_id, e.anchor_id]))];
-    /** @type {Map<string, TagQueryRow>} */
+    /** @type {Map<string, TagQueryRow | undefined>} The tags rows the entries name, each read once by key. */
     const rows = new Map();
-    for (let i = 0; i < ids.length; i += TAG_QUERY_ID_CHUNK) {
-        const slice = ids.slice(i, i + TAG_QUERY_ID_CHUNK);
-        const sql = `SELECT ${TAG_QUERY_ROW_COLUMNS} FROM tags WHERE id IN (${slice.map(() => '?').join(',')}) LIMIT ${slice.length}`;
-        for (const row of /** @type {Generator<TagQueryRow>} */ (db.iterate(sql, slice))) rows.set(row.id, row);
-    }
+    const rowOf = (/** @type {string} */ id) => {
+        if (!rows.has(id)) {
+            rows.set(id, /** @type {TagQueryRow | undefined} */ (db.get(`SELECT ${TAG_QUERY_ROW_COLUMNS} FROM tags WHERE id = ? LIMIT 1`, [id])));
+        }
+        return rows.get(id);
+    };
+    // Streamed in arrival order: only the places the entries leave are kept, not the entries.
+    const entries = /** @type {Iterable<{ tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, value: string | null }>} */ (
+        db.iterate('SELECT tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq'));
 
     /** @typedef {{ base: TagQueryPosition, side: 'before' | 'after', items: string[] }} TagPendingGap */
     /** @type {Map<string, TagPendingGap[]>} */
@@ -9335,14 +9319,14 @@ function readTagPendingOverlaySync(db, pass) {
         placed.delete(id);
     };
     for (const { tag_id: id, side, anchor_id: anchorId, value } of entries) {
-        const row = rows.get(id);
+        const row = rowOf(id);
         if (!usable(row) || !parseTagObject(/** @type {TagQueryRow} */ (row).data)) continue;
         if (side === null || anchorId === null) {
             unplace(id);
             if (pass === null) values.set(id, tagDerivedColumns({ sort_order: JSON.parse(/** @type {string} */ (value)) }).sortOrder);
             continue;
         }
-        const anchor = rows.get(anchorId);
+        const anchor = rowOf(anchorId);
         if (id === anchorId || !usable(anchor)) continue;
         const anchorRow = /** @type {TagQueryRow} */ (anchor);
         if (anchorRow.sort_order === null && !parseTagObject(anchorRow.data)) continue;
@@ -9379,7 +9363,7 @@ function readTagPendingOverlaySync(db, pass) {
             items.forEach((id, i) => keys.set(id, { ...base, g: side === 'before' ? -1 : 1, i }));
         }
     }
-    return { keys, rows };
+    return { keys, rows: /** @type {Map<string, TagQueryRow>} */ (rows) };
 }
 
 /**
@@ -9569,10 +9553,9 @@ function queryTagsByIds(entry, params, pass) {
  * good only for the order it was made in (D25.8).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {TagQueryParams} params
- * @returns {Promise<TagQueryResult | 'invalid-cursor' | 'not-ready' | 'order-settling' | null>} null when no SQLite
+ * @returns {Promise<TagQueryResult | 'invalid-cursor' | 'not-ready' | null>} null when no SQLite
  *   engine is usable; 'invalid-cursor' for a manual cursor made in another order than the one read now; 'not-ready'
- *   until the derived columns are filled (tagQueryColumnsReady()), the one-time pass after an update;
- *   'order-settling' in manual order while more moves are queued than readTagPendingOverlaySync() reads.
+ *   until the derived columns are filled (tagQueryColumnsReady()), the one-time pass after an update.
  */
 export async function queryTags(directories, params) {
     const entry = await getEntry(directories);
@@ -9583,13 +9566,7 @@ export async function queryTags(directories, params) {
         const made = params.after.pass ?? null;
         if (made?.id !== pass?.id || made?.mode !== pass?.mode) return 'invalid-cursor';
     }
-    let result;
-    try {
-        result = params.ids ? queryTagsByIds(entry, params, pass) : queryTagsIndexed(entry, params, pass);
-    } catch (err) {
-        if (err instanceof TagOrderSettlingError) return 'order-settling';
-        throw err;
-    }
+    const result = params.ids ? queryTagsByIds(entry, params, pass) : queryTagsIndexed(entry, params, pass);
     if (params.counts !== true) return result;
     const ids = result.rows.map(tag => /** @type {{ id?: unknown }} */ (tag).id).filter(id => typeof id === 'string');
     return { ...result, ...tagCountsForIdsSync(entry, ids) };
@@ -9739,8 +9716,9 @@ function idListDrivenFrom(table) {
 }
 
 /**
- * Pushes the clauses for a tag filter that a marked tag touches (expandTagFilter()). Each included group counts as
- * one tag, so 'and' mode counts distinct groups, not distinct tag ids.
+ * Pushes the clauses for a tag filter that a marked tag touches (expandTagFilter()). A row matches an included tag
+ * when its tag is that tag or a marked tag merging into it; the marks are matched in the query itself, so no list of
+ * them is read. 'and' mode counts the distinct tags a row's tags resolve to, not distinct tag ids.
  * @param {string[]} clauses
  * @param {any[]} args
  * @param {import('./tag-deletions.js').ExpandedTagFilter} expanded
@@ -9758,34 +9736,34 @@ function pushExpandedTagClauses(clauses, args, expanded, { tagTable, entityColum
         return;
     }
     const rowCondition = rowSql ? ` AND ${rowSql}` : '';
-    const placeholders = (/** @type {unknown[]} */ list) => list.map(() => '?').join(', ');
+    /** The tag row's tag is one of the json list's tags, or a marked tag merging into one. Binds the list twice. */
+    const matchesSql = `(${tagTable}.tag_id IN (SELECT value FROM json_each(?)) OR ${tagTable}.tag_id IN (SELECT d.tag_id FROM tag_deletions d WHERE d.merge_into IN (SELECT value FROM json_each(?))))`;
+    /** @param {string[]} targets */
+    const matchArgs = (targets) => [JSON.stringify(targets), JSON.stringify(targets)];
+    const resolvedSql = `COALESCE((SELECT d.merge_into FROM tag_deletions d WHERE d.tag_id = ${tagTable}.tag_id), ${tagTable}.tag_id)`;
     const { include, exclude, mode } = expanded;
     if (include.length > 0) {
-        const flat = include.flat();
         if (mode === 'and') {
-            const single = include.every(group => group.length === 1);
-            const keySql = single ? 'tag_id' : `CASE ${include.map((group, i) => `WHEN tag_id IN (${placeholders(group)}) THEN ${i}`).join(' ')} END`;
-            const keyArgs = single ? [] : flat;
             if (perRow) {
-                clauses.push(`(SELECT COUNT(DISTINCT ${keySql}) FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id IN (${placeholders(flat)})${rowCondition}) = ?`);
-                args.push(...keyArgs, ...flat, include.length);
+                clauses.push(`(SELECT COUNT(DISTINCT ${resolvedSql}) FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND ${matchesSql}${rowCondition}) = ?`);
+                args.push(...matchArgs(include), include.length);
             } else {
-                clauses.push(`id IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (${placeholders(flat)})${rowCondition} GROUP BY ${entityColumn} HAVING COUNT(DISTINCT ${keySql}) = ?)`);
-                args.push(...flat, ...keyArgs, include.length);
+                clauses.push(`id IN (SELECT ${entityColumn} FROM ${tagTable} WHERE ${matchesSql}${rowCondition} GROUP BY ${entityColumn} HAVING COUNT(DISTINCT ${resolvedSql}) = ?)`);
+                args.push(...matchArgs(include), include.length);
             }
         } else if (perRow) {
-            clauses.push(`EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id IN (${placeholders(flat)})${rowCondition})`);
-            args.push(...flat);
+            clauses.push(`EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND ${matchesSql}${rowCondition})`);
+            args.push(...matchArgs(include));
         } else {
-            clauses.push(`id IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (${placeholders(flat)})${rowCondition})`);
-            args.push(...flat);
+            clauses.push(`id IN (SELECT ${entityColumn} FROM ${tagTable} WHERE ${matchesSql}${rowCondition})`);
+            args.push(...matchArgs(include));
         }
     }
     if (exclude.length > 0) {
         clauses.push(perRow
-            ? `NOT EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND tag_id IN (SELECT value FROM json_each(?))${rowCondition})`
-            : `id NOT IN (SELECT ${entityColumn} FROM ${tagTable} WHERE tag_id IN (SELECT value FROM json_each(?))${rowCondition})`);
-        args.push(JSON.stringify(exclude));
+            ? `NOT EXISTS (SELECT 1 FROM ${tagTable} WHERE ${entityColumn} = ${outer}.id AND ${matchesSql}${rowCondition})`
+            : `id NOT IN (SELECT ${entityColumn} FROM ${tagTable} WHERE ${matchesSql}${rowCondition})`);
+        args.push(...matchArgs(exclude));
     }
 }
 
@@ -10085,13 +10063,13 @@ function countFromCounters(db, kinds, { include, exclude, fav, world }, deletion
 
     const target = resolveTagId(named, deletions);
     if (target === null) return { total: include.length > 0 ? 0 : total, approxTotal: false };
-    const tagIds = tagIdsCountedAs(target, deletions);
-    const tagCounts = tagIds.map(tagId => kinds.reduce((n, kind) => n + storedTagCount(db, tagId, kind, favs), 0));
-    const sum = tagCounts.reduce((a, b) => a + b, 0);
-    const approxTotal = tagIds.length > 1;
+    const approxTotal = deletions.hasMergingInto(target);
+    if (!approxTotal) {
+        const count = kinds.reduce((n, kind) => n + storedTagCount(db, target, kind, favs), 0);
+        return { total: include.length > 0 ? count : total - count, approxTotal };
+    }
+    const { sum, largest } = storedMergedTagCounts(db, target, kinds, favs);
     if (include.length > 0) return { total: sum, approxTotal };
-    if (!approxTotal) return { total: total - sum, approxTotal };
-    const largest = tagCounts.reduce((a, b) => Math.max(a, b), 0);
     return { total: Math.max(0, Math.round(((total - sum) + (total - largest)) / 2)), approxTotal };
 }
 
@@ -10122,12 +10100,21 @@ function storedTagCount(db, tagId, kind, favs) {
 }
 
 /**
- * The tag ids whose rows a filter naming the unmarked tag `target` matches: itself and every marked tag merging into it.
+ * The counters of the unmarked tag `target` and every marked tag merging into it, summed per tag in the query: their
+ * sum, and the largest one tag's.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {string} target
- * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @param {EntityCountKind['name'][]} kinds
+ * @param {number[]} favs
+ * @returns {{ sum: number, largest: number }}
  */
-function tagIdsCountedAs(target, deletions) {
-    return [target, ...deletions.mergingInto(target)];
+function storedMergedTagCounts(db, target, kinds, favs) {
+    const row = /** @type {{ sum: number | null, largest: number | null }} */ (db.get(`SELECT SUM(n) AS sum, MAX(n) AS largest FROM (
+        SELECT SUM(count) AS n FROM entity_tag_counts
+        WHERE (tag_id = @target OR tag_id IN (SELECT tag_id FROM tag_deletions WHERE merge_into = @target))
+            AND kind IN (SELECT value FROM json_each(@kinds)) AND fav IN (SELECT value FROM json_each(@favs))
+        GROUP BY tag_id)`, { target, kinds: JSON.stringify(kinds), favs: JSON.stringify(favs) }));
+    return { sum: Number(row.sum ?? 0), largest: Number(row.largest ?? 0) };
 }
 
 /**
@@ -10235,10 +10222,10 @@ function seededRandom(text) {
  *   order. Then clamp each kind's sum between its largest counter and the sum of its counters, at the filter's fav;
  *   the lower bound only while nothing but fav narrows the set further.
  * - Otherwise: sample the whole entity table and scale by its count.
- * A tag with marked tags merging into it is sampled over its rows and theirs, each entity once, and scaled by the sum
- * of their counters.
+ * A tag with marked tags merging into it is sampled over its rows and theirs as one population, matched in the query
+ * so no list of them is read, each entity once, and scaled by the sum of their counters.
  *
- * The budget is split between kinds, then between the tag ids of each kind, in proportion to their counters. A
+ * The budget is split between kinds, then between the terms of each kind, in proportion to their counters. A
  * share that covers its whole tag or table is read in full, and a term whose rows are all read counts its matches
  * exactly. Otherwise the share is read as runs of COUNT_SAMPLE_RUN_SIZE rows in id order, each starting at the entity
  * of the kind's table at a random rowid, so starts follow the ids' real distribution, and wrapping to the start of
@@ -10259,7 +10246,8 @@ function seededRandom(text) {
  * @returns {{ total: number, approxTotal: boolean }}
  */
 function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, excludeIds }, deletions, random) {
-    /** @type {string[][]} Each included tag as the tag ids whose rows it matches. */
+    /** @typedef {{ target: string, merged: boolean }} SampledTag An included tag; merged when marked tags merge into it. */
+    /** @type {SampledTag[]} */
     const included = [];
     for (const id of include) {
         const target = resolveTagId(id, deletions);
@@ -10267,34 +10255,38 @@ function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, e
             if (mode === 'and') return { total: 0, approxTotal: false };
             continue;
         }
-        if (!included.some(group => group[0] === target)) included.push(tagIdsCountedAs(target, deletions));
+        if (!included.some(tag => tag.target === target)) included.push({ target, merged: deletions.hasMergingInto(target) });
     }
     if (include.length > 0 && included.length === 0) return { total: 0, approxTotal: false };
 
     const bothFavs = [0, 1];
-    const groupSize = (/** @type {string[]} */ group) => kinds.reduce((n, kind) => n + group.reduce((m, tagId) => m + storedTagCount(db, tagId, kind.name, bothFavs), 0), 0);
-    /** @type {{ tagIds: string[] | null, earlier: string[] }[]} tagIds null samples the whole table. */
+    /** A tag's counter for one kind; a merged tag's is its own and its marked tags' summed in the query. */
+    const tagSize = (/** @type {SampledTag} */ tag, /** @type {EntityCountKind['name']} */ kindName, /** @type {number[]} */ favs) => (tag.merged
+        ? storedMergedTagCounts(db, tag.target, [kindName], favs).sum
+        : storedTagCount(db, tag.target, kindName, favs));
+    const groupSize = (/** @type {SampledTag} */ tag) => kinds.reduce((n, kind) => n + tagSize(tag, kind.name, bothFavs), 0);
+    /** @type {{ tag: SampledTag | null, earlier: string[] }[]} tag null samples the whole table. */
     let terms;
     if (included.length === 0) {
-        terms = [{ tagIds: null, earlier: [] }];
+        terms = [{ tag: null, earlier: [] }];
     } else if (mode === 'and' || included.length === 1) {
-        const unmerged = included.filter(group => group.length === 1);
+        const unmerged = included.filter(tag => !tag.merged);
         const candidates = unmerged.length > 0 ? unmerged : included;
         let source = candidates[0];
         let sourceSize = groupSize(source);
-        for (const group of candidates.slice(1)) {
-            const size = groupSize(group);
-            if (size < sourceSize) [source, sourceSize] = [group, size];
+        for (const tag of candidates.slice(1)) {
+            const size = groupSize(tag);
+            if (size < sourceSize) [source, sourceSize] = [tag, size];
         }
-        terms = [{ tagIds: source, earlier: [] }];
+        terms = [{ tag: source, earlier: [] }];
     } else {
-        const ordered = [...included].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-        terms = ordered.map((group, i) => ({ tagIds: group, earlier: ordered.slice(0, i).flat() }));
+        const ordered = [...included].sort((a, b) => (a.target < b.target ? -1 : a.target > b.target ? 1 : 0));
+        terms = ordered.map((tag, i) => ({ tag, earlier: ordered.slice(0, i).map(earlier => earlier.target) }));
     }
 
-    const populations = kinds.map(kind => terms.map(term => (term.tagIds === null
-        ? [{ tagId: null, size: storedEntityCount(db, kind.name, bothFavs) }]
-        : term.tagIds.map(tagId => ({ tagId, size: storedTagCount(db, tagId, kind.name, bothFavs) })))));
+    const populations = kinds.map(kind => terms.map(term => (term.tag === null
+        ? [{ tagId: null, merged: false, size: storedEntityCount(db, kind.name, bothFavs) }]
+        : [{ tagId: term.tag.target, merged: term.tag.merged, size: tagSize(term.tag, kind.name, bothFavs) }])));
     const kindSizes = populations.map(perTerm => perTerm.flat().reduce((n, population) => n + population.size, 0));
     const allSize = kindSizes.reduce((a, b) => a + b, 0);
     if (allSize === 0) return { total: 0, approxTotal: false };
@@ -10311,14 +10303,14 @@ function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, e
             const ids = new Set();
             let full = true;
             let termSize = 0;
-            for (const { tagId, size } of populations[k][t]) {
+            for (const { tagId, merged, size } of populations[k][t]) {
                 const share = kindSizes[k] > 0 ? Math.floor(kindBudget * size / kindSizes[k]) : 0;
-                full = readCountSample(db, kind, tagId, size, share, random, ids) && full;
+                full = readCountSample(db, kind, tagId, merged, size, share, random, ids) && full;
                 termSize += size;
             }
             if (ids.size === 0) continue;
             const idsJson = JSON.stringify([...ids]);
-            const checked = term.tagIds !== null && terms.length > 1
+            const checked = term.tag !== null && terms.length > 1
                 ? { tags: { exclude: [...exclude, ...term.earlier] }, fav, world: kindWorld, excludeIds, ids: [...ids] }
                 : { tags, fav, world: kindWorld, excludeIds, ids: [...ids] };
             const { from, where, args } = kind.name === 'character' ? buildWhereClause(checked, deletions) : buildGroupWhereClause(checked, deletions);
@@ -10333,7 +10325,7 @@ function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, e
         }
         if (kindApprox && terms.length > 1) {
             const favs = favScope(fav);
-            const counts = terms.flatMap(term => /** @type {string[]} */ (term.tagIds)).map(tagId => storedTagCount(db, tagId, kind.name, favs));
+            const counts = terms.map(term => tagSize(/** @type {SampledTag} */ (term.tag), kind.name, favs));
             const onlyFav = exclude.length === 0 && !(typeof kindWorld === 'string' && kindWorld) && !(Array.isArray(excludeIds) && excludeIds.length > 0);
             const lower = onlyFav ? counts.reduce((a, b) => Math.max(a, b), 0) : 0;
             const upper = counts.reduce((a, b) => a + b, 0);
@@ -10351,18 +10343,20 @@ function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, e
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {EntityCountKind} kind
  * @param {string | null} tagId
+ * @param {boolean} merged The population is `tagId`'s rows and those of every marked tag merging into it.
  * @param {number} size The population's counter.
  * @param {number} share
  * @param {() => number} random
  * @param {Set<string>} ids
  * @returns {boolean} Whether every row of the population was read.
  */
-function readCountSample(db, kind, tagId, size, share, random, ids) {
+function readCountSample(db, kind, tagId, merged, size, share, random, ids) {
     if (size === 0) return true;
     if (share <= 0) return false;
     const column = tagId === null ? 'id' : kind.entityColumn;
     const from = tagId === null ? kind.table : kind.tagTable;
-    const rowsOf = tagId === null ? '' : `tag_id = @tagId AND ${kind.tagRowCounts(kind.entityColumn)} AND `;
+    const tagRows = merged ? '(tag_id = @tagId OR tag_id IN (SELECT tag_id FROM tag_deletions WHERE merge_into = @tagId))' : 'tag_id = @tagId';
+    const rowsOf = tagId === null ? '' : `${tagRows} AND ${kind.tagRowCounts(kind.entityColumn)} AND `;
     const base = tagId === null ? {} : { tagId };
     const read = (/** @type {string} */ condition, /** @type {object} */ params) => {
         let n = 0;
@@ -10389,6 +10383,31 @@ function readCountSample(db, kind, tagId, size, share, random, ids) {
         if (got < len) read(`${column} < @start`, { start: startRow.id, len: len - got });
     }
     return false;
+}
+
+/** Ids filterCharacterIdsByTags() checks per statement. */
+const TAG_CHECK_ID_CHUNK = 1000;
+
+/**
+ * The characters among `ids` that a /query tag filter keeps, in `ids`' order. Each chunk of ids is checked by primary
+ * key, with marked tags matched in the query. For a search whose tag filter the index couldn't take
+ * (searchIndexTagFilter()'s leftToSql), so its ranked ids can be paged after the filter rather than before.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} ids
+ * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} tags
+ * @returns {Promise<string[] | null>} null when the store can't be opened.
+ */
+export async function filterCharacterIdsByTags(directories, ids, tags) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const deletions = readTagDeletionsSync(entry.db);
+    /** @type {Set<string>} */
+    const kept = new Set();
+    for (let i = 0; i < ids.length; i += TAG_CHECK_ID_CHUNK) {
+        const { from, where, args } = buildWhereClause({ tags, ids: ids.slice(i, i + TAG_CHECK_ID_CHUNK) }, deletions);
+        for (const row of /** @type {Iterable<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM ${from} ${where}`, args))) kept.add(row.id);
+    }
+    return ids.filter(id => kept.has(id));
 }
 
 /**
@@ -11192,10 +11211,12 @@ export async function findCharacterMatches(directories, { name = null, allowAvat
         sql = 'SELECT id, name FROM characters WHERE name_fold = ? ORDER BY id';
         params = [foldName(name)];
     } else if (tagNames) {
-        const firstIds = [...wantedTagIds[0]];
-        for (const target of wantedTagIds[0]) firstIds.push(...deletions.mergingInto(target));
-        sql = `SELECT DISTINCT character_id AS id FROM character_tags WHERE tag_id IN (${firstIds.map(() => '?').join(', ')}) ORDER BY character_id`;
-        params = firstIds;
+        // A row of a marked tag merging into one of the first tags counts as that tag; the marks are matched here.
+        const firstIds = JSON.stringify([...wantedTagIds[0]]);
+        sql = `SELECT DISTINCT character_id AS id FROM character_tags
+            WHERE tag_id IN (SELECT value FROM json_each(?)) OR tag_id IN (SELECT tag_id FROM tag_deletions WHERE merge_into IN (SELECT value FROM json_each(?)))
+            ORDER BY character_id`;
+        params = [firstIds, firstIds];
     } else {
         sql = 'SELECT id, name FROM characters ORDER BY id';
         params = [];

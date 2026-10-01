@@ -181,33 +181,24 @@ describe('a tag with more deleted tags merging into it than a read takes', () =>
         return { status: response.status, body: await response.json() };
     }
 
-    test('a find by that tag alone and a query filtering on it are refused as a backlog; at the limit they answer', async () => {
-        const { MAX_MERGING_INTO } = await import('../src/tag-deletions.js');
+    test('however many are merging into it, a find by that tag and a query filtering on it answer, with the merged rows', async () => {
         await seedCharacter('a.png', 'Sam');
+        await seedCharacter('b.png', 'Ben');
+        await seedCharacter('c.png', 'Cal');
         await seedTag('t1', 'Hero');
         await metadataDb.fillTagNameKeysIfNeeded(directories);
         await metadataDb.assignEntityTag(directories, 'a.png', 't1');
+        // b carries one of the marked tags; its row still counts as Hero until the marks finish.
+        await metadataDb.assignEntityTag(directories, 'b.png', 'gone-01234');
 
-        await markMergingInto('t1', MAX_MERGING_INTO);
-        expect((await find({ tags: ['Hero'] })).body).toEqual({ ids: ['a.png'], capped: false });
-        expect((await query({ filter: { tags: { include: ['t1'] } }, want: ['rows'], page: 1, pageSize: 10 })).status).toBe(200);
-
-        const Database = (await import('better-sqlite3')).default;
-        const db = new Database(path.join(directories.root, 'character-metadata.sqlite'));
-        try {
-            db.prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, ?)').run('one-too-many', 't1');
-        } finally {
-            db.close();
-        }
-        const found = await find({ tags: ['Hero'] });
-        expect(found.status).toBe(503);
-        expect(found.body.reason).toBe('tag-merge-backlog');
-        // A find by name checks each match's own tags and needs no list of the marks.
-        expect((await find({ name: 'Sam', tags: ['Hero'] })).body).toEqual({ ids: ['a.png'], capped: false });
-        const queried = await query({ filter: { tags: { include: ['t1'] } }, want: ['rows'], page: 1, pageSize: 10 });
-        expect(queried.status).toBe(503);
-        expect(queried.body.reason).toBe('tag-merge-backlog');
-        // A query that names no tag reads no marks.
-        expect((await query({ filter: {}, want: ['rows'], page: 1, pageSize: 10 })).status).toBe(200);
+        await markMergingInto('t1', 5000);
+        expect((await find({ tags: ['Hero'] })).body).toEqual({ ids: ['a.png', 'b.png'], capped: false });
+        expect((await find({ name: 'Ben', tags: ['Hero'] })).body).toEqual({ ids: ['b.png'], capped: false });
+        const included = await query({ filter: { tags: { include: ['t1'] } }, want: ['rows', 'total'], page: 1, pageSize: 10 });
+        expect(included.status).toBe(200);
+        expect(included.body.rows.map(row => row.avatar).sort()).toEqual(['a.png', 'b.png']);
+        const excluded = await query({ filter: { tags: { exclude: ['t1'] } }, want: ['rows'], page: 1, pageSize: 10 });
+        expect(excluded.status).toBe(200);
+        expect(excluded.body.rows.map(row => row.avatar)).toEqual(['c.png']);
     });
 });

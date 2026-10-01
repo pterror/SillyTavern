@@ -35,8 +35,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
-import { TagMergeBacklogError } from '../tag-deletions.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, filterCharacterIdsByTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2360,9 +2359,11 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
         excludeIds: filter.excludeIds,
         ids: Array.isArray(filter.ids) ? filter.ids : undefined,
     };
-    const { groups, backend: groupsBackend, position: groupsPosition } = includeGroups
+    const groupsSorted = includeGroups
         ? await searchGroupsSorted(handle, directories, searchTerm, sortField, order, filterOptions)
         : { groups: [], backend: 'tantivy', position: null };
+    if (groupsSorted === null) return null;
+    const { groups, backend: groupsBackend, position: groupsPosition } = groupsSorted;
     if (groupsOnly) {
         const entities = groups.slice(offset, offset + count).map(group => ({ type: /** @type {'group'} */ ('group'), id: group.id }));
         return { entities, total: groups.length, backend: groupsBackend, position: null, groupsPosition };
@@ -2630,7 +2631,14 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         // filter.ids and filter.search both restrict the candidate set - when both are present they
         // intersect, not override each other, for both types when includeGroups is active.
         const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
-        const effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
+        let effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
+        if (searchResult.tagsLeftToSql && sort.field === 'search' && !includeGroups) {
+            // The index couldn't take the tag filter, so these are every text match: keep the ones the tags allow
+            // before queryCharacters() pages them by rank, or the page would come back short.
+            const kept = await timePhase('tag_check', () => filterCharacterIdsByTags(user.directories, effectiveIds, filter.tags));
+            if (kept === null) return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
+            effectiveIds = kept;
+        }
 
         let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy', position: null };
         let effectiveGroupIds = [];
@@ -2648,7 +2656,9 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             ? groupSearchResult.backend
             : searchResult.backend;
 
-        approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap || (includeGroups && groupSearchResult.total > idFetchCap));
+        // A search that left its tags to SQL returned every match, so its total isn't cut short.
+        approxTotal = Number.isFinite(idFetchCap) && ((!searchResult.tagsLeftToSql && searchResult.total > idFetchCap)
+            || (includeGroups && !groupSearchResult.tagsLeftToSql && groupSearchResult.total > idFetchCap));
 
         if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
             const current = includeGroups
@@ -2717,7 +2727,8 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             return queryReply(200, payload);
         }
 
-        queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
+        // After a tag check in SQL, effectiveIds is the ranking itself; queryCharacters() pages it by rank.
+        queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.tagsLeftToSql ? effectiveIds : searchResult.ids };
         if (sort.field === 'search') {
             // queryCharacters() pages the ranked ids before reading rows, so hits whose row is gone would
             // leave the page short; it reads the margin too, and the page is trimmed back below.
@@ -2784,20 +2795,11 @@ async function handleQuery(request, response) {
         if ('hashes' in reply) return sendHashQueryResponse(response, reply.hashes);
         return response.status(reply.status).send(reply.body);
     } catch (err) {
-        if (err instanceof TagMergeBacklogError) return sendTagMergeBacklog(response);
         console.error('[characters/query] Query failed:', err);
         return response.status(500).send({ error: true });
     }
 }
 
-/**
- * A read naming a tag that too many deleted tags are still merging into (TagMergeBacklogError): refused until
- * finishDeletedTags() catches up, which it does in the background.
- * @param {import('express').Response} response
- */
-function sendTagMergeBacklog(response) {
-    return response.status(503).send({ error: true, reason: 'tag-merge-backlog', message: 'Deleted tags are still being merged. Try again in a moment.' });
-}
 
 router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
 
@@ -2933,7 +2935,6 @@ router.post('/folder-tiles', async function (request, response) {
         }
         return response.send({ tiles: results });
     } catch (err) {
-        if (err instanceof TagMergeBacklogError) return sendTagMergeBacklog(response);
         console.error('[characters/folder-tiles] Failed:', err);
         return response.status(500).send({ error: true });
     }
@@ -3011,7 +3012,6 @@ router.post('/find', async function (request, response) {
         if (result === 'names-not-ready') return response.status(503).send({ error: true, reason: 'names-not-ready' });
         return response.send(result);
     } catch (err) {
-        if (err instanceof TagMergeBacklogError) return sendTagMergeBacklog(response);
         console.error('[characters/find] Lookup failed:', err);
         return response.status(500).send({ error: true });
     }
