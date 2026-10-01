@@ -519,24 +519,32 @@ export class CharacterRepository {
     }
 
     /**
-     * Hydrates the full card for an already-resident character and returns the (in-place-updated) resident
-     * entity. Throws for a non-resident id rather than fetching one in - entry-level fault-in isn't implemented,
-     * since it'd require deciding whether the fetched card should join `charactersStore` (see `get()`).
+     * The full card. A resident character is hydrated in place and the resident entity returned. Any other id is
+     * read from the server and returned without joining `charactersStore`: what is resident is decided by
+     * selection and view, never by a read.
      * @param {string} id
-     * @returns {Promise<Character>}
-     * @throws {Error} if `id` is not currently resident.
+     * @returns {Promise<Character|undefined>} `undefined` if no character has this id.
      */
     async full(id) {
-        if (!this.store.has(id)) {
-            throw new Error(
-                `CharacterRepository.full(${JSON.stringify(id)}): entry-level fault-in for a non-resident id ` +
-                'is not implemented (design doc §6, phase 5 documented gap) - it requires a phase-6 residency ' +
-                'decision, not just a fetch. Use exists() first if the caller only needs to know whether the ' +
-                'id is valid.',
-            );
+        if (this.store.has(id)) {
+            await unshallowCharacter(id);
+            return this.store.get(id);
         }
-        await unshallowCharacter(id);
-        return this.store.get(id);
+        const response = await fetch('/api/characters/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: id }),
+        });
+        if (response.status === 404) {
+            return undefined;
+        }
+        if (!response.ok) {
+            throw new CharacterQueryError(`/api/characters/get failed with ${response.status}`, { status: response.status, reason: undefined, body: undefined });
+        }
+        const character = await response.json();
+        character.chat = character.chat ? String(character.chat) : '';
+        character.shallow = false;
+        return character;
     }
 
     /**
