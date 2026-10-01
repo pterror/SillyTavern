@@ -537,6 +537,112 @@ describe('/query search with more marked tags merging into a filtered tag than t
     }, 20000);
 });
 
+describe('/query searches walked under the work cap', () => {
+    /** Characters zephyr0..7 (zephyr2: t1, zephyr5: t2 merged into t1, zephyr6: world 'lore'), and more than the index takes merging into t1. */
+    async function seedWalked() {
+        const { TANTIVY_MERGED_IDS_LIMIT } = await import('../src/tag-deletions.js');
+        for (let i = 0; i < 8; i++) await seedCharacterWithFile(`zephyr${i}.png`, `Zephyr ${i}`);
+        const lore = cardFor('Zephyr lore', false);
+        lore.data.extensions.world = 'lore';
+        await metadataDb.upsertCharacterFromWrite(directories, 'zephyr6.png', JSON.stringify(lore));
+        await seedGroup('zephyr-group');
+        await saveTags(['t1', 't2']);
+        await assign('zephyr2.png', 't1');
+        await assign('zephyr5.png', 't2');
+        await assign('zephyr-group', 't1');
+        await fill();
+        expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toMatchObject({ refused: [] });
+        withRawDb(db => {
+            const insert = db.prepare('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (?, ?)');
+            db.transaction(() => {
+                for (let i = 0; i < TANTIVY_MERGED_IDS_LIMIT; i++) insert.run(`gone-${String(i).padStart(5, '0')}`, 't1');
+            })();
+        });
+    }
+
+    /** Every row id over pages of one, each request sending the last reply's cursor. */
+    async function followCursors(request) {
+        const ids = [];
+        let cursor;
+        for (let i = 0; i < 20; i++) {
+            const response = await postJson({ ...request, pageSize: 1, ...(cursor ? { cursor } : {}) });
+            expect(response.status).toBe(200);
+            const body = await response.json();
+            ids.push(...body.rows.map(row => row.item?.avatar ?? row.item?.id ?? row.avatar));
+            if (!body.cursor) return ids;
+            cursor = body.cursor;
+        }
+        throw new Error('the cursor never ran out');
+    }
+
+    test('a page that stops short of the end carries a cursor, and the cursors cover the matches once, in order', async () => {
+        await seedWalked();
+        const tags = { include: ['t1'] };
+
+        const byName = await followCursors({ filter: { search: 'zephyr', tags }, sort: { field: 'name', order: 'asc' }, want: ['rows'] });
+        expect(byName).toEqual(['zephyr2.png', 'zephyr5.png']);
+
+        const byRank = await followCursors({ filter: { search: 'zephyr', tags }, sort: { field: 'search' }, want: ['rows'] });
+        expect(byRank.slice().sort()).toEqual(['zephyr2.png', 'zephyr5.png']);
+
+        const withGroups = await followCursors({ filter: { search: 'zephyr', tags, includeGroups: true }, sort: { field: 'name', order: 'asc' }, want: ['rows'] });
+        expect(withGroups.slice().sort()).toEqual(['zephyr-group', 'zephyr2.png', 'zephyr5.png']);
+
+        const rankWithGroups = await followCursors({ filter: { search: 'zephyr', tags, includeGroups: true }, sort: { field: 'search' }, want: ['rows'] });
+        expect(rankWithGroups.slice().sort()).toEqual(['zephyr-group', 'zephyr2.png', 'zephyr5.png']);
+    }, 30000);
+
+    test('a world filter, which the index has no field for, is walked too, in relevance order and in a sort', async () => {
+        await seedWalked();
+        for (const sort of [{ field: 'search' }, { field: 'date_added', order: 'desc' }]) {
+            const response = await postJson({ filter: { search: 'zephyr', world: 'lore' }, sort, page: 1, pageSize: 5, want: ['rows', 'total'] });
+            expect(response.status).toBe(200);
+            const body = await response.json();
+            expect(body.rows.map(row => row.avatar)).toEqual(['zephyr6.png']);
+            expect(body.total).toBe(1);
+            expect(body.cursor).toBeUndefined();
+        }
+    }, 30000);
+
+    test('the total is exact once the walk has checked every match; a page number still works without a cursor', async () => {
+        await seedWalked();
+        const request = { filter: { search: 'zephyr', tags: { include: ['t1'] } }, sort: { field: 'name', order: 'asc' }, pageSize: 1, want: ['rows', 'total'] };
+        const second = await (await postJson({ ...request, page: 2 })).json();
+        expect(second.total).toBe(2);
+        expect(second.rows.map(row => row.avatar)).toEqual(['zephyr5.png']);
+        expect(second.cursor).toBeUndefined();
+
+        // A cursor made for another filter is no cursor: the page number is used.
+        const first = await (await postJson({ ...request, page: 1 })).json();
+        const other = await (await postJson({ ...request, filter: { search: 'zephyr', tags: { include: ['t1'] }, fav: false }, page: 1, cursor: first.cursor })).json();
+        expect(other.rows.map(row => row.avatar)).toEqual(['zephyr2.png']);
+    }, 30000);
+
+    test('hash mode carries the cursor after the token, flagged in the header', async () => {
+        await seedWalked();
+        const response = await postJson({ filter: { search: 'zephyr', tags: { include: ['t1'] } }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 1, want: ['hashes'] });
+        expect(response.status).toBe(200);
+        const buffer = await response.arrayBuffer();
+        const view = new DataView(buffer);
+        const flags = view.getUint8(0);
+        expect(flags & 0b100).toBe(0);
+        expect(flags & 0b1000).toBe(0b1000);
+        let offset = 1 + 1 + 8 + 8;
+        const rowCount = view.getUint16(offset, true); offset += 2;
+        expect(rowCount).toBe(1);
+        offset += 1;
+        const idLen = view.getUint16(offset, true); offset += 2 + idLen + 4 + 4 + 4 + 8 * 5;
+        const chatLen = view.getUint16(offset, true); offset += 2 + chatLen;
+        const tokenLen = view.getUint16(offset, true); offset += 2 + tokenLen;
+        const cursorLen = view.getUint16(offset, true); offset += 2;
+        const cursor = new TextDecoder().decode(new Uint8Array(buffer, offset, cursorLen));
+        expect(offset + cursorLen).toBe(buffer.byteLength);
+
+        const next = await (await postJson({ filter: { search: 'zephyr', tags: { include: ['t1'] } }, sort: { field: 'name', order: 'asc' }, pageSize: 1, cursor, want: ['rows'] })).json();
+        expect(next.rows.map(row => row.avatar)).toEqual(['zephyr5.png']);
+    }, 30000);
+});
+
 describe('/query sampled estimates', () => {
     test('each estimated shape, with and without groups, sends ~ and a value within tolerance of the COUNT(*) total, reading at most the sample budget', async () => {
         await seedBigStore();

@@ -178,7 +178,7 @@ describe('search with more deleted tags merging into a tag than the index is han
         }
     }
 
-    test('the index leaves the tags to SQL, which keeps the right characters', async () => {
+    test('past the limit the index leaves the tags to SQL', async () => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
         const { TANTIVY_MERGED_IDS_LIMIT } = await import('../src/tag-deletions.js');
         const handle = 'tag-delete-left-to-sql';
@@ -192,8 +192,11 @@ describe('search with more deleted tags merging into a tag than the index is han
         expect(hits.tagsLeftToSql).toBe(true);
         expect(hits.ids).toEqual(['Ben.png']);
         expect(await searchIndex.searchCharacterIdsSorted(handle, directories, 'Ben', 'name', 'asc', 0, 10, { tags })).toBeNull();
-        expect(await metadataDb.filterCharacterIdsByTags(directories, ['Ben.png', 'Ann.png'], tags)).toEqual(['Ann.png']);
-        expect(await metadataDb.filterCharacterIdsByTags(directories, ['Ben.png', 'Ann.png'], { exclude: ['tag-y'] })).toEqual(['Ben.png']);
+        expect(await searchIndex.searchTagsLeftToSql(directories, tags)).toBe(true);
+        // A window of the ranking still holds every text match in it; the caller checks the tags.
+        const window = await searchIndex.searchCharacterIdsWindow(handle, directories, 'Ben', 0, 10, { tags });
+        expect(window.tagsLeftToSql).toBe(true);
+        expect(window.hits.map(hit => hit.id)).toEqual(['Ben.png']);
     }, 20000);
 
     test('at the limit the index still takes the tags', async () => {
@@ -209,5 +212,6 @@ describe('search with more deleted tags merging into a tag than the index is han
         const ben = await searchIndex.searchCharacterIds(handle, directories, 'Ben', undefined, { tags });
         expect(ben.tagsLeftToSql).toBe(false);
         expect(ben.ids).toEqual([]);
+        expect(await searchIndex.searchTagsLeftToSql(directories, tags)).toBe(false);
     }, 20000);
 });

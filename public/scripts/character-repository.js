@@ -57,9 +57,19 @@ import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normali
  * when `filter.search` was non-empty.
  * @property {number|string} [hidden] - with `want: 'hidden'`: every entity less the rows on this page, `~`-prefixed
  * when approximate like `total`.
+ * @property {string} [cursor] - where a walked search (the server's runSearchWalk()) stopped: present when rows match
+ * past this page. `query()` sends it back for the next page.
  */
 
 const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
+
+/**
+ * Per query (filter, sort, page size and want), the page whose end `query()` last reached and the cursor the server
+ * gave there, so the next page carries on from it instead of walking from the start. Cleared past the size limit.
+ * @type {Map<string, {page: number, cursor: string}>}
+ */
+const pageEndCursors = new Map();
+const PAGE_END_CURSOR_LIMIT = 64;
 
 /**
  * Last-seen `/query` response per exact request signature, so a repeated request can send back its `token` as
@@ -278,7 +288,7 @@ const HASH_QUERY_SEARCH_BACKEND_NAMES = { 1: 'tantivy', 2: 'native', 3: 'wasm', 
  * `serializeQueryHashesBinary()` server-side (src/endpoints/characters.js) for the matching encoder and the
  * field-by-field layout spec this just walks with a `DataView`.
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, searchBackend: string|undefined, more: boolean, cursor: string|undefined, hashRows: {id:string, isGroup:boolean, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}[]}}
  */
 function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -288,6 +298,8 @@ function deserializeQueryHashesBinary(buffer) {
     const headerFlags = view.getUint8(offset); offset += 1;
     const hasTotal = (headerFlags & 0b01) !== 0;
     const totalApprox = (headerFlags & 0b10) !== 0;
+    const more = (headerFlags & 0b100) !== 0;
+    const hasCursor = (headerFlags & 0b1000) !== 0;
     const searchBackendCode = view.getUint8(offset); offset += 1;
     const searchBackend = HASH_QUERY_SEARCH_BACKEND_NAMES[searchBackendCode];
     const seq = view.getFloat64(offset, true); offset += 8;
@@ -328,6 +340,13 @@ function deserializeQueryHashesBinary(buffer) {
     const token = tokenLen > 0 ? decoder.decode(new Uint8Array(buffer, offset, tokenLen)) : null;
     offset += tokenLen;
 
+    let cursor;
+    if (hasCursor) {
+        const cursorLen = view.getUint16(offset, true); offset += 2;
+        cursor = decoder.decode(new Uint8Array(buffer, offset, cursorLen));
+        offset += cursorLen;
+    }
+
     // Present only when the request wanted 'hidden': hiddenFlags(1) [bit0=approx] + hidden(8).
     let hidden;
     let hiddenApprox = false;
@@ -336,7 +355,7 @@ function deserializeQueryHashesBinary(buffer) {
         hidden = view.getFloat64(offset, true); offset += 8;
     }
 
-    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox };
+    return { seq, token, total: hasTotal ? total : undefined, totalApprox, searchBackend, hashRows, hidden, hiddenApprox, more, cursor };
 }
 
 /**
@@ -639,14 +658,29 @@ export class CharacterRepository {
         const includeGroups = normalizedFilter.includeGroups === true;
 
         const fetchStamp = tagFetchStamp();
-        const result = useHashMode
-            ? await this.#queryHashMode(requestShape, cached, includeGroups)
-            : await postJson('/api/characters/query', cached ? { ...requestShape, ifToken: cached.token } : requestShape);
+        const cursorKey = JSON.stringify({ filter: normalizedFilter, sort: normalizedSort, pageSize, want });
+        const previousEnd = pageEndCursors.get(cursorKey);
+        const firstShape = previousEnd?.page === page - 1 ? { ...requestShape, cursor: previousEnd.cursor } : requestShape;
+        let result = useHashMode
+            ? await this.#queryHashMode(firstShape, cached, includeGroups)
+            : await postJson('/api/characters/query', cached ? { ...firstShape, ifToken: cached.token } : firstShape);
 
         // Server confirmed nothing changed - reuse the cached response rather than the rows/total-less stub.
         if (result?.unchanged === true && cached) {
             stampRowsTagFetch(cached, fetchStamp);
             return cached;
+        }
+
+        // A walked search stopped at its work cap before the page was full: carry on from its cursor, one request at a
+        // time, until the page is full or the matches end.
+        if (result?.more === true) {
+            result = await this.#fillPage(result, requestShape, useHashMode, includeGroups);
+        }
+        if (typeof result?.cursor === 'string') {
+            if (pageEndCursors.size >= PAGE_END_CURSOR_LIMIT) pageEndCursors.clear();
+            pageEndCursors.set(cursorKey, { page, cursor: result.cursor });
+        } else {
+            pageEndCursors.delete(cursorKey);
         }
 
         // Kept under its token: a response without one has nothing to send back, so it isn't kept.
@@ -656,6 +690,38 @@ export class CharacterRepository {
         }
 
         stampRowsTagFetch(result, fetchStamp);
+        return result;
+    }
+
+    /**
+     * Follows `first`'s cursor until the page has `requestShape.pageSize` rows or the server has no more.
+     * @param {CharacterQueryResult & {more?: boolean}} first
+     * @param {{filter: object, sort: object|undefined, page: number, pageSize: number, want: string[]}} requestShape
+     * @param {boolean} useHashMode
+     * @param {boolean} includeGroups
+     * @returns {Promise<CharacterQueryResult>}
+     */
+    async #fillPage(first, requestShape, useHashMode, includeGroups) {
+        const rows = [...(first.rows ?? [])];
+        let last = first;
+        // `hidden` counts every entity less the rows on the page, so it is taken from the first reply and reduced.
+        const want = requestShape.want.filter(w => w !== 'hidden');
+        while (last.more === true && typeof last.cursor === 'string' && rows.length < requestShape.pageSize) {
+            const shape = { ...requestShape, want, pageSize: requestShape.pageSize - rows.length, cursor: last.cursor };
+            last = useHashMode ? await this.#queryHashMode(shape, undefined, includeGroups) : await postJson('/api/characters/query', shape);
+            rows.push(...(last.rows ?? []));
+        }
+        /** @type {CharacterQueryResult} */
+        const result = { ...first, rows, seq: last.seq, token: last.token };
+        delete result.more;
+        if (last.total !== undefined) result.total = last.total;
+        if (typeof last.cursor === 'string') result.cursor = last.cursor;
+        else delete result.cursor;
+        if (first.hidden !== undefined) {
+            const approx = typeof first.hidden === 'string' && first.hidden.startsWith('~');
+            const hidden = Math.max(0, Number(approx ? String(first.hidden).slice(1) : first.hidden) - (rows.length - (first.rows?.length ?? 0)));
+            result.hidden = approx ? `~${hidden}` : hidden;
+        }
         return result;
     }
 
@@ -683,6 +749,8 @@ export class CharacterRepository {
         if (decoded.total !== undefined) result.total = decoded.totalApprox ? `~${decoded.total}` : decoded.total;
         if (decoded.hidden !== undefined) result.hidden = decoded.hiddenApprox ? `~${decoded.hidden}` : decoded.hidden;
         if (decoded.searchBackend !== undefined) result.searchBackend = decoded.searchBackend;
+        if (decoded.more) result.more = true;
+        if (decoded.cursor !== undefined) result.cursor = decoded.cursor;
         result.rows = await this.#resolveHashRows(decoded.hashRows, includeGroups);
         return result;
     }

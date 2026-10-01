@@ -30,12 +30,13 @@ import { migrateOwnerOnTouch } from '../message-tree-migration.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, tantivySortOrder, getCharacterIndexPosition } from './characters-search-index.js';
+import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, searchCharacterIdsWindow, searchTagsLeftToSql, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, tantivySortOrder, getCharacterIndexPosition } from './characters-search-index.js';
+import { walkKey, encodeWalkCursor, decodeWalkCursor, walkRanking, walkSorted, walkTotal } from './search-walk.js';
 import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, filterCharacterIdsByTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2213,7 +2214,7 @@ const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavai
  * Serializes `/query`'s hash-only mode (`want: ['hashes']`) into a compact binary response. See
  * `deserializeQueryHashesBinary()` client-side (character-repository.js) for the matching decoder.
  *
- * Header (20 bytes): headerFlags(1) [bit0=hasTotal, bit1=totalApprox] + searchBackendCode(1) + seq(8, float64) +
+ * Header (20 bytes): headerFlags(1) [bit0=hasTotal, bit1=totalApprox, bit2=more, bit3=hasCursor] + searchBackendCode(1) + seq(8, float64) +
  * total(8, float64, meaningful only if hasTotal) + rowCount(2, uint16).
  *
  * Per row: flags(1) [bit0=isGroup, bit1=hasCreateDate] + idLen(2) + id(idLen, utf8) + favHash(4) +
@@ -2222,13 +2223,16 @@ const HASH_QUERY_SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavai
  * chat(chatLen, utf8, omitted if chatLen is 0).
  *
  * Trailer, after the last row: tokenLen(2, uint16) + token(tokenLen, utf8); tokenLen 0 when the token is null.
+ * Then, only when the header's bit3 is set: cursorLen(2, uint16) + cursor(cursorLen, utf8), runSearchWalk()'s cursor.
  * Then, only when `hidden` is a number: hiddenFlags(1) [bit0=approx] + hidden(8, float64). A decoder that reads no
  * further than the token still reads the rest correctly.
- * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean}} params
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string, hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string}} params
  * @returns {Buffer}
  */
-function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false }) {
+function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, searchBackend, hidden, approxHidden = false, more = false, cursor }) {
     const hasTotal = typeof total === 'number';
+    const hasCursor = typeof cursor === 'string' && cursor.length > 0;
+    const cursorBytes = hasCursor ? Buffer.byteLength(cursor, 'utf8') : 0;
     const hasHidden = typeof hidden === 'number';
     const searchBackendCode = HASH_QUERY_SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
@@ -2240,12 +2244,13 @@ function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, 
         totalSize += 1 + 2 + idBytes + 4 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 2 + chatBytes;
     }
     totalSize += 2 + tokenBytes; // trailer
+    if (hasCursor) totalSize += 2 + cursorBytes;
     if (hasHidden) totalSize += 1 + 8;
 
     const buf = Buffer.allocUnsafe(totalSize);
     let offset = 0;
 
-    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0);
+    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
     buf.writeUInt8(searchBackendCode, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
@@ -2281,6 +2286,10 @@ function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, 
     buf.writeUInt16LE(tokenBytes, offset); offset += 2;
     if (tokenBytes > 0) {
         buf.write(token, offset, tokenBytes, 'utf8'); offset += tokenBytes;
+    }
+    if (hasCursor) {
+        buf.writeUInt16LE(cursorBytes, offset); offset += 2;
+        buf.write(cursor, offset, cursorBytes, 'utf8'); offset += cursorBytes;
     }
     if (hasHidden) {
         buf.writeUInt8(approxHidden ? 0b1 : 0, offset); offset += 1;
@@ -2392,6 +2401,162 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
     const entities = timePhase('merge_ids', () => mergeSortedWindow({ ...window, groups, offset, count }));
     const backend = chars.backend === 'unavailable' || groupsBackend === 'unavailable' ? 'unavailable' : chars.backend;
     return { entities, total: chars.total + groups.length, backend, position, groupsPosition };
+}
+
+/**
+ * A search the index can't answer whole (searchTagsLeftToSql(), a world filter, or a sort the index has no field for),
+ * walked and checked under SEARCH_WORK_CAP (search plan step 1b, T2) instead of reading every match.
+ *
+ * `rank` walks the index's relevance ranking (groups merged in by score) and checks each window's rows in SQL against
+ * the filter. `sorted` walks the filtered rows in SQL in the sort's order and checks each window against the search.
+ * Past the cap the reply has the rows found so far, `more`, and a `cursor`; sending the cursor back carries on from
+ * the last row examined. A reply that stops short of the end has a cursor too, for the page after it. A cursor made
+ * for another search, filter or sort is ignored.
+ * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
+ * @param {object} params
+ * @returns {Promise<QueryReply>}
+ */
+async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql, offset, pageSize, wantRows, wantTotal, wantHashes, cursor }) {
+    const { directories } = user;
+    const handle = user.profile.handle;
+    const unavailable = () => queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
+    const key = walkKey({ mode, searchTerm, filter, sort, includeGroups, groupsOnly });
+    const start = decodeWalkCursor(cursor, key) ?? { c: 0, g: 0, n: 0, e: 0, s: offset };
+    const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
+    const fav = typeof filter.fav === 'boolean' ? filter.fav : undefined;
+    const entityKey = (type, id) => `${type}:${id}`;
+
+    let backend;
+    let position = null;
+    let groupsPosition = null;
+    let base = 0;
+    let walked;
+
+    if (mode === 'rank') {
+        const indexTags = tagsLeftToSql ? undefined : filter.tags;
+        let groups = [];
+        if (includeGroups) {
+            // A user's groups are few: read every match, ranked, as searchGroupIds() does for the bounded path.
+            const groupResult = await searchGroupIds(handle, directories, searchTerm, Number.MAX_SAFE_INTEGER, { fav, tags: indexTags });
+            groupsPosition = groupResult.position;
+            backend = groupResult.backend;
+            groups = groupResult.ids.map(id => ({ id, score: groupResult.scoresById.get(id) }));
+            base += groupResult.total;
+        }
+        let charactersTotal = 0;
+        walked = await walkRanking({
+            groups,
+            need: pageSize,
+            count: wantTotal,
+            start,
+            fetchCharacters: async (windowOffset, count) => {
+                if (groupsOnly) return [];
+                const window = await searchCharacterIdsWindow(handle, directories, searchTerm, windowOffset, count, {
+                    fav, tags: indexTags, excludeIds: filter.excludeIds, ids: explicitIds ? filter.ids : undefined,
+                });
+                position ??= window.position;
+                if (backend !== 'unavailable') backend = window.backend;
+                charactersTotal = window.total;
+                return window.hits;
+            },
+            check: async batch => {
+                const ids = batch.map(entity => entity.id);
+                const result = includeGroups
+                    ? await queryEntities(directories, { tags: filter.tags, fav: filter.fav, world: filter.world, excludeIds: filter.excludeIds, ids, groupsOnly, offset: 0, limit: ids.length, wantRows: false, wantHashes: true, wantTotal: false })
+                    : await queryCharacters(directories, { tags: filter.tags, fav: filter.fav, world: filter.world, excludeIds: filter.excludeIds, ids, offset: 0, limit: ids.length, wantRows: false, wantHashes: true, wantTotal: false });
+                if (result === null) return null;
+                const kept = new Set();
+                for (const row of result.hashRows ?? []) {
+                    if (explicitIds && !explicitIds.has(row.id)) continue;
+                    kept.add(entityKey(row.isGroup ? 'group' : 'character', row.id));
+                }
+                return kept;
+            },
+        });
+        base += charactersTotal;
+    } else {
+        /** @type {Set<string> | null} */
+        let groupMatches = null;
+        const sqlParams = {
+            tags: filter.tags, fav: filter.fav, world: filter.world, excludeIds: filter.excludeIds, ids: filter.ids,
+            sortField: sort.field, sortOrder: sort.order, seed, handle,
+        };
+        walked = await walkSorted({
+            need: pageSize,
+            count: wantTotal,
+            start,
+            fetchWindow: async (windowOffset, count) => {
+                const params = { ...sqlParams, offset: windowOffset, limit: count, wantRows: false, wantHashes: true, wantTotal: false };
+                const result = includeGroups ? await queryEntities(directories, { ...params, groupsOnly }) : await queryCharacters(directories, params);
+                if (result === null) return null;
+                return (result.hashRows ?? []).map(row => ({ type: row.isGroup ? 'group' : 'character', id: row.id }));
+            },
+            check: async batch => {
+                const kept = new Set();
+                const characterIds = batch.filter(entity => entity.type === 'character').map(entity => entity.id);
+                if (characterIds.length > 0) {
+                    const matched = await searchCharacterIds(handle, directories, searchTerm, characterIds.length, { ids: characterIds });
+                    position ??= matched.position;
+                    if (backend !== 'unavailable') backend = matched.backend;
+                    for (const id of matched.ids) kept.add(entityKey('character', id));
+                }
+                if (batch.some(entity => entity.type === 'group')) {
+                    if (groupMatches === null) {
+                        // A user's groups are few: every group the search matches, read once.
+                        const groupResult = await searchGroupIds(handle, directories, searchTerm, Number.MAX_SAFE_INTEGER, {});
+                        groupsPosition = groupResult.position;
+                        if (groupResult.backend === 'unavailable') backend = 'unavailable';
+                        groupMatches = new Set(groupResult.ids);
+                    }
+                    for (const entity of batch) {
+                        if (entity.type === 'group' && groupMatches.has(entity.id)) kept.add(entityKey('group', entity.id));
+                    }
+                }
+                return kept;
+            },
+        });
+        if (wantTotal && walked !== null && !walked.seen.ended) {
+            const counted = includeGroups
+                ? await queryEntities(directories, { ...sqlParams, groupsOnly, wantRows: false, wantTotal: true })
+                : await queryCharacters(directories, { ...sqlParams, wantRows: false, wantTotal: true });
+            if (counted === null) return unavailable();
+            base = Number(counted.total ?? 0);
+        }
+    }
+    if (walked === null) return unavailable();
+
+    const { entities, exhausted, capped } = walked;
+    const extra = {};
+    if (capped && entities.length < pageSize) extra.more = true;
+    if (!exhausted) extra.cursor = encodeWalkCursor(key, walked.position);
+    const counted = wantTotal ? walkTotal(walked.seen, base) : null;
+
+    const read = includeGroups
+        ? await timePhase('page_rows', () => getEntityRowsByIds(directories, entities, { wantRows, wantHashes }))
+        : await timePhase('page_rows', () => queryCharacters(directories, { ids: entities.map(entity => entity.id), wantRows, wantHashes, wantTotal: false }));
+    if (read === null) return unavailable();
+    const token = queryToken({ seq: read.seq, groupsVersion: read.groupsVersion, search: true, includeGroups, position, groupsPosition });
+
+    if (wantHashes) {
+        let hashRows = read.hashRows;
+        if (!includeGroups) {
+            const byId = new Map(read.hashRows.map(row => [row.id, row]));
+            hashRows = entities.map(entity => byId.get(entity.id)).filter(Boolean);
+        }
+        return queryHashesReply({ seq: read.seq, token, total: counted?.total, approxTotal: counted?.approx ?? false, hashRows, searchBackend: backend, ...extra });
+    }
+    const payload = { seq: read.seq, token, searchBackend: backend, ...extra };
+    if (wantRows) {
+        if (includeGroups) {
+            payload.rows = await timePhase('hydrate', () => hydrateEntityRows(directories, read.rows));
+        } else {
+            // Rows here are plain toShallow() projections, so the id lives at `.avatar`.
+            const byId = new Map(read.rows.map(row => [row.avatar, row]));
+            payload.rows = entities.map(entity => byId.get(entity.id)).filter(Boolean);
+        }
+    }
+    if (counted) payload.total = counted.approx ? `~${counted.total}` : counted.total;
+    return queryReply(200, payload);
 }
 
 /**
@@ -2567,6 +2732,20 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
     if (hasSearch) {
         const handle = user.profile.handle;
 
+        const tagsLeftToSql = await searchTagsLeftToSql(user.directories, filter.tags);
+        const indexSorts = sort.field !== undefined && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world && !tagsLeftToSql;
+        // A match the index can't fully filter (tags left to SQL, or a world, which it has no field for) or can't
+        // order (any sort but relevance and its fast fields) is walked and checked under the work cap.
+        const walkMode = sort.field === 'search'
+            ? (tagsLeftToSql || filter.world ? 'rank' : null)
+            : (indexSorts ? null : 'sorted');
+        if (walkMode) {
+            return runSearchWalk(user, {
+                mode: walkMode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql,
+                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor,
+            });
+        }
+
         // tantivy sorts natively when the sort field has a fast field, and only the page is hydrated. The index
         // has no world field, so a world-filtered search takes the SQL path below.
         if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world) {
@@ -2631,14 +2810,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         // filter.ids and filter.search both restrict the candidate set - when both are present they
         // intersect, not override each other, for both types when includeGroups is active.
         const explicitIds = Array.isArray(filter.ids) ? new Set(filter.ids) : null;
-        let effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
-        if (searchResult.tagsLeftToSql && sort.field === 'search' && !includeGroups) {
-            // The index couldn't take the tag filter, so these are every text match: keep the ones the tags allow
-            // before queryCharacters() pages them by rank, or the page would come back short.
-            const kept = await timePhase('tag_check', () => filterCharacterIdsByTags(user.directories, effectiveIds, filter.tags));
-            if (kept === null) return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-            effectiveIds = kept;
-        }
+        const effectiveIds = timePhase('merge_ids', () => explicitIds ? searchResult.ids.filter(id => explicitIds.has(id)) : searchResult.ids);
 
         let groupSearchResult = { ids: [], scoresById: new Map(), total: 0, backend: 'tantivy', position: null };
         let effectiveGroupIds = [];
@@ -2656,9 +2828,8 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             ? groupSearchResult.backend
             : searchResult.backend;
 
-        // A search that left its tags to SQL returned every match, so its total isn't cut short.
-        approxTotal = Number.isFinite(idFetchCap) && ((!searchResult.tagsLeftToSql && searchResult.total > idFetchCap)
-            || (includeGroups && !groupSearchResult.tagsLeftToSql && groupSearchResult.total > idFetchCap));
+        approxTotal = Number.isFinite(idFetchCap) && (searchResult.total > idFetchCap
+            || (includeGroups && groupSearchResult.total > idFetchCap));
 
         if (effectiveIds.length === 0 && effectiveGroupIds.length === 0) {
             const current = includeGroups
@@ -2727,8 +2898,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             return queryReply(200, payload);
         }
 
-        // After a tag check in SQL, effectiveIds is the ranking itself; queryCharacters() pages it by rank.
-        queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.tagsLeftToSql ? effectiveIds : searchResult.ids };
+        queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
         if (sort.field === 'search') {
             // queryCharacters() pages the ranked ids before reading rows, so hits whose row is gone would
             // leave the page short; it reads the margin too, and the page is trimmed back below.
