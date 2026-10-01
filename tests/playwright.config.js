@@ -1,14 +1,10 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { defineConfig } from '@playwright/test';
+import { openRunRoot } from './util/temp-run-root.js';
 
-// Playwright loads this config again in every worker. The run root is made once in the runner process
-// and reaches the workers through the environment they inherit; each worker makes its own data root
-// under it (see frontend/fixtures.js).
-if (!process.env.ST_E2E_RUN_ROOT) {
-    process.env.ST_E2E_RUN_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'st-e2e-'));
-}
+// Playwright loads this config again in every worker. The run root is opened once in the runner process
+// and reaches the workers and their servers through the environment they inherit (TMPDIR points into it
+// too); each worker makes its own data root under it (see frontend/fixtures.js). e2e-reporter.js removes it.
+process.env.ST_E2E_RUN_ROOT = openRunRoot('e2e');
 
 export default defineConfig({
     testMatch: '*.e2e.js',
