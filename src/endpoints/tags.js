@@ -36,6 +36,7 @@ import {
 } from '../character-metadata-db.js';
 import { requestMetadataMigrationPass } from '../metadata-migration-coordinator.js';
 import { writeBackpressured } from '../util.js';
+import { contentHashOf } from '../../public/scripts/hash-utils.js';
 
 export const router = express.Router();
 
@@ -501,9 +502,11 @@ router.post('/query', async (request, response) => {
 const BY_IDS_MAX_IDS = 500;
 
 /**
- * `{ ids }` → `{ tags, gone }`: the definitions for a named set of ids, and the ids among them no tag has (never
- * stored, deleted, or marked deleted). An id in neither is a tag whose stored definition can't be read. More than
- * BY_IDS_MAX_IDS distinct ids is a 400 rather than a truncated answer, which would read as those tags not existing.
+ * `{ ids, known }` → `{ tags, gone, unchanged }`: the definitions for a named set of ids, and the ids among them no
+ * tag has (never stored, deleted, or marked deleted). `known` (optional) maps an id to contentHashOf() of the copy
+ * the caller holds: a definition with that hash is left out of `tags` and listed in `unchanged`. An id in none of
+ * the three is a tag whose stored definition can't be read. More than BY_IDS_MAX_IDS distinct ids is a 400 rather
+ * than a truncated answer, which would read as those tags not existing.
  */
 router.post('/by-ids', async (request, response) => {
     try {
@@ -511,12 +514,26 @@ router.post('/by-ids', async (request, response) => {
         if (new Set(ids.map(String)).size > BY_IDS_MAX_IDS) {
             return response.status(400).send({ error: `at most ${BY_IDS_MAX_IDS} distinct ids per request` });
         }
+        const known = request.body?.known;
+        if (known !== undefined && (known === null || typeof known !== 'object' || Array.isArray(known))) {
+            return response.status(400).send({ error: 'known must be an object of id to hash' });
+        }
         const tags = await getTagDefinitionsByIds(request.user.directories, ids);
         const gone = tags === null ? null : await getGoneTagIds(request.user.directories, ids);
         if (tags === null || gone === null) {
             return response.send({ tags: null });
         }
-        response.send({ tags, gone });
+        if (!known) {
+            return response.send({ tags, gone });
+        }
+        /** @type {string[]} */
+        const unchanged = [];
+        const changed = tags.filter((tag) => {
+            if (!Object.hasOwn(known, tag.id) || known[tag.id] !== contentHashOf(tag)) return true;
+            unchanged.push(tag.id);
+            return false;
+        });
+        response.send({ tags: changed, gone, unchanged });
     } catch (err) {
         console.error('Could not read tag definitions by id', err);
         response.sendStatus(500);

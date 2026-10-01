@@ -2,7 +2,8 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 // `tags` is an upstream export of tags.js that extensions push to, splice and edit in place, and upstream stores it
-// with the settings. Here a tag put in is created on the server as soon as a settings save is asked for, and a
+// with the settings. The page holds a tag only while something on screen shows it, so the tests open a character
+// carrying the tags they look at. Here a tag put in is created on the server as soon as a settings save is asked for, and a
 // changed field is stored with the save itself, each as its own request about that one tag. A tag taken out is put
 // back and named in a warning.
 
@@ -124,6 +125,36 @@ async function heldTagIds(page) {
     return withTags(page, 'return tags.map(tag => tag.id);');
 }
 
+/**
+ * Makes a character carrying `tagIds` from another tab, before the page loads. The page holds a tag only while
+ * something on screen shows it, so selectHolder() then opens that character to have the page hold them.
+ * @param {import('@playwright/test').Browser} browser
+ * @param {string[]} tagIds
+ * @returns {Promise<string>} the character's avatar
+ */
+async function createHolder(browser, tagIds) {
+    return withOtherTab(browser, async (setup) => {
+        const card = await createCharacter(setup, `TagsExpHolder-${Date.now()}`);
+        for (const tagId of tagIds) await api(setup, '/api/tags/assign', { id: card, tagId });
+        return card;
+    });
+}
+
+/**
+ * Opens `card` and waits until the page holds `tagIds`.
+ * @param {import('@playwright/test').Page} page @param {string} card @param {string[]} tagIds
+ */
+async function selectHolder(page, card, tagIds) {
+    await page.evaluate(async (card) => {
+        const { selectCharacterByAvatar } = await import('/script.js');
+        await selectCharacterByAvatar(card);
+    }, card);
+    await expect.poll(async () => {
+        const held = await heldTagIds(page);
+        return tagIds.filter(id => !held.includes(id));
+    }).toEqual([]);
+}
+
 // Long enough for a request the page should not send to have shown up.
 const NO_WRITE_SETTLE_MS = 1500;
 
@@ -133,7 +164,9 @@ test.describe('the tags export', () => {
     test('is one array, the same one context hands out', async ({ browser, page }) => {
         const stamp = Date.now();
         const id = await withOtherTab(browser, setup => createTag(setup, `tagsexp-same-${stamp}`));
+        const card = await createHolder(browser, [id]);
         await loadApp(page);
+        await selectHolder(page, card, [id]);
 
         const result = await withTags(page, `
             const context = window['SillyTavern'].getContext();
@@ -181,7 +214,7 @@ test.describe('the tags export', () => {
 
         await page.reload();
         await loadApp(page);
-        expect(await heldTagIds(page)).toContain(id);
+        expect(await serverTag(page, id)).toMatchObject({ id, name: id, color: '#112233' });
     });
 
     test('a tag pushed and assigned in one turn is created before it is assigned', async ({ browser, page }) => {
@@ -212,7 +245,9 @@ test.describe('the tags export', () => {
     test('a changed field is stored with the next settings save, as an edit of that field', async ({ browser, page }) => {
         const stamp = Date.now();
         const id = await withOtherTab(browser, setup => createTag(setup, `tagsexp-edit-${stamp}`, { color: '#aaaaaa' }));
+        const card = await createHolder(browser, [id]);
         await loadApp(page);
+        await selectHolder(page, card, [id]);
         // Another tab renames it; this tab's copy keeps the old name.
         await withOtherTab(browser, other => api(other, '/api/tags/edit', { id, patch: { name: 'renamed elsewhere' } }));
         const writes = recordWrites(page);
@@ -233,7 +268,9 @@ test.describe('the tags export', () => {
     test('a tag taken out is not deleted: it is put back and named in a warning', async ({ browser, page }) => {
         const stamp = Date.now();
         const id = await withOtherTab(browser, setup => createTag(setup, `tagsexp-out-${stamp}`));
+        const card = await createHolder(browser, [id]);
         await loadApp(page);
+        await selectHolder(page, card, [id]);
         const writes = recordWrites(page);
 
         await withTags(page, 'tags.splice(tags.findIndex(tag => tag.id === arg), 1);', id);
@@ -249,7 +286,9 @@ test.describe('the tags export', () => {
     test('a tag taken out and put back in one turn sends nothing and warns of nothing', async ({ browser, page }) => {
         const stamp = Date.now();
         const id = await withOtherTab(browser, setup => createTag(setup, `tagsexp-back-${stamp}`));
+        const card = await createHolder(browser, [id]);
         await loadApp(page);
+        await selectHolder(page, card, [id]);
         const writes = recordWrites(page);
 
         await withTags(page, `
@@ -291,7 +330,9 @@ test.describe('the tags export', () => {
             leftOut: await createTag(setup, `tagsexp-refill-leftout-${stamp}`),
             added: `tagsexp-refill-added-${stamp}`,
         }));
+        const card = await createHolder(browser, [fixture.same, fixture.changed, fixture.leftOut]);
         await loadApp(page);
+        await selectHolder(page, card, [fixture.same, fixture.changed, fixture.leftOut]);
         const elsewhere = await withOtherTab(browser, other => createTag(other, `tagsexp-refill-elsewhere-${stamp}`));
         const writes = recordWrites(page);
 
