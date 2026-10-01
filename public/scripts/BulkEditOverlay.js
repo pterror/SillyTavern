@@ -922,15 +922,19 @@ class BulkEditOverlay {
                     message: t`Deleting ${characterIds.length} character(s)…`,
                     toastMode: loader.ToastMode.STATIC,
                 });
-                const avatarList = characterIds.filter(avatar => charactersStore.has(avatar));
-                return CharacterContextMenu.delete(avatarList, deleteChats)
+                return CharacterContextMenu.delete([...characterIds], deleteChats)
                     .then(() => this.browseState())
                     .finally(() => loaderHandle.hide());
             });
 
-        // At this moment the popup is already changed in the dom, but not yet closed/resolved. We build the avatar list here
-        const entities = characterIds.map(avatar => characterToEntity(charactersStore.get(avatar))).filter(entity => entity.item !== undefined);
-        buildAvatarList($('#bulk_delete_avatars_block'), entities);
+        // The popup is in the DOM but not resolved yet; fill its avatar list once the selected characters are read.
+        import('./character-repository.js')
+            .then(({ characterRepository }) => characterRepository.getMany(characterIds))
+            .then((resolved) => {
+                const entities = characterIds.filter(avatar => resolved.has(avatar)).map(avatar => characterToEntity(resolved.get(avatar)));
+                buildAvatarList($('#bulk_delete_avatars_block'), entities);
+            })
+            .catch(error => console.error('Could not read the characters selected for deletion:', error));
 
         return promise;
     };

@@ -409,6 +409,25 @@ describe('getMany()', () => {
         expect(result.size).toBe(2);
     });
 
+    test('more missing ids than one server page holds are asked for in page-sized chunks, none dropped', async () => {
+        const store = makeStore([]);
+        const repo = new CharacterRepository(store);
+        const characters = Array.from({ length: 2001 }, (_, i) => addCharacter({ avatar: `c${String(i).padStart(4, '0')}`, name: `C${i}` }));
+        await cacheCharacters(...characters);
+        const ids = characters.map(c => c.avatar);
+        queueQuery({ ids: ids.slice(0, 2000), total: 2000, seq: 1 });
+        queueQuery({ ids: ids.slice(2000), total: 1, seq: 1 });
+
+        const result = await repo.getMany(ids);
+
+        const queryBodies = global.fetch.mock.calls
+            .filter(([url]) => url === '/api/characters/query')
+            .map(([, init]) => JSON.parse(init.body));
+        expect(queryBodies.map(body => body.filter.ids.length)).toEqual([2000, 1]);
+        expect(result.size).toBe(2001);
+        expect(result.has('c2000')).toBe(true);
+    });
+
     test('ids that fail to resolve server-side are simply absent from the result map (exists()-style semantics)', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);

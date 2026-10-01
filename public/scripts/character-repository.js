@@ -72,7 +72,7 @@ const DEFAULT_QUERY_WANT = /** @type {const} */ (['rows', 'total']);
 const queryResponseCache = new Map();
 const QUERY_RESPONSE_CACHE_LIMIT = 100;
 
-/** Mirrors the server's own page cap (`MAX_QUERY_PAGE_SIZE`) - `queryAll()` chunks its loop at this size. */
+/** Mirrors the server's own page cap (`MAX_QUERY_PAGE_SIZE`): `queryAll()` and `getMany()` chunk their requests at this size. */
 const QUERY_ALL_PAGE_SIZE = 2000;
 
 /** Mirrors the server's `MAX_FOLDER_TILES_PER_REQUEST`: `folderTiles()` splits its tiles into requests of this many. */
@@ -493,7 +493,8 @@ export class CharacterRepository {
     }
 
     /**
-     * Batched form of `get()`: resident ids resolve from `charactersStore`, the rest in a single `/query` call.
+     * Batched form of `get()`: resident ids resolve from `charactersStore`, the rest through `/query`, in chunks no
+     * larger than the server's page cap so no id is cut off.
      * @param {string[]} ids
      * @returns {Promise<Map<string, Character>>} keyed by id; ids that don't resolve are simply absent, not
      * `undefined`-valued - so `.has(id)` is the miss check, matching `exists()`'s semantics rather than
@@ -509,11 +510,13 @@ export class CharacterRepository {
             if (resident) result.set(id, resident);
             else missing.push(id);
         }
-        if (missing.length === 0) return result;
 
-        const fetched = await this.query({ ids: missing }, undefined, 1, missing.length, ['rows']);
-        for (const row of fetched.rows ?? []) {
-            result.set(row.avatar, row);
+        for (let start = 0; start < missing.length; start += QUERY_ALL_PAGE_SIZE) {
+            const chunk = missing.slice(start, start + QUERY_ALL_PAGE_SIZE);
+            const fetched = await this.query({ ids: chunk }, undefined, 1, chunk.length, ['rows']);
+            for (const row of fetched.rows ?? []) {
+                result.set(row.avatar, row);
+            }
         }
         return result;
     }

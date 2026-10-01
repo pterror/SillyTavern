@@ -12510,10 +12510,22 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
     /** @type {{avatar: string, entity: object}[]} */
     const removedCharacters = [];
 
+    // Resolved through the repository, not charactersStore: a character the page doesn't hold still gets deleted.
+    let resolved;
+    try {
+        const { characterRepository } = await import('./scripts/character-repository.js');
+        resolved = await characterRepository.getMany(characterKey);
+    } catch (error) {
+        console.error('Could not look up the characters to delete:', error);
+        toastr.error(t`Could not look up the characters to delete. Nothing was deleted.`);
+        await removeCharacterFromUI(removedCharacters);
+        return deleted;
+    }
+
     /** @type {object[]} */
     const characters = [];
     for (const key of characterKey) {
-        const character = charactersStore.get(key);
+        const character = resolved.get(key);
         if (!character) {
             toastr.warning(t`Character ${key} not found. Skipping deletion.`);
             continue;
@@ -14112,7 +14124,7 @@ jQuery(async function () {
         resetMovableStyles(drawerId);
     });
 
-    $(document).on('click', '.mes .avatar', function () {
+    $(document).on('click', '.mes .avatar', async function () {
         const messageElement = $(this).closest('.mes');
         const thumbURL = $(this).children('img').attr('src');
         const charsPath = '/characters/';
@@ -14125,7 +14137,16 @@ jQuery(async function () {
             targetAvatarImg = thumbURL.substring(thumbURL.lastIndexOf('=') + 1);
         }
         const charname = targetAvatarImg.replace('.png', '');
-        const isValidCharacter = characters.some(x => x.avatar === decodeURIComponent(targetAvatarImg));
+        // Only a system message's avatar can be either a character's or a persona's.
+        let isValidCharacter = false;
+        if (messageElement.attr('is_system') == 'true') {
+            const avatarKey = decodeURIComponent(targetAvatarImg);
+            isValidCharacter = charactersStore.has(avatarKey);
+            if (!isValidCharacter) {
+                const { checkCharactersExistOrNull } = await import('./scripts/character-existence-check.js');
+                isValidCharacter = (await checkCharactersExistOrNull([avatarKey]))?.[avatarKey] === true;
+            }
+        }
 
         // Remove existing zoomed avatars for characters that are not the clicked character when moving UI is not enabled
         if (!power_user.movingUI) {

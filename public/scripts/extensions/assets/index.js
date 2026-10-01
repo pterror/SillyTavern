@@ -1,8 +1,10 @@
 import { DOMPurify } from '../../../lib.js';
 import { processDroppedFiles } from '../../../script.js';
 import { getRequestHeaders } from '../../request-headers.js';
+import { checkCharactersExistOrNull } from '../../character-existence-check.js';
+import { charactersStore } from '../../character-store.js';
 import { eventSource, event_types } from '../../events.js';
-import { deleteExtension, EMPTY_AUTHOR, extensionNames, getAuthorFromUrl, getContext, installExtension, renderExtensionTemplateAsync, isOfficialExtension } from '../../extensions.js';
+import { deleteExtension, EMPTY_AUTHOR, extensionNames, getAuthorFromUrl, installExtension, renderExtensionTemplateAsync, isOfficialExtension } from '../../extensions.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
 import { accountStorage } from '../../util/AccountStorage.js';
 import { escapeHtml, flashHighlight, getStringHash, isValidUrl } from '../../utils.js';
@@ -18,6 +20,8 @@ let ASSETS_JSON_URL = 'https://raw.githubusercontent.com/SillyTavern/SillyTavern
 
 let availableAssets = {};
 let currentAssets = {};
+/** @type {Set<string>} Ids of the listed character assets that are already in the library. */
+let installedCharacterAssets = new Set();
 
 //#############################//
 //  Extension UI and Settings  //
@@ -237,6 +241,7 @@ async function populateAssetsMenu(json) {
     $('#assets_type_select').off('change').on('change', filterAssets);
     $('#assets_search').off('input').on('input', filterAssets);
 
+    await refreshInstalledCharacterAssets((availableAssets.character ?? []).map(asset => asset.id));
     for (const assetType of assetTypes) {
         await buildAssetTypeSection(assetType);
     }
@@ -293,6 +298,22 @@ function previewAsset(e) {
     }
 }
 
+/**
+ * Asks the server which of these character assets are already in the library. An installed character asset is
+ * imported under its id, so its avatar is the id with a `.png` extension.
+ * @param {string[]} ids Character asset ids from the assets list
+ */
+async function refreshInstalledCharacterAssets(ids) {
+    const avatarOf = (/** @type {string} */ id) => `${id.replace(/\.[^/.]+$/, '')}.png`;
+    const found = await checkCharactersExistOrNull([...new Set(ids.map(avatarOf))]);
+    if (found === null) {
+        // Unverifiable: fall back to the characters the page holds rather than showing everything as missing.
+        installedCharacterAssets = new Set(ids.filter(id => charactersStore.has(avatarOf(id))));
+        return;
+    }
+    installedCharacterAssets = new Set(ids.filter(id => found[avatarOf(id)] === true));
+}
+
 function isAssetInstalled(assetType, filename) {
     let assetList = currentAssets[assetType];
 
@@ -302,7 +323,7 @@ function isAssetInstalled(assetType, filename) {
     }
 
     if (assetType == 'character') {
-        assetList = getContext().characters.map(x => x.avatar);
+        return installedCharacterAssets.has(filename);
     }
 
     for (const i of assetList) {
@@ -392,6 +413,7 @@ async function openCharacterBrowser(forceDefault) {
     }
 
     const template = $(await renderExtensionTemplateAsync(MODULE_NAME, 'market', {}));
+    await refreshInstalledCharacterAssets(characters.map(character => character.id));
 
     for (const character of characters.sort((a, b) => a.name.localeCompare(b.name))) {
         const listElement = template.find(character.highlight ? '.contestWinnersList' : '.featuredCharactersList');
