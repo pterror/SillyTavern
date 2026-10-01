@@ -15,7 +15,7 @@ import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, Filte
 
 import { groupCandidatesFilter, groupMembersFilter, selected_group } from './group-chats.js';
 import { groups, groupsStore } from './group-store.js';
-import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, debounce, findChar, escapeHtml } from './utils.js';
+import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, debounce, findChar, findCharAsync, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
 import { EntityStore, onAnyEntityStoreChange } from './entity-store.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -32,7 +32,7 @@ import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandE
 import { getCachedTags, setCachedTags } from './tags-cache.js';
 import { DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, digestsEqual } from './hash-utils.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
-import { parseQueryTotal } from './character-repository.js';
+import { characterRepository, parseQueryTotal } from './character-repository.js';
 
 export {
     TAG_FOLDER_TYPES,
@@ -561,9 +561,10 @@ const tagSavesNotStored = [];
 /**
  * Marks a local tag change on `key` as unsaved right away (see tag-fetch-stamps.js), and returns the task that
  * saves it. The task waits for the saves queued for `key` before it.
+ * @template T
  * @param {string} key
- * @param {() => Promise<unknown>} save
- * @returns {() => Promise<void>}
+ * @param {() => Promise<T>} save
+ * @returns {() => Promise<T>} the task, answering what `save` answered
  */
 function queueTagSave(key, save) {
     const saved = beginLocalTagChange(key);
@@ -576,7 +577,7 @@ function queueTagSave(key, save) {
     return async () => {
         try {
             await before;
-            await save();
+            return await save();
         } finally {
             saved();
             finished();
@@ -699,7 +700,7 @@ function redrawTagsOfKey(key, tagId) {
  * Sends the assign of `tagId` to `key`. If the server doesn't store it, the tag is taken off `key` in this tab
  * again and the failure is reported once every pending save is answered.
  * @param {string} key @param {string} tagId
- * @returns {() => Promise<void>}
+ * @returns {() => Promise<boolean>} the task, answering whether the server gave `key` the tag as asked
  */
 function queueAssignSave(key, tagId) {
     return queueTagSave(key, async () => {
@@ -710,7 +711,7 @@ function queueAssignSave(key, tagId) {
             if (!answer.defined && storedTagFields.has(tagId)) {
                 tagAssignsNotAsAsked.push({ key, tagId, tagName: String(tagsStore.get(tagId)?.name ?? tagId), assigned: tagId });
             }
-            return;
+            return true;
         }
         if (answer) {
             tagAssignsNotAsAsked.push({ key, tagId, tagName: String(tagsStore.get(tagId)?.name ?? tagId), assigned: answer.assigned });
@@ -720,12 +721,13 @@ function queueAssignSave(key, tagId) {
         if (!resolveTagIdsArray(key)) {
             // An entity this tab doesn't hold, given the tag through `tag_map`: a failed assign is sent again with the
             // next take-in.
-            if (answer) return;
+            if (answer) return false;
             const sent = unheldTagMapSent.get(key);
             if (sent?.includes(tagId)) sent.splice(sent.indexOf(tagId), 1);
-            return;
+            return false;
         }
         if (unassignTagLocally(key, tagId)) redrawTagsOfKey(key, tagId);
+        return false;
     });
 }
 
@@ -733,16 +735,55 @@ function queueAssignSave(key, tagId) {
  * Sends the unassign of `tagId` from `key`. If the server doesn't store it, the tag is put back on `key` in this
  * tab and the failure is reported once every pending save is answered.
  * @param {string} key @param {string} tagId
- * @returns {() => Promise<void>}
+ * @returns {() => Promise<boolean>} the task, answering whether the server stored it
  */
 function queueUnassignSave(key, tagId) {
     return queueTagSave(key, async () => {
-        if (await unassignTagOnServer(key, tagId)) return;
+        if (await unassignTagOnServer(key, tagId)) return true;
         tagSavesNotStored.push({ key, tagId, assign: false });
         // The tag may be gone from this tab by now, deleted along with its assignments.
-        if (!tagsStore.has(tagId)) return;
+        if (!tagsStore.has(tagId)) return false;
         if (assignTagLocally(key, tagId)) redrawTagsOfKey(key, tagId);
+        return false;
     });
+}
+
+/**
+ * The tag ids of a character or group, held or not: a held one's own `tag_ids`, else the server's.
+ * @param {string} key
+ * @returns {Promise<string[] | null>} null if the server could not be asked
+ */
+async function readEntityTagIds(key) {
+    const held = resolveTagIdsArray(key);
+    if (held) return [...held];
+    const answer = await postTagsRead('/api/tags/for', { ids: [key] });
+    if (!answer) return null;
+    const ids = answer[key];
+    return Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : [];
+}
+
+/**
+ * Puts tags on, or takes them off, a character or group this tab doesn't hold, on the server only, one tag at a
+ * time. The character list's page is drawn again once the saves are answered.
+ * @param {string} key
+ * @param {string[]} tagIds
+ * @param {boolean} assign
+ * @returns {Promise<boolean>} whether the server stored at least one change as asked
+ */
+async function saveTagsOnUnheldKey(key, tagIds, assign) {
+    const current = await readEntityTagIds(key);
+    if (!current) {
+        toastr.error(t`The server could not be asked which tags it has.`, t`Tags could not be saved`);
+        return false;
+    }
+    let storedAny = false;
+    for (const tagId of tagIds) {
+        if (current.includes(tagId) === assign) continue;
+        const task = assign ? queueAssignSave(key, tagId) : queueUnassignSave(key, tagId);
+        if (await task()) storedAny = true;
+    }
+    if (storedAny) printCharactersDebounced();
+    return storedAny;
 }
 
 /**
@@ -3198,7 +3239,9 @@ async function importTags(character, { importSetting = null, suppressSuccessToas
 
     const tagsToImport = await createNewTags(tagNamesToImport);
     if (!tagsToImport.length) return false;
-    const added = addTagsToEntity(tagsToImport, character.avatar);
+    const added = resolveTagIdsArray(character.avatar)
+        ? addTagsToEntity(tagsToImport, character.avatar)
+        : await saveTagsOnUnheldKey(character.avatar, tagsToImport.map(tag => tag.id), true);
     const tagNames = tagsToImport.map(x => escapeHtml(x.name)).join(', ');
 
     if (added) {
@@ -3222,7 +3265,7 @@ async function importTags(character, { importSetting = null, suppressSuccessToas
  */
 async function handleTagImport(character, { importSetting = null } = {}) {
     /** @type {string[]} */
-    const alreadyAssignedTags = getTagIdsForKey(character.avatar);
+    const alreadyAssignedTags = (await readEntityTagIds(character.avatar)) ?? [];
     // Enough names that the first ANTI_TROLL_MAX_TAGS not assigned yet are among them.
     const candidateNames = character.tags.map(t => t.trim()).filter(t => t)
         .filter(t => !IMPORT_EXLCUDED_TAGS.includes(t))
@@ -6178,6 +6221,36 @@ async function showOwnTagInViewList(id, { scrollTo = false } = {}) {
     if (row.length && row.index() !== placeBefore) flashHighlight(row);
 }
 
+/**
+ * The id of a group with `name`, matched ignoring case and accents, asked of the server.
+ * @param {string} name
+ * @returns {Promise<string|null>} null when there is none or the server could not be asked
+ */
+async function findGroupIdByName(name) {
+    const answer = await postTagsRead('/api/characters/find', { type: 'group', name });
+    const id = Array.isArray(answer?.ids) ? answer.ids[0] : undefined;
+    return typeof id === 'string' ? id : null;
+}
+
+/**
+ * The key of the character or group a tag command's `name` argument names, held or not: with no name, the open group
+ * or the current character; else a character with that name or avatar key, else a group with that name. Warns when
+ * there is none.
+ * @param {string?} name
+ * @returns {Promise<string|null>}
+ */
+async function findTagCommandEntityKey(name) {
+    if (!name) return searchCharByName(name);
+    const character = await findCharAsync({ name });
+    if (character?.avatar) return character.avatar;
+    const heldGroup = groups.find(x => equalsIgnoreCaseAndAccents(x.name, name));
+    if (heldGroup) return String(heldGroup.id);
+    const groupId = await findGroupIdByName(name);
+    if (groupId) return groupId;
+    toastr.warning(`Character ${name} not found.`);
+    return null;
+}
+
 function registerTagsSlashCommands() {
     /**
      * Gets a tag by its name. Optionally can create the tag if it does not exist.
@@ -6203,10 +6276,11 @@ function registerTagsSlashCommands() {
         returns: 'true/false - Whether the tag was added or was assigned already',
         /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
         callback: async ({ name }, tagName) => {
-            const key = searchCharByName(name);
+            const key = await findTagCommandEntityKey(name);
             if (!key) return 'false';
             const tag = await paraGetTag(tagName, { allowCreate: true });
             if (!tag) return 'false';
+            if (!resolveTagIdsArray(key)) return String(await saveTagsOnUnheldKey(key, [tag.id], true));
             const result = addTagsToEntity(tag, key);
             printCharacters();
             return String(result);
@@ -6250,10 +6324,11 @@ function registerTagsSlashCommands() {
         returns: 'true/false - Whether the tag was removed or wasn\'t assigned already',
         /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
         callback: async ({ name }, tagName) => {
-            const key = searchCharByName(name);
+            const key = await findTagCommandEntityKey(name);
             if (!key) return 'false';
             const tag = await paraGetTag(tagName);
             if (!tag) return 'false';
+            if (!resolveTagIdsArray(key)) return String(await saveTagsOnUnheldKey(key, [tag.id], false));
             const result = removeTagFromEntity(tag, key);
             printCharacters();
             return String(result);
@@ -6296,11 +6371,16 @@ function registerTagsSlashCommands() {
         returns: 'true/false - Whether the given tag name is assigned to the character',
         /** @param {{name: string}} namedArgs @param {string} tagName @returns {Promise<string>} */
         callback: async ({ name }, tagName) => {
-            const key = searchCharByName(name);
+            const key = await findTagCommandEntityKey(name);
             if (!key) return 'false';
             const tag = await paraGetTag(tagName);
             if (!tag) return 'false';
-            return String(isTagAssignedToKey(key, tag.id));
+            const ids = await readEntityTagIds(key);
+            if (!ids) {
+                toastr.error(t`The server could not be asked which tags it has.`);
+                return 'false';
+            }
+            return String(ids.includes(tag.id));
         },
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
@@ -6338,11 +6418,21 @@ function registerTagsSlashCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'tag-list',
         returns: 'Comma-separated list of all assigned tags',
-        /** @param {{name: string}} namedArgs @returns {string} */
-        callback: ({ name }) => {
-            const key = searchCharByName(name);
+        /** @param {{name: string}} namedArgs @returns {Promise<string>} */
+        callback: async ({ name }) => {
+            const key = await findTagCommandEntityKey(name);
             if (!key) return '';
-            const tags = getTagsList(key);
+            const ids = await readEntityTagIds(key);
+            if (!ids) {
+                toastr.error(t`The server could not be asked which tags it has.`);
+                return '';
+            }
+            const read = await readTagsForIds(ids);
+            if (!read) {
+                toastr.error(t`The server could not be asked which tags it has.`);
+                return '';
+            }
+            const tags = [...read.tags.values()].sort(compareTagsForSort);
             return tags.map(x => x.name).join(', ');
         },
         namedArgumentList: [
@@ -6380,7 +6470,7 @@ function registerTagsSlashCommands() {
                 toastr.warning(t`Tag import does not support group chats.`);
                 return 'false';
             }
-            const key = searchCharByName(name);
+            const key = await findTagCommandEntityKey(name);
             if (!key) return 'false';
 
             // Map mode argument to tag_import_setting
@@ -6396,7 +6486,11 @@ function registerTagsSlashCommands() {
             }
 
             const importSetting = mode ? modeMap[mode] : null;
-            const character = findChar({ name: key });
+            const character = charactersStore.get(key) ?? await characterRepository.full(key);
+            if (!character) {
+                toastr.warning(t`Tag import does not support groups.`);
+                return 'false';
+            }
 
             const result = await importTags(character, { importSetting });
             return result ? 'true' : 'false';
