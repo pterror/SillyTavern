@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
 import { startServer } from '../e2e-st-server.js';
-import { FAILED_MARKER, WORKER_DONE_MARKER } from '../e2e-reporter.js';
+import { FAILED_MARKER, WORKER_DONE_MARKER } from '../e2e-run-root.js';
 
 export const test = base.extend({
     freshAccount: [false, { scope: 'worker', option: true }],
@@ -33,7 +33,7 @@ export const test = base.extend({
         fs.writeFileSync(path.join(dataRoot, WORKER_DONE_MARKER), '');
     }, { scope: 'worker', auto: true, timeout: 180000 }],
 
-    // Names each test that didn't end as expected in its worker's data root, so e2e-reporter.js keeps
+    // Names each test that didn't end as expected in its worker's data root, so e2e-run-root.js keeps
     // that data root (and only that one) for inspection.
     failureMarker: [async ({ stServer }, use, testInfo) => {
         await use(undefined);

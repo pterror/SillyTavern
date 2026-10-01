@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { startServer } from './e2e-st-server.js';
+import { SEED_DONE_MARKER } from './e2e-run-root.js';
 
 export default async function globalSetup() {
     const seedRoot = path.join(/** @type {string} */ (process.env.ST_E2E_RUN_ROOT), 'seed');
@@ -28,4 +29,5 @@ export default async function globalSetup() {
     } finally {
         await server.stop();
     }
+    fs.writeFileSync(path.join(seedRoot, SEED_DONE_MARKER), '');
 }
