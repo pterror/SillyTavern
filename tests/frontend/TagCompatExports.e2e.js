@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
 // Things upstream exports around tags that extensions can call: `renameTagKey` and `loadTagsSettings(settings)` from
 // tags.js, `accountStorage.getState()`, and the `filter_state` field of a tag object. Upstream keeps all of it in the
@@ -186,6 +186,7 @@ test.describe('upstream tag exports', () => {
             return { seen, unseen, kept, from, to };
         });
         await loadApp(page);
+        await holdCharacters(page, [fixture.from]);
         // The current character is the one `tag_map` has an entry for.
         await page.evaluate(async (to) => {
             const { selectCharacterByAvatar } = await import('/script.js');
@@ -226,6 +227,7 @@ test.describe('upstream tag exports', () => {
             return { tag, from };
         });
         await loadApp(page);
+        await holdCharacters(page, [fixture.from]);
 
         await withTagsModule(page, 'tagsModule.renameTagKey(arg.from, `TagCompatNobody-${arg.from}`);', fixture);
 

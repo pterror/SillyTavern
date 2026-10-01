@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, setStackedDrawers } from './frontent-test-utils.js';
+import { testSetup, setStackedDrawers, findCharacterAvatarByName } from './frontent-test-utils.js';
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
@@ -329,10 +329,7 @@ async function createCharacter(page) {
     await openDrawer(page, 'char-info-panel');
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    const findAvatar = () => page.evaluate(async (n) => {
-        const { characters } = await import('/scripts/character-store.js');
-        return characters.find(c => c?.name === n)?.avatar;
-    }, name);
+    const findAvatar = () => findCharacterAvatarByName(page, name);
     await expect.poll(findAvatar).not.toBeUndefined();
     const avatar = await findAvatar();
     await resetDrawers(page);

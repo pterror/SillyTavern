@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
 // Restoring a tag backup adds the backup's assignments. It must never remove a tag a character already has on the
 // server, whether or not this page has loaded the character or holds a current copy of it. The backup's tag
@@ -185,6 +185,7 @@ test.describe('Tag restore adds to what a character already has', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.card]);
         expect(await residentTagsOf(page, fixture.card)).toEqual([]);
 
         await hideChangesOf(page, fixture.card);
@@ -241,6 +242,7 @@ test.describe('Tag restore stores the backup\'s tag definitions', () => {
         const name = `new-${stamp}`;
 
         await loadApp(page);
+        await holdCharacters(page, [card]);
         const wholeListSaves = [];
         page.on('request', request => { if (request.url().endsWith('/api/tags/save')) wholeListSaves.push(request.url()); });
         await openTagManagement(page);
@@ -254,6 +256,7 @@ test.describe('Tag restore stores the backup\'s tag definitions', () => {
 
         await page.reload();
         await loadApp(page);
+        await holdCharacters(page, [card]);
         expect(await pageTagsNamed(page, name)).toEqual([{ id, color: 'rgba(17, 34, 51, 1)' }]);
         expect(await residentTagsOf(page, card)).toEqual([id]);
         expect(wholeListSaves).toEqual([]);

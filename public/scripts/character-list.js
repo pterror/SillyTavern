@@ -13,13 +13,14 @@ import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, norm
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
-import { getCachedCursor, setCachedCursor, getAllCachedCharacters, readCachedCharactersByIds, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getWriteFailures, setWriteFailures } from './character-cache.js';
+import { getCachedCursor, setCachedCursor, readCachedCharactersByIds, saveCachedCharacters, removeCachedCharacters, clearCharacterCache, getWriteFailures, setWriteFailures } from './character-cache.js';
 import { Popup } from './popup.js';
 import { renderTemplateAsync } from './templates.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { getPermanentAssistantAvatar } from './welcome-screen.js';
 import { event_types, eventSource } from './events.js';
 import { getRequestHeaders } from './request-headers.js';
+import { checkCharactersExistOrNull } from './character-existence-check.js';
 import { default_avatar, getCurrentCharacter, per_page_default, selectCharacterByAvatar } from '../script.js';
 
 let saveCharactersPage = 0;
@@ -1007,21 +1008,21 @@ async function catchUpFromCache(progress, cursor) {
     while (sinceSeq < cursor) {
         const { seq, changes, truncated, hasMore } = await fetchChangesPage(sinceSeq);
         if (truncated) {
-            // The feed no longer reaches back to this tab's position: only the whole cache can say what changed.
-            const allCached = await getAllCachedCharacters();
-            progress.updates = new Map(allCached);
-            progress.full = true;
+            // The feed no longer reaches back to this tab's position. The tab that moved the cursor has the cache
+            // current through it, so the characters this page holds are read from the cache as it is now.
+            await readHeldFromCache(progress);
             progress.changed = true;
             memorySeq = cursor;
             return;
         }
-        const ids = [...new Set(changes.map(change => change.id))];
+        // Only the characters this page holds have anything in memory to update.
+        const ids = [...new Set(changes.map(change => change.id))].filter(id => charactersStore.has(id));
+        if (changes.length > 0) {
+            progress.changed = true;
+        }
         const stored = await readCachedCharactersByIds(ids);
         for (const id of ids) {
             progress.updates.set(id, stored.get(id) ?? null);
-        }
-        if (ids.length > 0) {
-            progress.changed = true;
         }
         memorySeq = seq;
         if (!hasMore) {
@@ -1174,8 +1175,9 @@ async function fetchCharactersDelta(progress) {
         await setCachedCursor(seq);
 
         // Read back from the cache rather than taken from `fresh`, so a character whose fetch or write failed is
-        // absent here exactly as it is on disk.
-        const touched = [...new Set([...deleteIds, ...wholeRecordIds, ...[...fieldGroupMap.values()].flatMap(group => group.ids)])];
+        // absent here exactly as it is on disk. Only the characters this page holds have anything in memory to update.
+        const touched = [...new Set([...deleteIds, ...wholeRecordIds, ...[...fieldGroupMap.values()].flatMap(group => group.ids)])]
+            .filter(id => charactersStore.has(id));
         const stored = await readCachedCharactersByIds(touched);
         for (const id of touched) {
             progress.updates.set(id, stored.get(id) ?? null);
@@ -1200,21 +1202,42 @@ function mergeShallowCharacterCustomizer(_objValue, srcValue) {
     return undefined;
 }
 
-// Seeds `characters` from the persisted cache before getCharacters()'s network call. Only grows from empty, so it can't clobber fresher state.
+/**
+ * Takes the cache's feed position at boot, before the first sync. The cache may hold the whole library, and none of
+ * it is read into memory: the page holds only the characters on screen, each read when something needs it, and every
+ * one of them is fresher than this position.
+ */
 export async function seedCharactersFromCache() {
-    if (characters.length > 0) {
-        return;
-    }
-    // Read before the cache, so a change another tab writes in between is taken in again rather than missed.
     memorySeq = await getCachedCursor();
-    const cached = await getAllCachedCharacters();
-    if (cached.size === 0) {
-        return;
+}
+
+/**
+ * Reads the characters this page holds from the cache as it is now. One the cache lacks is gone only if the server
+ * says so: a cache another tab is still rebuilding lacks characters that exist.
+ * @param {DeltaProgress} progress
+ */
+async function readHeldFromCache(progress) {
+    const held = charactersStore.getAll().map(character => character.avatar);
+    const stored = await readCachedCharactersByIds(held);
+    for (const [avatar, character] of stored) {
+        progress.updates.set(avatar, character);
     }
-    for (const character of cached.values()) {
-        characters.push(character);
+    await markHeldGoneIfDeleted(progress, held.filter(avatar => !stored.has(avatar)));
+}
+
+/**
+ * Records as gone each of these held characters that the server says doesn't exist. One it can't answer for is
+ * left as it is.
+ * @param {DeltaProgress} progress
+ * @param {string[]} avatars
+ */
+async function markHeldGoneIfDeleted(progress, avatars) {
+    if (avatars.length === 0) return;
+    const exists = await checkCharactersExistOrNull(avatars);
+    if (!exists) return;
+    for (const avatar of avatars) {
+        if (exists[avatar] === false) progress.updates.set(avatar, null);
     }
-    charactersStore.reset();
 }
 
 const DELTA_FETCH_MAX_RETRIES = 3;
@@ -1252,20 +1275,20 @@ export async function getCharacters(options = {}) {
 }
 
 /**
- * Applies a sync's updates to `characters` in place. Callers re-index the store afterwards.
+ * Applies a sync's updates to the characters the page holds, in place. A character it doesn't hold is not taken in:
+ * what the page holds is decided by what is on screen, never by a sync. Callers re-index the store afterwards.
  * @param {DeltaProgress} progress
  * @param {number} fetchStamp From tagFetchStamp() before the sync, so tag ids a newer write superseded are dropped.
  */
-function applyCharacterUpdates({ updates, full }, fetchStamp) {
+function applyCharacterUpdates({ updates }, fetchStamp) {
     const removed = new Set();
     for (const [avatar, incoming] of updates) {
         const existing = charactersStore.get(avatar);
-        if (!incoming) {
-            if (existing) removed.add(existing);
+        if (!existing) {
             continue;
         }
-        if (!existing) {
-            characters.push(incoming);
+        if (!incoming) {
+            removed.add(existing);
             continue;
         }
         if (!isFetchedTagIdsCurrent(avatar, fetchStamp)) {
@@ -1277,11 +1300,6 @@ function applyCharacterUpdates({ updates, full }, fetchStamp) {
         lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
         if (wasUnshallowed && incoming.shallow === true) {
             existing.shallow = false;
-        }
-    }
-    if (full) {
-        for (const character of characters) {
-            if (!updates.has(character.avatar)) removed.add(character);
         }
     }
     if (removed.size > 0) {
@@ -1310,6 +1328,15 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
                 console.warn(`Character delta fetch failed (attempt ${attempt + 1}/${DELTA_FETCH_MAX_RETRIES + 1}), retrying in ${retryDelay}ms:`, error);
                 await delay(retryDelay);
             }
+        }
+    }
+
+    // A rebuilt cache names every character that exists; a held one it didn't name is checked with the server.
+    if (progress.full) {
+        try {
+            await markHeldGoneIfDeleted(progress, charactersStore.getAll().map(character => character.avatar).filter(avatar => !progress.updates.has(avatar)));
+        } catch (error) {
+            console.error('Could not check the held characters a rebuilt cache did not name:', error);
         }
     }
 

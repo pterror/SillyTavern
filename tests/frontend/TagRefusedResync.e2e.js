@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
 // When the server refuses a tag create or edit, the page re-reads that tag: it takes the stored copy if there is one,
 // and otherwise drops the tag and re-reads the tags of the characters and groups it holds.
@@ -112,6 +112,7 @@ test.describe('A refused tag save', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.card]);
         await openTagManagement(page);
         expect(await pageCharacterTagIds(page, fixture.card)).toEqual([fixture.deleted]);
 

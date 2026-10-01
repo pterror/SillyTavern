@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
 // A tag put on or taken off a character or group from another tab reaches this one without a reload, whether or not
 // the character list is showing: the changes stream says something changed, and the page asks
@@ -180,6 +180,7 @@ test.describe('tag assignments changed in another tab', () => {
             await createTag(other, tagId);
 
             await loadApp(page);
+            await holdCharacters(page, [a, b, c]);
             expect(await listDrawerOpen(page)).toBe(false);
 
             await api(other, '/api/tags/restore', { tags: [], tagMap: { [a]: [tagId], [g1]: [tagId] }, overwrite: false });
@@ -209,6 +210,7 @@ test.describe('tag assignments changed in another tab', () => {
         await createTag(page, tagId);
         await page.reload();
         await loadApp(page);
+        await holdCharacters(page, [avatar]);
         await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([]);
         // The current character is the one `tag_map` has an entry for.
         await page.evaluate(async (avatar) => {
@@ -247,6 +249,7 @@ test.describe('tag assignments changed in another tab', () => {
             const second = await createCharacter(other, 'TagAssignOtherTabsRetryB');
             await createTag(other, tagId);
             await loadApp(page);
+            await holdCharacters(page, [first, second]);
             await page.waitForTimeout(STREAM_SETTLE_MS);
 
             let failed = 0;
@@ -279,6 +282,7 @@ test.describe('tag assignments changed in another tab', () => {
             const avatar = await createCharacter(other, 'TagAssignOtherTabsFarBehind');
             await createTag(other, tagId);
             await loadApp(page);
+            await holdCharacters(page, [avatar]);
             await page.waitForTimeout(STREAM_SETTLE_MS);
 
             // The first answer is made to say a million rows remain past its page.
@@ -297,10 +301,12 @@ test.describe('tag assignments changed in another tab', () => {
             await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([tagId]);
             const asks = requests.filter(r => r.path === '/api/tags/assignment-changes');
             expect(asks).toHaveLength(1);
+            // Everything held, and the character rows on screen whose characters the page doesn't hold.
             const held = await page.evaluate(async () => {
                 const { characters } = await import('/scripts/character-store.js');
                 const { groups } = await import('/scripts/group-store.js');
-                return characters.length + groups.length;
+                const { getUnheldRowTagIds } = await import('/scripts/character-list.js');
+                return characters.length + groups.length + getUnheldRowTagIds().size;
             });
             const reread = requests.filter(r => r.path === '/api/tags/for').flatMap(r => r.body.ids);
             expect(reread).toHaveLength(held);

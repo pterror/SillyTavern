@@ -1,6 +1,6 @@
 import zlib from 'node:zlib';
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
 // Upstream's exports that take a character index (a position in `getContext().characters`), called the way an
 // upstream extension calls them: with `getContext().characterId` (an index string), with a number, and with the
@@ -57,6 +57,8 @@ async function createCharacters(page, prefix, count) {
         // @ts-ignore
         await SillyTavern.getContext().getCharacters();
     });
+    // These tests are about characters the page holds.
+    await holdCharacters(page, avatars);
     return avatars;
 }
 
@@ -1746,6 +1748,7 @@ test.describe('getEntitiesList (step 10)', () => {
             }
             await ctx.getCharacters();
         }, favs);
+        await holdCharacters(page, avatars);
 
         const queryStatuses = [];
         page.on('response', (response) => {
