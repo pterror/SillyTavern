@@ -975,9 +975,14 @@ export function noteTagExportsMayHaveChanged() {
 
 // groupsStore is rebuilt on every refetch, so a listener on the store itself would be lost.
 onAnyEntityStoreChange(store => {
-    if (store !== tagsStore) queueTagExportTakeIn(true);
+    if (store === tagsStore) return;
+    queueTagExportTakeIn(true);
+    scheduleTagSweep();
 });
-onExposedEntitiesChange(() => queueTagExportTakeIn(true));
+onExposedEntitiesChange(() => {
+    queueTagExportTakeIn(true);
+    scheduleTagSweep();
+});
 
 /**
  * The keys `tag_map` has an entry for: the characters and groups extensions are shown (D17), the same ones
@@ -1203,6 +1208,79 @@ function addStoredTag(tag) {
     tagsStore.byId.set(tag.id, tag);
     noteStoredTag(tag);
     showSavedTagFilterState(tag);
+    scheduleTagSweep();
+}
+
+/**
+ * Ids of the tags an extension put into `tags` in this tab. They stay held: an extension that put a tag in expects
+ * to find it there.
+ * @type {Set<string>}
+ */
+const tagIdsPutInByExtension = new Set();
+
+/** How long after the last take-in or change of what is on screen the held tags are swept. */
+const TAG_SWEEP_DELAY_MS = 2000;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let tagSweepTimer = null;
+
+/** Sweeps the held tags (sweepHeldTags()) once things have settled. */
+function scheduleTagSweep() {
+    if (tagSweepTimer !== null) return;
+    tagSweepTimer = setTimeout(() => {
+        tagSweepTimer = null;
+        sweepHeldTags();
+    }, TAG_SWEEP_DELAY_MS);
+}
+
+/**
+ * The ids of the tags something needs held: the tags of the characters and groups the page holds; every tag drawn
+ * on screen (pills, Manage Tags rows, folder tiles); the tags the filters are set on; and the tags an extension put
+ * into `tags`, or that are being created.
+ * @returns {Set<string>}
+ */
+function tagIdsInUse() {
+    /** @type {Set<string>} */
+    const ids = new Set();
+    for (const [, tagIds] of allTagIdsEntries()) {
+        for (const id of tagIds) ids.add(id);
+    }
+    document.querySelectorAll('.tag[id], .tag_view_item[id], [tagid]').forEach((el) => {
+        const id = el.getAttribute('tagid') ?? el.id;
+        if (id) ids.add(id);
+    });
+    for (const helper of [groupCandidatesFilter, groupMembersFilter, entitiesFilter]) {
+        const data = helper.getFilterData(FILTER_TYPES.TAG);
+        for (const id of [...(data?.selected ?? []), ...(data?.excluded ?? [])]) ids.add(id);
+    }
+    for (const id of tagIdsPutInByExtension) ids.add(id);
+    for (const id of tagIdsBeingCreated) ids.add(id);
+    for (const id of tagsAddedThroughExport.keys()) ids.add(id);
+    return ids;
+}
+
+/**
+ * Lets go of the held tags nothing needs (tagIdsInUse()), keeping one an extension changed and hasn't stored yet.
+ * `tags` and its index change in the same turn, so letting go is never taken for an extension removing a tag.
+ */
+function sweepHeldTags() {
+    // What an extension changed in `tags` is taken in first.
+    takeInTagsExportWrites();
+    const inUse = tagIdsInUse();
+    /** @type {string[]} */
+    const letGo = [];
+    let write = 0;
+    for (const tag of tags) {
+        const keep = !isTagObject(tag) || inUse.has(tag.id) || !storedTagFields.has(tag.id) || tagFieldsChangedOnObject(tag).patch !== null;
+        if (keep) tags[write++] = tag;
+        else letGo.push(tag.id);
+    }
+    if (!letGo.length) return;
+    tags.length = write;
+    for (const id of letGo) storedTagFields.delete(id);
+    tagsStore.reindex();
+    invalidateTagsFuseIndex();
+    invalidateCharactersFuseIndex();
+    invalidateGroupsFuseIndex();
 }
 
 /** @param {string} id @param {Record<string, any>} fields - the fields the server now stores */
@@ -1260,6 +1338,7 @@ function takeInTagsExportWrites() {
     for (const tag of tags) {
         if (!isTagObject(tag)) continue;
         afterIds.add(tag.id);
+        if (!indexed.has(tag.id)) tagIdsPutInByExtension.add(tag.id);
         if (!indexed.has(tag.id) && !storedTagFields.has(tag.id)) tagsAddedThroughExport.set(tag.id, tag);
     }
     /** @type {Tag[]} */
@@ -4722,6 +4801,7 @@ async function onViewTagsListClick() {
     });
     state.observer?.disconnect();
     if (viewTagList === state) viewTagList = null;
+    scheduleTagSweep();
 }
 
 function redrawAfterTagSortOrderChange() {
@@ -6890,6 +6970,8 @@ function initTagsDrawerUnderlayClip() {
 }
 
 export function initTags() {
+    // A page of the list may show fewer tags than the one before it.
+    eventSource.on(event_types.CHARACTER_PAGE_LOADED, scheduleTagSweep);
     initTagsDrawerUnderlayClip();
     createTagInput('#tagInput', '#tagList', { tagOptions: { removable: true } });
     createTagInput('#groupTagInput', '#groupTagList', { tagOptions: { removable: true } });

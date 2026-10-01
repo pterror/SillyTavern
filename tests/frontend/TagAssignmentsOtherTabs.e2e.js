@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 // A tag put on or taken off a character or group from another tab reaches this one without a reload, whether or not
 // the character list is showing: the changes stream says something changed, and the page asks
@@ -319,16 +319,20 @@ test.describe('tag assignments changed in another tab', () => {
             const avatar = await createCharacter(other, 'TagAssignOtherTabsDeleted');
             for (const id of [merged, target, gone]) await createTag(other, id);
 
+            await page.addInitScript((ids) => {
+                for (const id of ids) localStorage.setItem(`CharacterList_tag_${id}`, 'EXCLUDED');
+            }, [merged, gone]);
             await loadApp(page);
+            await openCharacterManagementDrawer(page);
             await page.evaluate(async (avatar) => {
                 const { selectCharacterByAvatar } = await import('/script.js');
                 await selectCharacterByAvatar(avatar);
             }, avatar);
-            // The tags are read here as a picker reads what it offers.
-            await page.evaluate(async (ids) => {
-                const { readTagsForIds } = await import('/scripts/tags.js');
-                await readTagsForIds(ids);
-            }, [merged, gone]);
+            // A filter set on them keeps them held here.
+            await expect.poll(() => page.evaluate(async (ids) => {
+                const { tagsStore } = await import('/scripts/tags.js');
+                return ids.every(id => tagsStore.has(id));
+            }, [merged, gone])).toBe(true);
             // Cut off from the tag definition feed, so this tab still holds the two tags when they are deleted.
             await page.route('**/api/tags/changes', route => route.fulfill({ status: 500 }));
             await api(other, '/api/tags/delete', { id: merged, mergeInto: target });
