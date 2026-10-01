@@ -6540,8 +6540,6 @@ export function resetChatState() {
     // resets chat metadata
     setChatMetadata({});
     _resetMetadataSaveSnapshot();
-    // resets the characters array, forcing getcharacters to reset
-    characters.length = 0;
 }
 
 /**
@@ -12584,7 +12582,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
 /**
  * Function to delete a character from UI after character deletion API success.
  * It manages necessary UI changes such as unsetting
- * character ID, resetting characters array and chat metadata, deselecting character's tab
+ * character ID, resetting chat metadata, deselecting character's tab
  * panel, removing character name from navigation tabs, clearing chat, fetching updated list of characters.
  * It also ensures to save the settings after all the operations.
  * @param {{avatar: string, entity: object}[]} [removedCharacters] The just-deleted characters, so charactersStore can report exactly what happened instead of a generic reset.
