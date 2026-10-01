@@ -23,7 +23,7 @@ import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
 import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
-import { getStringHash, DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
+import { getStringHash, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
 export const characterChangeEmitter = new EventEmitter();
 
@@ -5392,8 +5392,9 @@ export async function getTagDefinitions(directories) {
 }
 
 /**
- * Every tag definition, in batches of at most 1000, in the same (rowid) order getTagDefinitions() returns them. Each
- * batch is one keyset page, finished before it is yielded, so the caller may await between batches.
+ * Every tag definition not marked deleted, in batches of at most 1000, in rowid (creation) order. Each batch is one
+ * keyset page, finished before it is yielded, so the caller may await between batches. For the backup, which is a
+ * download of every tag.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<AsyncGenerator<object[], void, undefined> | null>} null when the store is unavailable.
  */
@@ -5412,49 +5413,6 @@ export async function streamTagDefinitionBatches(directories) {
             yield (/** @type {{ data: string }[]} */ (rows)).map(row => JSON.parse(row.data));
         }
     })();
-}
-
-// Bucketed digest over every tag definition, computed on demand and stored nowhere - a tag row is small
-// enough (~110 bytes, ~130ms at 62k rows) that there's no need for derived state that could drift.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} [bucketCount]
- * @returns {Promise<{ bucketCount: number, buckets: object[] } | null>}
- */
-export async function getTagsDigest(directories, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    const buckets = Array.from({ length: bucketCount }, () => emptyDigest());
-    for (const row of (/** @type {TagRow[]} */ (entry.db.all(`SELECT id, data FROM tags WHERE ${NOT_MARKED_DELETED_SQL}`)))) {
-        let parsed;
-        try { parsed = JSON.parse(row.data); } catch { continue; }
-        const b = bucketOf(row.id, bucketCount);
-        buckets[b] = combineDigest(buckets[b], row.id, contentHashOf(parsed));
-    }
-    return { bucketCount, buckets };
-}
-
-// Every {id, hash} in one bucket, for a client to diff locally against a stale digest. Deletions need no
-// tombstone: a tag no longer present is simply absent from its bucket's membership.
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {number} bucket
- * @param {number} [bucketCount]
- * @returns {Promise<{ bucket: number, bucketCount: number, members: { id: string, hash: number }[] } | null>}
- */
-export async function getTagsBucketMembers(directories, bucket, bucketCount = DEFAULT_DIGEST_BUCKET_COUNT) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    const members = [];
-    for (const row of (/** @type {TagRow[]} */ (entry.db.all(`SELECT id, data FROM tags WHERE ${NOT_MARKED_DELETED_SQL}`)))) {
-        if (bucketOf(row.id, bucketCount) !== bucket) continue;
-        let parsed;
-        try { parsed = JSON.parse(row.data); } catch { continue; }
-        members.push({ id: row.id, hash: contentHashOf(parsed) });
-    }
-    return { bucket, bucketCount, members };
 }
 
 /**

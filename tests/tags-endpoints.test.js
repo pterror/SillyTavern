@@ -260,14 +260,14 @@ describe('tag usage counts', () => {
     });
 });
 
-describe('POST /api/tags/get (tag definitions - tags.json is gone entirely, owner decision)', () => {
-    test('get answers the definitions in the sqlite store, no tags.json file involved', async () => {
+describe('POST /api/tags/get, /digest, /bucket', () => {
+    test('there are no routes that read every tag definition', async () => {
         await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
 
         expect(fs.existsSync(path.join(tempDir, 'tags.json'))).toBe(false);
-
-        const got = await (await postJson('/api/tags/get', {})).json();
-        expect(got).toEqual({ tags: [{ id: 'tag1', name: 'Funny' }] });
+        for (const route of ['/api/tags/get', '/api/tags/digest', '/api/tags/bucket']) {
+            expect((await postJson(route, {})).status).toBe(404);
+        }
     });
 });
 
@@ -277,8 +277,7 @@ describe('POST /api/tags/save', () => {
 
         expect((await postJson('/api/tags/save', { tags: [{ id: 'tag2', name: 'Serious' }] })).status).toBe(404);
 
-        const got = await (await postJson('/api/tags/get', {})).json();
-        expect(got).toEqual({ tags: [{ id: 'tag1', name: 'Funny' }] });
+        expect(await metadataDb.getTagDefinitionsByIds(directories, ['tag1', 'tag2'])).toEqual([{ id: 'tag1', name: 'Funny' }]);
     });
 });
 

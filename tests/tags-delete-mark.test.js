@@ -97,9 +97,16 @@ async function deleteTag(id, mergeInto) {
     return response.json();
 }
 
+/** Every stored tag definition not marked deleted, in creation order. */
+async function storedTagDefinitions() {
+    /** @type {any[]} */
+    const tags = [];
+    for await (const batch of /** @type {AsyncGenerator<object[]>} */ (await metadataDb.streamTagDefinitionBatches(directories))) tags.push(...batch);
+    return tags;
+}
+
 async function listedTagIds() {
-    const { tags } = await (await post('/api/tags/get')).json();
-    return tags.map(t => t.id).sort();
+    return (await storedTagDefinitions()).map(t => t.id).sort();
 }
 
 async function tagsFor(ids) {
@@ -259,32 +266,13 @@ describe('POST /api/tags/delete marks the tag and leaves its rows', () => {
 });
 
 describe('every tag definition read leaves a marked tag out', () => {
-    test('/get, /by-ids, /digest, /bucket and /manifest', async () => {
+    test('the stored definitions and /by-ids', async () => {
         await seedLibrary();
-        const hashBefore = (await (await post('/api/tags/manifest')).json()).hash;
-        const digestBefore = await (await post('/api/tags/digest', { bucketCount: 1 })).json();
         await deleteTag('x', 'y');
 
         expect(await listedTagIds()).toEqual(['d', 'y', 'z']);
         const byIds = (await (await post('/api/tags/by-ids', { ids: ['x', 'y'] })).json()).tags;
         expect(byIds.map(t => t.id)).toEqual(['y']);
-        const bucket = await (await post('/api/tags/bucket', { bucket: 0, bucketCount: 1 })).json();
-        expect(bucket.members.map(m => m.id).sort()).toEqual(['d', 'y', 'z']);
-        const digestAfter = await (await post('/api/tags/digest', { bucketCount: 1 })).json();
-        expect(digestAfter).not.toEqual(digestBefore);
-        const hashAfter = (await (await post('/api/tags/manifest')).json()).hash;
-        expect(hashAfter).not.toBe(hashBefore);
-    });
-
-    test('the manifest hash equals one computed without the marked tag', async () => {
-        await saveTags(['y', 'z', 'd']);
-        const without = (await (await post('/api/tags/manifest')).json()).hash;
-        metadataDb.disposeMetadataStores();
-        fs.rmSync(path.join(tempDir, 'character-metadata.sqlite'));
-
-        await saveTags(['x', 'y', 'z', 'd']);
-        await deleteTag('x', 'y');
-        expect((await (await post('/api/tags/manifest')).json()).hash).toBe(without);
     });
 });
 

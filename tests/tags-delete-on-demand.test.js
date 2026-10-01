@@ -88,7 +88,8 @@ describe('POST /api/tags/delete while the server is running', () => {
         await coordinatorModule.whenMetadataMigrationsIdle(directories);
 
         expect(await metadataDb.getAllTagUsage(directories)).toEqual({ counts: { y: 2 }, approximate: [] });
-        const { tags } = await (await post('/api/tags/get')).json();
+        const tags = [];
+        for await (const batch of /** @type {AsyncGenerator<any[]>} */ (await metadataDb.streamTagDefinitionBatches(directories))) tags.push(...batch);
         expect(tags.map(t => t.id)).toEqual(['y']);
         const Database = (await import('better-sqlite3')).default;
         const db = new Database(path.join(tempDir, 'character-metadata.sqlite'), { readonly: true });

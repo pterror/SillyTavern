@@ -75,9 +75,16 @@ async function saveTags(ids) {
     await metadataDb.saveTagDefinitions(directories, ids.map(id => ({ id, name: id })));
 }
 
+/** Every stored tag definition not marked deleted, in creation order. */
+async function storedTagDefinitions() {
+    /** @type {any[]} */
+    const tags = [];
+    for await (const batch of /** @type {AsyncGenerator<object[]>} */ (await metadataDb.streamTagDefinitionBatches(directories))) tags.push(...batch);
+    return tags;
+}
+
 async function tagIds() {
-    const { tags } = await (await post('/api/tags/get')).json();
-    return tags.map(t => t.id).sort();
+    return (await storedTagDefinitions()).map(t => t.id).sort();
 }
 
 async function unusedCount() {
