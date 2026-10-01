@@ -18,7 +18,6 @@ import {
     deleteTagDefinition,
     countUnusedTags,
     pruneUnusedTags,
-    getTagsHash,
     getTagChangesSince,
     getTagChangesSeq,
     getEntityTagChangesSince,
@@ -569,19 +568,17 @@ router.post('/by-names', async (request, response) => {
 });
 
 /**
- * Freshness check for the client's tags cache; only changes when definitions change, not assignments. `changesSeq`
- * is where the tag change log ends at the definitions `hash` covers: the cursor to give /changes next.
- * `assignmentChanges` is `{ seq, groupsVersion }`, the cursors to give /assignment-changes next by a client that
- * reads its characters and groups after this answer; null when the store is unavailable.
+ * Where the change logs end now. `changesSeq` is the cursor to give /changes next. `assignmentChanges` is
+ * `{ seq, groupsVersion }`, the cursors to give /assignment-changes next by a client that reads its characters and
+ * groups after this answer; null when the store is unavailable.
  */
 router.post('/manifest', async (request, response) => {
     try {
-        const hash = await getTagsHash(request.user.directories);
         const changesSeq = await getTagChangesSeq(request.user.directories);
         const assignmentChanges = await getEntityTagChangesEnd(request.user.directories);
-        response.send({ hash, changesSeq, assignmentChanges });
+        response.send({ changesSeq, assignmentChanges });
     } catch (err) {
-        console.error('Could not get tags revision', err);
+        console.error('Could not read the tag change cursors', err);
         response.sendStatus(500);
     }
 });

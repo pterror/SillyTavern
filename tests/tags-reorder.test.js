@@ -209,13 +209,13 @@ describe('POST /api/tags/reorder', () => {
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
         const before = rows();
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         expect(await post('reorder', { id: 'x', before: 'a', mode: 'by_entries' })).toEqual({ status: 200, body: { result: 'ok', refused: [], queued: true } });
         expect(pass()).toEqual({ id: 1, mode: 'by_entries', at: null });
         expect(meta('tag_reorder_pass_last_id')).toBe('1');
         expect(pending()).toEqual([{ tag_id: 'x', side: 'before', anchor_id: 'a', value: null }]);
         expect(rows()).toEqual(before);
-        expect(await metadataDb.getTagsHash(directories)).toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);
         expect(requestPass.mock.calls).toEqual([[directories, 'runTagReorderPassIfNeeded']]);
     });
 
@@ -316,11 +316,11 @@ describe('while a reorder pass is recorded', () => {
     test('an edit writes its other fields at once and queues its sort_order as given', async () => {
         await openStore();
         await recordPass();
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         expect(await post('edit', { id: 'a', patch: { name: 'Alpha', sort_order: 'abc' } })).toEqual({ status: 200, body: { result: 'ok', refused: [] } });
         expect(data('a')).toEqual({ id: 'a', name: 'Alpha', sort_order: 1 });
         expect(column('a')).toBe(1);
-        expect(await metadataDb.getTagsHash(directories)).not.toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).not.toBe(changesSeq);
         expect(pending().slice(1)).toEqual([{ tag_id: 'a', side: null, anchor_id: null, value: '"abc"' }]);
     });
 
@@ -328,11 +328,11 @@ describe('while a reorder pass is recorded', () => {
         await openStore();
         await recordPass();
         const before = rows();
-        const hash = await metadataDb.getTagsHash(directories);
+        const changesSeq = await metadataDb.getTagChangesSeq(directories);
         expect((await post('edit', { id: 'x', patch: { sort_order: 5 } })).body.refused).toEqual([]);
         expect((await post('edit', { id: 'x', patch: { sort_order: null } })).body.refused).toEqual([]);
         expect(rows()).toEqual(before);
-        expect(await metadataDb.getTagsHash(directories)).toBe(hash);
+        expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);
         expect(pending().slice(1)).toEqual([
             { tag_id: 'x', side: null, anchor_id: null, value: '5' },
             { tag_id: 'x', side: null, anchor_id: null, value: 'null' },

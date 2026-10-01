@@ -316,11 +316,11 @@ describe('/api/tags/restore: definitions', () => {
     test('Overwrite: a tag the backup holds unchanged is not written', async () => {
         const tag = { id: 'a', name: 'Alpha', color: 'red', sort_order: 1 };
         await seedTags([tag]);
-        const before = await metadataDb.getTagsHash(directories);
+        const before = await metadataDb.getTagChangesSeq(directories);
 
         expect(await restore({ tags: [tag], overwrite: true })).toEqual(NOTHING_LEFT_OUT);
 
-        expect(await metadataDb.getTagsHash(directories)).toBe(before);
+        expect(await metadataDb.getTagChangesSeq(directories)).toBe(before);
     });
 
     test('a tag being deleted is created again under a new id, with the backup\'s assignments', async () => {
