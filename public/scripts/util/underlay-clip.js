@@ -5,7 +5,7 @@
 
 /** @typedef {{top: number, right: number, bottom: number, left: number}} Rect */
 
-/** @type {Map<HTMLElement, Map<string, Rect>>} element -> source -> hole, in the element's own coordinates */
+/** @type {Map<HTMLElement, Map<string, Rect | Rect[]>>} element -> source -> holes, in the element's own coordinates */
 const holes = new Map();
 
 /** @type {Set<() => void>} */
@@ -42,15 +42,50 @@ function disjointRects(rects) {
 /** @param {HTMLElement} el */
 function apply(el) {
     const own = holes.get(el);
-    if (!own || own.size === 0) {
+    const rects = own ? [...own.values()].flat() : [];
+    if (rects.length === 0) {
         holes.delete(el);
-        el.style.clipPath = '';
+        if (el.dataset.underlayClip !== undefined) {
+            delete el.dataset.underlayClip;
+            el.style.clipPath = '';
+        }
         return;
     }
-    const cut = disjointRects([...own.values()])
+    const cut = disjointRects(rects)
         .map(r => `${r.left}px ${r.top}px, ${r.right}px ${r.top}px, ${r.right}px ${r.bottom}px, ${r.left}px ${r.bottom}px, ${r.left}px ${r.top}px`)
         .join(', ');
-    el.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${cut})`;
+    const clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${cut})`;
+    // Rewriting an unchanged value would still wake observers of the style attribute.
+    if (el.dataset.underlayClip !== clipPath) {
+        el.dataset.underlayClip = clipPath;
+        el.style.clipPath = clipPath;
+    }
+}
+
+/**
+ * Sets every hole one source cuts in `el`, replacing that source's earlier ones.
+ * @param {HTMLElement} el
+ * @param {string} source
+ * @param {Rect[]} rects In `el`'s own coordinates; empty removes the source's holes
+ */
+export function setHoles(el, source, rects) {
+    if (rects.length === 0) {
+        holes.get(el)?.delete(source);
+    } else {
+        if (!holes.has(el)) {
+            holes.set(el, new Map());
+        }
+        holes.get(el).set(source, rects);
+    }
+    apply(el);
+}
+
+/**
+ * @param {Rect[]} rects Possibly overlapping
+ * @returns {number} The area they cover together
+ */
+export function unionArea(rects) {
+    return disjointRects(rects).reduce((sum, r) => sum + (r.right - r.left) * (r.bottom - r.top), 0);
 }
 
 /**
