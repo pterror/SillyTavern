@@ -35,7 +35,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -1753,13 +1753,19 @@ router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async funct
 /** Sets favorite status. Accepts `{ avatar, fav }` for one character or `{ bulk: [{ avatar, fav }, ...] }` for a batch. */
 router.post('/fav', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
-        const { avatar, fav, bulk } = request.body ?? {};
+        const { avatar, fav, bulk, toggle } = request.body ?? {};
 
+        // `toggle: true` flips the stored value and answers it, so the page needs no copy of the character.
         if (Array.isArray(bulk)) {
             const results = [];
             for (const entry of bulk) {
-                if (typeof entry.avatar !== 'string' || !entry.avatar) {
-                    results.push({ avatar: entry.avatar, ok: false });
+                if (typeof entry?.avatar !== 'string' || !entry.avatar) {
+                    results.push({ avatar: entry?.avatar, ok: false });
+                    continue;
+                }
+                if (entry.toggle === true) {
+                    const next = await toggleCharacterFav(request.user.directories, entry.avatar);
+                    results.push(next === null ? { avatar: entry.avatar, ok: false } : { avatar: entry.avatar, ok: true, fav: next });
                     continue;
                 }
                 const updated = await setCharacterFav(request.user.directories, entry.avatar, normalizeFav(entry.fav));
@@ -1770,6 +1776,13 @@ router.post('/fav', getFileNameValidationFunction('avatar'), async function (req
 
         if (typeof avatar !== 'string' || !avatar) {
             return response.status(400).send({ error: true, reason: 'avatar-required' });
+        }
+        if (toggle === true) {
+            const next = await toggleCharacterFav(request.user.directories, avatar);
+            if (next === null) {
+                return response.status(404).send({ error: true, reason: 'not-tracked' });
+            }
+            return response.send({ fav: next });
         }
         const updated = await setCharacterFav(request.user.directories, avatar, normalizeFav(fav));
         if (!updated) {
