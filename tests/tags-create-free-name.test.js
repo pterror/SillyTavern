@@ -112,6 +112,7 @@ describe('POST /api/tags/create with freeName', () => {
     });
 
     test('the answer carries the place in the manual order the server gave the tag', async () => {
+        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         expect((await post('/api/tags/create', { tag: { id: 'x', name: 'X', sort_order: 41 } })).status).toBe(200);
         await indexTagNames();
 
@@ -120,6 +121,7 @@ describe('POST /api/tags/create with freeName', () => {
     });
 
     test('without freeName the name is stored as given, taken or not', async () => {
+        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         expect((await post('/api/tags/create', { tag: { id: 'x', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'x', name: 'New Tag', sort_order: 1 } });
         expect((await post('/api/tags/create', { tag: { id: 'y', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'y', name: 'New Tag', sort_order: 2 } });
         expect((await post('/api/tags/create', { tag: { id: 'z', name: 'New Tag' }, freeName: false })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'z', name: 'New Tag', sort_order: 3 } });

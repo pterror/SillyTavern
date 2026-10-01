@@ -184,6 +184,23 @@ async function pagedIds(filter = {}) {
 /** @param {string[]} ids What pagedIds() gives when every page size reads `ids`. */
 const everyPageSize = ids => Object.fromEntries(PAGE_SIZES.map(pageSize => [pageSize, ids]));
 
+describe('POST /api/tags/query manual, with more moves queued than are read', () => {
+    test('the manual order answers 503 tag-order-settling; other orders still answer', async () => {
+        await seed();
+        await makeReady();
+        pend(Array.from({ length: 2000 }, (_, i) => /** @type {[string, 'before' | 'after', string]} */ ([i % 2 ? 'a' : 'b', 'after', i % 2 ? 'b' : 'a'])));
+        expect((await query({ pageSize: 5 })).status).toBe(200);
+
+        pend([['a', 'after', 'f']]);
+        const settling = await query({ pageSize: 5 });
+        expect(settling.status).toBe(503);
+        expect(settling.body.reason).toBe('tag-order-settling');
+        const byName = await query({ sort: { field: 'alphabetical' }, pageSize: 5 });
+        expect(byName.status).toBe(200);
+        expect(byName.body.rows.length).toBe(5);
+    });
+});
+
 describe('POST /api/tags/query manual, with moves pending', () => {
     describe.each([['indexed path', true]])('%s', (_, ready) => {
         beforeEach(async () => {

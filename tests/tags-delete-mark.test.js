@@ -514,6 +514,7 @@ describe('POST /api/tags/create and /api/tags/edit', () => {
     });
 
     test('create answers { result, refused }: empty when created, exists, deleted', async () => {
+        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await saveTags(['m']);
         await deleteTag('m');
         jest.spyOn(console, 'warn').mockImplementation(() => {});

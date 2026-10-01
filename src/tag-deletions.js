@@ -4,8 +4,55 @@
 // character-metadata-db.js.
 
 /**
- * @typedef {Map<string, string | null>} TagDeletions Marked tag id -> the unmarked tag id it merges into, or null.
+ * The marks as a reader asks about them, one tag at a time, so no reader holds the whole table.
+ * @typedef {object} TagDeletions
+ * @property {boolean} any Whether any tag is marked; when false, every other answer is the unmarked one.
+ * @property {(tagId: string) => boolean} has Whether `tagId` is marked.
+ * @property {(tagId: string) => string | null | undefined} get The unmarked tag id a marked `tagId` merges into, null
+ *   when it has none, undefined when `tagId` isn't marked.
+ * @property {(target: string) => string[]} mergingInto Every marked tag id merging into `target`. Bounded: throws
+ *   TagMergeBacklogError when more than MAX_MERGING_INTO are.
  */
+
+/**
+ * Most marked tags one tag may have merging into it before a read naming it is refused. They only pile up when tags
+ * are merged into one faster than finishDeletedTags() moves their rows.
+ */
+export const MAX_MERGING_INTO = 1000;
+
+/** More than MAX_MERGING_INTO marked tags merge into one tag a read needs. The read can be retried once they finish. */
+export class TagMergeBacklogError extends Error {
+    /** @param {string} target */
+    constructor(target) {
+        super(`More than ${MAX_MERGING_INTO} deleted tags are still merging into tag ${target}`);
+        this.name = 'TagMergeBacklogError';
+        this.target = target;
+    }
+}
+
+/**
+ * A TagDeletions over a plain Map of marked id -> merge target (or null). For marks already held in memory.
+ * @param {Map<string, string | null>} marks
+ * @returns {TagDeletions}
+ */
+export function tagDeletionsFromMap(marks) {
+    return {
+        any: marks.size > 0,
+        has: (tagId) => marks.has(tagId),
+        get: (tagId) => marks.get(tagId),
+        mergingInto: (target) => {
+            const ids = [];
+            for (const [id, mergeInto] of marks) {
+                if (mergeInto === target) ids.push(id);
+            }
+            if (ids.length > MAX_MERGING_INTO) throw new TagMergeBacklogError(target);
+            return ids;
+        },
+    };
+}
+
+/** No tag marked. */
+export const NO_TAG_DELETIONS = tagDeletionsFromMap(new Map());
 
 /**
  * `tagIds` with each marked id replaced by its merge target (or dropped when it has none), each id once, sorted.
@@ -15,7 +62,7 @@
  * @returns {string[]}
  */
 export function resolveTagIds(tagIds, deletions) {
-    if (!deletions.size || !Array.isArray(tagIds) || !tagIds.some(id => deletions.has(id))) return tagIds;
+    if (!deletions.any || !Array.isArray(tagIds) || !tagIds.some(id => deletions.has(id))) return tagIds;
     /** @type {Set<string>} */
     const out = new Set();
     for (const id of tagIds) {
@@ -58,24 +105,27 @@ export function resolveTagId(tagId, deletions) {
  * @returns {ExpandedTagFilter | null}
  */
 export function expandTagFilter(tags, deletions) {
-    if (!tags || !deletions.size) return null;
+    if (!tags || !deletions.any) return null;
     const include = Array.isArray(tags.include) ? tags.include.filter(Boolean).map(String) : [];
     const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean).map(String) : [];
     /** @type {Map<string, string[]>} */
     const mergedInto = new Map();
-    for (const [id, target] of deletions) {
-        if (target === null) continue;
-        const list = mergedInto.get(target);
-        if (list) list.push(id); else mergedInto.set(target, [id]);
-    }
-    const touched = (/** @type {string} */ id) => deletions.has(id) || mergedInto.has(id);
+    const mergingInto = (/** @type {string} */ target) => {
+        let ids = mergedInto.get(target);
+        if (!ids) {
+            ids = deletions.mergingInto(target);
+            mergedInto.set(target, ids);
+        }
+        return ids;
+    };
+    const touched = (/** @type {string} */ id) => deletions.has(id) || mergingInto(id).length > 0;
     if (!include.some(touched) && !exclude.some(touched)) return null;
 
     /** @param {string} id @returns {string[]} */
     const groupOf = (id) => {
         const target = resolveTagId(id, deletions);
         if (target === null) return [];
-        return [target, ...(mergedInto.get(target) ?? [])];
+        return [target, ...mergingInto(target)];
     };
 
     const mode = tags.mode === 'or' ? 'or' : 'and';

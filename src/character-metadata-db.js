@@ -20,7 +20,7 @@ import { isReadOnlyMode } from './read-only-mode.js';
 import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
-import { expandTagFilter, resolveTagId, resolveTagIds } from './tag-deletions.js';
+import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS, MAX_MERGING_INTO, TagMergeBacklogError } from './tag-deletions.js';
 import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
@@ -1557,7 +1557,7 @@ function parseShallowResolvingTags(shallowJson, deletions) {
  * @returns {number}
  */
 function characterTagIdsDigestForReader(storedDigest, shallowJson, deletions) {
-    if (!deletions.size || typeof shallowJson !== 'string') return storedDigest >>> 0;
+    if (!deletions.any || typeof shallowJson !== 'string') return storedDigest >>> 0;
     const tagIds = JSON.parse(shallowJson)?.tag_ids;
     const resolved = resolveTagIds(tagIds, deletions);
     return resolved === tagIds ? storedDigest >>> 0 : characterDigestTagIdsHash({ tag_ids: resolved }) >>> 0;
@@ -5277,22 +5277,40 @@ export async function normalizeGroupFavIfNeeded(directories) {
  * @returns {import('./tag-deletions.js').TagDeletions}
  */
 function readTagDeletionsSync(db) {
-    /** @type {import('./tag-deletions.js').TagDeletions} */
-    const deletions = new Map();
-    for (const row of /** @type {Iterable<{ tag_id: string, merge_into: string | null }>} */ (db.iterate('SELECT tag_id, merge_into FROM tag_deletions'))) {
-        deletions.set(row.tag_id, row.merge_into ?? null);
-    }
-    return deletions;
+    if (!db.get('SELECT 1 FROM tag_deletions LIMIT 1')) return NO_TAG_DELETIONS;
+    /** @type {Map<string, string | null | undefined>} Looked-up ids; undefined for an id that isn't marked. */
+    const looked = new Map();
+    /** @param {string} tagId */
+    const lookUp = (tagId) => {
+        if (!looked.has(tagId)) {
+            const row = /** @type {{ merge_into: string | null } | undefined} */ (db.get('SELECT merge_into FROM tag_deletions WHERE tag_id = @tagId', { tagId }));
+            looked.set(tagId, row ? row.merge_into ?? null : undefined);
+        }
+        return looked.get(tagId);
+    };
+    return {
+        any: true,
+        has: (tagId) => lookUp(tagId) !== undefined,
+        get: (tagId) => lookUp(tagId),
+        mergingInto: (target) => {
+            const rows = /** @type {{ tag_id: string }[]} */ (db.readBounded(
+                'SELECT tag_id FROM tag_deletions WHERE merge_into = @target ORDER BY tag_id LIMIT @limit',
+                { target, limit: MAX_MERGING_INTO + 1 }, MAX_MERGING_INTO + 1));
+            if (rows.length > MAX_MERGING_INTO) throw new TagMergeBacklogError(target);
+            return rows.map(row => row.tag_id);
+        },
+    };
 }
 
 /**
- * Every marked tag and its merge target, for callers outside this module that apply tag-deletions.js themselves.
+ * The marks as tag-deletions.js reads them, for callers outside this module. Each question is a lookup by key; the
+ * answer is only good until the caller next awaits.
  * @param {import('./users.js').UserDirectoryList} directories
  * @returns {Promise<import('./tag-deletions.js').TagDeletions>}
  */
 export async function getTagDeletions(directories) {
     const entry = await getEntry(directories);
-    if (!entry) return new Map();
+    if (!entry) return NO_TAG_DELETIONS;
     return readTagDeletionsSync(entry.db);
 }
 
@@ -5602,26 +5620,17 @@ const NEXT_TAG_SORT_ORDER_SQL = 'SELECT MAX(0, COALESCE(MAX(sort_order), 0)) + 1
 /**
  * The sort_order upstream's newTag() gives a new tag: `Math.max(0, ...orders) + 1` over the tags that have one.
  * Marked tags count too, which still puts it after every live tag.
+ *
+ * null until fillTagDerivedColumnsIfNeeded() has finished: before that the sort_order column isn't filled, and the
+ * max could only be found by reading every tag. A tag created then gets no sort_order of its own, and
+ * fillTagSortOrdersIfNeeded(), which only starts once the column is filled, numbers it after every ordered tag.
  * @param {MetadataDbEntry} entry
- * @returns {number}
+ * @returns {number | null}
  */
 function nextTagSortOrderSync(entry) {
-    if (tagQueryColumnsReady(entry)) {
-        const row = /** @type {{ next: number }} */ (entry.db.get(NEXT_TAG_SORT_ORDER_SQL));
-        return Number(row.next);
-    }
-    let max = 0;
-    for (const row of /** @type {Generator<{ data: string }>} */ (entry.db.iterate('SELECT data FROM tags'))) {
-        let parsed;
-        try {
-            parsed = JSON.parse(row.data);
-        } catch {
-            continue;
-        }
-        const { sortOrder } = tagDerivedColumns(parsed);
-        if (sortOrder !== null && sortOrder > max) max = sortOrder;
-    }
-    return max + 1;
+    if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_DERIVED_COLUMNS_FILLED_FLAG })) return null;
+    const row = /** @type {{ next: number }} */ (entry.db.get(NEXT_TAG_SORT_ORDER_SQL));
+    return Number(row.next);
 }
 
 /**
@@ -5670,7 +5679,10 @@ export async function createTagDefinition(directories, rawTag, { freeName = fals
             }
             tag.name = freeTagNameSync(entry.db, baseName);
         }
-        if (assignOrder) tag.sort_order = nextTagSortOrderSync(entry);
+        if (assignOrder) {
+            const next = nextTagSortOrderSync(entry);
+            if (next !== null) tag.sort_order = next;
+        }
         entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(tag));
         if (!assignOrder && !tagSortOrdersSettledSync(entry.db)) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
         logTagChangesSync(entry, [id]);
@@ -5893,16 +5905,11 @@ export async function deleteTagDefinition(directories, tagId, mergeInto = null) 
             }
         }
 
-        /** @type {string[]} */
-        const movedIds = [];
-        for (const row of /** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM tag_deletions WHERE merge_into = @id', { id: tagId }))) {
-            movedIds.push(row.tag_id);
-        }
+        // The marks merging into tagId now merge into its target, so their names change too.
+        entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId });
+        entry.db.run('INSERT INTO tag_name_changes (tag_id) SELECT tag_id FROM tag_deletions WHERE merge_into = @id ORDER BY tag_id', { id: tagId });
         entry.db.run('UPDATE tag_deletions SET merge_into = @target WHERE merge_into = @id', { id: tagId, target });
         entry.db.run('INSERT INTO tag_deletions (tag_id, merge_into) VALUES (@id, @target)', { id: tagId, target });
-        for (const id of [tagId, ...movedIds]) {
-            entry.db.run('INSERT INTO tag_name_changes (tag_id) VALUES (@tagId)', { tagId: id });
-        }
         logTagChangesSync(entry, [tagId]);
         result.mergedInto = target;
     });
@@ -6552,7 +6559,7 @@ function seedDefaultTagsIfPendingSync(entry, settings) {
             .sort((a, b) => compareNameKeys(tagDefinitionNameKey(a), tagDefinitionNameKey(b)));
         let next = nextTagSortOrderSync(entry);
         for (const tag of tags) {
-            entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams({ ...tag, sort_order: next++ }));
+            entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, tagRowParams(next === null ? tag : { ...tag, sort_order: next++ }));
         }
         logTagChangesSync(entry, null);
         outcome.seeded = true;
@@ -6645,10 +6652,10 @@ async function importSettingsTagDefinitions(entry, label, tags) {
                 }
                 const tag = { ...source };
                 const assignOrder = !Object.hasOwn(tag, 'sort_order');
-                if (assignOrder) tag.sort_order = next;
+                if (assignOrder && next !== null) tag.sort_order = next;
                 const params = tagRowParams(tag);
                 entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
-                if (params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
+                if (next !== null && params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
                 if (!assignOrder && !settled) queueTagSortOrderValueSync(entry.db, id, tag.sort_order);
                 batchInserted.push(id);
             }
@@ -7145,7 +7152,7 @@ async function restoreTagDefinitions(entry, tags, overwrite) {
                     if (outcome.refused === 'unreadable') done.unreadable.push({ id: existingId, name });
                     else if (outcome.written) done.updated.push(existingId);
                     const patchedOrder = Object.hasOwn(patch, 'sort_order') ? tagDerivedColumns(patch).sortOrder : null;
-                    if (patchedOrder !== null && patchedOrder >= next) next = patchedOrder + 1;
+                    if (next !== null && patchedOrder !== null && patchedOrder >= next) next = patchedOrder + 1;
                     continue;
                 }
 
@@ -7153,10 +7160,10 @@ async function restoreTagDefinitions(entry, tags, overwrite) {
                 if (newId !== id) done.actualIds.push([id, newId]);
                 const tag = { ...source, id: newId };
                 const assignOrder = !Object.hasOwn(tag, 'sort_order');
-                if (assignOrder) tag.sort_order = next;
+                if (assignOrder && next !== null) tag.sort_order = next;
                 const params = tagRowParams(tag);
                 entry.db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
-                if (params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
+                if (next !== null && params.sortOrder !== null && params.sortOrder >= next) next = params.sortOrder + 1;
                 if (!assignOrder && !settled) queueTagSortOrderValueSync(entry.db, newId, tag.sort_order);
                 done.created.push(newId);
             }
@@ -7336,7 +7343,8 @@ function resolveCardTagNamesSync(db, names, { ready, onlyExisting = false }) {
 
 /**
  * Creates a tag for each of resolved.toCreate, adding it to resolved.tagIds and resolved.learned. Each gets the
- * sort_order upstream's importTags() -> createNewTag() gives it, one after another: max+1 (nextTagSortOrderSync()).
+ * sort_order upstream's importTags() -> createNewTag() gives it, one after another: max+1 (nextTagSortOrderSync()), or
+ * none while that has no answer.
  * @param {MetadataDbEntry} entry
  * @param {ResolvedCardTags} resolved
  * @returns {string[]} The new tags' ids.
@@ -7344,10 +7352,10 @@ function resolveCardTagNamesSync(db, names, { ready, onlyExisting = false }) {
 function createCardTagsSync(entry, resolved) {
     const { db } = entry;
     // Each tag inserted is the new max, so the next one's max+1 is one more.
-    let sortOrder = resolved.toCreate.length > 0 ? nextTagSortOrderSync(entry) : 0;
+    let sortOrder = resolved.toCreate.length > 0 ? nextTagSortOrderSync(entry) : null;
     const created = resolved.toCreate.map((name) => {
         const id = crypto.randomUUID();
-        const params = tagRowParams({ id, name, create_date: Date.now(), sort_order: sortOrder++ });
+        const params = tagRowParams(sortOrder === null ? { id, name, create_date: Date.now() } : { id, name, create_date: Date.now(), sort_order: sortOrder++ });
         db.run(`INSERT INTO tags ${TAG_ROW_VALUES_SQL}`, params);
         resolved.learned.push({ key: params.nameKey, id, data: params.data });
         return id;
@@ -9250,6 +9258,20 @@ function parseTagQueryRow(row) {
 }
 
 /**
+ * Most queued moves the manual order is shown with. A queue only grows while the order is unsettled (a reorder pass
+ * or the one-time fill), and drainTagPendingMoves() empties it once that ends.
+ */
+const MAX_PENDING_TAG_MOVES_SHOWN = 2000;
+
+/** More than MAX_PENDING_TAG_MOVES_SHOWN moves are queued, so the manual order isn't shown until fewer are. */
+class TagOrderSettlingError extends Error {
+    constructor() {
+        super(`More than ${MAX_PENDING_TAG_MOVES_SHOWN} tag moves are queued`);
+        this.name = 'TagOrderSettlingError';
+    }
+}
+
+/**
  * @typedef {object} TagPendingOverlay
  * @property {Map<string, TagQueryPosition>} keys The manual place of every tag a pending entry placed or gave a
  *   value; its own row's place no longer counts.
@@ -9267,7 +9289,8 @@ function parseTagQueryRow(row) {
  * Under a reorder pass, places are the pass mode's. A value lands next to the tag the walk numbers with it, which
  * can't be found without counting rows, so a value entry leaves its tag at its own place in the mode's order
  * (tag-actions D24).
- * Bounded by the number of pending entries.
+ * Reads at most MAX_PENDING_TAG_MOVES_SHOWN entries; with more queued it throws TagOrderSettlingError, and the manual
+ * order can't be shown until the drain has applied enough of them.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {TagQueryPass | null} pass
  * @returns {TagPendingOverlay | null} null when nothing is pending.
@@ -9276,7 +9299,10 @@ function readTagPendingOverlaySync(db, pass) {
     const order = pass?.mode ?? 'manual';
     if (!db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return null;
     /** @type {{ tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, value: string | null }[]} */
-    const entries = [...db.iterate('SELECT tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq')];
+    const entries = /** @type {any[]} */ (db.readBounded(
+        'SELECT tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq LIMIT @limit',
+        { limit: MAX_PENDING_TAG_MOVES_SHOWN + 1 }, MAX_PENDING_TAG_MOVES_SHOWN + 1));
+    if (entries.length > MAX_PENDING_TAG_MOVES_SHOWN) throw new TagOrderSettlingError();
     const ids = [...new Set(entries.flatMap(e => e.anchor_id === null ? [e.tag_id] : [e.tag_id, e.anchor_id]))];
     /** @type {Map<string, TagQueryRow>} */
     const rows = new Map();
@@ -9543,9 +9569,10 @@ function queryTagsByIds(entry, params, pass) {
  * good only for the order it was made in (D25.8).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {TagQueryParams} params
- * @returns {Promise<TagQueryResult | 'invalid-cursor' | 'not-ready' | null>} null when no SQLite engine is usable;
- *   'invalid-cursor' for a manual cursor made in another order than the one read now; 'not-ready' until the
- *   derived columns are filled (tagQueryColumnsReady()), the one-time pass after an update.
+ * @returns {Promise<TagQueryResult | 'invalid-cursor' | 'not-ready' | 'order-settling' | null>} null when no SQLite
+ *   engine is usable; 'invalid-cursor' for a manual cursor made in another order than the one read now; 'not-ready'
+ *   until the derived columns are filled (tagQueryColumnsReady()), the one-time pass after an update;
+ *   'order-settling' in manual order while more moves are queued than readTagPendingOverlaySync() reads.
  */
 export async function queryTags(directories, params) {
     const entry = await getEntry(directories);
@@ -9556,7 +9583,13 @@ export async function queryTags(directories, params) {
         const made = params.after.pass ?? null;
         if (made?.id !== pass?.id || made?.mode !== pass?.mode) return 'invalid-cursor';
     }
-    const result = params.ids ? queryTagsByIds(entry, params, pass) : queryTagsIndexed(entry, params, pass);
+    let result;
+    try {
+        result = params.ids ? queryTagsByIds(entry, params, pass) : queryTagsIndexed(entry, params, pass);
+    } catch (err) {
+        if (err instanceof TagOrderSettlingError) return 'order-settling';
+        throw err;
+    }
     if (params.counts !== true) return result;
     const ids = result.rows.map(tag => /** @type {{ id?: unknown }} */ (tag).id).filter(id => typeof id === 'string');
     return { ...result, ...tagCountsForIdsSync(entry, ids) };
@@ -9768,7 +9801,7 @@ function pushExpandedTagClauses(clauses, args, expanded, { tagTable, entityColum
  * @param {import('./tag-deletions.js').TagDeletions} [deletions]
  * @returns {{ from: string, where: string, args: any[] }} `args` binds `from`'s placeholders, then `where`'s.
  */
-function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}, deletions = new Map()) {
+function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}, deletions = NO_TAG_DELETIONS) {
     const clauses = [];
     const args = [];
     let from = 'characters';
@@ -10094,11 +10127,7 @@ function storedTagCount(db, tagId, kind, favs) {
  * @param {import('./tag-deletions.js').TagDeletions} deletions
  */
 function tagIdsCountedAs(target, deletions) {
-    const tagIds = [target];
-    for (const [id, mergeInto] of deletions) {
-        if (mergeInto === target) tagIds.push(id);
-    }
-    return tagIds;
+    return [target, ...deletions.mergingInto(target)];
 }
 
 /**
@@ -10425,7 +10454,7 @@ export async function queryCharacters(directories, params = {}) {
     // shallow_json is written outside buildRow()/writeRowSync()'s own row construction, and it always writes
     // these three columns in the same statement, so a stored value here can never be stale relative to shallow_json.
     // shallow_json only for characterTagIdsDigestForReader(), and only while some tag is marked deleted.
-    const HASH_COLUMNS = `id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, digest_fav, digest_tag_ids, digest_content${deletions.size ? ', shallow_json' : ''}`;
+    const HASH_COLUMNS = `id, active_chat, date_added, create_date, date_last_chat, chat_size, data_size, digest_fav, digest_tag_ids, digest_content${deletions.any ? ', shallow_json' : ''}`;
     /** @param {HashSourceRow & { shallow_json?: string }} r */
     const toHashRow = (r) => ({
         id: r.id,
@@ -10529,7 +10558,7 @@ const DEFAULT_QUERY_LIMIT = 500;
  * @param {import('./tag-deletions.js').TagDeletions} [deletions]
  * @returns {{ from: string, where: string, args: any[] }} `args` binds `from`'s placeholders, then `where`'s.
  */
-function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = new Map()) {
+function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = NO_TAG_DELETIONS) {
     const clauses = [];
     const args = [];
     let from = 'groups';
@@ -10692,7 +10721,7 @@ function makeEntityHashRowMapper(entry, directories, deletions) {
      * @param {number} storedDigest
      */
     const groupTagIdsDigest = (id, storedDigest) => {
-        if (!deletions.size) return storedDigest;
+        if (!deletions.any) return storedDigest;
         /** @type {string[]} */
         const tagIds = [];
         for (const r of entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })) {
@@ -11099,7 +11128,7 @@ export async function findCharacterMatches(directories, { name = null, allowAvat
         });
         if (wantedTagIds.some(ids => ids.size === 0)) return { ids: [], capped: false };
     }
-    const deletions = tagNames ? readTagDeletionsSync(db) : new Map();
+    const deletions = tagNames ? readTagDeletionsSync(db) : NO_TAG_DELETIONS;
 
     /**
      * @param {string[]} ids
@@ -11164,9 +11193,7 @@ export async function findCharacterMatches(directories, { name = null, allowAvat
         params = [foldName(name)];
     } else if (tagNames) {
         const firstIds = [...wantedTagIds[0]];
-        for (const [tagId, mergeInto] of deletions) {
-            if (mergeInto !== null && wantedTagIds[0].has(mergeInto)) firstIds.push(tagId);
-        }
+        for (const target of wantedTagIds[0]) firstIds.push(...deletions.mergingInto(target));
         sql = `SELECT DISTINCT character_id AS id FROM character_tags WHERE tag_id IN (${firstIds.map(() => '?').join(', ')}) ORDER BY character_id`;
         params = firstIds;
     } else {

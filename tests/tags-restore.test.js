@@ -248,6 +248,7 @@ describe('/api/tags/restore: definitions', () => {
     });
 
     test('a created tag with no order of its own is placed after every tag that has one', async () => {
+        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await seedTags([{ id: 'a', name: 'Alpha', sort_order: 40 }]);
 
         await restore({ tags: [{ id: 'z', name: 'Zed' }, { id: 'm', name: 'Mid' }, { id: 'o', name: 'Ordered', sort_order: 50 }] });
