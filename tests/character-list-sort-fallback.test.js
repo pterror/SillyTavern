@@ -77,6 +77,7 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     applyTagsOnCharacterSelect: noop,
     applyTagsOnGroupSelect: noop,
     tagsStore: {},
+    heldTagsForIds: () => [],
     isTagAssignedToKey: () => { throw new Error('the list never reads tag assignments in the browser'); },
 }));
 jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({ getRandomSortSeed: () => 42 }));

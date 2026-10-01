@@ -64,6 +64,34 @@ async function takeInEntityTagChanges(page) {
     });
 }
 
+test.describe('a tag drawn without its definition', () => {
+    test('a row carrying a tag the page does not hold reads the tag and shows it', async ({ page }) => {
+        await loadApp(page);
+        await page.route('**/api/characters/changes', route => route.fulfill({ status: 500 }));
+        await page.route('**/api/tags/changes', route => route.fulfill({ status: 500 }));
+        const stamp = `${Date.now()}`;
+        const avatar = await createUnheldCharacter(page, `0000 TagRowDefinition ${stamp}`);
+        await createTag(page, `unheld-${stamp}`, `Unheld ${stamp}`);
+        await api(page, '/api/tags/assign', { id: avatar, tagId: `unheld-${stamp}` });
+        const heldTag = await page.evaluate(async (id) => {
+            const { tagsStore } = await import('./scripts/tags.js');
+            return tagsStore.has(id);
+        }, `unheld-${stamp}`);
+        expect(heldTag).toBe(false);
+
+        const read = page.waitForRequest(request => new URL(request.url()).pathname === '/api/tags/by-ids'
+            && request.postDataJSON()?.ids?.includes(`unheld-${stamp}`));
+        await openCharacterManagementDrawer(page);
+        await page.evaluate(async () => {
+            const { printCharacters } = await import('./scripts/character-list.js');
+            await printCharacters(true);
+        });
+        await read;
+        const row = page.locator(`#rm_print_characters_block .character_select[data-avatar="${avatar}"]`);
+        await expect(row.locator('.tag')).toHaveText([`Unheld ${stamp}`]);
+    });
+});
+
 test.describe('a row on screen the page does not hold', () => {
     test('shows a tag put on it elsewhere, and the merge target of a tag deleted elsewhere', async ({ page }) => {
         await loadApp(page);

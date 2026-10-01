@@ -86,6 +86,7 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     applyTagsOnCharacterSelect: noop,
     applyTagsOnGroupSelect: noop,
     tagsStore: {},
+    heldTagsForIds: () => [],
 }));
 jest.unstable_mockModule('../public/scripts/filters.js', () => ({
     FILTER_STATES: {},

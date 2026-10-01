@@ -6,7 +6,7 @@ import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, tagsStore, readFolderTileTags } from './tags.js';
+import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, readFolderTileTags } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
@@ -152,7 +152,7 @@ function renderCharacterBlock(template, item, id) {
     const tagsElement = template.find('.tags');
     const rowTagIds = rowTagIdsCurrent ? item.tag_ids : resident?.tag_ids;
     const rowTags = Array.isArray(rowTagIds)
-        ? rowTagIds.map(tagId => tagsStore.get(tagId)).filter(Boolean).sort(compareTagsForSort)
+        ? heldTagsForIds(rowTagIds).sort(compareTagsForSort)
         : [];
     printTagList(tagsElement, { forEntityOrKey: id, tags: () => rowTags, tagOptions: { isCharacterList: true } });
 }
@@ -227,6 +227,15 @@ export function setUnheldRowTagIds(avatar, tagIds, fetchStamp) {
     });
     const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(avatar)}"]`);
     if (item && row) updateCharacterBlock(row, item, avatar);
+}
+
+/** Draws the rows on screen of characters `charactersStore` doesn't hold again, as they are. */
+export function redrawUnheldRows() {
+    for (const entity of renderedPageEntities) {
+        if (entity.type !== 'character' || charactersStore.has(entity.id)) continue;
+        const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(entity.id)}"]`);
+        if (row) updateCharacterBlock(row, entity.item, entity.id);
+    }
 }
 
 export function removeCharacterListRow(id) {
