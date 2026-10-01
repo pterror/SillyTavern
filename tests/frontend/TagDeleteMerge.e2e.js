@@ -100,7 +100,12 @@ async function openDeleteDialog(page, tagId, mergeInto) {
     const popup = page.locator('dialog.popup', { hasText: 'Delete Tag' });
     await expect(popup).toBeVisible({ timeout: 10000 });
     if (mergeInto) {
-        await page.evaluate(id => window['jQuery']('#merge_tag_select').val(id).trigger('change'), mergeInto);
+        // As if picked from the search: the picker holds an option for the picked tag only. The tag may be gone from
+        // the server by now, so its name comes from its id (createTag()).
+        const name = mergeInto.replace(/^tag-delete-merge-/, '');
+        await page.evaluate(({ id, name }) => {
+            window['jQuery']('#merge_tag_select').append(new Option(name, id, true, true)).trigger('change');
+        }, { id: mergeInto, name });
     }
     return popup;
 }

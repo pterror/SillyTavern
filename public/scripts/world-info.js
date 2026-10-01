@@ -15,7 +15,7 @@ import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { getTokenCountAsync, getTokenCountWithAnswer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
 import { power_user, personaStore } from './power-user.js';
-import { getTagKeyForEntity } from './tags.js';
+import { findTagsByNames, getTagKeyForEntity, readTagsForIds, searchTagsByName } from './tags.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS } from './constants.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -1405,7 +1405,6 @@ function registerWorldInfoSlashCommands() {
     async function getEntryFieldCallback(args, uid) {
         const file = args.file;
         const field = args.field || 'content';
-        const tags = getContext().tags;
 
         const entries = await getEntriesFromFile(file, { args, unnamed: { uid }, callbackName: 'getEntryFieldCallback' });
 
@@ -1441,8 +1440,12 @@ function registerWorldInfoSlashCommands() {
                     if (!entry.characterFilter.tags) {
                         return '';
                     }
-                    //Find the tag objects corresponding to each ID in the array, then return the names
-                    fieldValue = tags.filter((tag) => entry.characterFilter.tags.includes(tag.id)).map((tag) => tag.name);
+                    const read = await readTagsForIds(entry.characterFilter.tags);
+                    if (!read) {
+                        toastr.error(t`The entry's tags could not be read. Check the server connection and try again.`);
+                        return '';
+                    }
+                    fieldValue = entry.characterFilter.tags.map((id) => read.tags.get(id)?.name).filter((name) => name !== undefined);
                 }
                 break;
             case 'characterFilterExclude':
@@ -1505,7 +1508,6 @@ function registerWorldInfoSlashCommands() {
         const file = args.file;
         const uid = args.uid;
         const field = args.field || 'content';
-        const tags = getContext().tags;
 
         // characterFilter is an object with internal fields we need to access, which may also may be null and need to be populated
         const createCharacterFilterFieldObjectIfNeeded = (currentEntry) => {
@@ -1574,13 +1576,19 @@ function registerWorldInfoSlashCommands() {
                     .filter(onlyUnique);
                 setWIOriginalDataValue(data, uid, 'character_filter', entry.characterFilter);
                 break;
-            case 'characterFilterTags':
-                createCharacterFilterFieldObjectIfNeeded(entry);
+            case 'characterFilterTags': {
                 tagNames = parseStringArray(value);
-                //Find the tag objects corresponding to each name in the user array, then return an array of the corresponding IDs
-                entry.characterFilter.tags = tags.filter((tag) => tagNames.includes(tag.name)).map((tag) => tag.id);
+                // Names match exactly, case included, as upstream's do; every tag that has the name counts.
+                const found = await findTagsByNames(tagNames);
+                const tagIds = [
+                    ...[...found.values()].filter((tag) => tag && tagNames.includes(tag.name)),
+                    ...getContext().tags.filter((tag) => tagNames.includes(tag.name)),
+                ].map((tag) => tag.id).filter(onlyUnique);
+                createCharacterFilterFieldObjectIfNeeded(entry);
+                entry.characterFilter.tags = tagIds;
                 setWIOriginalDataValue(data, uid, 'character_filter', entry.characterFilter);
                 break;
+            }
             case 'characterFilterExclude':
                 createCharacterFilterFieldObjectIfNeeded(entry);
                 entry.characterFilter.isExclude = isTrueBoolean(value);
@@ -3252,28 +3260,28 @@ function updatePosOrdDisplayHelper({ template, data, uid }) {
  * @param {JQuery<HTMLElement>} characterFilter - The select element for character filter.
  */
 function initCharacterFilterSelect2Helper(characterFilter) {
-    if (!isMobile()) {
-        const MAX_RESULTS = 100;
-        $(characterFilter).select2({
-            width: '100%',
-            placeholder: t`Tie this entry to specific characters or characters with specific tags`,
-            allowClear: true,
-            closeOnSelect: false,
-            minimumInputLength: 1,
-            ajax: {
-                transport: function (params, success) {
-                    const query = params.data?.q?.toLowerCase() ?? '';
-                    const results = [];
+    const MAX_RESULTS = 100;
+    $(characterFilter).select2({
+        width: '100%',
+        placeholder: t`Tie this entry to specific characters or characters with specific tags`,
+        allowClear: true,
+        closeOnSelect: false,
+        minimumInputLength: 1,
+        ajax: {
+            delay: 250,
+            transport: function (params, success, failure) {
+                const query = params.data?.q?.toLowerCase() ?? '';
+                // A search typed over is aborted; its answer must not replace the newer one's.
+                let aborted = false;
 
-                    // Tags first (few, always relevant)
-                    const ctxTags = getContext().tags;
-                    for (const tag of ctxTags) {
-                        if (results.length >= MAX_RESULTS) break;
-                        const text = `[Tag] ${tag.name}`;
-                        if (text.toLowerCase().includes(query)) {
-                            results.push({ id: tag.id, text });
-                        }
+                // Tags first (few, always relevant). Typing the "[Tag] " the options show still finds them.
+                searchTagsByName(query.replace(/^\[tag\]\s*/, ''), { pageSize: MAX_RESULTS }).then((page) => {
+                    if (aborted) return;
+                    if (!page) {
+                        failure();
+                        return;
                     }
+                    const results = page.rows.map((tag) => ({ id: tag.id, text: `[Tag] ${tag.name}` }));
 
                     // Characters (large set, capped)
                     const characters = getContext().characters;
@@ -3285,11 +3293,12 @@ function initCharacterFilterSelect2Helper(characterFilter) {
                         }
                     }
 
-                    Promise.resolve({ results }).then(success);
-                },
+                    success({ results });
+                });
+                return { abort: () => { aborted = true; } };
             },
-        });
-    }
+        },
+    });
 }
 
 /**
@@ -3310,19 +3319,34 @@ function fillCharacterAndTagOptionsHelper({ characterFilter, entry }) {
         characterFilter.append(option);
     }
 
+    // Every chosen tag gets its option at once, named once it is read: an id with no option would be dropped from the
+    // entry by the next change to the picker.
     const selectedTagIds = entry.characterFilter?.tags ?? [];
-    if (selectedTagIds.length > 0) {
-        const ctxTags = getContext().tags;
-        for (const tag of ctxTags) {
-            if (selectedTagIds.includes(tag.id)) {
-                const option = document.createElement('option');
-                option.innerText = `[Tag] ${tag.name}`;
-                option.selected = true;
-                option.value = tag.id;
-                characterFilter.append(option);
-            }
-        }
+    /** @type {Map<string, HTMLOptionElement>} */
+    const tagOptions = new Map();
+    for (const id of selectedTagIds) {
+        const option = document.createElement('option');
+        option.innerText = '[Tag] …';
+        option.selected = true;
+        option.value = id;
+        characterFilter.append(option);
+        tagOptions.set(id, option);
     }
+    if (tagOptions.size === 0) return;
+    readTagsForIds(selectedTagIds).then((read) => {
+        for (const [id, option] of tagOptions) {
+            const tag = read?.tags.get(id);
+            // A new element: select2 keeps what it drew an option as on the option itself.
+            const named = document.createElement('option');
+            named.value = id;
+            named.selected = option.selected;
+            if (tag) named.innerText = `[Tag] ${tag.name}`;
+            else if (read?.gone.has(id)) named.innerText = `[Tag] ${t`(deleted tag)`}`;
+            else named.innerText = `[Tag] ${id}`;
+            option.replaceWith(named);
+        }
+        characterFilter.trigger('change.select2');
+    });
 }
 
 /**

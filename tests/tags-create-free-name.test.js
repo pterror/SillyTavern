@@ -119,10 +119,10 @@ describe('POST /api/tags/create with freeName', () => {
         expect(body.tag).toEqual({ id: 'a', name: 'New Tag', color: '#112233', sort_order: 42 });
     });
 
-    test('without freeName the name is stored as given, taken or not, and the answer carries no tag', async () => {
-        expect((await post('/api/tags/create', { tag: { id: 'x', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [] });
-        expect((await post('/api/tags/create', { tag: { id: 'y', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [] });
-        expect((await post('/api/tags/create', { tag: { id: 'z', name: 'New Tag' }, freeName: false })).body).toEqual({ result: 'ok', refused: [] });
+    test('without freeName the name is stored as given, taken or not', async () => {
+        expect((await post('/api/tags/create', { tag: { id: 'x', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'x', name: 'New Tag', sort_order: 1 } });
+        expect((await post('/api/tags/create', { tag: { id: 'y', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'y', name: 'New Tag', sort_order: 2 } });
+        expect((await post('/api/tags/create', { tag: { id: 'z', name: 'New Tag' }, freeName: false })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'z', name: 'New Tag', sort_order: 3 } });
         expect(await storedName('z')).toBe('New Tag');
     });
 

@@ -5549,6 +5549,41 @@ export async function getGoneTagIds(directories, ids) {
 }
 
 /**
+ * The tag each name stands for, looked up as a card's tag names are (resolveCardTagNamesSync()): names compared by
+ * tagNameKey(), the first by rowid when several tags have the name, and a tag being deleted with a merge target
+ * standing for that target.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string[]} names
+ * @returns {Promise<{ name: string, tag: object | null }[] | 'names-not-ready' | null>} one entry per distinct name
+ *   given, in the order given; `tag` null when no tag has the name or its stored definition can't be parsed.
+ *   'names-not-ready': names can't be looked up yet. null when the store is unavailable.
+ */
+export async function findTagsByNames(directories, names) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    if (!tagNameKeysReady(entry)) return 'names-not-ready';
+
+    const out = [];
+    const seen = new Set();
+    for (const name of names) {
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const resolved = resolveCardTagNamesSync(entry.db, [name], { ready: true, onlyExisting: true });
+        let tag = null;
+        if (resolved.learned.length > 0) {
+            const learned = resolved.learned[0];
+            try {
+                tag = JSON.parse(learned.data);
+            } catch (err) {
+                console.warn(`[character-metadata] Tag definition ${learned.id} could not be parsed: ${/** @type {Error} */ (err).message}`);
+            }
+        }
+        out.push({ name, tag });
+    }
+    return out;
+}
+
+/**
  * getTagDefinitions()'s definitions, limited to `ids`: a tag marked deleted is left out, and a definition that
  * can't be parsed throws.
  * @param {import('./users.js').UserDirectoryList} directories
@@ -5742,9 +5777,9 @@ function nextTagSortOrderSync(entry) {
  * @param {object} [options]
  * @param {boolean} [options.freeName] The given name is only a base: the tag gets freeTagNameSync()'s name for it.
  *   Needs tagNameKeysReady().
- * @returns {Promise<(TagWriteResult & { tag?: TagDefinitionInput }) | 'names-not-ready' | null>} tag: with
- *   `freeName`, the definition as stored, when it was. 'names-not-ready': a free name was asked for before names can
- *   be looked up; nothing is written.
+ * @returns {Promise<(TagWriteResult & { tag?: TagDefinitionInput }) | 'names-not-ready' | null>} tag: the definition
+ *   as stored, when it was. 'names-not-ready': a free name was asked for before names can be looked up; nothing is
+ *   written.
  */
 export async function createTagDefinition(directories, rawTag, { freeName = false } = {}) {
     const entry = await getEntry(directories);
@@ -5789,7 +5824,7 @@ export async function createTagDefinition(directories, rawTag, { freeName = fals
         return result;
     }
     entry.tagCache = null;
-    return freeName ? { ...result, tag } : result;
+    return { ...result, tag };
 }
 
 /** How many numbered names freeTagNameSync() tries, one name_key lookup each, before it stops looking. */

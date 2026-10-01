@@ -551,7 +551,7 @@ describe('POST /api/tags/create and /api/tags/edit', () => {
         jest.spyOn(console, 'warn').mockImplementation(() => {});
         const created = await post('/api/tags/create', { tag: { id: 'n', name: 'New' } });
         expect(created.status).toBe(200);
-        expect(await created.json()).toEqual({ result: 'ok', refused: [] });
+        expect(await created.json()).toEqual({ result: 'ok', refused: [], tag: { id: 'n', name: 'New', sort_order: 1 } });
         expect(await (await post('/api/tags/create', { tag: { id: 'n', name: 'Again' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'n', reason: 'exists' }] });
         expect(await (await post('/api/tags/create', { tag: { id: 'm', name: 'Back' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'm', reason: 'deleted' }] });
         await withDb((db) => {
