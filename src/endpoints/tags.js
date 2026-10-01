@@ -328,10 +328,12 @@ router.post('/bucket', async (request, response) => {
 const DEFAULT_QUERY_PAGE_SIZE = 50;
 const MAX_QUERY_PAGE_SIZE = 500;
 const QUERY_MAX_IDS = 500;
+/** `restCount` counts at most this many tags after a page; past it the answer says "at least". */
+const QUERY_REST_COUNT_MAX = 10000;
 
 /**
  * One page of tag definitions:
- * `{ filter: { search, name, contains, ids, used, folders }, sort: { field }, pageSize, cursor, counts, ifHash }`
+ * `{ filter: { search, name, contains, ids, used, folders }, sort: { field }, pageSize, cursor, counts, ifHash, restCount }`
  * → `{ rows, cursor, more }`. `search` is a prefix of the name and `contains` text anywhere in it, both ignoring case
  * and accents. With `counts: true` the answer also has `counts: { [id]: n }`, how many characters and groups carry
  * each row's tag, and `approximate`, the ids whose count may be too high while a merge is unfinished.
@@ -342,6 +344,10 @@ const QUERY_MAX_IDS = 500;
  *
  * With `ifHash` (a string, empty when the client holds no copy of this page) the answer also has `hash`, and is
  * only `{ unchanged: true, hash }` when `ifHash` is the hash of what would be answered now.
+ *
+ * With `restCount: true`, a full page that has a next page also answers `rest: { count, more }`: how many tags
+ * match after it, counted up to QUERY_REST_COUNT_MAX under the same work cap. `more` means there may be more than
+ * `count`. A page cut short by the work cap (`more`) or with no next page has no `rest`.
  */
 router.post('/query', async (request, response) => {
     try {
@@ -365,6 +371,9 @@ router.post('/query', async (request, response) => {
         }
         if (body.ifHash !== undefined && typeof body.ifHash !== 'string') {
             return response.status(400).send({ error: true, reason: 'invalid-if-hash' });
+        }
+        if (body.restCount !== undefined && typeof body.restCount !== 'boolean') {
+            return response.status(400).send({ error: true, reason: 'invalid-rest-count' });
         }
         for (const flag of ['used', 'folders']) {
             if (filter[flag] !== undefined && typeof filter[flag] !== 'boolean') {
@@ -392,7 +401,7 @@ router.post('/query', async (request, response) => {
             ? Math.min(Math.trunc(Number(body.pageSize)), MAX_QUERY_PAGE_SIZE)
             : DEFAULT_QUERY_PAGE_SIZE;
 
-        const result = await queryTags(request.user.directories, {
+        const params = {
             sort: sortField,
             search: filter.search?.trim() || undefined,
             name: filter.name,
@@ -403,12 +412,21 @@ router.post('/query', async (request, response) => {
             folders: filter.folders === true,
             pageSize,
             after,
-        });
+        };
+        let result = await queryTags(request.user.directories, params);
         if (result === null) {
             return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
         }
         if (result === 'invalid-cursor') {
             return response.status(400).send({ error: true, reason: 'invalid-cursor' });
+        }
+        if (body.restCount === true && !ids && result.cursor && !result.more && result.rows.length === pageSize) {
+            const restAfter = decodeTagQueryCursor(result.cursor, sortField);
+            const rest = restAfter === null ? null : await queryTags(request.user.directories,
+                { ...params, counts: false, pageSize: QUERY_REST_COUNT_MAX, after: restAfter });
+            if (rest && rest !== 'invalid-cursor') {
+                result = { ...result, rest: { count: rest.rows.length, more: rest.cursor !== null } };
+            }
         }
         if (body.ifHash !== undefined) {
             const hash = crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex');

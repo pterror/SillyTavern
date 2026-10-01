@@ -3031,6 +3031,10 @@ input[type="file"] {
     display: inline;
 }
 
+#rm_print_characters_block .folder_tiles_rest {
+    padding: 2px 5px;
+}
+
 #rm_print_characters_block {
     overflow-y: auto;
     flex-grow: 1;

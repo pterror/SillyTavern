@@ -1635,7 +1635,7 @@ const TAG_READ_MAX_IDS = 500;
 /**
  * One read of /api/tags/query.
  * @param {object} body
- * @returns {Promise<{ rows?: Tag[], cursor?: string | null, more?: boolean, counts?: Record<string, number>, approximate?: string[], hash?: string, unchanged?: boolean } | 'invalid-cursor' | null>}
+ * @returns {Promise<{ rows?: Tag[], cursor?: string | null, more?: boolean, counts?: Record<string, number>, approximate?: string[], hash?: string, unchanged?: boolean, rest?: { count: number, more: boolean } } | 'invalid-cursor' | null>}
  *   null if the request failed. 'invalid-cursor': the server no longer takes the cursor. `unchanged` (only with
  *   `ifHash` in the body): the page is what it was, and the answer has no rows.
  */
@@ -3512,6 +3512,97 @@ export async function searchTagsByName(term, { pageSize = FIND_TAG_RESULT_LIMIT,
     });
     if (!answer || answer === 'invalid-cursor' || !Array.isArray(answer.rows)) return null;
     return { rows: answer.rows.filter(isTagObject), cursor: answer.cursor ?? null };
+}
+
+/** At most this many folder tags get a tile: one /api/characters/folder-tiles request's worth. */
+export const FOLDER_TILE_TAGS_MAX = 200;
+
+/** Reads a name search may make when the server's work cap keeps cutting its pages short. */
+const TAG_SEARCH_READS_MAX = 5;
+
+/**
+ * The folder tags the character list draws as tiles: the first FOLDER_TILE_TAGS_MAX in the tag sort mode's order,
+ * less `skip`, only those whose names hold `contains` when it is given. They are taken into `tags`, since a tile
+ * shows them.
+ * @param {object} options
+ * @param {string} [options.contains]
+ * @param {Set<string>} [options.skip] - ids that get no tile and don't count toward the bound
+ * @returns {Promise<{ tags: Tag[], rest: { count: number, more: boolean } | null } | null>} null if a read failed.
+ *   `rest`: the folder tags after these, null when there are none; `more` means there may be more than `count`.
+ */
+export async function readFolderTileTags({ contains = '', skip = new Set() } = {}) {
+    const term = String(contains ?? '').trim();
+    const filter = term ? { folders: true, contains: term } : { folders: true };
+    const field = tagQuerySortField();
+    /** @type {Tag[]} */
+    const found = [];
+    const rest = { count: 0, more: false };
+    /** @type {string | null} */
+    let cursor = null;
+    let restarted = false;
+    for (let reads = 0; ; reads++) {
+        const answer = await postTagQuery({
+            filter,
+            sort: { field },
+            pageSize: Math.min(FOLDER_TILE_TAGS_MAX - found.length + skip.size, 500),
+            cursor,
+            restCount: true,
+        });
+        if (answer === 'invalid-cursor' && !restarted) {
+            // The manual order the cursor was made in is being rewritten: read from the start.
+            restarted = true;
+            found.length = 0;
+            rest.count = 0;
+            cursor = null;
+            reads = -1;
+            continue;
+        }
+        if (!answer || answer === 'invalid-cursor' || !Array.isArray(answer.rows)) return null;
+        const rows = answer.rows.filter(isTagObject);
+        mergeServerTagDefinitions(rows.filter(row => !tagIdsBeingCreated.has(row.id)));
+        for (const row of rows) {
+            if (skip.has(row.id)) continue;
+            if (found.length < FOLDER_TILE_TAGS_MAX) found.push(tagsStore.get(row.id) ?? row);
+            else rest.count++;
+        }
+        cursor = answer.cursor ?? null;
+        if (cursor === null) break;
+        if (answer.rest) {
+            rest.count += answer.rest.count;
+            rest.more = answer.rest.more;
+            break;
+        }
+        if (found.length >= FOLDER_TILE_TAGS_MAX || reads + 1 >= TAG_SEARCH_READS_MAX) {
+            rest.more = true;
+            break;
+        }
+    }
+    return { tags: found, rest: rest.count > 0 || rest.more ? rest : null };
+}
+
+/**
+ * The tag `/random` picks from: a tag some character or group carries whose name is `name`, else one whose name
+ * starts with it, else one whose name holds it; the first in the tag sort mode's order, ignoring case and accents.
+ * @param {string} name
+ * @returns {Promise<string | undefined>} its id; undefined when no used tag matches or the server can't be read
+ */
+export async function findUsedTagIdByName(name) {
+    const term = String(name ?? '').trim();
+    if (!term) return undefined;
+    const field = tagQuerySortField();
+    for (const match of [{ name: term }, { search: term }, { contains: term }]) {
+        /** @type {string | null} */
+        let cursor = null;
+        for (let reads = 0; reads < TAG_SEARCH_READS_MAX; reads++) {
+            const answer = await postTagQuery({ filter: { used: true, ...match }, sort: { field }, pageSize: 1, cursor });
+            if (!answer || answer === 'invalid-cursor' || !Array.isArray(answer.rows)) return undefined;
+            const row = answer.rows.find(isTagObject);
+            if (row) return row.id;
+            cursor = answer.cursor ?? null;
+            if (cursor === null || !answer.more) break;
+        }
+    }
+    return undefined;
 }
 
 /**
