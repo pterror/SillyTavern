@@ -543,7 +543,7 @@ async function moduleWorker({ newChat = false } = {}) {
     // character has no expressions or it is not loaded
     if (Object.keys(spriteCache).length === 0) {
         await validateImages(spriteFolderName);
-        lastCharacter = context.groupId || context.characterId;
+        lastCharacter = context.groupId || context.characterAvatar;
     }
 
     const offlineMode = $('.expression_settings .offline_mode');
@@ -551,7 +551,7 @@ async function moduleWorker({ newChat = false } = {}) {
         $('#open_chat_expressions').show();
         $('#no_chat_expressions').hide();
         offlineMode.css('display', 'block');
-        lastCharacter = context.groupId || context.characterId;
+        lastCharacter = context.groupId || context.characterAvatar;
 
         if (context.groupId) {
             await validateImages(spriteFolderName, true);
@@ -586,7 +586,7 @@ async function moduleWorker({ newChat = false } = {}) {
         return;
     }
 
-    const lastMessageChanged = !((lastCharacter === context.characterId || lastCharacter === context.groupId) && lastMessage === currentLastMessage.mes);
+    const lastMessageChanged = !((lastCharacter === context.characterAvatar || lastCharacter === context.groupId) && lastMessage === currentLastMessage.mes);
 
     // check if last message changed
     if (!lastMessageChanged) {
@@ -630,7 +630,7 @@ async function moduleWorker({ newChat = false } = {}) {
         console.log(error);
     } finally {
         inApiCall = false;
-        lastCharacter = context.groupId || context.characterId;
+        lastCharacter = context.groupId || context.characterAvatar;
         lastMessage = currentLastMessage.mes;
         lastServerResponseTime = Date.now();
     }

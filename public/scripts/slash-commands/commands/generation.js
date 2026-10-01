@@ -2,7 +2,6 @@ import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { activateSendButtons, deactivateSendButtons, generateQuietPrompt, generateRaw, stopGeneration } from '../../../script.js';
 import { chat_metadata } from '../../chat-state.js';
-import { characters } from '../../character-store.js';
 import { saveMetadataDebounced } from '../../extensions.js';
 import { t } from '../../i18n.js';
 import { addEphemeralStoppingString, flushEphemeralStoppingStrings } from '../../power-user.js';
@@ -125,7 +124,7 @@ async function generateCallback(args, value) {
             quietName: char?.name ?? name,
             responseLength: length,
             trimToSentence: trim,
-            forceChId: char ? characters.indexOf(char) : null,
+            forceAvatar: char?.avatar ?? null,
         };
         const result = await generateQuietPrompt(params);
         return result;

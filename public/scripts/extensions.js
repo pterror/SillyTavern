@@ -92,7 +92,7 @@ export function cancelDebouncedMetadataSave() {
 export function saveMetadataDebounced() {
     const context = getContext();
     const groupId = context.groupId;
-    const characterId = context.characterId;
+    const characterAvatar = context.characterAvatar;
 
     cancelDebouncedMetadataSave();
 
@@ -104,7 +104,7 @@ export function saveMetadataDebounced() {
             return;
         }
 
-        if (characterId !== newContext.characterId) {
+        if (characterAvatar !== newContext.characterAvatar) {
             console.warn('Character changed, not saving metadata');
             return;
         }
@@ -2381,8 +2381,8 @@ export async function writeExtensionFieldBulk(avatars, key, value, { filterPath 
     }
 
     // If the currently active character was updated, sync the hidden input
-    if (context.characterId !== undefined) {
-        const activeChar = context.characters[context.characterId];
+    if (context.characterAvatar !== undefined) {
+        const activeChar = context.characters.find(character => character?.avatar === context.characterAvatar);
         if (activeChar && updatedSet.has(activeChar.avatar) && activeChar.json_data) {
             $('#character_json_data').val(activeChar.json_data);
             setFormBaseline('#character_json_data', String($('#character_json_data').val()));
