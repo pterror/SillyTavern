@@ -24,6 +24,7 @@ if (typeof global.document === 'undefined') global.document = {};
 
 const existsMock = jest.fn();
 const getManyMock = jest.fn();
+const getMock = jest.fn();
 
 // `characters` is a single stable array reference, mutated in place (never reassigned) - jest's ESM module
 // mocking snapshots a plain exported property's value at mock-factory-eval time rather than exposing a true
@@ -86,6 +87,7 @@ jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
     characterRepository: {
         exists: existsMock,
         getMany: getManyMock,
+        get: getMock,
         queryAll: queryAllMock,
     },
     buildCharacterQuery: ({ searchTerm = '', tagsInclude = [], tagsExclude = [], fav, sortField, sortOrder = 'asc', randomSeed } = {}) => {
@@ -327,6 +329,7 @@ beforeAll(async () => {
 beforeEach(() => {
     existsMock.mockReset();
     getManyMock.mockReset();
+    getMock.mockReset();
     characters.length = 0;
     charactersById = new Map();
     global.toastr = { warning: jest.fn(), info: jest.fn(), success: jest.fn(), error: jest.fn() };
@@ -344,10 +347,26 @@ describe('validateGroup()', () => {
     // validateGroup() saves through global fetch and there is no server here. saveGroupProperty() reads
     // nothing off the response, so a bare successful one is enough.
     const SAVE_URL = '/api/groups/save-partial';
+    const FIND_URL = '/api/characters/find';
     const originalFetch = globalThis.fetch;
+    /** Ids `/api/characters/find` answers per exact name; a name not listed matches nothing. */
+    /** @type {Record<string, string[]>} */
+    let idsByName;
+    /** When set, `/api/characters/find` answers with this status instead. */
+    /** @type {number|null} */
+    let findFailStatus;
 
     beforeEach(() => {
-        globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, status: 200 });
+        idsByName = {};
+        findFailStatus = null;
+        globalThis.fetch = jest.fn(async (url, options) => {
+            if (url === FIND_URL) {
+                if (findFailStatus !== null) return { ok: false, status: findFailStatus };
+                const { name } = JSON.parse(options.body);
+                return { ok: true, status: 200, json: async () => ({ ids: idsByName[name] ?? [], capped: false }) };
+            }
+            return { ok: true, status: 200 };
+        });
     });
 
     afterEach(() => {
@@ -371,14 +390,29 @@ describe('validateGroup()', () => {
         expect(group.members).toEqual(['alice.png']);
     });
 
-    test('keeps a legacy display-name member that resolves via the name fallback, without calling exists()', async () => {
-        addResidentCharacter('bob-real.png', 'Bob');
+    test('keeps a legacy display-name member the server finds by exact name, though the page does not hold it', async () => {
+        existsMock.mockResolvedValue({ 'Bob': false });
+        idsByName = { 'Bob': ['bob-real.png'] };
+        getMock.mockResolvedValue({ avatar: 'bob-real.png', name: 'Bob' });
         const group = { id: 'g1', members: ['Bob'], chats: [] };
 
         await validateGroup(group);
 
-        expect(existsMock).not.toHaveBeenCalled();
+        const findCalls = globalThis.fetch.mock.calls.filter(([url]) => url === FIND_URL);
+        expect(findCalls.map(([, options]) => JSON.parse(options.body))).toEqual([{ name: 'Bob', allowAvatar: false, insensitive: false }]);
         expect(group.members).toEqual(['Bob']);
+        expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
+    });
+
+    test('leaves members unchanged when the name lookup for a missing member fails', async () => {
+        existsMock.mockResolvedValue({ 'Bob': false });
+        findFailStatus = 500;
+        const group = { id: 'g1', members: ['Bob'], chats: [] };
+
+        await validateGroup(group);
+
+        expect(group.members).toEqual(['Bob']);
+        expect(globalThis.fetch).not.toHaveBeenCalledWith(SAVE_URL, expect.anything());
     });
 
     test('prunes a member exists() authoritatively says does not exist, and saves', async () => {

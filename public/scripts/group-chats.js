@@ -81,7 +81,7 @@ import {
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore, setCharacterId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
+import { charactersStore, setCharacterId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, tagsStore, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget, updateMessage } from './chat-store.js';
@@ -319,14 +319,37 @@ async function loadGroupChat(chatId, groupId) {
 }
 
 /**
- * Resolves a group member entry to its character, by avatar (O(1) via charactersStore) or, for legacy group
- * data stored by display name, by name (O(n) fallback scan). Resident-only: a miss means "not currently
- * resident", not "does not exist" - see `characterRepository.exists()` for the authoritative check.
+ * Resolves a group member entry to its character among the characters the page holds, by avatar. A miss means
+ * "not held", not "does not exist" - see `characterRepository.exists()` for that, and `findLegacyMemberByName()`
+ * for an entry stored by display name.
  * @param {string} member Group member entry (usually an avatar, occasionally a legacy name)
  * @returns {Character|undefined}
  */
 function findGroupMemberCharacter(member) {
-    return charactersStore.get(member) ?? characters.find(x => x.name === member);
+    return charactersStore.get(member);
+}
+
+/**
+ * Resolves a legacy group member entry, stored by display name rather than avatar, by asking the server for the
+ * character with exactly that name. Throws when the server can't answer, so a caller never reads "couldn't ask"
+ * as "no such character".
+ * @param {string} name
+ * @returns {Promise<Character|null>}
+ */
+async function findLegacyMemberByName(name) {
+    const response = await fetch('/api/characters/find', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name, allowAvatar: false, insensitive: false }),
+    });
+    if (!response.ok) {
+        throw new Error(`/api/characters/find failed with ${response.status}`);
+    }
+    const { ids } = await response.json();
+    if (!Array.isArray(ids) || ids.length === 0) {
+        return null;
+    }
+    return (await characterRepository.get(ids[0])) ?? null;
 }
 
 /**
@@ -349,6 +372,15 @@ async function resolveGroupMembers(members) {
     }
 
     const fetched = toFetch.length > 0 ? await characterRepository.getMany(toFetch) : new Map();
+    for (const member of toFetch) {
+        if (fetched.has(member)) continue;
+        try {
+            const byName = await findLegacyMemberByName(member);
+            if (byName) fetched.set(member, byName);
+        } catch (error) {
+            console.warn('Could not look up group member by name:', member, error);
+        }
+    }
 
     /** @type {Character[]} */
     const resolved = [];
@@ -388,11 +420,27 @@ export async function validateGroup(group) {
         existsResult = null;
     }
 
+    // A member that is no character's avatar may be a legacy entry stored by display name.
+    /** @type {Set<string>} */
+    const foundByName = new Set();
+    if (existsResult !== null) {
+        try {
+            for (const member of needsExistenceCheck) {
+                if (existsResult[member]) continue;
+                if (await findLegacyMemberByName(member)) foundByName.add(member);
+            }
+        } catch (error) {
+            console.warn('Group member lookup by name failed; leaving group members unchanged', group.id, error);
+            existsResult = null;
+        }
+    }
+
     let membersDirty = false;
     if (existsResult !== null) {
         const filtered = membersArray.filter(member => {
             if (findGroupMemberCharacter(member)) return true;
             if (existsResult[member]) return true;
+            if (foundByName.has(member)) return true;
             const msg = t`Warning: Listed member ${member} does not exist as a character. It will be removed from the group.`;
             toastr.warning(msg, t`Group Validation`);
             console.warn(msg);
@@ -968,10 +1016,18 @@ async function fetchGroups({ silent }) {
             if (group.chat_id == undefined) {
                 group.chat_id = group.id;
                 group.chats = [group.id];
-                group.members = group.members
-                    .map(x => characters.find(y => y.name == x)?.avatar)
-                    .filter(x => x)
-                    .filter(onlyUnique);
+                try {
+                    const avatars = [];
+                    for (const name of group.members) {
+                        avatars.push((await findLegacyMemberByName(name))?.avatar);
+                    }
+                    group.members = avatars
+                        .filter(x => x)
+                        .filter(onlyUnique);
+                } catch (error) {
+                    // Left as names, which still resolve by name later; dropping them would lose members.
+                    console.warn('Could not convert legacy group members to avatars', group.id, error);
+                }
             }
             if (typeof group.chat_id === 'number') {
                 group.chat_id = String(group.chat_id);
@@ -1369,13 +1425,9 @@ function activateSwipe(members, { allowSystem = false } = {}) {
 
     // pre-update group chat swipe
     if (!lastMessage.original_avatar) {
-        const matches = characters.filter(x => x.name == lastMessage.name);
-
-        for (const match of matches) {
-            if (members.includes(match.avatar)) {
-                activatedNames.push(match.avatar);
-                break;
-            }
+        const match = members.find(member => charactersStore.get(member)?.name == lastMessage.name);
+        if (match) {
+            activatedNames.push(match);
         }
     } else {
         activatedNames.push(lastMessage.original_avatar);
@@ -2340,7 +2392,8 @@ async function createGroup() {
     let generationMode = Number($('#rm_group_generation_mode').find(':selected').val()) ?? group_generation_mode.SWAP;
     let autoModeDelay = Number($('#rm_group_automode_delay').val()) ?? DEFAULT_AUTO_MODE_DELAY;
     const members = newGroupMembers;
-    const memberNames = characters.filter(x => members.includes(x.avatar)).map(x => x.name).join(', ');
+    const { resolved: memberCharacters } = await resolveGroupMembers(members);
+    const memberNames = memberCharacters.map(x => x.name).join(', ');
 
     if (!name) {
         name = t`Group: ${memberNames}`;
