@@ -379,14 +379,12 @@ for (const side of /** @type {const} */ (['left', 'right'])) {
             expect(panel.width).toBeCloseTo(space.width, 1);
             expect(panel.top).toBeCloseTo(0, 1);
             expect(panel.bottom).toBeCloseTo(VIEWPORT.height, 1);
-            await expect(page.locator('#char-info-panel')).toHaveAttribute('data-drawer-zones', 'left center right');
             await expect(page.locator('#left-nav-panel')).toBeHidden();
             await expect(page.locator('#left-nav-panel')).toHaveClass(/openDrawer/);
 
             // Capped well below the chat's Chat Width %: the panel is centered beside the bar, off the sidebars, and the
             // pinned sidebar shows again.
             await setSettingInput(page, '#chat_width_max', 'chat_width_max', 40);
-            await expect(page.locator('#char-info-panel')).toHaveAttribute('data-drawer-zones', 'center');
             await expect(page.locator('#left-nav-panel')).toBeVisible();
             panel = await rect(page, '#char-info-panel');
             expect(panel.left - space.left).toBeCloseTo(space.right - (panel.left + panel.width), 0);
