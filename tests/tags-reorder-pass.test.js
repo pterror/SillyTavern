@@ -234,17 +234,9 @@ describe('runTagReorderPassIfNeeded', () => {
         insertTag('a', { sort_order: 0 });
         record(1, 'alphabetical');
         const before = live().prepare('SELECT data FROM tags WHERE id = ?').pluck().get('a');
-        let events = 0;
-        const onChanged = () => { events++; };
-        metadataDb.characterChangeEmitter.on(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, onChanged);
-        try {
-            await metadataDb.runTagReorderPassIfNeeded(directories);
-        } finally {
-            metadataDb.characterChangeEmitter.off(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, onChanged);
-        }
+        await metadataDb.runTagReorderPassIfNeeded(directories);
         expect(live().prepare('SELECT data FROM tags WHERE id = ?').pluck().get('a')).toBe(before);
         expect(stamp('a')).toBe(1);
-        expect(events).toBe(0);
 
         insertTag('b', { sort_order: 1 });
         record(2, 'alphabetical');

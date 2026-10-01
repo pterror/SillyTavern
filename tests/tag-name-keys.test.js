@@ -145,7 +145,7 @@ describe('resolving card tag names once name keys are filled', () => {
         expect((await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png')).tagIds).toEqual(['z-first']);
     });
 
-    test('a tag another connection created after this process loaded its tag cache is found, not created again', async () => {
+    test('a tag another connection created is found, not created again', async () => {
         await writeCharacter('Alice.png', ['Other']);
         await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');
         withRawDb(db => db.prepare('INSERT INTO tags (id, data, name_key) VALUES (?, ?, ?)').run('worker-made', JSON.stringify({ id: 'worker-made', name: 'Beta' }), 'beta'));
@@ -180,23 +180,23 @@ describe('resolving card tag names once name keys are filled', () => {
 });
 
 describe('while name keys are unfilled', () => {
-    test('a name in this process\'s tag cache is assigned at once', async () => {
+    test('a name an existing tag has is held, and the fill pass assigns that tag', async () => {
         await metadataDb.saveTagDefinitions(directories, [{ id: 'known', name: 'Known' }]);
         await makeTagsLegacy();
         await writeCharacter('Bob.png', ['known']);
 
         const { tagIds, heldTagNames } = await metadataDb.seedCardTagsForSingleCharacter(directories, 'Bob.png');
 
-        expect(tagIds).toEqual(['known']);
-        expect(heldTagNames).toEqual([]);
+        expect(tagIds).toEqual([]);
+        expect(heldTagNames).toEqual(['known']);
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
+        expect(assignedTagIds('Bob.png')).toEqual(['known']);
+        expect(tagRows().filter(r => r.name_key === 'known')).toHaveLength(1);
     });
 
-    test('a name the cache lacks is held, not created, and the fill pass assigns the tag another connection made', async () => {
+    test('a name is held, not created, and the fill pass assigns the tag another connection made', async () => {
         await metadataDb.saveTagDefinitions(directories, [{ id: 'other', name: 'Other' }]);
         await makeTagsLegacy();
-        await writeCharacter('Alice.png', ['Other']);
-        // Loads this process's tag cache before the other connection's tag exists.
-        expect((await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png')).tagIds).toEqual(['other']);
         withRawDb(db => db.prepare('INSERT INTO tags (id, data) VALUES (?, ?)').run('elsewhere', JSON.stringify({ id: 'elsewhere', name: 'Beta' })));
         await writeCharacter('Bob.png', ['Béta', 'Brand New']);
 
@@ -220,9 +220,6 @@ describe('while name keys are unfilled', () => {
     test('a name held in only-existing mode is assigned if the tag exists, and never created', async () => {
         await metadataDb.saveTagDefinitions(directories, [{ id: 'other', name: 'Other' }]);
         await makeTagsLegacy();
-        await writeCharacter('Alice.png', ['Other']);
-        // Loads this process's tag cache before the other connection's tag exists.
-        await metadataDb.seedCardTagsForSingleCharacter(directories, 'Alice.png');
         withRawDb(db => db.prepare('INSERT INTO tags (id, data) VALUES (?, ?)').run('exists', JSON.stringify({ id: 'exists', name: 'Exists' })));
         await writeCharacter('Bob.png', ['Exists', 'Missing']);
 

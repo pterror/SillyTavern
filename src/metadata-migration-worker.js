@@ -9,11 +9,10 @@ import { setConfigFilePath } from './util.js';
  * done-marker is written last. workerData.boot is set for the once-per-boot run, whose lines are [boot-timing] ones.
  *
  * Messages to the coordinator:
- *   { type: 'batch', changed, tagDefinitionsChanged, tagChangesLogged, groupChangesLogged }
+ *   { type: 'batch', changed, tagChangesLogged, groupChangesLogged }
  *                                                     a batch committed that wrote change rows (changed), tag
- *                                                     definitions (tagDefinitionsChanged), tag change log rows
- *                                                     (tagChangesLogged) and/or groups version rows
- *                                                     (groupChangesLogged).
+ *                                                     change log rows (tagChangesLogged) and/or groups version
+ *                                                     rows (groupChangesLogged).
  *   { type: 'tag-move-failed', payload }               a queued tag move couldn't be applied (reportTagMoveFailed()).
  *   { type: 'tag-order-settled' }                      the queued tag moves are all applied (reportTagOrderSettled()).
  *   { type: 'error', message }
@@ -37,7 +36,6 @@ const post = (msg) => parentPort?.postMessage(msg);
 
 // The events fire inside a pass's synchronous transaction, so the microtask runs once that batch has committed.
 let changed = false;
-let tagDefinitionsChanged = false;
 let tagChangesLogged = false;
 let groupChangesLogged = false;
 let batchReportQueued = false;
@@ -45,9 +43,8 @@ function queueBatchReport() {
     if (batchReportQueued) return;
     batchReportQueued = true;
     queueMicrotask(() => {
-        post({ type: 'batch', changed, tagDefinitionsChanged, tagChangesLogged, groupChangesLogged });
+        post({ type: 'batch', changed, tagChangesLogged, groupChangesLogged });
         changed = false;
-        tagDefinitionsChanged = false;
         tagChangesLogged = false;
         groupChangesLogged = false;
         batchReportQueued = false;
@@ -55,10 +52,6 @@ function queueBatchReport() {
 }
 metadataDb.characterChangeEmitter.on('change', () => {
     changed = true;
-    queueBatchReport();
-});
-metadataDb.characterChangeEmitter.on(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, () => {
-    tagDefinitionsChanged = true;
     queueBatchReport();
 });
 metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, () => {
