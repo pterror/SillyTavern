@@ -203,11 +203,14 @@ test.describe('tags drawer overlay, stacked drawers off', () => {
 /**
  * Whether character info, the layer under the open suggestion list, has exactly the part the list covers cut out of
  * it. (Read from the cut itself: the list is on top, so hit-testing would find the list either way.)
+ * The stack cuts in the animation frame after the list shows, before that frame paints; reading sooner (a script
+ * task can run between the list showing and that frame) would see the cut not made yet.
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<boolean | null>} true if cut, false if nothing is cut, null if cut wrongly
  */
 async function rowCutUnderSuggestions(page) {
-    return page.evaluate(() => {
+    return page.evaluate(async () => {
+        await new Promise(resolve => requestAnimationFrame(resolve));
         const menu = [...document.querySelectorAll('.ui-autocomplete')].find(el => getComputedStyle(el).display !== 'none');
         const under = document.getElementById('char-info-panel');
         const m = menu.getBoundingClientRect();
