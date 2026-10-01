@@ -531,19 +531,6 @@ function onScreenEntityKeys(unheldRows) {
     return keys;
 }
 
-/**
- * The tag assignments of every resident entity as a plain object, for the tag backup file.
- * @returns {{[key: string]: string[]}}
- */
-function getTagMapSnapshot() {
-    /** @type {{[key: string]: string[]}} */
-    const snapshot = {};
-    for (const [key, tagIds] of allTagIdsEntries()) {
-        if (tagIds.length) snapshot[key] = tagIds;
-    }
-    return snapshot;
-}
-
 /** @param {string} key @returns {string[]} */
 function getTagIdsForKey(key) {
     return resolveTagIdsArray(key) ?? [];
@@ -5254,9 +5241,12 @@ async function onTagRestoreFileSelect(e) {
         return;
     }
 
-    // Prompt user if they want to overwrite existing tags
+    // Prompt user if they want to overwrite existing tags. The page holds only some of the tags, so the server is
+    // asked whether it has any; when it can't say, the question is asked.
+    const firstPage = await postTagQuery({ sort: { field: tagQuerySortField() }, pageSize: 1 });
+    const serverHasTags = firstPage === null || firstPage === 'invalid-cursor' || (firstPage.rows?.length ?? 0) > 0 || firstPage.more === true;
     let overwrite = false;
-    if (tags.length > 0) {
+    if (serverHasTags) {
         const result = await Popup.show.confirm('Tag Restore', 'You have existing tags. If the backup contains any of those tags, do you want the backup to overwrite their settings (Name, color, folder state, etc)?',
             { okButton: 'Overwrite', cancelButton: 'Keep Existing' });
         overwrite = result === POPUP_RESULT.AFFIRMATIVE;
@@ -5316,17 +5306,26 @@ function onBackupRestoreClick() {
         .trigger('click');
 }
 
-function onTagsBackupClick() {
+/** Downloads the server's tag backup file: every tag and every character's and group's tags. */
+async function onTagsBackupClick() {
     const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
     const filename = `tags_${timestamp}.json`;
-    // File format field name kept as `tag_map` for backward compatibility with existing backup files -
-    // this is a freshly-computed snapshot of each resident entity's own tag_ids, not a persisted cache.
-    const data = {
-        tags: tags,
-        tag_map: getTagMapSnapshot(),
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    download(blob, filename, 'application/json');
+    try {
+        const response = await fetch('/api/tags/backup', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+            cache: 'no-cache',
+        });
+        if (!response.ok) throw new Error(response.statusText);
+        const blob = await response.blob();
+        // A backup cut off mid-stream doesn't parse: it is not handed out as if it were whole.
+        JSON.parse(await blob.text());
+        download(blob, filename, 'application/json');
+    } catch (error) {
+        console.error('Could not make the tag backup:', error);
+        toastr.error(t`The tag backup could not be made.`, t`Tag Backup`);
+    }
 }
 
 /** Server-side cap on /api/tags/prune's `limit`. */
