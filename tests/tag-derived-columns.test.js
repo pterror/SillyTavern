@@ -179,6 +179,8 @@ describe('columns at open', () => {
         metadataDb.disposeMetadataStores();
 
         withRawDb(db => {
+            // A store from before the columns has none of the triggers that read them either.
+            for (const name of ['trg_tags_pending_places_ad', 'trg_tags_pending_places_name_key']) db.exec(`DROP TRIGGER ${name}`);
             for (const name of ['sort_order', 'folder_type', 'is_folder', 'usage_count']) db.exec(`ALTER TABLE tags DROP COLUMN ${name}`);
             for (const { name } of newTriggers) db.exec(`DROP TRIGGER ${name}`);
             db.exec(`

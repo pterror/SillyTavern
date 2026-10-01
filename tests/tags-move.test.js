@@ -545,7 +545,7 @@ function listenForMoveFailures(deliver) {
 }
 
 describe('moveTagDefinition before the sort_order fill has finished: queued', () => {
-    test('while the fill\'s flag is missing, the move is queued and nothing else is written', async () => {
+    test('while the fill\'s flag is missing, the move is queued with the place it will leave, and no tag is written', async () => {
         await openStore({ filled: false });
         insertTag('a', { sort_order: 1 });
         insertTag('x', { sort_order: 5 });
@@ -553,8 +553,8 @@ describe('moveTagDefinition before the sort_order fill has finished: queued', ()
         const changesSeq = await metadataDb.getTagChangesSeq(directories);
         runSql = [];
         await queue('x', { before: 'a' });
-        expect(runSql).toHaveLength(1);
         expect(runSql[0]).toMatch(/^INSERT INTO tag_pending_moves\b/);
+        for (const sql of runSql.slice(1)) expect(sql).toMatch(/^(DELETE FROM|INSERT INTO) tag_pending_places\b|^INSERT INTO meta\b/);
         expect(pending()).toEqual([{ tag_id: 'x', side: 'before', anchor_id: 'a', value: null }]);
         expect(rows()).toEqual(before);
         expect(await metadataDb.getTagChangesSeq(directories)).toBe(changesSeq);
