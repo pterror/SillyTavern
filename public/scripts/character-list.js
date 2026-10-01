@@ -197,6 +197,38 @@ export function renameCharacterListRow(previousId, id) {
     return true;
 }
 
+/**
+ * The character rows on screen whose characters `charactersStore` doesn't hold, each with the tag ids it was drawn
+ * with: those rows are the only place the page has them.
+ * @returns {Map<string, string[]>} by avatar
+ */
+export function getUnheldRowTagIds() {
+    /** @type {Map<string, string[]>} */
+    const found = new Map();
+    for (const entity of renderedPageEntities) {
+        if (entity.type !== 'character' || charactersStore.has(entity.id)) continue;
+        found.set(entity.id, Array.isArray(entity.item?.tag_ids) ? entity.item.tag_ids : []);
+    }
+    return found;
+}
+
+/**
+ * Draws the row on screen of a character `charactersStore` doesn't hold again with `tagIds`.
+ * @param {string} avatar
+ * @param {string[]} tagIds
+ * @param {number} fetchStamp - tagFetchStamp() taken before `tagIds` was read
+ */
+export function setUnheldRowTagIds(avatar, tagIds, fetchStamp) {
+    let item = null;
+    renderedPageEntities = renderedPageEntities.map((entity) => {
+        if (entity.type !== 'character' || entity.id !== avatar) return entity;
+        item = { ...entity.item, tag_ids: [...tagIds], tagFetchStamp: fetchStamp };
+        return characterToEntity(item);
+    });
+    const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(avatar)}"]`);
+    if (item && row) updateCharacterBlock(row, item, avatar);
+}
+
 export function removeCharacterListRow(id) {
     const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(id)}"]`);
     if (!row) return false;
