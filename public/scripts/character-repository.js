@@ -11,7 +11,7 @@
 import { unshallowCharacter } from '../script.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
-import { tagFetchStamp } from './tag-fetch-stamps.js';
+import { isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { getCachedEntriesByIds, saveCachedCharacters, getCachedGroupEntriesByIds, saveCachedGroups } from './character-cache.js';
 import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normalizeTagIds, shallowCharacterData } from './hash-utils.js';
 
@@ -74,6 +74,8 @@ const QUERY_RESPONSE_CACHE_LIMIT = 100;
 
 /** Mirrors the server's own page cap (`MAX_QUERY_PAGE_SIZE`): `queryAll()` and `getMany()` chunk their requests at this size. */
 const QUERY_ALL_PAGE_SIZE = 2000;
+// The server's FULL_BATCH_MAX (src/endpoints/characters.js).
+const FULL_BATCH_SIZE = 200;
 
 /** Mirrors the server's `MAX_FOLDER_TILES_PER_REQUEST`: `folderTiles()` splits its tiles into requests of this many. */
 export const FOLDER_TILES_PER_REQUEST = 200;
@@ -548,6 +550,61 @@ export class CharacterRepository {
         character.chat = character.chat ? String(character.chat) : '';
         character.shallow = false;
         return character;
+    }
+
+    /**
+     * Full cards for these ids. A character the page holds is returned as held (every held character is full);
+     * the rest are read from the server and not taken in.
+     * @param {string[]} ids
+     * @returns {Promise<Map<string, Character>>} keyed by id; an id no character has is absent.
+     */
+    async fullMany(ids) {
+        /** @type {Map<string, Character>} */
+        const result = new Map();
+        /** @type {string[]} */
+        const missing = [];
+        for (const id of ids) {
+            const held = this.peek(id);
+            if (held) result.set(id, held);
+            else missing.push(id);
+        }
+        for (const [id, character] of await this.readFull(missing)) {
+            result.set(id, character);
+        }
+        return result;
+    }
+
+    /**
+     * Reads the full cards of these ids from the server, whether or not the page holds them, and takes none in.
+     * @param {string[]} ids
+     * @returns {Promise<Map<string, Character>>} keyed by id; an id no character has is absent.
+     */
+    async readFull(ids) {
+        /** @type {Map<string, Character>} */
+        const result = new Map();
+        for (let start = 0; start < ids.length; start += FULL_BATCH_SIZE) {
+            const chunk = ids.slice(start, start + FULL_BATCH_SIZE);
+            const fetchStamp = tagFetchStamp();
+            const response = await fetch('/api/characters/batch', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ avatars: chunk, full: true }),
+            });
+            if (!response.ok) {
+                throw new CharacterQueryError(`/api/characters/batch failed with ${response.status}`, { status: response.status, reason: undefined, body: undefined });
+            }
+            /** @type {Character[]} */
+            const characters = await response.json();
+            for (const character of characters) {
+                character.chat = character.chat ? String(character.chat) : '';
+                character.shallow = false;
+                if (!isFetchedTagIdsCurrent(character.avatar, fetchStamp)) {
+                    delete character.tag_ids;
+                }
+                result.set(character.avatar, character);
+            }
+        }
+        return result;
     }
 
     /**

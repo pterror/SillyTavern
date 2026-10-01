@@ -3207,7 +3207,7 @@ async function doRandomChat(_, tagName) {
         toastr.error('No characters found');
         return;
     }
-    const character = await characterRepository.get(avatar);
+    const character = await characterRepository.full(avatar);
     if (!character) {
         toastr.error('No characters found');
         return;

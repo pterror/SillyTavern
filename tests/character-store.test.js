@@ -5,7 +5,7 @@ jest.unstable_mockModule('../public/script.js', () => ({ selectCharacterByAvatar
 
 const {
     characters, charactersStore, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH, selectCharacterById,
-    exposedCharacters, exposedGroups, setExposedGroupId, setCharacterId, onExposedEntitiesChange,
+    exposedCharacters, exposedGroups, setExposedGroupId, setCharacterId, onExposedEntitiesChange, holdCharacter,
 } = await import('../public/scripts/character-store.js');
 const { setGroups, rebuildGroupsStoreCore } = await import('../public/scripts/group-store.js');
 
@@ -161,12 +161,32 @@ describe('selectCharacterById', () => {
         ]);
     });
 
-    test('a miss selects nothing', async () => {
+    test('an index that misses selects nothing', async () => {
         await selectCharacterById(99);
         await selectCharacterById('03');
         await selectCharacterById('length');
-        await selectCharacterById('missing.png');
         expect(selectCharacterByAvatar).not.toHaveBeenCalled();
+    });
+
+    test('an avatar key the page does not hold is handed on, to be read from the server', async () => {
+        await selectCharacterById('missing.png');
+        expect(selectCharacterByAvatar.mock.calls).toEqual([['missing.png', { switchMenu: true }]]);
+    });
+});
+
+describe('holdCharacter', () => {
+    test('holds a full card, and refuses a shallow row', () => {
+        const full = { avatar: 'full.png', name: 'Full', description: 'd', shallow: false };
+        expect(holdCharacter(full)).toBe(full);
+        expect(charactersStore.get('full.png')).toBe(full);
+
+        expect(() => holdCharacter({ avatar: 'row.png', name: 'Row', shallow: true })).toThrow(TypeError);
+        expect(charactersStore.has('row.png')).toBe(false);
+        expect(() => setCharacterId({ avatar: 'row.png', name: 'Row', shallow: true })).toThrow(TypeError);
+    });
+
+    test('a character already held is kept as it is, even when handed its shallow row', () => {
+        expect(holdCharacter({ avatar: 'gamma.png', name: 'Gamma', shallow: true })).toBe(gamma);
     });
 });
 

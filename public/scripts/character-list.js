@@ -1279,9 +1279,13 @@ export async function getCharacters(options = {}) {
  * what the page holds is decided by what is on screen, never by a sync. Callers re-index the store afterwards.
  * @param {DeltaProgress} progress
  * @param {number} fetchStamp From tagFetchStamp() before the sync, so tag ids a newer write superseded are dropped.
+ * @returns {string[]} Held characters an update reached only as a shallow row: their heavy fields may have changed
+ *   too, so they are to be read again in full.
  */
 function applyCharacterUpdates({ updates }, fetchStamp) {
     const removed = new Set();
+    /** @type {string[]} */
+    const readAgain = [];
     for (const [avatar, incoming] of updates) {
         const existing = charactersStore.get(avatar);
         if (!existing) {
@@ -1294,12 +1298,11 @@ function applyCharacterUpdates({ updates }, fetchStamp) {
         if (!isFetchedTagIdsCurrent(avatar, fetchStamp)) {
             delete incoming.tag_ids;
         }
-        // Merged field by field, since `incoming` can be a shallow projection missing heavy fields; and an
-        // unshallowed character is not downgraded back to shallow.
-        const wasUnshallowed = existing.shallow === false;
+        // Merged field by field: a shallow row lacks the heavy fields, which the held card keeps until it is read again.
         lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
-        if (wasUnshallowed && incoming.shallow === true) {
+        if (incoming.shallow === true) {
             existing.shallow = false;
+            readAgain.push(avatar);
         }
     }
     if (removed.size > 0) {
@@ -1308,6 +1311,19 @@ function applyCharacterUpdates({ updates }, fetchStamp) {
             if (!removed.has(character)) characters[kept++] = character;
         }
         characters.length = kept;
+    }
+    return readAgain;
+}
+
+/**
+ * Reads these held characters again in full and updates them in place. One the page let go of meanwhile stays out.
+ * @param {string[]} avatars
+ */
+async function readHeldAgainInFull(avatars) {
+    if (avatars.length === 0) return;
+    const full = await characterRepository.readFull(avatars);
+    for (const [avatar, character] of full) {
+        if (charactersStore.has(avatar)) charactersStore.update(avatar, character);
     }
 }
 
@@ -1342,7 +1358,12 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
 
     // Pages a failed sync did apply moved the cursor past them, so they are applied here even on failure.
     if (progress.changed) {
-        applyCharacterUpdates(progress, fetchStamp);
+        const readAgain = applyCharacterUpdates(progress, fetchStamp);
+        try {
+            await readHeldAgainInFull(readAgain);
+        } catch (error) {
+            console.error('Could not read changed characters again in full:', error);
+        }
         if (silent) {
             charactersStore.reindex();
         } else {

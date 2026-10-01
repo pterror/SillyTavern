@@ -104,9 +104,9 @@ jest.unstable_mockModule('../public/scripts/hash-utils.js', () => ({
     getStringHash: jest.fn(),
 }));
 
-const repositoryGetMock = jest.fn(async (id) => ({ avatar: id, name: `name of ${id}` }));
+const repositoryFullMock = jest.fn(async (id) => ({ avatar: id, name: `name of ${id}` }));
 jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
-    characterRepository: { get: repositoryGetMock },
+    characterRepository: { full: repositoryFullMock },
 }));
 
 /** @type {typeof import('../public/scripts/utils.js').findChar} */
@@ -306,7 +306,7 @@ describe('findCharAsync()', () => {
 
         const found = await findCharAsync({ name: 'Sam', insensitive: false, filteredByTags: ['Hero'], preferCurrentChar: false });
         expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({ name: 'Sam', allowAvatar: true, insensitive: false, tags: ['Hero'] });
-        expect(repositoryGetMock).toHaveBeenCalledWith('a.png');
+        expect(repositoryFullMock).toHaveBeenCalledWith('a.png');
         expect(found).toEqual({ avatar: 'a.png', name: 'name of a.png' });
         expect(global.toastr.warning).not.toHaveBeenCalled();
     });

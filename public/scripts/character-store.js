@@ -163,7 +163,8 @@ onAnyEntityStoreChange(store => {
 });
 
 /**
- * Makes the page hold a character it was handed (one read from the server or the cache), so it can be selected.
+ * Makes the page hold a character it was handed, so it can be selected. Every held character is a full card: a
+ * shallow row (from `/query`, `getMany()` or the cache) is refused; read it with `characterRepository.full()` first.
  * A character already held is kept as it is.
  * @param {Character} character
  * @returns {Character} the held character
@@ -171,6 +172,9 @@ onAnyEntityStoreChange(store => {
 export function holdCharacter(character) {
     const held = charactersStore.get(character.avatar);
     if (held) return held;
+    if (character.shallow === true) {
+        throw new TypeError(`Only a full character can be held, not the shallow row of ${character.avatar}`);
+    }
     charactersStore.create(character);
     return character;
 }
