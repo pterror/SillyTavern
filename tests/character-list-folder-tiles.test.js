@@ -28,6 +28,9 @@ function createFakeLocalforageInstance() {
 /** The client's tag list. One stable array, mutated in place: the mocked module's export is bound once. */
 const clientTags = [];
 const powerUser = { bogus_folders: true, fuzzy_search: false };
+const FOLDER_TILE_TAGS_MAX = 200;
+/** @type {{ contains: string, skip: string[] }[]} */
+const readFolderTileTagsCalls = [];
 
 jest.unstable_mockModule('../public/lib.js', () => ({
     lodash,
@@ -52,8 +55,7 @@ jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     fuzzySearchGroups: () => { throw new Error('the tiles never search groups in the browser'); },
     fuzzySearchPersonas: () => [],
     fuzzySearchWorldInfo: () => [],
-    // Stands in for Fuse: a tag matches when its name starts with the term.
-    fuzzySearchTags: term => clientTags.filter(tag => tag.name.toLowerCase().startsWith(term.toLowerCase())).map(item => ({ item, score: 0 })),
+    fuzzySearchTags: () => { throw new Error('the tiles never search tags in the browser'); },
 }));
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     debounce: fn => fn,
@@ -79,6 +81,17 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     applyTagsOnGroupSelect: noop,
     tagsStore: {},
     isTagAssignedToKey: () => { throw new Error('the tiles never read tag assignments in the browser'); },
+    // Stands in for the server's folder tag query (tested in tags-query.test.js and FolderTilesFromServer.e2e.js):
+    // the client list's folders in sort_order, bounded like the real one.
+    readFolderTileTags: async ({ contains = '', skip = new Set() } = {}) => {
+        const matching = clientTags
+            .filter(tag => tag.folder_type !== undefined && tag.folder_type !== 'NONE' && !skip.has(tag.id))
+            .filter(tag => tag.name.toLowerCase().includes(String(contains).trim().toLowerCase()))
+            .sort((a, b) => a.sort_order - b.sort_order);
+        readFolderTileTagsCalls.push({ contains, skip: [...skip] });
+        const rest = matching.length - FOLDER_TILE_TAGS_MAX;
+        return { tags: matching.slice(0, FOLDER_TILE_TAGS_MAX), rest: rest > 0 ? { count: rest, more: false } : null };
+    },
 }));
 jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({ getRandomSortSeed: () => 42 }));
 jest.unstable_mockModule('../public/scripts/i18n.js', () => ({ t: (strings, ...values) => String.raw(strings, ...values) }));
@@ -169,6 +182,7 @@ beforeEach(() => {
         fs.mkdirSync(dir, { recursive: true });
     }
     clientTags.length = 0;
+    readFolderTileTagsCalls.length = 0;
     powerUser.bogus_folders = true;
     powerUser.fuzzy_search = false;
     const { FILTER_TYPES } = filters;
@@ -312,6 +326,7 @@ describe('getFolderTileEntities', () => {
         const listFilter = { fav: true, tags: { include: ['b'], exclude: [], mode: 'and' }, includeGroups: true };
 
         const tiles = await characterList.getFolderTileEntities(1, listFilter, NAME_ASC, 1);
+        expect(readFolderTileTagsCalls).toEqual([{ contains: '', skip: ['b'] }]);
         expect(tileRequests).toEqual([{ tiles: ['a', 'c'], filter: { fav: true, tags: listFilter.tags, group: false }, sort: NAME_ASC, want: ['hashes'] }]);
         expect(tiles.map(tile => [tile.id, tile.total, tile.entities.map(entityKey)])).toEqual([['a', 1, ['Fav.png']], ['c', 1, ['Fav.png']]]);
 
@@ -330,9 +345,10 @@ describe('getFolderTileEntities', () => {
         powerUser.bogus_folders = false;
         expect(await characterList.getFolderTileEntities(1, {}, NAME_ASC, 3)).toEqual([]);
         expect(tileRequests).toEqual([]);
+        expect(readFolderTileTagsCalls).toHaveLength(2);
     }, 30000);
 
-    test('450 folders go in requests of 200, one after another', async () => {
+    test('450 folders: only the first 200 are tried for a tile, in one request', async () => {
         expect(repository.FOLDER_TILES_PER_REQUEST).toBe(200);
         const folders = Array.from({ length: 450 }, (_, i) => ({ id: `f${String(i).padStart(3, '0')}`, name: `F${i}`, folder_type: 'OPEN' }));
         await defineTags(folders);
@@ -342,10 +358,8 @@ describe('getFolderTileEntities', () => {
         await tag('Last.png', ['f449']);
 
         const tiles = await characterList.getFolderTileEntities(1, {}, NAME_ASC, 2);
-        expect(tileRequests.map(body => body.tiles.length)).toEqual([200, 200, 50]);
-        expect(tileRequests.flatMap(body => body.tiles)).toEqual(folders.map(folder => folder.id));
-        expect(maxInFlight).toBe(1);
-        expect(tiles.map(tile => [tile.id, tile.entities.map(entityKey)])).toEqual([['f000', ['First.png']], ['f449', ['Last.png']]]);
+        expect(tileRequests.map(body => body.tiles)).toEqual([folders.slice(0, 200).map(folder => folder.id)]);
+        expect(tiles.map(tile => [tile.id, tile.entities.map(entityKey)])).toEqual([['f000', ['First.png']]]);
     }, 60000);
 
     test('a folder the server doesn\'t have gets no tile', async () => {
@@ -362,7 +376,7 @@ describe('getFolderTileEntities', () => {
     test.each([
         ['plain matching', false],
         ['fuzzy matching', true],
-    ])('with a search term (%s), only folders whose name matches get a tile, empty or not', async (_, fuzzy) => {
+    ])('with a search term (%s), only folders whose name holds it get a tile, empty or not', async (_, fuzzy) => {
         if ((await searchEngine.resolveSearchEngine()).tier !== 'tantivy') return;
         powerUser.fuzzy_search = fuzzy;
         await defineTags([

@@ -279,6 +279,29 @@ describe('POST /api/tags/query', () => {
         expect((await query({ ...ask, ifHash: 7 })).status).toBe(400);
     });
 
+    describe.each([['indexed path', true], ['today\'s path', false]])('restCount, %s', (_, ready) => {
+        test('a full page with more after it answers how many match after it; others answer no rest', async () => {
+            await seed(mixedTags());
+            if (ready) await makeReady();
+            for (const sort of SORTS) {
+                for (const filter of [{}, { folders: true }, { contains: 'a', folders: true }, { used: true }]) {
+                    const want = expected(sort, filter);
+                    if (want.length < 4) continue;
+                    const page = await query({ sort: { field: sort }, filter, pageSize: 3, restCount: true });
+                    expect(page.body.rows.map(t => t.id)).toEqual(want.slice(0, 3));
+                    expect({ sort, filter, rest: page.body.rest }).toEqual({ sort, filter, rest: { count: want.length - 3, more: false } });
+                    const next = await query({ sort: { field: sort }, filter, pageSize: 3, cursor: page.body.cursor });
+                    expect(next.body.rows.map(t => t.id)).toEqual(want.slice(3, 6));
+
+                    const whole = await query({ sort: { field: sort }, filter, pageSize: want.length + 1, restCount: true });
+                    expect(whole.body).not.toHaveProperty('rest');
+                    expect((await query({ sort: { field: sort }, filter, pageSize: 3 })).body).not.toHaveProperty('rest');
+                }
+            }
+            expect((await query({ restCount: 'yes' })).status).toBe(400);
+        });
+    });
+
     describe.each([['indexed path', true], ['today\'s path', false]])('%s', (_, ready) => {
         test('every sort and filter pages through exactly the expected order, following cursors', async () => {
             await seed(mixedTags());
@@ -508,5 +531,12 @@ describe('POST /api/tags/query', () => {
             expect(all.ids).toHaveLength(5);
             expect(all.capped).toBeGreaterThan(0);
         }
+
+        // restCount stops counting at 10,000 and says there may be more.
+        const counted = await query({ sort: { field: 'manual' }, pageSize: 3, restCount: true });
+        expect(counted.body.rest).toEqual({ count: 10000, more: true });
+        // A page the work cap cut short counts nothing.
+        const cut = await query({ sort: { field: 'by_entries' }, filter: { folders: true }, pageSize: 50, restCount: true });
+        expect(cut.body).toEqual({ rows: [], cursor: expect.any(String), more: true });
     });
 });

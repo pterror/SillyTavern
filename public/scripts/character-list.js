@@ -6,7 +6,7 @@ import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { tags, filterByTagState, isBogusFolder, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, tagsStore } from './tags.js';
+import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, tagsStore, readFolderTileTags } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
@@ -359,7 +359,10 @@ export async function printCharacters(fullRefresh = false) {
             // Build into a detached fragment and append once - one reflow for the page instead of one per row.
             // Moving an attached node into the fragment detaches it from `list`, so replaceChildren() below is safe.
             const fragment = document.createDocumentFragment();
-            for (const i of data) {
+            const restBlock = getFolderTilesRestBlock();
+            const lastTileIndex = data.findLastIndex(i => i.type === 'tag');
+            if (restBlock && lastTileIndex === -1) fragment.appendChild(restBlock);
+            for (const [index, i] of data.entries()) {
                 switch (i.type) {
                     case 'character': {
                         const existingRow = existingCharacterRows.get(i.item.avatar);
@@ -376,6 +379,7 @@ export async function printCharacters(fullRefresh = false) {
                         break;
                     case 'tag':
                         fragment.appendChild(getTagBlock(i.item, i.entities, i.hidden, i.isUseless, i.total).get(0));
+                        if (restBlock && index === lastTileIndex) fragment.appendChild(restBlock);
                         break;
                 }
             }
@@ -721,8 +725,36 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
 }
 
 /**
+ * What the line under page 1's folder tiles says: the folder tags that got no tile (readFolderTileTags()'s `rest`),
+ * 'failed' when they couldn't be read, null for no line.
+ * @type {{ count: number, more: boolean } | 'failed' | null}
+ */
+let folderTilesRest = null;
+
+/**
+ * The line under the folder tiles, or null when none is due.
+ * @returns {HTMLElement | null}
+ */
+function getFolderTilesRestBlock() {
+    const rest = folderTilesRest;
+    if (rest === null) return null;
+    const block = document.createElement('div');
+    block.classList.add('text_muted', 'folder_tiles_rest');
+    if (rest === 'failed') {
+        block.textContent = t`Folders could not be loaded.`;
+    } else if (rest.count === 0) {
+        block.textContent = t`More folders may match. Search with more of a folder's name to find it.`;
+    } else {
+        const count = rest.more ? `${rest.count.toLocaleString()}+` : rest.count.toLocaleString();
+        block.textContent = t`${count} more folders have no tile here. Search for a folder's name to find it.`;
+    }
+    return block;
+}
+
+/**
  * The folder tiles on a page of the server-paged list. They all go at the top of page 1, so every other page has
- * none and asks for none.
+ * none and asks for none. At most FOLDER_TILE_TAGS_MAX folder tags are tried for a tile; the rest are counted for
+ * getFolderTilesRestBlock().
  *
  * Which folders get a tile: a folder the tag filter selects or excludes gets none,
  * none do while "Folders" is excluded, and with a search term only folders whose name matches it do, each whatever
@@ -738,16 +770,21 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
  * @returns {Promise<Entity[]>}
  */
 export async function getFolderTileEntities(page, filter, sort, listTotal) {
+    folderTilesRest = null;
     if (page !== 1 || !power_user.bogus_folders) return [];
     if (isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FOLDER), FILTER_STATES.EXCLUDED)) return [];
 
     const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
-    const folders = tags
-        .filter(tag => isBogusFolder(tag) && !tagFilterData.selected.includes(tag.id) && !tagFilterData.excluded.includes(tag.id))
-        .sort(compareTagsForSort)
-        .map(tag => tagToEntity(tag));
-    const candidates = entitiesFilter.tagSearchFilter(folders);
-    entitiesFilter.clearFuzzySearchCaches();
+    const folderTags = await readFolderTileTags({
+        contains: entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '',
+        skip: new Set([...tagFilterData.selected, ...tagFilterData.excluded]),
+    });
+    if (!folderTags) {
+        folderTilesRest = 'failed';
+        return [];
+    }
+    folderTilesRest = folderTags.rest;
+    const candidates = folderTags.tags.map(tag => tagToEntity(tag));
     if (!candidates.length) return [];
 
     const groupState = entitiesFilter.getFilterData(FILTER_TYPES.GROUP);

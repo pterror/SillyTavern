@@ -73,6 +73,7 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 }));
 jest.unstable_mockModule('../public/scripts/constants.js', () => ({ debounce_timeout: { quick: 100 } }));
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
+    readFolderTileTags: async () => ({ tags: [], rest: null }),
     tags: [],
     filterByTagState: noop,
     isBogusFolder: noop,

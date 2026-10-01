@@ -46,7 +46,7 @@ import {
     updateBindModelTemplatesState,
 } from './instruct-mode.js';
 
-import { getTagsList, tag_import_setting, tag_sort_mode, tags, getAssignedTagIds, refreshTagsDrawerUnderlayClip } from './tags.js';
+import { getTagsList, tag_import_setting, tag_sort_mode, tags, getAssignedTagIds, refreshTagsDrawerUnderlayClip, findUsedTagIdByName } from './tags.js';
 import { tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 
@@ -3163,36 +3163,6 @@ async function resetMovablePanels(type) {
 }
 
 /**
- * Finds the ID of the tag with the given name.
- * @param {string} name
- * @returns {string} The ID of the tag with the given name.
- */
-function findTagIdByName(name) {
-    const matchTypes = [
-        (a, b) => a === b,
-        (a, b) => a.startsWith(b),
-        (a, b) => a.includes(b),
-    ];
-
-    // Only get tags that are actually assigned to at least one entity
-    const liveTagIds = getAssignedTagIds();
-    const liveTags = tags.filter(x => liveTagIds.has(x.id));
-
-    const exactNameMatchIndex = liveTags.map(x => x.name.toLowerCase()).indexOf(name.toLowerCase());
-
-    if (exactNameMatchIndex !== -1) {
-        return liveTags[exactNameMatchIndex].id;
-    }
-
-    for (const matchType of matchTypes) {
-        const index = liveTags.findIndex(x => matchType(x.name.toLowerCase(), name.toLowerCase()));
-        if (index !== -1) {
-            return liveTags[index].id;
-        }
-    }
-}
-
-/**
  * Picks one random character, optionally tag-filtered, via the server's `ORDER BY RANDOM() LIMIT 1` - a
  * one-shot pick unrelated to the persisted seeded random-sort *list* ordering, so it goes straight through
  * `characterRepository.query()` instead of scanning `characters`/`groups`.
@@ -3202,7 +3172,7 @@ function findTagIdByName(name) {
 async function getRandomCharacterAvatar(tagName) {
     let tagId;
     if (tagName) {
-        tagId = findTagIdByName(tagName);
+        tagId = await findUsedTagIdByName(tagName);
         if (!tagId) {
             return undefined;
         }

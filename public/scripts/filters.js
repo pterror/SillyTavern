@@ -351,23 +351,6 @@ export class FilterHelper {
     }
 
     /**
-     * searchFilter()'s test for folder tag entities alone, which leaves characters and groups out of the pass.
-     * @param {any[]} data Tag entities.
-     * @returns {any[]} The ones whose tag name matches the search term, all of them with no term.
-     */
-    tagSearchFilter(data) {
-        const searchValue = this.filterData[FILTER_TYPES.SEARCH];
-        if (!searchValue) {
-            return data;
-        }
-        if (power_user.fuzzy_search) {
-            const matched = new Set(fuzzySearchTags(searchValue, this.fuzzySearchCaches).map(i => i.item.id));
-            return data.filter(entity => matched.has(entity.id));
-        }
-        return data.filter(entity => includesIgnoreCaseAndAccents(entity.item?.name, searchValue));
-    }
-
-    /**
      * Sets the filter data for the given filter type.
      * @param {string} filterType The filter type to set data for.
      * @param {any} data The data to set.
