@@ -45,6 +45,10 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
                 );
                 combinedResult.isRequired = namedResult.isRequired || unnamedResult.isRequired;
                 combinedResult.forceMatch = namedResult.forceMatch && unnamedResult.forceMatch;
+                const loaders = [namedResult.loadOptions, unnamedResult.loadOptions].filter(Boolean);
+                if (loaders.length > 0) {
+                    combinedResult.loadOptions = async (typed) => (await Promise.all(loaders.map(load => load(typed)))).flat();
+                }
                 return combinedResult;
             }
         }
@@ -102,7 +106,8 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
 
         if (name.includes('=') && cmdArg) {
             const enumList = cmdArg?.enumProvider?.(this.executor, this.scope) ?? cmdArg?.enumList;
-            if (cmdArg && enumList?.length) {
+            const loadOptions = this.getOptionLoader(cmdArg);
+            if (cmdArg && (enumList?.length || loadOptions)) {
                 if (isSelect && enumList.find(it => it.value == value) && argAssign && argAssign.end == index) {
                     return null;
                 }
@@ -114,6 +119,7 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
                 );
                 result.isRequired = true;
                 result.forceMatch = cmdArg.forceEnum;
+                result.loadOptions = loadOptions;
                 return result;
             }
         }
@@ -151,7 +157,7 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
                     cmdArg = this.executor.command.unnamedArgumentList.slice(-1)[0];
                 }
                 const enumList = cmdArg?.enumProvider?.(this.executor, this.scope) ?? cmdArg?.enumList;
-                if (cmdArg && enumList.length > 0) {
+                if (cmdArg && (enumList.length > 0 || this.getOptionLoader(cmdArg))) {
                     value = argAssign.value.toString().slice(0, index - argAssign.start);
                     start = argAssign.start;
                 } else {
@@ -170,7 +176,8 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
         }
 
         const enumList = cmdArg?.enumProvider?.(this.executor, this.scope) ?? cmdArg?.enumList;
-        if (cmdArg == null || enumList.length == 0) return null;
+        const loadOptions = this.getOptionLoader(cmdArg);
+        if (cmdArg == null || (enumList.length == 0 && !loadOptions)) return null;
 
         const result = new AutoCompleteSecondaryNameResult(
             value,
@@ -182,6 +189,19 @@ export class SlashCommandAutoCompleteNameResult extends AutoCompleteNameResult {
         const isSelectedValue = isSelect && isCompleteValue;
         result.isRequired = cmdArg.isRequired && !isSelectedValue;
         result.forceMatch = cmdArg.forceEnum;
+        result.loadOptions = loadOptions;
         return result;
+    }
+
+    /**
+     * The loader for options an argument's enum provider has to ask for with the typed text (an `enumSearchProvider`
+     * attached to the provider function), or null when it has none.
+     * @param {import('./SlashCommandArgument.js').SlashCommandArgument} cmdArg
+     * @returns {((typed: string) => Promise<SlashCommandEnumAutoCompleteOption[]>)?}
+     */
+    getOptionLoader(cmdArg) {
+        const search = cmdArg?.enumProvider?.['enumSearchProvider'];
+        if (typeof search !== 'function') return null;
+        return async (typed) => (await search(typed)).map(it => SlashCommandEnumAutoCompleteOption.from(this.executor.command, it));
     }
 }

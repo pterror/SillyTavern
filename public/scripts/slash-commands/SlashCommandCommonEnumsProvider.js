@@ -122,6 +122,33 @@ export const enumIcons = {
     },
 };
 
+/** How many characters and groups one autocomplete search asks the server for. */
+const CHARACTER_SEARCH_LIMIT = 50;
+
+/**
+ * Searches the whole library on the server for characters and groups matching typed text, as autocomplete options.
+ * @param {('all' | 'character' | 'group')} mode - Which type to return
+ * @returns {(typed: string) => Promise<SlashCommandEnumValue[]>}
+ */
+function searchCharacterEnumValues(mode) {
+    return async (typed) => {
+        const search = String(typed ?? '').trim();
+        if (!search) return [];
+        // Imported when used: character-repository.js imports script.js, which imports this module.
+        const { characterRepository, normalizeQueryRow } = await import('../character-repository.js');
+        const filter = { search };
+        if (mode !== 'character') filter.includeGroups = true;
+        if (mode === 'group') filter.group = true;
+        const result = await characterRepository.query(filter, { field: 'search' }, 1, CHARACTER_SEARCH_LIMIT, ['rows']);
+        return (result.rows ?? []).map(row => {
+            const { type, item } = normalizeQueryRow(row);
+            return type === 'group'
+                ? new SlashCommandEnumValue(item.name, null, enumTypes.qr, enumIcons.group)
+                : new SlashCommandEnumValue(item.name, null, enumTypes.name, enumIcons.character);
+        });
+    };
+}
+
 /**
  * A collection of common enum providers
  *
@@ -197,12 +224,15 @@ export const commonEnumProviders = {
      * @param {('all' | 'character' | 'group')?} [mode='all'] - Which type to return
      * @returns {() => SlashCommandEnumValue[]}
      */
-    characters: (mode = 'all') => () => {
-        return [
+    characters: (mode = 'all') => {
+        const provider = () => [
             ...['all', 'character'].includes(mode) ? characters.map(char => new SlashCommandEnumValue(char.name, null, enumTypes.name, enumIcons.character)) : [],
             ...['all', 'group'].includes(mode) ? groups.map(group => new SlashCommandEnumValue(group.name, null, enumTypes.qr, enumIcons.group)) : [],
             ...(name2 === neutralCharacterName) ? [new SlashCommandEnumValue(neutralCharacterName, null, enumTypes.name, '🥸')] : [],
         ];
+        // The list above covers only what the page holds; the autocomplete also asks the server with what was typed.
+        provider.enumSearchProvider = searchCharacterEnumValues(mode);
+        return provider;
     },
 
     /**

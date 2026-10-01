@@ -3275,22 +3275,25 @@ function initCharacterFilterSelect2Helper(characterFilter) {
                 let aborted = false;
 
                 // Tags first (few, always relevant). Typing the "[Tag] " the options show still finds them.
-                searchTagsByName(query.replace(/^\[tag\]\s*/, ''), { pageSize: MAX_RESULTS }).then((page) => {
+                const tagSearch = searchTagsByName(query.replace(/^\[tag\]\s*/, ''), { pageSize: MAX_RESULTS });
+                // Characters come from the server's search over the whole library, not from what the page holds.
+                const characterSearch = characterRepository.query({ search: query }, { field: 'search' }, 1, MAX_RESULTS, ['rows'])
+                    .catch((error) => {
+                        console.error('Character search for the lorebook entry filter failed:', error);
+                        return null;
+                    });
+                Promise.all([tagSearch, characterSearch]).then(([page, characterPage]) => {
                     if (aborted) return;
-                    if (!page) {
+                    if (!page || !characterPage) {
                         failure();
                         return;
                     }
                     const results = page.rows.map((tag) => ({ id: tag.id, text: `[Tag] ${tag.name}` }));
 
-                    // Characters (large set, capped)
-                    const characters = getContext().characters;
-                    for (const character of characters) {
+                    for (const character of characterPage.rows ?? []) {
                         if (results.length >= MAX_RESULTS) break;
-                        const name = character.avatar.replace(/\.[^/.]+$/, '') ?? character.name;
-                        if (name.toLowerCase().includes(query)) {
-                            results.push({ id: name, text: name });
-                        }
+                        const name = character.avatar.replace(/\.[^/.]+$/, '');
+                        results.push({ id: name, text: name });
                     }
 
                     success({ results });

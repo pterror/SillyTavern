@@ -360,6 +360,24 @@ export class AutoComplete {
             }
         }
 
+        const loadOptions = this.isReplaceable ? this.effectiveParserResult['loadOptions'] : null;
+        if (typeof loadOptions === 'function') {
+            const text = this.text;
+            const cursor = this.textarea.selectionStart;
+            let loaded = [];
+            try {
+                loaded = await loadOptions(this.name);
+            } catch (error) {
+                console.warn('Autocomplete options could not be loaded:', error);
+            }
+            // Typed further (or moved) while waiting: the newer show() answers for the text as it is now.
+            if (this.textarea.value !== text || this.textarea.selectionStart !== cursor) return;
+            const list = this.effectiveParserResult.optionList;
+            for (const option of loaded) {
+                if (!list.some(it => it.value == option.value)) list.push(option);
+            }
+        }
+
         if (this.matchType == 'fuzzy') {
             // only build the fuzzy regex if match type is set to fuzzy
             this.fuzzyRegex = new RegExp(`^(.*?)${this.name.split('').map(char => `(${escapeRegex(char)})`).join('(.*?)')}(.*?)$`, 'i');
