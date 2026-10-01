@@ -2,7 +2,7 @@ import { cancelTtsPlay, getCurrentChatId, isStreamingEnabled, name2, saveSetting
 import { charactersStore } from '../../character-store.js';
 import { eventSource, event_types } from '../../events.js';
 import { ModuleWorkerWrapper, extension_settings, getContext, renderExtensionTemplateAsync } from '../../extensions.js';
-import { delay, escapeRegex, getBase64Async, getStringHash, onlyUnique, regexFromString } from '../../utils.js';
+import { delay, escapeRegex, findCharAsync, getBase64Async, getStringHash, onlyUnique, regexFromString } from '../../utils.js';
 import { accountStorage } from '../../util/AccountStorage.js';
 import { EdgeTtsProvider } from './edge.js';
 import { ElevenLabsTtsProvider } from './elevenlabs.js';
@@ -185,9 +185,14 @@ async function onNarrateText(args, text) {
     const baseName = args?.voice || name2;
     const name = (baseName === 'SillyTavern System' ? DEFAULT_VOICE_MARKER : baseName) || DEFAULT_VOICE_MARKER;
 
-    const voiceMapEntry = voiceMap[name] === DEFAULT_VOICE_MARKER
+    let voiceMapEntry = voiceMap[name] === DEFAULT_VOICE_MARKER
         ? voiceMap[DEFAULT_VOICE_MARKER]
         : voiceMap[name];
+
+    // Any character without a voice set speaks with the default voice, listed in the map or not.
+    if (voiceMapEntry === undefined && await findCharAsync({ name, allowAvatar: false, insensitive: false, preferCurrentChar: false, quiet: true })) {
+        voiceMapEntry = voiceMap[DEFAULT_VOICE_MARKER];
+    }
 
     if (voiceMapEntry === DISABLED_VOICE_MARKER) {
         toastr.info(`TTS voice for ${name} is disabled.`);
@@ -1289,11 +1294,39 @@ export function getCharacters(unrestricted) {
     const context = getContext();
 
     if (unrestricted) {
-        const names = context.characters.map(char => char.name);
-        names.unshift(DEFAULT_VOICE_MARKER);
+        // Every name with a voice set, beside the current chat's: a name with none set answers the default voice
+        // whether listed or not, so the whole library isn't needed to answer any name.
+        const names = [DEFAULT_VOICE_MARKER, ...getCurrentChatNames(context), ...Object.keys(getSavedVoiceMap())];
         return names.filter(onlyUnique);
     }
 
+    let characters = getCurrentChatNames(context);
+
+    // If multi-voice is enabled, expand characters to include segment types
+    if (extension_settings.tts.multi_voice_enabled) {
+        const expandedCharacters = [];
+        for (const char of characters) {
+            if (char === DEFAULT_VOICE_MARKER || char === 'SillyTavern System') {
+                expandedCharacters.push(char);
+            } else {
+                expandedCharacters.push(`${char} ("Quotes")`);
+                expandedCharacters.push(`${char} (*Text inside asterisks*)`);
+                expandedCharacters.push(`${char} (Other text)`);
+            }
+        }
+        return expandedCharacters;
+    }
+
+    return characters;
+}
+
+/**
+ * The default voice marker and the names speaking in the current chat: the user, and the character or the group's
+ * members.
+ * @param {ReturnType<typeof getContext>} context
+ * @returns {string[]}
+ */
+function getCurrentChatNames(context) {
     let characters = [];
     if (context.groupId === null) {
         // Single char chat
@@ -1312,24 +1345,22 @@ export function getCharacters(unrestricted) {
             }
         }
     }
-    characters = characters.filter(onlyUnique);
+    return characters.filter(onlyUnique);
+}
 
-    // If multi-voice is enabled, expand characters to include segment types
-    if (extension_settings.tts.multi_voice_enabled) {
-        const expandedCharacters = [];
-        for (const char of characters) {
-            if (char === DEFAULT_VOICE_MARKER || char === 'SillyTavern System') {
-                expandedCharacters.push(char);
-            } else {
-                expandedCharacters.push(`${char} ("Quotes")`);
-                expandedCharacters.push(`${char} (*Text inside asterisks*)`);
-                expandedCharacters.push(`${char} (Other text)`);
-            }
-        }
-        return expandedCharacters;
+/**
+ * The voice map saved in the current provider's settings, in either of its stored representations.
+ * @returns {Record<string, string>}
+ */
+function getSavedVoiceMap() {
+    const saved = extension_settings.tts[ttsProviderName]?.voiceMap;
+    if (typeof saved === 'string') {
+        return parseVoiceMap(saved);
     }
-
-    return characters;
+    if (saved && typeof saved === 'object') {
+        return saved;
+    }
+    return {};
 }
 
 export function sanitizeId(input) {
@@ -1487,17 +1518,7 @@ async function initVoiceMapInternal(unrestricted) {
     // Get characters in current chat
     const characters = getCharacters(unrestricted);
 
-    // Get saved voicemap from provider settings, handling new and old representations
-    let voiceMapFromSettings = {};
-    if ('voiceMap' in extension_settings.tts[ttsProviderName]) {
-        // Handle previous representation
-        if (typeof extension_settings.tts[ttsProviderName].voiceMap === 'string') {
-            voiceMapFromSettings = parseVoiceMap(extension_settings.tts[ttsProviderName].voiceMap);
-            // Handle new representation
-        } else if (typeof extension_settings.tts[ttsProviderName].voiceMap === 'object') {
-            voiceMapFromSettings = extension_settings.tts[ttsProviderName].voiceMap;
-        }
-    }
+    const voiceMapFromSettings = getSavedVoiceMap();
 
     // Get voiceIds from provider
     let voiceIdsFromProvider;
