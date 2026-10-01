@@ -879,7 +879,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
 // `world` has no equivalent: no field for it exists in the tantivy schema (buildSchema()'s fast/filter field
 // lists), so it isn't applied here and a caller has to check it itself.
 // `position` is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
-async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}) {
+async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}, { offset } = {}) {
     const { fav, tags, excludeIds, ids } = filter;
     const engine = await timePhase('chars_index_get', () => resolveSearchEngine());
 
@@ -928,9 +928,11 @@ async function runIdSearch(handle, directories, searchTerm, maxRows, filter = {}
     if (!query) {
         return { hits: [], total: 0, backend: 'tantivy', position };
     }
-    // With the tags left to SQL, a capped list could be filled with hits the tags rule out, so every match is returned.
-    const boundedMaxRows = !tagsLeftToSql && Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
-    const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'chars' });
+    // With the tags left to SQL, a capped list could be filled with hits the tags rule out, so every match is returned,
+    // unless the caller asked for one window of the ranking (`offset`), which it checks against the tags itself.
+    const windowed = Number.isFinite(offset);
+    const boundedMaxRows = (windowed || !tagsLeftToSql) && Number.isFinite(maxRows) && maxRows > 0 ? maxRows : undefined;
+    const { results, total } = runTantivySearch(tantivyIndex.index, query, boundedMaxRows, { timingLabel: 'chars', ...(windowed ? { offset } : {}) });
     return { hits: timePhase('chars_ids', () => results.map(r => ({ id: r.raw, score: r.score }))), total, backend: 'tantivy', position, tagsLeftToSql };
 }
 
@@ -953,6 +955,34 @@ export async function searchCharacters(handle, directories, searchTerm, maxRows,
 export async function searchCharacterIds(handle, directories, searchTerm, maxRows, filter = {}) {
     const { hits, total, backend, position, tagsLeftToSql = false } = await runIdSearch(handle, directories, searchTerm, maxRows, filter);
     return timePhase('chars_ids', () => ({ ids: hits.map(hit => hit.id), scoresById: new Map(hits.map(hit => [hit.id, hit.score])), total, backend, position, tagsLeftToSql }));
+}
+
+/**
+ * One window of the matches in relevance order: ranks [offset, offset + count). fav, ids and excludeIds are applied
+ * by the index; tags too unless searchIndexTagFilter() leaves them to SQL (`tagsLeftToSql`), in which case the caller
+ * checks each window against them. `total` counts what the index matched, before any tags it left to SQL.
+ * @param {string} handle
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} searchTerm
+ * @param {number} offset
+ * @param {number} count
+ * @param {{ fav?: boolean, tags?: object, excludeIds?: string[], ids?: string[] }} [filter]
+ */
+export async function searchCharacterIdsWindow(handle, directories, searchTerm, offset, count, filter = {}) {
+    const { hits, total, backend, position, tagsLeftToSql = false } = await runIdSearch(handle, directories, searchTerm, count, filter, { offset });
+    return { hits, total, backend, position, tagsLeftToSql };
+}
+
+/**
+ * Whether the search indexes can't take this tag filter (searchIndexTagFilter()'s leftToSql), so a search with it
+ * must check its matches against the tags in SQL.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {object | undefined} tags
+ * @returns {Promise<boolean>}
+ */
+export async function searchTagsLeftToSql(directories, tags) {
+    if (!tags) return false;
+    return searchIndexTagFilter(tags, await getTagDeletions(directories)).leftToSql;
 }
 
 // fav_name_sort_key is encoded so ascending order gives favorites-first-then-alpha, whatever order was asked for.

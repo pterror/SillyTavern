@@ -10385,31 +10385,6 @@ function readCountSample(db, kind, tagId, merged, size, share, random, ids) {
     return false;
 }
 
-/** Ids filterCharacterIdsByTags() checks per statement. */
-const TAG_CHECK_ID_CHUNK = 1000;
-
-/**
- * The characters among `ids` that a /query tag filter keeps, in `ids`' order. Each chunk of ids is checked by primary
- * key, with marked tags matched in the query. For a search whose tag filter the index couldn't take
- * (searchIndexTagFilter()'s leftToSql), so its ranked ids can be paged after the filter rather than before.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {string[]} ids
- * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} tags
- * @returns {Promise<string[] | null>} null when the store can't be opened.
- */
-export async function filterCharacterIdsByTags(directories, ids, tags) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    const deletions = readTagDeletionsSync(entry.db);
-    /** @type {Set<string>} */
-    const kept = new Set();
-    for (let i = 0; i < ids.length; i += TAG_CHECK_ID_CHUNK) {
-        const { from, where, args } = buildWhereClause({ tags, ids: ids.slice(i, i + TAG_CHECK_ID_CHUNK) }, deletions);
-        for (const row of /** @type {Iterable<{ id: string }>} */ (entry.db.iterate(`SELECT id FROM ${from} ${where}`, args))) kept.add(row.id);
-    }
-    return ids.filter(id => kept.has(id));
-}
-
 /**
  * Browse/sort/filter query backing `POST /api/characters/query`, entirely SQLite-backed.
  * @param {import('./users.js').UserDirectoryList} directories

@@ -76,8 +76,9 @@ const SEARCH_BACKEND_CODES = { tantivy: 1, native: 2, wasm: 3, unavailable: 4 };
  * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], searchBackend?:string}} params
  * @returns {ArrayBuffer}
  */
-function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBackend }) {
+function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBackend, more = false, cursor }) {
     const hasTotal = typeof total === 'number';
+    const cursorBytes = cursor ? Buffer.byteLength(cursor, 'utf8') : 0;
     const searchBackendCode = SEARCH_BACKEND_CODES[searchBackend] ?? 0;
 
     let totalSize = 1 + 1 + 8 + 8 + 2;
@@ -88,11 +89,12 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
     }
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
     totalSize += 2 + tokenBytes;
+    if (cursor) totalSize += 2 + cursorBytes;
 
     const buf = Buffer.alloc(totalSize);
     let offset = 0;
 
-    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0);
+    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (cursor ? 0b1000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
     buf.writeUInt8(searchBackendCode, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
@@ -128,6 +130,10 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, searchBac
     buf.writeUInt16LE(tokenBytes, offset); offset += 2;
     if (tokenBytes > 0) {
         buf.write(token, offset, tokenBytes, 'utf8'); offset += tokenBytes;
+    }
+    if (cursor) {
+        buf.writeUInt16LE(cursorBytes, offset); offset += 2;
+        buf.write(cursor, offset, cursorBytes, 'utf8'); offset += cursorBytes;
     }
 
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
@@ -176,8 +182,8 @@ function addGroup(group) {
  * The next /query answer: `ids` in server order, each a character or group fixture id. With `unchanged`, the
  * answer is the server's JSON `{seq, token, unchanged: true}` stub instead.
  */
-function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, searchBackend = undefined, unchanged = false }) {
-    server.queryResponses.push({ ids, total, approxTotal, seq, token, searchBackend, unchanged });
+function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, searchBackend = undefined, unchanged = false, more = false, cursor = undefined }) {
+    server.queryResponses.push({ ids, total, approxTotal, seq, token, searchBackend, unchanged, more, cursor });
 }
 
 function jsonResponse(data) {
@@ -211,7 +217,7 @@ async function fakeFetch(url, init) {
         }
         const buffer = encodeQueryHashes({
             seq: next.seq, token: next.token, total: next.total, approxTotal: next.approxTotal, searchBackend: next.searchBackend,
-            hashRows: next.ids.map(hashRowFor),
+            hashRows: next.ids.map(hashRowFor), more: next.more, cursor: next.cursor,
         });
         return {
             ok: true,
@@ -506,6 +512,37 @@ describe('query()', () => {
         expect(JSON.parse(init.body)).toEqual({
             filter, sort, page: 2, pageSize: 50, want: ['hashes', 'total'],
         });
+    });
+
+    test('a page the server stopped short at its work cap is filled by following its cursor, one request at a time', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        const [a, b, c] = ['a', 'b', 'c'].map(avatar => addCharacter({ avatar, name: avatar.toUpperCase() }));
+        queueQuery({ ids: ['a'], total: 40, approxTotal: true, seq: 1, more: true, cursor: 'k1' });
+        queueQuery({ ids: [], seq: 1, more: true, cursor: 'k2' });
+        queueQuery({ ids: ['b', 'c'], total: 3, seq: 2, cursor: 'k3' });
+
+        const result = await repo.query({ search: 'x', tags: { include: ['t'] } }, { field: 'name', order: 'asc' }, 1, 3, ['rows', 'total']);
+
+        expect(result.rows).toEqual([a, b, c].map(hashModeCharacter));
+        expect(result.total).toBe(3);
+        expect(result.cursor).toBe('k3');
+        expect(result).not.toHaveProperty('more');
+        const bodies = global.fetch.mock.calls.filter(([url]) => url === '/api/characters/query').map(([, init]) => JSON.parse(init.body));
+        expect(bodies.map(body => [body.cursor, body.pageSize])).toEqual([[undefined, 3], ['k1', 2], ['k2', 2]]);
+    });
+
+    test('the next page carries on from the cursor the last page ended at', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        addCharacter({ avatar: 'a', name: 'A' });
+        addCharacter({ avatar: 'b', name: 'B' });
+        queueQuery({ ids: ['a'], seq: 1, cursor: 'end-of-1' });
+        queueQuery({ ids: ['b'], seq: 1 });
+
+        await repo.query({ search: 'x' }, { field: 'name', order: 'asc' }, 1, 1, ['rows']);
+        await repo.query({ search: 'x' }, { field: 'name', order: 'asc' }, 2, 1, ['rows']);
+
+        const bodies = global.fetch.mock.calls.filter(([url]) => url === '/api/characters/query').map(([, init]) => JSON.parse(init.body));
+        expect(bodies.map(body => [body.page, body.cursor])).toEqual([[1, undefined], [2, 'end-of-1']]);
     });
 
     test('passes an approximate (~-prefixed) total through unchanged, never coercing it to a number', async () => {
