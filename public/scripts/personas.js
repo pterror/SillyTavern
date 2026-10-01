@@ -19,7 +19,8 @@ import { characterToEntity, groupToEntity } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore } from './character-store.js';
+import { charactersStore, resolveCharacterRef } from './character-store.js';
+import { characterRepository } from './character-repository.js';
 import { eventSource, event_types } from './events.js';
 import { power_user, personaStore, defaultPersonaRecord } from './power-user.js';
 import { getTokenCountWithAnswer } from './tokenizers.js';
@@ -599,11 +600,15 @@ export async function initPersona(avatarId, personaName, personaDescription, per
  * The function creates a new persona with the same name as the character, and sets the persona description to the character description with the macros swapped.
  * The function also saves the settings and refreshes the persona selector.
  *
- * @param {string} [avatar] - The avatar of the character to convert to a persona. Defaults to the current character.
+ * @param {string|number} [characterId] - An index into `getContext().characters` (upstream's form), or a character's
+ * avatar key, which may be one the page doesn't hold. Defaults to the current character.
  * @returns {Promise<boolean>} A promise that resolves to true if the character was converted, false otherwise.
  */
-export async function convertCharacterToPersona(avatar = null) {
-    const character = null === avatar ? getCurrentCharacter() : charactersStore.get(avatar);
+export async function convertCharacterToPersona(characterId = null) {
+    const ref = characterId === null ? getCurrentCharacter() : resolveCharacterRef(characterId);
+    const avatar = ref?.avatar ?? (typeof characterId === 'string' ? characterId : undefined);
+    // The full card, since a held copy can be shallow and lack the description.
+    const character = avatar ? await characterRepository.full(avatar) : undefined;
 
     const avatarUrl = character?.avatar;
     if (!avatarUrl) {

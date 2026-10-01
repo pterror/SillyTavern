@@ -455,14 +455,14 @@ function getIndexOfLatestChatSummary(chat) {
 
 /**
  * Check if something is changed during the summarization process.
- * @param {{ groupId: any; chatId: any; characterId: any; }} context
+ * @param {{ groupId: any; chatId: any; characterAvatar: any; }} context
  * @returns {boolean} True if the context has changed and the summary should be discarded
  */
 function isContextChanged(context) {
     const newContext = getContext();
     if (newContext.groupId !== context.groupId
         || newContext.chatId !== context.chatId
-        || (!newContext.groupId && (newContext.characterId !== context.characterId))) {
+        || (!newContext.groupId && (newContext.characterAvatar !== context.characterAvatar))) {
         console.log('Context changed, summary discarded');
         return true;
     }

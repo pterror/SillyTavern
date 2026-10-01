@@ -3273,13 +3273,14 @@ export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
  * @prop {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
  * @prop {number} [responseLength] Maximum response length. If unset, the global default value is used.
  * @prop {number} [forceChId] Character ID to use for this generation run. Works in groups only.
+ * @prop {string} [forceAvatar] Avatar key of the character to use for this generation run, instead of `forceChId`. Works in groups only.
  * @prop {object} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
  * @prop {boolean} [removeReasoning] Parses and removes the reasoning block according to reasoning format preferences
  * @prop {boolean} [trimToSentence] Whether to trim the response to the last complete sentence
  * @param {GenerateQuietPromptParams} params Parameters for the quiet prompt generation
  * @returns {Promise<string>} Generated text. If using structured output, will contain a serialized JSON object.
  */
-export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = false, skipWIAN = false, quietImage = null, quietName = null, responseLength = null, forceChId = null, jsonSchema = null, removeReasoning = true, trimToSentence = false } = {}) {
+export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = false, skipWIAN = false, quietImage = null, quietName = null, responseLength = null, forceChId = null, forceAvatar = null, jsonSchema = null, removeReasoning = true, trimToSentence = false } = {}) {
     if (arguments.length > 0 && typeof arguments[0] !== 'object') {
         console.trace('generateQuietPrompt called with positional arguments. Please use an object instead.');
         [quietPrompt, quietToLoud, skipWIAN, quietImage, quietName, responseLength, forceChId, jsonSchema] = arguments;
@@ -3297,7 +3298,7 @@ export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = fals
             quietImage: quietImage ?? null,
             quietName: quietName ?? null,
             // forceChId (legacy numeric id) translated to an avatar here, so everything downstream is avatar-shaped.
-            force_avatar: (forceChId !== null && forceChId !== undefined) ? characters[forceChId]?.avatar ?? null : null,
+            force_avatar: forceAvatar ?? ((forceChId !== null && forceChId !== undefined) ? characters[forceChId]?.avatar ?? null : null),
             jsonSchema: jsonSchema ?? null,
         };
         if (responseLengthCustomized) {
