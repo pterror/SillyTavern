@@ -920,32 +920,94 @@ function finalizeFetchedCharacter(character) {
     character.chat = character.chat ? String(character.chat) : '';
 }
 
+/**
+ * What one sync learned, kept across retries: a failed attempt has already moved the cursor past the pages it
+ * applied, so their updates are only ever seen once.
+ * @typedef {object} DeltaProgress
+ * @property {Map<string, object|null>} updates Each character the sync touched, as the cache now holds it; `null`
+ *   when the cache has no record of it (deleted, or its fetch or write failed).
+ * @property {boolean} changed Whether the sync saw any change at all.
+ * @property {boolean} full Whether the cache was wiped and rebuilt, so a character absent from `updates` is gone.
+ */
+
+/**
+ * The change-feed position this tab's `characters` is current through. The cache and its cursor are shared by
+ * every tab of this user, so another tab can move the cursor past changes this tab has not taken in yet.
+ */
+let memorySeq = 0;
+
+/**
+ * @param {number} sinceSeq
+ * @returns {Promise<{seq: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean, hasMore: boolean}>}
+ */
+async function fetchChangesPage(sinceSeq) {
+    const changesResponse = await fetch('/api/characters/changes', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ sinceSeq }),
+        signal: AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS),
+    });
+    if (!changesResponse.ok) {
+        throw new Error(`Failed to fetch character changes: ${changesResponse.statusText}`);
+    }
+    return changesResponse.json();
+}
+
+/**
+ * Takes in what another tab already wrote to the cache between this tab's `memorySeq` and the shared cursor:
+ * the ids come from the change feed, the records from the cache.
+ * @param {DeltaProgress} progress
+ * @param {number} cursor The shared cursor.
+ */
+async function catchUpFromCache(progress, cursor) {
+    let sinceSeq = memorySeq;
+    while (sinceSeq < cursor) {
+        const { seq, changes, truncated, hasMore } = await fetchChangesPage(sinceSeq);
+        if (truncated) {
+            // The feed no longer reaches back to this tab's position: only the whole cache can say what changed.
+            const allCached = await getAllCachedCharacters();
+            progress.updates = new Map(allCached);
+            progress.full = true;
+            progress.changed = true;
+            memorySeq = cursor;
+            return;
+        }
+        const ids = [...new Set(changes.map(change => change.id))];
+        const stored = await readCachedCharactersByIds(ids);
+        for (const id of ids) {
+            progress.updates.set(id, stored.get(id) ?? null);
+        }
+        if (ids.length > 0) {
+            progress.changed = true;
+        }
+        memorySeq = seq;
+        if (!hasMore) {
+            break;
+        }
+        sinceSeq = seq;
+    }
+}
+
 // Syncs via the change-feed against the local cache instead of a full-library dump; no full-fetch fallback on failure since that dump can be multi-hundred-MB.
 // The server pages /changes; each page is applied and saved, then its cursor persisted, so an interrupted sync resumes at the last fully applied page.
-async function fetchCharactersDelta() {
-    let changed = false;
+/** @param {DeltaProgress} progress Filled in as each page is applied. */
+async function fetchCharactersDelta(progress) {
     // Advanced in memory, not re-read per page: setCachedCursor() swallows write errors, and re-reading a
     // cursor that failed to persist would refetch the same page forever.
     let sinceSeq = await getCachedCursor();
+    if (memorySeq < sinceSeq) {
+        await catchUpFromCache(progress, sinceSeq);
+    }
     for (;;) {
-        const changesResponse = await fetch('/api/characters/changes', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ sinceSeq }),
-            signal: AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS),
-        });
-
-        if (!changesResponse.ok) {
-            throw new Error(`Failed to fetch character changes: ${changesResponse.statusText}`);
-        }
-
-        /** @type {{seq: number, changes: {id: string, op: 'upsert'|'delete', fields?: string[]|null}[], truncated: boolean, hasMore: boolean}} */
-        const { seq, changes, truncated, hasMore } = await changesResponse.json();
+        const { seq, changes, truncated, hasMore } = await fetchChangesPage(sinceSeq);
 
         if (truncated) {
             // sinceSeq predates the server's change log; wipe the cache and retry as a fresh full sync.
             await clearCharacterCache();
-            return fetchCharactersDelta();
+            progress.updates.clear();
+            progress.full = true;
+            memorySeq = 0;
+            return fetchCharactersDelta(progress);
         }
 
         const deleteIds = [];
@@ -1068,19 +1130,23 @@ async function fetchCharactersDelta() {
         await setWriteFailures(writeFailures);
         await setCachedCursor(seq);
 
+        // Read back from the cache rather than taken from `fresh`, so a character whose fetch or write failed is
+        // absent here exactly as it is on disk.
+        const touched = [...new Set([...deleteIds, ...wholeRecordIds, ...[...fieldGroupMap.values()].flatMap(group => group.ids)])];
+        const stored = await readCachedCharactersByIds(touched);
+        for (const id of touched) {
+            progress.updates.set(id, stored.get(id) ?? null);
+        }
+        memorySeq = Math.max(memorySeq, seq);
+
         if (changes.length > 0 || previousFailures.length > 0) {
-            changed = true;
+            progress.changed = true;
         }
         if (!hasMore) {
             break;
         }
         sinceSeq = seq;
     }
-
-    // Re-read rather than reconstruct in place, so a server-side failed character correctly stays absent.
-    const allCached = await getAllCachedCharacters();
-
-    return { list: Array.from(allCached.values()), changed };
 }
 
 // lodash merge() would merge arrays index-by-index; returning arrays as-is makes them replace wholesale instead.
@@ -1096,6 +1162,8 @@ export async function seedCharactersFromCache() {
     if (characters.length > 0) {
         return;
     }
+    // Read before the cache, so a change another tab writes in between is taken in again rather than missed.
+    memorySeq = await getCachedCursor();
     const cached = await getAllCachedCharacters();
     if (cached.size === 0) {
         return;
@@ -1140,16 +1208,56 @@ export async function getCharacters(options = {}) {
     }
 }
 
+/**
+ * Applies a sync's updates to `characters` in place. Callers re-index the store afterwards.
+ * @param {DeltaProgress} progress
+ * @param {number} fetchStamp From tagFetchStamp() before the sync, so tag ids a newer write superseded are dropped.
+ */
+function applyCharacterUpdates({ updates, full }, fetchStamp) {
+    const removed = new Set();
+    for (const [avatar, incoming] of updates) {
+        const existing = charactersStore.get(avatar);
+        if (!incoming) {
+            if (existing) removed.add(existing);
+            continue;
+        }
+        if (!existing) {
+            characters.push(incoming);
+            continue;
+        }
+        if (!isFetchedTagIdsCurrent(avatar, fetchStamp)) {
+            delete incoming.tag_ids;
+        }
+        // Merged field by field, since `incoming` can be a shallow projection missing heavy fields; and an
+        // unshallowed character is not downgraded back to shallow.
+        const wasUnshallowed = existing.shallow === false;
+        lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
+        if (wasUnshallowed && incoming.shallow === true) {
+            existing.shallow = false;
+        }
+    }
+    if (full) {
+        for (const character of characters) {
+            if (!updates.has(character.avatar)) removed.add(character);
+        }
+    }
+    if (removed.size > 0) {
+        let kept = 0;
+        for (const character of characters) {
+            if (!removed.has(character)) characters[kept++] = character;
+        }
+        characters.length = kept;
+    }
+}
+
 async function syncCharacters({ silent = false, silentGroups = false, skipPrint = false, keepListPosition = false } = {}) {
-    let newCharacters;
-    let charactersChanged = true;
     let lastError;
     const fetchStamp = tagFetchStamp();
+    /** @type {DeltaProgress} */
+    const progress = { updates: new Map(), changed: false, full: false };
     for (let attempt = 0; attempt <= DELTA_FETCH_MAX_RETRIES; attempt++) {
         try {
-            const delta = await fetchCharactersDelta();
-            newCharacters = delta.list;
-            charactersChanged = delta.changed;
+            await fetchCharactersDelta(progress);
             lastError = undefined;
             break;
         } catch (error) {
@@ -1162,50 +1270,23 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
         }
     }
 
+    // Pages a failed sync did apply moved the cursor past them, so they are applied here even on failure.
+    if (progress.changed) {
+        applyCharacterUpdates(progress, fetchStamp);
+        if (silent) {
+            charactersStore.reindex();
+        } else {
+            charactersStore.reset();
+        }
+    }
+
     if (lastError) {
         console.error(`Character delta fetch failed after ${DELTA_FETCH_MAX_RETRIES + 1} attempts, giving up (no full-library fallback - see getCharacters()' doc comment):`, lastError);
         showCharacterSyncFailedToast();
         return;
     }
 
-    if (newCharacters === undefined) {
-        return;
-    }
-
-    if (charactersChanged) {
-        // Merge field-by-field rather than a wholesale replace, since newCharacters can be a shallow projection missing heavy fields.
-        const newByAvatar = new Map(newCharacters.map(c => [c.avatar, c]));
-        for (const existing of characters) {
-            const incoming = newByAvatar.get(existing.avatar);
-            if (!incoming) continue;
-            if (!isFetchedTagIdsCurrent(existing.avatar, fetchStamp)) {
-                delete incoming.tag_ids;
-            }
-            // Don't let an incoming shallow projection downgrade an already-unshallowed entity back to shallow.
-            const wasUnshallowed = existing.shallow === false;
-            lodash.mergeWith(existing, incoming, mergeShallowCharacterCustomizer);
-            if (wasUnshallowed && incoming.shallow === true) {
-                existing.shallow = false;
-            }
-        }
-        for (let i = characters.length - 1; i >= 0; i--) {
-            if (!newByAvatar.has(characters[i].avatar)) {
-                characters.splice(i, 1);
-            }
-        }
-        const existingAvatars = new Set(characters.map(c => c.avatar));
-        for (const incoming of newCharacters) {
-            if (!existingAvatars.has(incoming.avatar)) {
-                characters.push(incoming);
-            }
-        }
-
-        if (silent) {
-            charactersStore.reindex();
-        } else {
-            charactersStore.reset();
-        }
-
+    if (progress.changed) {
         if (this_avatar) {
             if (charactersStore.get(this_avatar)) {
                 await selectCharacterByAvatar(this_avatar, { switchMenu: false });
@@ -1214,7 +1295,7 @@ async function syncCharacters({ silent = false, silentGroups = false, skipPrint 
                 return location.reload();
             }
         }
-    } // end if (charactersChanged)
+    }
 
     await getGroups({ silent: silentGroups });
     if (skipPrint) return;
