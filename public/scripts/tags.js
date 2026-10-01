@@ -3039,24 +3039,19 @@ export function redrawAfterTagChange(tagIds, affectedKeys, usageFlips = new Map(
  */
 function updateEntityRowTags(keys) {
     for (const key of keys) {
-        // Match character rows by data-avatar (the stable id) directly, rather than resolving a charIndex and
-        // matching data-chid - the row's data-chid was baked in at whatever time it last rendered, which can
-        // mismatch a freshly-computed index if the characters array reordered since.
-        const isCharacter = characters.some(c => c.avatar === key);
-        const $row = isCharacter
-            ? $(`#rm_print_characters_block .character_select[data-avatar="${CSS.escape(String(key))}"]`)
-            : $(`#rm_print_characters_block .group_select[data-grid="${CSS.escape(String(key))}"]`);
+        // A key is either a character's avatar or a group's id, and only rows of its own kind carry it, so both
+        // selectors can be tried without first asking which kind it is.
+        const escapedKey = CSS.escape(String(key));
+        const $row = $(`#rm_print_characters_block .character_select[data-avatar="${escapedKey}"], #rm_print_characters_block .group_select[data-grid="${escapedKey}"]`);
 
         if ($row.length) {
             printTagList($row.find('.tags'), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
         }
 
         // The group editor's member and candidate rows of the character.
-        if (isCharacter) {
-            $(`.group_member[data-avatar="${CSS.escape(String(key))}"] .tags`).each((_, element) => {
-                printTagList($(element), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
-            });
-        }
+        $(`.group_member[data-avatar="${escapedKey}"] .tags`).each((_, element) => {
+            printTagList($(element), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
+        });
     }
 }
 
