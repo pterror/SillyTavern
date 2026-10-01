@@ -37,13 +37,12 @@ async function selectCharacter(page, avatar) {
 
 /**
  * Records every CHARACTER_EDITED from here on as the avatar it carries, the id it carries, and the avatar of
- * the character that id indexes in `characters` at the time it fires.
+ * the character that id indexes in `getContext().characters` at the time it fires.
  * @param {import('@playwright/test').Page} page
  */
 async function recordCharacterEdited(page) {
     await page.evaluate(async () => {
         const { eventSource, event_types } = await import('./script.js');
-        const { characters } = await import('./scripts/character-store.js');
         // @ts-ignore
         window.__characterEdited = [];
         eventSource.on(event_types.CHARACTER_EDITED, (event) => {
@@ -52,7 +51,8 @@ async function recordCharacterEdited(page) {
             window.__characterEdited.push({
                 avatar: event?.detail?.character?.avatar,
                 id: id === undefined ? 'undefined' : String(id),
-                idAvatar: id === undefined ? 'undefined' : characters[id]?.avatar,
+                // @ts-ignore
+                idAvatar: id === undefined ? 'undefined' : SillyTavern.getContext().characters[id]?.avatar,
             });
         });
     });

@@ -116,7 +116,10 @@ async function withTagsModule(page, fn, arg) {
 
 /** @param {import('@playwright/test').Page} page @param {string} card @returns {Promise<string[]>} */
 async function residentTagsOf(page, card) {
-    return page.evaluate(card => [...window['SillyTavern'].getContext().characters.find(c => c.avatar === card).tag_ids].sort(), card);
+    return page.evaluate(async (card) => {
+        const { charactersStore } = await import('/scripts/character-store.js');
+        return [...charactersStore.get(card).tag_ids].sort();
+    }, card);
 }
 
 /** @param {import('@playwright/test').Page} page @param {string} id @returns {Promise<string | undefined>} */
@@ -171,6 +174,11 @@ test.describe('upstream tag exports', () => {
             return { seen, unseen, kept, from, to };
         });
         await loadApp(page);
+        // The current character is the one `tag_map` has an entry for.
+        await page.evaluate(async (to) => {
+            const { selectCharacterByAvatar } = await import('/script.js');
+            await selectCharacterByAvatar(to);
+        }, fixture.to);
         // Assigned after this page read the character, so its copy of the old key lacks it.
         await withOtherTab(browser, setup => api(setup, '/api/tags/assign', { id: fixture.from, tagId: fixture.unseen }));
         expect(await residentTagsOf(page, fixture.from)).toEqual([fixture.seen]);
@@ -191,8 +199,8 @@ test.describe('upstream tag exports', () => {
         expect(await serverTagsOf(page, fixture.from)).toEqual([]);
         await expect.poll(() => residentTagsOf(page, fixture.to)).toEqual([fixture.seen, fixture.unseen, fixture.kept].sort());
         expect(await residentTagsOf(page, fixture.from)).toEqual([]);
-        const mapped = await withTagsModule(page, 'return { from: [...tagsModule.tag_map[arg.from]], to: [...tagsModule.tag_map[arg.to]].sort() };', fixture);
-        expect(mapped).toEqual({ from: [], to: [fixture.seen, fixture.unseen, fixture.kept].sort() });
+        const mapped = await withTagsModule(page, 'return { from: tagsModule.tag_map[arg.from], to: [...tagsModule.tag_map[arg.to]].sort() };', fixture);
+        expect(mapped).toEqual({ from: undefined, to: [fixture.seen, fixture.unseen, fixture.kept].sort() });
         expect(writes).toEqual([`/api/tags/rename-key ${JSON.stringify({ from: fixture.from, to: fixture.to })}`]);
         await expect.poll(() => page.evaluate(() => window['__settingsUpdated'])).toBeGreaterThanOrEqual(1);
     });

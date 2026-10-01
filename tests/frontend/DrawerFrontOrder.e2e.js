@@ -329,7 +329,10 @@ async function createCharacter(page) {
     await openDrawer(page, 'char-info-panel');
     await page.locator('#character_name_pole').fill(name);
     await page.locator('#create_button').evaluate(el => el.click());
-    const findAvatar = () => page.evaluate(n => window['SillyTavern'].getContext().characters.find(c => c?.name === n)?.avatar, name);
+    const findAvatar = () => page.evaluate(async (n) => {
+        const { characters } = await import('/scripts/character-store.js');
+        return characters.find(c => c?.name === n)?.avatar;
+    }, name);
     await expect.poll(findAvatar).not.toBeUndefined();
     const avatar = await findAvatar();
     await resetDrawers(page);

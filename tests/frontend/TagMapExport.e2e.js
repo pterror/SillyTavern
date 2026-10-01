@@ -2,7 +2,8 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 // `tag_map` is an upstream export of tags.js that extensions import, read and write. Here it covers the
-// characters and groups the page holds, and a write to it reaches the server as assigns and unassigns. A key added
+// characters and groups extensions are shown (the current character, or the open group and its members), and a
+// write to it reaches the server as assigns and unassigns. A key added
 // or deleted is found when a settings save is asked for, which is what upstream's extensions do after a write.
 
 /** @param {import('@playwright/test').Page} page */
@@ -98,6 +99,20 @@ async function hideCharacter(page, avatar) {
 }
 
 /**
+ * Makes the character the current one, which is what gives it a `tag_map` entry.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
+async function selectCharacter(page, avatar) {
+    await page.evaluate(async (avatar) => {
+        const { selectCharacterByAvatar } = await import('/script.js');
+        await selectCharacterByAvatar(avatar);
+    }, avatar);
+    await expect.poll(() => page.evaluate(() => window['SillyTavern'].getContext().characterAvatar)).toBe(avatar);
+    await expect.poll(() => page.evaluate(avatar => Object.hasOwn((window['SillyTavern'].getContext().tagMap), avatar), avatar)).toBe(true);
+}
+
+/**
  * @param {import('@playwright/test').Page} page
  * @returns {string[]} every tag assignment write the page sends from now on, as `path body`
  */
@@ -131,7 +146,7 @@ const NO_WRITE_SETTLE_MS = 1500;
 test.describe('the tag_map export', () => {
     test.setTimeout(180000);
 
-    test('is one object, the same one context hands out, and reads what the page holds', async ({ browser, page }) => {
+    test('is one object, the same one context hands out, and has entries only for the characters extensions are shown', async ({ browser, page }) => {
         const stamp = Date.now();
         const fixture = await withSetupPage(browser, async (setup) => {
             const tag = await createTag(setup, `tagmap-read-${stamp}`);
@@ -141,6 +156,7 @@ test.describe('the tag_map export', () => {
             return { tag, tagged, untagged };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.tagged);
 
         const seen = await page.evaluate(async ({ tagged, untagged }) => {
             const { tag_map } = await import('/scripts/tags.js');
@@ -160,10 +176,10 @@ test.describe('the tag_map export', () => {
         expect(seen.same).toBe(true);
         expect(seen.tagged).toEqual([fixture.tag]);
         expect(seen.isArray).toBe(true);
-        expect(seen.untagged).toEqual([]);
+        // Held by the page, but not the current character: extensions are not shown it.
+        expect(seen.untagged).toBeUndefined();
         expect(seen.missing).toBeUndefined();
-        expect(seen.keys).toContain(fixture.tagged);
-        expect(seen.keys).toContain(fixture.untagged);
+        expect(seen.keys).toEqual([fixture.tagged]);
         expect(seen.entry).toEqual([fixture.tag]);
         expect(seen.json).toEqual([fixture.tag]);
     });
@@ -189,6 +205,7 @@ test.describe('the tag_map export', () => {
             return { had, pushed, card };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card);
         const writes = recordWrites(page);
 
         await withTagMap(page, `
@@ -211,6 +228,7 @@ test.describe('the tag_map export', () => {
             return { pushed, card };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card);
 
         await page.evaluate(async ({ card, pushed }) => {
             const { tag_map } = await import('/scripts/tags.js');
@@ -235,6 +253,7 @@ test.describe('the tag_map export', () => {
             return { stays, goes, card };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card);
         const writes = recordWrites(page);
 
         await withTagMap(page, 'tag_map[arg.card] = tag_map[arg.card].filter(id => id !== arg.goes);', fixture);
@@ -278,6 +297,7 @@ test.describe('the tag_map export', () => {
             return { stays, goes, comes, card };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card);
         const writes = recordWrites(page);
 
         await withTagMap(page, `
@@ -301,6 +321,7 @@ test.describe('the tag_map export', () => {
             return { pushed, card };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card);
         const writes = recordWrites(page);
 
         await page.evaluate(async ({ card, pushed }) => {
@@ -316,7 +337,7 @@ test.describe('the tag_map export', () => {
         expect(writes).toEqual([`/api/tags/assign ${JSON.stringify({ id: fixture.card, tagId: fixture.pushed })}`]);
     });
 
-    test('deleting an entry the page holds unassigns its tags', async ({ browser, page }) => {
+    test('deleting the current character\'s entry unassigns its tags', async ({ browser, page }) => {
         const stamp = Date.now();
         const fixture = await withSetupPage(browser, async (setup) => {
             const tag = await createTag(setup, `tagmap-delete-${stamp}`);
@@ -325,11 +346,12 @@ test.describe('the tag_map export', () => {
             return { tag, card };
         });
         await loadApp(page);
+        await selectCharacter(page, fixture.card);
 
         await withTagMap(page, 'delete tag_map[arg.card]; saveSettingsDebounced();', fixture);
 
         await expect.poll(() => serverTagsOf(page, fixture.card)).toEqual([]);
-        // The page still holds the character, so it has an entry again.
+        // It is still the current character, so it has an entry again.
         expect(await withTagMap(page, 'return tag_map[arg.card];', fixture)).toEqual([]);
     });
 

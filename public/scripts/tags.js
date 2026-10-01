@@ -10,7 +10,7 @@ import {
 import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, setFilterDataFromUser } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
-import { characters, charactersStore } from './character-store.js';
+import { characters, charactersStore, exposedCharacters, exposedGroups, onExposedEntitiesChange } from './character-store.js';
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';
 
 import { groupCandidatesFilter, groupMembersFilter, selected_group } from './group-chats.js';
@@ -830,15 +830,16 @@ function decrementTagUsage(tagId) {
 
 /**
  * Upstream's export of the same name: entity key to tag ids. A plain object of plain arrays like upstream's, so it
- * can be cloned, posted to a worker or put in IndexedDB. Here it has an entry for each character and group the page
- * holds and none for the rest of the library. Each of those entries is a getter and setter handing out the
- * entity's own tag id array.
+ * can be cloned, posted to a worker or put in IndexedDB. Here it has an entry only for the characters and groups
+ * extensions are shown (the current character, or the open group and its members: see exposedTagKeys()). Each of
+ * those entries is a getter and setter handing out the entity's own tag id array.
  *
  * Extensions change it directly. Reading or assigning an entry is noticed, and what changed in the arrays handed
  * out is sent once the code that did it has finished its turn. A plain object can't report a key being added or
  * deleted; those are found when a settings save is asked for, which is how upstream's extensions get `tag_map`
- * stored, and whenever the characters or groups the page holds change. A change goes to the server as one assign
- * or unassign per tag id that actually changed.
+ * stored, and whenever the characters or groups shown change. A key the extension was given no entry for only ever
+ * adds tags, since the extension never saw what that entity has. A change goes to the server as one assign or
+ * unassign per tag id that actually changed.
  * @type {{[key: string]: string[]}}
  */
 const tag_map = {};
@@ -898,6 +899,19 @@ export function noteTagExportsMayHaveChanged() {
 onAnyEntityStoreChange(store => {
     if (store !== tagsStore) queueTagExportTakeIn(true);
 });
+onExposedEntitiesChange(() => queueTagExportTakeIn(true));
+
+/**
+ * The keys `tag_map` has an entry for: the characters and groups extensions are shown (D17), the same ones
+ * `getContext().characters` and `groups` hold.
+ * @returns {string[]}
+ */
+function exposedTagKeys() {
+    return [
+        ...exposedCharacters.map(character => character.avatar).filter(Boolean),
+        ...exposedGroups.map(group => String(group.id)).filter(Boolean),
+    ];
+}
 
 function takeInTagExportWrites() {
     tagExportTakeInQueued = false;
@@ -1017,13 +1031,13 @@ function takeInTagMapKeys() {
         if (!Object.hasOwn(tag_map, key)) unheldTagMapSent.delete(key);
     }
 
-    const heldKeys = new Set();
-    for (const [key] of allTagIdsEntries()) {
-        heldKeys.add(key);
+    const exposedKeys = new Set();
+    for (const key of exposedTagKeys()) {
+        exposedKeys.add(key);
         if (!tagMapEntryGetters.has(key)) defineTagMapEntry(key);
     }
     for (const key of [...tagMapEntryGetters.keys()]) {
-        if (heldKeys.has(key)) continue;
+        if (exposedKeys.has(key)) continue;
         delete tag_map[key];
         tagMapEntryGetters.delete(key);
     }
@@ -1656,6 +1670,21 @@ async function postTagQuery(body) {
         console.error('Error reading a page of tags:', error);
         return null;
     }
+}
+
+/**
+ * For extensions: one page of the whole tag list from the server, since `tags` and `tag_map` are partial. The body is /api/tags/query's (sort mode, filter, page size,
+ * `cursor` from the previous answer).
+ * @param {object} query
+ * @returns {Promise<{ rows: Tag[], cursor: string | null, more: boolean, counts?: Record<string, number>, approximate?: string[] }>}
+ * @throws {Error} if the server can't answer or no longer takes the cursor
+ */
+export async function queryTags(query) {
+    const answer = await postTagQuery({ ...query, ifHash: undefined });
+    if (answer === null || answer === 'invalid-cursor' || !Array.isArray(answer.rows)) {
+        throw new Error(answer === 'invalid-cursor' ? 'The tag list changed; start again without a cursor.' : 'Could not read the tag list.');
+    }
+    return /** @type {any} */ (answer);
 }
 
 /**
@@ -2853,7 +2882,7 @@ export function getTagKeyForEntity(entityOrKey) {
     // Next lets check if its a valid character or character id, so we can swith it to its tag
     let character;
     if (!character && characters.indexOf(x) >= 0) character = x; // Check for char object
-    if (!character && !isNaN(parseInt(entityOrKey))) character = characters[x]; // check if its a char id
+    if (!character && !isNaN(parseInt(entityOrKey))) character = exposedCharacters[x]; // check if its a char id
     if (!character) character = charactersStore.get(x); // check if its a char key
 
     if (character) {

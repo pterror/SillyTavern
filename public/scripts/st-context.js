@@ -66,7 +66,7 @@ import { chat, chat_metadata } from './chat-state.js';
 import { main_api, max_context } from './generation-params.js';
 import { name1 } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore, selectCharacterById } from './character-store.js';
+import { exposedCharacters, exposedGroups, charactersStore, selectCharacterById } from './character-store.js';
 import { event_types, eventSource } from './events.js';
 import {
     extension_settings,
@@ -80,7 +80,7 @@ import {
     writeExtensionField,
     writeExtensionFieldBulk,
 } from './extensions.js';
-import { groups, groupsStore, openGroupChat, selected_group, unshallowGroupMembers } from './group-chats.js';
+import { groupsStore, openGroupChat, selected_group, unshallowGroupMembers } from './group-chats.js';
 import { addLocaleData, getCurrentLocale, t, translate } from './i18n.js';
 import { hideLoader, showLoader } from './loader.js';
 import { loader } from './action-loader.js';
@@ -96,7 +96,7 @@ import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
 import { SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
-import { tag_map, tags, tagsStore, importTags } from './tags.js';
+import { tag_map, tags, tagsStore, importTags, queryTags } from './tags.js';
 import { getTextGenServer, textgenerationwebui_settings } from './textgen-settings.js';
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
@@ -135,18 +135,18 @@ export function getContext() {
     return {
         accountStorage,
         chat,
-        // Raw array kept as-is for backwards compat; prefer getCharacterByAvatar(avatar) for O(1) lookups.
-        characters,
+        // Upstream's array, holding only the current character or the open group's members.
+        characters: exposedCharacters,
         getCharacterByAvatar,
-        // Raw array kept as-is for backwards compat; prefer getGroupById(id) for O(1) lookups.
-        groups,
+        // Upstream's array, holding only the open group.
+        groups: exposedGroups,
         getGroupById,
         name1,
         name2,
         // Lazy getter so it stays fresh instead of going stale like a snapshot would.
         get characterId() {
             const avatar = getCurrentCharacter()?.avatar;
-            const index = avatar !== undefined ? characters.findIndex(x => x.avatar === avatar) : -1;
+            const index = avatar !== undefined ? exposedCharacters.findIndex(x => x.avatar === avatar) : -1;
             return index !== -1 ? String(index) : undefined;
         },
         characterAvatar: getCurrentCharacter()?.avatar,
@@ -253,6 +253,7 @@ export function getContext() {
         addLocaleData,
         tags,
         tagMap: tag_map,
+        queryTags,
         getTagById,
         menuType: menu_type,
         createCharacterData: create_save,

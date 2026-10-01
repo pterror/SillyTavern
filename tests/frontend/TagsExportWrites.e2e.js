@@ -189,6 +189,12 @@ test.describe('the tags export', () => {
         const id = `tagsexp-order-${stamp}`;
         const card = await withOtherTab(browser, setup => createCharacter(setup, `TagsExpOrder-${stamp}`));
         await loadApp(page);
+        // The current character is the one `tag_map` has an entry for.
+        await page.evaluate(async (card) => {
+            const { selectCharacterByAvatar } = await import('/script.js');
+            await selectCharacterByAvatar(card);
+        }, card);
+        await expect.poll(() => page.evaluate(card => Object.hasOwn(window['SillyTavern'].getContext().tagMap, card), card)).toBe(true);
         const writes = recordWrites(page);
 
         await withTags(page, `

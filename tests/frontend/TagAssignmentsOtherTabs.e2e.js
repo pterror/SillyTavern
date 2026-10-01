@@ -76,9 +76,10 @@ async function createGroup(page, name, members) {
  * @returns {Promise<string[] | null>} The tag ids this tab's own copy of the entity carries; null when it holds none.
  */
 async function heldTagIds(page, key) {
-    return page.evaluate((key) => {
-        const { characters, groups } = window['SillyTavern'].getContext();
-        const entity = characters.find(c => c.avatar === key) ?? groups.find(g => String(g.id) === key);
+    return page.evaluate(async (key) => {
+        const { charactersStore } = await import('/scripts/character-store.js');
+        const { groupsStore } = await import('/scripts/group-store.js');
+        const entity = charactersStore.get(key) ?? groupsStore.get(key);
         return entity ? [...(entity.tag_ids ?? [])].sort() : null;
     }, key);
 }
@@ -209,6 +210,12 @@ test.describe('tag assignments changed in another tab', () => {
         await page.reload();
         await loadApp(page);
         await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([]);
+        // The current character is the one `tag_map` has an entry for.
+        await page.evaluate(async (avatar) => {
+            const { selectCharacterByAvatar } = await import('/script.js');
+            await selectCharacterByAvatar(avatar);
+        }, avatar);
+        await expect.poll(() => page.evaluate(avatar => Object.hasOwn(window['SillyTavern'].getContext().tagMap, avatar), avatar)).toBe(true);
         await page.waitForTimeout(STREAM_SETTLE_MS);
 
         const requests = recordTagRequests(page);
@@ -290,8 +297,9 @@ test.describe('tag assignments changed in another tab', () => {
             await expect.poll(() => heldTagIds(page, avatar), { timeout: 15000 }).toEqual([tagId]);
             const asks = requests.filter(r => r.path === '/api/tags/assignment-changes');
             expect(asks).toHaveLength(1);
-            const held = await page.evaluate(() => {
-                const { characters, groups } = window['SillyTavern'].getContext();
+            const held = await page.evaluate(async () => {
+                const { characters } = await import('/scripts/character-store.js');
+                const { groups } = await import('/scripts/group-store.js');
                 return characters.length + groups.length;
             });
             const reread = requests.filter(r => r.path === '/api/tags/for').flatMap(r => r.body.ids);

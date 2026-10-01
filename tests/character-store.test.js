@@ -5,14 +5,28 @@ jest.unstable_mockModule('../public/script.js', () => ({ selectCharacterByAvatar
 
 const {
     characters, charactersStore, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH, selectCharacterById,
+    exposedCharacters, exposedGroups, setExposedGroupId, setCharacterId, onExposedEntitiesChange,
 } = await import('../public/scripts/character-store.js');
+const { setGroups, rebuildGroupsStoreCore } = await import('../public/scripts/group-store.js');
 
 const alpha = { avatar: 'alpha.png', name: 'Alpha' };
 const digitStem = { avatar: '3.png', name: 'Digit stem' };
 const gamma = { avatar: 'gamma.png', name: 'Gamma' };
 const delta = { avatar: 'delta.png', name: 'Delta' };
 
+/** A group whose members are the four characters, open by default, so upstream's indices 0-3 name them in order. */
+const party = { id: 'party', name: 'Party', members: ['alpha.png', '3.png', 'gamma.png', 'delta.png'] };
+
+/** @param {object[]} groupList */
+function loadGroups(groupList) {
+    setGroups(groupList);
+    return rebuildGroupsStoreCore();
+}
+
 beforeEach(() => {
+    setCharacterId(undefined);
+    loadGroups([party]);
+    setExposedGroupId('party');
     for (const character of [...characters]) {
         charactersStore.remove(character.avatar);
     }
@@ -153,5 +167,79 @@ describe('selectCharacterById', () => {
         await selectCharacterById('length');
         await selectCharacterById('missing.png');
         expect(selectCharacterByAvatar).not.toHaveBeenCalled();
+    });
+});
+
+describe('what extensions are shown', () => {
+    test('nothing open shows no character and no group, and indices miss', () => {
+        setExposedGroupId(null);
+        expect(exposedCharacters).toEqual([]);
+        expect(exposedGroups).toEqual([]);
+        expect(resolveCharacterRef(0)).toBeUndefined();
+        expect(resolveCharacterRef('length')).toBe(0);
+    });
+
+    test('the current character alone is shown at index 0; another held character is not, but its avatar still resolves', () => {
+        setExposedGroupId(null);
+        setCharacterId('gamma.png');
+        expect(exposedCharacters).toEqual([gamma]);
+        expect(exposedGroups).toEqual([]);
+        expect(resolveCharacterRef(0)).toBe(gamma);
+        expect(resolveCharacterRef(1)).toBeUndefined();
+        expect(exposedCharacters.find(character => character.avatar === 'alpha.png')).toBeUndefined();
+        expect(resolveCharacterRef('alpha.png')).toBe(alpha);
+    });
+
+    test('the open group is the only group shown, with its members in member order', () => {
+        const other = { id: 'other', name: 'Other', members: ['gamma.png'] };
+        loadGroups([party, other]);
+        setExposedGroupId('party');
+        expect(exposedGroups).toEqual([party]);
+        expect(exposedCharacters).toEqual([alpha, digitStem, gamma, delta]);
+    });
+
+    test('a member the page does not hold is left out until it is held', () => {
+        charactersStore.remove('delta.png');
+        expect(exposedCharacters).toEqual([alpha, digitStem, gamma]);
+        charactersStore.create(delta);
+        expect(exposedCharacters).toEqual([alpha, digitStem, gamma, delta]);
+    });
+
+    test('the arrays are updated in place, so a kept reference stays current', () => {
+        const kept = exposedCharacters;
+        const keptGroups = exposedGroups;
+        setExposedGroupId(null);
+        setCharacterId('delta.png');
+        expect(kept).toBe(exposedCharacters);
+        expect(keptGroups).toBe(exposedGroups);
+        expect(kept).toEqual([delta]);
+        expect(keptGroups).toEqual([]);
+    });
+
+    test('a member change made through the groups store shows the new members', () => {
+        const groupsStore = loadGroups([{ ...party }]);
+        setExposedGroupId('party');
+        groupsStore.update('party', { members: ['gamma.png'] });
+        expect(exposedCharacters).toEqual([gamma]);
+    });
+
+    test('a rebuilt groups store is followed', async () => {
+        const rebuiltParty = { ...party, members: ['delta.png'] };
+        loadGroups([rebuiltParty]);
+        await Promise.resolve();
+        expect(exposedGroups).toEqual([rebuiltParty]);
+        expect(exposedCharacters).toEqual([delta]);
+    });
+
+    test('listeners hear a change of what is shown, and only a change', () => {
+        const listener = jest.fn();
+        const unsubscribe = onExposedEntitiesChange(listener);
+        setExposedGroupId('party');
+        expect(listener).not.toHaveBeenCalled();
+        setExposedGroupId(null);
+        expect(listener).toHaveBeenCalledTimes(1);
+        unsubscribe();
+        setCharacterId('alpha.png');
+        expect(listener).toHaveBeenCalledTimes(1);
     });
 });

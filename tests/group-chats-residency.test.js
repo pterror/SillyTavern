@@ -228,7 +228,9 @@ jest.unstable_mockModule('../public/scripts/character-store.js', () => {
     return {
         characters,
         charactersStore: charactersStoreMock,
+        exposedGroups: [],
         setCharacterId: jest.fn(),
+        setExposedGroupId: jest.fn(),
         resolveCharacterRef,
         resolveCharacterRefPair,
         CHARACTER_REF_MISMATCH,

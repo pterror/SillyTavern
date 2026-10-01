@@ -12,10 +12,11 @@ import {
 } from './lib.js';
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
-import { characters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
+import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
-// Re-exported for existing importers (upstream's script.js exports these too).
-export { characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
+// Re-exported for existing importers (upstream's script.js exports these too). Extensions get the characters
+// they are shown, not every character the page holds.
+export { exposedCharacters as characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
 export { printCharacters, printCharactersDebounced, getEntitiesList, getOneCharacter, getCharacterSource, getCharacters, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT };
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import { showMigrationNotices } from './scripts/migration-notices.js';
@@ -3298,7 +3299,7 @@ export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = fals
             quietImage: quietImage ?? null,
             quietName: quietName ?? null,
             // forceChId (legacy numeric id) translated to an avatar here, so everything downstream is avatar-shaped.
-            force_avatar: forceAvatar ?? ((forceChId !== null && forceChId !== undefined) ? characters[forceChId]?.avatar ?? null : null),
+            force_avatar: forceAvatar ?? ((forceChId !== null && forceChId !== undefined) ? exposedCharacters[forceChId]?.avatar ?? null : null),
             jsonSchema: jsonSchema ?? null,
         };
         if (responseLengthCustomized) {
@@ -8912,7 +8913,7 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     // An index is emitted as passed. The avatar and object forms emit `this_chid` only when they resolve to the
     // current character (`this_avatar`), and undefined otherwise, so a wrong index is never emitted.
-    const editorOpenedChid = characters[chid] !== undefined ? chid : (avatar === this_avatar ? this_chid : undefined);
+    const editorOpenedChid = exposedCharacters[chid] !== undefined ? chid : (avatar === this_avatar ? this_chid : undefined);
     eventSource.emit(event_types.CHARACTER_EDITOR_OPENED, editorOpenedChid);
 
     // Only populates DOM fields from already-persisted data; nothing here needs saving.
