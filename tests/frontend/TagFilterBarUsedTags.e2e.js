@@ -131,13 +131,16 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
             const card = await createCharacter(other, `TagFilterBar-${stamp}`);
             await api(other, '/api/tags/assign', { id: card, tagId: used });
         });
-        // The page's own read of every tag's count.
-        await page.route('**/api/tags/usage', route => route.fulfill({ status: 500 }));
+        const usageReads = [];
+        page.on('request', request => {
+            if (new URL(request.url()).pathname === '/api/tags/usage') usageReads.push(request.url());
+        });
         await loadApp(page);
 
         await openBar(page);
         await expect(pill(page, used)).toBeVisible();
         await expect(pill(page, unused)).toHaveCount(0);
+        expect(usageReads).toEqual([]);
     });
 
     test('a tag that becomes used in another tab appears, and an unchanged page of the bar is not downloaded again', async ({ browser, page }) => {
@@ -207,7 +210,7 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
             localStorage.setItem(`CharacterList_tag_${unused}`, 'EXCLUDED');
         }, { used, unused });
 
-        const failing = ['**/api/tags/usage', '**/api/tags/query', '**/api/tags/by-ids'];
+        const failing = ['**/api/tags/query', '**/api/tags/by-ids'];
         for (const url of failing) await page.route(url, route => route.fulfill({ status: 500 }));
         await page.reload();
         await loadApp(page);

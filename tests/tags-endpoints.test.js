@@ -194,8 +194,7 @@ describe('POST /api/tags/assign and /api/tags/unassign', () => {
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
 
-        const usage = await (await getJson('/api/tags/usage')).json();
-        expect(usage.tag1).toBe(1);
+        expect((await metadataDb.getAllTagUsage(directories)).counts.tag1).toBe(1);
     });
 
     test('assign 404s for an id that is neither a known character nor a known group', async () => {
@@ -222,21 +221,26 @@ describe('POST /api/tags/assign and /api/tags/unassign', () => {
     });
 });
 
-describe('GET /api/tags/usage', () => {
-    test('reflects assign/unassign as a live {tagId: count} aggregate', async () => {
+describe('tag usage counts', () => {
+    test('reflect assign/unassign as a live {tagId: count} aggregate', async () => {
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
+        const counts = async () => (await metadataDb.getAllTagUsage(directories)).counts;
 
-        expect(await (await getJson('/api/tags/usage')).json()).toEqual({});
+        expect(await counts()).toEqual({});
 
         await postJson('/api/tags/assign', { id: 'Alice.png', tagId: 'tag1' });
         await postJson('/api/tags/assign', { id: 'Bob.png', tagId: 'tag1' });
         await postJson('/api/tags/assign', { id: 'Bob.png', tagId: 'tag2' });
 
-        expect(await (await getJson('/api/tags/usage')).json()).toEqual({ tag1: 2, tag2: 1 });
+        expect(await counts()).toEqual({ tag1: 2, tag2: 1 });
 
         await postJson('/api/tags/unassign', { id: 'Alice.png', tagId: 'tag1' });
-        expect(await (await getJson('/api/tags/usage')).json()).toEqual({ tag1: 1, tag2: 1 });
+        expect(await counts()).toEqual({ tag1: 1, tag2: 1 });
+    });
+
+    test('there is no route that answers every tag\'s count', async () => {
+        expect((await getJson('/api/tags/usage')).status).toBe(404);
     });
 });
 

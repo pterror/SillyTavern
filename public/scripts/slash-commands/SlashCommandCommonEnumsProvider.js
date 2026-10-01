@@ -5,7 +5,7 @@ import { extension_settings } from '../extensions.js';
 import { getGroupMembersResident } from '../group-chats.js';
 import { groups } from '../group-store.js';
 import { personaStore } from '../power-user.js';
-import { searchCharByName, getTagsList, tags, getAssignedTagIds } from '../tags.js';
+import { searchCharByName, getTagsList, tags, getHeldAssignedTagIds, searchUsedTagOptions } from '../tags.js';
 import { onlyUniqueJson, sortIgnoreCaseAndAccents } from '../utils.js';
 import { world_names } from '../world-info.js';
 import { SlashCommandClosure } from './SlashCommandClosure.js';
@@ -262,10 +262,15 @@ export const commonEnumProviders = {
      * @param {('all' | 'assigned')} [mode='all'] - Which types of tags to show
      * @returns {() => SlashCommandEnumValue[]}
      */
-    tags: (mode = 'all') => () => {
-        let assignedTags = mode === 'assigned' ? getAssignedTagIds() : new Set();
-        return tags.filter(tag => mode === 'all' || (mode === 'assigned' && assignedTags.has(tag.id)))
-            .map(tag => new SlashCommandEnumValue(tag.name, null, enumTypes.command, enumIcons.tag));
+    tags: (mode = 'all') => {
+        const toOption = tag => new SlashCommandEnumValue(tag.name, null, enumTypes.command, enumIcons.tag);
+        const provider = () => {
+            const assignedTags = mode === 'assigned' ? getHeldAssignedTagIds() : new Set();
+            return tags.filter(tag => mode === 'all' || (mode === 'assigned' && assignedTags.has(tag.id))).map(toOption);
+        };
+        // The list above covers only what the page holds; the autocomplete also asks the server with what was typed.
+        if (mode === 'assigned') provider.enumSearchProvider = searchUsedTagOptions(toOption);
+        return provider;
     },
 
     /**

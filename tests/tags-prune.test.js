@@ -113,7 +113,7 @@ describe('POST /api/tags/unused-count and /api/tags/prune', () => {
         await post('/api/tags/assign', { id: 'Alice.png', tagId: 'wasUsed' });
         await post('/api/tags/unassign', { id: 'Alice.png', tagId: 'wasUsed' });
 
-        const usage = async () => (await fetch(`${baseUrl}/api/tags/usage`)).json();
+        const usage = async () => (await metadataDb.getAllTagUsage(directories)).counts;
         expect(await usage()).toEqual({ onChar: 1, wasUsed: 0 });
 
         const body = await (await post('/api/tags/prune', { limit: 500 })).json();

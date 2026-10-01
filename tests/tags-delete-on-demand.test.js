@@ -87,9 +87,7 @@ describe('POST /api/tags/delete while the server is running', () => {
 
         await coordinatorModule.whenMetadataMigrationsIdle(directories);
 
-        const usage = await fetch(`${baseUrl}/api/tags/usage`);
-        expect(JSON.parse(usage.headers.get('X-Tag-Usage-Approximate') ?? 'null')).toEqual([]);
-        expect(await usage.json()).toEqual({ y: 2 });
+        expect(await metadataDb.getAllTagUsage(directories)).toEqual({ counts: { y: 2 }, approximate: [] });
         const { tags } = await (await post('/api/tags/get')).json();
         expect(tags.map(t => t.id)).toEqual(['y']);
         const Database = (await import('better-sqlite3')).default;

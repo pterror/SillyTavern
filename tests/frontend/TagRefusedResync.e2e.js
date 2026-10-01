@@ -91,8 +91,10 @@ function pageTag(page, id) {
 
 /** @param {import('@playwright/test').Page} page @param {string} avatar */
 function pageCharacterTagIds(page, avatar) {
-    return page.evaluate(avatar => {
-        const character = window['SillyTavern'].getContext().characters.find(c => c.avatar === avatar);
+    return page.evaluate(async avatar => {
+        // What the page holds, not what extensions are shown (only the current character).
+        const { charactersStore } = await import('/scripts/character-store.js');
+        const character = charactersStore.get(avatar);
         return character ? [...(character.tag_ids ?? [])] : null;
     }, avatar);
 }

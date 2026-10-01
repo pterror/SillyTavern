@@ -408,23 +408,21 @@ describe('tag filters read a marked tag as its merge target', () => {
 });
 
 describe('usage counts', () => {
-    test('/usage adds x into y, leaves x out, and lists y as approximate', async () => {
+    test('getAllTagUsage adds x into y, leaves x out, and lists y as approximate', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
         await deleteTag('d');
-        const response = await fetch(`${baseUrl}/api/tags/usage`);
-        const counts = await response.json();
+        const { counts, approximate } = await metadataDb.getAllTagUsage(directories);
         expect(counts.x).toBeUndefined();
         expect(counts.d).toBeUndefined();
         expect(counts.y).toBe(5);
         expect(counts.z).toBe(2);
-        expect(JSON.parse(response.headers.get('X-Tag-Usage-Approximate'))).toEqual(['y']);
+        expect(approximate).toEqual(['y']);
     });
 
     test('with nothing merging, the approximate list is empty', async () => {
         await seedLibrary();
-        const response = await fetch(`${baseUrl}/api/tags/usage`);
-        expect(JSON.parse(response.headers.get('X-Tag-Usage-Approximate'))).toEqual([]);
+        expect((await metadataDb.getAllTagUsage(directories)).approximate).toEqual([]);
     });
 
     test('unused-tag count and prune leave marked tags alone and keep a target used only through x', async () => {
