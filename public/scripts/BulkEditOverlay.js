@@ -4,19 +4,218 @@ import {
     characterGroupOverlay,
     buildAvatarList,
     deleteCharacter,
+    closeCurrentChat,
+    removeCharacterFromUI,
+    getPastCharacterChats,
 } from '../script.js';
-import { getCharacters, characterToEntity } from './character-list.js';
+import { getCharacters, characterToEntity, getCharacterListPageContext, removeCharacterListRow } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore } from './character-store.js';
+import { charactersStore, this_avatar } from './character-store.js';
 import { event_types, eventSource } from './events.js';
 
 import { favsToHotswap } from './RossAscends-mods.js';
 import { loader } from './action-loader.js';
-import { convertCharacterToPersona } from './personas.js';
+import { convertCharacterToPersona, convertCharactersToPersonas } from './personas.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
-import { createTagInput, printTagList, compareTagsForSort, importTags, tag_import_setting, readEntitiesTagIds, readTagsForIds, saveTagsOnKeys, tagsStore } from './tags.js';
+import { createTagInput, printTagList, compareTagsForSort, readTagsForIds, removeEntityTags, rereadResidentEntityTagIds, tagsStore } from './tags.js';
 import { t } from './i18n.js';
 import { escapeHtml } from './utils.js';
+import { accountStorage } from './util/AccountStorage.js';
+import { emptySelection, isSelected, setOne, setRange, setAll, isEverything, isEmpty, countSelection, selectionToWire } from './bulk-selection.js';
+
+/**
+ * @typedef {object} PreparedSelection A selection the server has fixed as a job (`/api/characters/bulk/prepare`).
+ * @property {string} job
+ * @property {number} count How many characters it holds.
+ * @property {boolean} containsCurrent Whether the current character is one of them.
+ * @property {string[]} sample Its first avatars.
+ */
+
+/**
+ * @param {object} wire A selection as `selectionToWire()` gives it.
+ * @returns {Promise<PreparedSelection|null>} `null` when the server couldn't fix it (already said so).
+ */
+async function prepareSelection(wire) {
+    const response = await fetch('/api/characters/bulk/prepare', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ selection: wire, current: this_avatar }),
+    });
+    if (!response.ok) {
+        toastr.error(t`The selected characters could not be read.`, t`Bulk edit`);
+        return null;
+    }
+    const prepared = await response.json();
+    if (Array.isArray(prepared.missing) && prepared.missing.length > 0) {
+        toastr.warning(t`These selected characters no longer exist, so they are left out:` + `<br />${prepared.missing.map(escapeHtml).join('<br />')}`,
+            t`Bulk edit`, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
+    }
+    return prepared;
+}
+
+/** @param {string} job */
+function dropPrepared(job) {
+    fetch('/api/characters/bulk/drop', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ job }),
+    }).catch(error => console.warn('Could not drop a bulk selection:', error));
+}
+
+/**
+ * A prepared selection's avatars, a page at a time.
+ * @param {string} job
+ * @returns {AsyncGenerator<string[], void, undefined>}
+ */
+async function* preparedAvatars(job) {
+    let after = '';
+    for (;;) {
+        const response = await fetch('/api/characters/bulk/ids', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ job, after }),
+        });
+        if (!response.ok) throw new Error(`/api/characters/bulk/ids failed with ${response.status}`);
+        const { avatars, more } = await response.json();
+        if (avatars.length > 0) yield avatars;
+        if (!more || avatars.length === 0) return;
+        after = avatars[avatars.length - 1];
+    }
+}
+
+/**
+ * The characters whose results the page wants sent back: the ones it holds, and the rows on screen.
+ * @returns {string[]}
+ */
+function watchedAvatars() {
+    const avatars = new Set(charactersStore.getAll().map(character => character.avatar));
+    for (const row of document.querySelectorAll(`#${BulkEditOverlay.containerId} .${BulkEditOverlay.characterClass}[data-avatar]`)) {
+        avatars.add(row.getAttribute('data-avatar'));
+    }
+    return [...avatars];
+}
+
+/**
+ * A toast showing how far a bulk action is, updated in place.
+ * @param {string} title
+ * @param {number} total
+ */
+function progressToast(title, total) {
+    const message = (/** @type {number} */ done) => t`${done} of ${total} done…`;
+    const toast = toastr.info(message(0), title, { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false });
+    return {
+        update: (/** @type {number} */ done) => toast?.find?.('.toast-message')?.text(message(done)),
+        close: () => toastr.clear(toast),
+    };
+}
+
+/**
+ * Runs an action on every character of a prepared selection (`/api/characters/bulk/run`), as the server streams its
+ * progress back.
+ * @param {PreparedSelection} prepared
+ * @param {string} action
+ * @param {object} options
+ * @param {string} title For the progress toast.
+ * @param {(line: { avatar: string, [key: string]: any }) => Promise<void>|void} [onItem] For each watched character done.
+ * @returns {Promise<{ done: number, failed: { avatar: string, error: string }[], stopped: boolean }>}
+ */
+async function runPrepared(prepared, action, options, title, onItem) {
+    const progress = progressToast(title, prepared.count);
+    /** @type {{ avatar: string, error: string }[]} */
+    const failed = [];
+    let done = 0;
+    let finished = false;
+    try {
+        const response = await fetch('/api/characters/bulk/run', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ job: prepared.job, action, options, watch: watchedAvatars() }),
+        });
+        if (!response.ok || !response.body) {
+            return { done, failed, stopped: true };
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffered = '';
+        for (;;) {
+            const { value, done: ended } = await reader.read();
+            buffered += decoder.decode(value ?? new Uint8Array(), { stream: !ended });
+            let newline;
+            while ((newline = buffered.indexOf('\n')) !== -1) {
+                const text = buffered.slice(0, newline);
+                buffered = buffered.slice(newline + 1);
+                if (!text.trim()) continue;
+                const line = JSON.parse(text);
+                switch (line.type) {
+                    case 'item':
+                        await onItem?.(line);
+                        break;
+                    case 'failed':
+                        failed.push({ avatar: line.avatar, error: line.error });
+                        break;
+                    case 'progress':
+                        done = line.done;
+                        progress.update(line.done + line.failed);
+                        break;
+                    case 'done':
+                        done = line.done;
+                        finished = true;
+                        break;
+                    case 'error':
+                        done = line.done;
+                        break;
+                }
+            }
+            if (ended) break;
+        }
+    } catch (error) {
+        console.error(`Bulk ${action} failed:`, error);
+    } finally {
+        progress.close();
+    }
+    return { done, failed, stopped: !finished };
+}
+
+/**
+ * Says what a bulk action didn't do: every character that failed, and whether it stopped before the end.
+ * @param {string} title
+ * @param {{ failed: { avatar: string }[], stopped: boolean }} result
+ * @param {(avatar: string) => string} [nameOf]
+ */
+function reportBulkProblems(title, result, nameOf = avatar => avatar) {
+    if (result.failed.length > 0) {
+        toastr.error(t`These characters were not done:` + `<br />${result.failed.map(entry => escapeHtml(nameOf(entry.avatar))).join('<br />')}`,
+            title, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
+    }
+    if (result.stopped) {
+        toastr.error(t`It stopped before the end. The characters it hadn't reached yet were not done.`, title, { timeOut: 0, extendedTimeOut: 0 });
+    }
+}
+
+/**
+ * Removes the per-character browser keys of characters that no longer exist.
+ */
+async function forgetDeletedCharactersInBrowser() {
+    const prefixes = ['AlertRegex_', 'mediaWarningShown:'];
+    /** @type {Map<string, string[]>} */
+    const keysByAvatar = new Map();
+    for (const key of Object.keys(accountStorage.getState())) {
+        const prefix = prefixes.find(p => key.startsWith(p));
+        if (!prefix) continue;
+        const avatar = key.slice(prefix.length);
+        keysByAvatar.set(avatar, [...(keysByAvatar.get(avatar) ?? []), key]);
+    }
+    const avatars = [...keysByAvatar.keys()];
+    for (let start = 0; start < avatars.length; start += 500) {
+        const chunk = avatars.slice(start, start + 500);
+        const response = await fetch('/api/characters/exists', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ ids: chunk }) });
+        if (!response.ok) return;
+        const exists = await response.json();
+        for (const avatar of chunk) {
+            if (exists[avatar] === false) keysByAvatar.get(avatar).forEach(key => accountStorage.removeItem(key));
+        }
+    }
+}
 
 /**
  * Static object representing the actions of the
@@ -105,7 +304,7 @@ class CharacterContextMenu {
         }
 
         const { fav } = await favResponse.json();
-        CharacterContextMenu.#applyFav(avatar, fav);
+        CharacterContextMenu.applyFav(avatar, fav);
     };
 
     /**
@@ -113,7 +312,7 @@ class CharacterContextMenu {
      * @param {string} avatar
      * @param {boolean} fav
      */
-    static #applyFav = (avatar, fav) => {
+    static applyFav = (avatar, fav) => {
         const character = charactersStore.get(avatar);
         if (character) {
             character.fav = fav;
@@ -152,7 +351,7 @@ class CharacterContextMenu {
                 failed.push(avatar);
                 continue;
             }
-            CharacterContextMenu.#applyFav(avatar, stored.get(avatar));
+            CharacterContextMenu.applyFav(avatar, stored.get(avatar));
         }
         if (failed.length) {
             toastr.error(t`Failed to update favorite status for:` + `<br />${failed.map(escapeHtml).join('<br />')}`, '', { escapeHtml: false });
@@ -231,16 +430,22 @@ class CharacterContextMenu {
  */
 class BulkTagPopupHandler {
     /**
-     * The characters for this popup
+     * The characters named for this popup: the ones passed to show(), or the first ones of the selection.
      * @type {string[]}
      */
-    characterIds;
+    characterIds = [];
 
     /**
      * A storage of the current mutual tags, as calculated by getMutualTags()
      * @type {object[]}
      */
-    currentMutualTags;
+    currentMutualTags = [];
+
+    /** @type {PreparedSelection|null} */
+    #prepared = null;
+
+    /** @type {string[]} The ids of the tags every selected character carries, as the server last said. */
+    #mutualTagIds = [];
 
     /**
      * Sets up the bulk popup menu handler for the given overlay.
@@ -255,15 +460,16 @@ class BulkTagPopupHandler {
      * @returns String containing the html for the popup
      */
     #getHtml = () => {
+        const count = this.#prepared?.count ?? this.characterIds.length;
         const characterData = JSON.stringify({ characterIds: this.characterIds });
         return `<div id="bulk_tag_shadow_popup">
             <div id="bulk_tag_popup" class="wider_dialogue_popup">
                 <div id="bulk_tag_popup_holder">
-                    <h3 class="marginBot5">Modify tags of ${this.characterIds.length} characters</h3>
+                    <h3 class="marginBot5">${escapeHtml(t`Modify tags of ${count} characters`)}</h3>
                     <small class="bulk_tags_desc m-b-1">Add or remove the mutual tags of all selected characters. Import all or existing tags for all selected characters.</small>
                     <div id="bulk_tags_avatars_block" class="avatars_inline avatars_inline_small tags tags_inline"></div>
                     <br>
-                    <div id="bulk_tags_div" class="marginBot5" data-characters='${characterData}'>
+                    <div id="bulk_tags_div" class="marginBot5" data-characters='${escapeHtml(characterData)}'>
                         <div class="tag_controls">
                             <input id="bulkTagInput" class="text_pole tag_input wide100p margin0" data-i18n="[placeholder]Search / Create Tags" placeholder="Search / Create tags" maxlength="25" />
                             <div class="tags_view menu_button fa-solid fa-tags" title="View all tags" data-i18n="[title]View all tags"></div>
@@ -293,31 +499,44 @@ class BulkTagPopupHandler {
     };
 
     /**
-     * The tag ids of each selected character, as last read: a held one's own, the rest the server's.
-     * @type {Map<string, string[]>}
-     */
-    tagIdsByKey = new Map();
-
-    /**
-     * Append and show the tag control
+     * Append and show the tag control for these characters.
      *
      * @param {string[]} characterIds - The characters that are shown inside the popup
      */
     async show(characterIds) {
-        // shallow copy character ids persistently into this tooltip
-        this.characterIds = characterIds.slice();
-
-        if (this.characterIds.length == 0) {
+        if (!Array.isArray(characterIds) || characterIds.length === 0) {
             console.log('No characters selected for bulk edit tags.');
+            return;
+        }
+        const prepared = await prepareSelection({ include: characterIds.slice() });
+        if (!prepared) return;
+        await this.showPrepared(prepared, characterIds.slice());
+    }
+
+    /**
+     * Append and show the tag control for a prepared selection. The popup owns the selection from here on and drops
+     * it when it closes.
+     * @param {PreparedSelection} prepared
+     * @param {string[]} [characterIds] The characters it was made from, when named one by one.
+     */
+    async showPrepared(prepared, characterIds = prepared.sample) {
+        this.#prepared = prepared;
+        this.characterIds = characterIds;
+        if (prepared.count === 0) {
+            dropPrepared(prepared.job);
+            this.#prepared = null;
             return;
         }
 
         document.body.insertAdjacentHTML('beforeend', this.#getHtml());
 
         const { characterRepository } = await import('./character-repository.js');
-        const characters = await characterRepository.getMany(this.characterIds);
-        const entities = this.characterIds.map(avatar => characterToEntity(characters.get(avatar))).filter(entity => entity.item !== undefined);
+        const characters = await characterRepository.getMany(prepared.sample);
+        const entities = prepared.sample.map(avatar => characters.get(avatar)).filter(Boolean).map(character => characterToEntity(character));
         buildAvatarList($('#bulk_tags_avatars_block'), entities);
+        if (prepared.count > entities.length) {
+            $('#bulk_tags_avatars_block').append($('<div class="bulk_more_note"></div>').text(t`and ${prepared.count - entities.length} more`));
+        }
 
         const listOptions = { tags: () => this.getMutualTags(), tagOptions: { removable: true, removeAction: tag => this.removeTag(tag) } };
         createTagInput('#bulkTagInput', '#bulkTagList', listOptions, { onTagChosen: tag => this.addTag(tag) });
@@ -332,41 +551,54 @@ class BulkTagPopupHandler {
     }
 
     /**
-     * Reads the selected characters' tags again, and the definitions of their mutual tags, and draws the mutual tags.
+     * Asks the server which tags every selected character carries, reads their definitions, and draws them.
      */
     async refresh() {
-        const read = await readEntitiesTagIds(this.characterIds);
-        if (!read) {
+        if (!this.#prepared) return;
+        const response = await fetch('/api/characters/bulk/mutual-tags', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ job: this.#prepared.job }),
+        });
+        if (!response.ok) {
             toastr.error(t`The server could not be asked which tags they have.`, t`Tags could not be read`);
             return;
         }
-        this.tagIdsByKey = read;
-        await readTagsForIds(this.getMutualTagIds());
+        const { tagIds } = await response.json();
+        this.#mutualTagIds = tagIds;
+        await readTagsForIds(tagIds);
         printTagList($('#bulkTagList'), { empty: 'always', tags: () => this.getMutualTags(), tagOptions: { removable: true, removeAction: tag => this.removeTag(tag) } });
+    }
+
+    /**
+     * Runs a tag action on every selected character, says what failed, and reads the mutual tags again.
+     * @param {string} action
+     * @param {object} [options]
+     */
+    async #run(action, options = {}) {
+        if (!this.#prepared) return;
+        /** @type {string[]} */
+        const shown = [];
+        const result = await runPrepared(this.#prepared, action, options, t`Bulk tag edit`, line => void shown.push(line.avatar));
+        // The characters the page holds or shows take their new tags now.
+        if (shown.length) await rereadResidentEntityTagIds(shown);
+        reportBulkProblems(t`Bulk tag edit`, result);
+        await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action, done: result.done, failed: result.failed.length });
+        await this.refresh();
     }
 
     /**
      * Import existing tags for all selected characters
      */
     async importExistingTags() {
-        await this.importTagsWith(tag_import_setting.ONLY_EXISTING);
+        await this.#run('tag-import', { onlyExisting: true });
     }
 
     /**
      * Import all tags for all selected characters
      */
     async importAllTags() {
-        await this.importTagsWith(tag_import_setting.ALL);
-    }
-
-    /** @param {string} importSetting */
-    async importTagsWith(importSetting) {
-        const { characterRepository } = await import('./character-repository.js');
-        for (const characterId of this.characterIds) {
-            const character = charactersStore.get(characterId) ?? await characterRepository.full(characterId);
-            if (character) await importTags(character, { importSetting });
-        }
-        await this.refresh();
+        await this.#run('tag-import', { onlyExisting: false });
     }
 
     /**
@@ -374,9 +606,7 @@ class BulkTagPopupHandler {
      * @returns {string[]}
      */
     getMutualTagIds() {
-        const lists = this.characterIds.map(key => this.tagIdsByKey.get(key) ?? []);
-        if (!lists.length) return [];
-        return lists.reduce((mutual, ids) => mutual.filter(id => ids.includes(id)));
+        return this.#mutualTagIds.slice();
     }
 
     /**
@@ -385,23 +615,18 @@ class BulkTagPopupHandler {
      * @returns {Array<object>} A list of mutual tags
      */
     getMutualTags() {
-        if (this.characterIds.length == 0) {
-            return [];
-        }
-        this.currentMutualTags = this.getMutualTagIds().map(id => tagsStore.get(id)).filter(Boolean).sort(compareTagsForSort);
+        this.currentMutualTags = this.#mutualTagIds.map(id => tagsStore.get(id)).filter(Boolean).sort(compareTagsForSort);
         return this.currentMutualTags;
     }
 
     /** @param {import('./tags.js').Tag} tag */
     async addTag(tag) {
-        await saveTagsOnKeys(this.characterIds, [tag.id], true);
-        await this.refresh();
+        await this.#run('tag-add', { tagIds: [tag.id] });
     }
 
     /** @param {import('./tags.js').Tag} tag */
     async removeTag(tag) {
-        await saveTagsOnKeys(this.characterIds, [tag.id], false);
-        await this.refresh();
+        await this.#run('tag-remove', { tagIds: [tag.id] });
     }
 
     /**
@@ -412,6 +637,9 @@ class BulkTagPopupHandler {
         if (popupElement) {
             document.body.removeChild(popupElement);
         }
+        if (this.#prepared) dropPrepared(this.#prepared.job);
+        this.#prepared = null;
+        this.#mutualTagIds = [];
 
         // No need to redraw here, all tags actions were redrawn when they happened
     }
@@ -420,16 +648,14 @@ class BulkTagPopupHandler {
      * Empty the tag map for the given characters
      */
     async resetTags() {
-        await Promise.all(this.characterIds.map(key => saveTagsOnKeys([key], this.tagIdsByKey.get(key) ?? [], false)));
-        await this.refresh();
+        await this.#run('tag-reset');
     }
 
     /**
      * Remove the mutual tags for all given characters
      */
     async removeMutual() {
-        await saveTagsOnKeys(this.characterIds, this.getMutualTagIds(), false);
-        await this.refresh();
+        await this.#run('tag-remove', { tagIds: this.getMutualTagIds() });
     }
 }
 
@@ -471,19 +697,28 @@ class BulkEditOverlay {
     #state = BulkEditOverlayState.browse;
     #longPress = false;
     #stateChangeCallbacks = [];
-    #selectedCharacters = [];
     #bulkTagPopupHandler = new BulkTagPopupHandler();
+
+    /**
+     * What is selected, as rules over the list (bulk-selection.js), never as every selected character.
+     * @type {import('./bulk-selection.js').BulkSelection}
+     */
+    #selection = emptySelection();
+
+    /** The list the selection is over (getCharacterListPageContext().queryKey). Another list clears it. */
+    #selectionQueryKey = '';
 
     /**
      * @typedef {object} LastSelected - An object noting the last selected character and its state.
      * @property {string} [characterId] - The avatar of the last selected character.
+     * @property {number} [position] - Its position in the list.
      * @property {boolean} [select] - The selected state of the last selected character. <c>true</c> if it was selected, <c>false</c> if it was deselected.
      */
 
     /**
      * @type {LastSelected} - An object noting the last selected character and its state.
      */
-    lastSelected = { characterId: undefined, select: undefined };
+    lastSelected = { characterId: undefined, position: undefined, select: undefined };
 
     /**
      * Locks other pointer actions when the context menu is open
@@ -531,11 +766,17 @@ class BulkEditOverlay {
     }
 
     /**
-     *
+     * The selected characters among the rows on screen, and the ones picked one by one elsewhere. A selection made
+     * with "select all" or a range holds more than this; the bulk actions act on all of it.
      * @returns {string[]}
      */
     get selectedCharacters() {
-        return this.#selectedCharacters;
+        const avatars = new Set(this.#selection.include.keys());
+        for (const row of this.#getEnabledElements()) {
+            const avatar = BulkEditOverlay.#resolveAvatar(row);
+            if (isSelected(this.#selection, avatar, BulkEditOverlay.#resolvePosition(row))) avatars.add(avatar);
+        }
+        return [...avatars];
     }
 
     /**
@@ -568,11 +809,10 @@ class BulkEditOverlay {
     selectState = () => this.state = BulkEditOverlayState.select;
 
     /**
-     * Set up a Sortable grid for the loaded page
+     * Sets up a newly drawn page. In select mode the selection carries over to it, unless the page belongs to another
+     * list (another filter, search or sort), which clears it.
      */
     onPageLoad = () => {
-        this.browseState();
-
         const elements = this.#getEnabledElements();
         elements.forEach(element => element.addEventListener('touchstart', this.handleHold));
         elements.forEach(element => element.addEventListener('mousedown', this.handleHold));
@@ -582,6 +822,19 @@ class BulkEditOverlay {
         elements.forEach(element => element.addEventListener('mouseup', this.handleLongPressEnd));
         elements.forEach(element => element.addEventListener('dragend', this.handleLongPressEnd));
         elements.forEach(element => element.addEventListener('touchmove', this.handleLongPressEnd));
+
+        if (this.state !== BulkEditOverlayState.select) return;
+
+        const queryKey = getCharacterListPageContext().queryKey;
+        if (queryKey !== this.#selectionQueryKey) {
+            setAll(this.#selection, false);
+            Object.assign(this.lastSelected, { characterId: undefined, position: undefined, select: undefined });
+            this.#selectionQueryKey = queryKey;
+        }
+        this.#disableClickEventsForCharacters();
+        this.#disableClickEventsForGroups();
+        this.#paintSelection();
+        this.updateSelectedCount();
 
         // Cohee: It only triggers when clicking on a margin between the elements?
         // Feel free to fix or remove this, I'm not sure how to.
@@ -607,6 +860,7 @@ class BulkEditOverlay {
                 break;
             case BulkEditOverlayState.select:
                 this.container.classList.add(BulkEditOverlay.selectModeClass);
+                this.#selectionQueryKey = getCharacterListPageContext().queryKey;
                 this.#disableClickEventsForCharacters();
                 this.#disableClickEventsForGroups();
                 this.enableContextMenu();
@@ -733,6 +987,25 @@ class BulkEditOverlay {
      */
     static #resolveAvatar = (character) => character.getAttribute('data-avatar');
 
+    /**
+     * A character row's position in the list (`data-list-position`), or NaN when it has none.
+     * @param {Element} character
+     * @returns {number}
+     */
+    static #resolvePosition = (character) => Number(character.getAttribute('data-list-position') ?? NaN);
+
+    /**
+     * Shows each row on screen as selected or not.
+     */
+    #paintSelection = () => {
+        for (const row of this.#getEnabledElements()) {
+            const selected = isSelected(this.#selection, BulkEditOverlay.#resolveAvatar(row), BulkEditOverlay.#resolvePosition(row));
+            row.classList.toggle(BulkEditOverlay.selectedClass, selected);
+            const checkbox = /** @type {HTMLInputElement|null} */ (row.querySelector('.' + BulkEditOverlay.legacySelectedClass));
+            if (checkbox) checkbox.checked = selected;
+        }
+    };
+
     toggleCharacterSelected = event => {
         event.stopPropagation();
 
@@ -755,15 +1028,15 @@ class BulkEditOverlay {
     /**
      * When shift click was held down, this function handles the multi select of characters in a single click.
      *
-     * If the last clicked character was deselected, and the current one was deselected too, it will deselect all currently selected characters between those two.
-     * If the last clicked character was selected, and the current one was selected too, it will select all currently not selected characters between those two.
+     * If the last clicked character was deselected, and the current one was deselected too, it will deselect every
+     * character between those two in the list's order, on this page or not.
+     * If the last clicked character was selected, and the current one was selected too, it will select them all.
      * If the states do not match, nothing will happen.
      *
      * @param {HTMLElement} currentCharacter - The html element of the currently toggled character
      */
     handleShiftClick = (currentCharacter) => {
-        const characterId = BulkEditOverlay.#resolveAvatar(currentCharacter);
-        const select = !this.selectedCharacters.includes(characterId);
+        const select = !isSelected(this.#selection, BulkEditOverlay.#resolveAvatar(currentCharacter), BulkEditOverlay.#resolvePosition(currentCharacter));
 
         if (this.lastSelected.characterId !== undefined && this.lastSelected.select !== undefined) {
             // Only if select state and the last select state match we execute the range select
@@ -782,65 +1055,67 @@ class BulkEditOverlay {
      */
     toggleSingleCharacter = (character, { markState = true } = {}) => {
         const characterId = BulkEditOverlay.#resolveAvatar(character);
+        const position = BulkEditOverlay.#resolvePosition(character);
 
-        const select = !this.selectedCharacters.includes(characterId);
+        const select = !isSelected(this.#selection, characterId, position);
+        setOne(this.#selection, characterId, position, select);
+
+        character.classList.toggle(BulkEditOverlay.selectedClass, select);
         const legacyBulkEditCheckbox = /** @type {HTMLInputElement} */ (character.querySelector('.' + BulkEditOverlay.legacySelectedClass));
-
-        if (select) {
-            character.classList.add(BulkEditOverlay.selectedClass);
-            if (legacyBulkEditCheckbox) legacyBulkEditCheckbox.checked = true;
-            this.#selectedCharacters.push(characterId);
-        } else {
-            character.classList.remove(BulkEditOverlay.selectedClass);
-            if (legacyBulkEditCheckbox) legacyBulkEditCheckbox.checked = false;
-            this.#selectedCharacters = this.#selectedCharacters.filter(item => characterId !== item);
-        }
+        if (legacyBulkEditCheckbox) legacyBulkEditCheckbox.checked = select;
 
         this.updateSelectedCount();
 
         if (markState) {
-            this.lastSelected.characterId = characterId;
-            this.lastSelected.select = select;
+            Object.assign(this.lastSelected, { characterId, position, select });
         }
     };
 
     /**
-     * Updates the selected count element with the current count
+     * Selects every character the list shows, or, when that is already the selection, nothing.
+     */
+    toggleSelectAll = () => {
+        setAll(this.#selection, !isEverything(this.#selection));
+        Object.assign(this.lastSelected, { characterId: undefined, position: undefined, select: undefined });
+        this.#paintSelection();
+        this.updateSelectedCount();
+    };
+
+    /**
+     * Updates the selected count element with the current count. A count involving "select all" or a range is an
+     * estimate (`~`) until an action asks the server, which counts it exactly.
      *
      * @param {number} [countOverride] - optional override for a manual number to set
      */
     updateSelectedCount = (countOverride = undefined) => {
-        const count = countOverride ?? this.selectedCharacters.length;
-        $(`#${BulkEditOverlay.bulkSelectedCountId}`).text(count).attr('title', `${count} characters selected`);
+        const context = getCharacterListPageContext();
+        const { count, approx } = countOverride !== undefined
+            ? { count: countOverride, approx: false }
+            : countSelection(this.#selection, context.total);
+        const text = `${approx ? '~' : ''}${count}`;
+        $(`#${BulkEditOverlay.bulkSelectedCountId}`).text(text).attr('title', t`${text} characters selected`);
     };
 
     /**
-     * Toggles the selection of characters in a given range.
-     * The range is provided by the given character and the last selected one remembered in the selection state.
+     * Toggles the selection of characters in a given range: every row of the list between the given character and
+     * the last selected one, in the list's order, whether drawn on this page or not.
      *
      * @param {HTMLElement} currentCharacter - The html element of the currently toggled character
      * @param {boolean} select - <c>true</c> if the characters in the range are to be selected, <c>false</c> if deselected
      */
     toggleCharactersInRange = (currentCharacter, select) => {
-        const currentCharacterId = BulkEditOverlay.#resolveAvatar(currentCharacter);
-        // Confusingly named the same as the module-scope `characters` array, but this is the rendered DOM
-        // node list - walking DOM order (not the `characters` array) is the correct thing under pagination.
-        const characters = Array.from(document.querySelectorAll('#' + BulkEditOverlay.containerId + ' .' + BulkEditOverlay.characterClass));
-
-        const startIndex = characters.findIndex(c => BulkEditOverlay.#resolveAvatar(c) === this.lastSelected.characterId);
-        const endIndex = characters.findIndex(c => BulkEditOverlay.#resolveAvatar(c) === currentCharacterId);
-
-        for (let i = Math.min(startIndex, endIndex); i <= Math.max(startIndex, endIndex); i++) {
-            const character = characters[i];
-            const characterId = BulkEditOverlay.#resolveAvatar(character);
-            const isCharacterSelected = this.selectedCharacters.includes(characterId);
-
-            // Only toggle the character if it wasn't on the state we have are toggling towards.
-            // Also doing a weird type check, because typescript checker doesn't like the return of 'querySelectorAll'.
-            if ((select && !isCharacterSelected || !select && isCharacterSelected) && character instanceof HTMLElement) {
-                this.toggleSingleCharacter(character, { markState: currentCharacterId == characterId });
-            }
+        const characterId = BulkEditOverlay.#resolveAvatar(currentCharacter);
+        const position = BulkEditOverlay.#resolvePosition(currentCharacter);
+        const lastPosition = this.lastSelected.position;
+        if (!Number.isInteger(position) || !Number.isInteger(lastPosition)) {
+            this.toggleSingleCharacter(currentCharacter);
+            return;
         }
+
+        setRange(this.#selection, lastPosition, position, select);
+        Object.assign(this.lastSelected, { characterId, position, select });
+        this.#paintSelection();
+        this.updateSelectedCount();
     };
 
     handleContextMenuShow = (event) => {
@@ -859,35 +1134,99 @@ class BulkEditOverlay {
     };
 
     /**
-     * Batch-handle character favorite requests in a single request.
+     * Has the server fix the selection as a job, and hands it to `use`; the job is dropped afterwards unless `use`
+     * says it keeps it (returns true).
+     * @param {(prepared: PreparedSelection) => Promise<boolean|void>} use
+     */
+    #withPrepared = async (use) => {
+        if (isEmpty(this.#selection)) {
+            toastr.info(t`No characters are selected.`, t`Bulk edit`);
+            return;
+        }
+        const reading = loader.show({ slug: 'bulk-prepare', title: t`Bulk edit`, message: t`Reading the selection…`, toastMode: loader.ToastMode.STATIC });
+        let prepared;
+        try {
+            prepared = await prepareSelection(selectionToWire(this.#selection, getCharacterListPageContext().query));
+        } finally {
+            await reading.hide();
+        }
+        if (!prepared) return;
+        let kept = false;
+        try {
+            if (prepared.count === 0) {
+                toastr.info(t`None of the selected characters exist any more.`, t`Bulk edit`);
+                return;
+            }
+            kept = (await use(prepared)) === true;
+        } finally {
+            if (!kept) dropPrepared(prepared.job);
+        }
+    };
+
+    /**
+     * Toggles the favorite status of every selected character, on the server.
      *
      * @returns {Promise<void>}
      */
     handleContextMenuFavorite = async () => {
-        await CharacterContextMenu.favoriteBulk(this.selectedCharacters);
-        await getCharacters();
+        await this.#withPrepared(async (prepared) => {
+            const result = await runPrepared(prepared, 'fav', {}, t`Favorite`, line => CharacterContextMenu.applyFav(line.avatar, line.fav));
+            reportBulkProblems(t`Favorite`, result);
+            await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action: 'fav', done: result.done, failed: result.failed.length });
+        });
+        await getCharacters({ keepListPosition: true });
         await favsToHotswap();
         this.browseState();
     };
 
     /**
-     * Batch-handle character duplicate requests in a single request.
+     * Duplicates every selected character, on the server.
      *
      * @returns {Promise<void>}
      */
-    handleContextMenuDuplicate = () => CharacterContextMenu.duplicateBulk(this.selectedCharacters)
-        .then(() => getCharacters())
-        .then(() => this.browseState());
+    handleContextMenuDuplicate = async () => {
+        await this.#withPrepared(async (prepared) => {
+            const held = new Set(charactersStore.getAll().map(character => character.avatar));
+            const result = await runPrepared(prepared, 'duplicate', {}, t`Duplicate`, async (line) => {
+                // Extensions see the characters the page holds; the rest are counted in CHARACTERS_BULK_EDITED.
+                if (held.has(line.avatar)) await eventSource.emit(event_types.CHARACTER_DUPLICATED, { oldAvatar: line.avatar, newAvatar: line.path });
+            });
+            reportBulkProblems(t`Duplicate`, result);
+            await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action: 'duplicate', done: result.done, failed: result.failed.length });
+        });
+        await getCharacters({ keepListPosition: true });
+        this.browseState();
+    };
 
     /**
-     * Sequentially handle all character-to-persona conversions.
+     * Converts every selected character to a persona. It asks only about a character whose persona already exists,
+     * or whose description uses macros, when that character comes up.
      *
      * @returns {Promise<void>}
      */
     handleContextMenuPersona = async () => {
-        for (const characterId of this.selectedCharacters) {
-            await CharacterContextMenu.persona(characterId);
-        }
+        await this.#withPrepared(async (prepared) => {
+            const progress = progressToast(t`Convert to persona`, prepared.count);
+            let result;
+            try {
+                result = await convertCharactersToPersonas(preparedAvatars(prepared.job), done => progress.update(done));
+            } catch (error) {
+                console.error('Bulk persona conversion failed:', error);
+                toastr.error(t`It stopped before the end. The characters it hadn't reached yet were not converted.`, t`Convert to persona`);
+                return;
+            } finally {
+                progress.close();
+            }
+            if (result.converted > 0) {
+                toastr.success(t`${result.converted} persona(s) created. You can pick them in the Persona Management menu.`, t`Convert to persona`);
+            }
+            if (result.failed.length > 0) {
+                toastr.error(t`These characters were not converted:` + `<br />${result.failed.map(escapeHtml).join('<br />')}`, t`Convert to persona`, { escapeHtml: false, timeOut: 0, extendedTimeOut: 0 });
+            }
+            if (result.cancelled) {
+                toastr.info(t`Cancelled. The characters after that one were not converted.`, t`Convert to persona`);
+            }
+        });
 
         this.browseState();
     };
@@ -895,12 +1234,13 @@ class BulkEditOverlay {
     /**
      * Gets the HTML as a string that is displayed inside the popup for the bulk delete
      *
-     * @param {Array<string>} characterIds - The characters that are shown inside the popup
+     * @param {Array<string>|number} characterIds - The characters that are shown inside the popup, or how many there are
      * @returns String containing the html for the popup content
      */
     static #getDeletePopupContentHtml = (characterIds) => {
+        const count = Array.isArray(characterIds) ? characterIds.length : characterIds;
         return `
-            <h3 class="marginBot5">Delete ${characterIds.length} characters?</h3>
+            <h3 class="marginBot5">${escapeHtml(t`Delete ${count} characters?`)}</h3>
             <span class="bulk_delete_note">
                 <i class="fa-solid fa-triangle-exclamation warning margin-r5"></i>
                 <b>THIS IS PERMANENT!</b>
@@ -916,62 +1256,101 @@ class BulkEditOverlay {
     };
 
     /**
-     * Request user input before concurrently handle deletion
-     * requests.
+     * Asks, showing exactly how many characters will go, then deletes every selected character on the server.
      *
-     * @returns {Promise<number>}
+     * @returns {Promise<void>}
      */
-    handleContextMenuDelete = () => {
-        const characterIds = this.selectedCharacters;
-        const popupContent = $(BulkEditOverlay.#getDeletePopupContentHtml(characterIds));
-        const checkbox = popupContent.find('#del_char_checkbox');
-        const promise = callGenericPopup(popupContent, POPUP_TYPE.CONFIRM)
-            .then((accept) => {
-                if (!accept) return;
+    handleContextMenuDelete = async () => {
+        await this.#withPrepared(async (prepared) => {
+            const popupContent = $(BulkEditOverlay.#getDeletePopupContentHtml(prepared.count));
+            const checkbox = popupContent.find('#del_char_checkbox');
+            const confirmed = callGenericPopup(popupContent, POPUP_TYPE.CONFIRM);
 
-                const deleteChats = checkbox.prop('checked') ?? false;
+            // The popup is in the DOM but not resolved yet; fill its avatar list once the first characters are read.
+            import('./character-repository.js')
+                .then(({ characterRepository }) => characterRepository.getMany(prepared.sample))
+                .then((resolved) => {
+                    const entities = prepared.sample.filter(avatar => resolved.has(avatar)).map(avatar => characterToEntity(resolved.get(avatar)));
+                    buildAvatarList($('#bulk_delete_avatars_block'), entities);
+                    if (prepared.count > entities.length) {
+                        $('#bulk_delete_avatars_block').append($('<div class="bulk_more_note"></div>').text(t`and ${prepared.count - entities.length} more`));
+                    }
+                })
+                .catch(error => console.error('Could not read the characters selected for deletion:', error));
 
-                const loaderHandle = loader.show({
-                    slug: 'bulk-delete',
-                    title: t`Bulk Delete`,
-                    message: t`Deleting ${characterIds.length} character(s)…`,
-                    toastMode: loader.ToastMode.STATIC,
-                });
-                return CharacterContextMenu.delete([...characterIds], deleteChats)
-                    .then(() => this.browseState())
-                    .finally(() => loaderHandle.hide());
+            if (!await confirmed) return;
+            const deleteChats = checkbox.prop('checked') ?? false;
+
+            if (prepared.containsCurrent && !await closeCurrentChat()) return;
+
+            // Extensions see the characters the page holds: they get CHARACTER_DELETED (and CHAT_DELETED), with the
+            // character, as a single delete gives them. The rest are counted in CHARACTERS_BULK_EDITED.
+            const held = new Map(charactersStore.getAll().map(character => [character.avatar, character]));
+            /** @type {Map<string, any[]>} */
+            const pastChats = new Map();
+            if (deleteChats) {
+                for (const avatar of held.keys()) {
+                    pastChats.set(avatar, await getPastCharacterChats(avatar));
+                }
+            }
+
+            /** @type {{avatar: string, entity: object}[]} */
+            const removedHeld = [];
+            /** @type {string[]} */
+            const removedRows = [];
+            const result = await runPrepared(prepared, 'delete', { deleteChats }, t`Bulk Delete`, async (line) => {
+                removedRows.push(line.avatar);
+                const character = held.get(line.avatar);
+                if (!character) return;
+                accountStorage.removeItem(`AlertRegex_${character.avatar}`);
+                accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
+                removeEntityTags(character.avatar);
+                for (const chat of pastChats.get(character.avatar) ?? []) {
+                    await eventSource.emit(event_types.CHAT_DELETED, chat.file_name.replace('.jsonl', ''));
+                }
+                await eventSource.emit(event_types.CHARACTER_DELETED, { id: undefined, character });
+                removedHeld.push({ avatar: character.avatar, entity: character });
             });
 
-        // The popup is in the DOM but not resolved yet; fill its avatar list once the selected characters are read.
-        import('./character-repository.js')
-            .then(({ characterRepository }) => characterRepository.getMany(characterIds))
-            .then((resolved) => {
-                const entities = characterIds.filter(avatar => resolved.has(avatar)).map(avatar => characterToEntity(resolved.get(avatar)));
-                buildAvatarList($('#bulk_delete_avatars_block'), entities);
-            })
-            .catch(error => console.error('Could not read the characters selected for deletion:', error));
+            if (prepared.containsCurrent) {
+                await removeCharacterFromUI(removedHeld);
+            } else {
+                for (const { avatar, entity } of removedHeld) charactersStore.reportRemoved(avatar, entity);
+                await getCharacters({ keepListPosition: true });
+            }
+            for (const avatar of removedRows) removeCharacterListRow(avatar);
 
-        return promise;
+            reportBulkProblems(t`Bulk Delete`, result);
+            if (result.done > 0) toastr.success(t`${result.done} character(s) deleted.`, t`Bulk Delete`);
+            await eventSource.emit(event_types.CHARACTERS_BULK_EDITED, { action: 'delete', done: result.done, failed: result.failed.length });
+            forgetDeletedCharactersInBrowser().catch(error => console.warn('Could not forget deleted characters in the browser:', error));
+        });
+
+        this.browseState();
     };
 
     /**
-     * Attaches and opens the tag menu
+     * Attaches and opens the tag menu for every selected character.
      */
-    handleContextMenuTag = () => {
-        CharacterContextMenu.tag(this.selectedCharacters);
+    handleContextMenuTag = async () => {
+        await this.#withPrepared(async (prepared) => {
+            await this.#bulkTagPopupHandler.showPrepared(prepared);
+            // The popup owns the job now and drops it when it closes.
+            return true;
+        });
         this.browseState();
     };
 
     addStateChangeCallback = callback => this.stateChangeCallbacks.push(callback);
 
     /**
-     * Clears internal character storage and
-     * removes visual highlight.
+     * Clears the selection and removes visual highlight.
      */
     clearSelectedCharacters = () => {
+        setAll(this.#selection, false);
+        Object.assign(this.lastSelected, { characterId: undefined, position: undefined, select: undefined });
         document.querySelectorAll('#' + BulkEditOverlay.containerId + ' .' + BulkEditOverlay.selectedClass)
             .forEach(element => element.classList.remove(BulkEditOverlay.selectedClass));
-        this.selectedCharacters.length = 0;
     };
 }
 

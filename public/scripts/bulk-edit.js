@@ -1,5 +1,5 @@
 import { characterGroupOverlay } from '../script.js';
-import { BulkEditOverlay, BulkEditOverlayState, CharacterContextMenu } from './BulkEditOverlay.js';
+import { BulkEditOverlayState, CharacterContextMenu } from './BulkEditOverlay.js';
 import { event_types, eventSource } from './events.js';
 
 let is_bulk_edit = false;
@@ -38,28 +38,10 @@ function onEditButtonClick() {
 }
 
 /**
- * Toggles the select state of all characters in bulk edit mode to selected. If all are selected, they'll be deselected.
+ * Selects every character the list shows (on every page, not just this one), or nothing when that is the selection.
  */
 function onSelectAllButtonClick() {
-    const characters = Array.from(document.querySelectorAll('#' + BulkEditOverlay.containerId + ' .' + BulkEditOverlay.characterClass));
-    let atLeastOneSelected = false;
-    for (const character of characters) {
-        const checked = $(character).find('.bulk_select_checkbox:checked').length > 0;
-        if (!checked && character instanceof HTMLElement) {
-            characterGroupOverlay.toggleSingleCharacter(character);
-            atLeastOneSelected = true;
-        }
-    }
-
-    if (!atLeastOneSelected) {
-        // If none was selected, trigger click on all to deselect all of them
-        for (const character of characters) {
-            const checked = $(character).find('.bulk_select_checkbox:checked') ?? false;
-            if (checked && character instanceof HTMLElement) {
-                characterGroupOverlay.toggleSingleCharacter(character);
-            }
-        }
-    }
+    characterGroupOverlay.toggleSelectAll();
 }
 
 /**
@@ -90,7 +72,8 @@ function enableBulkSelect() {
 
     $('#rm_print_characters_block').addClass('bulk_select');
     // We also need to disable the default click event for the character_select divs
-    $(document).on('click', '.bulk_select_checkbox', function (event) {
+    // Namespaced so that running this again for a newly drawn page doesn't stack another handler.
+    $(document).off('click.bulkSelect').on('click.bulkSelect', '.bulk_select_checkbox', function (event) {
         event.stopImmediatePropagation();
     });
 }
@@ -119,6 +102,10 @@ export function initBulkEdit() {
     $('#bulkDeleteButton').on('click', onDeleteButtonClick);
 
     const characterContextMenu = new CharacterContextMenu(characterGroupOverlay);
+    // Before the overlay's own handler, which marks the rows of a new page selected, checkboxes included.
+    eventSource.on(event_types.CHARACTER_PAGE_LOADED, () => {
+        if (is_bulk_edit) enableBulkSelect();
+    });
     eventSource.on(event_types.CHARACTER_PAGE_LOADED, characterGroupOverlay.onPageLoad);
     console.debug('Character context menu initialized', characterContextMenu);
 }

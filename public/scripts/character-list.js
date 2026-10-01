@@ -348,6 +348,27 @@ const PAGE_WANT = ['rows', 'total', 'hidden'];
 /** @type {Entity[]} */
 let renderedPageEntities = [];
 
+/**
+ * @typedef {object} CharacterListPageContext
+ * @property {{ filter: object, sort: object|undefined } | null} query The `/query` filter and sort the drawn page came from.
+ * @property {string} queryKey `query` as a string, to tell whether a later page came from the same list.
+ * @property {number} pageOffset The position in the list of the drawn page's first row (folder tiles not counted).
+ * @property {number} total How many rows the list has.
+ * @property {boolean} totalApprox Whether `total` is an estimate.
+ */
+
+/** @type {CharacterListPageContext} */
+let listPageContext = { query: null, queryKey: '', pageOffset: 0, total: 0, totalApprox: false };
+
+/**
+ * Which list the drawn page belongs to and where in it, for the bulk selection. Each drawn character row carries its
+ * position in the list as `data-list-position`.
+ * @returns {CharacterListPageContext}
+ */
+export function getCharacterListPageContext() {
+    return listPageContext;
+}
+
 function replaceRenderedCharacterEntity(previousId, character) {
     renderedPageEntities = renderedPageEntities.map(entity =>
         entity.type === 'character' && entity.id === previousId ? characterToEntity(character) : entity);
@@ -404,19 +425,25 @@ export async function printCharacters(fullRefresh = false) {
             const restBlock = getFolderTilesRestBlock();
             const lastTileIndex = data.findLastIndex(i => i.type === 'tag');
             if (restBlock && lastTileIndex === -1) fragment.appendChild(restBlock);
+            // Folder tiles aren't rows of the list, so they don't count.
+            let position = listPageContext.pageOffset;
             for (const [index, i] of data.entries()) {
                 switch (i.type) {
                     case 'character': {
                         const existingRow = existingCharacterRows.get(i.item.avatar);
+                        let row;
                         if (existingRow) {
                             existingCharacterRows.delete(i.item.avatar);
-                            fragment.appendChild(updateCharacterBlock(existingRow, i.item, i.id));
+                            row = updateCharacterBlock(existingRow, i.item, i.id);
                         } else {
-                            fragment.appendChild(getCharacterBlock(i.item, i.id).get(0));
+                            row = getCharacterBlock(i.item, i.id).get(0);
                         }
+                        row.setAttribute('data-list-position', String(position++));
+                        fragment.appendChild(row);
                         break;
                     }
                     case 'group':
+                        position++;
                         fragment.appendChild(getGroupBlock(i.item).get(0));
                         break;
                     case 'tag':
@@ -538,6 +565,13 @@ export async function printCharacters(fullRefresh = false) {
                         saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
                         pageTotalApprox = isApproxTotal(result.total);
                         pageHidden = result.hidden ?? 0;
+                        listPageContext = {
+                            query: { filter, sort },
+                            queryKey: JSON.stringify({ filter, sort }),
+                            pageOffset: (page - 1) * requestedPageSize,
+                            total: saveCharactersTotal,
+                            totalApprox: pageTotalApprox,
+                        };
                         if (result.searchBackend !== undefined) showSearchBackend(result.searchBackend);
                         ajaxParams.success({ rows: [...folderTiles, ...pageEntities], total: result.total });
                     })

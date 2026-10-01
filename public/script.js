@@ -12627,7 +12627,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true, [DELET
  * It also ensures to save the settings after all the operations.
  * @param {{avatar: string, entity: object}[]} [removedCharacters] The just-deleted characters, so charactersStore can report exactly what happened instead of a generic reset.
  */
-async function removeCharacterFromUI(removedCharacters = []) {
+export async function removeCharacterFromUI(removedCharacters = []) {
     preserveNeutralChat();
     await clearChat();
     resetChatState();
