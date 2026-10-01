@@ -142,7 +142,8 @@ async function askCharacter(args, text) {
 
     // Captured by avatar, not this_chid: this_chid is an array index that can go stale by the time
     // restoreCharacter runs, since it's only called back after the async Generate() below.
-    const prevAvatar = getCurrentCharacter()?.avatar;
+    const prevCharacter = getCurrentCharacter();
+    const prevAvatar = prevCharacter?.avatar;
 
     const character = await findCharAsync({ name: args?.name });
     if (!character) {
@@ -168,8 +169,9 @@ async function askCharacter(args, text) {
         }
 
         if (prevAvatar !== undefined) {
-            setCharacterId(charactersStore.get(prevAvatar));
-            setCharacterName(charactersStore.get(prevAvatar)?.name);
+            // The page may have let go of it while the other character was selected; the object kept here is taken in again.
+            setCharacterId(charactersStore.get(prevAvatar) ?? prevCharacter);
+            setCharacterName(getCurrentCharacter()?.name);
         } else {
             setCharacterId(undefined);
             setCharacterName(neutralCharacterName);
@@ -299,7 +301,7 @@ async function goToCharacterCallback(_, name) {
 
     const character = await findCharAsync({ name: name });
     if (character) {
-        await openChat(character.avatar);
+        await openChat(character);
         setActiveCharacter(character.avatar);
         setActiveGroup(null);
         return character.name;
@@ -315,9 +317,10 @@ async function goToCharacterCallback(_, name) {
     return '';
 }
 
-async function openChat(avatar) {
+/** @param {Character} character */
+async function openChat(character) {
     resetSelectedGroup();
-    setCharacterId(avatar);
+    setCharacterId(character);
     await delay(1);
     await reloadCurrentChat();
 }

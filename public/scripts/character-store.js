@@ -117,8 +117,22 @@ onAnyEntityStoreChange(store => {
 });
 
 /**
+ * Makes the page hold a character it was handed (one read from the server or the cache), so it can be selected.
+ * A character already held is kept as it is.
+ * @param {Character} character
+ * @returns {Character} the held character
+ */
+export function holdCharacter(character) {
+    const held = charactersStore.get(character.avatar);
+    if (held) return held;
+    charactersStore.create(character);
+    return character;
+}
+
+/**
  * Sets the currently selected character, keyed by avatar (`this_avatar`, the source of truth).
- * @param {string|object|undefined} value A character avatar, a character object, or undefined to clear.
+ * @param {string|object|undefined} value A character avatar, a character object, or undefined to clear. An avatar
+ * must be one the page holds; a character object the page doesn't hold is taken in.
  */
 export function setCharacterId(value) {
     switch (typeof value) {
@@ -129,6 +143,7 @@ export function setCharacterId(value) {
             // Identify by avatar rather than by object reference - the object may be a fresh reload of the
             // same character (different reference, same avatar), which should still resolve.
             const avatar = value?.avatar;
+            if (typeof avatar === 'string' && avatar !== '') holdCharacter(value);
             this_avatar = (avatar !== undefined && charactersStore.has(avatar)) ? avatar : undefined;
             break;
         }

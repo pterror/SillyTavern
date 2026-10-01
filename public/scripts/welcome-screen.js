@@ -17,7 +17,6 @@ import {
     selectCharacterByAvatar,
     system_avatar,
     system_message_types,
-    unshallowCharacter,
     updateRemoteChatName,
 } from '../script.js';
 import { getCharacters, printCharactersDebounced } from './character-list.js';
@@ -25,6 +24,7 @@ import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
+import { characterRepository } from './character-repository.js';
 import { event_types, eventSource } from './events.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { deleteGroupChatByName, getGroupAvatar, groupsStore, is_group_generating, openGroupById, openGroupChat } from './group-chats.js';
@@ -199,19 +199,29 @@ class PinnedChatsManager {
     }
 }
 
+/**
+ * The avatar of the character set as the welcome page assistant, or the default one's. Not checked against the
+ * library: the page holds only some characters. {@link loadPermanentAssistant} checks it.
+ * @returns {string}
+ */
 export function getPermanentAssistantAvatar() {
-    const assistantAvatar = accountStorage.getItem(assistantAvatarKey);
-    if (assistantAvatar === null) {
-        return defaultAssistantAvatar;
-    }
+    return accountStorage.getItem(assistantAvatarKey) ?? defaultAssistantAvatar;
+}
 
-    const character = charactersStore.get(assistantAvatar);
-    if (character === undefined) {
-        accountStorage.removeItem(assistantAvatarKey);
-        return defaultAssistantAvatar;
+/**
+ * The welcome page assistant's full card. A chosen assistant that no longer exists is forgotten, and the default
+ * one is used instead.
+ * @returns {Promise<Character|undefined>} undefined when the assistant doesn't exist (the default one not yet
+ *   created). Throws when the server can't answer.
+ */
+async function loadPermanentAssistant() {
+    const avatar = getPermanentAssistantAvatar();
+    const character = await characterRepository.full(avatar);
+    if (character || avatar === defaultAssistantAvatar) {
+        return character;
     }
-
-    return assistantAvatar;
+    accountStorage.removeItem(assistantAvatarKey);
+    return characterRepository.full(defaultAssistantAvatar);
 }
 
 /**
@@ -241,18 +251,14 @@ export async function openWelcomeScreen({ force = false, expand = false } = {}) 
     }
 
     await sendWelcomePanel(recentChats, expand);
-    await unshallowPermanentAssistant();
-    sendAssistantMessage();
+    let assistant;
+    try {
+        assistant = await loadPermanentAssistant();
+    } catch (error) {
+        console.error('Could not load the welcome page assistant:', error);
+    }
+    sendAssistantMessage(assistant);
     sendWelcomePrompt();
-}
-
-/**
- * Makes sure the assistant character has all data loaded.
- * @returns {Promise<void>}
- */
-async function unshallowPermanentAssistant() {
-    const assistantAvatar = getPermanentAssistantAvatar();
-    await unshallowCharacter(assistantAvatar);
 }
 
 /**
@@ -270,9 +276,8 @@ function getAssistantGreeting(character) {
     return getRegexedString(character.first_mes || '', regex_placement.AI_OUTPUT, { depth: 0 }) || defaultGreeting;
 }
 
-function sendAssistantMessage() {
-    const currentAssistantAvatar = getPermanentAssistantAvatar();
-    const character = charactersStore.get(currentAssistantAvatar);
+/** @param {Character|undefined} character The assistant, if it exists */
+function sendAssistantMessage(character) {
     const name = character ? character.name : neutralCharacterName;
     const avatar = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
     const greeting = getAssistantGreeting(character);
@@ -471,14 +476,12 @@ async function sendWelcomePanel(chats, expand = false) {
  * @param {string} fileName Chat file name
  */
 async function openRecentCharacterChat(avatarId, fileName) {
-    const character = charactersStore.get(avatarId);
-    if (!character) {
-        console.error(`Character not found for avatar ID: ${avatarId}`);
-        return;
-    }
-
     try {
+        // Reads the character when the page doesn't hold it, and reports one that doesn't exist.
         await selectCharacterByAvatar(avatarId);
+        if (getCurrentCharacter()?.avatar !== avatarId) {
+            return;
+        }
         setActiveCharacter(avatarId);
         saveSettingsDebounced('active_character', 'active_group');
         const currentChatId = getCurrentChatId();
@@ -520,13 +523,25 @@ async function openRecentGroupChat(groupId, fileName) {
 }
 
 /**
+ * @param {string} avatarId
+ * @returns {Promise<boolean>} false when the character doesn't exist, or the server can't say
+ */
+async function recentChatCharacterExists(avatarId) {
+    try {
+        return (await characterRepository.get(avatarId)) !== undefined;
+    } catch (error) {
+        console.error('Could not look up the character of a recent chat:', avatarId, error);
+        return false;
+    }
+}
+
+/**
  * Renames a recent character chat.
  * @param {string} avatarId Avatar file name
  * @param {string} fileName Chat file name
  */
 async function renameRecentCharacterChat(avatarId, fileName) {
-    const character = charactersStore.get(avatarId);
-    if (!character) {
+    if (!await recentChatCharacterExists(avatarId)) {
         console.error(`Character not found for avatar ID: ${avatarId}`);
         return;
     }
@@ -588,8 +603,7 @@ async function renameRecentGroupChat(groupId, fileName) {
  * @param {string} fileName Chat file name
  */
 async function deleteRecentCharacterChat(avatarId, fileName) {
-    const character = charactersStore.get(avatarId);
-    if (!character) {
+    if (!await recentChatCharacterExists(avatarId)) {
         console.error(`Character not found for avatar ID: ${avatarId}`);
         return;
     }
@@ -770,8 +784,17 @@ async function getRecentChats() {
         return [];
     }
 
+    // The page holds only some characters; the ones these chats belong to are read in one request.
+    const avatars = [...new Set(data.map(chat => chat.avatar).filter(avatar => typeof avatar === 'string' && avatar !== ''))];
+    /** @type {Map<string, Character>} */
+    let charactersByAvatar = new Map();
+    try {
+        charactersByAvatar = avatars.length > 0 ? await characterRepository.getMany(avatars) : new Map();
+    } catch (error) {
+        console.error('Could not read the characters of the recent chats:', error);
+    }
     const dataWithEntities = data
-        .map(chat => ({ chat, character: charactersStore.get(chat.avatar), group: groupsStore.get(chat.group) }))
+        .map(chat => ({ chat, character: charactersByAvatar.get(chat.avatar), group: groupsStore.get(chat.group) }))
         .filter(t => t.character || t.group)
         .sort((a, b) => {
             const isAPinned = PinnedChatsManager.isPinned(a.chat);
@@ -806,8 +829,15 @@ async function getRecentChats() {
 }
 
 export async function openPermanentAssistantChat({ tryCreate = true, created = false } = {}) {
-    const avatar = getPermanentAssistantAvatar();
-    const character = charactersStore.get(avatar);
+    let character;
+    try {
+        character = await loadPermanentAssistant();
+    } catch (error) {
+        console.error('Could not look up the welcome page assistant:', error);
+        toastr.error(t`Failed to open permanent assistant chat. See console for details.`);
+        return;
+    }
+    const avatar = character?.avatar ?? getPermanentAssistantAvatar();
     if (!character) {
         if (!tryCreate) {
             console.error(`Character not found for avatar ID: ${avatar}. Cannot create.`);
@@ -870,14 +900,18 @@ async function createPermanentAssistant() {
 }
 
 export async function openPermanentAssistantCard() {
-    const avatar = getPermanentAssistantAvatar();
-    const character = charactersStore.get(avatar);
+    let character;
+    try {
+        character = await loadPermanentAssistant();
+    } catch (error) {
+        console.error('Could not look up the welcome page assistant:', error);
+    }
     if (!character) {
         toastr.info(t`Assistant not found. Try sending a chat message.`);
         return;
     }
 
-    await selectCharacterByAvatar(avatar);
+    await selectCharacterByAvatar(character.avatar);
 }
 
 /**

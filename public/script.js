@@ -12,7 +12,7 @@ import {
 } from './lib.js';
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
-import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
+import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too). Extensions get the characters
 // they are shown, not every character the page holds.
@@ -6669,6 +6669,12 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             setCharacterId(undefined);
             // Reload characters list
             await getCharacters({ silent: true, skipPrint: true });
+            // A sync only refreshes characters the page already holds; the renamed one comes in under its new key.
+            if (!charactersStore.has(newAvatar)) {
+                const { characterRepository } = await import('./scripts/character-repository.js');
+                const renamed = await characterRepository.get(newAvatar);
+                if (renamed) holdCharacter(renamed);
+            }
             charactersStore.reportRenamed(oldAvatar, newAvatar);
             renameCharacterListRow(oldAvatar, newAvatar);
 
@@ -12124,6 +12130,19 @@ function applyImportedCharacter(character) {
 }
 
 /**
+ * Whether a character with this avatar exists. A check the server can't answer counts as no: it only decides how
+ * the import is reported and whether a cached thumbnail is reloaded.
+ * @param {string} avatar
+ * @returns {Promise<boolean>}
+ */
+async function characterExistsOnServer(avatar) {
+    if (charactersStore.has(avatar)) return true;
+    const { checkCharactersExistOrNull } = await import('./scripts/character-existence-check.js');
+    const result = await checkCharactersExistOrNull([avatar]);
+    return result?.[avatar] === true;
+}
+
+/**
  * Selects the given imported char
  * @param {string} charId char to select
  */
@@ -12153,7 +12172,8 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
         return;
     }
 
-    const exists = preserveFileName ? charactersStore.get(preserveFileName) : undefined;
+    // Whether the import replaces a character: asked of the server, since the page holds only some characters.
+    const exists = preserveFileName ? await characterExistsOnServer(preserveFileName) : false;
 
     const format = ext[1].toLowerCase();
     $('#character_import_file_type').val(format);

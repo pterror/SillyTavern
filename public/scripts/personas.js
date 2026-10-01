@@ -771,16 +771,32 @@ export function buildPersonaAvatarList(block, personas, { empty = true, interact
     buildAvatarList($(block), personaEntities, { empty: empty, interactable: interactable, highlightFavs: highlightFavs });
 }
 
+/** Counts draws of the persona connections list, so an older draw that waited on the server doesn't win. */
+let connectionsListDrawId = 0;
+
 /**
  * Displays avatar connections for the current persona.
  * Converts connections to entities and populates the avatar list. Shows a message if no connections are found.
  */
-export function updatePersonaConnectionsAvatarList() {
+export async function updatePersonaConnectionsAvatarList() {
+    const drawId = ++connectionsListDrawId;
     /** @type {PersonaConnection[]} */
     const connections = personaStore.get(user_avatar)?.connections ?? [];
+    // The page holds only some characters; the connected ones it doesn't hold are read in one request.
+    const unheld = connections.filter(connection => connection.type === 'character' && !charactersStore.has(connection.id)).map(connection => connection.id);
+    /** @type {Map<string, Character>} */
+    let read = new Map();
+    if (unheld.length > 0) {
+        try {
+            read = await characterRepository.getMany(unheld);
+        } catch (error) {
+            console.error('Could not read the characters connected to the persona:', error);
+        }
+        if (drawId !== connectionsListDrawId) return;
+    }
     const entities = connections.map(connection => {
         if (connection.type === 'character') {
-            const character = charactersStore.get(connection.id);
+            const character = charactersStore.get(connection.id) ?? read.get(connection.id);
             if (character) return characterToEntity(character);
         }
         if (connection.type === 'group') {
@@ -872,7 +888,7 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
                 saveSettingsDebounced('power_user.persona_data');
                 updatePersonaConnectionsAvatarList();
                 if (power_user.persona_show_notifications) {
-                    const name = targetedChar.type == 'character' ? charactersStore.get(targetedChar.id)?.name : groups[targetedChar.id]?.name;
+                    const name = (targetedChar.type == 'character' ? charactersStore.get(targetedChar.id)?.name : groups[targetedChar.id]?.name) ?? targetedChar.id;
                     toastr.info(t`All connections to ${name} have been removed.`, t`Personas Unlocked`);
                 }
             },
