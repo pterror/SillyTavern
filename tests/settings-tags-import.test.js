@@ -101,6 +101,8 @@ describe('migrateSettingsTagsIfNeeded', () => {
         const tagsText = writeKeyFile('tags', tags);
         const tagMapText = writeKeyFile('tag_map', tagMap);
 
+        // As in MIGRATION_PASSES: until the column fill has run, a new tag gets no sort_order of its own.
+        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         await metadataDb.migrateSettingsTagsIfNeeded(directories);
 
         const defs = await definitionsById();
