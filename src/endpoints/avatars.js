@@ -47,6 +47,31 @@ router.post('/delete', getFileNameValidationFunction('avatar'), function (reques
     return response.sendStatus(404);
 });
 
+/**
+ * Makes a persona image from a character's card image, cut and sized as an upload is, without the image passing
+ * through the page. Body: `{ avatar, overwrite_name }`. Answers `{ path }`.
+ */
+router.post('/from-character', getFileNameValidationFunction('overwrite_name'), async (request, response) => {
+    const { avatar, overwrite_name: overwriteName } = request.body ?? {};
+    if (typeof avatar !== 'string' || !avatar || avatar !== sanitize(avatar) || typeof overwriteName !== 'string' || !overwriteName) {
+        return response.sendStatus(400);
+    }
+    const cardPath = path.join(request.user.directories.characters, avatar);
+    if (!fs.existsSync(cardPath)) return response.sendStatus(404);
+
+    try {
+        const image = await applyAvatarCropResize(await Jimp.read(cardPath), undefined);
+        const filename = sanitize(overwriteName);
+        invalidateThumbnail(request.user.directories, 'persona', filename);
+        cacheBuster.bust(request, response);
+        writeFileAtomicSync(path.join(request.user.directories.avatars, filename), image);
+        return response.send({ path: filename });
+    } catch (err) {
+        console.error('Error making a persona image from a character:', err);
+        return response.status(400).send('Is not a valid image');
+    }
+});
+
 router.post('/upload', getFileNameValidationFunction('overwrite_name'), async (request, response) => {
     if (!request.file) return response.sendStatus(400);
 
