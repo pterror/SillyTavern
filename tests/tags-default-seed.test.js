@@ -71,8 +71,12 @@ function writeKeyFile(key, value) {
     fs.writeFileSync(path.join(directories.root, 'settings', `${key}.json`), JSON.stringify(value, null, 4));
 }
 
-/** The migration worker's two import passes, in MIGRATION_PASSES order. */
+/**
+ * The migration worker's two import passes, in MIGRATION_PASSES order, after the column fill that precedes them
+ * there: until that fill has run, a new tag gets no sort_order of its own.
+ */
 async function runImportPasses() {
+    await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
     await metadataDb.migrateTagsJsonIfNeeded(directories);
     await metadataDb.migrateSettingsTagsIfNeeded(directories);
 }
