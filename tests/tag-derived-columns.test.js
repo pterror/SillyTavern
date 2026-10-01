@@ -351,7 +351,7 @@ function planOf({ sql, params }) {
 describe('createTagDefinition', () => {
     test('an id that already has a row is refused as exists, and nothing is written', async () => {
         await openStore();
-        expect(await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' })).toEqual({ refused: [] });
+        expect(await metadataDb.createTagDefinition(directories, { id: 'a', name: 'A' })).toEqual({ refused: [], tag: { id: 'a', name: 'A', sort_order: 1 } });
         const watcher = watchWrites();
         try {
             expect(await metadataDb.createTagDefinition(directories, { id: 'a', name: 'Other', sort_order: 9 })).toEqual({ refused: [{ id: 'a', reason: 'exists' }] });

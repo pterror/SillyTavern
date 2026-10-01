@@ -21,7 +21,6 @@ import { EntityStore, onAnyEntityStoreChange } from './entity-store.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
-import { isMobile } from './RossAscends-mods.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { debounce_timeout } from './constants.js';
 import { INTERACTABLE_CONTROL_CLASS } from './keyboard.js';
@@ -3167,18 +3166,32 @@ function removeTagFromMap(tagId, characterId = null) {
  */
 const FIND_TAG_RESULT_LIMIT = 50;
 
+/**
+ * The tag input's suggestions: names holding what was typed, in the tag sort mode's order, leaving out the tags
+ * already on the list. The typed text itself comes first when no tag has that name, so it can be created; when the
+ * tag with that name is already on the list, nothing is offered for it.
+ * @param {{ term: string }} request
+ * @param {(names: string[]) => void} resolve
+ * @param {string} listSelector
+ */
 function findTag(request, resolve, listSelector) {
-    const skipIds = [...($(listSelector).find('.tag').map((_, el) => $(el).attr('id')))];
-    const haystack = tags.filter(t => !skipIds.includes(t.id)).sort(compareTagsForSort).map(t => t.name);
-    const needle = request.term;
-    const hasExactMatch = haystack.findIndex(x => equalsIgnoreCaseAndAccents(x, needle)) !== -1;
-    const result = haystack.filter(x => includesIgnoreCaseAndAccents(x, needle)).slice(0, FIND_TAG_RESULT_LIMIT);
+    const skipIds = new Set($(listSelector).find('.tag').map((_, el) => $(el).attr('id')).get());
+    const needle = String(request.term ?? '');
+    const pageSize = Math.min(FIND_TAG_RESULT_LIMIT + skipIds.size, TAG_READ_MAX_IDS);
 
-    if (request.term && !hasExactMatch) {
-        result.unshift(request.term);
-    }
-
-    resolve(result);
+    Promise.all([
+        searchTagsByName(needle, { pageSize }),
+        needle.trim() ? findTagByName(needle) : null,
+    ]).then(([page, exact]) => {
+        const rows = page?.rows
+            ?? tags.filter(t => includesIgnoreCaseAndAccents(t.name, needle)).sort(compareTagsForSort);
+        const result = rows.filter(t => !skipIds.has(t.id)).map(t => tagsStore.get(t.id)?.name ?? t.name).slice(0, FIND_TAG_RESULT_LIMIT);
+        if (exact && !skipIds.has(exact.id) && !result.some(name => equalsIgnoreCaseAndAccents(name, exact.name))) {
+            result.unshift(exact.name);
+        }
+        if (needle && !exact) result.unshift(needle);
+        resolve(result);
+    });
 }
 
 /**
@@ -3208,34 +3221,12 @@ function selectTag(event, ui, listSelector, { tagListOptions = {} } = {}) {
         applyCharacterTagsToMessageDivs();
     };
 
-    const existing = getTag(tagName);
-    if (existing) {
-        add(existing);
-    } else {
-        createNewTag(tagName).then(tag => {
-            if (tag) add(tag);
-        });
-    }
+    createNewTags([tagName]).then(([tag]) => {
+        if (tag) add(tag);
+    });
 
     // need to return false to keep the input clear
     return false;
-}
-
-/**
- * Get a list of existing tags matching a list of provided new tag names
- *
- * @param {string[]} newTags - A list of strings representing tag names
- * @returns {Tag[]} List of existing tags
- */
-function getExistingTags(newTags) {
-    let existingTags = [];
-    for (let tagName of newTags) {
-        let foundTag = getTag(tagName);
-        if (foundTag) {
-            existingTags.push(foundTag);
-        }
-    }
-    return existingTags;
 }
 
 /**
@@ -3310,16 +3301,19 @@ async function importTags(character, { importSetting = null, suppressSuccessToas
 async function handleTagImport(character, { importSetting = null } = {}) {
     /** @type {string[]} */
     const alreadyAssignedTags = getTagIdsForKey(character.avatar);
-    const importTags = character.tags.map(t => t.trim()).filter(t => t)
+    // Enough names that the first ANTI_TROLL_MAX_TAGS not assigned yet are among them.
+    const candidateNames = character.tags.map(t => t.trim()).filter(t => t)
         .filter(t => !IMPORT_EXLCUDED_TAGS.includes(t))
+        .slice(0, ANTI_TROLL_MAX_TAGS + alreadyAssignedTags.length);
+    const found = await findTagsByNames(candidateNames);
+    const importTags = candidateNames
         .filter(t => {
-            const existingTag = getTag(t);
+            const existingTag = found.get(t);
             return !existingTag || !alreadyAssignedTags.includes(existingTag.id);
         })
         .slice(0, ANTI_TROLL_MAX_TAGS);
-    const existingTags = getExistingTags(importTags);
-    const newTags = importTags.filter(t => !existingTags.some(existingTag => existingTag.name.toLowerCase() === t.toLowerCase()))
-        .map(newTag);
+    const existingTags = importTags.map(t => found.get(t)).filter(Boolean);
+    const newTags = importTags.filter(t => !found.get(t)).map(newTagWithoutOrder);
     const folderTags = getOpenBogusFolders();
 
     // Choose the setting for this dialog. First check override, then saved setting or finally use "ASK".
@@ -3418,6 +3412,150 @@ function getTag(tagName) {
     return tags.find(t => equalsIgnoreCaseAndAccents(t.name, tagName));
 }
 
+/** At most this many distinct names per /api/tags/by-names request; more is a 400. */
+const TAG_BY_NAMES_MAX = 100;
+
+/**
+ * The tag each name stands for on the server, as getTag() matches names, and a tag being deleted with a merge target
+ * standing for that target. A tag found that this tab doesn't have is added to `tags`. If the server can't be asked,
+ * the names are looked up in the tags this tab has.
+ * @param {string[]} names
+ * @returns {Promise<Map<string, Tag | null>>} for each name as given
+ */
+export async function findTagsByNames(names) {
+    /** @type {Map<string, Tag | null>} */
+    const found = new Map();
+    const distinct = [...new Set(names)];
+    for (let i = 0; i < distinct.length; i += TAG_BY_NAMES_MAX) {
+        const slice = distinct.slice(i, i + TAG_BY_NAMES_MAX);
+        let answer = null;
+        try {
+            answer = await postTagsRead('/api/tags/by-names', { names: slice });
+        } catch (error) {
+            console.error('Could not look up tags by name:', error);
+        }
+        if (!Array.isArray(answer?.tags)) {
+            for (const name of slice) found.set(name, getTag(name) ?? null);
+            continue;
+        }
+        mergeServerTagDefinitions(answer.tags.map(entry => entry?.tag).filter(isTagObject));
+        for (const { name, tag } of answer.tags) {
+            found.set(name, isTagObject(tag) ? (tagsStore.get(tag.id) ?? null) : null);
+        }
+    }
+    return found;
+}
+
+/**
+ * @param {string} name
+ * @returns {Promise<Tag | null>} the tag the name stands for (findTagsByNames())
+ */
+async function findTagByName(name) {
+    return (await findTagsByNames([name])).get(name) ?? null;
+}
+
+/**
+ * The definitions of `ids`: the ones this tab has, and the rest read from the server into `tags`.
+ * @param {string[]} ids
+ * @returns {Promise<{ tags: Map<string, Tag>, gone: Set<string> } | null>} `gone`: ids no tag has. An id in neither is a
+ *   tag whose stored definition can't be read. null if a read failed.
+ */
+export async function readTagsForIds(ids) {
+    /** @type {Map<string, Tag>} */
+    const found = new Map();
+    /** @type {Set<string>} */
+    const gone = new Set();
+    const missing = [];
+    for (const id of new Set(ids)) {
+        const held = tagsStore.get(id);
+        if (held) found.set(id, held);
+        else missing.push(id);
+    }
+    for (let i = 0; i < missing.length; i += TAG_READ_MAX_IDS) {
+        const answer = await postTagsRead('/api/tags/by-ids', { ids: missing.slice(i, i + TAG_READ_MAX_IDS) }).catch((error) => {
+            console.error('Could not read tags by id:', error);
+            return null;
+        });
+        if (!answer || !Array.isArray(answer.tags) || !Array.isArray(answer.gone)) return null;
+        mergeServerTagDefinitions(answer.tags);
+        for (const id of answer.gone) gone.add(String(id));
+    }
+    for (const id of missing) {
+        const tag = tagsStore.get(id);
+        if (tag) found.set(id, tag);
+    }
+    return { tags: found, gone };
+}
+
+/** The order tag suggestions and pickers list tags in: the tag sort mode's. */
+function tagQuerySortField() {
+    const mode = power_user.tag_sort_mode;
+    return Object.values(tag_sort_mode).includes(mode) ? mode : tag_sort_mode.MANUAL;
+}
+
+/**
+ * One page of the tags whose names hold `term` anywhere, in the tag sort mode's order. The tags are not added to
+ * `tags`.
+ * @param {string} term - empty: every tag
+ * @param {object} [options]
+ * @param {number} [options.pageSize]
+ * @param {string | null} [options.cursor] - where an earlier page said the next one starts
+ * @returns {Promise<{ rows: Tag[], cursor: string | null } | null>} null if the read failed
+ */
+export async function searchTagsByName(term, { pageSize = FIND_TAG_RESULT_LIMIT, cursor = null } = {}) {
+    const contains = String(term ?? '').trim();
+    const answer = await postTagQuery({
+        filter: contains ? { contains } : {},
+        sort: { field: tagQuerySortField() },
+        pageSize,
+        cursor,
+    });
+    if (!answer || answer === 'invalid-cursor' || !Array.isArray(answer.rows)) return null;
+    return { rows: answer.rows.filter(isTagObject), cursor: answer.cursor ?? null };
+}
+
+/**
+ * Makes a single-choice select a search over tag names (searchTagsByName()), with more results loaded as its list is
+ * scrolled. An option's value is the tag's id and its text the tag's name.
+ * @param {JQuery<HTMLElement>} select
+ * @param {object} options
+ * @param {string} options.placeholder
+ * @param {JQuery<HTMLElement>} [options.dropdownParent]
+ * @param {string} [options.leaveOut] - a tag id not to offer
+ */
+function initTagSearchSelect(select, { placeholder, dropdownParent, leaveOut }) {
+    /** Where each search's next page starts, by page number and search text. */
+    const pageCursors = new Map();
+    select.select2({
+        width: '50%',
+        placeholder,
+        allowClear: true,
+        dropdownParent,
+        ajax: {
+            delay: 250,
+            data: (params) => ({ term: params.term ?? '', page: params.page ?? 1 }),
+            transport: (params, success, failure) => {
+                const { term, page } = params.data;
+                // A search typed over is aborted; its answer must not replace the newer one's.
+                let aborted = false;
+                searchTagsByName(term, { cursor: pageCursors.get(`${page}\n${term}`) ?? null }).then((answer) => {
+                    if (aborted) return;
+                    if (!answer) {
+                        failure();
+                        return;
+                    }
+                    if (answer.cursor) pageCursors.set(`${page + 1}\n${term}`, answer.cursor);
+                    success({
+                        results: answer.rows.filter(x => x.id !== leaveOut).map(x => ({ id: x.id, text: x.name })),
+                        pagination: { more: answer.cursor !== null },
+                    });
+                });
+                return { abort: () => { aborted = true; } };
+            },
+        },
+    });
+}
+
 /**
  * Creates of tags by name that the server hasn't answered yet, so a second request for a name waits for the first
  * instead of making another tag with it.
@@ -3426,7 +3564,7 @@ function getTag(tagName) {
 const tagNamesBeingCreated = [];
 
 /**
- * Gets the tag for each name, creating those no tag in this tab has. A new tag is in `tags` only once the server
+ * Gets the tag for each name, creating those no tag on the server has. A new tag is in `tags` only once the server
  * has stored it. Names that could not be created are left out, and listed to the user in one message.
  *
  * @param {string[]} tagNames
@@ -3436,9 +3574,10 @@ async function createNewTags(tagNames) {
     let storedAny = false;
     /** @type {string[]} */
     const failedNames = [];
+    const found = await findTagsByNames(tagNames);
 
     const results = await Promise.all(tagNames.map(async (tagName) => {
-        const existing = getTag(tagName);
+        const existing = found.get(tagName) ?? getTag(tagName);
         if (existing) return existing;
 
         const inFlight = tagNamesBeingCreated.find(x => equalsIgnoreCaseAndAccents(x.name, tagName));
@@ -3446,7 +3585,7 @@ async function createNewTags(tagNames) {
 
         const entry = { name: tagName, created: /** @type {Promise<Tag | null>} */ (null) };
         entry.created = (async () => {
-            const tag = newTag(tagName);
+            const tag = newTagWithoutOrder(tagName);
             const outcome = await createTagOnServer(tag);
             if (outcome === 'failed') failedNames.push(tagName);
             if (outcome !== 'stored') return null;
@@ -3480,7 +3619,7 @@ async function createNewTags(tagNames) {
  *   not be created, which the user has been told.
  */
 async function createNewTag(tagName) {
-    const existing = getTag(tagName);
+    const existing = await findTagByName(tagName);
     if (existing) {
         toastr.warning(`Cannot create new tag. A tag with the name already exists:<br />${escapeHtml(existing.name)}`, 'Creating Tag', { escapeHtml: false });
         return existing;
@@ -3490,20 +3629,8 @@ async function createNewTag(tagName) {
 }
 
 /**
- * Creates a new tag object with the given tag name and default properties
- *
- * Not to be confused with `createNewTag`, which actually creates the tag and adds it to the existing list of tags.
- * Use this one to create temporary tag objects, for example for drawing.
- *
- * @param {string} tagName - The name of the tag
- * @return {Tag} The newly created tag object
- */
-function newTag(tagName) {
-    return { ...newTagWithoutOrder(tagName), sort_order: Math.max(0, ...tags.map(t => t.sort_order)) + 1 };
-}
-
-/**
- * newTag() without a place in the manual order: the server gives it one when it creates the tag.
+ * A new tag object with default properties and no place in the manual order: the server gives it one when it creates
+ * the tag. Not to be confused with `createNewTag`, which creates the tag.
  * @param {string} tagName
  * @returns {Tag}
  */
@@ -4378,7 +4505,6 @@ function onTagRemoveClick(event) {
 // @ts-ignore
 function onTagInput(event) {
     let val = $(this).val();
-    if (getTag(String(val))) return;
     // @ts-ignore
     $(this).autocomplete('search', val);
 }
@@ -5181,34 +5307,31 @@ function updateDrawTagFolder(element, tag) {
 async function onTagDeleteClick() {
     const id = $(this).closest('.tag_view_item').attr('id');
     const tag = tagsStore.get(id);
-    const otherTags = sortTags(tags.filter(x => x.id !== id).map(x => ({ id: x.id, name: x.name })));
 
-    const popupContent = $(await renderTemplateAsync('deleteTag', { otherTags }));
+    const popupContent = $(await renderTemplateAsync('deleteTag', {}));
 
     appendTagToList(popupContent.find('#tag_to_delete'), tag);
+    // Read from popupContent, not the document: the popup has left the DOM by the time its promise resolves. The
+    // select is one of popupContent's own top-level nodes, which find() alone doesn't search.
+    const mergeSelect = popupContent.find('#merge_tag_select').addBack('#merge_tag_select');
 
-    if (!isMobile()) {
-        popupContent.find('#merge_tag_select option[value=""]').remove();
-        popupContent.find('#merge_tag_select').select2({
-            width: '50%',
-            placeholder: 'Select tag to merge into',
-            allowClear: true,
-        }).val(null).trigger('change');
-    }
-
-    const result = await callGenericPopup(popupContent, POPUP_TYPE.CONFIRM);
+    const result = await callGenericPopup(popupContent, POPUP_TYPE.CONFIRM, '', {
+        // The popup is a modal dialog: a picker list put anywhere else would be drawn under it.
+        onOpen: (popup) => initTagSearchSelect(mergeSelect, {
+            placeholder: t`Search for a tag to merge into`,
+            dropdownParent: $(popup.dlg),
+            leaveOut: id,
+        }),
+    });
     if (result !== POPUP_RESULT.AFFIRMATIVE) {
         return;
     }
 
-    // Read from popupContent, not the document: the popup has left the DOM by the time its promise resolves. The
-    // select is one of popupContent's own top-level nodes, which find() alone doesn't search.
-    const mergeSelect = popupContent.find('#merge_tag_select').addBack('#merge_tag_select');
     const mergeTagId = mergeSelect.val() ? String(mergeSelect.val()) : null;
 
     const title = t`Delete Tag`;
     // The name the picker showed: this tab may have dropped the tag since.
-    const mergeTagName = mergeTagId ? (otherTags.find(x => x.id === mergeTagId)?.name ?? mergeTagId) : null;
+    const mergeTagName = mergeTagId ? (mergeSelect.find('option:selected').text() || mergeTagId) : null;
 
     const answer = await deleteTagOnServer(id, mergeTagId);
     if (!answer) {
@@ -6053,7 +6176,7 @@ function registerTagsSlashCommands() {
             toastr.warning('Tag name must be provided.');
             return null;
         }
-        const tag = getTag(tagName);
+        const tag = await findTagByName(tagName);
         if (tag) return tag;
         if (allowCreate) return createNewTag(tagName);
         toastr.warning(`Tag ${tagName} not found.`);

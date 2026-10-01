@@ -28,6 +28,7 @@ import {
     getTagsBucketMembers,
     getTagDefinitionsByIds,
     getGoneTagIds,
+    findTagsByNames,
     queryTags,
     decodeTagQueryCursor,
     TAG_QUERY_SORTS,
@@ -39,10 +40,10 @@ import { writeBackpressured } from '../util.js';
 export const router = express.Router();
 
 /**
- * `{ tag, freeName }` → `{ result, refused: [{ id, reason: 'deleted' | 'exists' }], tag }`. With `freeName: true`,
- * `tag.name` is only a base and the server picks a name no other tag has (`name`, else `name #1`, `name #2`, ...);
- * the answer's `tag` is then the definition as stored, when it was. 503 with reason 'tag-names-not-indexed', and
- * nothing written, until tag names can be looked up.
+ * `{ tag, freeName }` → `{ result, refused: [{ id, reason: 'deleted' | 'exists' }], tag }`. `tag` is the definition
+ * as stored, when it was; a tag sent with no `sort_order` gets the next place in the manual order. With
+ * `freeName: true`, `tag.name` is only a base and the server picks a name no other tag has (`name`, else `name #1`,
+ * `name #2`, ...); 503 with reason 'tag-names-not-indexed', and nothing written, until tag names can be looked up.
  */
 router.post('/create', async (request, response) => {
     try {
@@ -441,6 +442,35 @@ router.post('/by-ids', async (request, response) => {
         response.send({ tags, gone });
     } catch (err) {
         console.error('Could not read tag definitions by id', err);
+        response.sendStatus(500);
+    }
+});
+
+const BY_NAMES_MAX_NAMES = 100;
+
+/**
+ * `{ names }` → `{ tags: [{ name, tag }] }`, one entry per distinct name in the order given: the tag each name stands
+ * for (findTagsByNames()), or null. 503 with reason 'tag-names-not-indexed' until tag names can be looked up.
+ */
+router.post('/by-names', async (request, response) => {
+    try {
+        const names = request.body?.names;
+        if (!Array.isArray(names) || !names.every(name => typeof name === 'string')) {
+            return response.status(400).send({ error: 'names must be an array of strings' });
+        }
+        if (new Set(names).size > BY_NAMES_MAX_NAMES) {
+            return response.status(400).send({ error: `at most ${BY_NAMES_MAX_NAMES} distinct names per request` });
+        }
+        const found = await findTagsByNames(request.user.directories, names);
+        if (found === null) {
+            return response.status(503).send({ error: 'Character metadata store is unavailable' });
+        }
+        if (found === 'names-not-ready') {
+            return response.status(503).send({ error: 'Tag names are still being indexed', reason: 'tag-names-not-indexed' });
+        }
+        response.send({ tags: found });
+    } catch (err) {
+        console.error('Could not look up tags by name', err);
         response.sendStatus(500);
     }
 });
