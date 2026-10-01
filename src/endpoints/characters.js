@@ -36,7 +36,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -3777,6 +3777,339 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
     } catch (error) {
         console.error(error);
         return response.send({ error: true });
+    }
+});
+
+/** Rows per `/query` page the bulk selection walks. Within MAX_QUERY_PAGE_SIZE. */
+const BULK_QUERY_PAGE_SIZE = 1000;
+/** The most avatars a selection may name one by one, and the most position ranges it may hold. */
+const BULK_MAX_NAMED = 10000;
+const BULK_MAX_RANGES = 1000;
+/** Avatars a prepared selection answers by name, for the page to show who is in it. */
+const BULK_SAMPLE_SIZE = 30;
+/** The actions `/bulk/run` carries out on each selected character. */
+const BULK_ACTIONS = new Set(['delete', 'fav', 'duplicate', 'tag-add', 'tag-remove', 'tag-reset', 'tag-import']);
+
+/** Hands the event loop back between batches, so a long bulk action holds no request up. */
+const bulkPause = () => new Promise(resolve => setImmediate(resolve));
+
+/**
+ * The avatars of the rows at positions `start` (inclusive) to `end` (exclusive) of a `/query` list, in batches, as
+ * the list shows them: same filter, same sort, groups counted in the positions and left out of the batches.
+ * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
+ * @param {{ filter?: object, sort?: object }} query
+ * @param {number} start
+ * @param {number} end
+ * @returns {AsyncGenerator<string[], void, undefined>}
+ */
+async function* walkQueryAvatars(user, query, start, end) {
+    let page = Math.floor(start / BULK_QUERY_PAGE_SIZE) + 1;
+    let position = (page - 1) * BULK_QUERY_PAGE_SIZE;
+    /** @type {string|undefined} */
+    let cursor;
+    while (position < end) {
+        const ask = async (/** @type {number} */ pageSize, /** @type {string|undefined} */ from) => {
+            const reply = await runQuery(user, { filter: query.filter ?? {}, sort: query.sort, page, pageSize, want: ['rows'], cursor: from });
+            if ('hashes' in reply || reply.status !== 200) {
+                throw new Error(`The list could not be read: ${'hashes' in reply ? 'hashes' : reply.status}`);
+            }
+            return reply.body;
+        };
+        let body = await ask(BULK_QUERY_PAGE_SIZE, cursor);
+        const rows = [...(body.rows ?? [])];
+        // A walked search stops at its work cap before the page is full; carry on from its cursor, as the page does.
+        while (body.more === true && typeof body.cursor === 'string' && rows.length < BULK_QUERY_PAGE_SIZE) {
+            body = await ask(BULK_QUERY_PAGE_SIZE - rows.length, body.cursor);
+            rows.push(...(body.rows ?? []));
+        }
+        cursor = typeof body.cursor === 'string' ? body.cursor : undefined;
+
+        const from = Math.max(0, start - position);
+        const to = Math.min(rows.length, end - position);
+        const avatars = rows.slice(from, to)
+            .map(row => row?.type ? (row.type === 'character' ? row.item?.avatar : undefined) : row?.avatar)
+            .filter(avatar => typeof avatar === 'string' && avatar);
+        if (avatars.length > 0) yield avatars;
+        if (rows.length < BULK_QUERY_PAGE_SIZE) return;
+        position += BULK_QUERY_PAGE_SIZE;
+        page++;
+        await bulkPause();
+    }
+}
+
+/**
+ * @param {unknown} value
+ * @returns {[number, number][] | null} Ranges of positions, both ends included, or `null` when malformed.
+ */
+function parseBulkRanges(value) {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > BULK_MAX_RANGES) return null;
+    /** @type {[number, number][]} */
+    const ranges = [];
+    for (const range of value) {
+        if (!Array.isArray(range) || range.length !== 2) return null;
+        const [a, b] = range.map(Number);
+        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return null;
+        ranges.push([Math.min(a, b), Math.max(a, b)]);
+    }
+    return ranges;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string[] | null} The avatars, or `null` when malformed.
+ */
+function parseBulkAvatars(value) {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > BULK_MAX_NAMED) return null;
+    if (!value.every(avatar => typeof avatar === 'string' && avatar && !forbiddenRegExp.test(avatar))) return null;
+    return /** @type {string[]} */ (value);
+}
+
+/**
+ * Fills a bulk job with a selection: every character matching `query` (`all`), or the characters at `ranges` of the
+ * list `query` gives; then less those at `excludeRanges`, plus `include`, less `exclude`. The client keeps `include`
+ * outside what `all` and `ranges` already hold, and `exclude` inside it.
+ * @param {{ directories: import('../users.js').UserDirectoryList, profile: { handle: string } }} user
+ * @param {string} job
+ * @param {{ query: { filter?: object, sort?: object } | null, all: boolean, ranges: [number, number][], excludeRanges: [number, number][], include: string[], exclude: string[] }} selection
+ * @returns {Promise<{ missing: string[] }>} `missing`: the avatars `include` named that no character has.
+ */
+async function fillBulkSelection(user, job, selection) {
+    const directories = user.directories;
+    const { query } = selection;
+
+    if (selection.all && query) {
+        const filter = /** @type {Record<string, any>} */ (query.filter ?? {});
+        const search = typeof filter.search === 'string' ? filter.search.trim() : '';
+        // Groups aren't characters, so a groups-only list selects none.
+        if (filter.group !== true) {
+            if (search) {
+                const charactersOnly = { filter: { ...filter, includeGroups: false, group: undefined }, sort: query.sort };
+                for await (const avatars of walkQueryAvatars(user, charactersOnly, 0, Infinity)) {
+                    await addToBulkSelection(directories, job, avatars);
+                }
+            } else {
+                const stream = await streamCharacterIdsMatching(directories, filter);
+                if (stream === null) throw new Error('The metadata store is unavailable');
+                for await (const avatars of stream) {
+                    await addToBulkSelection(directories, job, avatars);
+                    await bulkPause();
+                }
+            }
+        }
+    }
+    if (query) {
+        for (const [a, b] of selection.ranges) {
+            for await (const avatars of walkQueryAvatars(user, query, a, b + 1)) {
+                await addToBulkSelection(directories, job, avatars);
+            }
+        }
+        for (const [a, b] of selection.excludeRanges) {
+            for await (const avatars of walkQueryAvatars(user, query, a, b + 1)) {
+                await removeFromBulkSelection(directories, job, avatars);
+            }
+        }
+    }
+    await addToBulkSelection(directories, job, selection.include);
+    await removeFromBulkSelection(directories, job, selection.exclude);
+
+    const exists = selection.include.length > 0 ? await checkCharactersExist(directories, selection.include) : {};
+    return { missing: selection.include.filter(avatar => exists?.[avatar] === false) };
+}
+
+/**
+ * Fixes a selection in the store and says how many characters it holds. Body: `{ selection: { query?, all?,
+ * ranges?, excludeRanges?, include?, exclude? }, current? }`; `query` is the list's `{ filter, sort }` and is needed
+ * by `all` and the ranges; `current` is an avatar the answer says whether the selection holds. Answers `{ job, count,
+ * containsCurrent, sample, missing }`, `sample` being the first avatars of it and `missing` the avatars `include` named
+ * that no character has. The job is kept until `/bulk/drop`.
+ */
+router.post('/bulk/prepare', async function (request, response) {
+    const body = request.body ?? {};
+    const raw = body.selection;
+    if (!raw || typeof raw !== 'object') {
+        return response.status(400).send({ error: true, reason: 'selection-required' });
+    }
+    const query = raw.query && typeof raw.query === 'object' ? { filter: raw.query.filter ?? {}, sort: raw.query.sort } : null;
+    const ranges = parseBulkRanges(raw.ranges);
+    const excludeRanges = parseBulkRanges(raw.excludeRanges);
+    const include = parseBulkAvatars(raw.include);
+    const exclude = parseBulkAvatars(raw.exclude);
+    if (ranges === null || excludeRanges === null || include === null || exclude === null) {
+        return response.status(400).send({ error: true, reason: 'invalid-selection' });
+    }
+    const all = raw.all === true;
+    if ((all || ranges.length > 0 || excludeRanges.length > 0) && !query) {
+        return response.status(400).send({ error: true, reason: 'query-required' });
+    }
+
+    const job = await beginBulkSelection(request.user.directories);
+    if (job === null) {
+        return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+    }
+    try {
+        const { missing } = await fillBulkSelection(request.user, job, { query, all, ranges, excludeRanges, include, exclude });
+        const current = typeof body.current === 'string' ? body.current : undefined;
+        const { count, contains } = await describeBulkSelection(request.user.directories, job, current);
+        const sample = await readBulkSelectionPage(request.user.directories, job, { limit: BULK_SAMPLE_SIZE });
+        return response.send({ job, count, containsCurrent: contains, sample, missing });
+    } catch (err) {
+        console.error('[characters/bulk/prepare] The selection could not be read:', err);
+        await dropBulkSelection(request.user.directories, job);
+        return response.status(500).send({ error: true, reason: 'selection-failed' });
+    }
+});
+
+/**
+ * One page of a prepared selection, in avatar order. Body: `{ job, after? }`. Answers `{ avatars, more }`.
+ */
+router.post('/bulk/ids', async function (request, response) {
+    const { job, after } = request.body ?? {};
+    if (typeof job !== 'string' || !await bulkSelectionExists(request.user.directories, job)) {
+        return response.status(404).send({ error: true, reason: 'job-not-found' });
+    }
+    const limit = 500;
+    const avatars = await readBulkSelectionPage(request.user.directories, job, { after: typeof after === 'string' ? after : '', limit });
+    return response.send({ avatars, more: avatars.length === limit });
+});
+
+/** The tags every character of a prepared selection carries. Body: `{ job }`. Answers `{ tagIds }`. */
+router.post('/bulk/mutual-tags', async function (request, response) {
+    const { job } = request.body ?? {};
+    if (typeof job !== 'string' || !await bulkSelectionExists(request.user.directories, job)) {
+        return response.status(404).send({ error: true, reason: 'job-not-found' });
+    }
+    const tagIds = await mutualTagIdsOfBulkSelection(request.user.directories, job);
+    if (tagIds === null) {
+        return response.status(503).send({ error: true, reason: 'metadata-store-unavailable' });
+    }
+    return response.send({ tagIds });
+});
+
+/** Drops a prepared selection. Body: `{ job }`. */
+router.post('/bulk/drop', async function (request, response) {
+    const { job } = request.body ?? {};
+    if (typeof job === 'string') await dropBulkSelection(request.user.directories, job);
+    return response.sendStatus(204);
+});
+
+/**
+ * Carries out one bulk action on one character.
+ * @param {import('express').Request} request
+ * @param {string} action
+ * @param {string} avatar
+ * @param {Record<string, any>} options
+ * @returns {Promise<{ ok: boolean, error?: string, extra?: object }>}
+ */
+async function applyBulkAction(request, action, avatar, options) {
+    const directories = request.user.directories;
+    const tagIds = Array.isArray(options.tagIds) ? options.tagIds.filter(id => typeof id === 'string' && id) : [];
+    switch (action) {
+        case 'delete': {
+            const result = await deleteOneCharacter(request, avatar, options.deleteChats === true);
+            return result.ok ? { ok: true } : { ok: false, error: `status ${result.status}` };
+        }
+        case 'fav': {
+            const fav = await toggleCharacterFav(directories, avatar);
+            return fav === null ? { ok: false, error: 'not found' } : { ok: true, extra: { fav } };
+        }
+        case 'duplicate': {
+            const result = await duplicateOneCharacter(request, avatar);
+            return result.ok ? { ok: true, extra: { path: result.newAvatar } } : { ok: false, error: result.error };
+        }
+        case 'tag-add': {
+            for (const tagId of tagIds) {
+                const result = await assignEntityTag(directories, avatar, tagId);
+                if (result !== 'ok') return { ok: false, error: result === null ? 'store unavailable' : 'not found' };
+            }
+            return { ok: true };
+        }
+        case 'tag-remove': {
+            for (const tagId of tagIds) {
+                if (await unassignEntityTag(directories, avatar, tagId) !== 'ok') return { ok: false, error: 'store unavailable' };
+            }
+            return { ok: true };
+        }
+        case 'tag-reset': {
+            const carried = await getEntityTagIdsForMany(directories, [avatar], { type: 'character' });
+            if (carried === null) return { ok: false, error: 'store unavailable' };
+            for (const tagId of carried[avatar] ?? []) {
+                if (await unassignEntityTag(directories, avatar, tagId) !== 'ok') return { ok: false, error: 'store unavailable' };
+            }
+            return { ok: true };
+        }
+        case 'tag-import': {
+            await seedCardTagsForSingleCharacter(directories, avatar, { onlyExisting: options.onlyExisting === true });
+            return { ok: true };
+        }
+    }
+    return { ok: false, error: 'unknown action' };
+}
+
+/**
+ * Carries out an action on every character of a prepared selection, a batch at a time with a pause between batches.
+ * Body: `{ job, action, options?, watch? }`: `action` one of BULK_ACTIONS; `options` `deleteChats` (delete),
+ * `tagIds` (tag-add, tag-remove), `onlyExisting` (tag-import); `watch` the avatars the page shows or holds, whose
+ * results it is sent. Answers newline-separated JSON as it goes: `{ type: 'item', avatar, ... }` for a watched
+ * character done, `{ type: 'failed', avatar, error }` for each one that failed, `{ type: 'progress', done, failed }`
+ * after each batch, and last `{ type: 'done', done, failed }` (or `{ type: 'error', done, failed }` when it had to
+ * stop). The job stays, so the page can drop it or read it again.
+ */
+router.post('/bulk/run', async function (request, response) {
+    const { job, action, options, watch } = request.body ?? {};
+    if (typeof action !== 'string' || !BULK_ACTIONS.has(action)) {
+        return response.status(400).send({ error: true, reason: 'invalid-action' });
+    }
+    if (typeof job !== 'string' || !await bulkSelectionExists(request.user.directories, job)) {
+        return response.status(404).send({ error: true, reason: 'job-not-found' });
+    }
+    const watched = new Set(Array.isArray(watch) ? watch.filter(avatar => typeof avatar === 'string').slice(0, BULK_MAX_NAMED) : []);
+    const actionOptions = options && typeof options === 'object' ? options : {};
+
+    response.status(200);
+    response.set('Content-Type', 'application/x-ndjson');
+    response.set('Cache-Control', 'no-cache');
+    const send = async (/** @type {object} */ line) => {
+        await writeBackpressured(response, JSON.stringify(line) + '\n');
+        /** @type {any} */ (response).flush?.();
+    };
+
+    let done = 0;
+    let failed = 0;
+    try {
+        for await (const batch of streamBulkSelection(request.user.directories, job)) {
+            for (const avatar of batch) {
+                /** @type {{ ok: boolean, error?: string, extra?: object }} */
+                let outcome;
+                try {
+                    outcome = await applyBulkAction(request, action, avatar, actionOptions);
+                } catch (err) {
+                    // One character going wrong is named, and the rest are still done.
+                    console.error(`[characters/bulk/run] ${action} failed for ${avatar}:`, err);
+                    outcome = { ok: false, error: err instanceof Error ? err.message : String(err) };
+                }
+                if (outcome.ok) {
+                    done++;
+                    if (watched.has(avatar)) await send({ type: 'item', avatar, ...(outcome.extra ?? {}) });
+                } else {
+                    failed++;
+                    await send({ type: 'failed', avatar, error: outcome.error ?? 'failed' });
+                }
+            }
+            await send({ type: 'progress', done, failed });
+            await bulkPause();
+        }
+        await send({ type: 'done', done, failed });
+    } catch (err) {
+        console.error(`[characters/bulk/run] ${action} stopped:`, err);
+        try {
+            await send({ type: 'error', done, failed });
+        } catch {
+            // The connection is gone; nothing left to tell.
+        }
+    } finally {
+        response.end();
     }
 });
 

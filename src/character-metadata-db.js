@@ -670,6 +670,19 @@ const SCHEMA_SQL = `
         last_error      TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_character_index_retries_next ON character_index_retries(next_attempt_at, id);
+
+    -- A bulk action's selection, fixed when it is prepared (beginBulkSelection()) so the action works on the
+    -- characters the user saw counted, whatever the action itself does to the list's order or filter. Rows are
+    -- dropped with the job; a job left behind by a closed page is dropped by the next one after a day.
+    CREATE TABLE IF NOT EXISTS bulk_jobs (
+        job        TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS bulk_selections (
+        job    TEXT NOT NULL,
+        avatar TEXT NOT NULL,
+        PRIMARY KEY (job, avatar)
+    );
 `;
 
 const UPSERT_SQL = `
@@ -10130,6 +10143,217 @@ export async function streamLinkedWorlds(directories) {
         nextPageParams: {},
         keyColumn: 'world',
     }));
+}
+
+/** Rows per batch in the bulk selection reads below. */
+const BULK_BATCH_SIZE = 500;
+
+/** A bulk job older than this is left over from a page that went away, and the next job drops it. */
+const BULK_JOB_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Ids of the characters matching a `/query` filter with no search term (tags, fav, world, excludeIds), in rowid
+ * order, in batches. Each batch's read is finished before it is yielded, so the caller may write between batches.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ tags?: { include?: string[], exclude?: string[], mode?: 'and'|'or' }, fav?: boolean, world?: string, excludeIds?: string[] }} filter
+ * @returns {Promise<AsyncGenerator<string[], void, undefined> | null>} `null` if the metadata store is unavailable.
+ */
+export async function streamCharacterIdsMatching(directories, filter) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    return (async function* () {
+        let after = -1;
+        for (;;) {
+            const { from, where, args } = buildWhereClause({
+                tags: filter.tags,
+                fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
+                world: filter.world,
+                excludeIds: filter.excludeIds,
+            }, readTagDeletionsSync(entry.db));
+            const sql = `SELECT characters.rowid AS rid, characters.id AS id FROM ${from} ${where ? `${where} AND` : 'WHERE'} characters.rowid > ? ORDER BY characters.rowid LIMIT ?`;
+            const rows = /** @type {{ rid: number, id: string }[]} */ (entry.db.readBounded(sql, [...args, after, BULK_BATCH_SIZE], BULK_BATCH_SIZE));
+            if (rows.length > 0) yield rows.map(row => row.id);
+            if (rows.length < BULK_BATCH_SIZE) return;
+            after = rows[rows.length - 1].rid;
+        }
+    })();
+}
+
+/**
+ * Starts a bulk job's selection, empty, and drops the jobs left over from pages that went away.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<string | null>} The job's id, or `null` if the metadata store is unavailable.
+ */
+export async function beginBulkSelection(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    const staleBefore = Date.now() - BULK_JOB_MAX_AGE_MS;
+    const stale = /** @type {{ job: string }[]} */ (entry.db.readBounded(
+        'SELECT job FROM bulk_jobs WHERE created_at < @staleBefore ORDER BY created_at LIMIT 10',
+        { staleBefore }, 10));
+    for (const { job } of stale) {
+        await dropBulkSelection(directories, job);
+    }
+
+    const job = crypto.randomUUID();
+    entry.db.run('INSERT INTO bulk_jobs (job, created_at) VALUES (@job, @createdAt)', { job, createdAt: Date.now() });
+    return job;
+}
+
+/**
+ * Whether a bulk job exists.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} job
+ * @returns {Promise<boolean>}
+ */
+export async function bulkSelectionExists(directories, job) {
+    const entry = await getEntry(directories);
+    if (!entry) return false;
+    return Boolean(entry.db.get('SELECT 1 FROM bulk_jobs WHERE job = @job', { job }));
+}
+
+/**
+ * Adds characters to a bulk job's selection. An avatar no character has is left out; one already in it stays once.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} job
+ * @param {string[]} avatars
+ * @returns {Promise<void>}
+ */
+export async function addToBulkSelection(directories, job, avatars) {
+    const entry = await getEntry(directories);
+    if (!entry || avatars.length === 0) return;
+    for (let start = 0; start < avatars.length; start += BULK_BATCH_SIZE) {
+        const batch = avatars.slice(start, start + BULK_BATCH_SIZE);
+        for (const avatar of batch) {
+            if (typeof avatar === 'string' && avatar) flushBufferedRow(entry, avatar);
+        }
+        entry.db.run(
+            'INSERT OR IGNORE INTO bulk_selections (job, avatar) SELECT ?, id FROM characters WHERE id IN (SELECT value FROM json_each(?))',
+            [job, JSON.stringify(batch)]);
+    }
+}
+
+/**
+ * Takes characters out of a bulk job's selection.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} job
+ * @param {string[]} avatars
+ * @returns {Promise<void>}
+ */
+export async function removeFromBulkSelection(directories, job, avatars) {
+    const entry = await getEntry(directories);
+    if (!entry || avatars.length === 0) return;
+    for (let start = 0; start < avatars.length; start += BULK_BATCH_SIZE) {
+        const batch = avatars.slice(start, start + BULK_BATCH_SIZE);
+        entry.db.run(
+            'DELETE FROM bulk_selections WHERE job = ? AND avatar IN (SELECT value FROM json_each(?))',
+            [job, JSON.stringify(batch)]);
+    }
+}
+
+/**
+ * How many characters a bulk job's selection holds, and whether `avatar` is one of them.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} job
+ * @param {string} [avatar]
+ * @returns {Promise<{ count: number, contains: boolean }>}
+ */
+export async function describeBulkSelection(directories, job, avatar) {
+    const entry = await getEntry(directories);
+    if (!entry) return { count: 0, contains: false };
+    const row = /** @type {{ count: number }} */ (entry.db.get('SELECT COUNT(*) AS count FROM bulk_selections WHERE job = @job', { job }));
+    const contains = typeof avatar === 'string' && avatar
+        ? Boolean(entry.db.get('SELECT 1 FROM bulk_selections WHERE job = @job AND avatar = @avatar', { job, avatar }))
+        : false;
+    return { count: Number(row.count), contains };
+}
+
+/**
+ * One page of a bulk job's selection, in avatar order, after `after`.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} job
+ * @param {{ after?: string, limit?: number }} [options]
+ * @returns {Promise<string[]>}
+ */
+export async function readBulkSelectionPage(directories, job, { after = '', limit = BULK_BATCH_SIZE } = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+    const bounded = Math.max(1, Math.min(BULK_BATCH_SIZE, Math.trunc(limit) || BULK_BATCH_SIZE));
+    const rows = /** @type {{ avatar: string }[]} */ (entry.db.readBounded(
+        'SELECT avatar FROM bulk_selections WHERE job = @job AND avatar > @after ORDER BY avatar LIMIT @limit',
+        { job, after: String(after), limit: bounded }, bounded));
+    return rows.map(row => row.avatar);
+}
+
+/**
+ * A bulk job's selection in avatar order, in batches. Each batch's read is finished before it is yielded, so the
+ * caller may write between batches, including deleting the characters it was handed.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} job
+ * @returns {AsyncGenerator<string[], void, undefined>}
+ */
+export async function* streamBulkSelection(directories, job) {
+    let after = '';
+    for (;;) {
+        const batch = await readBulkSelectionPage(directories, job, { after });
+        if (batch.length > 0) yield batch;
+        if (batch.length < BULK_BATCH_SIZE) return;
+        after = batch[batch.length - 1];
+    }
+}
+
+/**
+ * The tags every character in a bulk job's selection carries. Read a batch at a time; the answer can only shrink, so
+ * it never holds more than the first character's tags.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} job
+ * @returns {Promise<string[] | null>} `null` if the metadata store is unavailable.
+ */
+export async function mutualTagIdsOfBulkSelection(directories, job) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+
+    /** @type {string[] | null} */
+    let mutual = null;
+    for await (const batch of streamBulkSelection(directories, job)) {
+        const candidates = mutual;
+        // Only a tag every character of the batch carries is kept, so the list is at most the first one's tags.
+        /** @type {string[]} */
+        const next = [];
+        const rows = /** @type {Iterable<{ tag_id: string, carriers: number }>} */ (entry.db.iterate(
+            candidates === null
+                ? 'SELECT tag_id, COUNT(*) AS carriers FROM character_tags WHERE character_id IN (SELECT value FROM json_each(?)) GROUP BY tag_id'
+                : 'SELECT tag_id, COUNT(*) AS carriers FROM character_tags WHERE character_id IN (SELECT value FROM json_each(?)) AND tag_id IN (SELECT value FROM json_each(?)) GROUP BY tag_id',
+            candidates === null ? [JSON.stringify(batch)] : [JSON.stringify(batch), JSON.stringify(candidates)]));
+        for (const row of rows) {
+            if (Number(row.carriers) === batch.length) next.push(row.tag_id);
+        }
+        mutual = next;
+        if (mutual.length === 0) return [];
+    }
+    return mutual ?? [];
+}
+
+/**
+ * Drops a bulk job and its selection.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} job
+ * @returns {Promise<void>}
+ */
+export async function dropBulkSelection(directories, job) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    // In batches, so dropping a big selection doesn't hold the database for one long statement.
+    for (;;) {
+        const removed = entry.db.run(
+            'DELETE FROM bulk_selections WHERE rowid IN (SELECT rowid FROM bulk_selections WHERE job = @job LIMIT @limit)',
+            { job, limit: BULK_BATCH_SIZE * 10 }).changes;
+        if (removed < BULK_BATCH_SIZE * 10) break;
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    entry.db.run('DELETE FROM bulk_jobs WHERE job = @job', { job });
 }
 
 /**
