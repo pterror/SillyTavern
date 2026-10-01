@@ -30,6 +30,7 @@ import { t, translate } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { contentHashOf } from './hash-utils.js';
+import { refreshUnderlayClips, registerUnderlayClip, scrollContainerOf, underlayClip } from './util/underlay-clip.js';
 import { dropOldTagsCache } from './tags-cache.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository, parseQueryTotal } from './character-repository.js';
@@ -4824,6 +4825,7 @@ export function createTagInput(inputSelector, listSelector, tagListOptions = {},
             minLength: 0,
         })
         .on('focus', onTagInputFocus); // <== show tag list on click
+    clipTagSuggestionsUnderlay($(inputSelector));
 }
 
 async function onViewTagsListClick() {
@@ -6967,12 +6969,9 @@ function resolveInsetClipPath(clipPath, width, height) {
     };
 }
 
-/** @type {(() => void) | null} */
-let updateTagsDrawerUnderlayClip = null;
-
-/** Re-applies the tags panel's underlay clipping after power_user.stacked_drawers changes. */
+/** Re-applies the tags panel's and the tag dropdowns' underlay clipping after power_user.stacked_drawers changes. */
 export function refreshTagsDrawerUnderlayClip() {
-    updateTagsDrawerUnderlayClip?.();
+    refreshUnderlayClips();
 }
 
 /**
@@ -6988,58 +6987,23 @@ function initTagsDrawerUnderlayClip() {
         return;
     }
 
-    /** @type {Set<HTMLElement>} */
-    const clipped = new Set();
+    const clip = underlayClip('tags-panel');
+    const scrollContainer = scrollContainerOf(drawer);
     let frame = 0;
 
-    const scrollContainer = (() => {
-        for (let el = drawer.parentElement; el; el = el.parentElement) {
-            if (getComputedStyle(el).overflowY !== 'visible') {
-                return el;
-            }
-        }
-        return document.documentElement;
-    })();
-
     function update() {
+        if (!power_user.stacked_drawers) {
+            clip.clear();
+            return;
+        }
         const box = panel.getBoundingClientRect();
         const inset = resolveInsetClipPath(getComputedStyle(panel).clipPath, box.width, box.height);
-        const cover = {
+        clip.cover({
             top: box.top + inset.top,
             right: box.right - inset.right,
             bottom: box.bottom - inset.bottom,
             left: box.left + inset.left,
-        };
-        const covering = power_user.stacked_drawers && cover.bottom > cover.top && cover.right > cover.left;
-
-        /** @type {Set<HTMLElement>} */
-        const covered = new Set();
-        if (covering) {
-            for (let path = /** @type {HTMLElement} */ (panel); path !== scrollContainer && path.parentElement; path = path.parentElement) {
-                for (const sibling of path.parentElement.children) {
-                    if (sibling === path || !(sibling instanceof HTMLElement)) {
-                        continue;
-                    }
-                    const rect = sibling.getBoundingClientRect();
-                    const top = Math.max(rect.top, cover.top) - rect.top;
-                    const bottom = Math.min(rect.bottom, cover.bottom) - rect.top;
-                    const left = Math.max(rect.left, cover.left) - rect.left;
-                    const right = Math.min(rect.right, cover.right) - rect.left;
-                    if (bottom <= top || right <= left) {
-                        continue;
-                    }
-                    sibling.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${left}px ${top}px, ${right}px ${top}px, ${right}px ${bottom}px, ${left}px ${bottom}px, ${left}px ${top}px)`;
-                    covered.add(sibling);
-                }
-            }
-        }
-        for (const el of clipped) {
-            if (!covered.has(el)) {
-                el.style.clipPath = '';
-            }
-        }
-        clipped.clear();
-        covered.forEach(el => clipped.add(el));
+        }, panel, scrollContainer);
     }
 
     function track() {
@@ -7051,11 +7015,63 @@ function initTagsDrawerUnderlayClip() {
         frame = requestAnimationFrame(step);
     }
 
-    updateTagsDrawerUnderlayClip = update;
+    registerUnderlayClip(update);
     new MutationObserver(track).observe(icon, { attributes: true, attributeFilter: ['class'] });
     const resizeObserver = new ResizeObserver(() => icon.classList.contains('up') && update());
     resizeObserver.observe(panel);
     resizeObserver.observe(scrollContainer);
+}
+
+let tagSuggestionClipCount = 0;
+
+/**
+ * A tag input's suggestion list is see-through like the tags panel. When the input sits in a drawer and stacked
+ * drawers are on, what the open list covers in that drawer is clipped away too, following the list as it opens,
+ * fills, moves and closes.
+ * @param {JQuery<HTMLElement>} $input The input the autocomplete is attached to
+ */
+function clipTagSuggestionsUnderlay($input) {
+    const input = $input.get(0);
+    if (!(input instanceof HTMLElement) || !input.closest('.drawer-content')) {
+        return;
+    }
+    const clip = underlayClip(`tag-suggestions-${++tagSuggestionClipCount}`);
+    /** @type {HTMLElement | null} */
+    let menu = null;
+    /** @type {ResizeObserver | null} */
+    let resizeObserver = null;
+    /** @type {HTMLElement | null} */
+    let scrollContainer = null;
+
+    function update() {
+        if (!menu || !power_user.stacked_drawers || !menu.isConnected || getComputedStyle(menu).display === 'none') {
+            clip.clear();
+            return;
+        }
+        const box = menu.getBoundingClientRect();
+        clip.cover({ top: box.top, right: box.right, bottom: box.bottom, left: box.left }, input, scrollContainer);
+    }
+    const onScroll = () => update();
+
+    registerUnderlayClip(update);
+    $input.on('autocompleteopen', () => {
+        // @ts-ignore
+        menu = $input.autocomplete('widget').get(0) ?? null;
+        scrollContainer = scrollContainerOf(input);
+        if (menu && !resizeObserver) {
+            resizeObserver = new ResizeObserver(() => update());
+            resizeObserver.observe(menu);
+            resizeObserver.observe(scrollContainer);
+            scrollContainer.addEventListener('scroll', onScroll, { passive: true });
+        }
+        update();
+    });
+    $input.on('autocompleteclose', () => {
+        resizeObserver?.disconnect();
+        resizeObserver = null;
+        scrollContainer?.removeEventListener('scroll', onScroll);
+        clip.clear();
+    });
 }
 
 export function initTags() {
