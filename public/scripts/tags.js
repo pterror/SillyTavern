@@ -7,7 +7,7 @@ import {
     menu_type,
     buildAvatarList,
 } from '../script.js';
-import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, setFilterDataFromUser } from './character-list.js';
+import { entitiesFilter, printCharactersDebounced, DEFAULT_PRINT_TIMEOUT, printCharacters, setFilterDataFromUser, getUnheldRowTagIds, setUnheldRowTagIds } from './character-list.js';
 import { getRequestHeaders } from './request-headers.js';
 import { eventSource, event_types } from './events.js';
 import { characters, charactersStore, exposedCharacters, exposedGroups, onExposedEntitiesChange } from './character-store.js';
@@ -516,6 +516,19 @@ function* allTagIdsEntries() {
         if (!Array.isArray(group.tag_ids)) group.tag_ids = [];
         yield /** @type {[string, string[]]} */ ([String(group.id), group.tag_ids]);
     }
+}
+
+/**
+ * The keys of the characters and groups whose tags something on screen may show: every one the page holds, and the
+ * character rows on screen the page doesn't hold.
+ * @param {Map<string, string[]>} unheldRows - getUnheldRowTagIds()
+ * @returns {string[]}
+ */
+function onScreenEntityKeys(unheldRows) {
+    const keys = [];
+    for (const [key] of allTagIdsEntries()) keys.push(key);
+    for (const key of unheldRows.keys()) keys.push(key);
+    return keys;
 }
 
 /**
@@ -1937,8 +1950,8 @@ function moveTagFilters(fromId, toId) {
 }
 
 /**
- * Removes tags from this tab only (the server already has no such tags), then re-reads the tags of every resident
- * entity so what the server gave them in their place shows up.
+ * Removes tags from this tab only (the server already has no such tags), then re-reads the tags of the characters
+ * and groups that carried them, so what the server gave them in their place shows up.
  * @param {{ id: string, replaceWithId?: string }[]} drops - replaceWithId: the tag the server merged `id` into.
  *   Resident entities and tag filters get it in `id`'s place at once, ahead of the re-read.
  * @returns {Promise<Map<string, { held: boolean, moved: boolean }>>} by id, what became of the tag filters on it
@@ -1951,9 +1964,12 @@ async function dropTagsLocally(drops) {
     const needsFullRedraw = tagChangeAffectsCurrentView(drops.flatMap(({ id, replaceWithId }) => replaceWithId ? [id, replaceWithId] : [id]));
     const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithAnyTag(new Set(drops.map(({ id }) => id)));
 
+    const dropped = new Set(drops.map(({ id }) => id));
+    /** @type {Set<string>} Characters and groups on screen that carried a dropped tag: their tags are read again. */
+    const carriers = new Set(getRenderedKeysWithAnyTag(dropped));
     let heldDefinition = false;
     for (const { id, replaceWithId } of drops) {
-        removeTagIdLocally(id, { replaceWithId });
+        for (const key of removeTagIdLocally(id, { replaceWithId })) carriers.add(key);
         filters.set(id, moveTagFilters(id, replaceWithId));
         storedTagFields.delete(id);
         tagsAddedThroughExport.delete(id);
@@ -1961,7 +1977,6 @@ async function dropTagsLocally(drops) {
     }
 
     if (heldDefinition) {
-        const dropped = new Set(drops.map(({ id }) => id));
         let write = 0;
         for (const tag of tags) {
             if (!dropped.has(tag.id)) tags[write++] = tag;
@@ -1991,7 +2006,7 @@ async function dropTagsLocally(drops) {
     }
     applyCharacterTagsToMessageDivs();
 
-    await rereadResidentEntityTagIds();
+    if (carriers.size) await rereadResidentEntityTagIds([...carriers]);
     return filters;
 }
 
@@ -2021,23 +2036,22 @@ function rereadEntitiesLeftWaiting() {
 }
 
 /**
- * Replaces each resident entity's tag ids with the server's where they differ, and fetches any tag definition
- * the new ids need that this tab doesn't have. Stops at the first failed request, keeping what it already applied.
+ * Replaces the tag ids of characters and groups on screen with the server's where they differ, and fetches any tag
+ * definition the new ids need that this tab doesn't have: a held entity's own, and a character row on screen the
+ * page doesn't hold (drawn again with them). Stops at the first failed request, keeping what it already applied.
  * An entity with a tag save of this tab's still unanswered keeps what it shows and is re-read once the saves are
  * answered.
- * @param {string[]} [onlyKeys] - the entities to re-read; every resident one when left out
+ * @param {string[]} [onlyKeys] - the entities to re-read; every one on screen (onScreenEntityKeys()) when left out
  * @returns {Promise<boolean>} false if a request failed
  */
 async function rereadResidentEntityTagIds(onlyKeys) {
     // What an extension changed through `tag_map` is sent before the server's copy is read over it.
     tagMapKeysToCheck = true;
     takeInTagExportWrites();
-    const keys = [];
-    if (onlyKeys) {
-        keys.push(...onlyKeys.filter(key => resolveTagIdsArray(key)));
-    } else {
-        for (const [key] of allTagIdsEntries()) keys.push(key);
-    }
+    const unheldRows = getUnheldRowTagIds();
+    const keys = onlyKeys
+        ? onlyKeys.filter(key => resolveTagIdsArray(key) || unheldRows.has(key))
+        : onScreenEntityKeys(unheldRows);
 
     /** @type {Set<string>} */
     const changedTagIds = new Set();
@@ -2045,6 +2059,8 @@ async function rereadResidentEntityTagIds(onlyKeys) {
     const changedKeys = new Set();
     /** @type {Set<string>} */
     const unknownTagIds = new Set();
+    /** @type {Map<string, { serverIds: string[], fetchStamp: number }>} */
+    const unheldRowsToRedraw = new Map();
 
     try {
         for (let i = 0; i < keys.length; i += TAG_READ_MAX_IDS) {
@@ -2057,13 +2073,20 @@ async function rereadResidentEntityTagIds(onlyKeys) {
             for (const [key, serverIds] of Object.entries(answer)) {
                 if (!Array.isArray(serverIds)) continue;
                 const ids = resolveTagIdsArray(key);
-                if (!ids) continue;
+                const rowIds = ids ? undefined : unheldRows.get(key);
+                if (!ids && !rowIds) continue;
                 if (!isFetchedTagIdsCurrent(key, fetchStamp)) {
                     tagRereadsWaiting.add(key);
                     continue;
                 }
                 for (const tagId of serverIds) {
                     if (!tagsStore.has(tagId)) unknownTagIds.add(tagId);
+                }
+                if (rowIds) {
+                    if (rowIds.length === serverIds.length && rowIds.every((tagId, i) => tagId === serverIds[i])) continue;
+                    unheldRowsToRedraw.set(key, { serverIds, fetchStamp });
+                    for (const tagId of [...rowIds, ...serverIds]) changedTagIds.add(tagId);
+                    continue;
                 }
                 if (ids.length === serverIds.length && ids.every((tagId, i) => tagId === serverIds[i])) continue;
 
@@ -2091,6 +2114,12 @@ async function rereadResidentEntityTagIds(onlyKeys) {
         }
         return true;
     } finally {
+        // Drawn once the definitions they need are read, or with what there is when that read failed.
+        for (const [key, { serverIds, fetchStamp }] of unheldRowsToRedraw) setUnheldRowTagIds(key, serverIds, fetchStamp);
+        if (unheldRowsToRedraw.size && !changedKeys.size) {
+            if (tagChangeAffectsCurrentView([...changedTagIds])) printCharactersDebounced();
+            refreshUsedTagBars();
+        }
         if (changedKeys.size) {
             invalidateCharactersFuseIndex();
             invalidateGroupsFuseIndex();
@@ -2129,7 +2158,7 @@ async function takeInEntityTagChanges() {
         if (!page || typeof page.seq !== 'number' || typeof page.groupsVersion !== 'number') return;
 
         const rowsLeft = (page.endSeq - page.seq) + (page.endGroupsVersion - page.groupsVersion);
-        if (page.reset || (page.hasMore && rowsLeft > charactersStore.getAll().length + groupsStore.getAll().length)) {
+        if (page.reset || (page.hasMore && rowsLeft > onScreenEntityKeys(getUnheldRowTagIds()).length)) {
             // The logs' ends as read before the tags are, so nothing written while they are read is missed.
             if (await rereadResidentEntityTagIds()) {
                 entityTagChangesCursor = { sinceSeq: page.endSeq, sinceGroupsVersion: page.endGroupsVersion };
@@ -2139,7 +2168,8 @@ async function takeInEntityTagChanges() {
             return;
         }
 
-        const held = (Array.isArray(page.ids) ? page.ids : []).filter(key => typeof key === 'string' && resolveTagIdsArray(key));
+        const unheldRows = getUnheldRowTagIds();
+        const held = (Array.isArray(page.ids) ? page.ids : []).filter(key => typeof key === 'string' && (resolveTagIdsArray(key) || unheldRows.has(key)));
         if (held.length && !await rereadResidentEntityTagIds(held)) return;
         entityTagChangesCursor = { sinceSeq: page.seq, sinceGroupsVersion: page.groupsVersion };
         // Manage Tags shows counts and the filter bars the used tags, which cover the characters and groups this tab
@@ -3112,9 +3142,11 @@ function getRenderedKeysWithTag(tagId) {
  */
 function getRenderedKeysWithAnyTag(tagIds) {
     const keys = [];
+    const unheldRows = getUnheldRowTagIds();
     document.querySelectorAll('#rm_print_characters_block [data-avatar], #rm_print_characters_block [data-grid]').forEach(el => {
         const key = el.getAttribute('data-avatar') ?? el.getAttribute('data-grid');
-        if (getTagsList(key).some(t => tagIds.has(t.id))) {
+        const ids = resolveTagIdsArray(key) ?? unheldRows.get(key) ?? [];
+        if (ids.some(id => tagIds.has(id))) {
             keys.push(key);
         }
     });
@@ -5746,7 +5778,7 @@ async function copyTags(data) {
         return;
     }
     // The duplicate is usually not held yet; one that is takes the server's tags.
-    if (resolveTagIdsArray(data.newAvatar) !== undefined) await rereadResidentEntityTagIds();
+    if (resolveTagIdsArray(data.newAvatar) !== undefined) await rereadResidentEntityTagIds([data.newAvatar]);
 }
 
 /**
