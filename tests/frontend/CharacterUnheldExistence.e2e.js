@@ -34,7 +34,10 @@ async function createUnheldCharacter(page, name) {
         if (!response.ok) throw new Error(`create failed: ${response.status}`);
         return response.text();
     }, name);
-    const held = await page.evaluate(avatar => window['SillyTavern'].getContext().characters.some(c => c.avatar === avatar), avatar);
+    const held = await page.evaluate(async (avatar) => {
+        const { charactersStore } = await import('./scripts/character-store.js');
+        return charactersStore.has(avatar);
+    }, avatar);
     expect(held).toBe(false);
     return avatar;
 }
