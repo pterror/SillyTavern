@@ -31,6 +31,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { contentHashOf } from './hash-utils.js';
 import { refreshUnderlayClips, registerUnderlayClip, scrollContainerOf, underlayClip } from './util/underlay-clip.js';
+import { addStackOverlay, removeStackOverlay } from './drawer-stack.js';
 import { dropOldTagsCache } from './tags-cache.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository, parseQueryTotal } from './character-repository.js';
@@ -7022,12 +7023,10 @@ function initTagsDrawerUnderlayClip() {
     resizeObserver.observe(scrollContainer);
 }
 
-let tagSuggestionClipCount = 0;
-
 /**
- * A tag input's suggestion list is see-through like the tags panel. When the input sits in a drawer and stacked
- * drawers are on, what the open list covers in that drawer is clipped away too, following the list as it opens,
- * fills, moves and closes.
+ * A tag input's suggestion list is see-through like the tags panel. When the input sits in a drawer, the open list is
+ * the top layer of the drawer stack: with stacked drawers on, what it covers below is cut away, following the list as
+ * it opens, fills, moves and closes.
  * @param {JQuery<HTMLElement>} $input The input the autocomplete is attached to
  */
 function clipTagSuggestionsUnderlay($input) {
@@ -7035,42 +7034,15 @@ function clipTagSuggestionsUnderlay($input) {
     if (!(input instanceof HTMLElement) || !input.closest('.drawer-content')) {
         return;
     }
-    const clip = underlayClip(`tag-suggestions-${++tagSuggestionClipCount}`);
     /** @type {HTMLElement | null} */
     let menu = null;
-    /** @type {ResizeObserver | null} */
-    let resizeObserver = null;
-    /** @type {HTMLElement | null} */
-    let scrollContainer = null;
-
-    function update() {
-        if (!menu || !power_user.stacked_drawers || !menu.isConnected || getComputedStyle(menu).display === 'none') {
-            clip.clear();
-            return;
-        }
-        const box = menu.getBoundingClientRect();
-        clip.cover({ top: box.top, right: box.right, bottom: box.bottom, left: box.left }, input, scrollContainer);
-    }
-    const onScroll = () => update();
-
-    registerUnderlayClip(update);
     $input.on('autocompleteopen', () => {
         // @ts-ignore
         menu = $input.autocomplete('widget').get(0) ?? null;
-        scrollContainer = scrollContainerOf(input);
-        if (menu && !resizeObserver) {
-            resizeObserver = new ResizeObserver(() => update());
-            resizeObserver.observe(menu);
-            resizeObserver.observe(scrollContainer);
-            scrollContainer.addEventListener('scroll', onScroll, { passive: true });
-        }
-        update();
+        if (menu) addStackOverlay(menu);
     });
     $input.on('autocompleteclose', () => {
-        resizeObserver?.disconnect();
-        resizeObserver = null;
-        scrollContainer?.removeEventListener('scroll', onScroll);
-        clip.clear();
+        if (menu) removeStackOverlay(menu);
     });
 }
 
