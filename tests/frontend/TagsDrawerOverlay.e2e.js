@@ -28,7 +28,8 @@ async function openCharacterWithTags(page) {
     for (const tag of tags) {
         await page.locator('#tagInput').fill('');
         await page.locator('#tagInput').pressSequentially(tag);
-        await page.locator('.ui-autocomplete .ui-menu-item', { hasText: tag }).first().click();
+        // Exact text: once an earlier test made these tags, 'eta' also suggests 'theta'.
+        await page.locator('.ui-autocomplete .ui-menu-item', { hasText: new RegExp(`^\\s*${tag}\\s*$`) }).first().click();
     }
     await page.locator('#tagInput').fill('');
     await page.locator('#tagInput').blur();
@@ -194,6 +195,99 @@ test.describe('tags drawer overlay, stacked drawers off', () => {
             expect(await underlayHitUnderPanel(page)).toBe(true);
             await expect(page.locator('#creatorInfoWrapper')).not.toHaveAttribute('style', /clip-path/);
         } finally {
+            await deleteOpenCharacter(page);
+        }
+    });
+});
+
+/**
+ * Whether the collapsed tag row under the input has exactly the part the open suggestion list covers cut out of it.
+ * (The row ignores the pointer, so this reads the cut itself rather than hit-testing.)
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<boolean | null>} true if cut, false if nothing is cut, null if cut wrongly
+ */
+async function rowCutUnderSuggestions(page) {
+    return page.evaluate(() => {
+        const menu = [...document.querySelectorAll('.ui-autocomplete')].find(el => getComputedStyle(el).display !== 'none');
+        const under = document.getElementById('tags_div_preview');
+        const m = menu.getBoundingClientRect();
+        const u = under.getBoundingClientRect();
+        const expected = [
+            Math.max(m.left, u.left) - u.left,
+            Math.max(m.top, u.top) - u.top,
+            Math.min(m.right, u.right) - u.left,
+            Math.min(m.bottom, u.bottom) - u.top,
+        ];
+        if (expected[2] <= expected[0] || expected[3] <= expected[1]) {
+            throw new Error('the suggestion list does not cover the tag row');
+        }
+        const clip = under.style.clipPath;
+        if (!clip) {
+            return false;
+        }
+        const points = clip.replace(/^polygon\(evenodd,\s*/, '').replace(/\)$/, '').split(',').slice(5)
+            .map(p => p.trim().split(/\s+/).map(parseFloat));
+        const hole = [points[0][0], points[0][1], points[2][0], points[2][1]];
+        return hole.every((v, i) => Math.abs(v - expected[i]) < 1) ? true : null;
+    });
+}
+
+/**
+ * Opens the suggestion list of #tagInput.
+ * @param {import('@playwright/test').Page} page
+ */
+async function openSuggestions(page) {
+    await page.locator('#tagInput').fill('');
+    await page.locator('#tagInput').blur();
+    await page.locator('#tagInput').focus();
+    await expect(page.locator('.ui-autocomplete .ui-menu-item').first()).toBeVisible();
+}
+
+/**
+ * Closes #tagInput's suggestion list. Not with Escape: that also closes the character info drawer.
+ * @param {import('@playwright/test').Page} page
+ */
+async function closeSuggestions(page) {
+    // @ts-ignore jQuery UI
+    await page.evaluate(() => window['$']('#tagInput').autocomplete('close'));
+}
+
+test.describe('tag suggestion list overlay', () => {
+    test.beforeEach(testSetup.awaitST);
+    test.afterEach(async ({ page }) => setStackedDrawers(page, false));
+
+    test('with stacked drawers on, the open list hides the form it covers, and the hole goes when it closes', async ({ page }) => {
+        await setStackedDrawers(page, true);
+        await openCharacterWithTags(page);
+        try {
+            await openSuggestions(page);
+            expect(await rowCutUnderSuggestions(page)).toBe(true);
+
+            await closeSuggestions(page);
+            await expect(page.locator('.ui-autocomplete .ui-menu-item').first()).toBeHidden();
+            await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('#char-info-panel *')]
+                .filter(el => /** @type {HTMLElement} */ (el).style.clipPath).length)).toBe(0);
+        } finally {
+            await deleteOpenCharacter(page);
+        }
+    });
+
+    test('with stacked drawers off the list clips nothing, and it clips again once the setting is on', async ({ page }) => {
+        await setStackedDrawers(page, false);
+        await openCharacterWithTags(page);
+        try {
+            await openSuggestions(page);
+            expect(await rowCutUnderSuggestions(page)).toBe(false);
+
+            await setStackedDrawers(page, true);
+            await openSuggestions(page);
+            expect(await rowCutUnderSuggestions(page)).toBe(true);
+
+            await setStackedDrawers(page, false);
+            await openSuggestions(page);
+            expect(await rowCutUnderSuggestions(page)).toBe(false);
+        } finally {
+            await closeSuggestions(page);
             await deleteOpenCharacter(page);
         }
     });
