@@ -110,7 +110,53 @@ export function setExposedGroupId(groupId) {
     refreshExposed();
 }
 
-charactersStore.onChange(() => refreshExposed());
+/** @type {Set<() => Iterable<string>>} */
+const heldCharacterKeepers = new Set();
+
+/**
+ * Registers a source of avatars the page must keep holding even though they aren't exposed: a character whose save
+ * is still in flight, the one loaded in the editor.
+ * @param {() => Iterable<string>} keeper
+ * @returns {() => void} unregister function
+ */
+export function keepHeldCharacters(keeper) {
+    heldCharacterKeepers.add(keeper);
+    return () => heldCharacterKeepers.delete(keeper);
+}
+
+/** How long after what is exposed last changed the page lets go of characters it no longer needs. */
+const RELEASE_DELAY_MS = 2000;
+let releaseTimer;
+
+function scheduleRelease() {
+    clearTimeout(releaseTimer);
+    releaseTimer = setTimeout(releaseUnneededCharacters, RELEASE_DELAY_MS);
+}
+
+/**
+ * Lets go of every held character that isn't exposed and that nothing keeps. Put off while one is still kept by
+ * a keeper that can't be read.
+ */
+function releaseUnneededCharacters() {
+    const keep = new Set(exposedAvatars());
+    try {
+        for (const keeper of heldCharacterKeepers) {
+            for (const avatar of keeper()) keep.add(avatar);
+        }
+    } catch (error) {
+        console.error('Could not tell which characters to keep holding:', error);
+        scheduleRelease();
+        return;
+    }
+    const unneeded = characters.map(character => character.avatar).filter(avatar => !keep.has(avatar));
+    for (const avatar of unneeded) charactersStore.remove(avatar);
+}
+
+charactersStore.onChange((change) => {
+    refreshExposed();
+    if (change.op === 'created' || change.op === 'reset') scheduleRelease();
+});
+onExposedEntitiesChange(scheduleRelease);
 // Catches groupsStore being rebuilt; the rebuilt store is assigned right after it is built, so look a turn later.
 onAnyEntityStoreChange(store => {
     if (store !== charactersStore) queueMicrotask(refreshExposed);

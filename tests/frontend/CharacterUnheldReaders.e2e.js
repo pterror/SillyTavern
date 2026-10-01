@@ -108,6 +108,21 @@ test.describe('readers of characters the page does not hold', () => {
         expect(stored).toBe(avatar);
     });
 
+    test('the page lets go of a character once another is opened', async ({ page }) => {
+        const first = await createUnheldCharacter(page, `ReleaseFirst ${Date.now()}`);
+        const second = await createUnheldCharacter(page, `ReleaseSecond ${Date.now()}`);
+        const open = (avatar) => page.evaluate(async (avatar) => (await import('./script.js')).selectCharacterByAvatar(avatar), avatar);
+
+        await open(first);
+        await expect.poll(() => currentAvatar(page)).toBe(first);
+        expect(await isHeld(page, first)).toBe(true);
+
+        await open(second);
+        await expect.poll(() => currentAvatar(page)).toBe(second);
+        await expect.poll(() => isHeld(page, first), { timeout: 10000 }).toBe(false);
+        expect(await isHeld(page, second)).toBe(true);
+    });
+
     test('a group draws a member the page does not hold in its avatar', async ({ page }) => {
         const avatar = await createUnheldCharacter(page, `GroupMember ${Date.now()}`);
         const sources = await page.evaluate(async (avatar) => {

@@ -129,15 +129,22 @@ export async function setDrawerBarMobilePosition(page, value) {
 }
 
 /**
- * Makes the page hold these characters' full cards, as opening them does. The page holds only what is on screen, so a
- * test about how held characters behave first has the page hold them.
+ * Makes the page hold these characters' full cards, as opening them does, and keep holding them for the rest of the
+ * test. The page holds only what is on screen and lets go of the rest, so a test about how held characters behave
+ * first has the page hold them.
  * @param {import('@playwright/test').Page} page
  * @param {string[]} avatars
  */
 export async function holdCharacters(page, avatars) {
     const missing = await page.evaluate(async (avatars) => {
         const { characterRepository } = await import('/scripts/character-repository.js');
-        const { holdCharacter } = await import('/scripts/character-store.js');
+        const { holdCharacter, keepHeldCharacters } = await import('/scripts/character-store.js');
+        if (!window['__testHeldAvatars']) {
+            const kept = new Set();
+            window['__testHeldAvatars'] = kept;
+            keepHeldCharacters(() => kept);
+        }
+        for (const avatar of avatars) window['__testHeldAvatars'].add(avatar);
         const missing = [];
         for (const avatar of avatars) {
             const character = await characterRepository.full(avatar);

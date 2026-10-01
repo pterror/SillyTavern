@@ -12,7 +12,7 @@ import {
 } from './lib.js';
 
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
-import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
+import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, keepHeldCharacters, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
 // Re-exported for existing importers (upstream's script.js exports these too). Extensions get the characters
 // they are shown, not every character the page holds.
@@ -645,6 +645,13 @@ const characterFieldSaveChains = new Map();
 function characterFieldSaveKey(avatar, formId) {
     return `${avatar}\n${formId}`;
 }
+
+// A character whose field saves are still in flight, or that is loaded in the editor, stays held.
+keepHeldCharacters(() => {
+    const avatars = [...characterFieldSaveChains.keys(), ...pendingCharacterFieldSaves.keys()].map(key => key.split('\n')[0]);
+    if (_loadedCharacterFieldHashesAvatar) avatars.push(_loadedCharacterFieldHashesAvatar);
+    return avatars;
+});
 
 /**
  * The `id` CHARACTER_EDITED carries for an edit to `avatar`'s card: upstream's index into `characters`, which
