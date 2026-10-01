@@ -2,11 +2,9 @@ import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
 
 // The server adds upstream's default tags to a new store (tags-default-seed.test.js). The page never makes up tags
-// of its own: when the server answers no tag list this run (`/api/tags/get` answers `tags: null`), the page holds only
-// tags the server answered when asked for some, and creates none.
+// of its own: it holds only tags the server answered when asked for some, and creates none.
 
-test('no tag list from the server: the page holds only tags the server answered, and creates none', async ({ page }) => {
-    await page.route('**/api/tags/get', route => route.fulfill({ json: { tags: null } }));
+test('the page holds only tags the server answered, and creates none', async ({ page }) => {
     /** @type {string[]} */
     const creates = [];
     /** @type {Set<string>} */

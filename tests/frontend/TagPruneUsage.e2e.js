@@ -60,7 +60,7 @@ async function createTag(page, name) {
 
 /** @param {import('@playwright/test').Page} page @returns {Promise<string[]>} */
 async function serverTagIds(page) {
-    const { tags } = await api(page, '/api/tags/get');
+    const { tags } = await api(page, '/api/tags/backup');
     return tags.map(t => t.id);
 }
 

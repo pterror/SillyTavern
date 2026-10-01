@@ -22,8 +22,6 @@ import {
     getTagChangesSeq,
     getEntityTagChangesSince,
     getEntityTagChangesEnd,
-    getTagsDigest,
-    getTagsBucketMembers,
     getTagDefinitionsByIds,
     getGoneTagIds,
     findTagsByNames,
@@ -249,40 +247,6 @@ router.post('/delete', async (request, response) => {
     }
 });
 
-router.post('/get', async (request, response) => {
-    let batches;
-    let first;
-    try {
-        batches = await streamTagDefinitionBatches(request.user.directories);
-        if (batches === null) {
-            return response.send({ tags: null });
-        }
-        // Read before the first write, so a failure here can still answer 500.
-        first = await batches.next();
-    } catch (err) {
-        console.error('Could not read tag definitions', err);
-        return response.sendStatus(500);
-    }
-
-    // Past the first write, a failure can't un-send the 200 and partial body, so it logs and ends the connection.
-    response.set('Content-Type', 'application/json');
-    response.status(200);
-    try {
-        await writeBackpressured(response, '{"tags":[');
-        let wroteAny = false;
-        for (let next = first; !next.done; next = await batches.next()) {
-            for (const tag of next.value) {
-                await writeBackpressured(response, (wroteAny ? ',' : '') + JSON.stringify(tag));
-                wroteAny = true;
-            }
-        }
-        await writeBackpressured(response, ']}');
-    } catch (err) {
-        console.error('[tags/get] Streaming response failed mid-flight; ending the connection:', err);
-    }
-    response.end();
-});
-
 /**
  * The tag backup file: `{ tags: [...every tag definition], tag_map: { key: [tag ids] } }`, streamed. Every character
  * and group the store has is in it, whatever any page holds. A tag being deleted is left out of `tags`, and an
@@ -340,47 +304,6 @@ router.post('/backup', async (request, response) => {
         console.error('[tags/backup] Streaming response failed mid-flight; ending the connection:', err);
     }
     response.end();
-});
-
-/** Bucketed digest of every tag definition, for cheap client-side cache verification. */
-router.post('/digest', async (request, response) => {
-    try {
-        const bucketCount = Number(request.body?.bucketCount);
-        const digest = await getTagsDigest(
-            request.user.directories,
-            Number.isFinite(bucketCount) && bucketCount > 0 ? Math.trunc(bucketCount) : undefined,
-        );
-        if (digest === null) {
-            return response.send({ digest: null });
-        }
-        response.send(digest);
-    } catch (err) {
-        console.error('Could not compute the tag digest', err);
-        response.sendStatus(500);
-    }
-});
-
-/** The {id, hash} membership of one bucket, for a client whose digest disagreed. */
-router.post('/bucket', async (request, response) => {
-    try {
-        const bucket = Number(request.body?.bucket);
-        if (!Number.isFinite(bucket) || bucket < 0) {
-            return response.status(400).send({ error: true, reason: 'bucket-required' });
-        }
-        const bucketCount = Number(request.body?.bucketCount);
-        const result = await getTagsBucketMembers(
-            request.user.directories,
-            Math.trunc(bucket),
-            Number.isFinite(bucketCount) && bucketCount > 0 ? Math.trunc(bucketCount) : undefined,
-        );
-        if (result === null) {
-            return response.send({ members: null });
-        }
-        response.send(result);
-    } catch (err) {
-        console.error('Could not read tag bucket members', err);
-        response.sendStatus(500);
-    }
 });
 
 const DEFAULT_QUERY_PAGE_SIZE = 50;
