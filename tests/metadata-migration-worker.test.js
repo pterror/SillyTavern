@@ -89,7 +89,6 @@ function fakeSetup(options = {}) {
     /** @type {FakeWorker[]} */
     const workers = [];
     const onChanged = jest.fn();
-    const onTagDefinitionsChanged = jest.fn(async () => {});
     const coordinator = coordinatorModule.createMetadataMigrationCoordinator({
         spawnWorker: (workerData) => {
             const worker = new FakeWorker(workerData);
@@ -98,10 +97,9 @@ function fakeSetup(options = {}) {
         },
         waitForBootChain: async () => true,
         onChanged,
-        onTagDefinitionsChanged,
         ...options,
     });
-    return { coordinator, workers, onChanged, onTagDefinitionsChanged };
+    return { coordinator, workers, onChanged };
 }
 
 /** Lets pending promise callbacks run. */
@@ -200,46 +198,36 @@ describe('createMetadataMigrationCoordinator()', () => {
         await Promise.all([first, second]);
     });
 
-    test('a batch that wrote change rows emits one \'change\'; one that wrote tag definitions clears the tag cache', async () => {
-        const { coordinator, workers, onChanged, onTagDefinitionsChanged } = fakeSetup();
+    test('a batch that wrote change rows emits one \'change\'; one that wrote none emits nothing', async () => {
+        const { coordinator, workers, onChanged } = fakeSetup();
         const done = coordinator.start(directories);
         await flush();
         const worker = workers[0];
 
-        worker.emit('message', { type: 'batch', changed: false, tagDefinitionsChanged: true });
+        worker.emit('message', { type: 'batch', changed: false });
         await flush();
-        expect(onTagDefinitionsChanged).toHaveBeenCalledTimes(1);
-        expect(onTagDefinitionsChanged).toHaveBeenCalledWith(directories);
         expect(onChanged).not.toHaveBeenCalled();
 
-        worker.emit('message', { type: 'batch', changed: true, tagDefinitionsChanged: false });
+        worker.emit('message', { type: 'batch', changed: true });
         await flush();
         expect(onChanged).toHaveBeenCalledTimes(1);
-        expect(onTagDefinitionsChanged).toHaveBeenCalledTimes(1);
 
         worker.emit('exit', 0);
         await done;
     });
 
-    test('a batch that logged tag changes is handed to onTagChangesLogged, after the tag cache is cleared', async () => {
-        /** @type {string[]} */
-        const calls = [];
-        const onTagChangesLogged = jest.fn(() => { calls.push('logged'); });
-        const onTagDefinitionsChanged = jest.fn(async () => {
-            await flush();
-            calls.push('cache-cleared');
-        });
-        const { coordinator, workers } = fakeSetup({ onTagChangesLogged, onTagDefinitionsChanged });
+    test('a batch that logged tag changes is handed to onTagChangesLogged; one that did not is not', async () => {
+        const onTagChangesLogged = jest.fn();
+        const { coordinator, workers } = fakeSetup({ onTagChangesLogged });
         const done = coordinator.start(directories);
         await flush();
 
-        workers[0].emit('message', { type: 'batch', changed: false, tagDefinitionsChanged: true, tagChangesLogged: true });
+        workers[0].emit('message', { type: 'batch', changed: false, tagChangesLogged: true });
         await flush();
-        await flush();
-        expect(calls).toEqual(['cache-cleared', 'logged']);
+        expect(onTagChangesLogged).toHaveBeenCalledTimes(1);
         expect(onTagChangesLogged).toHaveBeenCalledWith(directories);
 
-        workers[0].emit('message', { type: 'batch', changed: true, tagDefinitionsChanged: false, tagChangesLogged: false });
+        workers[0].emit('message', { type: 'batch', changed: true, tagChangesLogged: false });
         await flush();
         expect(onTagChangesLogged).toHaveBeenCalledTimes(1);
 
@@ -253,11 +241,11 @@ describe('createMetadataMigrationCoordinator()', () => {
         const done = coordinator.start(directories);
         await flush();
 
-        workers[0].emit('message', { type: 'batch', changed: false, tagDefinitionsChanged: false, tagChangesLogged: false, groupChangesLogged: true });
+        workers[0].emit('message', { type: 'batch', changed: false, tagChangesLogged: false, groupChangesLogged: true });
         await flush();
         expect(onGroupChangesLogged).toHaveBeenCalledTimes(1);
 
-        workers[0].emit('message', { type: 'batch', changed: true, tagDefinitionsChanged: false, tagChangesLogged: false, groupChangesLogged: false });
+        workers[0].emit('message', { type: 'batch', changed: true, tagChangesLogged: false, groupChangesLogged: false });
         await flush();
         expect(onGroupChangesLogged).toHaveBeenCalledTimes(1);
 
@@ -272,7 +260,7 @@ describe('createMetadataMigrationCoordinator()', () => {
         await flush();
         const worker = workers[0];
 
-        worker.emit('message', { type: 'batch', changed: false, tagDefinitionsChanged: false });
+        worker.emit('message', { type: 'batch', changed: false });
         await flush();
         expect(onChatStatsMayBeQueued).toHaveBeenCalledTimes(1);
         expect(onChatStatsMayBeQueued).toHaveBeenCalledWith(directories);
@@ -298,21 +286,15 @@ describe('createMetadataMigrationCoordinator()', () => {
         await done;
     });
 
-    test('a tag-order-settled message clears the tag cache, then is handed to onTagOrderSettled', async () => {
-        /** @type {string[]} */
-        const calls = [];
-        const onTagOrderSettled = jest.fn(() => { calls.push('settled'); });
-        const onTagDefinitionsChanged = jest.fn(async () => {
-            await new Promise(resolve => setImmediate(resolve));
-            calls.push('cache cleared');
-        });
-        const { coordinator, workers } = fakeSetup({ onTagOrderSettled, onTagDefinitionsChanged });
+    test('a tag-order-settled message is handed to onTagOrderSettled', async () => {
+        const onTagOrderSettled = jest.fn();
+        const { coordinator, workers } = fakeSetup({ onTagOrderSettled });
         const done = coordinator.start(directories);
         await flush();
 
         workers[0].emit('message', { type: 'tag-order-settled' });
         await flush();
-        expect(calls).toEqual(['cache cleared', 'settled']);
+        expect(onTagOrderSettled).toHaveBeenCalledTimes(1);
         expect(onTagOrderSettled).toHaveBeenCalledWith(directories);
 
         workers[0].emit('exit', 0);
@@ -386,7 +368,6 @@ describe('metadata-migration-worker.js', () => {
         await writeCardFile('Alice.png', ['Beta']);
         await writeCardFile('Carol.png', ['Beta']);
         await Promise.all(await metadataDb.initializeMetadataStores([directories]));
-        // Loads this process's tag cache while no tag exists yet.
         expect((await metadataDb.seedCardTagsForSingleCharacter(directories, 'Carol.png', { onlyExisting: true })).tagIds).toEqual([]);
 
         await coordinatorModule.createMetadataMigrationCoordinator().start(directories);
@@ -520,14 +501,13 @@ describe('createMetadataMigrationCoordinator().request(): a pass on demand', () 
         await boot;
     });
 
-    test('the requested run\'s batches clear the tag cache and emit \'change\' like the boot run\'s', async () => {
-        const { coordinator, workers, onChanged, onTagDefinitionsChanged } = fakeSetup();
+    test('the requested run\'s batches emit \'change\' like the boot run\'s', async () => {
+        const { coordinator, workers, onChanged } = fakeSetup();
         const done = coordinator.request(directories, 'finishDeletedTags');
         await flush();
-        workers[0].emit('message', { type: 'batch', changed: true, tagDefinitionsChanged: true });
+        workers[0].emit('message', { type: 'batch', changed: true });
         workers[0].emit('exit', 0);
         await done;
-        expect(onTagDefinitionsChanged).toHaveBeenCalledWith(directories);
         expect(onChanged).toHaveBeenCalledTimes(1);
     });
 

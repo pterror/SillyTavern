@@ -630,12 +630,12 @@ describe('the sort_order fill applies the queued moves when it ends', () => {
         const hash = await metadataDb.getTagsHash(directories);
         let changedEvents = 0;
         const onChanged = () => changedEvents++;
-        metadataDb.characterChangeEmitter.on(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, onChanged);
+        metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, onChanged);
         try {
             const totals = await metadataDb.fillTagSortOrdersIfNeeded(directories);
             expect(totals.rowsChanged).toBe(4);
         } finally {
-            metadataDb.characterChangeEmitter.off(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, onChanged);
+            metadataDb.characterChangeEmitter.off(metadataDb.TAG_CHANGES_EVENT, onChanged);
         }
         expect(changedEvents).toBe(4);
         expect(pending()).toEqual([]);

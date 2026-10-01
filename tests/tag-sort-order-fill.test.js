@@ -393,11 +393,11 @@ describe('fillTagSortOrdersIfNeeded', () => {
         const hashBefore = await metadataDb.getTagsHash(directories);
         let events = 0;
         const onChanged = () => { events++; };
-        metadataDb.characterChangeEmitter.on(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, onChanged);
+        metadataDb.characterChangeEmitter.on(metadataDb.TAG_CHANGES_EVENT, onChanged);
         try {
             await metadataDb.fillTagSortOrdersIfNeeded(directories);
         } finally {
-            metadataDb.characterChangeEmitter.off(metadataDb.TAG_DEFINITIONS_CHANGED_EVENT, onChanged);
+            metadataDb.characterChangeEmitter.off(metadataDb.TAG_CHANGES_EVENT, onChanged);
         }
         expect(events).toBe(2);
         expect(await metadataDb.getTagsHash(directories)).not.toBe(hashBefore);

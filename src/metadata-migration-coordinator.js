@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 
-import { characterChangeEmitter, clearTagCache, GROUP_CHANGES_EVENT, kickChatStatsReconcile, reportTagChanges, reportTagMoveFailed, reportTagOrderSettled, waitForMetadataBootChain } from './character-metadata-db.js';
+import { characterChangeEmitter, GROUP_CHANGES_EVENT, kickChatStatsReconcile, reportTagChanges, reportTagMoveFailed, reportTagOrderSettled, waitForMetadataBootChain } from './character-metadata-db.js';
 import { isReadOnlyMode } from './read-only-mode.js';
 import { color, getConfigFilePath } from './util.js';
 
@@ -55,16 +55,14 @@ function spawnMigrationWorker(workerData) {
  * (request()). A store has at most one worker at a time; a run asked for while one is going runs once it has
  * exited, and every request made meanwhile joins that one run. A store's worker starts only once that store's boot
  * chain (initializeMetadataStores()) has finished, and not at all if the chain failed, since the passes rely on what
- * it populates. Keeps this process in step with what the worker writes: after each batch that
- * wrote tag definitions the store's tag cache is cleared, after each batch that logged tag changes the store's
- * clients are told (reportTagChanges()), after each batch that wrote change rows 'change' is emitted once, and after
+ * it populates. Keeps this process in step with what the worker writes: after each batch that logged tag changes the
+ * store's clients are told (reportTagChanges()), after each batch that wrote change rows 'change' is emitted once, and after
  * each batch that wrote groups version rows GROUP_CHANGES_EVENT is. A queued tag move the worker couldn't apply is reported here (reportTagMoveFailed()). A pass that
  * inserts rows queues their chat stats, which only this thread counts (kickChatStatsReconcile()), so the count is
  * started after each batch and once the worker has exited.
  * @param {object} [options]
  * @param {(workerData: object) => MigrationWorker} [options.spawnWorker]
  * @param {(directories: import('./users.js').UserDirectoryList) => Promise<boolean>} [options.waitForBootChain]
- * @param {(directories: import('./users.js').UserDirectoryList) => Promise<void>} [options.onTagDefinitionsChanged]
  * @param {() => void} [options.onChanged]
  * @param {(directories: import('./users.js').UserDirectoryList, payload: import('./character-metadata-db.js').TagMoveFailedPayload) => void} [options.onTagMoveFailed]
  * @param {(directories: import('./users.js').UserDirectoryList) => void} [options.onTagOrderSettled]
@@ -75,7 +73,6 @@ function spawnMigrationWorker(workerData) {
 export function createMetadataMigrationCoordinator({
     spawnWorker = spawnMigrationWorker,
     waitForBootChain = waitForMetadataBootChain,
-    onTagDefinitionsChanged = clearTagCache,
     onChanged = () => characterChangeEmitter.emit('change'),
     onTagMoveFailed = (directories, payload) => reportTagMoveFailed(directories.root, payload),
     onTagOrderSettled = directories => reportTagOrderSettled(directories.root),
@@ -99,8 +96,6 @@ export function createMetadataMigrationCoordinator({
     async function handleMessage(directories, entry, msg) {
         switch (msg?.type) {
             case 'batch': {
-                if (msg.tagDefinitionsChanged) await onTagDefinitionsChanged(directories);
-                // After the cache is cleared, so a client that asks on this isn't answered from the old cache.
                 if (msg.tagChangesLogged) onTagChangesLogged(directories);
                 if (msg.changed) onChanged();
                 if (msg.groupChangesLogged) onGroupChangesLogged();
@@ -112,8 +107,6 @@ export function createMetadataMigrationCoordinator({
                 return;
             }
             case 'tag-order-settled': {
-                // First, so a client that re-reads the tags on this message isn't answered from the old cache.
-                await onTagDefinitionsChanged(directories);
                 onTagOrderSettled(directories);
                 return;
             }
