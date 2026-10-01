@@ -5355,6 +5355,19 @@
                                 <input id="show_card_avatar_urls" type="checkbox" />
                                 <small data-i18n="Show avatar filenames">Show avatar filenames</small>
                             </label>
+                            <div id="hold_recent_characters_block" class="flex-container flexFlowColumn flexNoGap">
+                                <div class="flex-container alignitemscenter">
+                                    <label class="checkbox_label flex1" for="hold_recent_characters" title="Usually leave this off. Only turn it on if an extension needs to see more characters than the one you have open. Each character kept uses memory." data-i18n="[title]hold_recent_characters_tooltip">
+                                        <input id="hold_recent_characters" type="checkbox" />
+                                        <small data-i18n="Keep recently used characters">Keep recently used characters</small>
+                                    </label>
+                                    <label for="hold_recent_characters_count" class="flex-container alignitemscenter">
+                                        <small data-i18n="How many">How many</small>
+                                        <input id="hold_recent_characters_count" class="text_pole widthUnset" type="number" min="1" max="5000" step="1" />
+                                    </label>
+                                </div>
+                                <small class="hold_recent_characters_note" data-i18n="hold_recent_characters_note">Usually leave this off. It's only for extensions that need to see more characters than the one you have open: they then see your most recently used ones too. Each character kept uses memory.</small>
+                            </div>
                             <label class="checkbox_label" for="spoiler_free_mode" title="Hide character definitions from the editor panel behind a spoiler button." data-i18n="[title]Hide character definitions from the editor panel behind a spoiler button">
                                 <input id="spoiler_free_mode" type="checkbox" />
                                 <small data-i18n="Spoiler Free Mode">Spoiler Free Mode</small>

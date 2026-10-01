@@ -27,7 +27,7 @@ import { printCharactersDebounced, printCharacters, entitiesFilter, resetCharact
 import { chat } from './chat-state.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characters, charactersStore, setCharacterId } from './character-store.js';
+import { characters, charactersStore, setCharacterId, setRecentCharacters, getRecentCharacters, holdCharacter } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { isMobile, initMovingUI, favsToHotswap, countCharTokensWhenShown, onCharacterEditorMaybeShown, onStackedDrawersChanged } from './RossAscends-mods.js';
 import {
@@ -157,6 +157,8 @@ export const power_user = {
     chat_width_max: 120,
     never_resize_avatars: false,
     show_card_avatar_urls: false,
+    hold_recent_characters: false,
+    hold_recent_characters_count: 100,
     play_message_sound: false,
     play_sound_unfocused: true,
     auto_save_msg_edits: false,
@@ -1795,6 +1797,67 @@ function getExampleMessagesBehavior() {
 }
 
 //MARK: loadPowerUser
+/** The most "keep recently used characters" can keep; each is a whole card in memory. */
+const MAX_RECENT_CHARACTERS = 5000;
+/** How many recently used characters one request asks the server for. */
+const RECENT_CHARACTERS_PAGE_SIZE = 500;
+
+/**
+ * @param {any} value
+ * @returns {number} a whole number from 1 to {@link MAX_RECENT_CHARACTERS}
+ */
+function clampRecentCharacterCount(value) {
+    const count = Math.trunc(Number(value));
+    if (!Number.isFinite(count) || count < 1) return 1;
+    return Math.min(count, MAX_RECENT_CHARACTERS);
+}
+
+let holdRecentCharactersRun = 0;
+
+/**
+ * Applies "keep recently used characters": with it on, the page keeps the most recently chatted-with characters in
+ * memory, up to the set number, and shows them to extensions; with it off, only the current character or group.
+ * Which ones comes from the server's "Recent" order, read in pages; the cards the page doesn't hold are read in full.
+ */
+async function applyHoldRecentCharacters() {
+    const run = ++holdRecentCharactersRun;
+    const limit = power_user.hold_recent_characters ? clampRecentCharacterCount(power_user.hold_recent_characters_count) : 0;
+    // Lowering the number or turning it off lets go at once, without waiting for the server.
+    setRecentCharacters(limit, getRecentCharacters());
+    if (limit === 0) return;
+
+    try {
+        /** @type {string[]} */
+        const avatars = [];
+        const pageSize = Math.min(RECENT_CHARACTERS_PAGE_SIZE, limit);
+        for (let page = 1; avatars.length < limit; page++) {
+            const result = await characterRepository.query({}, { field: 'date_last_chat', order: 'desc' }, page, pageSize, ['rows']);
+            if (run !== holdRecentCharactersRun) return;
+            const rows = Array.isArray(result.rows) ? result.rows : [];
+            for (const row of rows) {
+                const avatar = /** @type {any} */ (row)?.avatar;
+                if (typeof avatar === 'string' && avatar !== '') avatars.push(avatar);
+            }
+            if (rows.length < pageSize) break;
+        }
+        // Characters used since the page loaded stay first; the server's order fills the rest.
+        setRecentCharacters(limit, [...getRecentCharacters(), ...avatars]);
+
+        const missing = getRecentCharacters().filter(avatar => !charactersStore.has(avatar));
+        const full = await characterRepository.readFull(missing);
+        if (run !== holdRecentCharactersRun) return;
+        const wanted = new Set(getRecentCharacters());
+        for (const character of full.values()) {
+            if (wanted.has(character.avatar)) holdCharacter(character);
+        }
+    } catch (error) {
+        console.error('Could not load the recently used characters:', error);
+        if (run === holdRecentCharactersRun) {
+            toastr.error(t`Could not load the recently used characters. Extensions only see the current character for now.`);
+        }
+    }
+}
+
 export async function loadPowerUserSettings(settings, data) {
     const defaultStscript = JSON.parse(JSON.stringify(power_user.stscript));
     // Load from settings.json
@@ -1959,6 +2022,9 @@ export async function loadPowerUserSettings(settings, data) {
     $('#play_sound_unfocused').prop('checked', power_user.play_sound_unfocused);
     $('#never_resize_avatars').prop('checked', power_user.never_resize_avatars);
     $('#show_card_avatar_urls').prop('checked', power_user.show_card_avatar_urls);
+    $('#hold_recent_characters').prop('checked', !!power_user.hold_recent_characters);
+    $('#hold_recent_characters_count').val(clampRecentCharacterCount(power_user.hold_recent_characters_count));
+    applyHoldRecentCharacters();
     $('#auto_save_msg_edits').prop('checked', power_user.auto_save_msg_edits);
     $('#allow_name1_display').prop('checked', power_user.allow_name1_display);
     $('#allow_name2_display').prop('checked', power_user.allow_name2_display);
@@ -4043,6 +4109,21 @@ jQuery(() => {
         power_user.show_card_avatar_urls = !!$(this).prop('checked');
         printCharactersDebounced();
         saveSettingsDebounced('power_user.show_card_avatar_urls');
+    });
+
+    $('#hold_recent_characters').on('input', function () {
+        power_user.hold_recent_characters = !!$(this).prop('checked');
+        saveSettingsDebounced('power_user.hold_recent_characters');
+        applyHoldRecentCharacters();
+    });
+
+    $('#hold_recent_characters_count').on('change', function () {
+        const count = clampRecentCharacterCount($(this).val());
+        $(this).val(count);
+        if (count === power_user.hold_recent_characters_count) return;
+        power_user.hold_recent_characters_count = count;
+        saveSettingsDebounced('power_user.hold_recent_characters_count');
+        applyHoldRecentCharacters();
     });
 
     $('#play_message_sound').on('input', function () {
