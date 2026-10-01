@@ -390,22 +390,6 @@
         height: 0;
     }
 
-    /* Single-panel width: any open panel already covers #sheld's spot, so hide it behind them too. */
-    body.stackedDrawers:has(#left-nav-panel.openDrawer) #sheld,
-    body.stackedDrawers:has(#right-nav-panel.openDrawer) #sheld,
-    body.stackedDrawers:has(#char-info-panel.openDrawer) #sheld,
-    body.stackedDrawers:has(.drawer-content.openDrawer) #sheld {
-        visibility: hidden;
-    }
-
-    /* Pinning can leave more than one of the 4 pinnable panels open; only the front one is shown here. */
-    body.stackedDrawers #left-nav-panel.openDrawer:not(.frontMobileOverlay),
-    body.stackedDrawers #right-nav-panel.openDrawer:not(.frontMobileOverlay),
-    body.stackedDrawers #char-info-panel.openDrawer:not(.frontMobileOverlay),
-    body.stackedDrawers #WorldInfo.openDrawer:not(.frontMobileOverlay) {
-        visibility: hidden;
-    }
-
     #floatingPrompt,
     #cfgConfig,
     #logprobsViewer,
@@ -887,22 +871,6 @@ body.forceMobileView #left-nav-panel:not(.openDrawer),
 body.forceMobileView #right-nav-panel:not(.openDrawer),
 body.forceMobileView #char-info-panel:not(.openDrawer) {
         height: 0;
-    }
-
-/* Single-panel width: any open panel already covers #sheld's spot, so hide it behind them too. */
-body.forceMobileView.stackedDrawers:has(#left-nav-panel.openDrawer) #sheld,
-body.forceMobileView.stackedDrawers:has(#right-nav-panel.openDrawer) #sheld,
-body.forceMobileView.stackedDrawers:has(#char-info-panel.openDrawer) #sheld,
-body.forceMobileView.stackedDrawers:has(.drawer-content.openDrawer) #sheld {
-        visibility: hidden;
-    }
-
-/* Pinning can leave more than one of the 4 pinnable panels open; only the front one is shown here. */
-body.forceMobileView.stackedDrawers #left-nav-panel.openDrawer:not(.frontMobileOverlay),
-body.forceMobileView.stackedDrawers #right-nav-panel.openDrawer:not(.frontMobileOverlay),
-body.forceMobileView.stackedDrawers #char-info-panel.openDrawer:not(.frontMobileOverlay),
-body.forceMobileView.stackedDrawers #WorldInfo.openDrawer:not(.frontMobileOverlay) {
-        visibility: hidden;
     }
 
 body.forceMobileView #floatingPrompt,

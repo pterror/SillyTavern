@@ -256,6 +256,7 @@ import { initDynamicStyles } from './scripts/dynamic-styles.js';
 import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-textareas.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
+import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, updateDrawerStack } from './scripts/drawer-stack.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { registerExtensionSlashCommands as initExtensionSlashCommands } from './scripts/extensions-slashcommands.js';
 import { ToolManager } from './scripts/tool-calling.js';
@@ -8450,74 +8451,10 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
     }
 }
 
-// Desktop layout has 3 zones: left (#left-nav-panel, .zoomed_avatar_container), center (#sheld and most
-// drawers), right (#right-nav-panel, #char-info-panel). Fullscreen character management spans all 3 zones;
-// fullscreen character info spans center plus each sidebar it reaches - each only while toggle-dependent.css
-// actually draws it fullscreen.
 // Only pinnable drawers can stay open behind another drawer: opening or bringing forward a drawer closes every
-// unpinned one (closeUnpinnedDrawersFor). With stacked drawers on (body.stackedDrawers), a pinned drawer that isn't
-// in front is open but hidden; with it off, it stays visible under the front one.
-const ZONE_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
-// The 4 pinnable panels. In the mobile layout every top-bar drawer covers the whole screen (see mobile-styles.css),
-// so one of these is shown there only while no other open top-bar drawer is in front of it.
-const MOBILE_OVERLAY_PANEL_IDS = ['right-nav-panel', 'char-info-panel', 'left-nav-panel', 'WorldInfo'];
-function getDrawerZones(id) {
-    const el = document.getElementById(id);
-    if (!el) return [];
-    if (id === 'left-nav-panel') return ['left'];
-    // Same conditions as the fullscreen rules in toggle-dependent.css; any other menu is drawn in the right sidebar.
-    const menu = el.getAttribute('data-active-menu');
-    if (id === 'right-nav-panel') {
-        const fullscreen = document.body.classList.contains('charGalleryView') && el.classList.contains('galleryFullscreen') && menu === 'rm_characters_block';
-        return fullscreen ? ['left', 'center', 'right'] : ['right'];
-    }
-    if (id === 'char-info-panel') {
-        const fullscreen = el.classList.contains('charInfoFullscreen') && menu === 'rm_ch_create_block';
-        return fullscreen ? getCharInfoFullscreenZones(el) : ['right'];
-    }
-    return ['center'];
-}
-
-/**
- * @param {'left'|'right'} edge
- * @returns {number} How much of that screen edge the drawer bar takes, in px (--drawerBarLeft / --drawerBarRight).
- */
-function getDrawerBarInset(edge) {
-    const name = edge === 'left' ? '--drawerBarLeft' : '--drawerBarRight';
-    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name)) || 0;
-}
-
-/**
- * Fullscreen character info is capped at Chat Width Max, so depending on the window, Chat Width and Chat Width Max
- * it may be no wider than #sheld and leave both sidebars uncovered.
- * @param {HTMLElement} panel
- * @returns {string[]}
- */
-function getCharInfoFullscreenZones(panel) {
-    const box = panel.getBoundingClientRect();
-    const sheld = document.getElementById('sheld')?.getBoundingClientRect();
-    if (!box.width || !sheld) return ['center'];
-    // Each sidebar spans from the drawer bar (or the screen edge) to 1px short of #sheld (.fillLeft / .fillRight in
-    // style.css), unless held wider by its min-width.
-    const minWidth = id => parseFloat(getComputedStyle(document.getElementById(id)).minWidth) || 0;
-    const leftEnd = Math.max(sheld.left - 1, getDrawerBarInset('left') + minWidth('left-nav-panel'));
-    const rightStart = Math.min(sheld.right + 1, document.documentElement.clientWidth - getDrawerBarInset('right') - minWidth('right-nav-panel'));
-    return [
-        ...(box.left < leftEnd ? ['left'] : []),
-        'center',
-        ...(box.right > rightStart ? ['right'] : []),
-    ];
-}
-
-/** @returns {string} Every top-bar drawer's zones, to tell when a resize changed them. */
-function drawerZonesKey() {
-    return Array.from(document.querySelectorAll(ZONE_DRAWER_SELECTOR), el => `${el.id}:${getDrawerZones(el.id).join(' ')}`).join();
-}
-let lastDrawerZonesKey = '';
-
-// Drawer ids, most recently fronted last. Which drawers are open is read from .openDrawer, not from here,
-// so a drawer opened without frontDrawer() (e.g. by an extension) still counts, ranked behind all fronted ones.
-const drawerFrontOrder = [];
+// unpinned one (closeUnpinnedDrawersFor). With stacked drawers on (body.stackedDrawers), the drawer fronted last is
+// on top and cuts away what it covers under it (drawer-stack.js); with it off, a pinned drawer stays visible under the
+// front one.
 
 // accountStorage keys holding whether each pinnable panel was open, so a reload can restore it.
 const PANEL_OPEN_STATE_KEYS = {
@@ -8539,39 +8476,19 @@ export function readSavedPanelOpenStates() {
     return states;
 }
 
-// Derives every "which open drawer is on top" class from drawerFrontOrder, each over its own overlap group:
-// .frontFillRight (the two .fillRight panels), .frontMobileOverlay (on MOBILE_OVERLAY_PANEL_IDS, ranked against
-// every top-bar drawer), and .frontInZone (per zone; an id spanning several zones must be on top of all of them).
-function recomputeDrawerFronts() {
-    const openDrawers = Array.from(document.querySelectorAll('.drawer-content.openDrawer'));
-    const rank = el => drawerFrontOrder.indexOf(el.id);
-    const backToFront = openDrawers.sort((a, b) => rank(a) - rank(b)).map(el => el.id);
-    const topOf = ids => backToFront.filter(id => ids.includes(id)).at(-1);
-
-    const fillRightIds = Array.from(document.querySelectorAll('.fillRight'), el => el.id);
-    const fillRightFront = topOf(fillRightIds);
-    for (const id of fillRightIds) document.getElementById(id).classList.toggle('frontFillRight', id === fillRightFront);
-
-    const zoneDrawerIds = Array.from(document.querySelectorAll(ZONE_DRAWER_SELECTOR), el => el.id);
-
-    const mobileFront = topOf(zoneDrawerIds);
-    for (const id of MOBILE_OVERLAY_PANEL_IDS) document.getElementById(id)?.classList.toggle('frontMobileOverlay', id === mobileFront);
-
-    const zoneTop = {};
-    for (const zone of ['left', 'center', 'right']) zoneTop[zone] = topOf(zoneDrawerIds.filter(id => getDrawerZones(id).includes(zone)));
-    for (const id of zoneDrawerIds) {
-        const zones = getDrawerZones(id);
-        const el = document.getElementById(id);
-        el.classList.toggle('frontInZone', zones.length > 0 && zones.every(zone => zoneTop[zone] === id));
-        if (el.getAttribute('data-drawer-zones') !== zones.join(' ')) el.setAttribute('data-drawer-zones', zones.join(' '));
-    }
-    lastDrawerZonesKey = drawerZonesKey();
-
+/** After a drawer opens, closes or comes forward: recomputes the stack, records open panels, runs the shown hooks. */
+function onDrawersChanged() {
+    updateDrawerStack();
     if (panelOpenStatesRead) {
         for (const [id, key] of Object.entries(PANEL_OPEN_STATE_KEYS)) {
             accountStorage.setItem(key, String(Boolean(document.getElementById(id)?.classList.contains('openDrawer'))));
         }
     }
+    onDrawerVisibilityChanged();
+}
+
+/** The character list and editor load what they show when they become visible, including by being uncovered. */
+function onDrawerVisibilityChanged() {
     onCharacterEditorMaybeShown();
     onCharacterListMaybeShown();
 }
@@ -8593,19 +8510,18 @@ function onCharacterListMaybeShown() {
  * @param {string} contentId The .drawer-content element's id.
  */
 export function frontDrawer(contentId) {
-    const idx = drawerFrontOrder.indexOf(contentId);
-    if (idx !== -1) drawerFrontOrder.splice(idx, 1);
-    drawerFrontOrder.push(contentId);
-    if (document.getElementById(contentId)?.classList.contains('fillRight')) {
+    const content = document.getElementById(contentId);
+    if (content) raiseDrawer(content);
+    if (content?.classList.contains('fillRight')) {
         accountStorage.setItem('FillRightFront', contentId);
     }
-    recomputeDrawerFronts();
+    onDrawersChanged();
     autosizeTextareas(document.getElementById(contentId) ?? document);
 }
 
 function closeDrawerContent(content) {
     content.classList.replace('openDrawer', 'closedDrawer');
-    recomputeDrawerFronts();
+    onDrawersChanged();
 }
 
 /** @param {Element} content A .drawer-content. @returns {Element|null} Its navbar icon. */
@@ -8650,7 +8566,7 @@ export function keepOneRightPanelOpen() {
     if (power_user.stacked_drawers) return;
     const open = Array.from(document.querySelectorAll('.fillRight.openDrawer'));
     if (open.length < 2) return;
-    const front = open.find(el => el.classList.contains('frontFillRight')) ?? open.at(-1);
+    const front = frontmostOf(open);
     for (const el of open) {
         if (el === front) continue;
         getDrawerIcon(el)?.classList.replace('openIcon', 'closedIcon');
@@ -12711,9 +12627,9 @@ export async function doNavbarIconClick() {
 
         frontDrawer(targetDrawerID);
     } else if (drawerWasOpenAlready) {
-        // Open but hidden behind another drawer (only stacked drawers hide any): the click brings it forward
+        // Open but partly or wholly under another drawer (only with stacked drawers on): the click brings it forward
         // rather than closing it.
-        if (getComputedStyle(drawer[0]).visibility === 'hidden') {
+        if (isDrawerCovered(drawer[0])) {
             bringOpenDrawerForward(drawer[0]);
             return;
         }
@@ -14560,14 +14476,7 @@ jQuery(async function () {
         }
     });
 
-    // Which sidebars fullscreen character info reaches depends on its width and #sheld's, and on whether the drawer
-    // bar is at a side (the holder's size changes whenever it moves to or from one).
-    const drawerZonesObserver = new ResizeObserver(() => {
-        if (drawerZonesKey() !== lastDrawerZonesKey) recomputeDrawerFronts();
-    });
-    drawerZonesObserver.observe(document.getElementById('sheld'));
-    drawerZonesObserver.observe(document.getElementById('char-info-panel'));
-    drawerZonesObserver.observe(document.getElementById('top-settings-holder'));
+    initDrawerStack(onDrawerVisibilityChanged);
 
     $('#charInfoFullscreenToggle').on('click', () => {
         const panel = document.getElementById('char-info-panel');

@@ -8,10 +8,14 @@
     padding: 5px;
 }
 
-/* Stacked drawers (power_user.stacked_drawers) lets both .fillRight panels be open at once; hide whichever isn't
-   the active tab so panel translucency doesn't blend two overlapping open panels into an unreadable mess. Every
-   rule that hides something for being behind a drawer requires body.stackedDrawers. */
-body.stackedDrawers .fillRight.openDrawer:not(.frontFillRight) {
+/* Stacked drawers (power_user.stacked_drawers): the drawer fronted last is on top, and what an open drawer covers
+   under it is cut away (drawer-stack.js), so translucent themes never blend two layers. A layer cut everywhere is
+   hidden. */
+body.stackedDrawers #top-settings-holder > .drawer > .drawer-content {
+    z-index: calc(3000 + var(--drawerOrder, 0));
+}
+
+body.stackedDrawers .stackCovered {
     visibility: hidden;
     transition: visibility 0s !important;
 }
@@ -319,17 +323,8 @@ body.charGalleryView #right-nav-panel.galleryFullscreen[data-active-menu="rm_cha
     display: none;
 }
 
-/* Same one-visible-at-a-time trick as .fillRight.openDrawer:not(.frontFillRight) above, extended to #sheld
-   once this panel covers the full viewport where #sheld normally sits. Requires .frontInZone (not just
-   .frontFillRight, a separate right-zone-only tracker) since a center-zone drawer can evict this panel's
-   zone without touching frontFillRight. */
-body.charGalleryView.stackedDrawers:has(#right-nav-panel.galleryFullscreen.frontFillRight.frontInZone.openDrawer[data-active-menu="rm_characters_block"]) #sheld {
-    visibility: hidden;
-}
-
 /* Same fullscreen pattern as the character list above, but for #char-info-panel (a separate .fillRight
-   drawer) - capped at Chat Width Max. The cap can leave it no wider than #sheld, off the sidebars; getDrawerZones
-   in script.js measures which it covers. */
+   drawer) - capped at Chat Width Max. */
 #char-info-panel.charInfoFullscreen[data-active-menu="rm_ch_create_block"].fillRight.openDrawer {
     left: var(--drawerBarLeft);
     right: var(--drawerBarRight);
@@ -341,47 +336,6 @@ body.charGalleryView.stackedDrawers:has(#right-nav-panel.galleryFullscreen.front
     height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100vh - var(--drawerBarTop) - var(--drawerBarBottom));
     max-height: calc(100dvh - var(--drawerBarTop) - var(--drawerBarBottom));
-}
-
-/* Same one-visible-at-a-time trick as above, extended to #sheld while this panel is the fullscreen drawer.
-   Requires .frontInZone too, for the same reason as the galleryFullscreen rule above. */
-body.stackedDrawers:has(#char-info-panel.charInfoFullscreen.frontFillRight.frontInZone.openDrawer[data-active-menu="rm_ch_create_block"]) #sheld {
-    visibility: hidden;
-}
-
-/* These drawers fully overlap #sheld already (same width/centering) - hide it behind them too.
-   #WorldInfo is pinnable (can stay open while eclipsed by another zone occupant, see activateZoneFront
-   in script.js), so it only counts here while it's actually the visible one; the rest can't be pinned
-   and so are never open-but-eclipsed. */
-body.stackedDrawers:has(#WorldInfo.openDrawer.frontInZone) #sheld,
-body.stackedDrawers:has(#PersonaManagement.openDrawer) #sheld,
-body.stackedDrawers:has(#rm_extensions_block.openDrawer) #sheld,
-body.stackedDrawers:has(#Backgrounds.openDrawer) #sheld,
-body.stackedDrawers:has(#user-settings-block.openDrawer) #sheld,
-body.stackedDrawers:has(#AdvancedFormatting.openDrawer) #sheld {
-    visibility: hidden;
-}
-
-/* Zone system (see getDrawerZones/activateZoneFront in script.js): left = #left-nav-panel +
-   .zoomed_avatar_container, center = #sheld + most drawers, right = #right-nav-panel + #char-info-panel.
-   galleryFullscreen spans all 3 zones, charInfoFullscreen spans center plus whichever sidebars it reaches (its
-   data-drawer-zones) - so a fullscreen .fillRight panel
-   can end up sharing a zone with a pinned drawer that normally lives there. Whichever is frontInZone wins;
-   the loser stays logically open but hidden, same trick as .fillRight.openDrawer:not(.frontFillRight) above. */
-body.stackedDrawers #left-nav-panel.openDrawer:not(.frontInZone),
-body.stackedDrawers #WorldInfo.openDrawer:not(.frontInZone),
-body.stackedDrawers #right-nav-panel.galleryFullscreen.openDrawer:not(.frontInZone),
-body.stackedDrawers #char-info-panel.charInfoFullscreen.openDrawer:not(.frontInZone) {
-    visibility: hidden;
-    transition: visibility 0s !important;
-}
-
-/* .zoomed_avatar_container isn't a drawer (no open/close state of its own), so it just sits under
-   whichever left-zone drawer currently has focus, same as #sheld does for the center zone. */
-body.stackedDrawers:has(#left-nav-panel.openDrawer.frontInZone) .zoomed_avatar_container,
-body.stackedDrawers:has(#right-nav-panel.galleryFullscreen.openDrawer.frontInZone) .zoomed_avatar_container,
-body.stackedDrawers:has(#char-info-panel.openDrawer.frontInZone[data-drawer-zones~="left"]) .zoomed_avatar_container {
-    visibility: hidden;
 }
 
 /* Pins the search row to nowrap so a growing search-pill row concedes width, not height, and wastes no

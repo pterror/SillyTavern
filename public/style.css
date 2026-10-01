@@ -37,7 +37,7 @@
     initial-value: 0px;
 }
 
-/* Registered so that scripts read them in px (getDrawerBarInset in script.js). */
+/* Registered as lengths, so they compute to px. */
 @property --drawerBarLeft {
     syntax: '<length>';
     inherits: true;
