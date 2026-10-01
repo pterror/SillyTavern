@@ -289,7 +289,7 @@ function drawerOverlapState(page) {
 
 /**
  * What the user sees of the stacked layers (stacked drawers on): every layer on screen (the chat, the shown top-bar
- * drawers, zoomed avatars, open suggestion lists), bottom first, and every sample point where a layer can be hit
+ * drawers, floating windows, open lists), bottom first, and every sample point where a layer can be hit
  * (`elementsFromPoint` follows clip paths and visibility) although a layer above covers that point, or can't be hit
  * although nothing above covers it.
  * @param {import('@playwright/test').Page} page
@@ -300,12 +300,13 @@ function stackState(page) {
         const shown = el => el.isConnected && getComputedStyle(el).display !== 'none'
             && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
         const order = el => Number(el.style.getPropertyValue('--drawerOrder')) || 0;
-        const ordered = [...document.querySelectorAll('#top-settings-holder > .drawer > .drawer-content, .zoomed_avatar')]
+        const ordered = [...document.querySelectorAll('#sheld, #top-settings-holder > .drawer > .drawer-content, #movingDivs > *, body > .draggable')]
             .filter(shown)
-            .sort((a, b) => order(a) - order(b) || (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
-        const sheld = document.getElementById('sheld');
-        const menus = [...document.querySelectorAll('.ui-autocomplete')].filter(shown);
-        const layers = [...(sheld && shown(sheld) ? [sheld] : []), ...ordered, ...menus];
+            .sort((a, b) => order(a) - order(b)
+                || Number(b.id === 'sheld') - Number(a.id === 'sheld')
+                || (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+        const lists = [...document.querySelectorAll('.ui-menu, .select2-container--open > .select2-dropdown')].filter(shown);
+        const layers = [...ordered, ...lists];
         const name = el => el.id || String(el.className).split(' ')[0] || el.tagName;
         const cutWrong = [];
         layers.forEach((layer, i) => {
@@ -941,5 +942,113 @@ test.describe('Stacked drawers off, mobile', () => {
         await openDrawer(page, 'user-settings-block');
         await expect.poll(async () => (await drawerOverlapState(page)).visible.sort()).toEqual(['WorldInfo', 'user-settings-block']);
         expect(await isShown(page, '#sheld')).toBe(true);
+    });
+});
+
+/**
+ * Adds a window the way an extension does: a `.drawer-content` in #movingDivs, left of and over the chat's left edge,
+ * holding a button that counts its clicks in `window.extWindowClicks`.
+ * @param {import('@playwright/test').Page} page
+ */
+async function addExtensionWindow(page) {
+    await page.evaluate(() => {
+        const win = document.createElement('div');
+        win.id = 'extWindow';
+        win.className = 'drawer-content';
+        const sheld = document.getElementById('sheld').getBoundingClientRect();
+        // .drawer-content centers itself; an extension's window sits where it puts it.
+        Object.assign(win.style, { position: 'fixed', left: `${sheld.left - 60}px`, right: 'auto', margin: '0', top: '120px', width: '260px', height: '220px', display: 'block' });
+        const button = document.createElement('button');
+        button.id = 'extWindowButton';
+        button.textContent = 'x';
+        Object.assign(button.style, { position: 'absolute', left: '8px', top: '8px', width: '30px', height: '30px' });
+        window['extWindowClicks'] = 0;
+        button.addEventListener('click', () => window['extWindowClicks']++);
+        win.append(button);
+        document.getElementById('movingDivs').append(win);
+    });
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<{ x: number, y: number }>} A point inside both the extension window and the chat.
+ */
+function overlapPoint(page) {
+    return page.evaluate(() => {
+        const a = document.getElementById('extWindow').getBoundingClientRect();
+        const b = document.getElementById('sheld').getBoundingClientRect();
+        return { x: (Math.max(a.left, b.left) + Math.min(a.right, b.right)) / 2, y: (a.top + a.bottom) / 2 };
+    });
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {{ x: number, y: number }} point
+ * @returns {Promise<string>} Which of the two layers is hit there.
+ */
+function hitAt(page, point) {
+    return page.evaluate(({ x, y }) => {
+        const hit = document.elementFromPoint(x, y);
+        return hit?.closest('#extWindow') ? 'extWindow' : hit?.closest('#sheld') ? 'sheld' : String(hit?.id);
+    }, point);
+}
+
+test.describe('Layers found by what they are', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test.beforeEach(async ({ page }) => {
+        await awaitAppReady(page);
+        await page.setViewportSize({ width: 1400, height: 900 });
+        await setStackedDrawers(page, true);
+        await resetDrawers(page);
+    });
+
+    test('a window an extension adds comes forward as it appears, and clicking the chat\'s visible part brings the chat forward', async ({ page }) => {
+        await addExtensionWindow(page);
+        const point = await overlapPoint(page);
+        await expect.poll(() => hitAt(page, point)).toBe('extWindow');
+        await expect.poll(async () => (await stackState(page)).cutWrong).toEqual([]);
+
+        const sheld = await page.locator('#sheld').boundingBox();
+        await page.mouse.click(sheld.x + sheld.width / 2, sheld.y + sheld.height / 2);
+        await expect.poll(() => hitAt(page, point)).toBe('sheld');
+        await expect.poll(async () => (await stackState(page)).layers.at(-1)).toBe('sheld');
+        await expect.poll(async () => (await stackState(page)).cutWrong).toEqual([]);
+        // The window still shows where the chat doesn't cover it.
+        await expect(page.locator('#extWindow')).not.toHaveClass(/stackCovered/);
+    });
+
+    test('a button in a back layer still gets its click, and its layer comes forward', async ({ page }) => {
+        await addExtensionWindow(page);
+        const point = await overlapPoint(page);
+        const sheld = await page.locator('#sheld').boundingBox();
+        await page.mouse.click(sheld.x + sheld.width / 2, sheld.y + sheld.height / 2);
+        await expect.poll(() => hitAt(page, point)).toBe('sheld');
+
+        await page.locator('#extWindowButton').click();
+        expect(await page.evaluate(() => window['extWindowClicks'])).toBe(1);
+        await expect.poll(() => hitAt(page, point)).toBe('extWindow');
+        await expect.poll(async () => (await stackState(page)).cutWrong).toEqual([]);
+    });
+
+    test('typing in the chat brings it forward', async ({ page }) => {
+        await addExtensionWindow(page);
+        const point = await overlapPoint(page);
+        await expect.poll(() => hitAt(page, point)).toBe('extWindow');
+        // Focus moved by the page itself doesn't bring a layer forward; typing does.
+        await page.locator('#send_textarea').evaluate(el => el.focus());
+        expect(await hitAt(page, point)).toBe('extWindow');
+        await page.keyboard.type('a');
+        await expect.poll(() => hitAt(page, point)).toBe('sheld');
+    });
+
+    test('the lorebook\'s select2 dropdown cuts the layers under it', async ({ page }) => {
+        await openDrawer(page, 'WorldInfo');
+        await page.locator('#WorldInfo .select2-selection').first().click();
+        const dropdown = page.locator('.select2-container--open > .select2-dropdown');
+        await expect(dropdown).toBeVisible();
+        await expect.poll(async () => (await stackState(page)).layers.at(-1)).toMatch(/^select2-dropdown/);
+        await expect.poll(async () => (await stackState(page)).cutWrong).toEqual([]);
+        await expect.poll(() => page.locator('#WorldInfo').evaluate(el => el.dataset.stackCut)).toBe('true');
     });
 });

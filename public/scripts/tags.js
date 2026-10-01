@@ -31,7 +31,6 @@ import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { contentHashOf } from './hash-utils.js';
 import { refreshUnderlayClips, registerUnderlayClip, scrollContainerOf, underlayClip } from './util/underlay-clip.js';
-import { addStackOverlay, removeStackOverlay } from './drawer-stack.js';
 import { dropOldTagsCache } from './tags-cache.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository, parseQueryTotal } from './character-repository.js';
@@ -4826,7 +4825,6 @@ export function createTagInput(inputSelector, listSelector, tagListOptions = {},
             minLength: 0,
         })
         .on('focus', onTagInputFocus); // <== show tag list on click
-    clipTagSuggestionsUnderlay($(inputSelector));
 }
 
 async function onViewTagsListClick() {
@@ -7023,28 +7021,6 @@ function initTagsDrawerUnderlayClip() {
     resizeObserver.observe(scrollContainer);
 }
 
-/**
- * A tag input's suggestion list is see-through like the tags panel. When the input sits in a drawer, the open list is
- * the top layer of the drawer stack: with stacked drawers on, what it covers below is cut away, following the list as
- * it opens, fills, moves and closes.
- * @param {JQuery<HTMLElement>} $input The input the autocomplete is attached to
- */
-function clipTagSuggestionsUnderlay($input) {
-    const input = $input.get(0);
-    if (!(input instanceof HTMLElement) || !input.closest('.drawer-content')) {
-        return;
-    }
-    /** @type {HTMLElement | null} */
-    let menu = null;
-    $input.on('autocompleteopen', () => {
-        // @ts-ignore
-        menu = $input.autocomplete('widget').get(0) ?? null;
-        if (menu) addStackOverlay(menu);
-    });
-    $input.on('autocompleteclose', () => {
-        if (menu) removeStackOverlay(menu);
-    });
-}
 
 export function initTags() {
     // A page of the list may show fewer tags than the one before it.
