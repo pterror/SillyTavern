@@ -201,15 +201,15 @@ test.describe('tags drawer overlay, stacked drawers off', () => {
 });
 
 /**
- * Whether the collapsed tag row under the input has exactly the part the open suggestion list covers cut out of it.
- * (The row ignores the pointer, so this reads the cut itself rather than hit-testing.)
+ * Whether character info, the layer under the open suggestion list, has exactly the part the list covers cut out of
+ * it. (Read from the cut itself: the list is on top, so hit-testing would find the list either way.)
  * @param {import('@playwright/test').Page} page
  * @returns {Promise<boolean | null>} true if cut, false if nothing is cut, null if cut wrongly
  */
 async function rowCutUnderSuggestions(page) {
     return page.evaluate(() => {
         const menu = [...document.querySelectorAll('.ui-autocomplete')].find(el => getComputedStyle(el).display !== 'none');
-        const under = document.getElementById('tags_div_preview');
+        const under = document.getElementById('char-info-panel');
         const m = menu.getBoundingClientRect();
         const u = under.getBoundingClientRect();
         const expected = [
@@ -219,16 +219,18 @@ async function rowCutUnderSuggestions(page) {
             Math.min(m.bottom, u.bottom) - u.top,
         ];
         if (expected[2] <= expected[0] || expected[3] <= expected[1]) {
-            throw new Error('the suggestion list does not cover the tag row');
+            throw new Error('the suggestion list does not cover character info');
         }
         const clip = under.style.clipPath;
         if (!clip) {
             return false;
         }
+        // After the outer square, each hole is five points: four corners and back to the first.
         const points = clip.replace(/^polygon\(evenodd,\s*/, '').replace(/\)$/, '').split(',').slice(5)
             .map(p => p.trim().split(/\s+/).map(parseFloat));
-        const hole = [points[0][0], points[0][1], points[2][0], points[2][1]];
-        return hole.every((v, i) => Math.abs(v - expected[i]) < 1) ? true : null;
+        const holes = [];
+        for (let k = 0; k + 4 < points.length + 1; k += 5) holes.push([points[k][0], points[k][1], points[k + 2][0], points[k + 2][1]]);
+        return holes.some(hole => hole.every((v, n) => Math.abs(v - expected[n]) < 1)) ? true : null;
     });
 }
 
@@ -256,7 +258,7 @@ test.describe('tag suggestion list overlay', () => {
     test.beforeEach(testSetup.awaitST);
     test.afterEach(async ({ page }) => setStackedDrawers(page, false));
 
-    test('with stacked drawers on, the open list hides the form it covers, and the hole goes when it closes', async ({ page }) => {
+    test('with stacked drawers on, the open list cuts what it covers out of character info, and the hole goes when it closes', async ({ page }) => {
         await setStackedDrawers(page, true);
         await openCharacterWithTags(page);
         try {
@@ -265,8 +267,7 @@ test.describe('tag suggestion list overlay', () => {
 
             await closeSuggestions(page);
             await expect(page.locator('.ui-autocomplete .ui-menu-item').first()).toBeHidden();
-            await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('#char-info-panel *')]
-                .filter(el => /** @type {HTMLElement} */ (el).style.clipPath).length)).toBe(0);
+            await expect.poll(() => page.locator('#char-info-panel').evaluate(el => el.style.clipPath)).toBe('');
         } finally {
             await deleteOpenCharacter(page);
         }
