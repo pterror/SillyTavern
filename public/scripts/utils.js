@@ -2815,7 +2815,8 @@ export async function findCharAsync({ name = null, allowAvatar = true, insensiti
     }
     // Imported when used: character-repository.js imports script.js, which imports this module.
     const { characterRepository } = await import('./character-repository.js');
-    return (await characterRepository.get(answer.ids[0])) ?? null;
+    // The whole card, as findChar() returns: callers read any field, and may select it.
+    return (await characterRepository.full(answer.ids[0])) ?? null;
 }
 
 /**

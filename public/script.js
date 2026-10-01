@@ -6675,7 +6675,7 @@ export async function renameCharacter(name = null, { silent = false, renameChats
             // A sync only refreshes characters the page already holds; the renamed one comes in under its new key.
             if (!charactersStore.has(newAvatar)) {
                 const { characterRepository } = await import('./scripts/character-repository.js');
-                const renamed = await characterRepository.get(newAvatar);
+                const renamed = await characterRepository.full(newAvatar);
                 if (renamed) holdCharacter(renamed);
             }
             charactersStore.reportRenamed(oldAvatar, newAvatar);
@@ -6923,7 +6923,8 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
 }
 
 /**
- * Loads all the data of a shallow character.
+ * Loads all the data of a shallow character. Kept for upstream callers: every character the page holds is already
+ * a full card, so for those this does nothing.
  * @param {string|number|undefined} characterId An index into `getContext().characters`, or an avatar key
  * @returns {Promise<void>} Promise that resolves when the character is unshallowed
  */
@@ -12125,10 +12126,12 @@ function applyImportedCharacter(character) {
     if (!character?.avatar) {
         return;
     }
+    // The import answer is the whole card.
+    character.shallow = false;
     if (charactersStore.has(character.avatar)) {
         charactersStore.update(character.avatar, character);
     } else {
-        charactersStore.create(character);
+        holdCharacter(character);
     }
 }
 

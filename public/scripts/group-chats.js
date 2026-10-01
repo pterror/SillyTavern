@@ -407,7 +407,15 @@ let askedForGroupId = null;
  * holds. A member that can't be read stays out.
  * @returns {Promise<void>}
  */
-export async function holdOpenGroupMembers() {
+export function holdOpenGroupMembers() {
+    openGroupHold = openGroupHold.then(holdMissingOpenGroupMembers);
+    return openGroupHold;
+}
+
+/** Each hold of the open group's members runs after the one before, so awaiting the latest awaits them all. */
+let openGroupHold = Promise.resolve();
+
+async function holdMissingOpenGroupMembers() {
     const groupId = selected_group;
     if (!groupId) return;
     if (askedForGroupId !== groupId) {
@@ -421,8 +429,9 @@ export async function holdOpenGroupMembers() {
     for (const member of missing) askedOpenGroupMembers.add(member);
     try {
         const { resolved } = await resolveGroupMembers(missing);
+        const full = await characterRepository.fullMany(resolved.map(character => character.avatar));
         if (selected_group !== groupId) return;
-        for (const character of resolved) holdCharacter(character);
+        for (const character of full.values()) holdCharacter(character);
     } catch (error) {
         console.error('Could not read the open group\'s members:', error);
         for (const member of missing) askedOpenGroupMembers.delete(member);
@@ -1659,6 +1668,10 @@ async function deleteGroup(id) {
  * @returns {Promise<void>} Promise that resolves when all group members are unshallowed
  */
 export async function unshallowGroupMembers(groupId) {
+    // The open group's members are held as full cards once read; wait for that read.
+    if (groupId === selected_group) {
+        await holdOpenGroupMembers();
+    }
     const group = groupsStore.get(groupId);
     if (!group) {
         return;

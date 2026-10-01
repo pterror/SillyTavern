@@ -100,8 +100,9 @@ jest.unstable_mockModule('../public/scripts/filters.js', () => ({
     FilterHelper: class {},
     isFilterState: noop,
 }));
+const readFull = jest.fn(async () => new Map());
 jest.unstable_mockModule('../public/scripts/character-repository.js', () => ({
-    characterRepository: {},
+    characterRepository: { readFull },
     buildCharacterQuery: noop,
     isServerQueryableSort: noop,
     isInvalidSortFieldError: noop,
@@ -336,5 +337,52 @@ describe('delta sync applies only what changed', () => {
         expect(avatars()).toEqual([a, b]);
         expect(store.get(a)).toBe(heldA);
         expect(heldA.fav).toBe(true);
+    });
+
+    test('a held character a sync reaches only as a shallow row is read again in full', async () => {
+        const cache = await import('../public/scripts/character-cache.js');
+        const a = await createCharacter('A');
+        await sync();
+        await hold(a);
+        const heldA = store.get(a);
+
+        await postJson('/api/characters/fav', { avatar: a, fav: true });
+        // The cache holds a shallow row of the change (as with lazyLoadCharacters on): no description.
+        const changes = await (await postJson('/api/characters/changes', { sinceSeq: await cache.getCachedCursor() })).json();
+        const batchResponse = await postJson('/api/characters/batch', { avatars: [a] });
+        const [record] = await batchResponse.json();
+        record.chat = record.chat ? String(record.chat) : '';
+        record.shallow = true;
+        delete record.description;
+        await cache.saveCachedCharacters([{ avatar: a, character: record }], { includeCreatorNotes: batchResponse.headers.get('X-Shallow-Characters-Include-Creator-Notes') === 'true' });
+        await cache.setCachedCursor(changes.seq);
+        readFull.mockClear();
+        readFull.mockImplementationOnce(async ids => new Map(ids.map(id => [id, { avatar: id, name: 'A', description: 'read again', fav: true, shallow: false }])));
+
+        await sync();
+
+        expect(readFull).toHaveBeenCalledWith([a]);
+        expect(store.get(a)).toBe(heldA);
+        expect(heldA.shallow).toBe(false);
+        expect(heldA.fav).toBe(true);
+        expect(heldA.description).toBe('read again');
+    });
+
+    test('/batch with full answers whole cards with their edit hashes, a bounded number at a time', async () => {
+        const a = await createCharacter('A');
+        const [record] = await (await postJson('/api/characters/batch', { avatars: [a], full: true })).json();
+        expect(record.avatar).toBe(a);
+        expect(record.description).toBe('d');
+        expect(record.shallow).toBeUndefined();
+        expect(typeof record._fieldsHash).toBe('number');
+        expect(typeof record._bodyHash).toBe('number');
+
+        const tooMany = Array.from({ length: 201 }, (_, i) => `c${i}.png`);
+        const response = await realFetch(`${baseUrl}/api/characters/batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ avatars: tooMany, full: true }),
+        });
+        expect(response.status).toBe(400);
     });
 });

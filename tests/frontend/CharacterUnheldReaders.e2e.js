@@ -31,6 +31,7 @@ async function createUnheldCharacter(page, name) {
         const form = new FormData();
         form.set('ch_name', name);
         form.set('first_mes', `Hello from ${name}.`);
+        form.set('description', `Description of ${name}.`);
         const response = await fetch('/api/characters/create', { method: 'POST', headers: getRequestHeaders({ omitContentType: true }), body: form });
         if (!response.ok) throw new Error(`create failed: ${response.status}`);
         return response.text();
@@ -49,6 +50,46 @@ async function isHeld(page, avatar) {
         const { charactersStore } = await import('./scripts/character-store.js');
         return charactersStore.has(avatar);
     }, avatar);
+}
+
+/**
+ * The held copy of a character, or null.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @returns {Promise<{ shallow?: boolean, description?: string }|null>}
+ */
+async function heldCopy(page, avatar) {
+    return page.evaluate(async (avatar) => {
+        const { charactersStore } = await import('./scripts/character-store.js');
+        const character = charactersStore.get(avatar);
+        return character ? { shallow: character.shallow, description: character.description } : null;
+    }, avatar);
+}
+
+/**
+ * Records in `__heldShallow` every shallow row the page takes in, and makes the page's row reads (`get()`, `getMany()`) answer shallow rows with no description, as /query does with
+ * lazyLoadCharacters on.
+ * @param {import('@playwright/test').Page} page
+ */
+async function shallowRowReads(page) {
+    await page.evaluate(async () => {
+        const { charactersStore } = await import('./scripts/character-store.js');
+        window['__heldShallow'] = [];
+        charactersStore.onChange(change => {
+            if (change.op === 'created' && change.entity?.shallow === true) window['__heldShallow'].push(change.entity.avatar);
+        });
+        const { characterRepository } = await import('./scripts/character-repository.js');
+        const toRow = character => {
+            if (!character || characterRepository.peek(character.avatar)) return character;
+            const row = { ...character, shallow: true };
+            delete row.description;
+            return row;
+        };
+        const get = characterRepository.get.bind(characterRepository);
+        const getMany = characterRepository.getMany.bind(characterRepository);
+        characterRepository.get = async id => toRow(await get(id));
+        characterRepository.getMany = async ids => new Map([...(await getMany(ids))].map(([id, character]) => [id, toRow(character)]));
+    });
 }
 
 /** @param {import('@playwright/test').Page} page */
@@ -131,5 +172,39 @@ test.describe('readers of characters the page does not hold', () => {
             return element.find('img').toArray().map(img => img.getAttribute('src'));
         }, avatar);
         expect(sources.some(src => src.includes(encodeURIComponent(avatar)))).toBe(true);
+    });
+
+    test('/go holds the whole card of the character it opens', async ({ page }) => {
+        const name = `GoWhole ${Date.now()}`;
+        const avatar = await createUnheldCharacter(page, name);
+        await shallowRowReads(page);
+
+        await run(page, `/go ${name}`);
+        await expect.poll(() => currentAvatar(page)).toBe(avatar);
+        expect(await heldCopy(page, avatar)).toEqual({ shallow: false, description: `Description of ${name}.` });
+        expect(await page.evaluate(() => window['__heldShallow'])).toEqual([]);
+    });
+
+    test('opening a group holds its members as whole cards', async ({ page }) => {
+        const stamp = Date.now();
+        const first = await createUnheldCharacter(page, `WholeMemberA ${stamp}`);
+        const second = await createUnheldCharacter(page, `WholeMemberB ${stamp}`);
+        await page.unroute('**/api/characters/changes');
+        await shallowRowReads(page);
+        await page.evaluate(async (members) => {
+            const ctx = window['SillyTavern'].getContext();
+            const response = await fetch('/api/groups/create', { method: 'POST', headers: ctx.getRequestHeaders(), body: JSON.stringify({ name: `Whole ${Date.now()}`, members }) });
+            if (!response.ok) throw new Error(`group create failed: ${response.status}`);
+            const id = String((await response.json()).id);
+            const { groupsStore, openGroupById, unshallowGroupMembers } = await import('./scripts/group-chats.js');
+            await ctx.getCharacters({ silentGroups: true });
+            groupsStore.reportCreated(id);
+            await openGroupById(id);
+            await unshallowGroupMembers(id);
+        }, [first, second]);
+
+        expect(await heldCopy(page, first)).toEqual({ shallow: false, description: `Description of WholeMemberA ${stamp}.` });
+        expect(await heldCopy(page, second)).toEqual({ shallow: false, description: `Description of WholeMemberB ${stamp}.` });
+        expect(await page.evaluate(() => window['__heldShallow'])).toEqual([]);
     });
 });

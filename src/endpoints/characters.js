@@ -44,6 +44,8 @@ import { withSearchTiming, timePhase, markSinceStart } from '../search-timing.js
 
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
+// Whole cards are heavy; a full /batch reads the characters a page holds (one character or a group's members).
+export const FULL_BATCH_MAX = 200;
 const useDiskCache = !!getConfigValue('performance.useDiskCache', true, 'boolean');
 
 class DiskCache {
@@ -3198,12 +3200,19 @@ router.post('/batch', async function (request, response) {
             return response.send(data);
         }
 
+        // `full: true` answers what /get answers, for each id: the whole card whatever lazyLoadCharacters says, with
+        // the edit-conflict hashes. The page holds only full characters, and reads the ones it holds this way.
+        const full = request.body?.full === true;
+        if (full && avatars.length > FULL_BATCH_MAX) {
+            return response.status(400).send({ error: `at most ${FULL_BATCH_MAX} avatars with full` });
+        }
+
         // Scoped to just the requested ids - unlike /all and /query, this endpoint never wants the whole table.
         const rowById = await getCharacterIndexRowsByIds(request.user.directories, avatars);
         const processingPromises = avatars.map(avatar => {
             const row = rowById.get(avatar);
             return processCharacterOrPlaceholder(avatar, request.user.directories, {
-                shallow: useShallowCharacters,
+                shallow: full ? false : useShallowCharacters,
                 cardJson: row?.card_json ?? null,
                 chatStats: row ? { chatSize: row.chat_size, dateLastChat: row.date_last_chat } : undefined,
             });
@@ -3215,6 +3224,12 @@ router.post('/batch', async function (request, response) {
         await stampDbActiveChat(request.user.directories, data);
         await stampDbTagIds(request.user.directories, data);
         await stampDbAllowGlobalStyles(request.user.directories, data);
+        if (full) {
+            for (const character of data) {
+                character._fieldsHash = characterDigestFieldsHash(character);
+                character._bodyHash = characterDigestCardBodyHash(character);
+            }
+        }
         return response.send(data);
     } catch (err) {
         console.error(err);
@@ -3459,9 +3474,9 @@ router.post('/import', async function (request, response) {
             }
         }
 
-        // Hands the client the freshly-imported character's data in the same response, so it can insert it
-        // directly instead of a second full-library fetch just to learn what it itself just uploaded.
-        const character = await processCharacterOrPlaceholder(`${fileName}.png`, request.user.directories, { shallow: useShallowCharacters });
+        // Hands the client the freshly-imported character's whole card in the same response, so the page can hold it
+        // (it holds only full cards) without reading it back.
+        const character = await processCharacterOrPlaceholder(`${fileName}.png`, request.user.directories, { shallow: false });
         await stampDbFav(request.user.directories, [character]);
         await stampDbTagIds(request.user.directories, [character]);
 
