@@ -1824,6 +1824,9 @@ async function editTagOnServer(id, patch, tag, applyStored) {
 /** At most this many distinct ids per /api/tags/for and /api/tags/by-ids request; more is a 400. */
 const TAG_READ_MAX_IDS = 500;
 
+/** Whether the last /api/tags/query answer was that the server can't page tags yet, after an update. */
+let tagQueryNotReady = false;
+
 /**
  * One read of /api/tags/query.
  * @param {object} body
@@ -1839,7 +1842,9 @@ async function postTagQuery(body) {
             body: JSON.stringify(body),
             cache: 'no-cache',
         });
-        if (response.status === 400 && (await response.clone().json().catch(() => null))?.reason === 'invalid-cursor') return 'invalid-cursor';
+        const reason = response.ok ? null : (await response.clone().json().catch(() => null))?.reason;
+        tagQueryNotReady = response.status === 503 && reason === 'tag-query-not-ready';
+        if (response.status === 400 && reason === 'invalid-cursor') return 'invalid-cursor';
         if (!response.ok) throw new Error(response.statusText);
         const answer = await response.json();
         if (answer?.unchanged !== true && !Array.isArray(answer?.rows)) throw new Error('no rows in the answer');
@@ -4678,7 +4683,8 @@ function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTag
         appendTagToList($container, pill, { skipExistsCheck: true });
     } else if (tail === 'failed') {
         /** @type {Tag} */
-        const pill = { id: `placeholder_${uuidv4()}`, name: t`Tags could not be loaded. Try again`, color: 'transparent', class: 'placeholder-expander', action: onUsedTagBarRetryClick };
+        const name = tagQueryNotReady ? t`Tags are still being indexed after an update. Try again` : t`Tags could not be loaded. Try again`;
+        const pill = { id: `placeholder_${uuidv4()}`, name, color: 'transparent', class: 'placeholder-expander', action: onUsedTagBarRetryClick };
         appendTagToList($container, pill, { skipExistsCheck: true });
     }
     tagFilterRenderCache.set(type, drawn);
@@ -6042,7 +6048,7 @@ function setViewTagStatus(state, kind) {
             status.text(t`Loading tags...`);
             break;
         case 'failed':
-            status.append($('<span></span>').text(t`The tags could not be loaded.`), button(t`Try again`, viewTagListRows(state).length ? 'after' : 'reload'));
+            status.append($('<span></span>').text(tagQueryNotReady ? t`Tags are still being indexed after an update.` : t`The tags could not be loaded.`), button(t`Try again`, viewTagListRows(state).length ? 'after' : 'reload'));
             break;
         case 'paused':
             status.append($('<span></span>').text(t`No tag found yet among the ones looked at so far.`), button(t`Keep looking`, 'after'));

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, afterEach } from '@jest/gl
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { storedTagDefinitions, storedTagUsageRows } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -75,16 +76,8 @@ async function saveTags(ids) {
     await metadataDb.saveTagDefinitions(directories, ids.map(id => ({ id, name: id })));
 }
 
-/** Every stored tag definition not marked deleted, in creation order. */
-async function storedTagDefinitions() {
-    /** @type {any[]} */
-    const tags = [];
-    for await (const batch of /** @type {AsyncGenerator<object[]>} */ (await metadataDb.streamTagDefinitionBatches(directories))) tags.push(...batch);
-    return tags;
-}
-
 async function tagIds() {
-    return (await storedTagDefinitions()).map(t => t.id).sort();
+    return (await storedTagDefinitions(metadataDb, directories)).map(t => t.id).sort();
 }
 
 async function unusedCount() {
@@ -120,7 +113,7 @@ describe('POST /api/tags/unused-count and /api/tags/prune', () => {
         await post('/api/tags/assign', { id: 'Alice.png', tagId: 'wasUsed' });
         await post('/api/tags/unassign', { id: 'Alice.png', tagId: 'wasUsed' });
 
-        const usage = async () => (await metadataDb.getAllTagUsage(directories)).counts;
+        const usage = () => storedTagUsageRows(directories);
         expect(await usage()).toEqual({ onChar: 1, wasUsed: 0 });
 
         const body = await (await post('/api/tags/prune', { limit: 500 })).json();

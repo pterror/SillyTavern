@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, jest } from '@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { storedTagDefinitions } from './tag-store-reads.js';
 
 // The real coordinator's pass waits for a boot chain these tests never run.
 const requestMetadataMigrationPass = jest.fn(() => Promise.resolve());
@@ -100,7 +101,7 @@ describe('POST /api/settings/restore-snapshot and the settings tags import', () 
         expect(requestMetadataMigrationPass).toHaveBeenCalledWith(directories, 'migrateSettingsTagsIfNeeded');
 
         await metadataDb.migrateSettingsTagsIfNeeded(directories);
-        expect((await metadataDb.getTagDefinitions(directories)).map(t => t.id)).toEqual(['r1']);
+        expect((await storedTagDefinitions(metadataDb, directories)).map(t => t.id)).toEqual(['r1']);
         expect(flag()).toBeTruthy();
     });
 

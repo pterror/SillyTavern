@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { tagCounts } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -185,7 +186,7 @@ describe('finishDeletedTags', () => {
         await assign('g2', 'y');
         await assign('g3', 'z');
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
-        expect((await metadataDb.getAllTagUsage(directories))?.approximate).toEqual(['y']);
+        expect((await tagCounts(metadataDb, directories, ['x', 'y', 'z'])).approximate).toEqual(['y']);
         const changesBefore = { c1: changeFieldsFor('c1.png').length, c2: changeFieldsFor('c2.png').length, c3: changeFieldsFor('c3.png').length };
 
         const result = await metadataDb.finishDeletedTags(directories);
@@ -207,9 +208,9 @@ describe('finishDeletedTags', () => {
         expect(tagsRowExists('x')).toBe(false);
         expect(usageRowOf('x')).toBeUndefined();
         expect(markOf('x')).toBeUndefined();
-        const usage = await metadataDb.getAllTagUsage(directories);
-        expect(usage?.approximate).toEqual([]);
-        expect(usage?.counts).toEqual({ y: 4, z: 2 });
+        const usage = await tagCounts(metadataDb, directories, ['x', 'y', 'z']);
+        expect(usage.approximate).toEqual([]);
+        expect(usage.counts).toEqual({ y: 4, z: 2 });
         expect(result).toEqual({ batches: 2, rowsChanged: 4 });
         expect(tagsRowExists('y')).toBe(true);
     });
@@ -428,6 +429,6 @@ describe('finishDeletedTags over many batches', () => {
         expect(tagsRowExists('x')).toBe(false);
         expect(usageRowOf('x')).toBeUndefined();
         expect(markOf('x')).toBeUndefined();
-        expect((await metadataDb.getAllTagUsage(directories))?.approximate).toEqual([]);
+        expect((await tagCounts(metadataDb, directories, ['x', 'y', 'z'])).approximate).toEqual([]);
     }, 60000);
 });

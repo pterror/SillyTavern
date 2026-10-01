@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { storedTagDefinitions, storedTagUsageRows } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -1445,14 +1446,14 @@ describe('phase 3: character_tags as source of truth (not a tags.json mirror)', 
         expect(result['Ghost.png']).toEqual([]);
     });
 
-    test('getAllTagUsage returns the whole trigger-maintained tag_usage table', async () => {
+    test('tag_usage counts each tag\'s assignments, kept by triggers', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', cardJson());
         await metadataDb.upsertCharacterFromWrite(directories, 'Alice.png', cardJson({ name: 'Alice' }));
         await metadataDb.assignEntityTag(directories, 'Bob.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag1');
         await metadataDb.assignEntityTag(directories, 'Alice.png', 'tag2');
 
-        expect(await metadataDb.getAllTagUsage(directories)).toEqual({ counts: { tag1: 2, tag2: 1 }, approximate: [] });
+        expect(await storedTagUsageRows(directories)).toEqual({ tag1: 2, tag2: 1 });
     });
 
     test('an ordinary metadata write (upsertCharacterFromWrite on an existing row) does not touch existing direct tag assignments', async () => {
@@ -1672,13 +1673,13 @@ describe('phase 3 extension: tag definitions (owner decision - tags.json removal
     test('saveTagDefinitions/getTagDefinitions round-trip full Tag objects', async () => {
         const tagsArray = [{ id: 'tag1', name: 'Funny', color: '#fff' }, { id: 'tag2', name: 'Serious' }];
         expect(await metadataDb.saveTagDefinitions(directories, tagsArray)).toBe('ok');
-        expect(await metadataDb.getTagDefinitions(directories)).toEqual(tagsArray);
+        expect(await storedTagDefinitions(metadataDb, directories)).toEqual(tagsArray);
     });
 
     test('saveTagDefinitions is a full replace, not additive', async () => {
         await metadataDb.saveTagDefinitions(directories, [{ id: 'tag1', name: 'Funny' }]);
         await metadataDb.saveTagDefinitions(directories, [{ id: 'tag2', name: 'Serious' }]);
-        expect(await metadataDb.getTagDefinitions(directories)).toEqual([{ id: 'tag2', name: 'Serious' }]);
+        expect(await storedTagDefinitions(metadataDb, directories)).toEqual([{ id: 'tag2', name: 'Serious' }]);
     });
 
     test('the tag change log advances on a definitions write, but not on assign/unassign', async () => {
@@ -1784,7 +1785,7 @@ describe('phase 3 extension: tags.json removal (migration + settings-snapshot ro
 
         await metadataDb.migrateTagsJsonIfNeeded(directories);
 
-        expect(await metadataDb.getTagDefinitions(directories)).toEqual([{ id: 'tag1', name: 'Funny' }]);
+        expect(await storedTagDefinitions(metadataDb, directories)).toEqual([{ id: 'tag1', name: 'Funny' }]);
         expect(await metadataDb.getCharacterTagIds(directories, 'Bob.png')).toEqual(['tag1']);
         expect(await metadataDb.getGroupTagIds(directories, 'group1')).toEqual(['tag1']);
         // The unresolvable key is dropped, not guessed at - see this function's own doc comment.
@@ -1800,7 +1801,7 @@ describe('phase 3 extension: tags.json removal (migration + settings-snapshot ro
         fs.writeFileSync(path.join(tempDir, 'tags.json'), JSON.stringify({ tags: [{ id: 'tag1', name: 'Funny' }], tag_map: {} }));
         await metadataDb.migrateTagsJsonIfNeeded(directories);
 
-        expect(await metadataDb.getTagDefinitions(directories)).toEqual([]);
+        expect(await storedTagDefinitions(metadataDb, directories)).toEqual([]);
         // The re-created tags.json is untouched since migration was already marked complete.
         expect(fs.existsSync(path.join(tempDir, 'tags.json'))).toBe(true);
     });
@@ -1814,7 +1815,7 @@ describe('phase 3 extension: tags.json removal (migration + settings-snapshot ro
 
         await metadataDb.migrateTagsJsonIfNeeded(directories);
 
-        const defs = await metadataDb.getTagDefinitions(directories);
+        const defs = await storedTagDefinitions(metadataDb, directories);
         expect(defs).toHaveLength(3);
         expect(defs).toEqual(expect.arrayContaining([
             { id: 'tag1', name: 'Saved Later' },

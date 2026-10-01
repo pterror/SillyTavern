@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { storedTagDefinitions } from './tag-store-reads.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -49,7 +50,7 @@ describe('the default settings template on a fresh install', () => {
             await /** @type {any} */ (metadataDb)[name](directories);
         }
 
-        const definitions = await metadataDb.getTagDefinitions(directories);
+        const definitions = await storedTagDefinitions(metadataDb, directories);
         expect(definitions.map(tag => tag.id)).toEqual([ST_DEFAULT_ID]);
         expect(definitions[0]).toMatchObject({ id: ST_DEFAULT_ID, name: 'ST Default', color: 'rgba(108, 32, 32, 1)' });
         expect(await metadataDb.getCharacterTagIds(directories, 'default_Seraphina.png')).toEqual([ST_DEFAULT_ID]);

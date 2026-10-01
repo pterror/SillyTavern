@@ -3490,7 +3490,7 @@ export async function getCharacterTagIds(directories, avatar) {
 export async function getTagUsageCount(directories, tagId) {
     const entry = await getEntry(directories);
     if (!entry) return 0;
-    // Counted the way getAllTagUsage() counts it.
+    // Counted as tagCountsForIdsSync() counts it, without the buffered import rows.
     if (entry.db.get('SELECT 1 FROM tag_deletions WHERE tag_id = @tagId', { tagId })) return 0;
     const row = (/** @type {{ count: number } | undefined} */ (entry.db.get(
         `SELECT (SELECT COALESCE(SUM(count), 0) FROM tag_usage WHERE tag_id = @tagId)
@@ -4382,37 +4382,6 @@ export async function getGroupTagIds(directories, groupId) {
     const entry = await getEntry(directories);
     if (!entry || tagEntityTypeOf(groupId) !== 'group') return [];
     return resolveTagIds(normalizeTagIds(Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id: groupId })), r => r.tag_id)), readTagDeletionsSync(entry.db));
-}
-
-/**
- * A marked tag's count is added to its merge target's and the marked tag is left out. An entity carrying both counts
- * twice until the migration worker merges its rows, so each target that has a marked tag with rows merging into it
- * is listed in `approximate`: finding the overlap would read every row of the marked tag.
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<{ counts: Record<string, number>, approximate: string[] } | null>}
- */
-export async function getAllTagUsage(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-
-    const deletions = readTagDeletionsSync(entry.db);
-    const rows = (/** @type {{ tag_id: string, count: number }[]} */ (entry.db.all('SELECT tag_id, count FROM tag_usage')));
-    /** @type {Record<string, number>} */
-    const counts = {};
-    /** @type {Set<string>} */
-    const approximate = new Set();
-    for (const row of rows) {
-        const count = Number(row.count);
-        if (!deletions.has(row.tag_id)) {
-            counts[row.tag_id] = (counts[row.tag_id] ?? 0) + count;
-            continue;
-        }
-        const target = deletions.get(row.tag_id);
-        if (typeof target !== 'string') continue;
-        counts[target] = (counts[target] ?? 0) + count;
-        if (count > 0) approximate.add(target);
-    }
-    return { counts, approximate: [...approximate] };
 }
 
 // SQL counterpart to tagEntityTypeOf(id) === 'group' for a group_tags row (case-sensitive, like endsWith()).
@@ -5375,22 +5344,6 @@ export async function getFolderTileTags(directories, tileIds) {
     return { closedByTileId, closedIds };
 }
 
-// Returns tag definitions in no particular order - sorting is a client concern (compareTagsForSort(), tags.js).
-/**
- * @param {import('./users.js').UserDirectoryList} directories
- * @returns {Promise<object[] | null>}
- */
-export async function getTagDefinitions(directories) {
-    const entry = await getEntry(directories);
-    if (!entry) return null;
-    // Known violation of CLAUDE.md Scale: this array holds every tag definition. It goes when its callers do.
-    const definitions = [];
-    for (const row of /** @type {Iterable<{ data: string }>} */ (entry.db.iterate(`SELECT data FROM tags WHERE ${NOT_MARKED_DELETED_SQL}`))) {
-        definitions.push(JSON.parse(row.data));
-    }
-    return definitions;
-}
-
 /**
  * Every tag definition not marked deleted, in batches of at most 1000, in rowid (creation) order. Each batch is one
  * keyset page, finished before it is yielded, so the caller may await between batches. For the backup, which is a
@@ -5502,8 +5455,7 @@ export async function findTagsByNames(directories, names) {
 }
 
 /**
- * getTagDefinitions()'s definitions, limited to `ids`: a tag marked deleted is left out, and a definition that
- * can't be parsed throws.
+ * The stored definitions of `ids`: a tag marked deleted is left out, and a definition that can't be parsed throws.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {string[]} ids
  * @returns {Promise<object[] | null>} null when the store is unavailable.
@@ -9300,41 +9252,21 @@ function parseTagQueryRow(row) {
  * (tag-actions D24).
  * Bounded by the number of pending entries.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- * @param {boolean} derive The derived columns aren't filled yet: sort_order, is_folder and name_key come from data
- *   as queryTagsFromList() derives them, and usage_count from tag_usage.
  * @param {TagQueryPass | null} pass
  * @returns {TagPendingOverlay | null} null when nothing is pending.
  */
-function readTagPendingOverlaySync(db, derive, pass) {
+function readTagPendingOverlaySync(db, pass) {
     const order = pass?.mode ?? 'manual';
     if (!db.get('SELECT 1 FROM tag_pending_moves LIMIT 1')) return null;
     /** @type {{ tag_id: string, side: 'before' | 'after' | null, anchor_id: string | null, value: string | null }[]} */
     const entries = [...db.iterate('SELECT tag_id, side, anchor_id, value FROM tag_pending_moves ORDER BY seq')];
     const ids = [...new Set(entries.flatMap(e => e.anchor_id === null ? [e.tag_id] : [e.tag_id, e.anchor_id]))];
-    const columns = derive
-        ? `rowid AS r, id, data, COALESCE((SELECT count FROM tag_usage WHERE tag_id = tags.id), 0) AS usage_count,
-            EXISTS (SELECT 1 FROM tag_deletions WHERE tag_id = tags.id) AS marked`
-        : TAG_QUERY_ROW_COLUMNS;
     /** @type {Map<string, TagQueryRow>} */
     const rows = new Map();
     for (let i = 0; i < ids.length; i += TAG_QUERY_ID_CHUNK) {
         const slice = ids.slice(i, i + TAG_QUERY_ID_CHUNK);
-        const sql = `SELECT ${columns} FROM tags WHERE id IN (${slice.map(() => '?').join(',')}) LIMIT ${slice.length}`;
-        for (const row of /** @type {Generator<TagQueryRow>} */ (db.iterate(sql, slice))) {
-            if (!derive) {
-                rows.set(row.id, row);
-                continue;
-            }
-            /** @type {unknown} */
-            let tag = null;
-            try {
-                tag = JSON.parse(row.data);
-            } catch {
-                // Derived as data with no fields.
-            }
-            const { sortOrder, isFolder } = tagDerivedColumns(tag);
-            rows.set(row.id, { ...row, sort_order: sortOrder, is_folder: isFolder, name_key: tagDefinitionNameKey(tag) });
-        }
+        const sql = `SELECT ${TAG_QUERY_ROW_COLUMNS} FROM tags WHERE id IN (${slice.map(() => '?').join(',')}) LIMIT ${slice.length}`;
+        for (const row of /** @type {Generator<TagQueryRow>} */ (db.iterate(sql, slice))) rows.set(row.id, row);
     }
 
     /** @typedef {{ base: TagQueryPosition, side: 'before' | 'after', items: string[] }} TagPendingGap */
@@ -9505,7 +9437,7 @@ function queryTagsIndexed(entry, params, pass) {
     const after = params.after ?? null;
     // A cursor in the gap before a place was cut before the place's own row was shown, so the walk starts at it.
     const walkAfter = after !== null && after.g === -1 ? { ...after, r: after.r - 1, g: /** @type {0} */ (0), i: 0 } : after;
-    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, false, pass) : null;
+    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, pass) : null;
     const emitBefore = tagOverlayEmitter(order, tagOverlayPageItems(overlay, params, names, order), rows, pageSize, encode);
 
     for (const phase of tagWalkPhases(order, { used, folders })) {
@@ -9557,7 +9489,7 @@ function queryTagsByIds(entry, params, pass) {
     const { sort, pageSize } = params;
     const order = pass?.mode ?? sort;
     const names = tagNameMatchers(params);
-    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, false, pass) : null;
+    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, pass) : null;
     const wanted = [...new Set(params.ids)];
     /** @type {{ position: TagQueryPosition, row: TagQueryRow }[]} */
     const found = [];
@@ -9587,115 +9519,28 @@ function queryTagsByIds(entry, params, pass) {
 }
 
 /**
- * Today's path, until tagQueryColumnsReady(): the whole list from getTagDefinitions() (and, for by_entries or
- * used, the counts from getAllTagUsage()), filtered and ordered in JS with the same keys and coercion the columns
- * hold, then cut to the page. Ties are ordered by rowid, read through the primary key for the tied rows the page
- * reaches, so the order and the cursor are the indexed path's. Manual merges in the pending moves' overlay the same
- * way as the indexed path.
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {MetadataDbEntry} entry
- * @param {TagQueryParams} params
- * @param {TagQueryPass | null} pass Manual only: the reorder pass whose mode order to use.
- * @returns {Promise<TagQueryResult | null>}
- */
-async function queryTagsFromList(directories, entry, params, pass) {
-    const { sort, pageSize } = params;
-    const order = pass?.mode ?? sort;
-    /** @param {TagQueryPosition} place */
-    const encode = place => encodeTagQueryCursor(sort, place, pass);
-    const all = await getTagDefinitions(directories);
-    if (all === null) return null;
-    /** @type {Record<string, number> | null} */
-    let counts = null;
-    if (order === 'by_entries' || params.used === true) {
-        const usage = await getAllTagUsage(directories);
-        if (usage === null) return null;
-        counts = usage.counts;
-    }
-    const names = tagNameMatchers(params);
-    const ids = params.ids ? new Set(params.ids) : null;
-    const overlay = sort === 'manual' ? readTagPendingOverlaySync(entry.db, true, pass) : null;
-    /** @type {{ tag: any, position: TagQueryPosition }[]} */
-    const candidates = [];
-    for (const tag of all) {
-        const id = tag.id;
-        if (typeof id !== 'string') continue;
-        if (ids && !ids.has(id)) continue;
-        if (overlay?.keys.has(id) === true) continue;
-        const { sortOrder, isFolder } = tagDerivedColumns(tag);
-        const nameKey = tagDefinitionNameKey(tag);
-        const count = counts ? Number(counts[id] ?? 0) : 0;
-        if (params.folders === true && isFolder !== 1) continue;
-        if (params.used === true && !(count > 0)) continue;
-        if (!names.matches(nameKey)) continue;
-        const phase = order === 'manual' && sortOrder === null ? 2 : 1;
-        candidates.push({ tag, position: { phase, s: sortOrder, k: nameKey, c: count, r: 0 } });
-    }
-    candidates.sort((a, b) => compareTagKeys(order, a.position, b.position));
-
-    const after = params.after ?? null;
-    /** @type {object[]} */
-    const rows = [];
-    const emitBefore = tagOverlayEmitter(order, tagOverlayPageItems(overlay, params, names, order), rows, pageSize, encode);
-    let i = 0;
-    while (i < candidates.length) {
-        let end = i + 1;
-        while (end < candidates.length && compareTagKeys(order, candidates[i].position, candidates[end].position) === 0) end++;
-        const vsAfter = after === null ? 1 : compareTagKeys(order, candidates[i].position, after);
-        if (vsAfter < 0) {
-            i = end;
-            continue;
-        }
-        const group = candidates.slice(i, end);
-        /** @type {Map<string, number>} */
-        const rowids = new Map();
-        for (let j = 0; j < group.length; j += TAG_QUERY_ID_CHUNK) {
-            const slice = group.slice(j, j + TAG_QUERY_ID_CHUNK).map(g => g.tag.id);
-            for (const row of /** @type {Generator<{ id: string, r: number }>} */ (entry.db.iterate(`SELECT id, rowid AS r FROM tags WHERE id IN (${slice.map(() => '?').join(',')}) LIMIT ${slice.length}`, slice))) {
-                rowids.set(row.id, row.r);
-            }
-        }
-        // A tag whose row went away since the list was read is gone, and is left out.
-        const ordered = group.filter(g => rowids.has(g.tag.id))
-            .map(g => ({ ...g, position: { ...g.position, r: /** @type {number} */ (rowids.get(g.tag.id)) } }))
-            .filter(g => vsAfter > 0 || compareTagPositions(order, g.position, /** @type {TagQueryPosition} */ (after)) > 0)
-            .sort((a, b) => a.position.r - b.position.r);
-        for (const g of ordered) {
-            const full = emitBefore(g.position);
-            if (full !== null) return { rows, cursor: full, more: false };
-            rows.push(g.tag);
-            if (rows.length === pageSize) return { rows, cursor: encode(g.position), more: false };
-        }
-        i = end;
-    }
-    return { rows, cursor: emitBefore(null), more: false };
-}
-
-/**
- * One keyset page of tag definitions (tags-paging step 2, D1, D11-D14). Tags marked deleted are left out, as
- * getTagDefinitions() leaves them. Manual, while tag_pending_moves holds entries, shows the order they will leave
- * once applied (readTagPendingOverlaySync(), tag-actions D16). Manual while a reorder pass is recorded and not
- * draining walks the pass mode's live order instead, with the pending moves on top in that order's places
- * (tag-actions step 6, D24, D26); a manual cursor is good only for the order it was made in (D25.8).
+ * One keyset page of tag definitions (tags-paging step 2, D1, D11-D14). Tags marked deleted are left out. Manual,
+ * while tag_pending_moves holds entries, shows the order they will leave once applied (readTagPendingOverlaySync(),
+ * tag-actions D16). Manual while a reorder pass is recorded and not draining walks the pass mode's live order
+ * instead, with the pending moves on top in that order's places (tag-actions step 6, D24, D26); a manual cursor is
+ * good only for the order it was made in (D25.8).
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {TagQueryParams} params
- * @returns {Promise<TagQueryResult | 'invalid-cursor' | null>} null when no SQLite engine is usable;
- *   'invalid-cursor' for a manual cursor made in another order than the one read now.
+ * @returns {Promise<TagQueryResult | 'invalid-cursor' | 'not-ready' | null>} null when no SQLite engine is usable;
+ *   'invalid-cursor' for a manual cursor made in another order than the one read now; 'not-ready' until the
+ *   derived columns are filled (tagQueryColumnsReady()), the one-time pass after an update.
  */
 export async function queryTags(directories, params) {
     const entry = await getEntry(directories);
     if (!entry) return null;
+    if (!tagQueryColumnsReady(entry)) return 'not-ready';
     const pass = params.sort === 'manual' ? tagQueryPassSync(entry.db) : null;
     if (params.sort === 'manual' && params.after) {
         const made = params.after.pass ?? null;
         if (made?.id !== pass?.id || made?.mode !== pass?.mode) return 'invalid-cursor';
     }
-    /** @type {TagQueryResult | null} */
-    let result;
-    if (!tagQueryColumnsReady(entry)) result = await queryTagsFromList(directories, entry, params, pass);
-    else if (params.ids) result = queryTagsByIds(entry, params, pass);
-    else result = queryTagsIndexed(entry, params, pass);
-    if (result === null || params.counts !== true) return result;
+    const result = params.ids ? queryTagsByIds(entry, params, pass) : queryTagsIndexed(entry, params, pass);
+    if (params.counts !== true) return result;
     const ids = result.rows.map(tag => /** @type {{ id?: unknown }} */ (tag).id).filter(id => typeof id === 'string');
     return { ...result, ...tagCountsForIdsSync(entry, ids) };
 }
@@ -9706,8 +9551,7 @@ export async function queryTags(directories, params) {
  * flushed that carry it. So a count of 0 is exactly a tag prune would delete.
  *
  * An entity carrying both a tag and a marked tag merging into it counts twice until the migration worker merges its
- * rows; finding the overlap would read every row of the marked tag. Such a tag is listed in `approximate`, as
- * getAllTagUsage() lists it.
+ * rows; finding the overlap would read every row of the marked tag. Such a tag is listed in `approximate`.
  * @param {MetadataDbEntry} entry
  * @param {string[]} ids Distinct ids of tags that aren't marked; at most a page of them.
  * @returns {{ counts: Record<string, number>, approximate: string[] }}

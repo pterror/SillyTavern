@@ -185,7 +185,7 @@ async function pagedIds(filter = {}) {
 const everyPageSize = ids => Object.fromEntries(PAGE_SIZES.map(pageSize => [pageSize, ids]));
 
 describe('POST /api/tags/query manual, with moves pending', () => {
-    describe.each([['indexed path', true], ['today\'s path', false]])('%s', (_, ready) => {
+    describe.each([['indexed path', true]])('%s', (_, ready) => {
         beforeEach(async () => {
             await seed();
             if (ready) await makeReady();
