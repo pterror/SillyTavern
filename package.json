@@ -134,6 +134,7 @@
         "start:bun": "bun server.js",
         "start:no-csrf": "node server.js --disableCsrf",
         "test": "cd tests && npm run test:unit",
+        "test:src": "node --experimental-test-module-mocks --import ./tests/util/node-test-temp-root.js --test",
         "lint": "eslint \"src/**/*.js\" \"public/**/*.js\" ./*.js",
         "lint:fix": "eslint \"src/**/*.js\" \"public/**/*.js\" ./*.js --fix",
         "typecheck:dangling-refs": "tsc -p tsconfig.precommit.json --noEmit",

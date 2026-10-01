@@ -2,6 +2,8 @@
     "verbose": true,
     "transform": {},
     "testEnvironment": "node",
+    "globalSetup": "<rootDir>/jest-global-setup.js",
+    "globalTeardown": "<rootDir>/jest-global-teardown.js",
     "moduleNameMapper": {
         "^/scripts/(.*)$": "<rootDir>/../public/scripts/$1"
     }
