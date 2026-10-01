@@ -5,7 +5,7 @@ import { extension_settings } from '../extensions.js';
 import { getGroupMembersResident } from '../group-chats.js';
 import { groups } from '../group-store.js';
 import { personaStore } from '../power-user.js';
-import { searchCharByName, getTagsList, tags, getHeldAssignedTagIds, searchUsedTagOptions } from '../tags.js';
+import { searchCharByName, getTagsList, tags, getHeldAssignedTagIds, searchUsedTagOptions, searchTagOptions } from '../tags.js';
 import { onlyUniqueJson, sortIgnoreCaseAndAccents } from '../utils.js';
 import { world_names } from '../world-info.js';
 import { SlashCommandClosure } from './SlashCommandClosure.js';
@@ -269,7 +269,7 @@ export const commonEnumProviders = {
             return tags.filter(tag => mode === 'all' || (mode === 'assigned' && assignedTags.has(tag.id))).map(toOption);
         };
         // The list above covers only what the page holds; the autocomplete also asks the server with what was typed.
-        if (mode === 'assigned') provider.enumSearchProvider = searchUsedTagOptions(toOption);
+        provider.enumSearchProvider = mode === 'assigned' ? searchUsedTagOptions(toOption) : searchTagOptions(toOption);
         return provider;
     },
 
@@ -279,13 +279,20 @@ export const commonEnumProviders = {
      * @param {('all' | 'existing' | 'not-existing')?} [mode='all'] - Which types of tags to show
      * @returns {(executor:SlashCommandExecutor, scope:SlashCommandScope) => SlashCommandEnumValue[]}
      */
-    tagsForChar: (mode = 'all') => (executor, _scope) => {
-        const charName = executor.namedArgumentList.find(it => it.name == 'name')?.value;
-        if (charName instanceof SlashCommandClosure) throw new Error('Argument \'name\' does not support closures');
-        const key = searchCharByName(substituteParams(charName), { suppressLogging: true });
-        const assigned = key ? getTagsList(key) : [];
-        return tags.filter(it => mode === 'all' || mode === 'existing' && assigned.includes(it) || mode === 'not-existing' && !assigned.includes(it))
-            .map(tag => new SlashCommandEnumValue(tag.name, null, enumTypes.command, enumIcons.tag));
+    tagsForChar: (mode = 'all') => {
+        const toOption = tag => new SlashCommandEnumValue(tag.name, null, enumTypes.command, enumIcons.tag);
+        /** @param {SlashCommandExecutor} executor */
+        const provider = (executor, _scope) => {
+            const charName = executor.namedArgumentList.find(it => it.name == 'name')?.value;
+            if (charName instanceof SlashCommandClosure) throw new Error('Argument \'name\' does not support closures');
+            const key = searchCharByName(substituteParams(charName), { suppressLogging: true });
+            const assigned = key ? getTagsList(key) : [];
+            return tags.filter(it => mode === 'all' || mode === 'existing' && assigned.includes(it) || mode === 'not-existing' && !assigned.includes(it))
+                .map(toOption);
+        };
+        // The list above covers only the tags the page holds; for any tag, the autocomplete also asks the server.
+        if (mode !== 'existing') provider.enumSearchProvider = searchTagOptions(toOption);
+        return provider;
     },
 
     /**

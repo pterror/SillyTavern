@@ -103,6 +103,26 @@ function recordTagRequests(page) {
     return paths;
 }
 
+/**
+ * Makes a character carrying `tagIds`. The page holds a tag only while something on screen shows it, so a test opens
+ * this character (selectCharacter()) to have the page hold the tags it looks at.
+ * @param {import('@playwright/test').Page} other @param {string} name @param {string[]} tagIds
+ * @returns {Promise<string>} avatar
+ */
+async function createHolder(other, name, tagIds) {
+    const avatar = await createCharacter(other, name);
+    for (const tagId of tagIds) await api(other, '/api/tags/assign', { id: avatar, tagId });
+    return avatar;
+}
+
+/** @param {import('@playwright/test').Page} page @param {string} avatar */
+async function selectCharacter(page, avatar) {
+    await page.evaluate(async (avatar) => {
+        const { selectCharacterByAvatar } = await import('/script.js');
+        await selectCharacterByAvatar(avatar);
+    }, avatar);
+}
+
 // The stream holds a 'tags-changed' message back for up to 2s; past this, one that was coming has come.
 const STREAM_SETTLE_MS = 4000;
 
@@ -200,7 +220,10 @@ test.describe('tag changes from another tab', () => {
         try {
             const ids = ['tag-other-tabs-order-a', 'tag-other-tabs-order-b', 'tag-other-tabs-order-c'];
             for (const [i, id] of ids.entries()) await api(other, '/api/tags/create', tagBody(id, 5000 + i));
+            const holder = await createHolder(other, 'TagOtherTabsOrder', ids);
             await loadApp(page);
+            await selectCharacter(page, holder);
+            await expect.poll(async () => (await Promise.all(ids.map(id => heldTag(page, id)))).every(Boolean), { timeout: 15000 }).toBe(true);
 
             const answer = await api(other, '/api/tags/move', { id: ids[2], before: ids[0] });
             expect(answer.refused).toEqual([]);
@@ -214,11 +237,15 @@ test.describe('tag changes from another tab', () => {
     });
 
     test('an ask that fails leaves the cursor where it was: the next ask brings what both changed', async ({ page, browser }) => {
-        await loadApp(page);
         const { other, close } = await openOtherTab(browser);
         try {
             const first = 'tag-other-tabs-retry-first';
             const second = 'tag-other-tabs-retry-second';
+            // The character carries both ids before any tag has them, so it is drawn here without them.
+            const holder = await createHolder(other, 'TagOtherTabsRetry', [first, second]);
+            await loadApp(page);
+            await selectCharacter(page, holder);
+            await expect(page.locator('#tagList')).toBeAttached();
             let failed = 0;
             await page.route('**/api/tags/changes', async (route) => {
                 if (failed === 0) {
@@ -247,7 +274,10 @@ test.describe('tag changes from another tab', () => {
         try {
             const id = 'tag-other-tabs-unstored';
             await api(other, '/api/tags/create', tagBody(id, 1000));
+            const holder = await createHolder(other, 'TagOtherTabsUnstored', [id]);
             await loadApp(page);
+            await selectCharacter(page, holder);
+            await expect.poll(() => heldTag(page, id), { timeout: 15000 }).toMatchObject({ id });
 
             await page.evaluate((id) => { window['SillyTavern'].getContext().tags.find(t => t.id === id).color2 = '#abcdef'; }, id);
             await api(other, '/api/tags/edit', { id, patch: { name: 'renamed elsewhere' } });

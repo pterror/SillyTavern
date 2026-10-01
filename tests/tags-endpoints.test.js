@@ -155,6 +155,22 @@ describe('POST /api/tags/by-ids', () => {
         expect(body.gone.sort()).toEqual(['deleted', 'never']);
     });
 
+    test('known leaves out a definition the caller already has, and lists it as unchanged', async () => {
+        const { contentHashOf } = await import('../public/scripts/hash-utils.js');
+        await metadataDb.saveTagDefinitions(directories, [{ id: 'same', name: 'Same' }, { id: 'edited', name: 'Edited' }]);
+        const known = { same: contentHashOf({ id: 'same', name: 'Same' }), edited: contentHashOf({ id: 'edited', name: 'Old name' }) };
+
+        const body = await (await postJson('/api/tags/by-ids', { ids: ['same', 'edited', 'never'], known })).json();
+        expect(body.tags).toEqual([{ id: 'edited', name: 'Edited' }]);
+        expect(body.unchanged).toEqual(['same']);
+        expect(body.gone).toEqual(['never']);
+    });
+
+    test('400s when known is not an object', async () => {
+        expect((await postJson('/api/tags/by-ids', { ids: ['a'], known: ['a'] })).status).toBe(400);
+        expect((await postJson('/api/tags/by-ids', { ids: ['a'], known: null })).status).toBe(400);
+    });
+
     test('a tag whose stored definition cannot be read is in neither tags nor gone', async () => {
         await metadataDb.saveTagDefinitions(directories, [{ id: 'broken', name: 'Broken' }]);
         const Database = (await import('better-sqlite3')).default;

@@ -29,8 +29,8 @@ import { renderTemplateAsync } from './templates.js';
 import { t, translate } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
-import { getCachedTags, setCachedTags } from './tags-cache.js';
-import { DEFAULT_DIGEST_BUCKET_COUNT, bucketOf, contentHashOf, emptyDigest, combineDigest, digestsEqual } from './hash-utils.js';
+import { contentHashOf } from './hash-utils.js';
+import { dropOldTagsCache } from './tags-cache.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository, parseQueryTotal } from './character-repository.js';
 
@@ -1355,7 +1355,6 @@ function sendTagsAddedThroughExport() {
         if (!storedIds.length) return;
         // The server gave each new tag its sort_order.
         await takeStoredFieldsTagsLack(storedIds);
-        await refreshTagsManifestCache();
         await eventSource.emit(event_types.SETTINGS_UPDATED);
     })().catch(error => console.error('Error storing tags added through the tags export:', error));
 
@@ -1452,7 +1451,6 @@ async function storeTagExportChangesOnce() {
     await takeStoredFieldsTagsLack(toReread);
 
     if (storedAny) {
-        await refreshTagsManifestCache();
         await eventSource.emit(event_types.SETTINGS_UPDATED);
     }
 }
@@ -1497,24 +1495,6 @@ function rebuildTagStores() {
         if (!isTagObject(tag)) continue;
         noteStoredTag(tag);
         showSavedTagFilterState(tag);
-    }
-}
-
-/** Refreshes the client-side tags cache so the next boot's freshness check can hit it. */
-async function refreshTagsManifestCache() {
-    const manifestResponse = await fetch('/api/tags/manifest', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({}),
-        cache: 'no-cache',
-    });
-    if (manifestResponse.ok) {
-        const { hash } = await manifestResponse.json();
-        if (hash !== null && hash !== undefined) {
-            await setCachedTags(hash, tags);
-        }
-    } else {
-        console.error(`Failed to refresh tags manifest: ${manifestResponse.statusText}`);
     }
 }
 
@@ -1575,7 +1555,6 @@ async function createTagOnServer(tag, { freeName = false } = {}) {
             invalidateCharactersFuseIndex();
             invalidateGroupsFuseIndex();
         }
-        await refreshTagsManifestCache();
         if (!reason) return 'stored';
         warnRefusedTags(refused, tag, t`Creating Tag`);
         if (reason === 'exists') await resyncRefusedTag(tag.id);
@@ -1673,7 +1652,6 @@ async function editTagOnServer(id, patch, tag, applyStored) {
 
         const { refused } = await response.json();
         if (!refused?.length) applyStored?.();
-        await refreshTagsManifestCache();
         warnRefusedTags(refused, tag, 'Editing Tag');
         if (refused?.length) {
             await resyncRefusedTag(id);
@@ -1879,7 +1857,6 @@ async function replaceTagFromServer(id, serverTag) {
     invalidateTagsFuseIndex();
     invalidateCharactersFuseIndex();
     invalidateGroupsFuseIndex();
-    await refreshTagsManifestCache();
 
     let anyDiffered = false;
     for (const [field, redraw] of Object.entries(TAG_FIELD_REDRAWS)) {
@@ -1973,7 +1950,6 @@ async function dropTagsLocally(drops) {
         invalidateTagsFuseIndex();
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
-        await refreshTagsManifestCache();
     }
 
     for (const { id } of drops) {
@@ -2302,8 +2278,19 @@ function getHeldAssignedTagIds() {
  * @returns {(typed: string) => Promise<any[]>}
  */
 export function searchUsedTagOptions(toOption) {
+    return searchTagOptions(toOption, { used: true });
+}
+
+/**
+ * Autocomplete options for tags whose names hold the typed text, from the server, for the tags this tab doesn't hold.
+ * @param {(tag: Tag) => any} toOption
+ * @param {object} [options]
+ * @param {boolean} [options.used] - only tags some character or group carries
+ * @returns {(typed: string) => Promise<any[]>}
+ */
+export function searchTagOptions(toOption, { used = false } = {}) {
     return async (typed) => {
-        const page = await searchTagsByName(typed, { used: true });
+        const page = await searchTagsByName(typed, { used });
         return (page?.rows ?? []).map(toOption);
     };
 }
@@ -2581,87 +2568,6 @@ function filterByFolder(filterHelper) {
  * group's own `tag_ids` field, already resident by the time `characters`/`groups` are populated.
  */
 /**
- * Repairs a cached copy of the tag definitions against the server's bucket digest instead of refetching all of
- * them: only the buckets whose hash disagrees get fetched, and only the ids within them that actually differ.
- * Verifies content rather than replaying a change log, so it also repairs drift from a bug on this side.
- * @param {object[]} cachedTags
- * @returns {Promise<object[]|null>} The repaired definitions, or null to fall back to a full fetch.
- */
-async function syncTagDefinitionsFromDigest(cachedTags) {
-    const post = async (path, body) => {
-        const response = await fetch(path, {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(body),
-            cache: 'no-cache',
-        });
-        return response.ok ? await response.json().catch(() => null) : null;
-    };
-
-    const remote = await post('/api/tags/digest', {});
-    if (!remote || !Array.isArray(remote.buckets)) return null;
-    const bucketCount = remote.bucketCount ?? DEFAULT_DIGEST_BUCKET_COUNT;
-
-    const byId = new Map();
-    const idsPerBucket = Array.from({ length: bucketCount }, () => new Set());
-    const local = Array.from({ length: bucketCount }, () => emptyDigest());
-    for (const tag of cachedTags) {
-        if (!tag?.id) continue;
-        const id = String(tag.id);
-        byId.set(id, tag);
-        const b = bucketOf(id, bucketCount);
-        idsPerBucket[b].add(id);
-        local[b] = combineDigest(local[b], id, contentHashOf(tag));
-    }
-
-    const mismatched = [];
-    for (let b = 0; b < bucketCount; b++) {
-        if (!digestsEqual(local[b], remote.buckets[b] ?? emptyDigest())) mismatched.push(b);
-    }
-    if (!mismatched.length) return cachedTags;
-
-    // Past a certain spread, asking bucket by bucket costs more round trips than simply taking the lot.
-    if (mismatched.length > bucketCount / 2) return null;
-
-    const wanted = new Set();
-    const gone = new Set();
-    for (const bucket of mismatched) {
-        const info = await post('/api/tags/bucket', { bucket, bucketCount });
-        if (!info || !Array.isArray(info.members)) return null;
-
-        const serverIds = new Set();
-        for (const member of info.members) {
-            const id = String(member.id);
-            serverIds.add(id);
-            const mine = byId.get(id);
-            if (!mine || contentHashOf(mine) !== member.hash) wanted.add(id);
-        }
-        for (const id of idsPerBucket[bucket]) {
-            if (!serverIds.has(id)) gone.add(id);
-        }
-    }
-
-    if (wanted.size) {
-        const fetched = await post('/api/tags/by-ids', { ids: [...wanted] });
-        if (!fetched || !Array.isArray(fetched.tags)) return null;
-        for (const tag of fetched.tags) {
-            if (tag?.id) byId.set(String(tag.id), tag);
-        }
-    }
-    for (const id of gone) byId.delete(id);
-
-    return [...byId.values()];
-}
-
-/** @param {Tag[]} list */
-function setTagList(list) {
-    takeInTagsExportWrites();
-    tags.length = 0;
-    if (!Array.isArray(list)) return;
-    for (const tag of list) tags.push(tag);
-}
-
-/**
  * With neither `tags` nor `tag_map` in `settings`, reads the tag definitions from the server.
  *
  * Upstream passes the settings object and takes both from it. Given here, they are taken in as an extension's
@@ -2705,12 +2611,17 @@ async function loadTagsFromServer() {
     }
 }
 
+/**
+ * Reads where this tab's tags are current to in the server's change logs, before anything is drawn, so nothing that
+ * changes from here on is missed. No tag definition is read: each is read by id when something on screen shows it
+ * (heldTagsForIds()).
+ */
 async function loadTagDefinitionsFromServer() {
-    let tagsFile = null;
-    let fetchFailed = false;
-    let manifestHash = null;
-
-    // Cheap freshness check before paying for the full (potentially very large) /api/tags/get response.
+    if (!tagStoresBuilt) {
+        rebuildTagStores();
+        tagStoresBuilt = true;
+        dropOldTagsCache();
+    }
     try {
         const manifestResponse = await fetch('/api/tags/manifest', {
             method: 'POST',
@@ -2718,96 +2629,24 @@ async function loadTagDefinitionsFromServer() {
             body: JSON.stringify({}),
             cache: 'no-cache',
         });
-        if (manifestResponse.ok) {
-            const { hash, changesSeq, assignmentChanges } = await manifestResponse.json();
-            manifestHash = hash;
-            // Read before the definitions are, so nothing that changes while they load is missed.
-            tagChangesSeq = typeof changesSeq === 'number' ? changesSeq : null;
-            // Only the first one, read before the characters and groups are: a later one would skip what changed
-            // since this tab last asked.
-            if (!entityTagChangesCursor && typeof assignmentChanges?.seq === 'number' && typeof assignmentChanges?.groupsVersion === 'number') {
-                entityTagChangesCursor = { sinceSeq: assignmentChanges.seq, sinceGroupsVersion: assignmentChanges.groupsVersion };
-            }
-            if (hash !== null && hash !== undefined) {
-                const cached = await getCachedTags();
-                if (cached && cached.hash === hash) {
-                    setTagList(cached.tags);
-                    rebuildTagStores();
-                    invalidateCharactersFuseIndex();
-                    invalidateGroupsFuseIndex();
-                    return;
-                }
-            }
-        } else {
-            console.error(`Failed to load tags manifest: ${manifestResponse.statusText}`);
+        if (!manifestResponse.ok) {
+            console.error(`Failed to read the tag change cursors: ${manifestResponse.statusText}`);
+            return;
+        }
+        const { changesSeq, assignmentChanges } = await manifestResponse.json();
+        tagChangesSeq = typeof changesSeq === 'number' ? changesSeq : null;
+        // Only the first one, read before the characters and groups are: a later one would skip what changed
+        // since this tab last asked.
+        if (!entityTagChangesCursor && typeof assignmentChanges?.seq === 'number' && typeof assignmentChanges?.groupsVersion === 'number') {
+            entityTagChangesCursor = { sinceSeq: assignmentChanges.seq, sinceGroupsVersion: assignmentChanges.groupsVersion };
         }
     } catch (error) {
-        console.error('Error loading tags manifest:', error);
+        console.error('Error reading the tag change cursors:', error);
     }
-
-    // Not current, but not worthless - repair the cache against the server's digest before falling back to a full fetch.
-    if (manifestHash !== null && manifestHash !== undefined) {
-        try {
-            const cached = await getCachedTags();
-            if (cached && Array.isArray(cached.tags) && cached.tags.length) {
-                const repaired = await syncTagDefinitionsFromDigest(cached.tags);
-                if (repaired) {
-                    setTagList(repaired);
-                    rebuildTagStores();
-                    await setCachedTags(manifestHash, tags);
-                    invalidateCharactersFuseIndex();
-                    invalidateGroupsFuseIndex();
-                    return;
-                }
-            }
-        } catch (error) {
-            console.error('Error repairing tags from digest:', error);
-        }
-    }
-
-    try {
-        const response = await fetch('/api/tags/get', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({}),
-            cache: 'no-cache',
-        });
-        if (response.ok) {
-            const data = await response.json();
-            if (data && data.tags !== null && data.tags !== undefined) {
-                tagsFile = data;
-            }
-        } else {
-            console.error(`Failed to load tags: ${response.statusText}`);
-            fetchFailed = true;
-        }
-    } catch (error) {
-        console.error('Error loading tags:', error);
-        fetchFailed = true;
-    }
-
-    if (tagsFile) {
-        setTagList(tagsFile.tags);
-    } else if (fetchFailed) {
-        // Don't know the server's actual state - reuse the cache rather than guessing.
-        const cached = await getCachedTags();
-        if (cached) {
-            setTagList(cached.tags);
-        } else {
-            console.warn('Could not load tag definitions and no cached copy exists - showing no tags.');
-        }
-    }
-
-    rebuildTagStores();
-
-    // Fill the cache the freshness check at the top reads.
-    if (tagsFile && manifestHash !== null && manifestHash !== undefined) {
-        await setCachedTags(manifestHash, tags);
-    }
-
-    invalidateCharactersFuseIndex();
-    invalidateGroupsFuseIndex();
 }
+
+/** Whether rebuildTagStores() has given `tagsStore` its subscribers. */
+let tagStoresBuilt = false;
 
 /**
  * Each entity carries its own `tag_ids` (server-stamped, see `resolveTagIdsArray()`), so there's nothing to
@@ -4524,6 +4363,18 @@ function removeGoneTagFilters(goneIds) {
 }
 
 /**
+ * What a saved filter's pill shows while this tab has no definition of its tag (it hasn't been read, or a read
+ * failed): the name kept with the filter, or the tag's id when none was kept. Not put in `tags`.
+ * @param {string|undefined} storagePrefix
+ * @param {string} id
+ * @returns {Tag}
+ */
+function savedFilterStandIn(storagePrefix, id) {
+    const name = storagePrefix ? accountStorage.getItem(`${storagePrefix}_tagname_${id}`) : null;
+    return { id, name: name ?? id, folder_type: TAG_FOLDER_DEFAULT_TYPE, color: '', color2: '' };
+}
+
+/**
  * @param {Tag[]} shown The used tags a bar draws.
  * @param {FilterHelper} filterHelper The bar's filter.
  * @returns {Tag[]} `shown`, followed by the tags the bar is filtered by that aren't among them: a filter always has
@@ -4537,10 +4388,10 @@ function withSavedFilterTags(shown, filterHelper) {
     const extra = [];
     for (const [state, ids] of /** @type {[string, string[]][]} */ ([['SELECTED', data?.selected], ['EXCLUDED', data?.excluded]])) {
         for (const id of Array.isArray(ids) ? ids : []) {
-            const tag = tagsStore.get(id);
-            if (!tag) continue;
+            const held = tagsStore.get(id);
             // The name kept with the filter follows a rename.
-            if (storagePrefix) saveTagFilterName(storagePrefix, id, state, tag.name);
+            if (held && storagePrefix) saveTagFilterName(storagePrefix, id, state, held.name);
+            const tag = held ?? savedFilterStandIn(storagePrefix, id);
             if (shownIds.has(id)) continue;
             shownIds.add(id);
             extra.push(tag);
@@ -4980,29 +4831,34 @@ async function moveTagOnServer(id, placement, mode) {
     }
     if (changed) {
         redrawAfterTagSortOrderChange();
-        await refreshTagsManifestCache();
     }
 }
 
 /**
- * Takes the server's definitions of `serverTags` into `tags`, in place: a tag this tab has keeps its object and
- * takes the server's fields, one it doesn't is added. Redraws each drawn field that changed except the order.
- * Left as they are: a tag this tab is creating (its create's answer puts it in), and a field an extension changed
- * on the object that hasn't been stored yet.
+ * Takes the server's definitions of `serverTags` into the tags this tab holds, in place: a held tag keeps its object
+ * and takes the server's fields. A tag it doesn't hold is left out, unless something was drawn without it because the
+ * server had none (it is taken in and drawn now); whatever else shows it reads it when drawn. Redraws
+ * each drawn field that changed except the order. Left as they are: a field an extension changed on the object that
+ * hasn't been stored yet.
  * @param {Tag[]} serverTags
  * @returns {{ anyChanged: boolean, sortOrderChanged: boolean }}
  */
 function takeInServerTagDefinitions(serverTags) {
     let sortOrderChanged = false;
     let anyChanged = false;
+    let drawnWithout = false;
     for (const serverTag of serverTags) {
         if (!isTagObject(serverTag)) continue;
         const local = tagsStore.get(serverTag.id);
         if (local === serverTag) continue;
         if (!local) {
-            if (tagIdsBeingCreated.has(serverTag.id)) continue;
-            addStoredTag(serverTag);
-            anyChanged = true;
+            // Something was drawn without it while the server had none: it is taken in and drawn now. Any other tag
+            // this tab doesn't hold is left out; a draw that meets it reads it then.
+            if (tagIdsWithoutDefinition.delete(serverTag.id)) {
+                addStoredTag(serverTag);
+                anyChanged = true;
+                drawnWithout = true;
+            }
             continue;
         }
         if (!storedTagFields.has(local.id)) continue;
@@ -5023,32 +4879,40 @@ function takeInServerTagDefinitions(serverTags) {
         invalidateGroupsFuseIndex();
         applyCharacterTagsToMessageDivs();
     }
+    if (drawnWithout) redrawTagsOnScreen();
     return { anyChanged, sortOrderChanged };
 }
 
 /**
- * Makes this tab's tag definitions match the server's, in place: `tags` stays the same array and a tag that
- * is still there stays the same object. Only what differs is downloaded, unless most of it does.
- * @returns {Promise<boolean>} false if the server couldn't be read; nothing is changed then.
+ * Makes the tag definitions this tab holds match the server's, in place: `tags` stays the same array and a tag that
+ * is still there stays the same object. Each held tag is read by id, sending a hash of the copy held, so only what
+ * changed is downloaded; a tag the server no longer has is dropped.
+ * @returns {Promise<boolean>} false if the server couldn't be read; what was read before that is kept.
  */
 async function rereadTagDefinitions() {
-    /** @type {Tag[] | null} */
-    let serverTags = await syncTagDefinitionsFromDigest(tags);
-    if (serverTags === tags) return true;
-    if (!serverTags) {
-        const answer = await postTagsRead('/api/tags/get', {});
-        if (!answer || !Array.isArray(answer.tags)) return false;
-        serverTags = answer.tags;
+    const ids = tags.filter(tag => isTagObject(tag) && storedTagFields.has(tag.id)).map(tag => tag.id);
+    let sortOrderChanged = false;
+    /** @type {{ id: string }[]} */
+    const gone = [];
+    let readAll = true;
+    for (let i = 0; i < ids.length; i += TAG_READ_MAX_IDS) {
+        const chunk = ids.slice(i, i + TAG_READ_MAX_IDS);
+        /** @type {Record<string, string>} */
+        const known = {};
+        for (const id of chunk) known[id] = contentHashOf(storedTagFields.get(id));
+        const answer = await postTagsRead('/api/tags/by-ids', { ids: chunk, known });
+        if (!answer || !Array.isArray(answer.tags) || !Array.isArray(answer.gone)) {
+            readAll = false;
+            break;
+        }
+        if (takeInServerTagDefinitions(answer.tags).sortOrderChanged) sortOrderChanged = true;
+        for (const id of answer.gone) gone.push({ id: String(id) });
     }
-
-    const serverIds = new Set(serverTags.filter(isTagObject).map(tag => tag.id));
-    const { sortOrderChanged } = takeInServerTagDefinitions(serverTags);
-    await dropTagsLocally(tags.filter(tag => !serverIds.has(tag.id) && storedTagFields.has(tag.id)).map(tag => ({ id: tag.id })));
+    await dropTagsLocally(gone);
     if (sortOrderChanged) redrawAfterTagSortOrderChange();
-    await refreshTagsManifestCache();
     refreshViewTagList();
     refreshUsedTagBars();
-    return true;
+    return readAll;
 }
 
 /**
@@ -5076,14 +4940,16 @@ async function takeInTagChanges() {
             return;
         }
 
-        const { anyChanged, sortOrderChanged } = takeInServerTagDefinitions(Array.isArray(page.tags) ? page.tags : []);
-        const drops = (Array.isArray(page.removed) ? page.removed : [])
-            .filter(removed => typeof removed?.id === 'string' && tagsStore.has(removed.id))
+        const changedTags = Array.isArray(page.tags) ? page.tags : [];
+        const removed = Array.isArray(page.removed) ? page.removed : [];
+        const { sortOrderChanged } = takeInServerTagDefinitions(changedTags);
+        const drops = removed
+            .filter(removal => typeof removal?.id === 'string' && tagsStore.has(removal.id))
             .map(({ id, mergedInto }) => ({ id, replaceWithId: typeof mergedInto === 'string' ? mergedInto : undefined }));
         await dropTagsLocally(drops);
         if (sortOrderChanged) redrawAfterTagSortOrderChange();
-        if (anyChanged) await refreshTagsManifestCache();
-        if (anyChanged || drops.length) {
+        // Manage Tags and the filter bars show tags this tab may not hold.
+        if (changedTags.length || removed.length) {
             refreshViewTagList();
             refreshUsedTagBars();
         }
@@ -5290,7 +5156,6 @@ async function onTagRestoreFileSelect(e) {
     }
 
     await rereadResidentEntityTagIds();
-    await refreshTagsManifestCache();
 
     // A restore can touch an arbitrary number of tags across an arbitrary number of characters/groups - not a
     // known small set, so there's no smaller-than-full update to target here.
@@ -5395,7 +5260,6 @@ async function onTagsPruneClick() {
         invalidateTagsFuseIndex();
         invalidateCharactersFuseIndex();
         invalidateGroupsFuseIndex();
-        await refreshTagsManifestCache();
     }
 
     // Pruned tags are unused by definition - no character/group row displays one, so only the filter buttons

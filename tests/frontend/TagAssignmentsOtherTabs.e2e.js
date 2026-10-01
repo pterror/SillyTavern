@@ -324,6 +324,11 @@ test.describe('tag assignments changed in another tab', () => {
                 const { selectCharacterByAvatar } = await import('/script.js');
                 await selectCharacterByAvatar(avatar);
             }, avatar);
+            // The tags are read here as a picker reads what it offers.
+            await page.evaluate(async (ids) => {
+                const { readTagsForIds } = await import('/scripts/tags.js');
+                await readTagsForIds(ids);
+            }, [merged, gone]);
             // Cut off from the tag definition feed, so this tab still holds the two tags when they are deleted.
             await page.route('**/api/tags/changes', route => route.fulfill({ status: 500 }));
             await api(other, '/api/tags/delete', { id: merged, mergeInto: target });
@@ -331,12 +336,15 @@ test.describe('tag assignments changed in another tab', () => {
             // Both deletes have finished once neither tag can be read any more.
             await expect.poll(async () => (await api(other, '/api/tags/by-ids', { ids: [merged, gone] })).tags.length, { timeout: 15000 }).toBe(0);
             await page.waitForTimeout(STREAM_SETTLE_MS);
-            const heldDefinitions = () => page.evaluate(ids => window['SillyTavern'].getContext().tags.filter(t => ids.includes(t.id)).length, [merged, gone]);
+            const heldDefinitions = () => page.evaluate(async (ids) => {
+                const { tagsStore } = await import('/scripts/tags.js');
+                return ids.filter(id => tagsStore.has(id)).length;
+            }, [merged, gone]);
             expect(await heldDefinitions()).toBe(2);
 
             await page.evaluate(async ({ avatar, merged, gone }) => {
-                const { addTagsToEntity, tags } = await import('/scripts/tags.js');
-                addTagsToEntity(tags.filter(t => t.id === merged || t.id === gone), avatar);
+                const { addTagsToEntity, tagsStore } = await import('/scripts/tags.js');
+                addTagsToEntity([tagsStore.get(merged), tagsStore.get(gone)], avatar);
             }, { avatar, merged, gone });
 
             const toast = page.locator('#toast-container .toast-warning', { hasText: 'Tag was deleted' });
