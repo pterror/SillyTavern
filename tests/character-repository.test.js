@@ -438,12 +438,33 @@ describe('full()', () => {
         expect(result.description).toBe('hydrated');
     });
 
-    test('throws a descriptive error for a non-resident id instead of silently returning undefined', async () => {
+    test('reads a non-resident id from the server without making it resident', async () => {
         const store = makeStore([]);
         const repo = new CharacterRepository(store);
+        global.fetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ avatar: 'bob', name: 'Bob', description: 'full', chat: null }) });
 
-        await expect(repo.full('ghost')).rejects.toThrow(/entry-level fault-in/);
+        const result = await repo.full('bob');
+
+        expect(result).toEqual({ avatar: 'bob', name: 'Bob', description: 'full', chat: '', shallow: false });
+        expect(store.has('bob')).toBe(false);
         expect(unshallowCharacterMock).not.toHaveBeenCalled();
+        const [url, init] = global.fetch.mock.calls[0];
+        expect(url).toBe('/api/characters/get');
+        expect(JSON.parse(init.body)).toEqual({ avatar_url: 'bob' });
+    });
+
+    test('a non-resident id the server does not know is not-found, not an error', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        global.fetch.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) });
+
+        await expect(repo.full('ghost')).resolves.toBeUndefined();
+    });
+
+    test('any other failed read rejects', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        global.fetch.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+
+        await expect(repo.full('bob')).rejects.toThrow(/500/);
     });
 });
 
