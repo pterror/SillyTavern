@@ -83,6 +83,7 @@ const QUERY_INDEXES = [
     'CREATE INDEX tags_folder_name_key ON tags(is_folder, name_key)',
     'CREATE INDEX tags_folder_sort_order ON tags(is_folder, sort_order)',
     'CREATE INDEX tags_folder_unordered_name_key ON tags(is_folder, name_key) WHERE sort_order IS NULL',
+    'CREATE INDEX tags_folder_usage_count ON tags(is_folder, usage_count DESC, name_key)',
     'CREATE INDEX tags_name_key ON tags(name_key)',
     'CREATE INDEX tags_sort_order ON tags(sort_order)',
     'CREATE INDEX tags_unordered_name_key ON tags(name_key) WHERE sort_order IS NULL',
@@ -165,6 +166,16 @@ describe('fillTagDerivedColumnsIfNeeded', () => {
         await metadataDb.ensureSchemaMigrated(directories);
         await metadataDb.fillTagNameKeysIfNeeded(directories);
         expect(tagIndexes()).toEqual(['CREATE INDEX tags_name_key ON tags(name_key)']);
+        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
+        expect(tagIndexes()).toEqual(QUERY_INDEXES);
+    });
+
+    test('a store filled before an index was added gets it from the next run', async () => {
+        await metadataDb.ensureSchemaMigrated(directories);
+        await metadataDb.fillTagNameKeysIfNeeded(directories);
+        await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
+        live().exec('DROP INDEX tags_folder_usage_count');
+        expect(tagIndexes()).not.toContain('CREATE INDEX tags_folder_usage_count ON tags(is_folder, usage_count DESC, name_key)');
         await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         expect(tagIndexes()).toEqual(QUERY_INDEXES);
     });

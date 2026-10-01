@@ -495,22 +495,27 @@ describe('POST /api/tags/query', () => {
 
     test('a walk the index doesn\'t cover stops at the work cap with more, and following cursors finds every match once', async () => {
         const cap = metadataDb.TAG_QUERY_WORK_CAP;
-        const tags = Array.from({ length: cap + 1500 }, (_, i) => ({ id: `w${String(i).padStart(6, '0')}`, name: `W ${String(i).padStart(6, '0')}`, sort_order: i }));
-        // Folders at the end of the most-used order: count 0 and last by name.
+        // Unused folders, then used folders last by name: the folder index fixes is_folder, not usage_count.
+        const tags = Array.from({ length: cap + 1500 }, (_, i) => ({ id: `w${String(i).padStart(6, '0')}`, name: `W ${String(i).padStart(6, '0')}`, sort_order: i, folder_type: 'OPEN' }));
         for (let i = 0; i < 5; i++) tags.push({ id: `f${i}`, name: `ZZ folder ${i}`, folder_type: 'OPEN' });
         await metadataDb.ensureSchemaMigrated(directories);
         await metadataDb.saveTagDefinitions(directories, tags);
         live().transaction(() => {
             const assign = live().prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)');
-            for (let i = 0; i < 100; i++) assign.run('c.png', tags[i].id);
+            for (let i = 0; i < 5; i++) assign.run('c.png', `f${i}`);
         })();
         await makeReady();
 
-        const first = await query({ sort: { field: 'by_entries' }, filter: { folders: true }, pageSize: 50 });
+        const first = await query({ sort: { field: 'alphabetical' }, filter: { folders: true, used: true }, pageSize: 50 });
         expect(first.body).toEqual({ rows: [], cursor: expect.any(String), more: true });
-        const got = await queryAll({ sort: { field: 'by_entries' }, filter: { folders: true }, pageSize: 50 });
+        const got = await queryAll({ sort: { field: 'alphabetical' }, filter: { folders: true, used: true }, pageSize: 50 });
         expect(got.ids).toEqual(['f0', 'f1', 'f2', 'f3', 'f4']);
         expect(got.capped).toBe(1);
+
+        // Most used of the folders has its own index, so it reads only folders, in order, and is never cut.
+        const byUse = await queryAll({ sort: { field: 'by_entries' }, filter: { folders: true }, pageSize: 50 });
+        expect(byUse.ids.slice(0, 5)).toEqual(['f0', 'f1', 'f2', 'f3', 'f4']);
+        expect(byUse.capped).toBe(0);
 
         // The same for a search under manual phase 1 and under most used.
         for (const sort of ['manual', 'by_entries']) {
@@ -531,7 +536,7 @@ describe('POST /api/tags/query', () => {
         const counted = await query({ sort: { field: 'manual' }, pageSize: 3, restCount: true });
         expect(counted.body.rest).toEqual({ count: 10000, more: true });
         // A page the work cap cut short counts nothing.
-        const cut = await query({ sort: { field: 'by_entries' }, filter: { folders: true }, pageSize: 50, restCount: true });
+        const cut = await query({ sort: { field: 'alphabetical' }, filter: { folders: true, used: true }, pageSize: 50, restCount: true });
         expect(cut.body).toEqual({ rows: [], cursor: expect.any(String), more: true });
     });
 });
