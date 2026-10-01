@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, holdCharacters } from './frontent-test-utils.js';
 
 // Duplicating a character copies its tags on the server, from what the server has. The page sends no tag list of
 // its own, so a copy of the original it holds that is out of date can't decide what the duplicate gets.
@@ -153,6 +153,7 @@ test.describe('Duplicating a character copies its tags on the server', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.card]);
         expect(await residentTagsOf(page, fixture.card)).toEqual([fixture.seen]);
 
         await hideChangesOf(page, fixture.card);
@@ -170,7 +171,6 @@ test.describe('Duplicating a character copies its tags on the server', () => {
         const expected = [fixture.seen, fixture.unseen].sort();
         expect((await serverTagsOf(page, copy)).sort()).toEqual(expected);
         expect((await serverTagsOf(page, fixture.card)).sort()).toEqual(expected);
-        await expect.poll(() => residentTagsOf(page, copy), { timeout: 15000 }).toEqual(expected);
     });
 
     test('a failed copy is reported', async ({ browser, page }) => {

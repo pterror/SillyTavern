@@ -2,6 +2,7 @@ import { blockWhileFieldEditing } from './character-field-editor.js';
 import { Fuse } from '../lib.js';
 
 import { groups, groupsStore, setGroups, rebuildGroupsStoreCore } from './group-store.js';
+import { onAnyEntityStoreChange } from './entity-store.js';
 
 import {
     shuffle,
@@ -81,7 +82,7 @@ import {
 import { getCharacters, showCharacterSyncFailedToast, SYNC_REQUEST_TIMEOUT_MS, queryWithSortFallback } from './character-list.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
-import { charactersStore, exposedGroups, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
+import { charactersStore, exposedGroups, holdCharacter, setCharacterId, setExposedGroupId, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, heldTagsForIds, compareTagsForSort } from './tags.js';
 import { _setCurrentTarget, updateMessage } from './chat-store.js';
@@ -395,6 +396,46 @@ async function resolveGroupMembers(members) {
 
     return { resolved, unresolved };
 }
+
+/** The open group's members this page has asked for since the group was opened, so one that can't be read isn't asked for on every change. */
+let askedOpenGroupMembers = new Set();
+/** @type {string|null} */
+let askedForGroupId = null;
+
+/**
+ * Makes the page hold the open group's members: they are on screen, and generation reads them from what the page
+ * holds. A member that can't be read stays out.
+ * @returns {Promise<void>}
+ */
+export async function holdOpenGroupMembers() {
+    const groupId = selected_group;
+    if (!groupId) return;
+    if (askedForGroupId !== groupId) {
+        askedForGroupId = groupId;
+        askedOpenGroupMembers = new Set();
+    }
+    const members = groupsStore.get(groupId)?.members;
+    if (!Array.isArray(members)) return;
+    const missing = members.filter(member => typeof member === 'string' && !charactersStore.has(member) && !askedOpenGroupMembers.has(member));
+    if (missing.length === 0) return;
+    for (const member of missing) askedOpenGroupMembers.add(member);
+    try {
+        const { resolved } = await resolveGroupMembers(missing);
+        if (selected_group !== groupId) return;
+        for (const character of resolved) holdCharacter(character);
+    } catch (error) {
+        console.error('Could not read the open group\'s members:', error);
+        for (const member of missing) askedOpenGroupMembers.delete(member);
+    }
+}
+
+// A member added to the open group, here or in another tab, arrives through a groups store change; groupsStore is
+// rebuilt on every refetch, so look a turn later.
+onAnyEntityStoreChange(store => {
+    queueMicrotask(() => {
+        if (store === groupsStore) void holdOpenGroupMembers();
+    });
+});
 
 /**
  * Validates a group by checking if all members exist and removing duplicates.
@@ -2344,6 +2385,7 @@ export async function openGroupById(groupId) {
             setExposedGroupId(groupId);
             setEditedMessageId(undefined);
             updateChatMetadata({}, true);
+            await holdOpenGroupMembers();
             await getGroupChat(groupId);
             return true;
         }

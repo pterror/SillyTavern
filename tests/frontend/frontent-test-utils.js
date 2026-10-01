@@ -127,3 +127,37 @@ export async function setDrawerBarMobilePosition(page, value) {
     await saved;
     await page.waitForFunction(v => document.body.classList.contains('drawerBarMobileBottom') === (v === 'bottom'), value);
 }
+
+/**
+ * Makes the page hold these characters' full cards, as opening them does. The page holds only what is on screen, so a
+ * test about how held characters behave first has the page hold them.
+ * @param {import('@playwright/test').Page} page
+ * @param {string[]} avatars
+ */
+export async function holdCharacters(page, avatars) {
+    const missing = await page.evaluate(async (avatars) => {
+        const { characterRepository } = await import('/scripts/character-repository.js');
+        const { holdCharacter } = await import('/scripts/character-store.js');
+        const missing = [];
+        for (const avatar of avatars) {
+            const character = await characterRepository.full(avatar);
+            if (character) holdCharacter(character);
+            else missing.push(avatar);
+        }
+        return missing;
+    }, avatars);
+    if (missing.length > 0) throw new Error(`holdCharacters: no such characters: ${missing.join(', ')}`);
+}
+
+/**
+ * The avatar key of the character with this exact name, asked of the server.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @returns {Promise<string|undefined>}
+ */
+export async function findCharacterAvatarByName(page, name) {
+    return page.evaluate(async (name) => {
+        const { findCharAsync } = await import('/scripts/utils.js');
+        return (await findCharAsync({ name, allowAvatar: false, insensitive: false, preferCurrentChar: false, quiet: true }))?.avatar;
+    }, name);
+}

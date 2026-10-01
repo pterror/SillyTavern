@@ -1395,7 +1395,7 @@ async function firstLoadInit() {
     initBookmarks();
     await getUserAvatars(true, user_avatar);
 
-    // No longer gates first paint; awaited later, right before APP_READY, to keep its full-residency guarantee.
+    // Doesn't gate first paint; awaited right before APP_READY, so the first sync has run by then.
     let residencySettled = false;
     const characterResidencyPromise = (async () => {
         await seedCharactersFromCache();
@@ -5027,11 +5027,7 @@ export async function duplicateCharacter({ avatar = null, silent = false } = {})
     // Determine the character to duplicate
     let targetAvatar;
     if (avatar) {
-        const character = charactersStore.get(avatar);
-        if (!character) {
-            toastr.warning(t`Character not found: ${avatar}`);
-            return '';
-        }
+        // The server answers for a character the page doesn't hold, and says when there is none.
         targetAvatar = avatar;
     } else {
         if (!getCurrentCharacter()) {

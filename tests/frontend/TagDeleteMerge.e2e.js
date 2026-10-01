@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
 // Deleting a tag from the tag manager, with or without a tag to merge it into, sends one request naming the merge
 // target. The server applies it to every card carrying the deleted tag, including cards this page never loaded, or
@@ -194,6 +194,7 @@ test.describe('Deleting a tag from the tag manager', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.loadedCard]);
         await openTagManagement(page);
         await countSettingsUpdated(page);
         const { body, paths } = await deleteFromTagManager(page, fixture.deleted, fixture.target);
@@ -224,6 +225,7 @@ test.describe('Deleting a tag from the tag manager', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.card]);
         await openTagManagement(page);
         const { body } = await deleteFromTagManager(page, fixture.deleted, null);
 
@@ -244,6 +246,7 @@ test.describe('Deleting a tag from the tag manager', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.card]);
         await openTagManagement(page);
         await countSettingsUpdated(page);
         const popup = await openDeleteDialog(page, fixture.kept, fixture.gone);
@@ -279,6 +282,7 @@ test.describe('Deleting a tag from the tag manager', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.card]);
         await openTagManagement(page);
         // The server follows a picked tag to the tag it was merged into only until it has finished removing the picked
         // one, which a test can't hold open. So the request is sent on naming the final tag, and its answer is what
@@ -307,6 +311,7 @@ test.describe('Deleting a tag from the tag manager', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.card]);
         await openTagManagement(page);
         await page.route('**/api/tags/delete', route => route.fulfill({ status: 500, body: '{}' }));
         const { paths } = await deleteFromTagManager(page, fixture.kept, null);

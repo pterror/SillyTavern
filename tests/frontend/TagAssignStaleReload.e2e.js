@@ -13,6 +13,8 @@ async function openNewCharacter(page) {
     await page.locator('#create_button_label').click();
     await page.locator('.character_select', { hasText: name }).first().click();
     await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
+    // A row whose character the page doesn't hold is read from the server before it opens.
+    await expect.poll(() => page.evaluate(() => SillyTavern.getContext().characterId), { timeout: 10000 }).not.toBeUndefined();
     return await page.evaluate(() => SillyTavern.getContext().characters[SillyTavern.getContext().characterId].avatar);
 }
 

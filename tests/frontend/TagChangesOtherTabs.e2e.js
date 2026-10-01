@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
 // A tag definition changed from another tab reaches this one without a reload: the changes stream says tags
 // changed, and the page asks /api/tags/changes for what changed past its cursor.
@@ -171,6 +171,7 @@ test.describe('tag changes from another tab', () => {
             await api(other, '/api/tags/assign', { id: avatar, tagId: from });
 
             await loadApp(page);
+            await holdCharacters(page, [avatar]);
             await openCharacterManagementDrawer(page);
             const heldIds = () => page.evaluate(async (avatar) => {
                 const { charactersStore } = await import('/scripts/character-store.js');

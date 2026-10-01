@@ -207,7 +207,9 @@ export function resolveCharacterRefPair(ref, avatar) {
  * @param {{switchMenu?: boolean}} [options]
  */
 export async function selectCharacterById(id, { switchMenu = true } = {}) {
-    const avatar = resolveCharacterRef(id)?.avatar;
+    // An avatar key names a character whether or not the page holds it; selectCharacterByAvatar() reads one it doesn't.
+    const isAvatarKey = typeof id === 'string' && id !== '' && exposedCharacters[id] === undefined && !/^\d+$/.test(id);
+    const avatar = isAvatarKey ? id : resolveCharacterRef(id)?.avatar;
     if (avatar === undefined) {
         return;
     }

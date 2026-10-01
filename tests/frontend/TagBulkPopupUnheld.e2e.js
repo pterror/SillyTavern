@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, holdCharacters } from './frontent-test-utils.js';
 
 // The bulk tag popup reads the selected characters' tags from the server and writes through it, so it shows and
 // changes the tags of characters the page doesn't hold. Each test makes its characters and tags after the page has
@@ -116,10 +116,8 @@ test.describe('the bulk tag popup on characters the page does not hold', () => {
 
     test('a held character and one the page does not hold get the same tag, and the held one shows it at once', async ({ page }) => {
         const stamp = `${Date.now()}`;
-        const held = await page.evaluate(async () => {
-            const { charactersStore } = await import('./scripts/character-store.js');
-            return charactersStore.getAll()[0].avatar;
-        });
+        const held = await createUnheldCharacter(page, `BulkTagHeld ${stamp}`);
+        await holdCharacters(page, [held]);
         const unheld = await createUnheldCharacter(page, `BulkTagMixed ${stamp}`);
         await createUnheldTag(page, `mixed-${stamp}`, `Mixed ${stamp}`);
 

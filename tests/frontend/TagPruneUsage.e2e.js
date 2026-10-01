@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, holdCharacters } from './frontent-test-utils.js';
 
 // "Prune unused tags" must only remove tags that no character or group uses anywhere on the server - not
 // judged by what this page happens to have loaded, synced or counted.
@@ -192,6 +192,7 @@ test.describe('Tag prune keeps tags that are in use', () => {
         });
 
         await loadApp(page);
+        await holdCharacters(page, [fixture.card]);
         // Change-stream syncs are deferred while the character list is hidden.
         await openCharacterManagementDrawer(page);
 

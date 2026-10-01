@@ -6,7 +6,8 @@ import process from 'node:process';
 import lodash from 'lodash';
 
 // The real delta-sync client (character-list.js getCharacters()) against the real server routes: a sync applies
-// only the characters the change feed names to `characters`, and never reads the whole cache. Only modules that
+// the changes the feed names to the characters the page holds, takes in none it doesn't hold, and never reads the
+// whole cache; boot reads none of the cache into memory. Only modules that
 // can't load in node are replaced: IndexedDB (localforage) by an in-memory store, and character-list.js's
 // DOM-bound UI imports. The character store is the real EntityStore over the shared array.
 
@@ -225,12 +226,45 @@ describe('delta sync applies only what changed', () => {
 
     const avatars = () => residentCharacters.map(c => c.avatar).sort();
 
-    test('a later sync reads no whole cache and applies only the changes', async () => {
+    /** Holds these characters, as selecting one or opening a group does: read from the server into the store. */
+    async function hold(...avatarKeys) {
+        const records = await (await postJson('/api/characters/batch', { avatars: avatarKeys })).json();
+        for (const record of records) {
+            record.chat = record.chat ? String(record.chat) : '';
+            store.create(record);
+        }
+    }
+
+    test('a sync takes in no character the page does not hold', async () => {
+        const a = await createCharacter('A');
+        await createCharacter('B');
+        await sync();
+        expect(avatars()).toEqual([]);
+
+        await hold(a);
+        await createCharacter('C');
+        await sync();
+        expect(avatars()).toEqual([a]);
+    });
+
+    test('boot reads none of the cache into memory', async () => {
+        await createCharacter('A');
+        await createCharacter('B');
+        await sync();
+
+        wholeStoreReads.count = 0;
+        await characterList.seedCharactersFromCache();
+
+        expect(wholeStoreReads.count).toBe(0);
+        expect(avatars()).toEqual([]);
+    });
+
+    test('a later sync reads no whole cache and applies the changes to the held characters', async () => {
         const a = await createCharacter('A');
         const b = await createCharacter('B');
         const c = await createCharacter('C');
         await sync();
-        expect(avatars()).toEqual([a, b, c]);
+        await hold(a, b, c);
         const heldA = store.get(a);
         const heldB = store.get(b);
 
@@ -242,18 +276,19 @@ describe('delta sync applies only what changed', () => {
         await sync();
 
         expect(wholeStoreReads.count).toBe(0);
-        expect(avatars()).toEqual([a, b, d]);
+        expect(avatars()).toEqual([a, b]);
         // Updated in place, so every reference to the character sees the change.
         expect(store.get(a)).toBe(heldA);
         expect(heldA.fav).toBe(true);
         expect(store.get(b)).toBe(heldB);
         expect(store.has(c)).toBe(false);
-        expect(store.get(d)?.name).toBe('D');
+        expect(store.has(d)).toBe(false);
     });
 
     test('a sync with nothing new leaves the held characters alone', async () => {
         const a = await createCharacter('A');
         await sync();
+        await hold(a);
         const heldA = store.get(a);
 
         wholeStoreReads.count = 0;
@@ -267,6 +302,7 @@ describe('delta sync applies only what changed', () => {
     test('a held character the cache does not have survives a sync that does not name it', async () => {
         const a = await createCharacter('A');
         await sync();
+        await hold(a);
         // As selectCharacterByAvatar() holds a character it fetched on demand: in memory, not in the cache.
         store.create({ avatar: 'OnDemand.png', name: 'On demand', shallow: false });
 
@@ -281,6 +317,7 @@ describe('delta sync applies only what changed', () => {
         const a = await createCharacter('A');
         const b = await createCharacter('B');
         await sync();
+        await hold(a, b);
         const heldA = store.get(a);
 
         await postJson('/api/characters/fav', { avatar: a, fav: true });
