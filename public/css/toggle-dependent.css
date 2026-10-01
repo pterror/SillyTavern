@@ -15,6 +15,26 @@ body.stackedDrawers #top-settings-holder > .drawer > .drawer-content {
     z-index: calc(3000 + var(--drawerOrder, 0));
 }
 
+/* The chat's own icon in the drawer bar: only with stacked drawers on, the only way to bring forward a chat that a
+   drawer covers entirely. Lit while nothing covers any part of the chat, as an open drawer's icon is lit. */
+#chat-button {
+    display: none;
+}
+
+body.stackedDrawers #chat-button {
+    display: flex;
+}
+
+.drawer-icon.chatDrawerIcon {
+    opacity: 0.3;
+    transition: all var(--animation-duration-2x);
+}
+
+.drawer-icon.chatDrawerIcon:hover,
+.drawer-icon.chatDrawerIcon.stackFront {
+    opacity: 1;
+}
+
 body.stackedDrawers .stackCovered {
     visibility: hidden;
     transition: visibility 0s !important;

@@ -201,7 +201,38 @@ export function updateDrawerStack() {
             above.push({ el, box });
         }
     }
+    updateFrontIcons();
     if (changed) onVisibilityChanged();
+}
+
+/**
+ * @param {HTMLElement} el An ordered layer
+ * @returns {boolean} Whether it is shown and no shown ordered layer above it covers any part of it. Floating lists
+ * don't count: they sit above everything while open and say nothing about which layer was brought forward.
+ */
+function isLayerInFront(el) {
+    if (!isShown(el)) return false;
+    const box = el.getBoundingClientRect();
+    return !orderedLayers().some(other => other !== el && !el.contains(other) && isShown(other)
+        && compareOrder(el, other) < 0 && holesIn(box, [other.getBoundingClientRect()]).length > 0);
+}
+
+/** Lights each `[data-stack-front-of]` icon while the layer it names is in front; with stacked drawers off, none. */
+function updateFrontIcons() {
+    for (const icon of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-stack-front-of]')])) {
+        const layer = document.getElementById(icon.dataset.stackFrontOf ?? '');
+        icon.classList.toggle('stackFront', stackOn() && !!layer && isLayerInFront(layer));
+    }
+}
+
+/**
+ * Brings the chat forward, however much of it is covered.
+ */
+export function bringChatForward() {
+    const chat = document.getElementById(CHAT_ID);
+    if (!chat || !stackOn() || isLayerInFront(chat)) return;
+    raiseDrawer(chat);
+    updateDrawerStack();
 }
 
 /** @returns {HTMLElement[]} Every element that can be a layer. */
