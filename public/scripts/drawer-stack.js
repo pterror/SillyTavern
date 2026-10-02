@@ -17,7 +17,7 @@
  * each top-bar drawer's own class (an extension may open one without our code) and the children of #movingDivs and
  * <body> (floating windows coming and going).
  */
-import { setHoles, unionArea } from './util/underlay-clip.js';
+import { setHoles, uncoveredPieces, unionArea } from './util/underlay-clip.js';
 
 /** The top-bar drawers. They share #top-settings-holder's stacking context, so z-index alone orders their painting. */
 export const STACK_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content';
@@ -174,17 +174,32 @@ function clearLayer(el) {
 }
 
 /**
- * Cuts the union of `covers` out of `el`.
+ * @param {HTMLElement} el
+ * @param {DOMRect} box Its box
+ * @param {DOMRect | null} chatBox The chat's box, if shown
+ * @returns {boolean} Whether it is a fullscreen drawer: a top-bar drawer reaching past the chat on both sides.
+ */
+function isFullscreenDrawer(el, box, chatBox) {
+    return !!chatBox && el.matches(STACK_DRAWER_SELECTOR) && box.left < chatBox.left - 1 && box.right > chatBox.right + 1;
+}
+
+/**
+ * Cuts the union of `covers` out of `el`. A fullscreen drawer whose visible part falls apart into separate pieces
+ * (a column down its middle leaving two strips) is hidden whole instead. Only fullscreen drawers get this, to keep the
+ * extra work off every other layer; it can widen later.
  * @param {HTMLElement} el
  * @param {DOMRect} box Its box
  * @param {DOMRect[]} covers
+ * @param {DOMRect[] | null} hideIfSplit Null, or what else hides parts of it (the drawer bar), for telling whether its
+ * visible part is split
  * @returns {boolean} Whether its entirely-covered state changed
  */
-function cutLayer(el, box, covers) {
+function cutLayer(el, box, covers, hideIfSplit) {
     const rects = holesIn(box, covers);
     if (rects.length === 0) return clearLayer(el);
     setHoles(el, HOLE_SOURCE, rects);
-    const covered = unionArea(rects) >= box.width * box.height - 0.5;
+    const covered = unionArea(rects) >= box.width * box.height - 0.5
+        || (!!hideIfSplit && uncoveredPieces(box.width, box.height, [...rects, ...holesIn(box, hideIfSplit)]) > 1);
     const before = el.classList.contains('stackCovered');
     el.classList.toggle('stackCovered', covered);
     el.dataset.stackCut = 'true';
@@ -220,6 +235,10 @@ export function updateDrawerStack() {
         for (const el of [...cut]) {
             if (!shown.has(el)) changed = clearLayer(el) || changed;
         }
+        const chat = document.getElementById(CHAT_ID);
+        const chatBox = chat && shown.has(chat) ? chat.getBoundingClientRect() : null;
+        const bar = document.getElementById('top-settings-holder');
+        const barBoxes = bar ? [bar.getBoundingClientRect()] : [];
         /** @type {{ el: HTMLElement, box: DOMRect }[]} */
         const above = [];
         for (let i = bottomUp.length - 1; i >= 0; i--) {
@@ -227,8 +246,9 @@ export function updateDrawerStack() {
             const box = el.getBoundingClientRect();
             // A layer inside another is cut along with it, so it never cuts its own ancestor.
             const covers = above.filter(a => !el.contains(a.el)).map(a => a.box);
-            changed = cutLayer(el, box, covers) || changed;
-            above.push({ el, box });
+            changed = cutLayer(el, box, covers, isFullscreenDrawer(el, box, chatBox) ? barBoxes : null) || changed;
+            // A hidden layer covers nothing below it.
+            if (!el.classList.contains('stackCovered')) above.push({ el, box });
         }
     }
     updateFrontIcons(ordered);

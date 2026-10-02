@@ -61,7 +61,7 @@ test.describe('stacked drawers', () => {
         const wrong = await page.evaluate(async () => {
             const { drawerOrder } = await import('./scripts/drawer-stack.js');
             const layers = [...document.querySelectorAll('#sheld, #top-settings-holder > .drawer > .drawer-content')]
-                .filter(el => el.checkVisibility() && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0)
+                .filter(el => el.checkVisibility({ visibilityProperty: true }) && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0)
                 .sort((a, b) => drawerOrder(a) - drawerOrder(b) || Number(b.id === 'sheld') - Number(a.id === 'sheld'));
             const out = [];
             for (let x = 5; x < innerWidth; x += 23) {
