@@ -298,9 +298,9 @@ describe('fillEntityCountsIfNeeded', () => {
 
         metadataDb.disposeMetadataStores();
         transactionCalls = 0;
-        const log = jest.spyOn(console, 'log').mockImplementation(() => {});
-        await metadataDb.fillEntityCountsIfNeeded(directories);
-        expect(log.mock.calls.map(args => String(args[0])).join('\n')).toMatch(/resuming characters after c00999\.png/);
+        const result = await metadataDb.fillEntityCountsIfNeeded(directories);
+        // Resumed after the first committed page (c00000-c00999): only the characters past it and the groups are walked.
+        expect(result?.batches).toBe(Math.ceil((CHARACTERS - 1000 + 1) / 1000) + Math.ceil((GROUPS + 1) / 1000));
         withRawDb(db => expect(fullyFilledMismatches(db)).toEqual([]));
     }, 60000);
 
