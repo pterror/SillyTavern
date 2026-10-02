@@ -13,26 +13,30 @@ export function noticeKey(id) { return `migration_notice:${id}`; }
 /**
  * @typedef {{ avatar: string, world: string, reason: string }} SkippedEntry
  * @typedef {{ avatar: string, world: string }} FailingEntry
+ * @typedef {{ avatar: string, world: string }} UndoneEntry
  * @typedef {{ total: number, entries: SkippedEntry[] }} SkippedList
  * @typedef {{ total: number, entries: FailingEntry[] }} FailingList
- * @typedef {{ version: number, skipped: SkippedList, failing: FailingList, noWorld?: SkippedList }} StoredNotice
+ * @typedef {{ total: number, entries: UndoneEntry[] }} UndoneList
+ * @typedef {{ version: number, skipped: SkippedList, failing: FailingList, undone: UndoneList }} StoredNotice
  */
 
 /**
- * Cards whose linked World file doesn't exist go to `noWorld`, not `skipped`: there is nothing a migration could undo
- * for them, so they weren't skipped, only looked at.
+ * What a pass tells the user: cards it changed, cards it couldn't check, cards it couldn't write. A card whose linked
+ * World file doesn't exist is none of these (nothing was or could be changed), so it isn't collected; the report
+ * still lists it.
  */
 export class NoticeCollector {
     /** @type {SkippedList} */ skipped = { total: 0, entries: [] };
-    /** @type {SkippedList} */ noWorld = { total: 0, entries: [] };
     /** @type {FailingList} */ failing = { total: 0, entries: [] };
+    /** @type {UndoneList} */ undone = { total: 0, entries: [] };
     /** @param {SkippedEntry} entry */ addSkipped(entry) {
-        const list = entry.reason === 'world-missing' ? this.noWorld : this.skipped;
-        list.total++;
-        if (list.entries.length < NOTICE_ENTRY_LIMIT) list.entries.push(entry);
+        if (entry.reason === 'world-missing') return;
+        this.skipped.total++;
+        if (this.skipped.entries.length < NOTICE_ENTRY_LIMIT) this.skipped.entries.push(entry);
     }
     /** @param {FailingEntry} entry */ addFailing(entry) { this.failing.total++; if (this.failing.entries.length < NOTICE_ENTRY_LIMIT) this.failing.entries.push(entry); }
-    isEmpty() { return this.skipped.total === 0 && this.failing.total === 0 && this.noWorld.total === 0; }
+    /** @param {UndoneEntry} entry */ addUndone(entry) { this.undone.total++; if (this.undone.entries.length < NOTICE_ENTRY_LIMIT) this.undone.entries.push(entry); }
+    isEmpty() { return this.skipped.total === 0 && this.failing.total === 0 && this.undone.total === 0; }
 }
 
 /** @type {SkippedList} */
@@ -67,10 +71,11 @@ export function parseNotice(raw) {
         || !Number.isFinite(notice.failing?.total)
         || !Array.isArray(notice.skipped?.entries)
         || !Array.isArray(notice.failing?.entries)
-        || (notice.noWorld !== undefined && (!Number.isFinite(notice.noWorld?.total) || !Array.isArray(notice.noWorld?.entries)))) {
+        || (notice.undone !== undefined && (!Number.isFinite(notice.undone?.total) || !Array.isArray(notice.undone?.entries)))) {
         return null;
     }
-    return { ...notice, noWorld: notice.noWorld ?? EMPTY_LIST };
+    // A `noWorld` list stored by an earlier version is dropped: those cards are nothing to tell the user about.
+    return { version: notice.version, skipped: notice.skipped, failing: notice.failing, undone: notice.undone ?? EMPTY_LIST };
 }
 
 /**
@@ -86,11 +91,20 @@ export async function readNotice(directories, id) {
 /**
  * A notice to store, with a version higher than the previous one's (and at least the current time).
  * @param {StoredNotice | null} previous
- * @param {{ skipped: SkippedList, failing: FailingList, noWorld?: SkippedList }} lists
+ * @param {{ skipped: SkippedList, failing: FailingList, undone?: UndoneList }} lists
  * @returns {string}
  */
 export function serializeNotice(previous, lists) {
-    return JSON.stringify({ version: Math.max(Date.now(), (previous?.version ?? 0) + 1), skipped: lists.skipped, failing: lists.failing, noWorld: lists.noWorld ?? EMPTY_LIST });
+    return JSON.stringify({ version: Math.max(Date.now(), (previous?.version ?? 0) + 1), skipped: lists.skipped, failing: lists.failing, undone: lists.undone ?? EMPTY_LIST });
+}
+
+/**
+ * Whether a notice has anything to tell the user.
+ * @param {{ skipped: SkippedList, failing: FailingList, undone: UndoneList }} notice
+ * @returns {boolean}
+ */
+export function noticeHasContent(notice) {
+    return notice.skipped.total > 0 || notice.failing.total > 0 || notice.undone.total > 0;
 }
 
 /**
@@ -111,23 +125,20 @@ export async function replaceNotice(directories, id, collector) {
 }
 
 /**
- * The lists a retry pass leaves in the notice. Skipped lists add up, since a card listed as skipped is never looked at
- * again; failing is replaced, since a retry pass looks at every card still failing.
+ * The lists a retry pass leaves in the notice. Skipped and undone lists add up, since a card in either is never looked
+ * at again; failing is replaced, since a retry pass looks at every card still failing.
  * @param {StoredNotice | null} previous
  * @param {NoticeCollector} collector
- * @returns {{ skipped: SkippedList, failing: FailingList, noWorld: SkippedList } | null} null when every list is empty.
+ * @returns {{ skipped: SkippedList, failing: FailingList, undone: UndoneList } | null} null when every list is empty.
  */
 export function mergeRetryNotice(previous, collector) {
     if (previous === null) {
-        return collector.isEmpty() ? null : { skipped: collector.skipped, failing: collector.failing, noWorld: collector.noWorld };
+        return collector.isEmpty() ? null : { skipped: collector.skipped, failing: collector.failing, undone: collector.undone };
     }
-    /** @type {(a: SkippedList, b: SkippedList) => SkippedList} */
+    /** @type {<T>(a: { total: number, entries: T[] }, b: { total: number, entries: T[] }) => { total: number, entries: T[] }} */
     const add = (a, b) => ({ total: a.total + b.total, entries: [...a.entries, ...b.entries].slice(0, NOTICE_ENTRY_LIMIT) });
-    const skipped = add(previous.skipped, collector.skipped);
-    const noWorld = add(previous.noWorld ?? EMPTY_LIST, collector.noWorld);
-    const failing = collector.failing;
-    if (skipped.total === 0 && failing.total === 0 && noWorld.total === 0) return null;
-    return { skipped, failing, noWorld };
+    const merged = { skipped: add(previous.skipped, collector.skipped), failing: collector.failing, undone: add(previous.undone ?? EMPTY_LIST, collector.undone) };
+    return noticeHasContent(merged) ? merged : null;
 }
 
 /**
@@ -147,21 +158,23 @@ export async function markNoticeSeen(directories, id, version) {
 /**
  * Every stored notice, each listed card with its character name from the index (null when it has no row).
  * @param {import('../users.js').UserDirectoryList} directories
- * @returns {Promise<{ id: string, version: number, skipped: { total: number, entries: (SkippedEntry & { name: string | null })[] }, failing: { total: number, entries: (FailingEntry & { name: string | null })[] }, noWorld: { total: number, entries: (SkippedEntry & { name: string | null })[] }, hasReport: boolean }[]>}
+ * A stored notice with nothing to tell (only an earlier version's `noWorld` list) isn't listed.
+ * @returns {Promise<{ id: string, version: number, skipped: { total: number, entries: (SkippedEntry & { name: string | null })[] }, failing: { total: number, entries: (FailingEntry & { name: string | null })[] }, undone: { total: number, entries: (UndoneEntry & { name: string | null })[] }, hasReport: boolean }[]>}
  */
 export async function getNoticesForClient(directories) {
     const notices = [];
     for (const id of NOTICE_IDS) {
         const notice = await readNotice(directories, id);
-        if (notice === null) continue;
-        const noWorld = notice.noWorld ?? EMPTY_LIST;
-        const names = await getCharacterNamesByIds(directories, [...notice.skipped.entries, ...notice.failing.entries, ...noWorld.entries].map(e => e.avatar));
+        if (notice === null || !noticeHasContent(notice)) continue;
+        const names = await getCharacterNamesByIds(directories, [...notice.skipped.entries, ...notice.failing.entries, ...notice.undone.entries].map(e => e.avatar));
+        /** @type {<T extends { avatar: string }>(list: { total: number, entries: T[] }) => { total: number, entries: (T & { name: string | null })[] }} */
+        const named = list => ({ total: list.total, entries: list.entries.map(e => ({ ...e, name: names.get(e.avatar) ?? null })) });
         notices.push({
             id,
             version: notice.version,
-            skipped: { total: notice.skipped.total, entries: notice.skipped.entries.map(e => ({ ...e, name: names.get(e.avatar) ?? null })) },
-            failing: { total: notice.failing.total, entries: notice.failing.entries.map(e => ({ ...e, name: names.get(e.avatar) ?? null })) },
-            noWorld: { total: noWorld.total, entries: noWorld.entries.map(e => ({ ...e, name: names.get(e.avatar) ?? null })) },
+            skipped: named(notice.skipped),
+            failing: named(notice.failing),
+            undone: named(notice.undone),
             hasReport: await hasReport(directories, id),
         });
     }

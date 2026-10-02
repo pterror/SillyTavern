@@ -35,6 +35,7 @@ test.describe('boot-migration notice', () => {
                 total: 23,
                 entries: Array.from({ length: 20 }, (_, i) => ({ avatar: `g${i}.png`, world: `Lost ${i}`, reason: 'world-unreadable', name: `Ghost ${i}` })),
             },
+            undone: { total: 2, entries: [{ avatar: 'u.png', world: 'Una Lore', name: 'Una' }, { avatar: 'v.png', world: 'Vic Lore', name: 'Vic' }] },
             noWorld: { total: 2538, entries: [{ avatar: 'n.png', world: 'Nowhere', reason: 'world-missing', name: 'Nomad' }] },
             hasReport: true,
         }]);
@@ -49,7 +50,11 @@ test.describe('boot-migration notice', () => {
         await expect(toast).toContainText('Ghost 0: its lorebook Lost 0 couldn\'t be read');
         await expect(toast).toContainText('Ghost 18');
         await expect(toast).toContainText('and 4 more.');
-        await expect(toast).toContainText('2538 character(s) link a lorebook that isn\'t in your worlds folder, so there was nothing to undo for them. They weren\'t changed.');
+        await expect(toast).toContainText('2 character(s) use their own embedded lorebook again, instead of the separate lorebook file it had been copied into:');
+        // The 20 names one notice shows are already used by the cards above, so these two are only counted.
+        await expect(toast).toContainText('copied into:and 2 more.');
+        await expect(toast).not.toContainText('2538');
+        await expect(toast).not.toContainText('Nomad');
         await expect(toast.locator('a', { hasText: 'Download the full list' })).toHaveAttribute('href', '/api/migrations/report/unimport-embedded-lore');
         await expect(toast).not.toContainText('Ghost 19');
         await expect(toast).not.toContainText('server console');

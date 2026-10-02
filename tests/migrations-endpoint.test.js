@@ -109,7 +109,7 @@ describe('/api/migrations', () => {
                 version,
                 skipped: { total: 1, entries: [{ avatar: 'Named.png', world: 'Lost', reason: 'world-unreadable', name: 'Named Person' }] },
                 failing: { total: 1, entries: [{ avatar: 'Gone.png', world: 'W', name: null }] },
-                noWorld: { total: 0, entries: [] },
+                undone: { total: 0, entries: [] },
                 hasReport: false,
             }],
         });

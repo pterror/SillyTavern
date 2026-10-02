@@ -345,13 +345,15 @@ async function reportOrphanedWorlds(directories, report) {
  */
 
 /**
- * The finished line's summary, in plain words.
+ * The finished line's summary, in plain words. Cards linking a World file that doesn't exist aren't mentioned: nothing
+ * was or could be done to them. The report's path is named only when the line says something happened to a card.
  * @param {PassCounts} counts
  * @param {{ apply: boolean, reportOnly: boolean }} mode
+ * @param {string} reportPath
  * @returns {string}
  */
-function summary(counts, { apply, reportOnly }) {
-    const { safe, migrated, failed, ambiguous, skipped, noWorld } = counts;
+function summary(counts, { apply, reportOnly }, reportPath) {
+    const { safe, migrated, failed, ambiguous, skipped } = counts;
     const parts = [];
     if (reportOnly) parts.push('report only, nothing written');
     else if (!apply) parts.push(`dry run, nothing written: ${safe} would be undone`);
@@ -359,8 +361,8 @@ function summary(counts, { apply, reportOnly }) {
     if (failed > 0) parts.push(`${failed} couldn't be written`);
     if (skipped > 0) parts.push(`${skipped} couldn't be checked`);
     if (ambiguous > 0) parts.push(`${ambiguous} left alone because they can't be told apart safely`);
-    if (noWorld > 0) parts.push(`${noWorld} link a lorebook that isn't in the worlds folder`);
-    return parts.join(', ');
+    const anything = failed > 0 || skipped > 0 || ambiguous > 0 || (reportOnly ? false : apply ? migrated > 0 : safe > 0);
+    return anything ? `${parts.join(', ')}. Full list: ${reportPath}` : 'nothing to undo';
 }
 
 /**
@@ -381,9 +383,12 @@ async function runPass(directories, { apply, reportOnly, log, report, progress, 
         counts.ambiguous += findings.ambiguous.length;
         for (const card of findings.skipped) {
             report.add(skippedLine(card.avatar, card.worldName, card.reason, card.detail));
-            notice.addSkipped({ avatar: card.avatar, world: card.worldName, reason: card.reason });
-            if (card.reason === 'world-missing') counts.noWorld++;
-            else counts.skipped++;
+            if (card.reason === 'world-missing') {
+                counts.noWorld++;
+            } else {
+                counts.skipped++;
+                notice.addSkipped({ avatar: card.avatar, world: card.worldName, reason: card.reason });
+            }
         }
         for (const { avatar, worldName } of findings.notLinked) {
             report.add(`nothing to do: ${avatar} is listed as linking "${worldName}", but its card doesn't link it`);
@@ -401,6 +406,7 @@ async function runPass(directories, { apply, reportOnly, log, report, progress, 
             const outcome = await unimportOne(directories, candidate, log, report, writeCard);
             if (outcome === 'unimported') {
                 counts.migrated++;
+                notice.addUndone({ avatar: candidate.avatar, world: candidate.worldName });
             } else if (outcome === 'not-linked') {
                 counts.notLinked++;
             } else {
@@ -463,7 +469,7 @@ export async function run(directories, options = {}) {
     }
     await report.close();
 
-    progress.finish(`${summary(counts, { apply, reportOnly: false })}. Full list: ${report.path}`);
+    progress.finish(summary(counts, { apply, reportOnly: false }, report.path));
     return { ...counts, orphanedWorlds, reportPath: report.path };
 }
 
@@ -473,7 +479,7 @@ export async function run(directories, options = {}) {
  * @param {string} avatar
  * @param {(line: string) => void} log
  * @param {typeof writeUnimportedCard} writeCard
- * @returns {Promise<{ kind: 'unimported' } | { kind: 'resolved' } | { kind: 'skipped', worldName: string, reason: SkippedCard['reason'] } | { kind: 'failed', worldName: string }>}
+ * @returns {Promise<{ kind: 'unimported', worldName: string } | { kind: 'resolved' } | { kind: 'skipped', worldName: string, reason: SkippedCard['reason'] } | { kind: 'failed', worldName: string }>}
  */
 async function retryOne(directories, avatar, log, writeCard) {
     const avatarPath = path.join(directories.characters, avatar);
@@ -542,7 +548,7 @@ async function retryOne(directories, avatar, log, writeCard) {
         return { kind: 'resolved' };
     }
     const outcome = await unimportOne(directories, findings.safe[0], log, NO_REPORT, writeCard);
-    if (outcome === 'unimported') return { kind: 'unimported' };
+    if (outcome === 'unimported') return { kind: 'unimported', worldName };
     if (outcome === 'not-linked') return { kind: 'resolved' };
     return { kind: 'failed', worldName };
 }
@@ -580,7 +586,8 @@ async function retryPending(directories, { log, writeCard }) {
             } else {
                 if (outcome.kind === 'unimported') {
                     migrated++;
-                } else if (outcome.kind === 'skipped') {
+                    notice.addUndone({ avatar, world: outcome.worldName });
+                } else if (outcome.kind === 'skipped' && outcome.reason !== 'world-missing') {
                     skipped++;
                     notice.addSkipped({ avatar, world: outcome.worldName, reason: outcome.reason });
                 } else {
@@ -602,7 +609,7 @@ async function retryPending(directories, { log, writeCard }) {
     let value;
     if (merged === null) {
         value = previousRaw === null ? undefined : null;
-    } else if (previous !== null && JSON.stringify({ skipped: merged.skipped, failing: merged.failing, noWorld: merged.noWorld }) === JSON.stringify({ skipped: previous.skipped, failing: previous.failing, noWorld: previous.noWorld })) {
+    } else if (previous !== null && JSON.stringify(merged) === JSON.stringify({ skipped: previous.skipped, failing: previous.failing, undone: previous.undone })) {
         value = undefined;
     } else {
         value = serializeNotice(previous, merged);
@@ -700,7 +707,7 @@ export async function runOnceAtBoot(directories, options = {}) {
         }
         await replaceNotice(directories, NOTICE_ID, notice);
         await markMigrationComplete(directories, SKIPPED_REPORTED_KEY);
-        result.progress.finish(`${summary(result.counts, { apply: false, reportOnly: true })}. Full list: ${result.report.path}`);
+        result.progress.finish(summary(result.counts, { apply: false, reportOnly: true }, result.report.path));
         return { status: 'reported', result: result.counts };
     }
 
@@ -719,7 +726,9 @@ export async function runOnceAtBoot(directories, options = {}) {
         if (!(await hasMigrationPending(directories, NOTICE_ID))) {
             await markMigrationComplete(directories, BOOT_MIGRATION_KEY);
         }
-        log(color.green(`[unimport-embedded-lore] retried ${result.retried} card(s) that couldn't be written before: ${result.migrated} undone, ${result.failed} still couldn't be written (tried again next start), ${result.skipped} couldn't be checked, ${result.resolved} no longer need it.`));
+        if (result.migrated > 0 || result.failed > 0 || result.skipped > 0) {
+            log(color.green(`[unimport-embedded-lore] retried ${result.retried} card(s) that couldn't be written before: ${result.migrated} undone, ${result.failed} still couldn't be written (tried again next start), ${result.skipped} couldn't be checked, ${result.resolved} no longer need it.`));
+        }
         return { status: 'retried', result };
     }
 
@@ -748,7 +757,7 @@ export async function runOnceAtBoot(directories, options = {}) {
     if (!(await hasMigrationPending(directories, NOTICE_ID))) {
         await markMigrationComplete(directories, BOOT_MIGRATION_KEY);
     }
-    result.progress.finish(`${summary(result.counts, { apply: true, reportOnly: false })}. Full list: ${result.report.path}`);
+    result.progress.finish(summary(result.counts, { apply: true, reportOnly: false }, result.report.path));
     return { status: 'ran', result: { ...result.counts, orphanedWorlds: result.orphanedWorlds } };
 }
 
