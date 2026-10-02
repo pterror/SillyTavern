@@ -689,6 +689,19 @@ const SCHEMA_SQL = `
         avatar TEXT NOT NULL,
         PRIMARY KEY (job, avatar)
     );
+
+    -- A user's saved views of the character list: a name and the view object the page lists by
+    -- (public/scripts/character-view.js), in the user's own order. views_version in meta goes up on every write, so a
+    -- page can ask whether anything changed.
+    CREATE TABLE IF NOT EXISTS saved_views (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        name_fold  TEXT NOT NULL,
+        view_json  TEXT NOT NULL,
+        position   REAL NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_saved_views_position ON saved_views(position, id);
 `;
 
 const UPSERT_SQL = `
@@ -13463,3 +13476,212 @@ export async function getChangesSince(directories, sinceSeq, { limit } = {}) {
 
     return { seq: lastSeq ?? maxSeq, changes, truncated: false, hasMore };
 }
+
+
+// Emitted on characterChangeEmitter as (root) when a store's saved views changed.
+export const SAVED_VIEWS_EVENT = 'saved-views';
+
+/** Longest view name and view object a saved view keeps. */
+export const SAVED_VIEW_NAME_MAX = 200;
+export const SAVED_VIEW_JSON_MAX = 64 * 1024;
+/** Most views one list read answers. */
+export const SAVED_VIEWS_PAGE_MAX = 200;
+
+/**
+ * @typedef {{ id: string, name: string, view: object, position: number, updatedAt: number }} SavedView
+ */
+
+/** @param {{ id: string, name: string, view_json: string, position: number, updated_at: number }} row @returns {SavedView} */
+function savedViewFromRow(row) {
+    return { id: row.id, name: row.name, view: JSON.parse(row.view_json), position: row.position, updatedAt: row.updated_at };
+}
+
+/** @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db */
+function readSavedViewsVersion(db) {
+    const row = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = \'views_version\''));
+    return Number(row?.value ?? 0);
+}
+
+/**
+ * Marks a write to the saved views, in the caller's transaction.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function bumpSavedViewsVersion(db) {
+    db.run('INSERT INTO meta (key, value) VALUES (\'views_version\', \'1\') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1');
+}
+
+/**
+ * One page of the user's saved views in their order, those whose names hold `contains` when it is given.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ contains?: string, after?: { position: number, id: string } | null, limit?: number }} [options]
+ * @returns {Promise<{ version: number, views: SavedView[], more: boolean } | null>} null if the store is unavailable.
+ */
+export async function listSavedViews(directories, { contains = '', after = null, limit = SAVED_VIEWS_PAGE_MAX } = {}) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const take = Math.max(1, Math.min(Math.trunc(limit) || SAVED_VIEWS_PAGE_MAX, SAVED_VIEWS_PAGE_MAX));
+    const needle = foldName(String(contains).trim());
+    const clauses = [];
+    /** @type {Record<string, unknown>} */
+    const params = { limit: take + 1 };
+    if (after) {
+        clauses.push('(position > @afterPosition OR (position = @afterPosition AND id > @afterId))');
+        params.afterPosition = after.position;
+        params.afterId = after.id;
+    }
+    if (needle) {
+        clauses.push('instr(name_fold, @needle) > 0');
+        params.needle = needle;
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const version = readSavedViewsVersion(entry.db);
+    const rows = /** @type {any[]} */ (entry.db.readBounded(
+        `SELECT id, name, view_json, position, updated_at FROM saved_views ${where} ORDER BY position, id LIMIT @limit`, params, take + 1));
+    return { version, views: rows.slice(0, take).map(savedViewFromRow), more: rows.length > take };
+}
+
+/**
+ * One saved view, or null when no view has the id.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @returns {Promise<SavedView | null | undefined>} undefined if the store is unavailable.
+ */
+export async function getSavedView(directories, id) {
+    const entry = await getEntry(directories);
+    if (!entry) return undefined;
+    const row = /** @type {any} */ (entry.db.get('SELECT id, name, view_json, position, updated_at FROM saved_views WHERE id = @id', { id }));
+    return row ? savedViewFromRow(row) : null;
+}
+
+/**
+ * Saves a new view after the user's others.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {{ name: string, view: object }} params
+ * @returns {Promise<SavedView | null>} null if the store is unavailable.
+ */
+export async function createSavedView(directories, { name, view }) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    let position = 0;
+    entry.db.transaction(() => {
+        const last = /** @type {{ position: number } | undefined} */ (entry.db.get('SELECT position FROM saved_views ORDER BY position DESC, id DESC LIMIT 1'));
+        position = last ? Math.floor(last.position) + 1 : 1;
+        entry.db.run('INSERT INTO saved_views (id, name, name_fold, view_json, position, updated_at) VALUES (@id, @name, @fold, @json, @position, @now)',
+            { id, name, fold: foldName(name), json: JSON.stringify(view), position, now });
+        bumpSavedViewsVersion(entry.db);
+    });
+    characterChangeEmitter.emit(SAVED_VIEWS_EVENT, directories.root);
+    return { id, name, view, position, updatedAt: now };
+}
+
+/**
+ * Changes one view's name or view object. Writes nothing when neither differs.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {{ name?: string, view?: object }} change
+ * @returns {Promise<SavedView | null | undefined>} null when no view has the id; undefined if the store is unavailable.
+ */
+export async function changeSavedView(directories, id, { name, view }) {
+    const entry = await getEntry(directories);
+    if (!entry) return undefined;
+    /** @type {{ result: SavedView | null, wrote: boolean }} */
+    const done = { result: null, wrote: false };
+    entry.db.transaction(() => {
+        done.wrote = false;
+        done.result = null;
+        const row = /** @type {any} */ (entry.db.get('SELECT id, name, view_json, position, updated_at FROM saved_views WHERE id = @id', { id }));
+        if (!row) return;
+        const nextName = name ?? row.name;
+        const nextJson = view !== undefined ? JSON.stringify(view) : row.view_json;
+        if (nextName === row.name && nextJson === row.view_json) {
+            done.result = savedViewFromRow(row);
+            return;
+        }
+        const now = Date.now();
+        entry.db.run('UPDATE saved_views SET name = @name, name_fold = @fold, view_json = @json, updated_at = @now WHERE id = @id',
+            { id, name: nextName, fold: foldName(nextName), json: nextJson, now });
+        bumpSavedViewsVersion(entry.db);
+        done.result = { id, name: nextName, view: JSON.parse(nextJson), position: row.position, updatedAt: now };
+        done.wrote = true;
+    });
+    if (done.wrote) characterChangeEmitter.emit(SAVED_VIEWS_EVENT, directories.root);
+    return done.result;
+}
+
+/**
+ * Deletes one view.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @returns {Promise<boolean | null>} false when no view had the id; null if the store is unavailable.
+ */
+export async function deleteSavedView(directories, id) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const done = { deleted: false };
+    entry.db.transaction(() => {
+        done.deleted = entry.db.run('DELETE FROM saved_views WHERE id = @id', { id }).changes > 0;
+        if (done.deleted) bumpSavedViewsVersion(entry.db);
+    });
+    if (done.deleted) characterChangeEmitter.emit(SAVED_VIEWS_EVENT, directories.root);
+    return done.deleted;
+}
+
+/**
+ * Moves one view to just before or just after another. Its position goes halfway between its new neighbours; when
+ * they are too close for that, the views from the anchor on are numbered apart again.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {{ anchor: string, side: 'before' | 'after' }} where
+ * @returns {Promise<'moved' | 'unchanged' | 'missing' | null>} 'missing' when either view doesn't exist; null if the
+ *   store is unavailable.
+ */
+export async function moveSavedView(directories, id, { anchor, side }) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    /** @type {{ outcome: 'moved' | 'unchanged' | 'missing' }} */
+    const done = { outcome: 'missing' };
+    entry.db.transaction(() => {
+        done.outcome = 'missing';
+        if (id === anchor) {
+            done.outcome = 'unchanged';
+            return;
+        }
+        const moving = /** @type {{ position: number } | undefined} */ (entry.db.get('SELECT position FROM saved_views WHERE id = @id', { id }));
+        const at = /** @type {{ position: number } | undefined} */ (entry.db.get('SELECT position FROM saved_views WHERE id = @anchor', { anchor }));
+        if (!moving || !at) return;
+        const beside = /** @type {{ id: string } | undefined} */ (side === 'before'
+            ? entry.db.get('SELECT id FROM saved_views WHERE position < @p OR (position = @p AND id < @anchor) ORDER BY position DESC, id DESC LIMIT 1', { p: at.position, anchor })
+            : entry.db.get('SELECT id FROM saved_views WHERE position > @p OR (position = @p AND id > @anchor) ORDER BY position, id LIMIT 1', { p: at.position, anchor }));
+        if (beside?.id === id) {
+            done.outcome = 'unchanged';
+            return;
+        }
+        const neighbour = /** @type {{ id: string, position: number } | undefined} */ (side === 'before'
+            ? entry.db.get('SELECT id, position FROM saved_views WHERE (position < @p OR (position = @p AND id < @anchor)) AND id <> @id ORDER BY position DESC, id DESC LIMIT 1', { p: at.position, anchor, id })
+            : entry.db.get('SELECT id, position FROM saved_views WHERE (position > @p OR (position = @p AND id > @anchor)) AND id <> @id ORDER BY position, id LIMIT 1', { p: at.position, anchor, id }));
+        const low = side === 'before' ? (neighbour ? neighbour.position : at.position - 2) : at.position;
+        const high = side === 'before' ? at.position : (neighbour ? neighbour.position : at.position + 2);
+        let position = (low + high) / 2;
+        if (!(position > low && position < high)) {
+            // Too close to split: space out every view from `low` on by whole numbers, then split the new gap.
+            let next = Math.floor(low) + 2;
+            for (const row of /** @type {{ id: string }[]} */ (entry.db.readBounded(
+                'SELECT id FROM saved_views WHERE position >= @low AND id <> @id ORDER BY position, id LIMIT @cap', { low, id, cap: SAVED_VIEWS_RESPACE_MAX }, SAVED_VIEWS_RESPACE_MAX))) {
+                entry.db.run('UPDATE saved_views SET position = @next WHERE id = @rid', { next, rid: row.id });
+                next += 2;
+            }
+            const anchorNow = /** @type {{ position: number }} */ (entry.db.get('SELECT position FROM saved_views WHERE id = @anchor', { anchor }));
+            position = side === 'before' ? anchorNow.position - 1 : anchorNow.position + 1;
+        }
+        entry.db.run('UPDATE saved_views SET position = @position WHERE id = @id', { id, position });
+        bumpSavedViewsVersion(entry.db);
+        done.outcome = 'moved';
+    });
+    if (done.outcome === 'moved') characterChangeEmitter.emit(SAVED_VIEWS_EVENT, directories.root);
+    return done.outcome;
+}
+
+/** The most views a respace renumbers in one move; a user's own saved views stay well under it. */
+const SAVED_VIEWS_RESPACE_MAX = 100000;

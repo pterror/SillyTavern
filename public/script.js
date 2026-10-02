@@ -14,6 +14,7 @@ import {
 import { favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
 import { exposedCharacters, charactersStore, this_avatar, this_chid, setCharacterId, holdCharacter, keepHeldCharacters, selectCharacterById, resolveCharacterRef, resolveCharacterRefPair, CHARACTER_REF_MISMATCH } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, getEntitiesList, findCharacterListPage, getOneCharacter, getCharacterSource, seedCharactersFromCache, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, hasActiveCharacterSearch, isCharacterListShowing, onSearchIndexUpdated, onCharacterListShown, entitiesFilter, characterToEntity, groupToEntity, tagToEntity, DEFAULT_PRINT_TIMEOUT } from './scripts/character-list.js';
+import { onSavedViewsChanged } from './scripts/saved-views.js';
 // Re-exported for existing importers (upstream's script.js exports these too). Extensions get the characters
 // they are shown, not every character the page holds.
 export { exposedCharacters as characters, charactersStore, selectCharacterById, setCharacterId, this_chid };
@@ -1023,6 +1024,10 @@ function setupCharacterChangeStream() {
             }
             if (message?.type === 'groups-changed') {
                 onEntityTagsChanged();
+                return;
+            }
+            if (message?.type === 'views-changed') {
+                void onSavedViewsChanged();
                 return;
             }
             if (message?.type === 'character-index-failed') {

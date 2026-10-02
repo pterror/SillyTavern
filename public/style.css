@@ -3602,6 +3602,81 @@ select option[disabled]:not(:checked) {
     opacity: 0.85;
 }
 
+.view_picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    max-width: 12em;
+    margin: 0;
+    padding: 3px 8px;
+}
+
+.view_picker_name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.view_picker_popover {
+    min-width: 18em;
+}
+
+.view_picker_list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+}
+
+.view_picker_row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    border-radius: 4px;
+}
+
+.view_picker_row:hover {
+    background-color: var(--white20a);
+}
+
+.view_picker_row.current .view_picker_row_name {
+    font-weight: bold;
+}
+
+.view_picker_row_name {
+    flex: 1;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.view_picker_action {
+    cursor: pointer;
+    opacity: 0.6;
+}
+
+.view_picker_action:hover,
+.view_picker_action:focus-visible {
+    opacity: 1;
+}
+
+.view_picker_save {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    padding-top: 4px;
+}
+
+.view_picker_save .menu_button,
+.view_picker_row .menu_button {
+    margin: 0;
+    white-space: nowrap;
+}
+
 .view_range_editor .view_range_row {
     display: flex;
     align-items: center;

@@ -12,6 +12,7 @@ import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filt
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
+import { initSavedViews, restoreCurrentView } from './saved-views.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -1607,8 +1608,14 @@ function showSearchBackend(searchBackend) {
 }
 
 export function initCharacterSearch() {
-    const debouncedCharacterSearch = debounce((/** @type {Partial<import('./character-view.js').CharacterView>} */ view) => {
-        setCharacterView(view, { fromSearchBox: true });
+    // Typing in the box waits for a pause; a change made any other way goes out at once and drops a pending one, which
+    // would carry what the pills were before it.
+    /** @type {Partial<import('./character-view.js').CharacterView> | null} */
+    let pendingTypedView = null;
+    const debouncedCharacterSearch = debounce(() => {
+        const view = pendingTypedView;
+        pendingTypedView = null;
+        if (view) setCharacterView(view, { fromSearchBox: true });
     });
 
     const searchForm = $('#form_character_search_form');
@@ -1623,7 +1630,15 @@ export function initCharacterSearch() {
         input: searchInput,
         getView: getCharacterView,
         translate: t,
-        setView: (view, fromSearchBox) => fromSearchBox ? debouncedCharacterSearch(view) : setCharacterView(view, { fromSearchBox: true }),
+        setView: (view, fromSearchBox) => {
+            if (fromSearchBox) {
+                pendingTypedView = view;
+                debouncedCharacterSearch();
+                return;
+            }
+            pendingTypedView = null;
+            setCharacterView(view, { fromSearchBox: true });
+        },
         searchTags: async (term) => {
             const page = await searchTagsByName(term);
             return page ? page.rows.map(tag => ({ id: String(tag.id), name: String(tag.name) })) : null;
@@ -1636,6 +1651,15 @@ export function initCharacterSearch() {
     });
     showViewInSearchBox();
     $('#character_search_bar_wrapper').after(makeSearchGuide());
+    initSavedViews({
+        before: $('#character_search_bar_wrapper').get(0),
+        getView: getCharacterView,
+        setView: view => setCharacterView(view),
+        sameView,
+        headers: () => getRequestHeaders(),
+        storage: accountStorage,
+        translate: t,
+    });
 
     searchButton.on('click', function () {
         const newVisibility = !searchForm.is(':visible');
@@ -1648,6 +1672,7 @@ export function initCharacterSearch() {
     });
 
     eventSource.on(event_types.APP_READY, () => {
+        void restoreCurrentView();
         const isVisible = accountStorage.getItem(storageKey) === 'true';
         searchForm.toggle(isVisible);
         searchButton.toggleClass('active', isVisible);
