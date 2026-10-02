@@ -172,17 +172,16 @@ describe('columns at open', () => {
         expect(byName.get('usage_count')).toMatchObject({ type: 'INTEGER', dflt_value: null, notnull: 0 });
     });
 
-    test('an old store gets the columns (NULL on its rows) and the new trigger bodies, and a later open writes no schema', async () => {
+    test('an old store gets the columns (NULL on its rows) and loses its tag usage triggers, and a later open writes no schema', async () => {
         await openStore();
-        const newTriggers = withRawDb(db => [...db.prepare('SELECT name, sql FROM sqlite_master WHERE type = \'trigger\' AND name IN (\'trg_character_tags_ai\', \'trg_character_tags_ad\', \'trg_group_tags_ai\', \'trg_group_tags_ad\') ORDER BY name').iterate()]);
-        expect(newTriggers).toHaveLength(4);
+        const usageTriggers = () => withRawDb(db => [...db.prepare('SELECT name FROM sqlite_master WHERE type = \'trigger\' AND name IN (\'trg_character_tags_ai\', \'trg_character_tags_ad\', \'trg_group_tags_ai\', \'trg_group_tags_ad\') ORDER BY name').iterate()]);
+        expect(usageTriggers()).toEqual([]);
         metadataDb.disposeMetadataStores();
 
         withRawDb(db => {
             // A store from before the columns has none of the triggers that read them either.
             for (const name of ['trg_tags_pending_places_ad', 'trg_tags_pending_places_name_key']) db.exec(`DROP TRIGGER ${name}`);
             for (const name of ['sort_order', 'folder_type', 'is_folder', 'usage_count']) db.exec(`ALTER TABLE tags DROP COLUMN ${name}`);
-            for (const { name } of newTriggers) db.exec(`DROP TRIGGER ${name}`);
             db.exec(`
                 CREATE TRIGGER IF NOT EXISTS trg_character_tags_ai AFTER INSERT ON character_tags BEGIN
                     INSERT INTO tag_usage (tag_id, count) VALUES (NEW.tag_id, 1)
@@ -200,15 +199,15 @@ describe('columns at open', () => {
                 END;
             `);
             db.prepare('INSERT INTO tags (id, data, name_key) VALUES (?, ?, ?)').run('old', JSON.stringify({ id: 'old', name: 'Old', sort_order: 4 }), 'old');
+            // Counted by the old store's trigger.
             db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('a.png', 'old');
         });
 
         await openStore();
         expect(derived('old')).toEqual({ sort_order: null, folder_type: null, is_folder: null, usage_count: null });
-        const migrated = withRawDb(db => [...db.prepare('SELECT name, sql FROM sqlite_master WHERE type = \'trigger\' AND name IN (\'trg_character_tags_ai\', \'trg_character_tags_ad\', \'trg_group_tags_ai\', \'trg_group_tags_ad\') ORDER BY name').iterate()]);
-        expect(migrated).toEqual(newTriggers);
+        expect(usageTriggers()).toEqual([]);
 
-        // The new body sets usage_count from tag_usage, so an unfilled row gets its exact count, not NULL + 1.
+        // An assignment sets usage_count from tag_usage, so an unfilled row gets its exact count, not NULL + 1.
         await seedCharacter('b.png');
         expect(await metadataDb.assignEntityTag(directories, 'b.png', 'old')).toBe('ok');
         expect(usageCount('old')).toBe(2);

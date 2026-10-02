@@ -447,8 +447,8 @@ const SCHEMA_SQL = `
     );
     CREATE INDEX IF NOT EXISTS idx_character_tags_tag ON character_tags(tag_id, character_id);
 
-    -- Maintained by the TAG_USAGE_TRIGGERS on character_tags and group_tags, not by application code, so it can
-    -- never drift from them regardless of which code path inserts/deletes a row there.
+    -- Every tag row's tag counted, kept by the only writers of character_tags and group_tags (insertTagRowSync(),
+    -- deleteTagRowSync()) in the same transaction as the row.
     CREATE TABLE IF NOT EXISTS tag_usage (
         tag_id TEXT PRIMARY KEY,
         count  INTEGER NOT NULL
@@ -513,7 +513,8 @@ const SCHEMA_SQL = `
         file_name TEXT
     );
 
-    -- Exact counts of what queryEntities() counts, kept by the triggers ENTITY_COUNT_TRIGGERS_SQL creates. kind is
+    -- Exact counts of what queryEntities() counts, kept by the writers of the entity and tag rows (countEntityRowSync(),
+    -- insertTagRowSync(), deleteTagRowSync()) in the same transaction. kind is
     -- 'character' or 'group'. entity_counts holds the rows of characters / groups by fav. entity_tag_counts holds the
     -- tag rows whose entity row exists, by that entity's fav; a group_tags row whose group_id ends in .png counts for
     -- no tag, as GROUP_TAG_ROW_IS_GROUP_SQL keeps it out of the tag filter. Tag rows are counted as they are stored:
@@ -998,7 +999,7 @@ function migrateGroupsColumns(db, directories) {
                     const group = JSON.parse(raw);
                     const stat = fs.statSync(filePath);
                     inItemSavepoint(db, () => {
-                        const changed = writeRowIfChanged(db, 'groups', { id }, {
+                        const changed = writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.group, id, {
                             name: group.name ?? '',
                             name_fold: foldName(group.name),
                             fav: normalizeFav(group.fav) ? 1 : 0,
@@ -1251,7 +1252,7 @@ function migrateCardJsonColumn(db, directories) {
 
     // A trigger that names `characters` makes the RENAME below fail while the table is gone. The rows are copied
     // unchanged, so the counters and the tag sort rows stay right; getEntry() creates the triggers again after this.
-    db.exec(DROP_ENTITY_COUNT_TRIGGERS_SQL);
+    dropOldCounterTriggers(db);
     db.exec(DROP_TAG_SORT_TRIGGERS_SQL);
     db.exec(DROP_RANDOM_RANK_TRIGGERS_SQL);
     db.exec(DROP_NAME_ORDER_TRIGGERS_SQL);
@@ -1310,43 +1311,8 @@ function migrateTagDerivedColumns(db) {
     }
 }
 
-// tags.usage_count is set from tag_usage.count in the same trigger, so it equals that count for its id at every
-// moment, whatever it held before. Kept as stored in sqlite_master (no IF NOT EXISTS, no trailing ';'), so
-// replaceTagUsageTriggers() can tell an old body from this one.
-const TAG_USAGE_TRIGGERS = [
-    ['trg_character_tags_ai', 'AFTER INSERT ON character_tags', 'NEW'],
-    ['trg_character_tags_ad', 'AFTER DELETE ON character_tags', 'OLD'],
-    ['trg_group_tags_ai', 'AFTER INSERT ON group_tags', 'NEW'],
-    ['trg_group_tags_ad', 'AFTER DELETE ON group_tags', 'OLD'],
-].map(([name, when, row]) => ({
-    name,
-    sql: `CREATE TRIGGER ${name} ${when} BEGIN
-    ${row === 'NEW'
-        ? 'INSERT INTO tag_usage (tag_id, count) VALUES (NEW.tag_id, 1) ON CONFLICT(tag_id) DO UPDATE SET count = count + 1;'
-        : 'UPDATE tag_usage SET count = count - 1 WHERE tag_id = OLD.tag_id;'}
-    UPDATE tags SET usage_count = COALESCE((SELECT count FROM tag_usage WHERE tag_id = ${row}.tag_id), 0) WHERE id = ${row}.tag_id;
-END`,
-}));
-
-/**
- * Creates each TAG_USAGE_TRIGGERS trigger that is missing or has another body. Runs after
- * migrateTagDerivedColumns(), since the bodies write tags.usage_count.
- * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
- */
-function replaceTagUsageTriggers(db) {
-    const isCurrent = (/** @type {{ name: string, sql: string }} */ trigger) => {
-        const row = /** @type {{ sql: string } | undefined} */ (db.get('SELECT sql FROM sqlite_master WHERE type = \'trigger\' AND name = @name', { name: trigger.name }));
-        return row?.sql === trigger.sql;
-    };
-    if (TAG_USAGE_TRIGGERS.every(isCurrent)) return;
-    db.transaction(() => {
-        for (const trigger of TAG_USAGE_TRIGGERS) {
-            if (isCurrent(trigger)) continue;
-            db.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
-            db.exec(trigger.sql);
-        }
-    });
-}
+/** The triggers that kept tag_usage and tags.usage_count before insertTagRowSync() / deleteTagRowSync() did. */
+const OLD_TAG_USAGE_TRIGGER_NAMES = ['trg_character_tags_ai', 'trg_character_tags_ad', 'trg_group_tags_ai', 'trg_group_tags_ad'];
 
 /**
  * The CREATE TABLE of tag_pending_moves (see SCHEMA_SQL), under `name`; a declaration, so SCHEMA_SQL can use it.
@@ -1540,9 +1506,7 @@ async function getEntry(directories) {
     migrateTagReorderPassColumn(db);
     migrateTagPendingMovesValueColumn(db);
     replaceTagPendingPlaceTriggers(db);
-    replaceTagUsageTriggers(db);
-    // Last: the group triggers read groups.fav, which migrateGroupsColumns() adds to an old table.
-    db.exec(ENTITY_COUNT_TRIGGERS_SQL);
+    dropOldCounterTriggers(db);
     db.exec(TAG_SORT_TABLES_SQL);
     db.exec(TAG_SORT_TRIGGERS_SQL);
     db.exec(RANDOM_RANKS_TABLE_SQL);
@@ -1665,7 +1629,7 @@ function writeShallowJson(db, id, shallow, fields, extraColumns = {}) {
     const changed = changedValues(stored, compared);
     if (Object.keys(changed).length === 0) return;
     const changeSeq = insertChange(db, id, 'upsert', JSON.stringify(changeFields));
-    writeRowIfChanged(db, 'characters', { id }, { ...changed, change_seq: Number(changeSeq) }, { current: stored });
+    writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, id, { ...changed, change_seq: Number(changeSeq) }, stored);
 }
 
 /**
@@ -1848,12 +1812,13 @@ function writeRowSync(db, row, tagIds) {
         const { stored, changed } = rowWriteChangesSync(db, row);
         if (Object.keys(changed).length === 0) return;
         const changeSeq = Number(insertChange(db, row.id, 'upsert', null));
-        writeRowIfChanged(db, 'characters', { id: row.id }, { ...changed, change_seq: changeSeq }, { current: stored });
+        writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, row.id, { ...changed, change_seq: changeSeq }, stored);
         return;
     }
 
     const lastInsertRowid = insertChange(db, row.id, 'upsert', null);
     db.run(UPSERT_SQL, { ...row, changeSeq: Number(lastInsertRowid) });
+    countEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, row.id, row.fav, 1);
 
     queueChatStatsReconcileSync(db, 'character', row.id);
 
@@ -1861,7 +1826,7 @@ function writeRowSync(db, row, tagIds) {
         const deletions = readTagDeletionsSync(db);
         const { tagIds: toAssign, dropped } = resolveTagIdsToAssign(tagIds, deletions);
         for (const tagId of toAssign) {
-            db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: row.id, tagId });
+            insertTagRowSync(db, 'character_tags', row.id, tagId);
         }
         warnDeletedTagsNotAssigned(row.id, dropped);
         // row.shallow_json was built from the unresolved ids.
@@ -1874,9 +1839,11 @@ function writeRowSync(db, row, tagIds) {
  * @param {string} id
  */
 function deleteRowSync(db, id) {
+    const stored = /** @type {{ fav: number } | undefined} */ (db.get('SELECT fav FROM characters WHERE id = @id', { id }));
     let deleted = db.run('DELETE FROM characters WHERE id = @id', { id }).changes;
+    if (stored && deleted > 0) countEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.character, id, stored.fav, -1);
     db.run('DELETE FROM activity_pending WHERE kind = \'character\' AND id = @id', { id });
-    deleted += db.run('DELETE FROM character_tags WHERE character_id = @id', { id }).changes;
+    deleted += deleteEntityTagRowsSync(db, 'character_tags', id);
     deleted += db.run('DELETE FROM tag_names_held WHERE character_id = @id', { id }).changes;
     // Cascades: a local_import_mtimes row recorded as duplicate_of this character must not outlive it.
     deleted += db.run('DELETE FROM local_import_mtimes WHERE duplicate_of = @id', { id }).changes;
@@ -2376,7 +2343,7 @@ export async function renameCharacterRow(directories, oldAvatar, newAvatar) {
     if (oldTagIds.length > 0) {
         entry.db.transaction(() => {
             for (const tagId of oldTagIds) {
-                entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@newAvatar, @tagId)', { newAvatar, tagId });
+                insertTagRowSync(entry.db, 'character_tags', newAvatar, tagId);
             }
             syncShallowTagIdsFromTable(entry.db, newAvatar);
         });
@@ -4167,7 +4134,7 @@ export async function assignEntityTagReporting(directories, id, tagId) {
     entry.db.transaction(() => {
         result.found = false;
         if (type === 'character' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM characters WHERE id = @id', { id })))) {
-            entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@id, @tagId)', { id, tagId });
+            insertTagRowSync(entry.db, 'character_tags', id, tagId);
             const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
             if (charRow) {
                 const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id })), r => r.tag_id);
@@ -4177,7 +4144,7 @@ export async function assignEntityTagReporting(directories, id, tagId) {
             }
             result.found = true;
         } else if (type === 'group' && (/** @type {Record<string, unknown> | undefined} */ (entry.db.get('SELECT 1 FROM groups WHERE id = @id', { id })))) {
-            const inserted = entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@id, @tagId)', { id, tagId }).changes > 0;
+            const inserted = insertTagRowSync(entry.db, 'group_tags', id, tagId);
             const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM group_tags WHERE group_id = @id ORDER BY tag_id', { id })), r => r.tag_id);
             const digestSet = setGroupDigestTagIdsSync(entry.db, id, groupDigestTagIdsHash({ tag_ids: currentTagIds }));
             if (inserted || digestSet) insertGroupChange(entry.db, id);
@@ -4239,7 +4206,7 @@ export async function unassignEntityTag(directories, id, tagId) {
 
     entry.db.transaction(() => {
         if (type === 'group') {
-            const deleted = entry.db.run('DELETE FROM group_tags WHERE group_id = @id AND tag_id = @tagId', { id, tagId }).changes > 0;
+            const deleted = deleteTagRowSync(entry.db, 'group_tags', id, tagId);
             const digestSet = setGroupDigestTagIdsSync(
                 entry.db,
                 id,
@@ -4249,7 +4216,7 @@ export async function unassignEntityTag(directories, id, tagId) {
             return;
         }
 
-        entry.db.run('DELETE FROM character_tags WHERE character_id = @id AND tag_id = @tagId', { id, tagId });
+        deleteTagRowSync(entry.db, 'character_tags', id, tagId);
         const charRow = (/** @type {{ shallow_json: string } | undefined} */ (entry.db.get('SELECT shallow_json FROM characters WHERE id = @id', { id })));
         if (charRow) {
             const currentTagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (entry.db.iterate('SELECT tag_id FROM character_tags WHERE character_id = @id', { id })), r => r.tag_id);
@@ -4353,39 +4320,208 @@ const ENTITY_COUNT_KINDS = [
     { name: 'group', table: 'groups', tagTable: 'group_tags', entityColumn: 'group_id', tagRowCounts: groupTagRowIsGroupSql },
 ];
 
+/** @type {{ character: EntityCountKind, group: EntityCountKind }} */
+const ENTITY_COUNT_KIND_BY_NAME = { character: ENTITY_COUNT_KINDS[0], group: ENTITY_COUNT_KINDS[1] };
+
 /**
- * The triggers that keep the counters of one kind of entity.
- * @param {EntityCountKind} kind
- * @returns {{ name: string, sql: string }[]}
+ * @param {string} tagTable
+ * @returns {EntityCountKind}
  */
-function entityCountTriggers({ name, table, tagTable, entityColumn, tagRowCounts }) {
-    const filled = (/** @type {string} */ idSql) => `EXISTS (SELECT 1 FROM entity_count_fill WHERE kind = '${name}' AND (done = 1 OR ${idSql} <= upto))`;
-    const tagRowsOf = (/** @type {string} */ idSql) => `SELECT tag_id FROM ${tagTable} WHERE ${entityColumn} = ${idSql} AND ${tagRowCounts(entityColumn)}`;
-    const add = (/** @type {string} */ ref) => `
-        INSERT INTO entity_counts (kind, fav, count) VALUES ('${name}', ${ref}.fav, 1)
-            ON CONFLICT (kind, fav) DO UPDATE SET count = count + 1;
-        INSERT INTO entity_tag_counts (tag_id, kind, fav, count) SELECT tag_id, '${name}', ${ref}.fav, 1 FROM (${tagRowsOf(`${ref}.id`)}) WHERE true
-            ON CONFLICT (tag_id, kind, fav) DO UPDATE SET count = count + 1;`;
-    const remove = (/** @type {string} */ ref) => `
-        UPDATE entity_counts SET count = count - 1 WHERE kind = '${name}' AND fav = ${ref}.fav;
-        DELETE FROM entity_counts WHERE kind = '${name}' AND fav = ${ref}.fav AND count = 0;
-        UPDATE entity_tag_counts SET count = count - 1 WHERE kind = '${name}' AND fav = ${ref}.fav AND tag_id IN (${tagRowsOf(`${ref}.id`)});
-        DELETE FROM entity_tag_counts WHERE kind = '${name}' AND fav = ${ref}.fav AND count = 0 AND tag_id IN (${tagRowsOf(`${ref}.id`)});`;
-    const entityFav = (/** @type {string} */ idSql) => `(SELECT fav FROM ${table} WHERE id = ${idSql})`;
-    const triggers = [
-        [`trg_${table}_count_ai`, `AFTER INSERT ON ${table} WHEN ${filled('NEW.id')}`, add('NEW')],
-        [`trg_${table}_count_ad`, `AFTER DELETE ON ${table} WHEN ${filled('OLD.id')}`, remove('OLD')],
-        // Entity ids never change by UPDATE (a rename inserts the new row and deletes the old), so OLD.id = NEW.id.
-        [`trg_${table}_count_au_fav`, `AFTER UPDATE OF fav ON ${table} WHEN OLD.fav IS NOT NEW.fav AND ${filled('NEW.id')}`, remove('OLD') + add('NEW')],
-        // A tag row counts only while its entity row exists: the entity's insert and delete count its tag rows.
-        [`trg_${tagTable}_count_ai`, `AFTER INSERT ON ${tagTable} WHEN ${tagRowCounts(`NEW.${entityColumn}`)} AND ${filled(`NEW.${entityColumn}`)}`, `
-            INSERT INTO entity_tag_counts (tag_id, kind, fav, count) SELECT NEW.tag_id, '${name}', fav, 1 FROM ${table} WHERE id = NEW.${entityColumn}
-                ON CONFLICT (tag_id, kind, fav) DO UPDATE SET count = count + 1;`],
-        [`trg_${tagTable}_count_ad`, `AFTER DELETE ON ${tagTable} WHEN ${tagRowCounts(`OLD.${entityColumn}`)} AND ${filled(`OLD.${entityColumn}`)}`, `
-            UPDATE entity_tag_counts SET count = count - 1 WHERE tag_id = OLD.tag_id AND kind = '${name}' AND fav = ${entityFav(`OLD.${entityColumn}`)};
-            DELETE FROM entity_tag_counts WHERE tag_id = OLD.tag_id AND kind = '${name}' AND fav = ${entityFav(`OLD.${entityColumn}`)} AND count = 0;`],
-    ];
-    return triggers.map(([triggerName, when, body]) => ({ name: triggerName, sql: `CREATE TRIGGER IF NOT EXISTS ${triggerName} ${when} BEGIN ${body} END;` }));
+function entityCountKindOfTagTable(tagTable) {
+    if (tagTable === 'character_tags') return ENTITY_COUNT_KIND_BY_NAME.character;
+    if (tagTable === 'group_tags') return ENTITY_COUNT_KIND_BY_NAME.group;
+    throw new Error(`Not a tag table: ${tagTable}`);
+}
+
+/**
+ * Whether a tag row with this entity id counts for its tag (EntityCountKind.tagRowCounts, in JS).
+ * @param {EntityCountKind} kind
+ * @param {string} entityId
+ */
+function tagRowCountsFor(kind, entityId) {
+    return kind.name === 'character' || !String(entityId).endsWith('.png');
+}
+
+/**
+ * Whether the counters of `kind` cover `id` yet (entity_count_fill). Compared in SQL, so the order is the primary
+ * key's (BINARY, UTF-8 bytes), the order the fill walks.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind} kind
+ * @param {string} id
+ */
+function entityCountFilledSync(db, kind, id) {
+    return !!db.get('SELECT 1 AS ok FROM entity_count_fill WHERE kind = @kind AND (done = 1 OR @id <= upto)', { kind: kind.name, id });
+}
+
+/**
+ * Adds `n` (1 or -1) to one entity_counts counter; a counter that reaches 0 is removed.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind} kind
+ * @param {number} fav
+ * @param {1 | -1} n
+ */
+function addEntityCountSync(db, kind, fav, n) {
+    if (n > 0) {
+        db.run('INSERT INTO entity_counts (kind, fav, count) VALUES (@kind, @fav, 1) ON CONFLICT (kind, fav) DO UPDATE SET count = count + 1', { kind: kind.name, fav });
+        return;
+    }
+    db.run('UPDATE entity_counts SET count = count - 1 WHERE kind = @kind AND fav = @fav', { kind: kind.name, fav });
+    db.run('DELETE FROM entity_counts WHERE kind = @kind AND fav = @fav AND count = 0', { kind: kind.name, fav });
+}
+
+/**
+ * Adds `n` (1 or -1) to one entity_tag_counts counter; a counter that reaches 0 is removed.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} tagId
+ * @param {EntityCountKind} kind
+ * @param {number} fav
+ * @param {1 | -1} n
+ */
+function addEntityTagCountSync(db, tagId, kind, fav, n) {
+    const params = { tagId, kind: kind.name, fav };
+    if (n > 0) {
+        db.run(`INSERT INTO entity_tag_counts (tag_id, kind, fav, count) VALUES (@tagId, @kind, @fav, 1)
+            ON CONFLICT (tag_id, kind, fav) DO UPDATE SET count = count + 1`, params);
+        return;
+    }
+    db.run('UPDATE entity_tag_counts SET count = count - 1 WHERE tag_id = @tagId AND kind = @kind AND fav = @fav', params);
+    db.run('DELETE FROM entity_tag_counts WHERE tag_id = @tagId AND kind = @kind AND fav = @fav AND count = 0', params);
+}
+
+/**
+ * Adds `n` (1 or -1) to a tag's tag_usage count and sets its tags row's usage_count to that count.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} tagId
+ * @param {1 | -1} n
+ */
+function addTagUsageSync(db, tagId, n) {
+    if (n > 0) db.run('INSERT INTO tag_usage (tag_id, count) VALUES (@tagId, 1) ON CONFLICT (tag_id) DO UPDATE SET count = count + 1', { tagId });
+    else db.run('UPDATE tag_usage SET count = count - 1 WHERE tag_id = @tagId', { tagId });
+    const usage = /** @type {{ count: number } | undefined} */ (db.get('SELECT count FROM tag_usage WHERE tag_id = @tagId', { tagId }));
+    db.run('UPDATE tags SET usage_count = @count WHERE id = @tagId AND usage_count IS NOT @count', { tagId, count: usage?.count ?? 0 });
+}
+
+/**
+ * Counts an entity row in (`sign` 1, just inserted) or out (-1, just deleted, its tag rows not yet), with its tag
+ * rows, under `fav`.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind} kind
+ * @param {string} id
+ * @param {number | boolean} fav
+ * @param {1 | -1} sign
+ */
+function countEntityRowSync(db, kind, id, fav, sign) {
+    if (!entityCountFilledSync(db, kind, id)) return;
+    const favValue = Number(fav) === 0 ? 0 : 1;
+    addEntityCountSync(db, kind, favValue, sign);
+    if (!tagRowCountsFor(kind, id)) return;
+    const tagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate(
+        `SELECT tag_id FROM ${kind.tagTable} WHERE ${kind.entityColumn} = @id`, { id })), r => r.tag_id);
+    for (const tagId of tagIds) addEntityTagCountSync(db, tagId, kind, favValue, sign);
+}
+
+/**
+ * Writes an entity row's changed columns (writeRowIfChanged()); a fav change moves the entity and its tag rows
+ * between the fav counters.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind} kind
+ * @param {string} id
+ * @param {Record<string, any>} values
+ * @param {Record<string, any>} [current] The stored row, when the caller already read it.
+ * @returns {boolean} Whether anything was written.
+ */
+function writeEntityRowSync(db, kind, id, values, current) {
+    /** @type {number | null} */
+    let favBefore = null;
+    if ('fav' in values) {
+        const stored = current && 'fav' in current
+            ? current
+            : /** @type {{ fav: number } | undefined} */ (db.get(`SELECT fav FROM ${kind.table} WHERE id = @id`, { id }));
+        if (stored) favBefore = stored.fav ? 1 : 0;
+    }
+    const written = writeRowIfChanged(db, kind.table, { id }, values, current ? { current } : {});
+    if (written && favBefore !== null && favBefore !== (values.fav ? 1 : 0)) {
+        countEntityRowSync(db, kind, id, favBefore, -1);
+        countEntityRowSync(db, kind, id, values.fav ? 1 : 0, 1);
+    }
+    return written;
+}
+
+/**
+ * Inserts a tag row if it isn't there, counting it into tag_usage and, while its entity row exists, entity_tag_counts.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} tagTable 'character_tags' or 'group_tags'.
+ * @param {string} entityId
+ * @param {string} tagId
+ * @returns {boolean} Whether it was inserted.
+ */
+function insertTagRowSync(db, tagTable, entityId, tagId) {
+    const kind = entityCountKindOfTagTable(tagTable);
+    if (db.run(`INSERT OR IGNORE INTO ${kind.tagTable} (${kind.entityColumn}, tag_id) VALUES (@entityId, @tagId)`, { entityId, tagId }).changes === 0) return false;
+    addTagUsageSync(db, tagId, 1);
+    countTagRowSync(db, kind, entityId, tagId, 1);
+    return true;
+}
+
+/**
+ * Deletes a tag row if it is there, counting it out the way insertTagRowSync() counted it in.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} tagTable 'character_tags' or 'group_tags'.
+ * @param {string} entityId
+ * @param {string} tagId
+ * @returns {boolean} Whether it was deleted.
+ */
+function deleteTagRowSync(db, tagTable, entityId, tagId) {
+    const kind = entityCountKindOfTagTable(tagTable);
+    if (db.run(`DELETE FROM ${kind.tagTable} WHERE ${kind.entityColumn} = @entityId AND tag_id = @tagId`, { entityId, tagId }).changes === 0) return false;
+    addTagUsageSync(db, tagId, -1);
+    countTagRowSync(db, kind, entityId, tagId, -1);
+    return true;
+}
+
+/**
+ * Deletes every tag row of one entity, as deleteTagRowSync() deletes each.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} tagTable
+ * @param {string} entityId
+ * @returns {number} How many it deleted.
+ */
+function deleteEntityTagRowsSync(db, tagTable, entityId) {
+    const kind = entityCountKindOfTagTable(tagTable);
+    const tagIds = Array.from(/** @type {Iterable<{ tag_id: string }>} */ (db.iterate(
+        `SELECT tag_id FROM ${kind.tagTable} WHERE ${kind.entityColumn} = @entityId`, { entityId })), r => r.tag_id);
+    let deleted = 0;
+    for (const tagId of tagIds) if (deleteTagRowSync(db, tagTable, entityId, tagId)) deleted++;
+    return deleted;
+}
+
+/**
+ * A tag row's entity_tag_counts change: only while its entity row exists and the counters cover it.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {EntityCountKind} kind
+ * @param {string} entityId
+ * @param {string} tagId
+ * @param {1 | -1} sign
+ */
+function countTagRowSync(db, kind, entityId, tagId, sign) {
+    if (!tagRowCountsFor(kind, entityId) || !entityCountFilledSync(db, kind, entityId)) return;
+    const entity = /** @type {{ fav: number } | undefined} */ (db.get(`SELECT fav FROM ${kind.table} WHERE id = @id`, { id: entityId }));
+    if (entity) addEntityTagCountSync(db, tagId, kind, entity.fav ? 1 : 0, sign);
+}
+
+/** The triggers that kept entity_counts and entity_tag_counts before the write path did. */
+const OLD_ENTITY_COUNT_TRIGGER_NAMES = ENTITY_COUNT_KINDS.flatMap(({ table, tagTable }) => [
+    `trg_${table}_count_ai`, `trg_${table}_count_ad`, `trg_${table}_count_au_fav`, `trg_${tagTable}_count_ai`, `trg_${tagTable}_count_ad`,
+]);
+
+/**
+ * Drops the counter triggers a store from before the write path kept its counters may still have.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ */
+function dropOldCounterTriggers(db) {
+    const names = [...OLD_ENTITY_COUNT_TRIGGER_NAMES, ...OLD_TAG_USAGE_TRIGGER_NAMES];
+    const present = db.get('SELECT 1 AS ok FROM sqlite_master WHERE type = \'trigger\' AND name IN (SELECT value FROM json_each(@names)) LIMIT 1', { names: JSON.stringify(names) });
+    if (present) db.exec(names.map(name => `DROP TRIGGER IF EXISTS ${name};`).join('\n'));
 }
 
 /**
@@ -4664,9 +4800,6 @@ export const NAME_ORDER_LIMIT = 2 ** 52;
 /** The window a respace starts with, doubled while the window has no room. */
 const NAME_ORDER_RESPACE_WINDOW = 64;
 
-const ENTITY_COUNT_TRIGGERS = ENTITY_COUNT_KINDS.flatMap(entityCountTriggers);
-const ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => trigger.sql).join('\n');
-const DROP_ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
 
 const GROUP_INSERT_IF_MISSING_SQL = `
     INSERT INTO groups (id, name, name_fold, fav, date_added, date_last_chat, chat_size, digest_fav, digest_content)
@@ -4701,11 +4834,12 @@ function upsertGroupRowSync(db, { id, name, fav, group, dateAdded, insertOnly = 
     // digest_tag_ids isn't written here: owned by assignEntityTag()/unassignEntityTag()'s group branch. date_added is
     // write-once. date_last_chat/chat_size are owned by applyGroupChatStats(), which follows every write to the
     // group's messages, and the backfill passes, not by /create or /edit requests.
-    if (existed) return writeRowIfChanged(db, 'groups', { id }, values);
+    if (existed) return writeEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.group, id, values);
     const inserted = db.run(GROUP_INSERT_IF_MISSING_SQL, {
         id, name: values.name, nameFold: values.name_fold, fav: values.fav, dateAdded,
         digestFav: values.digest_fav, digestContent: values.digest_content,
     }).changes > 0;
+    if (inserted) countEntityRowSync(db, ENTITY_COUNT_KIND_BY_NAME.group, id, values.fav, 1);
     queueChatStatsReconcileSync(db, 'group', id);
     return inserted;
 }
@@ -5524,9 +5658,11 @@ export async function deleteGroupRow(directories, id, { fileDeleted = false } = 
     const entry = await getEntry(directories);
     if (!entry) return;
     entry.db.transaction(() => {
+        const stored = /** @type {{ fav: number } | undefined} */ (entry.db.get('SELECT fav FROM groups WHERE id = @id', { id }));
         const rowDeleted = entry.db.run('DELETE FROM groups WHERE id = @id', { id }).changes > 0;
+        if (stored && rowDeleted) countEntityRowSync(entry.db, ENTITY_COUNT_KIND_BY_NAME.group, id, stored.fav, -1);
         entry.db.run('DELETE FROM activity_pending WHERE kind = \'group\' AND id = @id', { id });
-        const tagsDeleted = entry.db.run('DELETE FROM group_tags WHERE group_id = @id', { id }).changes > 0;
+        const tagsDeleted = deleteEntityTagRowsSync(entry.db, 'group_tags', id) > 0;
         if (rowDeleted || tagsDeleted || fileDeleted) insertGroupChange(entry.db, id, fileDeleted ? sanitize(`${id}.json`) : null);
     });
 }
@@ -5727,7 +5863,7 @@ export async function normalizeGroupFavIfNeeded(directories) {
             const values = { fav: fav ? 1 : 0, digest_fav: groupDigestFavHash({ fav }) };
             if (!entry.db.get('SELECT 1 FROM groups WHERE id = @id AND (fav IS NOT @fav OR digest_fav IS NOT @digestFav)', { id, fav: values.fav, digestFav: values.digest_fav })) return null;
             return () => {
-                writeRowIfChanged(entry.db, 'groups', { id }, values);
+                writeEntityRowSync(entry.db, ENTITY_COUNT_KIND_BY_NAME.group, id, values);
                 insertGroupChange(entry.db, id);
             };
         },
@@ -6499,7 +6635,7 @@ async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
             }
             const target = mark.merge_into ?? null;
             for (const id of page) {
-                if (db.run(`DELETE FROM ${tagTable} WHERE ${entityColumn} = @id AND tag_id = @tagId`, { id, tagId }).changes === 0) continue;
+                if (!deleteTagRowSync(db, tagTable, id, tagId)) continue;
                 state.removed++;
                 logTagRowsChanged(db, id);
                 if (!db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id })) {
@@ -6507,7 +6643,7 @@ async function moveDeletedTagRows(db, tagId, tagName, side, totals) {
                     continue;
                 }
                 if (target !== null) {
-                    db.run(`INSERT OR IGNORE INTO ${tagTable} (${entityColumn}, tag_id) VALUES (@id, @target)`, { id, target });
+                    insertTagRowSync(db, tagTable, id, target);
                 }
                 syncStoredCopy(db, id);
             }
@@ -6591,7 +6727,7 @@ export async function removeOrphanTagRowsIfNeeded(directories) {
                     const changedIds = new Set();
                     for (const row of candidates) {
                         if (db.get(`SELECT 1 FROM ${entityTable} WHERE id = @id`, { id: row.id })) continue;
-                        if (db.run(`DELETE FROM ${tagTable} WHERE ${entityColumn} = @id AND tag_id = @tagId`, row).changes === 0) continue;
+                        if (!deleteTagRowSync(db, tagTable, row.id, row.tagId)) continue;
                         if (!names.has(row.tagId)) names.set(row.tagId, tagNameForWarning(db, row.tagId));
                         state.removed.push(`  ${row.id}: ${names.get(row.tagId)}`);
                         changedIds.add(row.id);
@@ -7816,7 +7952,7 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
         return () => {
             let changed = false;
             for (const tagId of tagIds) {
-                if (entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@key, @tagId)', { key, tagId }).changes > 0) changed = true;
+                if (insertTagRowSync(entry.db, 'character_tags', key, tagId)) changed = true;
             }
             const currentTagIds = readCharacterTagIds(entry.db, key);
             // writeShallowJson() stores tag_ids normalized.
@@ -7835,7 +7971,7 @@ async function importTagMap(entry, tagMap, { label = 'tags.json migration', requ
     const prepareGroupKey = (key, tagIds) => () => {
         let changed = false;
         for (const tagId of tagIds) {
-            if (entry.db.run('INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (@key, @tagId)', { key, tagId }).changes > 0) changed = true;
+            if (insertTagRowSync(entry.db, 'group_tags', key, tagId)) changed = true;
         }
         if (tagIds.length > 0 && syncGroupDigestTagIdsFromTable(entry.db, key)) changed = true;
         if (changed) insertGroupChange(entry.db, key);
@@ -8315,7 +8451,7 @@ function writeResolvedCardTagsSync(entry, avatar, resolved, onlyExisting) {
     const { db } = entry;
     const created = createCardTagsSync(entry, resolved).length;
     for (const tagId of resolved.tagIds) {
-        db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: avatar, tagId });
+        insertTagRowSync(db, 'character_tags', avatar, tagId);
     }
     holdCardTagNamesSync(db, avatar, resolved.held, onlyExisting);
     return created;
@@ -8469,7 +8605,7 @@ export async function backfillCardTagsIfNeeded(directories) {
                 const created = createCardTagsSync(entry, resolved);
                 batchNewDefinitions += created.length;
                 for (const tagId of [...missing, ...created]) {
-                    batchNewAssignments += entry.db.run('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (@characterId, @tagId)', { characterId: id, tagId }).changes;
+                    if (insertTagRowSync(entry.db, 'character_tags', id, tagId)) batchNewAssignments++;
                 }
                 holdCardTagNamesSync(entry.db, id, resolved.held, false);
                 // Synced here rather than left to backfillTagIdsInShallowJson(), which only targets rows missing a

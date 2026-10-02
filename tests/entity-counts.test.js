@@ -226,47 +226,39 @@ async function runEveryWriteKind() {
     expectCountersExact();
 }
 
-/** Row orders and legacy rows that the store functions above never produce. */
-function runRawWrites() {
+/**
+ * Legacy rows the store functions above never produce (tag rows with no entity row yet, tag rows of a group whose id
+ * ends in .png), written raw, then the entity writes over them through the store.
+ */
+async function runLegacyRows() {
     withRawDb(db => {
-        const insertCharacter = db.prepare(`INSERT INTO characters (id, name, name_fold, fav, date_added, date_last_chat, chat_size, data_size, shallow_json,
-            digest_fav, digest_tag_ids, digest_content, change_seq, card_json) VALUES (?, ?, ?, ?, 0, 0, 0, 0, '{}', 0, 0, 0, 0, '{}')`);
-        const insertGroup = db.prepare('INSERT INTO groups (id, name, fav) VALUES (?, ?, ?)');
-
-        // Tag rows written before their entity's row: counted once the entity row lands.
-        db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('a9.png', 't1');
-        db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('z9.png', 't1');
-        db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run('ga9', 't1');
-        db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run('gz9', 't1');
-        expect(counterMismatches(db)).toEqual([]);
-        insertCharacter.run('a9.png', 'a9', 'a9', 1);
-        insertCharacter.run('z9.png', 'z9', 'z9', 0);
-        insertGroup.run('ga9', 'ga9', 1);
-        insertGroup.run('gz9', 'gz9', 0);
-        expect(counterMismatches(db)).toEqual([]);
-
-        // Legacy .png group rows: counted as groups, while their group_tags rows count for no tag. legacy2.png is
-        // kept to the end, where the totals are compared with queryEntities().
-        insertGroup.run('legacy.png', 'legacy', 1);
-        insertGroup.run('legacy2.png', 'legacy2', 0);
-        db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run('legacy.png', 't1');
-        db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run('legacy2.png', 't1');
-        expect(counterMismatches(db)).toEqual([]);
-        db.prepare('UPDATE groups SET fav = 0 WHERE id = ?').run('legacy.png');
-        expect(counterMismatches(db)).toEqual([]);
-
-        // Entity row deleted before its tag rows (as deleteRowSync does), then the tag rows.
-        db.prepare('DELETE FROM characters WHERE id = ?').run('a9.png');
-        db.prepare('DELETE FROM groups WHERE id = ?').run('ga9');
-        expect(counterMismatches(db)).toEqual([]);
-        db.prepare('DELETE FROM character_tags WHERE character_id = ?').run('a9.png');
-        db.prepare('DELETE FROM group_tags WHERE group_id = ?').run('ga9');
-        expect(counterMismatches(db)).toEqual([]);
-
-        db.prepare('DELETE FROM groups WHERE id = ?').run('legacy.png');
-        db.prepare('DELETE FROM group_tags WHERE group_id = ?').run('legacy.png');
+        for (const id of ['a9.png', 'z9.png']) db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)').run(id, 't1');
+        for (const id of ['ga9', 'gz9']) db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run(id, 't1');
         expect(counterMismatches(db)).toEqual([]);
     });
+    // Tag rows written before their entity's row: counted once the entity row lands.
+    await seedCharacter('a9.png', true);
+    await seedCharacter('z9.png');
+    await seedGroup('ga9', true);
+    await seedGroup('gz9');
+    expectCountersExact();
+
+    // Legacy .png group rows: counted as groups, while their group_tags rows count for no tag. legacy2.png is kept to
+    // the end, where the totals are compared with queryEntities().
+    await seedGroup('legacy.png', true);
+    await seedGroup('legacy2.png');
+    withRawDb(db => {
+        for (const id of ['legacy.png', 'legacy2.png']) db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run(id, 't1');
+        expect(counterMismatches(db)).toEqual([]);
+    });
+    await seedGroup('legacy.png', false);
+    expectCountersExact();
+
+    // Entities with tag rows deleted.
+    await metadataDb.deleteCharacterRow(directories, 'a9.png');
+    await metadataDb.deleteGroupRow(directories, 'ga9');
+    await metadataDb.deleteGroupRow(directories, 'legacy.png');
+    expectCountersExact();
 }
 
 describe('entity counters', () => {
@@ -284,14 +276,14 @@ describe('entity counters', () => {
     test('with nothing filled, no write touches a counter', async () => {
         await openWithFrontier({ character: NOTHING, group: NOTHING });
         await runEveryWriteKind();
-        runRawWrites();
+        await runLegacyRows();
         withRawDb(db => expect(counterRowCount(db)).toBe(0));
     });
 
     test('filled part way, counters are exact for the filled range across every write kind', async () => {
         await openWithFrontier({ character: { upto: 'm', done: false }, group: { upto: 'gm', done: false } });
         await runEveryWriteKind();
-        runRawWrites();
+        await runLegacyRows();
         withRawDb(db => {
             // Entities on both sides of the frontier exist, so the range really is partial.
             expect(db.prepare('SELECT COUNT(*) AS n FROM characters WHERE id > \'m\'').get().n).toBeGreaterThan(0);
@@ -303,7 +295,7 @@ describe('entity counters', () => {
     test('one kind done and the other with nothing filled, each kind follows its own frontier', async () => {
         await openWithFrontier({ character: DONE, group: NOTHING });
         await runEveryWriteKind();
-        runRawWrites();
+        await runLegacyRows();
         withRawDb(db => {
             expect(db.prepare('SELECT COUNT(*) AS n FROM entity_counts WHERE kind = \'group\'').get().n).toBe(0);
             expect(db.prepare('SELECT COUNT(*) AS n FROM entity_tag_counts WHERE kind = \'group\'').get().n).toBe(0);
@@ -313,7 +305,7 @@ describe('entity counters', () => {
     test('marked done, counters are exact across every write kind', async () => {
         await openWithFrontier({ character: DONE, group: DONE });
         await runEveryWriteKind();
-        runRawWrites();
+        await runLegacyRows();
         withRawDb(db => {
             expect(counterRowCount(db)).toBeGreaterThan(0);
             expect(counterMismatches(db)).toEqual([]);
@@ -323,7 +315,7 @@ describe('entity counters', () => {
     test('marked done, the counters give the same totals as queryEntities for every single-counter shape', async () => {
         await openWithFrontier({ character: DONE, group: DONE });
         await runEveryWriteKind();
-        runRawWrites();
+        await runLegacyRows();
 
         const read = () => withRawDb(db => ({
             entities: Array.from(db.prepare('SELECT kind, fav, count FROM entity_counts').iterate()),
@@ -363,7 +355,7 @@ describe('entity counters', () => {
         });
     });
 
-    test('a write that keeps fav the same writes no counter', async () => {
+    test('a write that keeps fav the same leaves every counter as it was', async () => {
         await openWithFrontier({ character: DONE, group: DONE });
         await saveTags(['t1', 't2']);
         await seedCharacter('a1.png', true);
@@ -371,47 +363,40 @@ describe('entity counters', () => {
         await assign('a1.png', 't1');
         await assign('a1.png', 't2');
         await assign('ga1', 't1');
-        withRawDb(db => {
-            const before = db.prepare('SELECT total_changes() AS n').get().n;
-            db.prepare('UPDATE characters SET fav = fav WHERE id = ?').run('a1.png');
-            db.prepare('UPDATE groups SET fav = fav WHERE id = ?').run('ga1');
-            db.prepare('UPDATE characters SET name = name, chat_size = chat_size + 1 WHERE id = ?').run('a1.png');
-            // One changed row per statement, plus a1's 2 tag sort rows taking the new chat_size; a counter trigger
-            // write would add to total_changes().
-            expect(db.prepare('SELECT total_changes() AS n').get().n - before).toBe(3 + 2);
-            db.prepare('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('a1.png', 't1');
-            expect(db.prepare('SELECT total_changes() AS n').get().n - before).toBe(3 + 2);
-        });
+        const counters = () => withRawDb(db => ({
+            entities: Array.from(db.prepare('SELECT * FROM entity_counts ORDER BY kind, fav').iterate()),
+            tags: Array.from(db.prepare('SELECT * FROM entity_tag_counts ORDER BY tag_id, kind, fav').iterate()),
+        }));
+        const before = counters();
+        expect(await metadataDb.setCharacterFav(directories, 'a1.png', true)).toBe(true);
+        await seedGroup('ga1', true);
+        await seedCharacter('a1.png', true);
+        await assign('a1.png', 't1');
+        expect(counters()).toEqual(before);
         expectCountersExact();
     });
 
-    test('a fav flip writes one counter per tag of the entity plus the entity counter', async () => {
+    test('a fav flip moves the entity and each of its tags to the other fav counter', async () => {
         await openWithFrontier({ character: DONE, group: DONE });
         await saveTags(['t1', 't2', 't3']);
         await seedCharacter('a1.png');
         for (const tagId of ['t1', 't2', 't3']) await assign('a1.png', tagId);
         await seedCharacter('a2.png', true);
         await assign('a2.png', 't1');
+        expect(await metadataDb.setCharacterFav(directories, 'a1.png', true)).toBe(true);
         withRawDb(db => {
-            const before = db.prepare('SELECT total_changes() AS n').get().n;
-            db.prepare('UPDATE characters SET fav = 1 WHERE id = ?').run('a1.png');
-            // The row, then for each of its 4 counters (entity + 3 tags) at most a decrement, a removal at 0 and an
-            // increment, its 3 tag sort rows taking the new fav, and the random order's ranks: leaving its 4 spaces
-            // of the old fav value (parking its rank, the last member moving in, the parked row going) and joining
-            // the 4 of the new.
-            const writes = db.prepare('SELECT total_changes() AS n').get().n - before;
-            expect(writes).toBeLessThanOrEqual(1 + 4 * 3 + 3 + 4 * 3 + 4);
             expect(counterMismatches(db)).toEqual([]);
+            expect(Array.from(db.prepare('SELECT kind, fav, count FROM entity_counts').iterate())).toEqual([{ kind: 'character', fav: 1, count: 2 }]);
         });
     });
 
-    test('the card_json table rebuild runs while the counter triggers exist, and they still count after it', async () => {
+    test('the card_json table rebuild keeps the counters, and writes after it are counted', async () => {
         await openWithFrontier({ character: DONE, group: DONE });
         await saveTags(['t1']);
         await seedCharacter('a1.png', true);
         await assign('a1.png', 't1');
         metadataDb.disposeMetadataStores();
-        // A store whose card_json is still nullable (a boot that left unresolved rows), with the triggers in place.
+        // A store whose card_json is still nullable (a boot that left unresolved rows).
         withRawDb(db => {
             const columns = Array.from(db.prepare('PRAGMA table_info(characters)').iterate());
             db.pragma('legacy_alter_table = ON');
@@ -420,7 +405,6 @@ describe('entity counters', () => {
             db.exec('DROP TABLE characters');
             db.exec('ALTER TABLE characters_old RENAME TO characters');
             expect(db.prepare('SELECT "notnull" FROM pragma_table_info(\'characters\') WHERE name = \'card_json\'').get().notnull).toBe(0);
-            expect(db.prepare('SELECT COUNT(*) AS n FROM sqlite_master WHERE type = \'trigger\' AND tbl_name = \'character_tags\' AND name LIKE \'%count%\'').get().n).toBeGreaterThan(0);
         });
         await metadataDb.ensureSchemaMigrated(directories);
         withRawDb(db => expect(db.prepare('SELECT "notnull" FROM pragma_table_info(\'characters\') WHERE name = \'card_json\'').get().notnull).toBe(1));
@@ -431,7 +415,7 @@ describe('entity counters', () => {
         withRawDb(db => expect(db.prepare('SELECT count FROM entity_tag_counts WHERE tag_id = \'t1\' AND kind = \'character\' AND fav = 0').get()?.count).toBe(1));
     });
 
-    test('the frontier, counters and triggers survive a reopen', async () => {
+    test('the frontier and counters survive a reopen', async () => {
         await openWithFrontier({ character: DONE, group: DONE });
         await saveTags(['t1']);
         await seedCharacter('a1.png', true);
@@ -445,3 +429,93 @@ describe('entity counters', () => {
         withRawDb(db => expect(db.prepare('SELECT done FROM entity_count_fill WHERE kind = \'character\'').get().done).toBe(1));
     });
 });
+
+describe('random writes against a recount', () => {
+    /** @param {number} seed */
+    function rng(seed) {
+        let s = seed >>> 0;
+        return () => {
+            s = (s + 0x6D2B79F5) >>> 0;
+            let t = s;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    /** Every tag's usage count, stored (tag_usage and the tags row) next to the count of its rows, where they differ. */
+    function tagUsageMismatches(db) {
+        return Array.from(db.prepare(`
+            WITH actual AS (SELECT tag_id, COUNT(*) AS n FROM (SELECT tag_id FROM character_tags UNION ALL SELECT tag_id FROM group_tags) GROUP BY tag_id)
+            SELECT t.id, u.count AS stored, t.usage_count AS column, COALESCE(a.n, 0) AS actual FROM tags t
+                LEFT JOIN tag_usage u ON u.tag_id = t.id LEFT JOIN actual a ON a.tag_id = t.id
+            WHERE COALESCE(u.count, 0) <> COALESCE(a.n, 0) OR COALESCE(t.usage_count, 0) <> COALESCE(a.n, 0)
+        `).iterate());
+    }
+
+    for (const seed of [1, 2, 3]) {
+        test(`seed ${seed}: entity and tag counters, tag usage and list totals equal a recount after every write`, async () => {
+            const random = rng(seed);
+            const pick = (/** @type {any[]} */ list) => list[Math.floor(random() * list.length)];
+            await openWithFrontier({ character: DONE, group: DONE });
+            const TAGS = ['t1', 't2', 't3', 't4'];
+            await saveTags(TAGS);
+            const characters = ['a.png', 'b.png', 'c.png', 'm.png', 'z.png'];
+            const groups = ['ga', 'gb', 'gz'];
+            for (let step = 0; step < 250; step++) {
+                const op = random();
+                const isGroup = random() < 0.4;
+                const id = isGroup ? pick(groups) : pick(characters);
+                const exists = withRawDb(db => !!db.prepare(`SELECT 1 FROM ${isGroup ? 'groups' : 'characters'} WHERE id = ?`).get(id));
+                if (op < 0.2) {
+                    if (isGroup) await seedGroup(id, random() < 0.5);
+                    else await seedCharacter(id, random() < 0.5);
+                } else if (op < 0.3) {
+                    if (isGroup) await metadataDb.deleteGroupRow(directories, id);
+                    else await metadataDb.deleteCharacterRow(directories, id);
+                } else if (op < 0.45) {
+                    if (!exists) continue;
+                    if (isGroup) await seedGroup(id, random() < 0.5);
+                    else await metadataDb.toggleCharacterFav(directories, id);
+                } else if (op < 0.7) {
+                    if (exists) await assign(id, pick(TAGS));
+                } else if (op < 0.9) {
+                    if (exists) await unassign(id, pick(TAGS));
+                } else if (op < 0.95) {
+                    if (!exists || isGroup) continue;
+                    const to = pick(characters);
+                    const taken = withRawDb(db => !!db.prepare('SELECT 1 FROM characters WHERE id = ?').get(to));
+                    if (taken) continue;
+                    await seedCharacter(to);
+                    await metadataDb.renameCharacterRow(directories, id, to);
+                } else {
+                    continue;
+                }
+                withRawDb(db => {
+                    expect([step, counterMismatches(db)]).toEqual([step, []]);
+                    expect([step, tagUsageMismatches(db)]).toEqual([step, []]);
+                });
+                if (step % 10 === 0) await expectTotals(step);
+            }
+        }, 120000);
+    }
+
+    /** List totals and a tag's usage count, read through the store, against a count of the rows. @param {number} step */
+    async function expectTotals(step) {
+        const want = withRawDb(db => ({
+            all: db.prepare('SELECT (SELECT COUNT(*) FROM characters) + (SELECT COUNT(*) FROM groups)').pluck().get(),
+            fav: db.prepare('SELECT (SELECT COUNT(*) FROM characters WHERE fav = 1) + (SELECT COUNT(*) FROM groups WHERE fav = 1)').pluck().get(),
+            t1: db.prepare(`SELECT (SELECT COUNT(*) FROM character_tags t JOIN characters c ON c.id = t.character_id WHERE t.tag_id = 't1')
+                            + (SELECT COUNT(*) FROM group_tags t JOIN groups g ON g.id = t.group_id WHERE t.tag_id = 't1')`).pluck().get(),
+        }));
+        expect([step, (await metadataDb.queryEntities(directories, { wantRows: false, wantTotal: true }))?.total]).toEqual([step, want.all]);
+        expect([step, (await metadataDb.queryEntities(directories, { fav: true, wantRows: false, wantTotal: true }))?.total]).toEqual([step, want.fav]);
+        expect([step, (await metadataDb.queryEntities(directories, { tags: { include: ['t1'] }, wantRows: false, wantTotal: true }))?.total]).toEqual([step, want.t1]);
+        expect([step, await metadataDb.getTagUsageCount(directories, 't1')]).toEqual([step, withRawDb(db => db.prepare('SELECT (SELECT COUNT(*) FROM character_tags WHERE tag_id = \'t1\') + (SELECT COUNT(*) FROM group_tags WHERE tag_id = \'t1\')').pluck().get())]);
+    }
+});
+
+/** @param {string} id @param {string} tagId */
+async function unassign(id, tagId) {
+    expect(await metadataDb.unassignEntityTag(directories, id, tagId)).toBe('ok');
+}

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { deleteEntityRaw, deleteTagRowRaw, insertEntityRaw, insertTagRowRaw, setFavRaw } from './util/stored-counters.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -190,7 +191,8 @@ let liveWriteRound = 0;
 /**
  * One round of live writes on each kind, on both sides of that kind's frontier (and inside the range a fill batch
  * is about to count, when called between its page read and its transaction): an insert with tags, a delete of an
- * entity with tags, a fav flip, a tag assign and a tag unassign.
+ * entity with tags, a fav flip, a tag assign and a tag unassign, each counted as the store's write path counts it
+ * (another connection writing through character-metadata-db.js).
  * @param {import('better-sqlite3').Database} db
  */
 function liveWrites(db) {
@@ -207,16 +209,20 @@ function liveWrites(db) {
         const below = upto === null ? side.idOf(0) : db.prepare(`SELECT id FROM ${side.table} WHERE id <= ? ORDER BY id DESC LIMIT 1`).pluck().get(upto);
         const above = db.prepare(`SELECT id FROM ${side.table} WHERE id > ? ORDER BY id LIMIT 1 OFFSET 700`).pluck().get(upto ?? '');
         for (const id of [below, above].filter(Boolean)) {
-            db.prepare(`UPDATE ${side.table} SET fav = 1 - fav WHERE id = ?`).run(id);
-            db.prepare(`INSERT OR IGNORE INTO ${side.tagTable} (${side.column}, tag_id) VALUES (?, ?)`).run(id, `live${r}`);
-            db.prepare(`DELETE FROM ${side.tagTable} WHERE ${side.column} = ? AND tag_id = (SELECT MIN(tag_id) FROM ${side.tagTable} WHERE ${side.column} = ?)`).run(id, id);
+            setFavRaw(db, side.kind, id, 1 - db.prepare(`SELECT fav FROM ${side.table} WHERE id = ?`).pluck().get(id));
+            insertTagRowRaw(db, side.tagTable, id, `live${r}`);
+            const first = db.prepare(`SELECT MIN(tag_id) FROM ${side.tagTable} WHERE ${side.column} = ?`).pluck().get(id);
+            if (first !== null) deleteTagRowRaw(db, side.tagTable, id, first);
         }
         // New entities just past the frontier and far above it, each with tags.
         const base = upto ?? side.idOf(0);
         for (const id of [`${base}~live${r}`, `z-live${r}${side.kind === 'character' ? '.png' : ''}`]) {
-            if (side.kind === 'character') db.prepare(insertCharacterSql).run(id, r % 2);
-            else db.prepare('INSERT INTO groups (id, name, fav) VALUES (?, \'n\', ?)').run(id, r % 2);
-            db.prepare(`INSERT INTO ${side.tagTable} (${side.column}, tag_id) VALUES (?, 't0'), (?, ?)`).run(id, id, `live${r}`);
+            insertEntityRaw(db, side.kind, id, r % 2, () => {
+                if (side.kind === 'character') db.prepare(insertCharacterSql).run(id, r % 2);
+                else db.prepare('INSERT INTO groups (id, name, fav) VALUES (?, \'n\', ?)').run(id, r % 2);
+            });
+            insertTagRowRaw(db, side.tagTable, id, 't0');
+            insertTagRowRaw(db, side.tagTable, id, `live${r}`);
         }
         // Deletes of entities with tags, the entity row first as the store does: the one before `below` and the one
         // after `above`.
@@ -224,10 +230,7 @@ function liveWrites(db) {
             below && db.prepare(`SELECT id FROM ${side.table} WHERE id < ? ORDER BY id DESC LIMIT 1`).pluck().get(below),
             above && db.prepare(`SELECT id FROM ${side.table} WHERE id > ? ORDER BY id LIMIT 1`).pluck().get(above),
         ];
-        for (const id of doomed.filter(Boolean)) {
-            db.prepare(`DELETE FROM ${side.table} WHERE id = ?`).run(id);
-            db.prepare(`DELETE FROM ${side.tagTable} WHERE ${side.column} = ?`).run(id);
-        }
+        for (const id of doomed.filter(Boolean)) deleteEntityRaw(db, side.kind, id);
     }
 }
 

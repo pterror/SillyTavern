@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { deleteTagRowRaw, rawTagRowInserter } from './util/stored-counters.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -160,13 +161,13 @@ async function seed(tags) {
     await metadataDb.ensureSchemaMigrated(directories);
     await metadataDb.saveTagDefinitions(directories, tags);
     const db = live();
-    const assign = db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)');
+    const assign = rawTagRowInserter(db, 'character_tags');
     db.transaction(() => {
         tags.forEach((tag, i) => {
             for (let n = 0; n < i % 4; n++) assign.run(`c${n}.png`, tag.id);
             if (i % 9 === 0) {
                 assign.run('gone.png', tag.id);
-                db.prepare('DELETE FROM character_tags WHERE character_id = ? AND tag_id = ?').run('gone.png', tag.id);
+                deleteTagRowRaw(db, 'character_tags', 'gone.png', tag.id);
             }
         });
     })();
@@ -356,7 +357,7 @@ describe('POST /api/tags/query', () => {
         test('a marked tag\'s count goes to the tag it merges into, which is listed as approximate', async () => {
             await metadataDb.ensureSchemaMigrated(directories);
             await metadataDb.saveTagDefinitions(directories, [{ id: 'source', name: 'Source' }, { id: 'target', name: 'Target' }, { id: 'other', name: 'Other' }]);
-            const assign = live().prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)');
+            const assign = rawTagRowInserter(live(), 'character_tags');
             assign.run('a.png', 'source');
             assign.run('b.png', 'source');
             assign.run('a.png', 'target');
@@ -501,7 +502,7 @@ describe('POST /api/tags/query', () => {
         await metadataDb.ensureSchemaMigrated(directories);
         await metadataDb.saveTagDefinitions(directories, tags);
         live().transaction(() => {
-            const assign = live().prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)');
+            const assign = rawTagRowInserter(live(), 'character_tags');
             for (let i = 0; i < 5; i++) assign.run('c.png', `f${i}`);
         })();
         await makeReady();

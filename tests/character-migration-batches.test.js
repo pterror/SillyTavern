@@ -544,7 +544,7 @@ describe('one-time group and card-tag passes never leave a row half-written', ()
         /** @param {string} id */
         const changeRowsFor = id => withRawDb(db => db.prepare('SELECT COUNT(*) AS n FROM changes WHERE id = ?').get(id).n);
 
-        failWrite = (sql, params) => sql.startsWith('INSERT OR IGNORE INTO character_tags') && params?.characterId === 'c01200.png';
+        failWrite = (sql, params) => sql.startsWith('INSERT OR IGNORE INTO character_tags') && params?.entityId === 'c01200.png';
         await expect(metadataDb.backfillCardTagsIfNeeded(directories)).rejects.toThrow('simulated write failure');
         failWrite = null;
 

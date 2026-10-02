@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { rawTagRowInserter } from './util/stored-counters.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -120,7 +121,7 @@ const USED = new Set(['b', 'd', 'i']);
 async function seed() {
     await metadataDb.ensureSchemaMigrated(directories);
     await metadataDb.saveTagDefinitions(directories, TAGS);
-    const assign = live().prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)');
+    const assign = rawTagRowInserter(live(), 'character_tags');
     for (const id of USED) assign.run('c.png', id);
 }
 

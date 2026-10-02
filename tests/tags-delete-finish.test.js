@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { tagCounts } from './tag-store-reads.js';
+import { insertTagRowRaw, rawTagRowInserter } from './util/stored-counters.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -239,8 +240,8 @@ describe('finishDeletedTags', () => {
         await seedCharacter('c1.png');
         await assign('c1.png', 'x');
         withRawDb(db => {
-            db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('ghost.png', 'x');
-            db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)').run('ghostgroup', 'x');
+            insertTagRowRaw(db, 'character_tags', 'ghost.png', 'x');
+            insertTagRowRaw(db, 'group_tags', 'ghostgroup', 'x');
         });
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -264,7 +265,7 @@ describe('finishDeletedTags', () => {
         await seedGroup('legacy.png');
         await assign('c1.png', 'x');
         withRawDb(db => {
-            const insert = db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)');
+            const insert = rawTagRowInserter(db, 'group_tags');
             insert.run('legacy.png', 'x');
             insert.run('ghost.png', 'x');
         });
@@ -326,7 +327,7 @@ async function seedCharacterCopies(count, tagIdsOf) {
             INSERT INTO characters (id, ${columns.join(', ')})
             SELECT printf('c%05d.png', n.i), ${columns.map(c => `s.${c}`).join(', ')} FROM n, characters s WHERE s.id = 'seed.png'
         `).run(count);
-        const insertTag = db.prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)');
+        const insertTag = rawTagRowInserter(db, 'character_tags');
         const setTagIds = db.prepare('UPDATE characters SET shallow_json = json_set(shallow_json, \'$.tag_ids\', json(?)), digest_tag_ids = ? WHERE id = ?');
         db.transaction(() => {
             for (let i = 0; i < count; i++) {
@@ -349,7 +350,7 @@ async function seedGroupCopies(count, tagIdsOf) {
             INSERT INTO groups (id, ${columns.join(', ')})
             SELECT printf('g%05d', n.i), ${columns.map(c => `s.${c}`).join(', ')} FROM n, groups s WHERE s.id = 'seedg'
         `).run(count);
-        const insertTag = db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)');
+        const insertTag = rawTagRowInserter(db, 'group_tags');
         const setDigest = db.prepare('UPDATE groups SET digest_tag_ids = ? WHERE id = ?');
         db.transaction(() => {
             for (let i = 0; i < count; i++) {
@@ -372,7 +373,7 @@ describe('finishDeletedTags over many batches', () => {
         await seedCharacterCopies(CHARACTERS, tagsOf);
         await seedGroupCopies(GROUPS, tagsOf);
         withRawDb(db => {
-            const insert = db.prepare('INSERT INTO group_tags (group_id, tag_id) VALUES (?, ?)');
+            const insert = rawTagRowInserter(db, 'group_tags');
             for (const id of ['g00500.png', 'g01200.png']) insert.run(id, 'x');
         });
         expect(await metadataDb.deleteTagDefinition(directories, 'x', 'y')).toMatchObject({ refused: [] });

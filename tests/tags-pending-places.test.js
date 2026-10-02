@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jes
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { deleteTagRowRaw, insertTagRowRaw } from './util/stored-counters.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -264,8 +265,8 @@ async function randomChange(next, values, step) {
         const tagId = pick(IDS);
         const characterId = pick(['c1.png', 'c2.png', 'c3.png']);
         const has = live().prepare('SELECT 1 FROM character_tags WHERE character_id = ? AND tag_id = ?').get(characterId, tagId);
-        if (has) live().prepare('DELETE FROM character_tags WHERE character_id = ? AND tag_id = ?').run(characterId, tagId);
-        else live().prepare('INSERT INTO character_tags (character_id, tag_id) VALUES (?, ?)').run(characterId, tagId);
+        if (has) deleteTagRowRaw(live(), 'character_tags', characterId, tagId);
+        else insertTagRowRaw(live(), 'character_tags', characterId, tagId);
     }
 }
 

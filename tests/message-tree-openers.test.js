@@ -63,32 +63,25 @@ function charWords(db) {
     return db.prepare('SELECT char_words FROM owner_message_stats WHERE owner_id = ?').get('rex')?.char_words;
 }
 
-/** @param {import('better-sqlite3').Database} db @param {string} id */
-function editReply(db, id) {
-    const content = JSON.parse(db.prepare('SELECT content FROM messages WHERE id = ?').get(id).content);
-    content.mes = 'one two three four five';
-    return db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(JSON.stringify(content), id);
-}
-
 describe('every connection that writes message rows keeps the stats', () => {
-    test('a script connection opened through openNativeTreeDatabase writes and updates the counters', async () => {
-        const { file, replyId } = await seed();
-        const db = stats.openNativeTreeDatabase(Database, file, { fileMustExist: true });
+    test('a store that still has the stats triggers loses them on open, and its writes are counted once', async () => {
+        const { directories, file, replyId } = await seed();
+        const raw = stats.openNativeTreeDatabase(Database, file, { fileMustExist: true });
         try {
-            expect(charWords(db)).toBe(3);
-            editReply(db, replyId);
-            expect(charWords(db)).toBe(5);
+            raw.exec('CREATE TRIGGER message_stats_content AFTER UPDATE OF content ON messages BEGIN UPDATE owner_message_stats SET char_words = char_words + 1000; END');
+            expect(charWords(raw)).toBe(3);
         } finally {
-            db.close();
+            raw.close();
         }
-    });
 
-    test('a connection without the functions has the write refused, and nothing changes', async () => {
-        const { file, replyId } = await seed();
-        const db = new Database(file, { fileMustExist: true });
+        const result = await treeDb.editMessage(directories, 'rex', replyId, { name: 'Rex', is_user: false, mes: 'one two three four five', send_date: T0 + 2000, extra: {} });
+        expect(result.ok).toBe(true);
+        treeDb.disposeMessageTreeStores();
+
+        const db = new Database(file, { readonly: true, fileMustExist: true });
         try {
-            expect(() => editReply(db, replyId)).toThrow(/no such function/);
-            expect(JSON.parse(db.prepare('SELECT content FROM messages WHERE id = ?').get(replyId).content).mes).toBe('one two three');
+            expect(db.prepare('SELECT name FROM sqlite_master WHERE type = \'trigger\' AND name LIKE \'message_stats_%\'').all()).toEqual([]);
+            expect(charWords(db)).toBe(5);
         } finally {
             db.close();
         }

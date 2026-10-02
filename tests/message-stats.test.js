@@ -146,42 +146,42 @@ describe('message stats are counted from the stored messages', () => {
         const directories = makeDirectories();
         let seed = 7;
         const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
-        const owners = ['rex', 'mira'];
+        const owners = ['rex', 'mira', 'ivo'];
         /** @type {Record<string, string[]>} */
         const nodes = {};
         for (const owner of owners) nodes[owner] = await seedChat(directories, owner);
 
-        for (let step = 0; step < 120; step++) {
+        for (let step = 0; step < 400; step++) {
             const owner = owners[Math.floor(random() * owners.length)];
             const ids = nodes[owner];
             const target = ids[Math.floor(random() * ids.length)];
             const roll = random();
             const words = Array.from({ length: 1 + Math.floor(random() * 6) }, (_, i) => `w${step}x${i}`).join(' ');
+            // Send dates in any order, so deletes and edits take away an owner's earliest user message.
+            const at = T0 + Math.floor(random() * 50) * 1000;
             if (roll < 0.35) {
-                const result = await treeDb.appendMessages(directories, owner, target, [random() < 0.5 ? userMessage(words, T0 + step) : charMessage(words, random() < 0.7 ? 100 * step : null)]);
+                const result = await treeDb.appendMessages(directories, owner, target, [random() < 0.5 ? userMessage(words, at) : charMessage(words, random() < 0.7 ? 100 * step : null)]);
                 if (result.ok) ids.push(...result.node_ids);
             } else if (roll < 0.6) {
                 const result = await treeDb.addAlternatives(directories, owner, target, [charMessage(words, random() < 0.5 ? 50 : null)]);
                 if (result.ok) ids.push(...result.node_ids);
             } else if (roll < 0.85) {
-                await treeDb.editMessages(directories, owner, [{ node_id: target, content: random() < 0.5 ? userMessage(words, T0 + step) : charMessage(words, 10) }]);
+                await treeDb.editMessages(directories, owner, [{ node_id: target, content: random() < 0.5 ? userMessage(words, at) : charMessage(words, 10) }]);
             } else {
                 const result = await treeDb.deleteAlternative(directories, owner, target);
                 if (result.ok) ids.splice(ids.indexOf(target), 1);
             }
 
             for (const o of owners) {
-                const counted = await live(directories, o);
-                const fresh = await recount(directories, o);
-                // The earliest user message date is only ever lowered by the counters; a recount is exact.
-                expect({ ...counted, first_user_at: null }).toEqual({ ...fresh, first_user_at: null });
+                expect([step, o, await live(directories, o)]).toEqual([step, o, await recount(directories, o)]);
             }
-        }
-
-        const read = await treeDb.readMessageStats(directories, owners);
-        const sum = (key) => owners.reduce((n, o) => n + read.owners.get(o)[key], 0);
-        for (const key of ['user_msgs', 'char_msgs', 'user_words', 'char_words', 'swipes', 'gen_ms', 'gen_unknown']) {
-            expect(read.totals[key]).toBe(sum(key));
+            const read = await treeDb.readMessageStats(directories, owners);
+            const sum = (key) => owners.reduce((n, o) => n + read.owners.get(o)[key], 0);
+            for (const key of ['user_msgs', 'char_msgs', 'user_words', 'char_words', 'swipes', 'gen_ms', 'gen_unknown']) {
+                expect([step, key, read.totals[key]]).toEqual([step, key, sum(key)]);
+            }
+            const firsts = owners.map(o => read.owners.get(o).first_user_at).filter(at => at !== null);
+            expect([step, read.totals.first_user_at]).toEqual([step, firsts.length === 0 ? null : Math.min(...firsts)]);
         }
     });
 

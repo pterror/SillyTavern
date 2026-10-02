@@ -2,9 +2,9 @@ import { deleteTreeMetaSync, setTreeMetaSync } from './message-tree-meta.js';
 import { writeRowIfChanged } from './row-values.js';
 
 /**
- * Per-owner message statistics, derived from the message tree: the stored messages are the only source. Triggers on
- * `messages` keep `owner_message_stats` current inside the writing statement's own transaction, through SQL functions
- * that read a row's content; `fillMessageStatsBatch()` recounts owners from their rows. Row `''` holds the user's totals.
+ * Per-owner message statistics, derived from the message tree: the stored messages are the only source. Every write to
+ * `messages` (message-tree-db.js) counts its rows into `owner_message_stats` in the same transaction
+ * (countMessageWriteSync(), deleteMessagesCountedSync()); `fillMessageStatsBatch()` recounts owners from their rows. Row `''` holds the user's totals.
  *
  * What counts: every user message, and every character message except the greetings (character messages whose
  * parent is the owner's anchor). System messages don't count. A swipe is every character message beyond the first
@@ -57,7 +57,7 @@ export function countWords(text) {
     return match ? match.length : 0;
 }
 
-/** @type {{ content: string | null, parsed: any }} The triggers call several functions on one row's content. */
+/** @type {{ content: string | null, parsed: any }} Counting a row reads its content several times. */
 const lastParsed = { content: null, parsed: null };
 
 /** @param {unknown} content */
@@ -101,24 +101,22 @@ export function generationMs(content) {
 }
 
 /**
- * Registers the SQL functions the stats triggers call. Every connection that writes message rows needs them.
+ * Registers the SQL functions the stats triggers of a store not yet migrated (migrateMessageStatsSync()) call: a
+ * connection that writes message rows of such a store needs them.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 export function defineMessageStatsFunctions(db) {
     db.defineFunction('st_kind', content => messageKind(content));
     db.defineFunction('st_words', content => countWords(parseContent(content)?.mes));
     db.defineFunction('st_gen_ms', content => generationMs(content));
-    db.defineFunction('st_send_at', (content) => {
-        const at = parseTimestamp(parseContent(content)?.send_date);
-        return at > 0 ? at : null;
-    });
+    db.defineFunction('st_send_at', content => sendAtOf(content));
 }
 
 /**
  * Opens message-tree.sqlite with a raw better-sqlite3 constructor, with the stats functions already registered. Any
- * code outside message-tree-db.js that opens the tree file goes through this, read-only or not: a connection without
- * the functions has every message write refused by the triggers ("no such function: st_kind").
- * tests/message-tree-openers.test.js fails if a file under src/ opens the tree another way.
+ * code outside message-tree-db.js that opens the tree file goes through this, read-only or not: on a store not yet
+ * migrated, a connection without the functions has every message write refused by the old triggers ("no such
+ * function: st_kind"). tests/message-tree-openers.test.js fails if a file under src/ opens the tree another way.
  * @param {typeof import('better-sqlite3')} Database
  * @param {string} file
  * @param {import('better-sqlite3').Options} [options]
@@ -130,7 +128,7 @@ export function openNativeTreeDatabase(Database, file, options) {
     return db;
 }
 
-/** Bumped when the table or triggers change; a store on another version is rebuilt and recounted. */
+/** Bumped when the table changes; a store on another version is rebuilt and recounted. */
 const MESSAGE_STATS_VERSION = '1';
 const VERSION_KEY = 'message_stats_version';
 const FILL_AFTER_KEY = 'message_stats_fill_after';
@@ -140,40 +138,13 @@ export const TOTALS_OWNER = '';
 const COUNTERS = ['user_msgs', 'char_msgs', 'user_words', 'char_words', 'swipes', 'gen_ms', 'gen_unknown'];
 
 /**
- * One row's change to an owner's counters, as an upsert. `sign` is 1 to add the row, -1 to take it away; the row's
- * sibling check runs against the table as it is when the trigger fires.
- * @param {string} owner SQL for the owner id.
- * @param {string} row The trigger row's alias: NEW or OLD.
- * @param {1 | -1} sign
+ * A user message's send date in milliseconds, null when it doesn't have a readable one.
+ * @param {unknown} content
+ * @returns {number | null}
  */
-function applyRowSql(owner, row, sign) {
-    const k = `st_kind(${row}.content)`;
-    const counts = `${row}.parent_id IS NOT NULL AND (${k} = 'user' OR (${k} = 'char' AND (SELECT parent_id FROM messages WHERE id = ${row}.parent_id) IS NOT NULL))`;
-    const otherChar = `EXISTS (SELECT 1 FROM messages s WHERE s.parent_id = ${row}.parent_id AND s.id <> ${row}.id AND st_kind(s.content) = 'char')`;
-    return `INSERT INTO owner_message_stats (owner_id, ${COUNTERS.join(', ')}, first_user_at)
-        SELECT ${owner},
-            ${sign} * (${k} = 'user'),
-            ${sign} * (${k} = 'char'),
-            ${sign} * (CASE WHEN ${k} = 'user' THEN st_words(${row}.content) ELSE 0 END),
-            ${sign} * (CASE WHEN ${k} = 'char' THEN st_words(${row}.content) ELSE 0 END),
-            ${sign} * (CASE WHEN ${k} = 'char' AND ${otherChar} THEN 1 ELSE 0 END),
-            ${sign} * (CASE WHEN ${k} = 'char' THEN COALESCE(st_gen_ms(${row}.content), 0) ELSE 0 END),
-            ${sign} * (CASE WHEN ${k} = 'char' AND st_gen_ms(${row}.content) IS NULL THEN 1 ELSE 0 END),
-            ${sign > 0 ? `CASE WHEN ${k} = 'user' THEN st_send_at(${row}.content) END` : 'NULL'}
-        WHERE ${counts}
-        ON CONFLICT(owner_id) DO UPDATE SET
-            ${COUNTERS.map(c => `${c} = ${c} + excluded.${c}`).join(', ')},
-            first_user_at = CASE WHEN excluded.first_user_at IS NULL THEN first_user_at
-                WHEN first_user_at IS NULL THEN excluded.first_user_at
-                ELSE MIN(first_user_at, excluded.first_user_at) END;`;
-}
-
-/**
- * @param {string} row
- * @param {1 | -1} sign
- */
-function applyRowBothSql(row, sign) {
-    return applyRowSql(`${row}.owner_id`, row, sign) + '\n' + applyRowSql(`'${TOTALS_OWNER}'`, row, sign);
+function sendAtOf(content) {
+    const at = parseTimestamp(parseContent(content)?.send_date);
+    return at > 0 ? at : null;
 }
 
 const MESSAGE_STATS_SQL = `
@@ -182,45 +153,232 @@ const MESSAGE_STATS_SQL = `
         ${COUNTERS.map(c => `${c} INTEGER NOT NULL DEFAULT 0`).join(',\n        ')},
         first_user_at INTEGER
     );
-    CREATE TRIGGER IF NOT EXISTS message_stats_insert AFTER INSERT ON messages BEGIN
-        ${applyRowBothSql('NEW', 1)}
-    END;
-    CREATE TRIGGER IF NOT EXISTS message_stats_delete AFTER DELETE ON messages BEGIN
-        ${applyRowBothSql('OLD', -1)}
-    END;
-    CREATE TRIGGER IF NOT EXISTS message_stats_content AFTER UPDATE OF content ON messages
-    WHEN OLD.content IS NOT NEW.content BEGIN
-        ${applyRowBothSql('OLD', -1)}
-        ${applyRowBothSql('NEW', 1)}
-    END;
-    CREATE TRIGGER IF NOT EXISTS message_stats_move AFTER UPDATE OF parent_id ON messages
-    WHEN OLD.parent_id IS NOT NEW.parent_id BEGIN
-        ${applyRowBothSql('OLD', -1)}
-        ${applyRowBothSql('NEW', 1)}
-    END;
+    CREATE INDEX IF NOT EXISTS idx_owner_message_stats_first_user_at ON owner_message_stats(first_user_at);
+`;
+
+/** The triggers that kept the counters before the write path did (countMessageWriteSync()). */
+const DROP_OLD_TRIGGERS_SQL = `
+    DROP TRIGGER IF EXISTS message_stats_insert;
+    DROP TRIGGER IF EXISTS message_stats_delete;
+    DROP TRIGGER IF EXISTS message_stats_content;
+    DROP TRIGGER IF EXISTS message_stats_move;
 `;
 
 /**
- * Creates the stats table and its triggers. A store on an older version gets them rebuilt and every owner recounted
- * by the fill (a hard cutover: the old counters are dropped).
+ * Creates the stats table. A store on an older version gets it rebuilt and every owner recounted by the fill (a hard
+ * cutover: the old counters are dropped).
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 export function migrateMessageStatsSync(db) {
     const version = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: VERSION_KEY }));
+    if (db.get('SELECT 1 AS present FROM sqlite_master WHERE type = \'trigger\' AND name LIKE \'message_stats_%\' LIMIT 1')) {
+        db.exec(DROP_OLD_TRIGGERS_SQL);
+    }
     if (version?.value !== MESSAGE_STATS_VERSION) {
-        db.exec(`
-            DROP TRIGGER IF EXISTS message_stats_insert;
-            DROP TRIGGER IF EXISTS message_stats_delete;
-            DROP TRIGGER IF EXISTS message_stats_content;
-            DROP TRIGGER IF EXISTS message_stats_move;
-            DROP TABLE IF EXISTS owner_message_stats;
-        `);
+        db.exec('DROP TABLE IF EXISTS owner_message_stats;');
         restartMessageStatsFillSync(db);
     }
     db.exec(MESSAGE_STATS_SQL);
     if (version?.value !== MESSAGE_STATS_VERSION) {
         setTreeMetaSync(db, VERSION_KEY, MESSAGE_STATS_VERSION);
     }
+}
+
+/**
+ * @typedef {{ id: string, parent_id: string | null, owner_id: string, content: string }} StatsMessageRow
+ */
+
+/**
+ * @typedef {object} OwnerChange One owner's counter change from one write.
+ * @property {MessageStats} delta The counters' change; its first_user_at is the earliest send date added.
+ * @property {number[]} removedSendAts The send dates of the user messages the write took away.
+ */
+
+/**
+ * Whether `parentId` is a message other than the anchor: a character message counts only under one.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} parentId
+ */
+function isUnderMessageSync(db, parentId) {
+    const parent = /** @type {{ parent_id: string | null } | undefined} */ (db.get('SELECT parent_id FROM messages WHERE id = @id', { id: parentId }));
+    return parent !== undefined && parent.parent_id !== null;
+}
+
+/**
+ * Whether `parentId` has a character message other than the ones in `exclude`, as the table is now.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} parentId
+ * @param {Set<string>} exclude
+ */
+function hasCharChildSync(db, parentId, exclude) {
+    for (const row of /** @type {Iterable<{ id: string, content: string }>} */ (db.iterate(
+        'SELECT id, content FROM messages WHERE parent_id = @parentId', { parentId }))) {
+        if (!exclude.has(row.id) && messageKind(row.content) === 'char') return true;
+    }
+    return false;
+}
+
+/**
+ * Adds one row's counters to its owner's change, `sign` 1 for a row the write added, -1 for one it took away.
+ * @param {Map<string, OwnerChange>} changes
+ * @param {StatsMessageRow} row
+ * @param {1 | -1} sign
+ * @param {boolean} underMessage Whether the row's parent is a message other than the anchor.
+ * @param {boolean} hasOtherChar Whether the row's parent has another character message.
+ */
+function addRowChange(changes, row, sign, underMessage, hasOtherChar) {
+    if (row.parent_id === null) return;
+    const kind = messageKind(row.content);
+    if (kind === null || (kind === 'char' && !underMessage)) return;
+    let change = changes.get(row.owner_id);
+    if (!change) {
+        change = { delta: emptyStats(), removedSendAts: [] };
+        changes.set(row.owner_id, change);
+    }
+    const { delta } = change;
+    const words = countWords(parseContent(row.content)?.mes);
+    if (kind === 'user') {
+        delta.user_msgs += sign;
+        delta.user_words += sign * words;
+        const at = sendAtOf(row.content);
+        if (at !== null) {
+            if (sign > 0) delta.first_user_at = delta.first_user_at === null ? at : Math.min(delta.first_user_at, at);
+            else change.removedSendAts.push(at);
+        }
+        return;
+    }
+    delta.char_msgs += sign;
+    delta.char_words += sign * words;
+    if (hasOtherChar) delta.swipes += sign;
+    const ms = generationMs(row.content);
+    if (ms === null) delta.gen_unknown += sign;
+    else delta.gen_ms += sign * ms;
+}
+
+/**
+ * The earliest send date of an owner's counted user messages, read from its rows.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} ownerId
+ * @returns {number | null}
+ */
+function readFirstUserAtSync(db, ownerId) {
+    let first = null;
+    for (const row of /** @type {Iterable<{ content: string }>} */ (db.iterate(
+        'SELECT content FROM messages WHERE owner_id = @ownerId AND parent_id IS NOT NULL', { ownerId }))) {
+        if (messageKind(row.content) !== 'user') continue;
+        const at = sendAtOf(row.content);
+        if (at !== null && (first === null || at < first)) first = at;
+    }
+    return first;
+}
+
+/**
+ * Writes each owner's change into its row and the totals row. An owner whose earliest user message was taken away
+ * has its first_user_at read again from its rows, and the totals' from the owners' rows.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {Map<string, OwnerChange>} changes
+ */
+function applyChangesSync(db, changes) {
+    if (changes.size === 0) return;
+    const totals = readRowSync(db, TOTALS_OWNER);
+    const totalsBefore = totals.first_user_at;
+    let totalsStale = false;
+    for (const [ownerId, { delta, removedSendAts }] of changes) {
+        const stats = readRowSync(db, ownerId);
+        const before = stats.first_user_at;
+        for (const c of COUNTERS) {
+            stats[c] += delta[c];
+            totals[c] += delta[c];
+        }
+        stats.first_user_at = minOf(before, delta.first_user_at);
+        if (before !== null && removedSendAts.includes(before)) {
+            stats.first_user_at = readFirstUserAtSync(db, ownerId);
+            if (before === totalsBefore && stats.first_user_at !== before) totalsStale = true;
+        }
+        writeRowSync(db, ownerId, stats);
+        totals.first_user_at = minOf(totals.first_user_at, delta.first_user_at);
+    }
+    if (totalsStale) {
+        const first = /** @type {{ first_user_at: number } | undefined} */ (db.get(
+            'SELECT first_user_at FROM owner_message_stats WHERE first_user_at IS NOT NULL AND owner_id <> @totals ORDER BY first_user_at LIMIT 1',
+            { totals: TOTALS_OWNER }));
+        totals.first_user_at = first?.first_user_at ?? null;
+    }
+    writeRowSync(db, TOTALS_OWNER, totals);
+}
+
+/**
+ * @param {number | null} a
+ * @param {number | null} b
+ */
+function minOf(a, b) {
+    if (a === null) return b;
+    if (b === null) return a;
+    return Math.min(a, b);
+}
+
+/**
+ * Counts one row the caller has just inserted, rewritten or moved, inside the caller's transaction. `before` is the
+ * row as it was (null for an insert), `after` as it is now; the same id.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {StatsMessageRow | null} before
+ * @param {StatsMessageRow} after
+ */
+export function countMessageWriteSync(db, before, after) {
+    /** @type {Map<string, OwnerChange>} */
+    const changes = new Map();
+    const self = new Set([after.id]);
+    for (const [row, sign] of /** @type {[StatsMessageRow | null, 1 | -1][]} */ ([[before, -1], [after, 1]])) {
+        if (row === null || row.parent_id === null) continue;
+        const kind = messageKind(row.content);
+        if (kind === null) continue;
+        const underMessage = kind === 'char' && isUnderMessageSync(db, row.parent_id);
+        addRowChange(changes, row, sign, underMessage, underMessage && hasCharChildSync(db, row.parent_id, self));
+    }
+    applyChangesSync(db, changes);
+}
+
+/**
+ * Deletes `rows` with `remove` and counts them out, inside the caller's transaction. Each row's place (its parent's
+ * parent, its parent's other character messages) is read before the delete, as the counters held it.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {StatsMessageRow[]} rows
+ * @param {() => number} remove Deletes the rows; returns how many it deleted, which must be all of them (else this
+ *   throws, rolling the caller's transaction back).
+ * @returns {number} What `remove` returned.
+ */
+export function deleteMessagesCountedSync(db, rows, remove) {
+    const deleting = new Set(rows.map(r => r.id));
+    /** @type {Map<string, boolean>} */
+    const underMessage = new Map();
+    /** @type {Map<string, number>} Per parent: character messages left after the delete, besides those deleted. */
+    const charsKept = new Map();
+    for (const row of rows) {
+        if (row.parent_id === null || messageKind(row.content) !== 'char' || underMessage.has(row.parent_id)) continue;
+        underMessage.set(row.parent_id, isUnderMessageSync(db, row.parent_id));
+        charsKept.set(row.parent_id, hasCharChildSync(db, row.parent_id, deleting) ? 1 : 0);
+    }
+    const deleted = remove();
+    if (deleted !== rows.length) throw new Error(`Deleted ${deleted} of ${rows.length} message rows; the stats count only whole deletes.`);
+    /** @type {Map<string, OwnerChange>} */
+    const changes = new Map();
+    /** @type {Map<string, number>} Per parent: deleted character messages not yet counted out. */
+    const charsLeftToCount = new Map();
+    for (const row of rows) {
+        if (row.parent_id !== null && messageKind(row.content) === 'char') charsLeftToCount.set(row.parent_id, (charsLeftToCount.get(row.parent_id) ?? 0) + 1);
+    }
+    for (const row of rows) {
+        const parentId = row.parent_id;
+        let hasOtherChar = false;
+        if (parentId !== null && messageKind(row.content) === 'char') {
+            const left = /** @type {number} */ (charsLeftToCount.get(parentId)) - 1;
+            charsLeftToCount.set(parentId, left);
+            hasOtherChar = left > 0 || (charsKept.get(parentId) ?? 0) > 0;
+        }
+        addRowChange(changes, row, -1, parentId !== null && (underMessage.get(parentId) ?? false), hasOtherChar);
+    }
+    applyChangesSync(db, changes);
+    return deleted;
 }
 
 /**
@@ -309,7 +467,7 @@ function writeRowSync(db, ownerId, stats) {
 /**
  * Recounts the next `limit` owners after where the fill stopped, each in its own transaction: the owner's row is
  * replaced by its count from its rows, and the totals move by the difference. Writes committed before or during the
- * fill are already in the rows it counts; writes after it are kept by the triggers.
+ * fill are already in the rows it counts; writes after it are counted by the write path.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {number} limit
  * @returns {{ owners: number, done: boolean }}

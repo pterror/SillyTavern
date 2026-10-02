@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { insertTagRowRaw } from './util/stored-counters.js';
 
 /** @type {typeof import('../src/character-metadata-db.js')} */
 let metadataDb;
@@ -262,8 +263,8 @@ describe('fillTagDerivedColumnsIfNeeded', () => {
             round++;
             const db = live();
             // An assignment to a row the fill has passed and to one it hasn't: the triggers set usage_count.
-            db.prepare('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('a.png', tagId(round));
-            db.prepare('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('a.png', tagId(2400 - round));
+            insertTagRowRaw(db, 'character_tags', 'a.png', tagId(round));
+            insertTagRowRaw(db, 'character_tags', 'a.png', tagId(2400 - round));
         };
         await metadataDb.fillTagDerivedColumnsIfNeeded(directories);
         afterCommit = null;

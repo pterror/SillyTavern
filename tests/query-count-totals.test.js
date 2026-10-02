@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { recountStoredCounters } from './util/stored-counters.js';
 
 // POST /api/characters/query's total read from the stored counters (entity_counts / entity_tag_counts) once their
 // fill is done, for the shapes they answer: no filter, fav alone, one included tag, one excluded tag (each ± fav).
@@ -475,21 +476,25 @@ async function seedBigStore() {
     await seedCharacter('tmpl.png');
     await seedGroup('gtmpl');
     await fill();
-    withRawDb(db => db.transaction(() => {
-        copyRows(db, 'characters', 'tmpl.png', BIG_CHARACTERS, {
-            id: 'printf(\'c%06d.png\', i)', name_fold: 'printf(\'c%06d\', i)',
-            fav: `${bucketSql(15485863)} < 15`, world: `CASE WHEN ${bucketSql(179424673)} < 30 THEN 'lore' ELSE '' END`,
-        });
-        copyRows(db, 'groups', 'gtmpl', BIG_GROUPS, {
-            id: 'printf(\'g%06d\', i)', name: 'printf(\'g%06d\', i)', name_fold: 'printf(\'g%06d\', i)', fav: `${bucketSql(15485863)} < 15`,
-        });
-        for (const [tagId, prime, percent] of [['t1', 7919, 70], ['t2', 104729, 50], ['t3', 1299709, 40]]) {
-            db.prepare(`${SEQ_CTE} INSERT INTO character_tags (character_id, tag_id) SELECT printf('c%06d.png', i), @tagId FROM seq WHERE ${bucketSql(prime)} < @percent`)
-                .run({ n: BIG_CHARACTERS, tagId, percent });
-            db.prepare(`${SEQ_CTE} INSERT INTO group_tags (group_id, tag_id) SELECT printf('g%06d', i), @tagId FROM seq WHERE ${bucketSql(prime)} < @percent`)
-                .run({ n: BIG_GROUPS, tagId, percent });
-        }
-    })());
+    withRawDb(db => {
+        db.transaction(() => {
+            copyRows(db, 'characters', 'tmpl.png', BIG_CHARACTERS, {
+                id: 'printf(\'c%06d.png\', i)', name_fold: 'printf(\'c%06d\', i)',
+                fav: `${bucketSql(15485863)} < 15`, world: `CASE WHEN ${bucketSql(179424673)} < 30 THEN 'lore' ELSE '' END`,
+            });
+            copyRows(db, 'groups', 'gtmpl', BIG_GROUPS, {
+                id: 'printf(\'g%06d\', i)', name: 'printf(\'g%06d\', i)', name_fold: 'printf(\'g%06d\', i)', fav: `${bucketSql(15485863)} < 15`,
+            });
+            for (const [tagId, prime, percent] of [['t1', 7919, 70], ['t2', 104729, 50], ['t3', 1299709, 40]]) {
+                db.prepare(`${SEQ_CTE} INSERT INTO character_tags (character_id, tag_id) SELECT printf('c%06d.png', i), @tagId FROM seq WHERE ${bucketSql(prime)} < @percent`)
+                    .run({ n: BIG_CHARACTERS, tagId, percent });
+                db.prepare(`${SEQ_CTE} INSERT INTO group_tags (group_id, tag_id) SELECT printf('g%06d', i), @tagId FROM seq WHERE ${bucketSql(prime)} < @percent`)
+                    .run({ n: BIG_GROUPS, tagId, percent });
+            }
+        })();
+        // Raw rows: counted from the rows, as the store counts the rows it writes.
+        recountStoredCounters(db);
+    });
 }
 
 /** The COUNT(*) statement's totals for these filters, read with the fill marked not done. */
@@ -809,13 +814,16 @@ describe('/query sampled estimates', () => {
         await saveTags(['ta', 'tb']);
         await seedCharacter('tmpl.png');
         await fill();
-        withRawDb(db => db.transaction(() => {
-            copyRows(db, 'characters', 'tmpl.png', 14000, { id: 'printf(\'m%06d.png\', i)' });
-            copyRows(db, 'characters', 'tmpl.png', 60000, { id: 'printf(\'y%06d.png\', i)' });
-            copyRows(db, 'characters', 'tmpl.png', 1000, { id: 'printf(\'z%04d.png\', i)' });
-            db.prepare('INSERT INTO character_tags (character_id, tag_id) SELECT id, \'tb\' FROM characters WHERE id LIKE \'m%\' OR id LIKE \'z%\'').run();
-            db.prepare('INSERT INTO character_tags (character_id, tag_id) SELECT id, \'ta\' FROM characters WHERE id LIKE \'z%\'').run();
-        })());
+        withRawDb(db => {
+            db.transaction(() => {
+                copyRows(db, 'characters', 'tmpl.png', 14000, { id: 'printf(\'m%06d.png\', i)' });
+                copyRows(db, 'characters', 'tmpl.png', 60000, { id: 'printf(\'y%06d.png\', i)' });
+                copyRows(db, 'characters', 'tmpl.png', 1000, { id: 'printf(\'z%04d.png\', i)' });
+                db.prepare('INSERT INTO character_tags (character_id, tag_id) SELECT id, \'tb\' FROM characters WHERE id LIKE \'m%\' OR id LIKE \'z%\'').run();
+                db.prepare('INSERT INTO character_tags (character_id, tag_id) SELECT id, \'ta\' FROM characters WHERE id LIKE \'z%\'').run();
+            })();
+            recountStoredCounters(db);
+        });
         expect(await jsonTotal({ tags: { include: ['ta', 'tb'], mode: 'or' } })).toEqual({ total: '~15000', counted: false });
     }, 60000);
 });
