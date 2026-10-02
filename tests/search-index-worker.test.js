@@ -418,6 +418,9 @@ describe('characters index chat stats', () => {
 
         await metadataDb.applyCharacterChatStats(directories, 'Kept.png', { sizeChange: 100, addedCreatedAt: 9999, readLastCreatedAt: null });
         await metadataDb.applyCharacterChatStats(directories, 'Scanned.png', { sizeChange: 7, addedCreatedAt: 42, readLastCreatedAt: null });
+        // Message writes queue their stats; the rows (and the change rows a catch-up follows) are written with the queue,
+        // as a read sorted by chat size or last chat does before it reads.
+        expect(await metadataDb.foldAllActivity(directories)).toBe(2);
         const seq = await metadataDb.getCurrentSeq(directories);
         await waitFor(() => indexCovers(seq));
 

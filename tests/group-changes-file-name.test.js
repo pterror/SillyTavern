@@ -229,9 +229,13 @@ const WRITERS = [
         rows: [['1001', null]],
     },
     {
-        name: 'applyGroupChatStats',
+        // A message write only queues the stats; the row (and its log row) is written when the queue is.
+        name: 'applyGroupChatStats, then the queue written out',
         setup: async () => { await seedGroup('1001'); },
-        act: () => metadataDb.applyGroupChatStats(directories, '1001', { sizeChange: 0, addedCreatedAt: 1234, readLastCreatedAt: null }),
+        act: async () => {
+            await metadataDb.applyGroupChatStats(directories, '1001', { sizeChange: 0, addedCreatedAt: 1234, readLastCreatedAt: null });
+            await metadataDb.foldAllActivity(directories);
+        },
         rows: [['1001', null]],
     },
     {

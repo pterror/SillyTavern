@@ -2006,6 +2006,7 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
 
         // A plain /edit-shaped call (rename) must not clobber the stats just applied.
         await metadataDb.upsertGroupRow(directories, 'g1', 'G1 Renamed');
+        await metadataDb.foldAllActivity(directories);
 
         const { default: Database } = await import('better-sqlite3');
         const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));
@@ -2025,6 +2026,9 @@ describe('groups schema extension (owner decision - fav/date_added/date_last_cha
 
         await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 10, addedCreatedAt: 2000, readLastCreatedAt: null });
         await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 20, addedCreatedAt: 1000, readLastCreatedAt: null });
+        // Queued until read: a read through the store sees it at once, the row once the queue is written out.
+        expect((await metadataDb.getGroupChatStatsByIds(directories, ['g1'])).get('g1')).toEqual({ chatSize: 30, dateLastChat: 2000 });
+        expect(await metadataDb.foldAllActivity(directories)).toBe(1);
 
         const { default: Database } = await import('better-sqlite3');
         const db = new Database(path.join(tempDir, 'character-metadata.sqlite'));

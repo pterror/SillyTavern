@@ -284,6 +284,8 @@ describe('a group_changes row with only a group id', () => {
         const maintainer = await builtMaintainer();
 
         await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 100, addedCreatedAt: 5, readLastCreatedAt: null });
+        // A message write only queues its chat stats; writing the queue into the row adds the group_changes row.
+        expect(await metadataDb.foldAllActivity(directories)).toBe(1);
         recordFileReads();
         expect(await maintainer.tick()).toMatchObject({ changed: true, refreshed: 2 });
         expect(filesRead()).toEqual(['g1.json', 'other.json']);
@@ -318,7 +320,7 @@ describe('a group_changes row with only a group id', () => {
         // Page 1: g9.json is new; page 2 (past 500 rows): g9's tag, a row with only its id.
         await writeGroup({ id: 'g9', name: 'Newcomer', members: [] });
         for (let i = 0; i < 510; i++) {
-            await metadataDb.applyGroupChatStats(directories, 'g2', { sizeChange: 1, addedCreatedAt: i + 1, readLastCreatedAt: null });
+            await metadataDb.upsertGroupRow(directories, 'g2', 'Circle', { fav: i % 2 === 0 });
         }
         expect(await metadataDb.assignEntityTag(directories, 'g9', 't1')).toBe('ok');
         recordFileReads();
@@ -456,8 +458,10 @@ describe('bounded reads', () => {
         expect(sqlEvents().filter(e => e.method === 'all')).toEqual([]);
 
         for (let i = 0; i < 1100; i++) {
-            await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 1, addedCreatedAt: i + 1, readLastCreatedAt: null });
+            await metadataDb.upsertGroupRow(directories, 'g1', 'Coven', { fav: i % 2 === 0 });
         }
+        await metadataDb.applyGroupChatStats(directories, 'g1', { sizeChange: 1100, addedCreatedAt: 1100, readLastCreatedAt: null });
+        expect(await metadataDb.foldAllActivity(directories)).toBe(1);
         events.length = 0;
         expect(await maintainer.tick()).toMatchObject({ changed: true, version: await metadataDb.getGroupsVersion(directories) });
 
