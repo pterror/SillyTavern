@@ -204,6 +204,17 @@ test.describe('Hotkeys', () => {
         await expect(overlay(page)).toHaveCount(0);
     });
 
+    test('with stacked drawers on, the held list is a layer: the chat under it is cut there, and back once it hides', async ({ page }) => {
+        await setStackedDrawers(page, true);
+        await chatBox(page).focus();
+        await page.keyboard.down('Control');
+        await expect(overlay(page)).toBeVisible();
+        await expect(page.locator('#sheld')).toHaveAttribute('data-stack-cut', 'true');
+        await page.keyboard.up('Control');
+        await expect(overlay(page)).toHaveCount(0);
+        await expect(page.locator('#sheld')).not.toHaveAttribute('data-stack-cut', 'true');
+    });
+
     test('a shortcut, a click or scrolling while Ctrl is down hides it or keeps it from showing', async ({ page }) => {
         await chatBox(page).focus();
         // A quick shortcut never shows it.
