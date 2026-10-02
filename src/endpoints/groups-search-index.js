@@ -3,10 +3,11 @@ import path from 'node:path';
 
 import {
     getTagDefinitionsForIds, getEntityTagIdsForMany, getTagDeletions, getGroupFavsByIds, getGroupsVersion, getGroupChangesSince,
-    getCurrentTagNameChangeSeq, getTagNameChangesSince, streamGroupIdsForTagIds, trySetMetaValues,
+    getCurrentTagNameChangeSeq, getTagNameChangesSince, streamGroupIdsForTagIds, trySetMetaValues, getNameOrderPositions,
 } from '../character-metadata-db.js';
 import { streamGroupsDataBatches, readGroupsDataFiles } from './groups.js';
-import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery, fastFieldOrderValue } from './tantivy-search.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, stringToSortKey, withFavFilter, buildTagFilterQuery } from './tantivy-search.js';
+import { sortKeysOf, sortKeyField } from './search-sort-keys.js';
 import { resolveSearchEngine } from './search-engine.js';
 import { getSearchIndex, GROUPS_INDEX_VERSION_META_KEY, GROUPS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY } from './search-index-coordinator.js';
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
@@ -492,29 +493,34 @@ export async function searchGroups(handle, directories, searchTerm, maxRows, fav
  * @param {string} sortField
  * @returns {number}
  */
-function groupSortValue(group, sortField) {
-    switch (sortField) {
-        case 'create_date':
-        case 'date_added': return Math.max(0, Number(group.date_added) || 0);
-        case 'date_last_chat': return Math.max(0, Number(group.date_last_chat) || 0);
-        case 'chat_size': return Math.max(0, Number(group.chat_size) || 0);
-        case 'data_size': return 0;
-        case 'name': return stringToSortKey(group.name ?? '');
-        case 'fav': return (group.fav ? 0 : 1) * (2 ** 48) + stringToSortKey(group.name ?? '', 6);
-        default: throw new Error(`no group sort value for ${sortField}`);
-    }
+/**
+ * A group's key for a sort, as the characters index stores the same field (sortKeysOf()), read descending.
+ * @param {{ asc: number, desc: number } | undefined} positions The group's name order positions.
+ */
+function groupSortKey(group, sortField, sortOrder, positions) {
+    const dateAdded = Math.max(0, Number(group.date_added) || 0);
+    const keys = sortKeysOf({
+        create_date: dateAdded,
+        date_added: dateAdded,
+        date_last_chat: Math.max(0, Number(group.date_last_chat) || 0),
+        chat_size: Math.max(0, Number(group.chat_size) || 0),
+        data_size: 0,
+    }, Boolean(group.fav), positions);
+    const field = sortKeyField(sortField, sortOrder);
+    if (field === null) throw new Error(`no group sort key for ${sortField}`);
+    return keys[field];
 }
 
 /**
- * Every matching group, in the order tantivy would sort them among characters: descending
- * fastFieldOrderValue(), ties by exact sort value in `order`, then by id. A user's groups are few, so all of them are read and sorted here.
- * @param {'asc'|'desc'} order The order tantivy sorts characters in (tantivySortOrder()).
+ * Every matching group, in the order the characters index sorts the same field: descending key (groupSortKey()),
+ * then id. A user's groups are few, so all of them are read and sorted here.
+ * @param {string} sortOrder The sort's direction, 'asc' or 'desc'.
  * @param {{ fav?: boolean, tags?: object, excludeIds?: string[], ids?: string[] }} [filter]
  * Null when the index can't take the tag filter (searchIndexTagFilter()'s leftToSql); the caller's SQL path applies it.
  * @returns {Promise<{ groups: { id: string, order: number }[], backend: 'tantivy' | 'unavailable', position: import('./search-index-coordinator.js').GroupsIndexPosition | null } | null>}
  * `position` is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
  */
-export async function searchGroupsSorted(handle, directories, searchTerm, sortField, order, filter = {}) {
+export async function searchGroupsSorted(handle, directories, searchTerm, sortField, sortOrder, filter = {}) {
     const { fav, tags, excludeIds, ids } = filter;
     const engine = await timePhase('groups_index_get', () => resolveSearchEngine());
     if (engine.tier === 'unavailable') {
@@ -551,19 +557,15 @@ export async function searchGroupsSorted(handle, directories, searchTerm, sortFi
         return { groups: [], backend: 'tantivy', position };
     }
     const { results } = runTantivySearch(tantivyIndex.index, query, undefined, { timingLabel: 'groups' });
-    const groups = timePhase('groups_ids', () => {
-        const allowed = Array.isArray(ids) ? new Set(ids) : null;
-        const excluded = new Set(Array.isArray(excludeIds) ? excludeIds : []);
-        return results
-            .map(r => JSON.parse(r.raw))
-            .filter(group => (!allowed || allowed.has(group.id)) && !excluded.has(group.id))
-            .map(group => {
-                const value = groupSortValue(group, sortField);
-                return { id: String(group.id), order: fastFieldOrderValue(value, order), value };
-            })
-            .sort((a, b) => b.order - a.order || (order === 'asc' ? a.value - b.value : b.value - a.value) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-            .map(({ id, order: groupOrder }) => ({ id, order: groupOrder }));
-    });
+    const allowed = Array.isArray(ids) ? new Set(ids) : null;
+    const excluded = new Set(Array.isArray(excludeIds) ? excludeIds : []);
+    const matched = results.map(r => JSON.parse(r.raw)).filter(group => (!allowed || allowed.has(group.id)) && !excluded.has(group.id));
+    const positions = sortField === 'name' || sortField === 'fav'
+        ? await getNameOrderPositions(directories, 'g', matched.map(group => String(group.id)))
+        : new Map();
+    const groups = timePhase('groups_ids', () => matched
+        .map(group => ({ id: String(group.id), order: groupSortKey(group, sortField, sortOrder, positions.get(String(group.id))) }))
+        .sort((a, b) => b.order - a.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
     return { groups, backend: 'tantivy', position };
 }
 

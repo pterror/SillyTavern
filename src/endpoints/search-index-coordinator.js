@@ -18,6 +18,7 @@ const DISPOSE_TIMEOUT_MS = 10000;
 export const CHARACTERS_INDEX_SEQ_META_KEY = 'tantivy_char_index_seq';
 export const CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_char_index_tag_name_change_seq';
 export const CHARACTERS_INDEX_RETRY_SEQ_META_KEY = 'tantivy_char_index_retry_seq';
+export const CHARACTERS_INDEX_NAME_ORDER_SEQ_META_KEY = 'tantivy_char_index_name_order_seq';
 /** The meta keys the groups index persists its position under (groups-search-index.js writes them). */
 export const GROUPS_INDEX_VERSION_META_KEY = 'tantivy_group_index_version';
 export const GROUPS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = 'tantivy_group_index_tag_name_change_seq';
@@ -29,9 +30,10 @@ export const CHARACTER_INDEX_FAILED_EVENT = 'character-index-failed';
 
 /**
  * @typedef {'characters' | 'groups'} SearchIndexTarget
- * @typedef {{ seq: number, tagNameSeq: number, retrySeq: number }} SearchIndexPosition How far the characters index
- * has applied the change log (`seq`) and the tag-rename log (`tagNameSeq`), and how many of its catch-ups changed
- * it by retrying cards that had failed to index, without moving either cursor (`retrySeq`).
+ * @typedef {{ seq: number, tagNameSeq: number, retrySeq: number, nameOrderSeq?: number }} SearchIndexPosition How far the
+ * characters index has applied the change log (`seq`), the tag-rename log (`tagNameSeq`) and the name order log
+ * (`nameOrderSeq`), and how many of its catch-ups changed it by retrying cards that had failed to index, without
+ * moving a cursor (`retrySeq`).
  * @typedef {{ version: number, tagNameSeq: number }} GroupsIndexPosition How far the groups index has applied the
  * groups version log (`version`, a getGroupsVersion() value) and the tag-rename log (`tagNameSeq`).
  * @typedef {{ index: any, schema: any, position?: SearchIndexPosition | GroupsIndexPosition | null }} SearchIndexReader
@@ -171,7 +173,7 @@ export function createSearchIndexCoordinator({
             return Number.isFinite(msg?.version) && Number.isFinite(msg?.tagNameSeq) ? { version: msg.version, tagNameSeq: msg.tagNameSeq } : null;
         }
         return Number.isFinite(msg?.seq) && Number.isFinite(msg?.tagNameSeq) && Number.isFinite(msg?.retrySeq)
-            ? { seq: msg.seq, tagNameSeq: msg.tagNameSeq, retrySeq: msg.retrySeq }
+            ? { seq: msg.seq, tagNameSeq: msg.tagNameSeq, retrySeq: msg.retrySeq, ...(Number.isFinite(msg?.nameOrderSeq) ? { nameOrderSeq: msg.nameOrderSeq } : {}) }
             : null;
     }
 
@@ -348,10 +350,12 @@ export function createSearchIndexCoordinator({
             // The index reads a missing tag-rename cursor or retry counter as 0 (openPersisted()), so this does too.
             const tagNameSeq = await getMetaValue(directories, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY);
             const retrySeq = await getMetaValue(directories, CHARACTERS_INDEX_RETRY_SEQ_META_KEY);
+            const nameOrderSeq = await getMetaValue(directories, CHARACTERS_INDEX_NAME_ORDER_SEQ_META_KEY);
             const position = {
                 seq: Number(seq),
                 tagNameSeq: tagNameSeq === null ? 0 : Number(tagNameSeq),
                 retrySeq: retrySeq === null ? 0 : Number(retrySeq),
+                nameOrderSeq: nameOrderSeq === null ? 0 : Number(nameOrderSeq),
             };
             return Number.isFinite(position.seq) && Number.isFinite(position.tagNameSeq) && Number.isFinite(position.retrySeq) ? position : null;
         } catch (err) {

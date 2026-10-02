@@ -11,6 +11,8 @@ let metadataDb;
 let cardParser;
 /** @type {typeof import('../src/endpoints/search-index-coordinator.js')} */
 let searchCoordinator;
+/** @type {typeof import('../src/endpoints/characters-search-index.js')} */
+let searchIndexModule;
 /** @type {import('node:http').Server} */
 let server;
 let baseUrl;
@@ -32,6 +34,7 @@ beforeAll(async () => {
     metadataDb = await import('../src/character-metadata-db.js');
     cardParser = await import('../src/character-card-parser.js');
     searchCoordinator = await import('../src/endpoints/search-index-coordinator.js');
+    searchIndexModule = await import('../src/endpoints/characters-search-index.js');
 
     const express = (await import('express')).default;
     const app = express();
@@ -426,6 +429,36 @@ describe('POST /api/characters/query - filter.includeGroups (extends the design 
         };
         expect(await idsFor('asc')).toEqual(['VampireOlder.png', 'VampireGroup', 'VampireNewer.png']);
         expect(await idsFor('desc')).toEqual(['VampireNewer.png', 'VampireGroup', 'VampireOlder.png']);
+    });
+
+    test('filter.search + includeGroups + create_date ascending places characters and a group 2 ms apart exactly', async () => {
+        await seedGroup('VampireGroup', { name: 'Vampire Group' });
+        const groupDate = Math.floor(fs.statSync(path.join(directories.groups, 'VampireGroup.json')).birthtimeMs);
+        const cardFor = (name, createDate) => ({ name, create_date: new Date(createDate).toISOString(), data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await seedCharacterWithFile('VampireOlder.png', cardFor('Vampire Older', groupDate - 2));
+        await seedCharacterWithFile('VampireNewer.png', cardFor('Vampire Newer', groupDate + 2));
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'create_date', order: 'asc' }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar)).toEqual(['VampireOlder.png', 'VampireGroup', 'VampireNewer.png']);
+    });
+
+    test.each([
+        ['asc', ['Alexanda.png', 'Alexander.png', 'Alexandra.png', 'Alexandre', 'Same.png', 'Same']],
+        ['desc', ['Same.png', 'Same', 'Alexandre', 'Alexandra.png', 'Alexander.png', 'Alexanda.png']],
+    ])('filter.search sorted by name %s through the search index comes back in full name order, then characters before groups', async (order, expected) => {
+        const cardFor = name => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        // The first three share their first 6 letters, which the old index sort key couldn't tell apart.
+        for (const name of ['Alexandra', 'Alexander', 'Alexanda']) await seedCharacterWithFile(`${name}.png`, cardFor(`Vampire ${name}`));
+        await seedCharacterWithFile('Same.png', cardFor('Vampire same'));
+        await seedGroup('Alexandre', { name: 'Vampire Alexandre' });
+        await seedGroup('Same', { name: 'Vampire same' });
+        await metadataDb.fillNameOrderIfNeeded(directories);
+        await searchIndexModule.rebuildCharacterSearchIndex(`test-user-${path.basename(directories.root)}`, directories);
+
+        const response = await postJson('/api/characters/query', { filter: { includeGroups: true, search: 'vampire' }, sort: { field: 'name', order }, page: 1, pageSize: 10 });
+        expect(response.status).toBe(200);
+        expect((await response.json()).rows.map(r => r.type === 'group' ? r.item.id : r.item.avatar)).toEqual(expected);
     });
 
     test('a deleted group is not resolvable via getGroupsByIds and is simply dropped from the page rather than shipping a null item', async () => {
