@@ -2852,11 +2852,17 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
                 }
                 return queryReply(200, payload);
             }
+            // The index refused the sort after all (a tag became left to SQL between the check above and the
+            // search): walk it under the work cap like any search the index can't answer whole.
+            return runSearchWalk(user, {
+                mode: 'sorted', searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql: true,
+                offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor,
+            });
         }
 
-        // Relevance was walked above; the sorts left here order in SQL, so they need every match. A random sort only
-        // gets here when its matches fit in the work cap.
-        const idFetchCap = sort.field === 'random' ? SEARCH_WORK_CAP : undefined;
+        // Relevance and every index-sorted search returned above. Only a random sort whose matches fit in the work cap
+        // gets here, so listing its matches is bounded by the cap.
+        const idFetchCap = SEARCH_WORK_CAP;
         // fav, tags, ids and excludeIds (for groups: fav and tags) are applied inside the search engine itself
         // (runIdSearch/runGroupSearch), before idFetchCap, so a hit they rule out never takes a place in the
         // capped list and leaves the page short. world isn't: the search engine has no world field. The SQL
