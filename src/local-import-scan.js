@@ -482,7 +482,13 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     importedCharacterId = `${pngName}.png`;
                     const destPath = path.join(directories.characters, `${pngName}.png`);
                     await pipelineResult.finish({ type: 'write', destPath, data });
-                    await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash, pipelineResult.avatarIdentityHash, { fromImport: true });
+                    try {
+                        await fireMetadataUpsertHook(directories, `${pngName}.png`, data, contentHash, pipelineResult.avatarIdentityHash, { fromImport: true });
+                    } catch (err) {
+                        // Retried next pass under a new id; a file left behind here would be a second copy.
+                        fs.rmSync(destPath, { force: true });
+                        throw err;
+                    }
                     await reflinkAgainstExistingDuplicate(directories, `${pngName}.png`, destPath, data, pipelineResult.avatarIdentityHash);
                     try {
                         await setCharacterDateAdded(directories, `${pngName}.png`, stat.mtimeMs);
