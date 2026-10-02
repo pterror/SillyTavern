@@ -309,15 +309,16 @@ describe('/query with characters only: the same walk, cursor and work cap', () =
                     const all = await metadataDb.queryCharacters(directories, { sortField, sortOrder, fav, offset: 0, limit: 100, wantTotal: false });
                     expect({ sortField, sortOrder, fav, rows: all.rows.map(r => r.avatar) }).toEqual({ sortField, sortOrder, fav, rows: want });
                     const followed = [];
+                    const fullPagesWithoutCursor = [];
                     let cursor;
                     for (let offset = 0; offset < want.length + 2; offset += 2) {
                         const page = await metadataDb.queryCharacters(directories, { sortField, sortOrder, fav, offset, limit: 2, wantTotal: false, cursor });
                         followed.push(...page.rows.map(r => r.avatar));
-                        if (page.rows.length === 2) expect(page.cursor).toEqual(expect.any(String));
+                        if (page.rows.length === 2 && typeof page.cursor !== 'string') fullPagesWithoutCursor.push(offset);
                         cursor = page.cursor;
                         if (page.rows.length < 2) break;
                     }
-                    expect({ sortField, sortOrder, fav, rows: followed }).toEqual({ sortField, sortOrder, fav, rows: want });
+                    expect({ sortField, sortOrder, fav, rows: followed, fullPagesWithoutCursor }).toEqual({ sortField, sortOrder, fav, rows: want, fullPagesWithoutCursor: [] });
                 }
             }
         }
