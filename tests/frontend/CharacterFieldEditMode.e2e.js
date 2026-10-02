@@ -866,14 +866,35 @@ test.describe('character field edit mode', () => {
         });
     }
 
-    test('code writing a field outside edit mode, as upstream extensions do, still saves it and updates the preview', async ({ page }) => {
-        const field = FIELDS.find(x => x.id === 'personality_textarea');
+    for (const field of FIELDS.filter(x => x.id !== 'greeting_field')) {
+        test(`${field.id}: code writing the field outside edit mode, as upstream extensions do, saves it and updates the preview`, async ({ page }) => {
+            await withCharacter(page, field, 'original', async (avatar) => {
+                await openInfoTab(page, field.tab);
+                await page.evaluate(id => $(`#${id}`).val('written by code').trigger('input'), field.id);
+                await expectPreviewMode(page, field);
+                await expect(fieldLocators(page, field.id).preview).toContainText('written by code');
+                await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field), { timeout: 10000 }).toBe('written by code');
+            });
+        });
+    }
+
+    test('code writing a field during an edit stores its value and keeps the user\'s typing in the editor', async ({ page }) => {
+        const field = FIELDS.find(x => x.id === 'description_textarea');
         await withCharacter(page, field, 'original', async (avatar) => {
             await openInfoTab(page, field.tab);
-            await page.evaluate(() => $('#personality_textarea').val('written by code').trigger('input'));
-            await expectPreviewMode(page, field);
-            await expect(fieldLocators(page, field.id).preview).toContainText('written by code');
+            const f = fieldLocators(page, field.id);
+            await f.pencil.click();
+            await expectEditMode(page, field);
+            await f.textarea.fill('typed by the user');
+            await page.evaluate(id => $(`#${id}`).val('written by code').trigger('input'), field.id);
+
+            await expect(f.textarea).toHaveValue('typed by the user');
+            await expectEditMode(page, field);
             await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field), { timeout: 10000 }).toBe('written by code');
+
+            await f.cancel.click();
+            await expectPreviewMode(page, field);
+            await expect(f.preview).toContainText('written by code');
         });
     });
 
