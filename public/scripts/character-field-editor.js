@@ -589,6 +589,9 @@ export function initCharacterFieldEditor(dependencies) {
     // handled Escape is marked with preventDefault, and those handlers leave it alone.
     document.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+        // An open suggestion list or panel in the editor takes the Escape first.
+        const editor = /** @type {Element} */ (event.target).closest?.('.cm-editor');
+        if (editor?.querySelector('.cm-tooltip-autocomplete, .cm-panels .cm-panel')) return;
         if (handleFieldEditKey('escape')) {
             event.preventDefault();
         }

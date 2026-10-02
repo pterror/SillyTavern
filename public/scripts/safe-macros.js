@@ -107,6 +107,17 @@ function maskUnsafeMacros(text) {
 }
 
 /**
+ * @param {string} macroText One whole `{{…}}`.
+ * @param {(content: string, options?: object) => string} substituteParams The app's substituteParams.
+ * @param {object} [options] Extra substituteParams options.
+ * @returns {string | null} Its value, or null when it isn't safe to run without being sent.
+ */
+export function evaluateSafeMacro(macroText, substituteParams, options = {}) {
+    if (!/^\{\{[\s\S]*\}\}$/.test(macroText) || !isSafeMacro(macroText)) return null;
+    return substituteParams(macroText, options);
+}
+
+/**
  * Plain text with only the safe macros evaluated and every other macro as written: for counting a field's tokens on
  * every change without running macros that have side effects or randomness.
  * @param {string} text
