@@ -8,6 +8,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { getConfigValue, setConfigFilePath } from '../util.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import { normalizeGroupRecord } from '../group-id.js';
+import { defineMessageStatsFunctions } from '../message-stats.js';
 import { groupDigestContentHash, groupDigestFavHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 
 /**
@@ -72,10 +73,11 @@ export const MARKER_MISSING_MESSAGE = 'start the server once, stop it, then reru
 
 /**
  * @param {any} db better-sqlite3 connection
- * @returns {Reader & { exec: (sql: string) => void, run: (sql: string, params?: object) => { changes: number } }}
+ * @returns {Reader & { exec: (sql: string) => void, run: (sql: string, params?: object) => { changes: number }, defineFunction: (name: string, fn: (...args: any[]) => any) => void }}
  */
 function wrap(db) {
     return {
+        defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn),
         get: (sql, params) => db.prepare(sql).get(params ?? {}),
         rows: (sql, params) => {
             const out = [];
@@ -566,6 +568,8 @@ async function queueStrayOwnerChatStats(dirs, warn) {
  */
 function applyTree({ Database, treePath, backupDir, repoint, stray, characterFileExists, characterRowExists, log, warn }) {
     const db = wrap(new Database(treePath, { fileMustExist: true }));
+    // The message stats triggers fire on the rows this deletes.
+    defineMessageStatsFunctions(/** @type {any} */ (db));
     try {
         db.exec('BEGIN IMMEDIATE');
         try {

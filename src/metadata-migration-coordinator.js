@@ -32,6 +32,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'dropTreeOwnerCreatedAtIndex',
     // Runs every boot: reads the metadata store, writes only the message tree.
     'fillTreeOwnerKinds',
+    // Counts each owner's message stats from its rows once; writes only the message tree.
+    'fillMessageStatsIfNeeded',
     // Builds /query's sort indexes; until they exist, /query reads each table in one statement.
     'buildEntitySortIndexesIfNeeded',
     // Copies tag rows older than the tag sort tables' triggers; until it finishes, /query's tag filters read today's way.

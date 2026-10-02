@@ -4,6 +4,10 @@ import crypto from 'node:crypto';
 
 import { color } from './util.js';
 import { getSqliteEngine } from './endpoints/sqlite-engine.js';
+import {
+    defineMessageStatsFunctions, fillMessageStatsBatchSync, messageStatsFilledSync, migrateMessageStatsSync,
+    readMessageStatsSync, restartMessageStatsFillSync,
+} from './message-stats.js';
 
 /**
  * Tree-structured message storage: one `messages` table, no swipe arrays — every alternative is a
@@ -509,9 +513,11 @@ async function getEntry(directories) {
         fs.mkdirSync(directories.root, { recursive: true });
     }
     const db = engine.openDatabase(getDbPath(directories));
+    defineMessageStatsFunctions(db);
     db.exec(SCHEMA_SQL);
     migrateTokenIdsChunks(db);
     migrateIdentityHashSync(db);
+    migrateMessageStatsSync(db);
     const entry = { db };
     entries.set(key, entry);
     return entry;
@@ -524,6 +530,55 @@ async function getEntry(directories) {
  */
 export async function getMessageTreeDb(directories) {
     return (await getEntry(directories))?.db ?? null;
+}
+
+/**
+ * Recounts the next `limit` owners' message stats from their rows (message-stats.js).
+ * @param {Directories} directories
+ * @param {number} limit
+ * @returns {Promise<{ owners: number, done: boolean } | null>} null when the store is unavailable.
+ */
+export async function fillMessageStats(directories, limit) {
+    const entry = await getEntry(directories);
+    return entry ? fillMessageStatsBatchSync(entry.db, limit) : null;
+}
+
+/**
+ * Starts the message stats recount over, so the next fill counts every owner again.
+ * @param {Directories} directories
+ */
+export async function restartMessageStatsFill(directories) {
+    const entry = await getEntry(directories);
+    if (entry) restartMessageStatsFillSync(entry.db);
+}
+
+/**
+ * Message stats per owner id, and the user's totals.
+ * @param {Directories} directories
+ * @param {string[]} ownerIds
+ * @returns {Promise<{ owners: Map<string, import('./message-stats.js').MessageStats>, totals: import('./message-stats.js').MessageStats, filled: boolean } | null>}
+ */
+export async function readMessageStats(directories, ownerIds) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const owners = new Map();
+    for (const ownerId of ownerIds) owners.set(ownerId, readMessageStatsSync(entry.db, ownerId));
+    return { owners, totals: readMessageStatsSync(entry.db, ''), filled: messageStatsFilledSync(entry.db) };
+}
+
+/**
+ * Up to `limit` owners with message stats whose kind is character, in owner id order, with their avatars.
+ * @param {Directories} directories
+ * @param {number} limit
+ * @returns {Promise<{ avatar: string, ownerId: string }[]>}
+ */
+export async function listCharacterStatOwners(directories, limit) {
+    const entry = await getEntry(directories);
+    if (!entry) return [];
+    return Array.from(/** @type {Iterable<{ owner_id: string, row_id: string }>} */ (entry.db.iterate(
+        `SELECT s.owner_id, o.row_id FROM owner_message_stats s JOIN owners o ON o.owner_id = s.owner_id
+         WHERE s.owner_id <> '' AND o.kind = 'character' ORDER BY s.owner_id LIMIT @limit`, { limit })),
+    row => ({ avatar: row.row_id, ownerId: row.owner_id }));
 }
 
 /**

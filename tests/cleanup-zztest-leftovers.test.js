@@ -7,6 +7,7 @@ import path from 'node:path';
 
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
 import { isBusyError, openWasmDatabase, streamRows } from '../src/endpoints/sqlite-engine.js';
+import { defineMessageStatsFunctions } from '../src/message-stats.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -33,6 +34,10 @@ class WasmBetterSqlite3 {
     constructor(file, options = {}) {
         WasmBetterSqlite3.opened.push({ file, options });
         this.db = new WasmDatabase(file, { readOnly: !!options.readonly, fileMustExist: !!options.fileMustExist });
+    }
+
+    function(name, options, fn) {
+        this.db.function(name, fn, options);
     }
 
     prepare(sql) {
@@ -206,6 +211,8 @@ function snapshotFiles(dir) {
 /** @param {string} file @param {(db: any) => any} fn */
 function withDb(file, fn) {
     const db = new WasmDatabase(file);
+    // The message stats triggers fire on message rows written here.
+    defineMessageStatsFunctions({ defineFunction: (name, f) => db.function(name, f, { deterministic: true }) });
     try {
         return fn(db);
     } finally {
