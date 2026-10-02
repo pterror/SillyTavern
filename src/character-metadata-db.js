@@ -10177,27 +10177,200 @@ function includedTagSortPlan(db, { tags, ids }, deletions) {
 }
 
 /**
- * A column list such as ENTITY_CHARACTER_COLUMNS with each plain column name qualified by its table, for a query
- * that joins another table.
- * @param {string} columns
- * @param {string} table
- * @returns {string}
- */
-function qualifiedColumns(columns, table) {
-    return columns.split(',').map(part => {
-        const column = part.trim();
-        if (/^[a-z_]+$/.test(column)) return `${table}.${column}`;
-        return column.replace(/^([a-z_]+)( as [a-z_]+)$/, `${table}.$1$2`);
-    }).join(', ');
-}
-
-/**
  * The conditions of a buildWhereClause()/buildGroupWhereClause() result, without its WHERE.
  * @param {{ where: string }} built
  * @returns {string[]}
  */
 function whereClausesOf(built) {
     return built.where ? [built.where.replace(/^WHERE /, '')] : [];
+}
+
+/**
+ * One ordered stream of a sorted /query page: one kind of entity, one fav value, read through a sort index.
+ * @typedef {object} SortedStream
+ * @property {string} name The stream's name in the page cursor.
+ * @property {'character' | 'group'} type
+ * @property {number} fav
+ * @property {string} from
+ * @property {string[]} where
+ * @property {unknown[]} args The arguments of `from` and `where`, in order.
+ * @property {string | null} key The sort key's SQL, or null when this kind has no such key and ties decide.
+ * @property {string} tie The tie key's SQL: a character's id, a group's `id || '.json'`.
+ * @property {string} id The entity id's SQL.
+ * @property {'ASC' | 'DESC'} dir
+ * @property {string} field The EntityRow field the merge comparator reads the key from.
+ */
+
+/**
+ * A sorted page's key row: enough for the merge comparator, the cursor and the page's row read.
+ * @typedef {{ stream: string, type: 'character' | 'group', id: string, fav: number, k: unknown, t: string } & Record<string, unknown>} SortedKeyRow
+ */
+
+/**
+ * The streams a sorted /query page merges: per kind and fav value, through the tag sort tables when an included tag
+ * can drive the walk (step 5), otherwise through the fav-first sort indexes (step 4).
+ * @param {MetadataDbEntry} entry
+ * @param {object} p
+ * @returns {SortedStream[]}
+ */
+function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly, charWhere, groupWhere, deletions }) {
+    const keyColumn = column === 'fav' ? 'name_fold' : column;
+    const dir = column !== 'fav' && sortOrder === 'desc' ? 'DESC' : 'ASC';
+    const field = column === 'fav' ? 'name_fold' : column;
+    const groupKey = keyColumn === 'create_date' ? 'date_added' : keyColumn === 'data_size' ? null : keyColumn;
+    const favValues = typeof fav === 'boolean' ? [fav ? 1 : 0] : [1, 0];
+    const plan = tagSortTablesReady(entry) ? includedTagSortPlan(entry.db, { tags, ids }, deletions) : null;
+    /** @type {SortedStream[]} */
+    const streams = [];
+    for (const favValue of favValues) {
+        if (plan) {
+            const restChar = buildWhereClause({ tags: plan.rest, fav, world, excludeIds }, deletions);
+            const restGroup = buildGroupWhereClause({ tags: plan.rest, fav, excludeIds }, deletions);
+            if (!groupsOnly) {
+                streams.push({
+                    name: `c${favValue}`, type: 'character', fav: favValue, dir, field,
+                    from: 'character_tag_sort s CROSS JOIN characters ON characters.id = s.entity_id',
+                    where: ['s.tag_id = ?', 's.k_fav = ?', ...whereClausesOf(restChar),
+                        ...plan.character.others.map(() => 'EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id = ?)')],
+                    args: [plan.character.driver, favValue, ...restChar.args, ...plan.character.others],
+                    key: `s.k_${keyColumn}`, tie: 's.entity_id', id: 's.entity_id',
+                });
+            }
+            streams.push({
+                name: `g${favValue}`, type: 'group', fav: favValue, dir, field,
+                from: 'group_tag_sort s CROSS JOIN groups ON groups.id = s.entity_id',
+                where: ['s.tag_id = ?', 's.k_fav = ?', ...whereClausesOf(restGroup),
+                    ...plan.group.others.map(() => 'EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id = ?)')],
+                args: [plan.group.driver, favValue, ...restGroup.args, ...plan.group.others],
+                key: groupKey ? `s.k_${groupKey}` : null, tie: '(s.entity_id || \'.json\')', id: 's.entity_id',
+            });
+        } else {
+            if (!groupsOnly) {
+                streams.push({
+                    name: `c${favValue}`, type: 'character', fav: favValue, dir, field,
+                    from: charWhere.from, where: [...whereClausesOf(charWhere), 'fav = ?'], args: [...charWhere.args, favValue],
+                    key: keyColumn, tie: 'id', id: 'id',
+                });
+            }
+            streams.push({
+                name: `g${favValue}`, type: 'group', fav: favValue, dir, field,
+                from: groupWhere.from, where: [...whereClausesOf(groupWhere), 'fav = ?'], args: [...groupWhere.args, favValue],
+                key: groupKey, tie: '(id || \'.json\')', id: 'id',
+            });
+        }
+    }
+    return streams;
+}
+
+/**
+ * Up to `limit` of a stream's key rows in its order, after `after` (a cursor's last [key, tie] for this stream) when
+ * given. Each part seeks its index: the rest of the run sharing the last key, then the keys past it, then (for a
+ * descending key) the rows with no key, which SQLite puts last.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {SortedStream} stream
+ * @param {[unknown, string] | null} after
+ * @param {number} limit
+ * @returns {SortedKeyRow[]}
+ */
+function readSortedKeys(db, stream, after, limit) {
+    const { key, tie, dir } = stream;
+    /** @type {[string | null, unknown[]][]} */
+    let parts;
+    if (!after) {
+        parts = [[null, []]];
+    } else if (key === null) {
+        parts = [[`${tie} > ?`, [after[1]]]];
+    } else {
+        const [lastKey, lastTie] = after;
+        parts = [[`${key} IS ? AND ${tie} > ?`, [lastKey, lastTie]]];
+        if (dir === 'ASC') {
+            parts.push(lastKey === null ? [`${key} IS NOT NULL`, []] : [`${key} > ?`, [lastKey]]);
+        } else if (lastKey !== null) {
+            parts.push([`${key} < ?`, [lastKey]], [`${key} IS NULL`, []]);
+        }
+    }
+    const order = `ORDER BY ${key !== null ? `${key} ${dir}, ` : ''}${tie} ASC`;
+    /** @type {SortedKeyRow[]} */
+    const out = [];
+    for (const [condition, conditionArgs] of parts) {
+        if (out.length >= limit) break;
+        const where = condition !== null ? [...stream.where, condition] : stream.where;
+        const rows = db.iterate(
+            `SELECT ${stream.id} AS id, ${key ?? 'NULL'} AS k, ${tie} AS t FROM ${stream.from}
+            ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''} ${order} LIMIT ?`,
+            [...stream.args, ...conditionArgs, limit - out.length],
+        );
+        for (const row of /** @type {Iterable<{ id: string, k: unknown, t: string }>} */ (rows)) {
+            out.push({ stream: stream.name, type: stream.type, id: row.id, fav: stream.fav, k: row.k, t: row.t, [stream.field]: row.k });
+        }
+    }
+    return out;
+}
+
+/**
+ * What a sorted page cursor is for: a cursor made for another filter or sort is ignored.
+ * @param {object} params
+ * @returns {string}
+ */
+function sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly, sortField, sortOrder }) {
+    return String(getStringHash(JSON.stringify({ tags: tags ?? null, fav: fav ?? null, world: world ?? null, excludeIds: excludeIds ?? null, ids: ids ?? null, groupsOnly: !!groupsOnly, sortField: sortField ?? null, sortOrder: sortOrder ?? null })));
+}
+
+/**
+ * @param {string} key
+ * @param {Record<string, [unknown, string]>} ends Each stream's last [key, tie] read so far.
+ * @returns {string}
+ */
+function encodeSortedPageCursor(key, ends) {
+    return Buffer.from(JSON.stringify({ v: 'sp1', k: key, s: ends })).toString('base64url');
+}
+
+/**
+ * @param {unknown} cursor
+ * @param {string} key
+ * @returns {Record<string, [unknown, string]> | null} null when absent, malformed, or made for another query.
+ */
+function decodeSortedPageCursor(cursor, key) {
+    if (typeof cursor !== 'string' || cursor.length === 0 || cursor.length > 8192) return null;
+    try {
+        const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+        if (parsed?.v !== 'sp1' || parsed.k !== key || typeof parsed.s !== 'object' || parsed.s === null) return null;
+        /** @type {Record<string, [unknown, string]>} */
+        const ends = {};
+        for (const [name, end] of Object.entries(parsed.s)) {
+            if (!/^[cg][01]$/.test(name) || !Array.isArray(end) || end.length !== 2 || typeof end[1] !== 'string') return null;
+            if (end[0] !== null && typeof end[0] !== 'string' && typeof end[0] !== 'number') return null;
+            ends[name] = [end[0], end[1]];
+        }
+        return ends;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The full rows of a page's entities, in the page's order. An entity whose row is gone is left out.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {{ type: 'character' | 'group', id: string }[]} entities
+ * @returns {EntityRow[]}
+ */
+function readEntityRowsInOrder(db, entities) {
+    if (entities.length === 0) return [];
+    /** @type {Map<string, EntityRow>} */
+    const byKey = new Map();
+    const characterIds = entities.filter(e => e.type === 'character').map(e => e.id);
+    const groupIds = entities.filter(e => e.type === 'group').map(e => e.id);
+    if (characterIds.length > 0) {
+        for (const row of db.iterate(`SELECT ${ENTITY_CHARACTER_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(characterIds)])) {
+            byKey.set(`character:${/** @type {EntityRow} */ (row).id}`, /** @type {EntityRow} */ (row));
+        }
+    }
+    if (groupIds.length > 0) {
+        for (const row of db.iterate(`SELECT ${ENTITY_GROUP_COLUMNS} FROM groups WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(groupIds)])) {
+            byKey.set(`group:${/** @type {EntityRow} */ (row).id}`, /** @type {EntityRow} */ (row));
+        }
+    }
+    return entities.map(e => byKey.get(`${e.type}:${e.id}`)).filter(row => row !== undefined);
 }
 
 /** The sort columns /query orders characters by, each with an index pair that starts with fav. */
@@ -11466,7 +11639,20 @@ function makeEntityMergeComparator(sortField, sortOrder, seed) {
     }
     // Remaining columns (date_added, date_last_chat, chat_size, create_date, data_size) are all plain numeric.
     // Dynamic-by-name lookup, hence the `any` casts - `column` is a runtime string, not a literal key.
-    return (a, b) => dir * (Number(/** @type {any} */ (a)[column] ?? 0) - Number(/** @type {any} */ (b)[column] ?? 0)) || tiebreak(a, b);
+    return (a, b) => dir * compareNullableNumbers(/** @type {any} */ (a)[column], /** @type {any} */ (b)[column]) || tiebreak(a, b);
+}
+
+/**
+ * Compares two sort keys as SQLite orders them: NULL below every number.
+ * @param {number | null | undefined} a
+ * @param {number | null | undefined} b
+ * @returns {number}
+ */
+function compareNullableNumbers(a, b) {
+    const aNull = a === null || a === undefined;
+    const bNull = b === null || b === undefined;
+    if (aNull || bNull) return aNull === bNull ? 0 : aNull ? -1 : 1;
+    return Number(a) - Number(b);
 }
 
 /**
@@ -11745,6 +11931,8 @@ export async function queryEntities(directories, params = {}) {
     const { toHashRow, resolveFileFallbackHashes } = makeEntityHashRowMapper(entry, directories, deletions);
 
     let rows, hashRows;
+    /** @type {string | undefined} */
+    let nextCursor;
     if (wantRows || wantHashes) {
         const orderParts = [];
         if (sortField === 'random') {
@@ -11827,81 +12015,33 @@ export async function queryEntities(directories, params = {}) {
         } else {
             const comparator = makeEntityMergeComparator(sortField, sortOrder, seed);
             const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
-            /** @type {EntityRow[][]} */
-            const streams = [];
-            /**
-             * @param {string} sql
-             * @param {unknown[]} args
-             * @returns {EntityRow[]} at most fetchLimit rows, by the LIMIT in `sql`
-             */
-            const readStream = (sql, args) => {
-                /** @type {EntityRow[]} */
-                const out = [];
-                for (const row of entry.db.iterate(sql, args)) out.push(/** @type {EntityRow} */ (row));
-                return out;
-            };
-            /** @param {string} where @param {string} clause */
-            const andWhere = (where, clause) => where ? `${where} AND ${clause}` : `WHERE ${clause}`;
+            /** @type {EntityRow[]} */
+            let rawRows;
 
-            const tagStreams = column && entitySortIndexesReady(entry) && tagSortTablesReady(entry)
-                ? includedTagSortPlan(entry.db, { tags, ids }, deletions)
-                : null;
-            if (column && tagStreams) {
-                // An included tag's entities read from its tag sort table, in the page's order, one stream per kind
-                // and fav value; the other included tags and every other filter are checked per row.
-                const keyColumn = column === 'fav' ? 'name_fold' : column;
-                const keyDirection = column !== 'fav' && sortOrder === 'desc' ? 'DESC' : 'ASC';
-                const favValues = typeof fav === 'boolean' ? [fav ? 1 : 0] : [1, 0];
-                const restCharWhere = buildWhereClause({ tags: tagStreams.rest, fav, world, excludeIds }, deletions);
-                const restGroupWhere = buildGroupWhereClause({ tags: tagStreams.rest, fav, excludeIds }, deletions);
-                for (const favValue of favValues) {
-                    if (!groupsOnly) {
-                        const probes = tagStreams.character.others.map(() => 'EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id = ?)');
-                        streams.push(readStream(
-                            `SELECT ${qualifiedColumns(ENTITY_CHARACTER_COLUMNS, 'characters')}
-                            FROM character_tag_sort s CROSS JOIN characters ON characters.id = s.entity_id
-                            WHERE ${['s.tag_id = ?', 's.k_fav = ?', ...whereClausesOf(restCharWhere), ...probes].join(' AND ')}
-                            ORDER BY s.k_${keyColumn} ${keyDirection}, s.entity_id ASC
-                            LIMIT ?`,
-                            [tagStreams.character.driver, favValue, ...restCharWhere.args, ...tagStreams.character.others, fetchLimit],
-                        ));
-                    }
-                    const groupKey = keyColumn === 'create_date' ? 'date_added' : keyColumn === 'data_size' ? null : keyColumn;
-                    const probes = tagStreams.group.others.map(() => 'EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id = ?)');
-                    streams.push(readStream(
-                        `SELECT ${qualifiedColumns(ENTITY_GROUP_COLUMNS, 'groups')}
-                        FROM group_tag_sort s CROSS JOIN groups ON groups.id = s.entity_id
-                        WHERE ${['s.tag_id = ?', 's.k_fav = ?', ...whereClausesOf(restGroupWhere), ...probes].join(' AND ')}
-                        ORDER BY ${groupKey ? `s.k_${groupKey} ${keyDirection}, ` : ''}(s.entity_id || '.json') ASC
-                        LIMIT ?`,
-                        [tagStreams.group.driver, favValue, ...restGroupWhere.args, ...tagStreams.group.others, fetchLimit],
-                    ));
+            if (column && entitySortIndexesReady(entry)) {
+                const streams = sortedPageStreams(entry, {
+                    column, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly, charWhere, groupWhere, deletions,
+                });
+                const cursorKey = sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly, sortField, sortOrder });
+                const startAt = decodeSortedPageCursor(params.cursor, cursorKey);
+                const need = startAt ? numericLimit : numericOffset + numericLimit;
+                const skip = startAt ? 0 : numericOffset;
+
+                // Keys only, through the indexes; full rows are read for the page alone.
+                /** @type {SortedKeyRow[]} */
+                let prefix = [];
+                for (const stream of streams) {
+                    prefix = mergeSortedRows(prefix, /** @type {any} */ (readSortedKeys(entry.db, stream, startAt?.[stream.name] ?? null, need)), comparator);
+                    if (prefix.length > need) prefix.length = need;
                 }
-            } else if (column && entitySortIndexesReady(entry)) {
-                // One stream per table and fav value, each read through its fav-first index in the page's order,
-                // so each stops after fetchLimit rows. The fav sort orders by name inside each fav value.
-                const keyColumn = column === 'fav' ? 'name_fold' : column;
-                const keyDirection = column !== 'fav' && sortOrder === 'desc' ? 'DESC' : 'ASC';
-                const favValues = typeof fav === 'boolean' ? [fav ? 1 : 0] : [1, 0];
-                const groupKeyColumn = keyColumn === 'create_date' ? 'date_added' : keyColumn === 'data_size' ? null : keyColumn;
-                for (const favValue of favValues) {
-                    if (!groupsOnly) {
-                        streams.push(readStream(
-                            `SELECT ${ENTITY_CHARACTER_COLUMNS}
-                            FROM ${charWhere.from} ${andWhere(charWhere.where, 'fav = ?')}
-                            ORDER BY ${keyColumn} ${keyDirection}, id ASC
-                            LIMIT ?`,
-                            [...charWhere.args, favValue, fetchLimit],
-                        ));
-                    }
-                    streams.push(readStream(
-                        `SELECT ${ENTITY_GROUP_COLUMNS}
-                        FROM ${groupWhere.from} ${andWhere(groupWhere.where, 'fav = ?')}
-                        ORDER BY ${groupKeyColumn ? `${groupKeyColumn} ${keyDirection}, ` : ''}(id || '.json') ASC
-                        LIMIT ?`,
-                        [...groupWhere.args, favValue, fetchLimit],
-                    ));
-                }
+                const pageKeys = prefix.slice(skip);
+
+                /** @type {Record<string, [unknown, string]>} */
+                const ends = { ...(startAt ?? {}) };
+                for (const keyRow of /** @type {SortedKeyRow[]} */ (/** @type {unknown} */ (prefix))) ends[keyRow.stream] = [keyRow.k, keyRow.t];
+                nextCursor = pageKeys.length === numericLimit ? encodeSortedPageCursor(cursorKey, ends) : undefined;
+
+                rawRows = readEntityRowsInOrder(entry.db, pageKeys);
             } else {
                 // Until the sort indexes exist: one statement per table, merged in JS.
                 // create_date: a group's own date_added stands in, projected as create_date, so it interleaves
@@ -11911,26 +12051,33 @@ export async function queryEntities(directories, params = {}) {
                 const groupOrderBy = orderBy
                     .replace(/\bcreate_date\b/g, 'date_added')
                     .replace(/\bid ASC$/, '(id || \'.json\') ASC');
+                /** @param {string} sql @param {unknown[]} args */
+                const readStream = (sql, args) => {
+                    /** @type {EntityRow[]} */
+                    const out = [];
+                    for (const row of entry.db.iterate(sql, args)) out.push(/** @type {EntityRow} */ (row));
+                    return out;
+                };
+                /** @type {EntityRow[]} */
+                let merged = [];
                 if (!groupsOnly) {
-                    streams.push(readStream(
+                    merged = readStream(
                         `SELECT ${ENTITY_CHARACTER_COLUMNS}
                         FROM ${charWhere.from} ${charWhere.where}
                         ${orderBy}
                         LIMIT ?`,
                         [...charWhere.args, ...orderArgs, fetchLimit],
-                    ));
+                    );
                 }
-                streams.push(readStream(
+                merged = mergeSortedRows(merged, readStream(
                     `SELECT ${ENTITY_GROUP_COLUMNS}
                     FROM ${groupWhere.from} ${groupWhere.where}
                     ${groupOrderBy}
                     LIMIT ?`,
                     [...groupWhere.args, ...orderArgs, fetchLimit],
-                ));
+                ), comparator);
+                rawRows = merged.slice(numericOffset, numericOffset + numericLimit);
             }
-
-            const merged = streams.reduce((acc, stream) => mergeSortedRows(acc, stream, comparator), /** @type {EntityRow[]} */ ([]));
-            const rawRows = merged.slice(numericOffset, numericOffset + numericLimit);
 
             if (wantHashes) {
                 hashRows = rawRows.map(toHashRow);
@@ -11941,7 +12088,7 @@ export async function queryEntities(directories, params = {}) {
         }
     }
 
-    return { rows, hashRows, total, approxTotal, seq, groupsVersion };
+    return { rows, hashRows, total, approxTotal, seq, groupsVersion, ...(nextCursor !== undefined ? { cursor: nextCursor } : {}) };
 }
 
 /**

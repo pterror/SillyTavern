@@ -2946,7 +2946,8 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
 
     // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly.
     if (!hasSearch && includeGroups) {
-        const result = await timePhase('query_entities', () => queryEntities(user.directories, queryParams));
+        // A sorted page's cursor (the page end it was read to) lets the next page seek there instead of skipping.
+        const result = await timePhase('query_entities', () => queryEntities(user.directories, { ...queryParams, cursor: body.cursor }));
         if (result === null) {
             return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
         }
@@ -2959,11 +2960,13 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
                 approxTotal: result.approxTotal,
                 hashRows: result.hashRows,
                 searchBackend: undefined,
+                cursor: result.cursor,
             });
         }
         const payload = { seq: result.seq, token: tokenFor(result) };
         if (wantTotal) payload.total = result.approxTotal ? `~${result.total}` : result.total;
         if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, result.rows));
+        if (result.cursor !== undefined) payload.cursor = result.cursor;
         return queryReply(200, payload);
     }
 
