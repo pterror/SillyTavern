@@ -30,7 +30,7 @@ import { migrateOwnerOnTouch } from '../message-tree-migration.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
-import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, searchCharacterIdsWindow, searchTagsLeftToSql, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, tantivySortOrder, getCharacterIndexPosition } from './characters-search-index.js';
+import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, searchCharacterIdsWindow, searchTagsLeftToSql, rebuildCharacterSearchIndex, indexCanSort, getCharacterIndexPosition } from './characters-search-index.js';
 import { walkKey, encodeWalkCursor, decodeWalkCursor, walkRanking, walkSorted, walkTotal, SEARCH_WORK_CAP } from './search-walk.js';
 import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
@@ -2350,7 +2350,7 @@ function queryToken({ seq, groupsVersion, search, includeGroups, position, group
     }
     if (search) {
         if (!position) return null;
-        components.push(position.seq, position.tagNameSeq, position.retrySeq);
+        components.push(position.seq, position.tagNameSeq, position.retrySeq, position.nameOrderSeq ?? null);
         if (includeGroups) {
             if (!Number.isFinite(groupsPosition?.version) || !Number.isFinite(groupsPosition?.tagNameSeq)) return null;
             components.push(groupsPosition.version, groupsPosition.tagNameSeq);
@@ -2381,7 +2381,6 @@ function pageOverFetch(pageSize) {
  * when unknown or groups weren't searched.
  */
 async function searchSortedPage(handle, directories, { searchTerm, sortField, sortOrder, filter, includeGroups, groupsOnly = false, offset, count }) {
-    const order = tantivySortOrder(sortField, sortOrder);
     const filterOptions = {
         fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
         tags: filter.tags,
@@ -2389,7 +2388,7 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
         ids: Array.isArray(filter.ids) ? filter.ids : undefined,
     };
     const groupsSorted = includeGroups
-        ? await searchGroupsSorted(handle, directories, searchTerm, sortField, order, filterOptions)
+        ? await searchGroupsSorted(handle, directories, searchTerm, sortField, sortOrder, filterOptions)
         : { groups: [], backend: 'tantivy', position: null };
     if (groupsSorted === null) return null;
     const { groups, backend: groupsBackend, position: groupsPosition } = groupsSorted;
@@ -2781,7 +2780,8 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         const handle = user.profile.handle;
 
         const tagsLeftToSql = await searchTagsLeftToSql(user.directories, filter.tags);
-        const indexSorts = sort.field !== undefined && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world && !tagsLeftToSql;
+        const indexSorts = sort.field !== undefined && !filter.world && !tagsLeftToSql
+            && await indexCanSort(user.directories, await getCharacterIndexPosition(handle, user.directories), sort.field);
         // A match the index can't fully filter (tags left to SQL, or a world, which it has no field for) or can't
         // order (any sort but relevance and its fast fields) is walked and checked under the work cap.
         // Relevance is always walked: the page and its margin are read from the index's ranking, and only the
@@ -2809,7 +2809,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
 
         // tantivy sorts natively when the sort field has a fast field, and only the page is hydrated. The index
         // has no world field, so a world-filtered search takes the SQL path below.
-        if (sort.field && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world) {
+        if (indexSorts) {
             const sortedPage = await searchSortedPage(handle, user.directories, {
                 searchTerm, sortField: sort.field, sortOrder: sort.order, filter, includeGroups, groupsOnly,
                 offset, count: pageSize + pageOverFetch(pageSize),

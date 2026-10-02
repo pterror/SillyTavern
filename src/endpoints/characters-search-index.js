@@ -6,11 +6,13 @@ import {
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
     streamDeletedIdsBetween, getMetaValue, trySetMetaValuesAndRetryMarks, getCharacterFavsByIds, getCharacterIndexRowsByIds,
     getCharacterIndexRetryMarksByIds, getDueCharacterIndexRetries, checkCharactersExist,
+    getNameOrderPositions, getNameOrderChangesSince, getNameOrderState, placeNameOrderRows,
 } from '../character-metadata-db.js';
 import { processCharacter, processCharacterOrPlaceholder } from './characters.js';
-import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter, stringToSortKey } from './tantivy-search.js';
+import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
-import { getSearchIndex, rebuildSearchIndex, startSearchWorker, CHARACTERS_INDEX_SEQ_META_KEY, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, CHARACTERS_INDEX_RETRY_SEQ_META_KEY } from './search-index-coordinator.js';
+import { TANTIVY_FAST_FIELDS, TANTIVY_ASC_FIELDS, TANTIVY_NAME_FIELDS, sortKeysOf, sortKeyField } from './search-sort-keys.js';
+import { getSearchIndex, rebuildSearchIndex, startSearchWorker, CHARACTERS_INDEX_SEQ_META_KEY, CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY, CHARACTERS_INDEX_RETRY_SEQ_META_KEY, CHARACTERS_INDEX_NAME_ORDER_SEQ_META_KEY } from './search-index-coordinator.js';
 import { rebuildTempDir, cleanupStaleRebuildDirs, swapIndexIntoPlace } from './tantivy-engine.js';
 import { getConfigValue, mapWithConcurrency, color } from '../util.js';
 import { timePhase } from '../search-timing.js';
@@ -21,13 +23,7 @@ import { getBusyWaitMs } from './sqlite-engine.js';
 const BM25_INDEXED_COLUMNS = ['name', 'resolved_tags', 'description', 'mes_example', 'scenario', 'personality', 'first_mes', 'creator_notes', 'creator', 'tags', 'alternate_greetings'];
 const BM25_WEIGHTS = [20, 10, 3, 3, 2, 2, 2, 2, 1, 1, 1];
 
-// Fast fields for native tantivy sorting (orderByField), avoiding a full-match-set SQLite round trip.
-const TANTIVY_FAST_FIELDS = ['create_date', 'date_added', 'date_last_chat', 'chat_size', 'data_size'];
-
-// name_sort_key: first 6 bytes of the lowercased name as a u64 sort key.
-// fav_name_sort_key: bit 48 = inverted fav, bits 0-47 = name_sort_key. ASC gives favorites-first-then-alpha.
-const TANTIVY_COLLATION_FIELDS = ['name_sort_key', 'fav_name_sort_key'];
-const ALL_FAST_FIELDS = [...TANTIVY_FAST_FIELDS, ...TANTIVY_COLLATION_FIELDS];
+const ALL_FAST_FIELDS = [...TANTIVY_FAST_FIELDS, ...TANTIVY_ASC_FIELDS, ...TANTIVY_NAME_FIELDS];
 
 const TANTIVY_FILTER_TEXT_FIELDS = [{ name: 'tag_ids', tokenizerName: 'whitespace' }];
 
@@ -35,20 +31,8 @@ const TAG_IDS_FIELD = 'tag_ids';
 
 export const TANTIVY_SORT_FIELDS = new Set([...TANTIVY_FAST_FIELDS, 'name', 'fav']);
 
-const SORT_FIELD_TO_TANTIVY_FIELD = {
-    create_date: 'create_date',
-    date_added: 'date_added',
-    date_last_chat: 'date_last_chat',
-    chat_size: 'chat_size',
-    data_size: 'data_size',
-    name: 'name_sort_key',
-    fav: 'fav_name_sort_key',
-};
-
-export { SORT_FIELD_TO_TANTIVY_FIELD };
-
 // Bump whenever characterToTantivyDoc()'s schema shape or field encoding changes; a mismatch forces a rebuild.
-const TANTIVY_SCHEMA_VERSION = 4;
+const TANTIVY_SCHEMA_VERSION = 5;
 
 // `tag:`/`tags:` maps to both tag-ish fields since BM25_WEIGHTS treats resolved_tags and tags as the same concept.
 const TANTIVY_FIELD_WEIGHTS = Object.fromEntries(BM25_INDEXED_COLUMNS.map((name, i) => [name, BM25_WEIGHTS[i]]));
@@ -78,6 +62,9 @@ const TANTIVY_INDEX_SEQ_META_KEY = CHARACTERS_INDEX_SEQ_META_KEY;
 const TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY;
 const TANTIVY_INDEX_RETRY_SEQ_META_KEY = CHARACTERS_INDEX_RETRY_SEQ_META_KEY;
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
+const TANTIVY_INDEX_NAME_ORDER_SEQ_META_KEY = CHARACTERS_INDEX_NAME_ORDER_SEQ_META_KEY;
+/** The most unplaced name order rows a catch-up places. */
+const NAME_ORDER_PLACE_BATCH_SIZE = 100;
 const TANTIVY_INDEX_TAG_RENAME_RESUME_META_KEY = 'tantivy_char_index_tag_rename_resume';
 
 const CHECKPOINT_EVERY_N_BATCHES = 20;
@@ -124,6 +111,12 @@ async function makeTagResolvers(directories, avatars, phases) {
     };
 }
 
+/** @param {string[]} avatars */
+async function makePositionsResolver(directories, avatars) {
+    const positions = await getNameOrderPositions(directories, 'c', avatars);
+    return (/** @type {string} */ avatar) => positions.get(avatar);
+}
+
 // The db's `fav` column is authoritative once a row is tracked; falls back to the card's embedded
 // `data.extensions.fav` for a character the metadata store hasn't picked up yet.
 async function makeFavResolver(directories, avatars) {
@@ -133,7 +126,15 @@ async function makeFavResolver(directories, avatars) {
         : Boolean(character.data?.extensions?.fav);
 }
 
-function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor) {
+function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, tagIdsFor, positionsFor) {
+    const fav = favFor(character);
+    const values = {
+        create_date: Math.max(0, Date.parse(character.create_date) || character.date_added || 0),
+        date_added: Math.max(0, Number(character.date_added) || 0),
+        date_last_chat: Math.max(0, Number(character.date_last_chat) || 0),
+        chat_size: Math.max(0, Number(character.chat_size) || 0),
+        data_size: Math.max(0, Number(character.data_size) || 0),
+    };
     return tantivy.Document.fromDict({
         name: character.data?.name ?? '',
         resolved_tags: tagNamesFor(character.avatar),
@@ -146,16 +147,10 @@ function characterToTantivyDoc(tantivy, schema, character, tagNamesFor, favFor, 
         creator: character.data?.creator ?? '',
         tags: Array.isArray(character.data?.tags) ? character.data.tags.join(' ') : '',
         alternate_greetings: Array.isArray(character.data?.alternate_greetings) ? character.data.alternate_greetings.join(' ') : '',
-        create_date: Math.max(0, Date.parse(character.create_date) || character.date_added || 0),
-        date_added: Math.max(0, Number(character.date_added) || 0),
-        date_last_chat: Math.max(0, Number(character.date_last_chat) || 0),
-        chat_size: Math.max(0, Number(character.chat_size) || 0),
-        data_size: Math.max(0, Number(character.data_size) || 0),
-        name_sort_key: stringToSortKey(character.data?.name ?? ''),
-        fav_name_sort_key: (favFor(character) ? 0 : 1) * (2 ** 48) + stringToSortKey(character.data?.name ?? '', 6),
+        ...sortKeysOf(values, fav, positionsFor(character.avatar)),
         tag_ids: tagIdsFor(character.avatar),
         [DATA_FIELD]: character.avatar,
-        [FAV_FIELD]: favFor(character),
+        [FAV_FIELD]: fav,
     }, schema);
 }
 
@@ -269,6 +264,7 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
     if (ids.length === 0) return outcome;
     const { tagNamesFor, tagIdsFor } = await makeTagResolvers(directories, ids, phases);
     const favFor = await timeAsync(phases, 'load', () => makeFavResolver(directories, ids));
+    const positionsFor = await timeAsync(phases, 'load', () => makePositionsResolver(directories, ids));
     const results = await timeAsync(phases, 'build', () => mapWithConcurrency(ids, INDEX_BUILD_READ_CONCURRENCY, async (id) => {
         const row = rowById.get(id);
         try {
@@ -289,7 +285,7 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
             outcome.failures.push({ id: result.id, name: rowById.get(result.id).name, err: result.err });
             continue;
         }
-        const doc = timeSync(phases, 'build', () => characterToTantivyDoc(tantivy, schema, result.character, tagNamesFor, favFor, tagIdsFor));
+        const doc = timeSync(phases, 'build', () => characterToTantivyDoc(tantivy, schema, result.character, tagNamesFor, favFor, tagIdsFor, positionsFor));
         timeSync(phases, 'add', () => {
             if (replace) writer.deleteDocumentsByTerm(DATA_FIELD, result.id);
             writer.addDocument(doc);
@@ -380,6 +376,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
     let deleteCursor = 0;
     // Bumped by each catch-up whose retries changed the index, which moves neither cursor.
     let retrySeq = 0;
+    // Every name order position move up to here is in the docs.
+    let nameOrderCursor = 0;
     /**
      * A tag-rename page a tick stopped partway through: the page ends at untilSeq, and its characters up to and
      * including afterId are re-indexed. null when no page is part done.
@@ -402,6 +400,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             [TANTIVY_INDEX_SEQ_META_KEY]: String(seqCursor),
             [TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY]: String(tagNameCursor),
             [TANTIVY_INDEX_RETRY_SEQ_META_KEY]: String(retrySeq),
+            [TANTIVY_INDEX_NAME_ORDER_SEQ_META_KEY]: String(nameOrderCursor),
             [TANTIVY_INDEX_SCHEMA_VERSION_META_KEY]: String(TANTIVY_SCHEMA_VERSION),
             [TANTIVY_INDEX_TAG_RENAME_RESUME_META_KEY]: renameResume ? JSON.stringify(renameResume) : '',
         };
@@ -459,6 +458,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         deleteCursor = 0;
         setCursors(Number(persistedSeq), persistedTagNameChangeSeq !== null ? Number(persistedTagNameChangeSeq) : 0);
         retrySeq = persistedRetrySeq !== null ? Number(persistedRetrySeq) : 0;
+        nameOrderCursor = Number(await getMetaValue(directories, TANTIVY_INDEX_NAME_ORDER_SEQ_META_KEY) ?? 0);
         renameResume = parseRenameResume(await getMetaValue(directories, TANTIVY_INDEX_TAG_RENAME_RESUME_META_KEY));
         return indexDir;
     }
@@ -604,7 +604,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
     async function rebuild() {
         const lastSeq = await getCurrentSeq(directories);
         const lastTagNameChangeSeq = await getCurrentTagNameChangeSeq(directories);
-        if (lastSeq === null || lastTagNameChangeSeq === null) {
+        const nameOrder = await getNameOrderState(directories);
+        if (lastSeq === null || lastTagNameChangeSeq === null || nameOrder === null) {
             return null;
         }
 
@@ -654,6 +655,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
 
         deleteCursor = 0;
         setCursors(lastSeq, lastTagNameChangeSeq);
+        nameOrderCursor = nameOrder.seq;
         renameResume = null;
         // Not skipped on a lock like a tick's: the new index is already in place, and the cursors persisted for the
         // old one would have the next start replay the change log from there.
@@ -701,6 +703,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const renameResumeFrom = renameResume;
         let lastSeq = seqCursor;
         let lastTagNameChangeSeq = tagNameCursor;
+        let lastNameOrderSeq = nameOrderCursor;
+        const nameOrderSeqFrom = nameOrderCursor;
         let resume = renameResume;
         /** @type {Map<string, number>} */
         const writers = new Map();
@@ -853,6 +857,25 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                 if ((!page.hasMore && !resumed) || Date.now() >= renamesDeadline) break;
             }
 
+            // Name order positions: place what's unplaced, then bring the docs whose position moved up to date. A
+            // log row for every character (the one-time fill) rebuilds the index.
+            await timeAsync(phases, 'read', () => placeNameOrderRows(directories, NAME_ORDER_PLACE_BATCH_SIZE));
+            for (;;) {
+                const page = await timeAsync(phases, 'read', () => getNameOrderChangesSince(directories, lastNameOrderSeq, INDEX_BUILD_BATCH_SIZE));
+                if (!page) break;
+                if (page.all) {
+                    w.rollback();
+                    return { swapped: await rebuild() };
+                }
+                if (page.ids.length > 0) {
+                    upserts += page.ids.length;
+                    const outcome = await addCharacterDocs(directories, tantivy, schema, w, page.ids, phases, { replace: true });
+                    await noteOutcomes([...outcome.indexed, ...outcome.missing], outcome.failures);
+                }
+                lastNameOrderSeq = page.seq;
+                if (!page.hasMore || Date.now() >= changesDeadline + tickBudgetMs * TAG_RENAME_BUDGET_SHARE) break;
+            }
+
             // Cards this tick already re-indexed or failed on aren't attempted again in it.
             const due = await timeAsync(phases, 'read', () => getDueCharacterIndexRetries(directories, Date.now(), CHARACTER_INDEX_RETRY_BATCH_SIZE));
             const retryIds = due.map(mark => mark.id).filter(id => !markWrites.has(id));
@@ -876,9 +899,10 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         if (changed) {
             timeSync(phases, 'commit', () => w.commit());
         }
-        const moved = lastSeq !== seqCursor || lastTagNameChangeSeq !== tagNameCursor || retriesChanged
+        const moved = lastSeq !== seqCursor || lastTagNameChangeSeq !== tagNameCursor || retriesChanged || lastNameOrderSeq !== nameOrderCursor
             || resume?.untilSeq !== renameResume?.untilSeq || resume?.afterId !== renameResume?.afterId;
         setCursors(lastSeq, lastTagNameChangeSeq);
+        nameOrderCursor = lastNameOrderSeq;
         renameResume = resume;
         deleteCursor = Math.max(deleteCursor, maxSeq);
         if (retriesChanged) retrySeq++;
@@ -892,6 +916,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         if (persistSkipped) {
             seqCursor = seqFrom;
             tagNameCursor = tagNameSeqFrom;
+            nameOrderCursor = nameOrderSeqFrom;
             renameResume = renameResumeFrom;
             deleteCursor = deleteCursorFrom;
             retrySeq = retrySeqFrom;
@@ -932,6 +957,8 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         tagNameSeq: () => tagNameCursor,
         /** How many catch-ups changed the index through retries alone. */
         retrySeq: () => retrySeq,
+        /** The name_order_changes seq the docs cover. */
+        nameOrderSeq: () => nameOrderCursor,
         /** Releases the writer's on-disk lock. */
         close() {
             if (writer) {
@@ -1055,13 +1082,22 @@ export async function searchTagsLeftToSql(directories, tags) {
     return searchIndexTagFilter(tags, await getTagDeletions(directories)).leftToSql;
 }
 
-// fav_name_sort_key is encoded so ascending order gives favorites-first-then-alpha, whatever order was asked for.
-export function tantivySortOrder(sortField, sortOrder) {
-    return sortField === 'fav' ? 'asc' : (sortOrder === 'asc' ? 'asc' : 'desc');
+/**
+ * Whether the index can sort by `sortField` now: the name and fav sorts need the stored name order filled, every
+ * row placed, and the index's docs to cover every position move (its name order cursor at the log's end). A search
+ * the index can't sort is walked in SQL order instead.
+ * @param {import('./search-index-coordinator.js').SearchIndexPosition | null} position The reader's.
+ * @param {string} sortField
+ */
+export async function indexCanSort(directories, position, sortField) {
+    if (!TANTIVY_SORT_FIELDS.has(sortField)) return false;
+    if (sortField !== 'name' && sortField !== 'fav') return true;
+    const state = await getNameOrderState(directories);
+    return Boolean(state?.usable) && Number.isFinite(position?.nameOrderSeq) && /** @type {number} */ (position?.nameOrderSeq) >= state.seq;
 }
 
 /**
- * One window of the matches in fast-field order. `hits[].order` is tantivy's sort value (see fastFieldOrderValue()).
+ * One window of the matches in fast-field order, read descending. `hits[].order` is the field's value (sortKeysOf()).
  * Returns null when sortField has no fast-field equivalent, or the index can't take the tag filter
  * (searchIndexTagFilter()'s leftToSql); caller uses the SQL sort path for those. `position`
  * is the reader's position (search-index-coordinator.js) as of the search, null when unknown.
@@ -1070,7 +1106,7 @@ export function tantivySortOrder(sortField, sortOrder) {
  */
 export async function searchCharacterIdsSorted(handle, directories, searchTerm, sortField, sortOrder, offset, limit, filter = {}) {
     const { fav, tags, excludeIds, ids } = filter;
-    const tantivySortField = SORT_FIELD_TO_TANTIVY_FIELD[sortField];
+    const tantivySortField = sortKeyField(sortField, sortOrder);
     if (!tantivySortField) return null;
 
     const engine = await timePhase('chars_index_get', () => resolveSearchEngine());
@@ -1117,7 +1153,7 @@ export async function searchCharacterIdsSorted(handle, directories, searchTerm, 
     // The exact count costs about 1 ms on top of the sorted window; the binding offers no cheaper estimate.
     const { results, total } = runTantivySearch(tantivyIndex.index, query, limit, {
         orderByField: tantivySortField,
-        order: tantivySortOrder(sortField, sortOrder),
+        order: 'desc',
         offset,
         count: true,
         timingLabel: 'chars',
