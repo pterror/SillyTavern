@@ -6,7 +6,7 @@ let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...va
 /** Plain-language names for the condition fields, in the order the field list shows them. */
 const FIELD_NAMES = () => ({
     name: t`Name`,
-    tag: t`Tag`,
+    tag: t`Tag name`,
     creator: t`Creator`,
     description: t`Description`,
     personality: t`Personality`,
@@ -45,11 +45,21 @@ document.addEventListener('pointerdown', event => {
 }, true);
 
 /**
+ * Pill kinds that aren't text fields: a tag the row carries, and favorite. They come first in the field list.
+ * @returns {Record<string, string>}
+ */
+const SPECIAL_FIELDS = () => ({
+    '@tag': t`Tag`,
+    '@fav': t`Favorite`,
+});
+
+/**
  * Opens a list of fields under `anchor`, with a box to narrow it; `onPick` gets the chosen field.
  * @param {HTMLElement} anchor
  * @param {(field: string) => void} onPick
+ * @param {{ special?: boolean }} [options] `special`: also offer the tag and favorite pills.
  */
-function openFieldPicker(anchor, onPick) {
+function openFieldPicker(anchor, onPick, { special = false } = {}) {
     closePopover();
     const popover = document.createElement('div');
     popover.className = 'view_pill_popover';
@@ -64,8 +74,11 @@ function openFieldPicker(anchor, onPick) {
     const renderList = () => {
         const needle = search.value.trim().toLowerCase();
         list.replaceChildren();
-        for (const field of Object.keys(SEARCH_FIELDS)) {
-            const name = fieldName(field);
+        const entries = [
+            ...(special ? Object.entries(SPECIAL_FIELDS()) : []),
+            ...Object.keys(SEARCH_FIELDS).map(field => [field, fieldName(field)]),
+        ];
+        for (const [field, name] of entries) {
             if (needle && !name.toLowerCase().includes(needle) && !field.includes(needle)) continue;
             const option = document.createElement('div');
             option.className = 'view_pill_field_option';
@@ -91,12 +104,84 @@ function openFieldPicker(anchor, onPick) {
     });
     renderList();
 
+    showPopover(popover, anchor, search);
+}
+
+/**
+ * @param {HTMLElement} popover
+ * @param {HTMLElement} anchor
+ * @param {HTMLElement} focus
+ */
+function showPopover(popover, anchor, focus) {
     document.body.append(popover);
     const box = anchor.getBoundingClientRect();
     popover.style.left = `${Math.max(4, Math.min(box.left, window.innerWidth - popover.offsetWidth - 4))}px`;
     popover.style.top = `${box.bottom + 4}px`;
     openPopover = popover;
-    search.focus();
+    focus.focus();
+}
+
+/**
+ * Opens a search over the server's tags under `anchor`; `onPick` gets the chosen tag.
+ * @param {HTMLElement} anchor
+ * @param {(term: string) => Promise<{ id: string, name: string }[] | null>} searchTags
+ * @param {(tag: { id: string, name: string }) => void} onPick
+ */
+function openTagPicker(anchor, searchTags, onPick) {
+    closePopover();
+    const popover = document.createElement('div');
+    popover.className = 'view_pill_popover';
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'text_pole textarea_compact';
+    search.placeholder = t`Find a tag`;
+    const list = document.createElement('div');
+    list.className = 'view_pill_field_list';
+    popover.append(search, list);
+
+    let asked = 0;
+    let timer = 0;
+    const load = async () => {
+        const ask = ++asked;
+        const found = await searchTags(search.value.trim());
+        if (ask !== asked || !popover.isConnected) return;
+        list.replaceChildren();
+        if (!found) {
+            list.textContent = t`Tags could not be loaded.`;
+            return;
+        }
+        if (found.length === 0) {
+            list.textContent = t`No tag has that name.`;
+            return;
+        }
+        for (const tag of found) {
+            const option = document.createElement('div');
+            option.className = 'view_pill_field_option';
+            option.dataset.tagId = tag.id;
+            option.textContent = tag.name;
+            option.addEventListener('click', () => {
+                closePopover();
+                onPick(tag);
+            });
+            list.append(option);
+        }
+    };
+    search.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = window.setTimeout(load, 150);
+    });
+    search.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closePopover();
+            anchor.focus();
+        } else if (event.key === 'Enter') {
+            event.preventDefault();
+            /** @type {HTMLElement|null} */ (list.querySelector('.view_pill_field_option'))?.click();
+        }
+    });
+    void load();
+    showPopover(popover, anchor, search);
 }
 
 /**
@@ -107,19 +192,131 @@ function openFieldPicker(anchor, onPick) {
  * @param {() => import('./character-view.js').CharacterView} options.getView
  * @param {(view: Partial<import('./character-view.js').CharacterView>, fromSearchBox: boolean) => void} options.setView
  * @param {typeof t} options.translate i18n's `t`.
+ * @param {(term: string) => Promise<{ id: string, name: string }[] | null>} options.searchTags Tags whose names hold
+ *   `term`, from the server; null if the read failed.
+ * @param {(ids: string[]) => Promise<{ names: Map<string, string>, gone: Set<string> } | null>} options.tagNames The
+ *   names of `ids`; `gone` holds ids no tag has. null if the read failed.
  * @returns {() => void} Redraws the pills and the box from the current view.
  */
-export function initViewPills({ container, input, getView, setView, translate }) {
+export function initViewPills({ container, input, getView, setView, translate, searchTags, tagNames }) {
     t = translate;
     /** @type {import('./character-view.js').CharacterViewCondition[]} */
     let conditions = [];
+    /** @type {import('./character-view.js').CharacterView['tags']} */
+    let tags = { include: [], exclude: [], mode: 'and' };
+    /** @type {boolean|undefined} */
+    let fav;
     /** The condition whose value is being typed, or -1. */
     let editing = -1;
+    /** Tag names already read, by id; null for a tag that no longer exists. @type {Map<string, string|null>} */
+    const names = new Map();
+    /** Ids being read. @type {Set<string>} */
+    const reading = new Set();
 
-    const send = (fromSearchBox = false) => setView({ text: String(input.val()), conditions: conditions.filter(c => c.value.trim()) }, fromSearchBox);
+    const send = (fromSearchBox = false) => setView({
+        text: String(input.val()),
+        conditions: conditions.filter(c => c.value.trim()),
+        tags: { include: [...tags.include], exclude: [...tags.exclude], mode: tags.mode },
+        fav,
+    }, fromSearchBox);
+
+    /** Reads the names of tags pills show and doesn't know yet, then draws again. */
+    function readMissingNames() {
+        const missing = [...tags.include, ...tags.exclude].filter(id => !names.has(id) && !reading.has(id));
+        if (missing.length === 0) return;
+        missing.forEach(id => reading.add(id));
+        void tagNames(missing).then(answer => {
+            missing.forEach(id => reading.delete(id));
+            if (!answer) return;
+            for (const id of missing) {
+                if (answer.names.has(id)) names.set(id, answer.names.get(id));
+                else if (answer.gone.has(id)) names.set(id, null);
+            }
+            render();
+        });
+    }
+
+    /** @param {string} id */
+    function tagLabel(id) {
+        if (!names.has(id)) return '…';
+        return names.get(id) ?? t`(deleted tag)`;
+    }
+
+    /**
+     * @param {string} id
+     * @param {boolean} included
+     */
+    function renderTagPill(id, included) {
+        const pill = $('<span class="search_pill view_tag_pill">').attr('data-tag-id', id).attr('data-op', included ? 'has' : 'not_has');
+        const field = $('<span class="search_pill_label">').text(t`Tag`);
+        const op = $('<span class="view_pill_op view_pill_part" tabindex="0" role="button">')
+            .text(included ? t`is on it` : t`isn't on it`).attr('title', t`Switch between showing and leaving out this tag`);
+        op.on('click', () => {
+            tags = included
+                ? { ...tags, include: tags.include.filter(x => x !== id), exclude: [...tags.exclude, id] }
+                : { ...tags, exclude: tags.exclude.filter(x => x !== id), include: [...tags.include, id] };
+            render();
+            send();
+        });
+        const value = $('<span class="search_pill_value view_pill_part" tabindex="0" role="button">').text(tagLabel(id)).attr('title', t`Pick another tag`);
+        value.on('click', () => openTagPicker(value.get(0), searchTags, picked => {
+            names.set(picked.id, picked.name);
+            const swap = (/** @type {string[]} */ list) => [...new Set(list.map(x => x === id ? picked.id : x))];
+            tags = included ? { ...tags, include: swap(tags.include) } : { ...tags, exclude: swap(tags.exclude) };
+            render();
+            send();
+        }));
+        const remove = $('<i class="fa-solid fa-xmark search_pill_remove" role="button" tabindex="0">').attr('title', t`Remove filter`);
+        remove.on('click', event => {
+            event.stopPropagation();
+            tags = { ...tags, include: tags.include.filter(x => x !== id), exclude: tags.exclude.filter(x => x !== id) };
+            render();
+            send();
+        });
+        return pill.append(field, op, value, remove);
+    }
+
+    function renderJoiner() {
+        const joiner = $('<span class="view_pill_joiner view_pill_part" tabindex="0" role="button">')
+            .text(tags.mode === 'or' ? t`or` : t`and`)
+            .attr('title', tags.mode === 'or' ? t`Showing rows with any of these tags. Click to need all of them.` : t`Showing rows with all of these tags. Click to need any one of them.`);
+        joiner.on('click', () => {
+            tags = { ...tags, mode: tags.mode === 'or' ? 'and' : 'or' };
+            render();
+            send();
+        });
+        return joiner;
+    }
+
+    function renderFavPill() {
+        const pill = $('<span class="search_pill view_fav_pill">').attr('data-fav', String(fav));
+        const field = $('<span class="search_pill_label">').text(t`Favorite`);
+        const value = $('<span class="search_pill_value view_pill_part" tabindex="0" role="button">')
+            .text(fav ? t`yes` : t`no`).attr('title', t`Switch between favorites only and no favorites`);
+        value.on('click', () => {
+            fav = !fav;
+            render();
+            send();
+        });
+        const remove = $('<i class="fa-solid fa-xmark search_pill_remove" role="button" tabindex="0">').attr('title', t`Remove filter`);
+        remove.on('click', event => {
+            event.stopPropagation();
+            fav = undefined;
+            render();
+            send();
+        });
+        return pill.append(field, value, remove);
+    }
 
     function render() {
         container.empty();
+        tags.include.forEach((id, index) => {
+            if (index > 0) container.append(renderJoiner());
+            container.append(renderTagPill(id, true));
+        });
+        tags.exclude.forEach(id => container.append(renderTagPill(id, false)));
+        if (typeof fav === 'boolean') container.append(renderFavPill());
+        readMissingNames();
         conditions.forEach((condition, index) => container.append(renderPill(condition, index)));
         const add = $('<span class="search_pill view_pill_add" tabindex="0" role="button">')
             .attr('title', t`Add a filter`)
@@ -128,10 +325,27 @@ export function initViewPills({ container, input, getView, setView, translate })
             if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
             event.preventDefault();
             openFieldPicker(add.get(0), field => {
+                if (field === '@fav') {
+                    fav = typeof fav === 'boolean' ? fav : true;
+                    render();
+                    send();
+                    return;
+                }
+                if (field === '@tag') {
+                    openTagPicker(add.get(0), searchTags, picked => {
+                        names.set(picked.id, picked.name);
+                        if (!tags.include.includes(picked.id)) {
+                            tags = { ...tags, include: [...tags.include, picked.id], exclude: tags.exclude.filter(x => x !== picked.id) };
+                        }
+                        render();
+                        send();
+                    });
+                    return;
+                }
                 conditions.push({ field, op: 'contains', value: '' });
                 editing = conditions.length - 1;
                 render();
-            });
+            }, { special: true });
         });
         container.append(add);
         container.find('.view_pill_value_input').trigger('focus');
@@ -234,11 +448,14 @@ export function initViewPills({ container, input, getView, setView, translate })
         }
     });
 
+    // Redrawing while a pill's value is being typed would lose it, and the box keeps what is typed in it.
     return () => {
+        if (editing !== -1) return;
         const view = getView();
         conditions = view.conditions.map(condition => ({ ...condition }));
-        editing = -1;
-        if (String(input.val()) !== view.text) input.val(view.text);
+        tags = { include: [...view.tags.include], exclude: [...view.tags.exclude], mode: view.tags.mode === 'or' ? 'or' : 'and' };
+        fav = view.fav;
+        if (String(input.val()) !== view.text && document.activeElement !== input.get(0)) input.val(view.text);
         render();
     };
 }

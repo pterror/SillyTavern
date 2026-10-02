@@ -64,6 +64,7 @@ describe('character view', () => {
             searchTerm: 'creator:alice castle',
             tagsInclude: ['t1'],
             tagsExclude: ['t2'],
+            tagsMode: 'and',
             fav: true,
             sortField: 'date_added',
             sortOrder: 'desc',
@@ -79,5 +80,13 @@ describe('character view', () => {
         const b = view({ ...parseSearchText('creator:alice castle'), tags: { include: ['a', 'b'], exclude: [] } });
         expect(sameView(a, b)).toBe(true);
         expect(sameView(a, view({ ...a, fav: true }))).toBe(false);
+    });
+
+    test('included tags combine with "or" only when there are two or more of them', () => {
+        expect(viewToQueryState(view({ tags: { include: ['a', 'b'], exclude: [], mode: 'or' } })).tagsMode).toBe('or');
+        expect(viewToQueryState(view({ tags: { include: ['a'], exclude: [], mode: 'or' } })).tagsMode).toBe('and');
+        const and = view({ tags: { include: ['a', 'b'], exclude: [], mode: 'and' } });
+        expect(sameView(and, view({ tags: { include: ['a', 'b'], exclude: [], mode: 'or' } }))).toBe(false);
+        expect(sameView(view({ tags: { include: ['a'], exclude: [] } }), view({ tags: { include: ['a'], exclude: [], mode: 'or' } }))).toBe(true);
     });
 });

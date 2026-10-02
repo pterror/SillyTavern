@@ -3,7 +3,8 @@
  * @typedef {object} CharacterView
  * @property {string} text Free search text, without its conditions.
  * @property {CharacterViewCondition[]} conditions Field conditions, in the order they were added.
- * @property {{ include: string[], exclude: string[] }} tags Tag ids the list must carry / must not carry.
+ * @property {{ include: string[], exclude: string[], mode?: 'and'|'or' }} tags Tag ids the list must carry / must not carry.
+ *   `mode` 'or': a row needs any one of `include`, not all of them.
  * @property {boolean|undefined} fav `true` favorites only, `false` no favorites, `undefined` either.
  * @property {boolean|undefined} group `true` groups only, `false` no groups, `undefined` either.
  * @property {CharacterViewSort} sort
@@ -108,6 +109,7 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
         searchTerm: serializeSearchText(view),
         tagsInclude: view.tags.include,
         tagsExclude: view.tags.exclude,
+        tagsMode: tagMode(view.tags),
         fav: view.fav,
         sortField: view.sort.field,
         sortOrder: view.sort.order,
@@ -115,6 +117,15 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
         includeGroups,
         group: view.group,
     };
+}
+
+/**
+ * How a view's included tags combine. With fewer than two there is nothing to combine, so it is 'and'.
+ * @param {CharacterView['tags']} tags
+ * @returns {'and'|'or'}
+ */
+export function tagMode(tags) {
+    return tags.mode === 'or' && tags.include.length > 1 ? 'or' : 'and';
 }
 
 /**
@@ -135,6 +146,7 @@ function viewKey(view) {
         search: serializeSearchText(view),
         include: [...view.tags.include].sort(),
         exclude: [...view.tags.exclude].sort(),
+        mode: tagMode(view.tags),
         fav: view.fav ?? null,
         group: view.group ?? null,
         sort: view.sort,
