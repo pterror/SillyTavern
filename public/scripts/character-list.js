@@ -12,7 +12,7 @@ import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filt
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
-import { initSavedViews, restoreCurrentView } from './saved-views.js';
+import { initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -404,6 +404,7 @@ export async function printCharacters(fullRefresh = false) {
 
     // A filter set from code (upstream's FilterHelper, the tag bars) shows in the pills and the box.
     showViewInSearchBox();
+    refreshSavedViewState();
 
     // We are actually always reprinting filters, as it "doesn't hurt", and this way they are always up to date
     printTagFilters(tag_filter_type.character);
@@ -847,6 +848,8 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
     }
     resetListPositionOnNextPrint = true;
     if (!fromSearchBox) showViewInSearchBox();
+    // At once, not on the print: a reload right after a change must still find it as a draft.
+    refreshSavedViewState();
     printCharactersDebounced();
 }
 
@@ -1613,6 +1616,12 @@ export function initCharacterSearch() {
     /** @type {Partial<import('./character-view.js').CharacterView> | null} */
     let pendingTypedView = null;
     const debouncedCharacterSearch = debounce(() => {
+        const view = pendingTypedView;
+        pendingTypedView = null;
+        if (view) setCharacterView(view, { fromSearchBox: true });
+    });
+    // What was typed and not yet sent still becomes the view (and so a draft) if the page goes before the pause.
+    window.addEventListener('pagehide', () => {
         const view = pendingTypedView;
         pendingTypedView = null;
         if (view) setCharacterView(view, { fromSearchBox: true });

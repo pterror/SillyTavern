@@ -8,6 +8,7 @@ let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...va
 
 const CURRENT_ID_KEY = 'characterListViewId';
 const CURRENT_NAME_KEY = 'characterListViewName';
+const DRAFT_KEY = 'characterListViewDraft';
 const PAGE_SIZE = 50;
 
 /**
@@ -19,8 +20,13 @@ let deps = null;
 
 /** The saved view the list shows, or null for "All characters". @type {string|null} */
 let currentId = null;
-/** What the current view was when it was applied or read: the list differs from it once the user changes something. */
+/** The saved view's object as it was applied or read; null for "All characters". The list differs from it once the
+ * user changes something, which makes the view unsaved. */
 let appliedView = null;
+/** A switch waiting on what to do with unsaved changes: the view to switch to (null: "All characters"). @type {{ target: SavedView|null }|null} */
+let pendingSwitch = null;
+/** Set once the view in use has been read back after the page loaded; until then there is nothing to compare with. */
+let restored = false;
 /** The views read so far, in order, and where the next page starts. @type {SavedView[]} */
 let loaded = [];
 let nextCursor = /** @type {string|null} */ (null);
@@ -91,6 +97,31 @@ function allCharactersView() {
     return fullView({});
 }
 
+/** What the list is compared with to tell whether it has unsaved changes. */
+function baseView() {
+    return currentId && appliedView ? appliedView : allCharactersView();
+}
+
+/** Whether the list differs from the view it was opened as. */
+export function hasUnsavedViewChanges() {
+    return !!deps && !deps.sameView(deps.getView(), baseView());
+}
+
+/**
+ * The list was drawn: marks the picker unsaved or not, and keeps the unsaved changes as a draft that a reload
+ * restores.
+ */
+export function refreshSavedViewState() {
+    if (!deps || !picker || !restored) return;
+    const dirty = hasUnsavedViewChanges();
+    picker.classList.toggle('unsaved', dirty);
+    picker.title = dirty
+        ? t`Views: ${picker.querySelector('.view_picker_name').textContent}, with unsaved changes. Click to save or discard them.`
+        : t`Views: ${picker.querySelector('.view_picker_name').textContent}. Click to switch or save one.`;
+    safeSet(DRAFT_KEY, dirty ? JSON.stringify({ id: currentId, view: deps.getView() }) : null);
+    if (popover) drawUnsavedBar();
+}
+
 /** @param {string|null} id @param {string} name */
 function setCurrent(id, name) {
     currentId = id;
@@ -114,9 +145,102 @@ function drawPicker(name) {
  */
 function applyView(saved) {
     const view = saved ? fullView(saved.view) : allCharactersView();
-    appliedView = view;
+    appliedView = saved ? view : null;
     setCurrent(saved ? saved.id : null, saved ? saved.name : t`All characters`);
     deps.setView(view);
+    refreshSavedViewState();
+}
+
+/**
+ * Switches to `target`, first asking in the picker what to do with unsaved changes.
+ * @param {SavedView|null} target
+ */
+function switchTo(target) {
+    if ((target?.id ?? null) !== currentId && hasUnsavedViewChanges()) {
+        pendingSwitch = { target };
+        drawUnsavedBar();
+        return;
+    }
+    closePopover();
+    applyView(target);
+}
+
+/** Saves the list over the current view. @returns {Promise<boolean>} */
+async function saveCurrent() {
+    if (!currentId) return false;
+    const answer = await call('change', { id: currentId, view: deps.getView() });
+    if (!answer || answer.notFound) {
+        toastr.error(t`The view could not be saved.`);
+        return false;
+    }
+    appliedView = fullView(answer.view);
+    setCurrent(answer.id, answer.name);
+    refreshSavedViewState();
+    return true;
+}
+
+/** Puts the list back to the view it was opened as. */
+function discardChanges() {
+    deps.setView(baseView());
+    refreshSavedViewState();
+}
+
+/**
+ * The bar at the top of the picker while the list has unsaved changes: Save, Discard, and when switching views,
+ * Save as new and Keep editing too.
+ */
+function drawUnsavedBar() {
+    if (!popover) return;
+    popover.querySelector('.view_picker_unsaved')?.remove();
+    const dirty = hasUnsavedViewChanges();
+    if (!dirty) pendingSwitch = null;
+    if (!dirty) return;
+    const bar = document.createElement('div');
+    bar.className = 'view_picker_unsaved';
+    const label = document.createElement('span');
+    const name = currentId ? picker.querySelector('.view_picker_name').textContent : t`All characters`;
+    label.textContent = pendingSwitch ? t`Unsaved changes to "${name}":` : t`Unsaved changes to "${name}"`;
+    bar.append(label);
+    /** @param {string} text @param {string} action @param {() => void | Promise<void>} onClick */
+    const button = (text, action, onClick) => {
+        const b = document.createElement('div');
+        b.className = 'menu_button';
+        b.dataset.action = action;
+        b.textContent = text;
+        b.addEventListener('click', () => void onClick());
+        bar.append(b);
+    };
+    const thenSwitch = () => {
+        const target = pendingSwitch?.target ?? null;
+        pendingSwitch = null;
+        closePopover();
+        applyView(target);
+    };
+    if (currentId) {
+        button(t`Save`, 'save', async () => {
+            if (await saveCurrent() && pendingSwitch) thenSwitch();
+        });
+    }
+    if (pendingSwitch) {
+        button(t`Save as new`, 'save-as', () => {
+            const input = popover.querySelector('.view_picker_save input');
+            if (input instanceof HTMLInputElement) input.focus();
+        });
+    }
+    button(t`Discard`, 'discard', () => {
+        if (pendingSwitch) {
+            thenSwitch();
+            return;
+        }
+        discardChanges();
+    });
+    if (pendingSwitch) {
+        button(t`Keep editing`, 'keep', () => {
+            pendingSwitch = null;
+            closePopover();
+        });
+    }
+    popover.prepend(bar);
 }
 
 /** Reads the first page of views (or the next one), for the picker. @param {boolean} more */
@@ -138,6 +262,7 @@ async function readViews(more) {
 function closePopover() {
     popover?.remove();
     popover = null;
+    pendingSwitch = null;
 }
 
 document.addEventListener('pointerdown', event => {
@@ -159,10 +284,7 @@ function makeRow(saved, index) {
     name.textContent = saved ? saved.name : t`All characters`;
     name.tabIndex = 0;
     name.setAttribute('role', 'button');
-    name.addEventListener('click', () => {
-        closePopover();
-        applyView(saved);
-    });
+    name.addEventListener('click', () => switchTo(saved));
     name.addEventListener('keydown', event => {
         if (event.key === 'Enter') name.click();
     });
@@ -273,7 +395,11 @@ function makeSaveRow() {
         }
         appliedView = fullView(answer.view);
         setCurrent(answer.id, answer.name);
+        refreshSavedViewState();
+        const target = pendingSwitch ? pendingSwitch.target : undefined;
+        pendingSwitch = null;
         closePopover();
+        if (target !== undefined) applyView(target);
     };
     save.addEventListener('click', () => void submit());
     input.addEventListener('keydown', event => {
@@ -352,6 +478,7 @@ async function openPopover() {
     popover.style.left = `${Math.max(4, Math.min(box.left, window.innerWidth - popover.offsetWidth - 4))}px`;
     popover.style.top = `${box.bottom + 4}px`;
     search.focus();
+    drawUnsavedBar();
     await refreshPopover();
 }
 
@@ -366,16 +493,22 @@ export async function onSavedViewsChanged() {
     const answer = await call('get', { id: currentId });
     if (!answer) return;
     if (answer.notFound) {
+        // The list keeps what it shows; with nothing to compare against it now counts as changes to "All characters".
+        appliedView = null;
         setCurrent(null, t`All characters`);
+        refreshSavedViewState();
         toastr.info(t`The view you were using was deleted.`);
         return;
     }
     const saved = fullView(answer.view);
     setCurrent(answer.id, answer.name);
-    if (appliedView && !deps.sameView(appliedView, saved) && deps.sameView(appliedView, deps.getView())) {
+    if (appliedView && !deps.sameView(appliedView, saved)) {
+        const unchanged = deps.sameView(appliedView, deps.getView());
         appliedView = saved;
-        deps.setView(saved);
+        // Unsaved changes stay on screen, now measured against the new version.
+        if (unchanged) deps.setView(saved);
     }
+    refreshSavedViewState();
 }
 
 /**
@@ -410,20 +543,46 @@ export function initSavedViews({ before, getView, setView, sameView, headers, st
         }
     });
     before.before(picker);
+    // A change made through the filter helper is only seen when the list is drawn; keep it if the page goes first.
+    window.addEventListener('pagehide', () => refreshSavedViewState());
     currentId = safeGet(CURRENT_ID_KEY);
     drawPicker();
 }
 
-/** Shows the saved view that was in use when the page was left, once the list can show views. */
+/**
+ * Shows the view that was in use when the page was left, once the list can show views, and puts back its unsaved
+ * changes where it was.
+ */
 export async function restoreCurrentView() {
-    if (!deps || !currentId) return;
-    const answer = await call('get', { id: currentId });
-    if (!answer) return;
-    if (answer.notFound) {
-        setCurrent(null, t`All characters`);
-        return;
+    if (!deps) return;
+    // Read before the view is applied: applying it draws a list with no changes, which clears the draft.
+    const draft = readDraft();
+    if (currentId) {
+        const answer = await call('get', { id: currentId });
+        if (!answer) {
+            toastr.warning(t`The view you were using could not be loaded. The list shows all characters until it can be.`);
+            return;
+        }
+        restored = true;
+        if (answer.notFound) {
+            setCurrent(null, t`All characters`);
+        } else {
+            applyView(answer);
+        }
     }
-    applyView(answer);
+    restored = true;
+    if (draft && draft.id === currentId) deps.setView(fullView(draft.view));
+    refreshSavedViewState();
+}
+
+/** @returns {{ id: string|null, view: object } | null} */
+function readDraft() {
+    try {
+        const draft = JSON.parse(safeGet(DRAFT_KEY) ?? 'null');
+        return draft && typeof draft === 'object' && draft.view && typeof draft.view === 'object' ? { id: typeof draft.id === 'string' ? draft.id : null, view: draft.view } : null;
+    } catch {
+        return null;
+    }
 }
 
 /** The saved view the list shows, or null for "All characters". */
