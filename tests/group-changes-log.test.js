@@ -340,14 +340,16 @@ describe('the groups version log', () => {
         expect(row).toEqual({ name: 'group 1001', digest_content: null });
     });
 
-    test('writeGroupFileAndRow: when the upsert fails no log row lands either', async () => {
+    test('writeGroupFileAndRow: when the upsert fails the row is unchanged, but the file change is still logged', async () => {
         await seedGroup('1001');
 
         failWriteMatching = /^\s*INSERT INTO groups\b|^UPDATE groups SET name\b/;
         const added = await addedBy(() => writeThroughStore({ id: '1001', name: 'renamed', members: [], chats: [] }));
         failWriteMatching = null;
 
-        expect(added).toEqual([]);
+        // The file was written, and readers read it (its digest is NULL, recomputed from the file), so they must
+        // learn it changed; otherwise a cached answer keeps showing what the file no longer holds.
+        expect(added).toEqual(['1001']);
         expect(withRawDb(db => db.prepare('SELECT name FROM groups WHERE id = \'1001\'').pluck().get())).toBe('group 1001');
     });
 
