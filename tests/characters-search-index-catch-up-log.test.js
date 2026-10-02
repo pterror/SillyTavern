@@ -124,7 +124,7 @@ describe('characters-search-index.js: catch-up log line', () => {
             .toContain('seq=10..20 tagseq=5..7 backlog=4 writers=fav:2,tag_ids:1,whole-record:1 tagrenames=2 ');
     });
 
-    test('one card\'s ordinary edit is not a batch; several changes, renames, a backlog, retries, failures or a skipped persist are', () => {
+    test('a single update logs nothing; several changes, renames, a backlog, a failure or a skipped persist log', () => {
         const single = {
             changed: true, deletes: 0, upserts: 1, ms: 5, seq: 11, seqFrom: 10, tagNameSeqFrom: 5, tagNameSeq: 5,
             retrySeq: 0, retried: 0, failed: 0, backlog: 0, writers: { fav: 1 }, tagRenames: 0, phases: {}, lockWaitMs: 0,
@@ -135,7 +135,7 @@ describe('characters-search-index.js: catch-up log line', () => {
         expect(searchIndex.isBatchCatchUp({ ...single, deletes: 1 })).toBe(true);
         expect(searchIndex.isBatchCatchUp({ ...single, tagRenames: 1 })).toBe(true);
         expect(searchIndex.isBatchCatchUp({ ...single, backlog: 3 })).toBe(true);
-        expect(searchIndex.isBatchCatchUp({ ...single, retried: 1 })).toBe(true);
+        expect(searchIndex.isBatchCatchUp({ ...single, retried: 1 })).toBe(false);
         expect(searchIndex.isBatchCatchUp({ ...single, failed: 1 })).toBe(true);
         expect(searchIndex.isBatchCatchUp({ ...single, persistSkipped: true })).toBe(true);
     });

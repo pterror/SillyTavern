@@ -315,15 +315,15 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
  */
 
 /**
- * Whether a committed catch-up is worth a console line. A tick that only applied one card's ordinary edit is the
- * steady trickle of single updates and stays quiet; a tick that applied several changes, renamed tags, left a
- * backlog, retried or failed a card, or couldn't persist its cursors is a batch and is logged. A failed card is
- * also logged on its own line when it fails, so quiet ticks never hide one.
+ * Whether a committed catch-up is worth a console line. A single update (one card added, changed, deleted or
+ * retried successfully) logs nothing; a tick that applied several changes, renamed tags or left a backlog is a
+ * batch and logs one line. A tick with a failed card or a skipped cursor persist always logs, and a failed card is
+ * also named on its own line when it fails.
  * @param {TickResult} r
  */
 export function isBatchCatchUp(r) {
     return r.deletes + r.upserts > 1 || r.tagRenames > 0 || r.backlog > 0
-        || r.retried > 0 || r.failed > 0 || Boolean(r.persistSkipped);
+        || r.failed > 0 || Boolean(r.persistSkipped);
 }
 
 /** @param {TickResult} r */
