@@ -1,8 +1,9 @@
-import { DOMPurify } from '../lib.js';
+import { DOMPurify, showdown } from '../lib.js';
 import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
-import { insertSafeMacroSpans, substituteSafeMacros } from './safe-macros.js';
+import { evaluateSafeMacro, insertSafeMacroSpans, substituteSafeMacros } from './safe-macros.js';
+import { isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
 
 // A leaf module: everything it needs from the rest of the app is passed to initCharacterFieldEditor()
 // (and to substituteMacrosWithPlaceholders()), so importing it never adds an import cycle.
@@ -70,6 +71,7 @@ export function insertMacroSpans(html, values) {
  * @property {(value: string) => Promise<boolean>} saveScenarioField
  * @property {(value: string) => Promise<boolean>} saveCharacterNoteField
  * @property {(value: string) => Promise<boolean>} saveExampleMessagesField
+ * @property {(file: File) => Promise<string>} [uploadImage] Uploads an image the editor's image button picked; gives its URL.
  * @property {(title: string, text: string) => Promise<boolean>} confirmDiscard Asks before an edit's change is thrown away.
  * @property {(id: string) => void} [onEditStart] Called once a field has entered edit mode.
  * @property {(id: string) => void} [onEditEnd] Called once a field has left edit mode (Done or cancel).
@@ -255,10 +257,56 @@ export function beginEdit(id) {
     getPanel(id).addClass('field_editing');
     deps.onEditStart?.(id);
     textarea.trigger('focus');
+    void mountFieldEditor(id);
+}
+
+/** @type {{ id: string, editor: import('./live-editor/mount.js').LiveEditor | null, ended: boolean } | null} The editor on the field in edit mode. */
+let liveEditor = null;
+
+/** Classes of a field's preview that style its text (not its box), so the editor's text is styled the same. */
+const PREVIEW_TEXT_CLASSES = new Set(['mes_text', 'creator_notes_preview_content']);
+
+/**
+ * Puts the live editor on the field in edit mode, in place of its textarea, set up as the field's preview renders.
+ * @param {string} id
+ */
+async function mountFieldEditor(id) {
+    const holder = { id, editor: null, ended: false };
+    liveEditor = holder;
+    const textarea = getTextarea(id)[0];
+    const preview = getPreview(id)[0];
+    const isGreeting = id === GREETING_FIELD_ID;
+    const characterName = () => String($('#character_name_pole').val() ?? '');
+    try {
+        const editor = await mountLiveEditor(textarea, {
+            render: FIELDS[id].render,
+            grammar: { emojis: showdown.helper.emojis, dialogueQuotes: isGreeting },
+            contentClass: [...(preview?.classList ?? [])].filter(c => PREVIEW_TEXT_CLASSES.has(c)).join(' '),
+            macros: { evaluate: text => evaluateSafeMacro(text, deps.substituteParams, isGreeting ? { name2Override: characterName() } : {}) },
+            formatting: { uploadImage: deps.uploadImage },
+            search: { context: () => ({ characterName: characterName() }) },
+        });
+        if (holder.ended) {
+            editor.destroy();
+            return;
+        }
+        holder.editor = editor;
+        if (document.activeElement === textarea) editor.view.focus();
+    } catch (error) {
+        console.error('The editor could not be loaded; the field stays a plain text box', error);
+    }
+}
+
+function unmountFieldEditor() {
+    if (!liveEditor) return;
+    liveEditor.ended = true;
+    liveEditor.editor?.destroy();
+    liveEditor = null;
 }
 
 function endEdit() {
     const { id } = activeEdit;
+    unmountFieldEditor();
     activeEdit = null;
     getPanel(id).removeClass('field_editing');
     deps.onEditEnd?.(id);
@@ -547,7 +595,16 @@ function initTabSwitchGuard() {
  * @param {string} id
  */
 function focusEditing(id) {
-    if (isFieldInEdit(id)) getTextarea(id)[0]?.focus({ preventScroll: true });
+    if (!isFieldInEdit(id)) return;
+    const view = liveEditor?.id === id ? liveEditor.editor?.view : null;
+    if (!view) {
+        getTextarea(id)[0]?.focus({ preventScroll: true });
+        return;
+    }
+    // Moving the editor loses the page's selection inside it: measure it where it is now, and put its cursor back.
+    view.requestMeasure();
+    view.focus();
+    view.dispatch({ selection: view.state.selection, scrollIntoView: true });
 }
 
 /**
@@ -589,6 +646,8 @@ export function initCharacterFieldEditor(dependencies) {
     // handled Escape is marked with preventDefault, and those handlers leave it alone.
     document.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+        // The editor's copy of a key on its textarea: the original already came through here.
+        if (isEditorEvent(event)) return;
         // An open suggestion list or panel in the editor takes the Escape first.
         const editor = /** @type {Element} */ (event.target).closest?.('.cm-editor');
         if (editor?.querySelector('.cm-tooltip-autocomplete, .cm-panels .cm-search, .cm-panels .live-presets')) return;
@@ -629,7 +688,7 @@ export function initCharacterFieldEditor(dependencies) {
         getTextarea(id).on('input', function (event) {
             const value = String($(this).val() ?? '');
             // Typing is a trusted event; `.val(x).trigger('input')` or a dispatched Event is code writing the field.
-            if (event.originalEvent?.isTrusted) {
+            if (isUserEvent(event.originalEvent)) {
                 if (isFieldInEdit(id)) {
                     activeEdit.userText = value;
                     if (deps.power_user.auto_save_msg_edits) {
