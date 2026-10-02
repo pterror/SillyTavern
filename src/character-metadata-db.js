@@ -12147,7 +12147,8 @@ export async function queryEntities(directories, params = {}) {
                 const need = skip + numericLimit;
 
                 // Keys only, through the indexes and under the work cap; full rows are read for the page alone.
-                const walked = walkSortedStreams(entry.db, streams, cursorAt?.ends ?? null, need, comparator);
+                // An id list bounds the read by itself, so it isn't capped: its callers ask for the whole list's page.
+                const walked = walkSortedStreams(entry.db, streams, cursorAt?.ends ?? null, need, comparator, Array.isArray(ids) ? Infinity : undefined);
                 const pageKeys = walked.rows.slice(skip);
                 moreRows = walked.more && pageKeys.length < numericLimit;
 

@@ -625,6 +625,22 @@ describe('/query searches walked under the work cap', () => {
         }
     }, 30000);
 
+    test('a sorted walk whose SQL windows stop at their own work cap still reads every window to the end', async () => {
+        await seedWalked();
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        // More marks merging into t1 than the index takes: the tags are left to SQL, so this search is walked.
+        const request = { filter: { search: 'zephyr', tags: { include: ['t1'] }, includeGroups: true }, sort: { field: 'date_added', order: 'desc' }, page: 1, pageSize: 20, want: ['rows'] };
+        const whole = (await (await postJson(request)).json()).rows.map(row => row.item?.avatar ?? row.item?.id ?? row.avatar);
+        expect(whole.slice().sort()).toEqual(['zephyr-group', 'zephyr2.png', 'zephyr5.png']);
+        metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
+        try {
+            const capped = (await (await postJson(request)).json()).rows.map(row => row.item?.avatar ?? row.item?.id ?? row.avatar);
+            expect(capped).toEqual(whole);
+        } finally {
+            metadataDb._setSortedPageWalkForTests(null);
+        }
+    }, 30000);
+
     test('the total is exact once the walk has checked every match; a page number still works without a cursor', async () => {
         await seedWalked();
         const request = { filter: { search: 'zephyr', tags: { include: ['t1'] } }, sort: { field: 'name', order: 'asc' }, pageSize: 1, want: ['rows', 'total'] };
