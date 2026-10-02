@@ -326,6 +326,14 @@ export function isBatchCatchUp(r) {
         || r.failed > 0 || Boolean(r.persistSkipped);
 }
 
+/**
+ * One full-rebuild batch's progress line, logged as each batch is done.
+ * @param {{ batch: number, cards: number, failed: number, doneSoFar: number, ms: number }} b
+ */
+export function formatRebuildBatchLine(b) {
+    return `[search] full rebuild: batch ${b.batch}, ${b.cards} cards${b.failed ? ` (${b.failed} failed)` : ''}, ${b.doneSoFar} done so far, ${b.ms} ms`;
+}
+
 /** @param {TickResult} r */
 export function formatCatchUpLine(r) {
     const p = r.phases;
@@ -615,13 +623,18 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const linked = await linkPersistedIndexInto(tempDir);
         const built = linked ?? createEmptyTantivyIndexAt(tantivy, tempDir);
         const tempWriter = built.index.writer();
+        const rebuildStart = Date.now();
+        let doneSoFar = 0;
         try {
             let batchIndex = 0;
             // Each streamed batch is one unit: its rows came with it, and its tag/fav lookups cover exactly it.
             for await (const rows of streamCharacterCardJsonBatches(directories)) {
+                const batchStart = Date.now();
                 const { indexed, failures } = await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row])), undefined, { replace: Boolean(linked) });
                 await persistRebuildMarks(indexed, failures, Boolean(linked));
                 batchIndex++;
+                doneSoFar += rows.length;
+                console.log(formatRebuildBatchLine({ batch: batchIndex, cards: rows.length, failed: failures.length, doneSoFar, ms: Date.now() - batchStart }));
                 if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
                     tempWriter.commit();
                 }
@@ -634,6 +647,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         }
 
         swapIndexIntoPlace(indexDir, tempDir);
+        console.log(`[search] full rebuild done: ${doneSoFar} cards in ${Date.now() - rebuildStart} ms`);
         index = tantivy.Index.open(indexDir);
         schema = index.schema;
         getWriter();
