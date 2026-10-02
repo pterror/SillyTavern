@@ -73,7 +73,9 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 }));
 jest.unstable_mockModule('../public/scripts/constants.js', () => ({ debounce_timeout: { quick: 100 } }));
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
-    readFolderTileTags: async () => ({ tags: [], rest: null }),
+    registerFolderCaseHandlers: noop,
+    searchTagsByName: async () => ({ rows: [], cursor: null }),
+    readTagsForIds: async () => ({ tags: new Map(), gone: new Set() }),
     tags: [],
     filterByTagState: noop,
     isBogusFolder: noop,

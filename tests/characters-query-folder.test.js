@@ -146,6 +146,13 @@ describe('/query filter.folder', () => {
         expect(again.rows.map(r => r.item.avatar ?? r.item.id).sort()).toEqual(['c0.png', 'c4.png', 'g1']);
     });
 
+    test('while no tag is a closed folder, "none" is no filter: every row, with a counted total', async () => {
+        await seed();
+        for (const id of ['closedA', 'closedB']) await metadataDb.editTagDefinition(directories, id, { folder_type: 'OPEN' });
+        const body = await (await post('/api/characters/query', { filter: { includeGroups: true, folder: 'none' }, pageSize: 2 })).json();
+        expect(body.total).toBe(Object.keys(CARRIES).length);
+    });
+
     test('the route refuses a folder that isn\'t a string', async () => {
         await seed();
         expect((await post('/api/characters/query', { filter: { folder: 7 } })).status).toBe(400);

@@ -6,13 +6,14 @@ import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, readFolderTileTags, searchTagsByName, readTagsForIds } from './tags.js';
+import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
 import { initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
+import { initFolderSwitcher, refreshFolderSwitcher } from './folder-switcher.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -74,11 +75,7 @@ export const entitiesFilter = new FilterHelper(printCharactersDebounced);
 
 const TAG_MODE_STORAGE_KEY = 'characterListTagMode';
 const RANGES_STORAGE_KEY = 'characterListRanges';
-
-function getBackBlock() {
-    const template = $('#bogus_folder_back_template .bogus_folder_select').clone();
-    return template;
-}
+const FOLDER_CASE_STORAGE_KEY = 'characterListFolderCase';
 
 async function getEmptyBlock() {
     const icons = ['fa-dragon', 'fa-otter', 'fa-kiwi-bird', 'fa-crow', 'fa-frog'];
@@ -405,6 +402,7 @@ export async function printCharacters(fullRefresh = false) {
     // A filter set from code (upstream's FilterHelper, the tag bars) shows in the pills and the box.
     showViewInSearchBox();
     refreshSavedViewState();
+    void refreshFolderSwitcher();
 
     // We are actually always reprinting filters, as it "doesn't hurt", and this way they are always up to date
     printTagFilters(tag_filter_type.character);
@@ -435,12 +433,8 @@ export async function printCharacters(fullRefresh = false) {
             // Build into a detached fragment and append once - one reflow for the page instead of one per row.
             // Moving an attached node into the fragment detaches it from `list`, so replaceChildren() below is safe.
             const fragment = document.createDocumentFragment();
-            const restBlock = getFolderTilesRestBlock();
-            const lastTileIndex = data.findLastIndex(i => i.type === 'tag');
-            if (restBlock && lastTileIndex === -1) fragment.appendChild(restBlock);
-            // Folder tiles aren't rows of the list, so they don't count.
             let position = listPageContext.pageOffset;
-            for (const [index, i] of data.entries()) {
+            for (const i of data) {
                 switch (i.type) {
                     case 'character': {
                         const existingRow = existingCharacterRows.get(i.item.avatar);
@@ -459,18 +453,11 @@ export async function printCharacters(fullRefresh = false) {
                         position++;
                         fragment.appendChild(getGroupBlock(i.item).get(0));
                         break;
-                    case 'tag':
-                        fragment.appendChild(getTagBlock(i.item, i.entities, i.hidden, i.isUseless, i.total).get(0));
-                        if (restBlock && index === lastTileIndex) fragment.appendChild(restBlock);
-                        break;
                 }
             }
 
             list.replaceChildren();
             renderedPageEntities = data;
-            if (power_user.bogus_folders && isBogusFolderOpen()) {
-                $(list).append(getBackBlock());
-            }
             if (!data.length) {
                 const emptyBlock = await getEmptyBlock();
                 $(list).append(emptyBlock);
@@ -527,11 +514,9 @@ export async function printCharacters(fullRefresh = false) {
     updatePersonaConnectionsAvatarList();
 
     async function printServerPaginated() {
-        // Folder tiles are prepended to page 1 only (never paginated), so page 1 can exceed pageSize.
         const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
 
-        // Page 1 is fetched before the plugin is built, so every later page and the folder tiles use the sort it
-        // settled on.
+        // Page 1 is fetched before the plugin is built, so every later page uses the sort it settled on.
         const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
             trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT));
 
@@ -571,7 +556,6 @@ export async function printCharacters(fullRefresh = false) {
                 pendingFirstPage = undefined;
                 resultPromise
                     .then(async result => {
-                        const folderTiles = await getFolderTileEntities(page, filter, sort, result.total);
                         const rows = Array.isArray(result.rows) ? result.rows : [];
                         const pageEntities = rows.map(row => queryRowToEntity(row));
                         const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
@@ -586,7 +570,7 @@ export async function printCharacters(fullRefresh = false) {
                             totalApprox: pageTotalApprox,
                         };
                         if (result.searchBackend !== undefined) showSearchBackend(result.searchBackend);
-                        ajaxParams.success({ rows: [...folderTiles, ...pageEntities], total: result.total });
+                        ajaxParams.success({ rows: pageEntities, total: result.total });
                     })
                     .catch(error => {
                         console.error('[printCharacters] server-paginated /query failed:', error);
@@ -762,6 +746,31 @@ function readRanges() {
     }
 }
 
+/**
+ * The closed-folder case the list shows, while "Tags as Folders" is on: 'none' (no closed folder) unless one was
+ * picked. Upstream's filter helper has no folder case, so it is kept beside it, per browser.
+ * @returns {string}
+ */
+function readFolderCase() {
+    try {
+        return accountStorage.getItem(FOLDER_CASE_STORAGE_KEY) || 'none';
+    } catch {
+        return 'none';
+    }
+}
+
+/** @param {string|null|undefined} folderCase */
+function writeFolderCase(folderCase) {
+    const value = folderCase || 'none';
+    try {
+        if (readFolderCase() === value) return;
+        if (value === 'none') accountStorage.removeItem(FOLDER_CASE_STORAGE_KEY);
+        else accountStorage.setItem(FOLDER_CASE_STORAGE_KEY, value);
+    } catch {
+        // The case just isn't remembered.
+    }
+}
+
 /** @param {import('./character-view.js').CharacterView['ranges']} ranges */
 function writeRanges(ranges) {
     const clean = cleanRanges(ranges);
@@ -814,7 +823,7 @@ export function getCharacterView() {
         fav: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.FAV)),
         group: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.GROUP)),
         sort,
-        folderCase: null,
+        folderCase: power_user.bogus_folders ? readFolderCase() : null,
     };
 }
 
@@ -834,6 +843,7 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
     entitiesFilter.setFilterData(FILTER_TYPES.TAG, { selected: [...next.tags.include], excluded: [...next.tags.exclude] }, true);
     writeTagMode(next.tags.mode === 'or' ? 'or' : 'and');
     writeRanges(next.ranges);
+    if (power_user.bogus_folders) writeFolderCase(next.folderCase);
     entitiesFilter.setFilterData(FILTER_TYPES.FAV, booleanToTriState(next.fav), true);
     entitiesFilter.setFilterData(FILTER_TYPES.GROUP, booleanToTriState(next.group), true);
     if (JSON.stringify(current.sort) !== JSON.stringify(next.sort) && next.sort.field !== 'search') {
@@ -905,9 +915,6 @@ export async function findCharacterListPage(isEntity, pageSize) {
  * This keeps the browser's own filter (`doFilter`) and sort (`doSort`) over the page: upstream callers expect it to
  * answer synchronously. It is the one place the browser still filters and ranks the list.
  *
- * Folder tiles' `entities`, `hidden` and `isUseless` are left as rendered: recomputing them here would only see
- * this page.
- *
  * @param {object} param0 - Optional parameters
  * @param {boolean} [param0.doFilter] - Whether this entity list should already be filtered based on the global filters
  * @param {boolean} [param0.doSort] - Whether the entity list should be sorted when returned
@@ -926,95 +933,29 @@ export function getEntitiesList({ doFilter = false, doSort = true } = {}) {
 }
 
 /**
- * What the line under page 1's folder tiles says: the folder tags that got no tile (readFolderTileTags()'s `rest`),
- * 'failed' when they couldn't be read, null for no line.
- * @type {{ count: number, more: boolean } | 'failed' | null}
+ * A page of folders of one type whose names hold `term`, in the tag sort order.
+ * @param {string} term
+ * @param {string | null} cursor
+ * @param {'OPEN'|'CLOSED'} folderType
+ * @returns {Promise<{ rows: { id: string, name: string }[], cursor: string | null } | null>}
  */
-let folderTilesRest = null;
-
-/**
- * The line under the folder tiles, or null when none is due.
- * @returns {HTMLElement | null}
- */
-function getFolderTilesRestBlock() {
-    const rest = folderTilesRest;
-    if (rest === null) return null;
-    const block = document.createElement('div');
-    block.classList.add('text_muted', 'folder_tiles_rest');
-    if (rest === 'failed') {
-        block.textContent = t`Folders could not be loaded.`;
-    } else if (rest.count === 0) {
-        block.textContent = t`More folders may match. Search with more of a folder's name to find it.`;
-    } else {
-        const count = rest.more ? `${rest.count.toLocaleString()}+` : rest.count.toLocaleString();
-        block.textContent = t`${count} more folders have no tile here. Search for a folder's name to find it.`;
-    }
-    return block;
+async function readFolderPage(term, cursor, folderType) {
+    const page = await searchTagsByName(term, { pageSize: 50, cursor, folderType });
+    return page && { rows: page.rows.map(tag => ({ id: tag.id, name: String(tag.name) })), cursor: page.cursor };
 }
 
 /**
- * The folder tiles on a page of the server-paged list. They all go at the top of page 1, so every other page has
- * none and asks for none. At most FOLDER_TILE_TAGS_MAX folder tags are tried for a tile; the rest are counted for
- * getFolderTilesRestBlock().
- *
- * Which folders get a tile: a folder the tag filter selects or excludes gets none,
- * none do while "Folders" is excluded, and with a search term only folders whose name matches it do, each whatever
- * its count. With no search term a folder gets a tile only when its sub-list isn't empty.
- *
- * A tile's `entities` hold only its strip's rows; `total` is the sub-list's size and `hidden` how many tagged
- * entities it leaves out, each `~`-prefixed when approximate. `isUseless` is set when the sub-list is the whole
- * list, `listTotal` long.
- * @param {number} page The page, 1-based.
- * @param {import('./character-repository.js').CharacterQueryFilter} filter The list's `/query` filter.
- * @param {import('./character-repository.js').CharacterQuerySort|undefined} sort The list's `/query` sort.
- * @param {number|string|undefined} listTotal The list's `/query` total.
- * @returns {Promise<Entity[]>}
+ * A folder of one type by id: null when no such folder exists, undefined when the read failed.
+ * @param {string} id
+ * @param {'OPEN'|'CLOSED'} folderType
+ * @returns {Promise<{ id: string, name: string } | null | undefined>}
  */
-export async function getFolderTileEntities(page, filter, sort, listTotal) {
-    folderTilesRest = null;
-    if (page !== 1 || !power_user.bogus_folders) return [];
-    if (isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FOLDER), FILTER_STATES.EXCLUDED)) return [];
-
-    const tagFilterData = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
-    const folderTags = await readFolderTileTags({
-        contains: entitiesFilter.getFilterData(FILTER_TYPES.SEARCH) ?? '',
-        skip: new Set([...tagFilterData.selected, ...tagFilterData.excluded]),
-    });
-    if (!folderTags) {
-        folderTilesRest = 'failed';
-        return [];
-    }
-    folderTilesRest = folderTags.rest;
-    const candidates = folderTags.tags.map(tag => tagToEntity(tag));
-    if (!candidates.length) return [];
-
-    const groupState = entitiesFilter.getFilterData(FILTER_TYPES.GROUP);
-    const answers = await characterRepository.folderTiles(candidates.map(entity => String(entity.id)), {
-        search: filter.search,
-        fav: filter.fav,
-        tags: filter.tags,
-        group: isFilterState(groupState, FILTER_STATES.SELECTED) ? true : (isFilterState(groupState, FILTER_STATES.EXCLUDED) ? false : undefined),
-    }, sort);
-    const answerById = new Map(answers.map(answer => [answer.id, answer]));
-
-    const hasSearchTerm = Boolean(entitiesFilter.getFilterData(FILTER_TYPES.SEARCH));
-    const list = parseQueryTotal(listTotal);
-    /** @type {Entity[]} */
-    const tiles = [];
-    for (const entity of candidates) {
-        const answer = answerById.get(String(entity.id));
-        // Missing: the server has no such tag, or it's marked deleted.
-        if (!answer || answer.missing) continue;
-        const rows = Array.isArray(answer.rows) ? answer.rows : [];
-        if (!hasSearchTerm && rows.length === 0) continue;
-        const count = parseQueryTotal(answer.count);
-        entity.entities = rows.map(row => queryRowToEntity(row));
-        entity.total = answer.count;
-        entity.hidden = answer.hidden;
-        entity.isUseless = !count.approx && !list.approx && count.value === list.value;
-        tiles.push(entity);
-    }
-    return tiles;
+async function readFolder(id, folderType) {
+    const answer = await readTagsForIds([id]);
+    if (!answer) return undefined;
+    const tag = answer.tags.get(id);
+    if (!tag || tag.folder_type !== folderType) return null;
+    return { id, name: String(tag.name) };
 }
 
 /**
@@ -1668,6 +1609,24 @@ export function initCharacterSearch() {
         headers: () => getRequestHeaders(),
         storage: accountStorage,
         translate: t,
+        folders: {
+            list: (term, cursor) => readFolderPage(term, cursor, 'OPEN'),
+            get: id => readFolder(id, 'OPEN'),
+        },
+    });
+    initFolderSwitcher({
+        after: $('#rm_characters_block .rm_tag_controls').get(0),
+        deps: {
+            getCase: () => getCharacterView().folderCase,
+            setCase: folderCase => setCharacterView({ folderCase }),
+            list: (term, cursor) => readFolderPage(term, cursor, 'CLOSED'),
+            get: id => readFolder(id, 'CLOSED'),
+        },
+        translate: t,
+    });
+    registerFolderCaseHandlers({
+        show: folderCase => setCharacterView({ folderCase }),
+        read: () => getCharacterView().folderCase,
     });
 
     searchButton.on('click', function () {

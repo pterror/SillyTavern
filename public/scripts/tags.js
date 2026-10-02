@@ -2567,7 +2567,23 @@ function getOpenBogusFolders() {
  * @returns {boolean} If currently viewing a folder
  */
 function isBogusFolderOpen() {
-    return getOpenBogusFolders().length > 0;
+    const shownCase = readShownFolderCase();
+    return getOpenBogusFolders().length > 0 || (shownCase !== null && shownCase !== 'none');
+}
+
+/** Set by the character list: shows a closed-folder case ('none' or a closed folder's tag id). */
+let showFolderCase = /** @type {((folderCase: string) => void) | null} */ (null);
+/** Set by the character list: the closed-folder case shown, null while "Tags as Folders" is off. */
+let readShownFolderCase = /** @type {() => string | null} */ (() => null);
+
+/**
+ * Lets chooseBogusFolder() and isBogusFolderOpen() reach the character list's folder switcher, which this module
+ * can't import.
+ * @param {{ show: (folderCase: string) => void, read: () => string | null }} handlers
+ */
+export function registerFolderCaseHandlers({ show, read }) {
+    showFolderCase = show;
+    readShownFolderCase = read;
 }
 
 /**
@@ -2578,6 +2594,34 @@ function isBogusFolderOpen() {
  * @param {boolean} remove Whether the given tag should be removed (otherwise it is added/chosen)
  */
 function chooseBogusFolder(source, tagId, remove = false) {
+    // A closed folder is a case of the list's folder switcher, not a tag filter.
+    const shownCase = readShownFolderCase();
+    if (showFolderCase && tagId === 'back' && shownCase !== null && shownCase !== 'none') {
+        showFolderCase('none');
+        return;
+    }
+    if (showFolderCase && shownCase !== null && tagId !== 'back' && !tagsStore.get(tagId)) {
+        // The page holds only the tags on screen: read this one to tell a closed folder from an open one.
+        void readTagsForIds([tagId]).then(answer => {
+            if (answer?.tags.get(tagId)?.folder_type === 'CLOSED') showFolderCase?.(remove ? 'none' : tagId);
+            else chooseTagFilterFolder(source, tagId, remove);
+        });
+        return;
+    }
+    if (showFolderCase && tagsStore.get(tagId)?.folder_type === 'CLOSED') {
+        showFolderCase(remove ? 'none' : tagId);
+        return;
+    }
+    chooseTagFilterFolder(source, tagId, remove);
+}
+
+/**
+ * Opens or closes an open folder: selects or clears its tag in the tag filter bar.
+ * @param {*} source The jQuery element clicked when choosing the folder
+ * @param {string} tagId The tag id that is behind the chosen folder, or 'back'
+ * @param {boolean} remove Whether the given tag should be removed (otherwise it is added/chosen)
+ */
+function chooseTagFilterFolder(source, tagId, remove) {
     // If we are here via the 'back' action, we implicitly take the last filtered folder as one to remove
     const isBack = tagId === 'back';
     if (isBack) {
@@ -3649,12 +3693,14 @@ function tagQuerySortField() {
  * @param {number} [options.pageSize]
  * @param {string | null} [options.cursor] - where an earlier page said the next one starts
  * @param {boolean} [options.used] - only tags some character or group carries
+ * @param {'OPEN'|'CLOSED'} [options.folderType] - only folders of this type
  * @returns {Promise<{ rows: Tag[], cursor: string | null } | null>} null if the read failed
  */
-export async function searchTagsByName(term, { pageSize = FIND_TAG_RESULT_LIMIT, cursor = null, used = false } = {}) {
+export async function searchTagsByName(term, { pageSize = FIND_TAG_RESULT_LIMIT, cursor = null, used = false, folderType = undefined } = {}) {
     const contains = String(term ?? '').trim();
     const filter = contains ? { contains } : {};
     if (used) filter.used = true;
+    if (folderType) filter.folderType = folderType;
     const answer = await postTagQuery({
         filter,
         sort: { field: tagQuerySortField() },
@@ -3665,71 +3711,8 @@ export async function searchTagsByName(term, { pageSize = FIND_TAG_RESULT_LIMIT,
     return { rows: answer.rows.filter(isTagObject), cursor: answer.cursor ?? null };
 }
 
-/** At most this many folder tags get a tile: one /api/characters/folder-tiles request's worth. */
-export const FOLDER_TILE_TAGS_MAX = 200;
-
 /** Reads a name search may make when the server's work cap keeps cutting its pages short. */
 const TAG_SEARCH_READS_MAX = 5;
-
-/**
- * The folder tags the character list draws as tiles: the first FOLDER_TILE_TAGS_MAX in the tag sort mode's order,
- * less `skip`, only those whose names hold `contains` when it is given. They are taken into `tags`, since a tile
- * shows them.
- * @param {object} options
- * @param {string} [options.contains]
- * @param {Set<string>} [options.skip] - ids that get no tile and don't count toward the bound
- * @returns {Promise<{ tags: Tag[], rest: { count: number, more: boolean } | null } | null>} null if a read failed.
- *   `rest`: the folder tags after these, null when there are none; `more` means there may be more than `count`.
- */
-export async function readFolderTileTags({ contains = '', skip = new Set() } = {}) {
-    const term = String(contains ?? '').trim();
-    const filter = term ? { folders: true, contains: term } : { folders: true };
-    const field = tagQuerySortField();
-    /** @type {Tag[]} */
-    const found = [];
-    const rest = { count: 0, more: false };
-    /** @type {string | null} */
-    let cursor = null;
-    let restarted = false;
-    for (let reads = 0; ; reads++) {
-        const answer = await postTagQuery({
-            filter,
-            sort: { field },
-            pageSize: Math.min(FOLDER_TILE_TAGS_MAX - found.length + skip.size, 500),
-            cursor,
-            restCount: true,
-        });
-        if (answer === 'invalid-cursor' && !restarted) {
-            // The manual order the cursor was made in is being rewritten: read from the start.
-            restarted = true;
-            found.length = 0;
-            rest.count = 0;
-            cursor = null;
-            reads = -1;
-            continue;
-        }
-        if (!answer || answer === 'invalid-cursor' || !Array.isArray(answer.rows)) return null;
-        const rows = answer.rows.filter(isTagObject);
-        mergeServerTagDefinitions(rows.filter(row => !tagIdsBeingCreated.has(row.id)));
-        for (const row of rows) {
-            if (skip.has(row.id)) continue;
-            if (found.length < FOLDER_TILE_TAGS_MAX) found.push(tagsStore.get(row.id) ?? row);
-            else rest.count++;
-        }
-        cursor = answer.cursor ?? null;
-        if (cursor === null) break;
-        if (answer.rest) {
-            rest.count += answer.rest.count;
-            rest.more = answer.rest.more;
-            break;
-        }
-        if (found.length >= FOLDER_TILE_TAGS_MAX || reads + 1 >= TAG_SEARCH_READS_MAX) {
-            rest.more = true;
-            break;
-        }
-    }
-    return { tags: found, rest: rest.count > 0 || rest.more ? rest : null };
-}
 
 /**
  * The tag `/random` picks from: a tag some character or group carries whose name is `name`, else one whose name

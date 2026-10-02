@@ -40,10 +40,6 @@ function closePopover() {
     openPopover = null;
 }
 
-document.addEventListener('pointerdown', event => {
-    if (openPopover && event.target instanceof Node && !openPopover.contains(event.target)) closePopover();
-}, true);
-
 /**
  * Pill kinds that aren't text fields: a tag the row carries, and favorite. They come first in the field list.
  * @returns {Record<string, string>}
@@ -326,6 +322,9 @@ function openTagPicker(anchor, searchTags, onPick) {
  * @returns {() => void} Redraws the pills and the box from the current view.
  */
 export function initViewPills({ container, input, getView, setView, translate, searchTags, tagNames }) {
+    document.addEventListener('pointerdown', event => {
+        if (openPopover && event.target instanceof Node && !openPopover.contains(event.target)) closePopover();
+    }, true);
     t = translate;
     /** @type {import('./character-view.js').CharacterViewCondition[]} */
     let conditions = [];

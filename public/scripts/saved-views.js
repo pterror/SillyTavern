@@ -15,8 +15,36 @@ const PAGE_SIZE = 50;
  * @typedef {{ id: string, name: string, view: import('./character-view.js').CharacterView, updatedAt: number }} SavedView
  */
 
-/** @type {{ getView: () => import('./character-view.js').CharacterView, setView: (view: import('./character-view.js').CharacterView) => void, sameView: (a: any, b: any) => boolean, headers: () => Record<string, string>, storage: { getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void } } | null} */
+/**
+ * @typedef {object} FolderReads Open folders, read for the picker's Folders section.
+ * @property {(term: string, cursor: string | null) => Promise<{ rows: { id: string, name: string }[], cursor: string | null } | null>} list
+ * @property {(id: string) => Promise<{ id: string, name: string } | null | undefined>} get null: no such open folder;
+ *   undefined: the read failed.
+ */
+
+/** @type {{ getView: () => import('./character-view.js').CharacterView, setView: (view: import('./character-view.js').CharacterView) => void, sameView: (a: any, b: any) => boolean, headers: () => Record<string, string>, storage: { getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }, folders: FolderReads } | null} */
 let deps = null;
+
+/** An open folder is a built-in view, "tag is <folder>"; its id in the picker is this prefix and the tag id. */
+const FOLDER_VIEW_PREFIX = 'folder:';
+
+/** @param {string|null} id */
+function isFolderViewId(id) {
+    return typeof id === 'string' && id.startsWith(FOLDER_VIEW_PREFIX);
+}
+
+/**
+ * The view an open folder is.
+ * @param {{ id: string, name: string }} folder
+ * @returns {SavedView}
+ */
+function folderView(folder) {
+    return { id: `${FOLDER_VIEW_PREFIX}${folder.id}`, name: folder.name, view: fullView({ tags: { include: [folder.id] } }), updatedAt: 0 };
+}
+
+/** The open folders read for the picker, and where the next page starts. @type {{ id: string, name: string }[]} */
+let loadedFolders = [];
+let foldersCursor = /** @type {string|null} */ (null);
 
 /** The saved view the list shows, or null for "All characters". @type {string|null} */
 let currentId = null;
@@ -88,7 +116,8 @@ function fullView(view) {
         group: typeof view?.group === 'boolean' ? view.group : undefined,
         ranges: view?.ranges && typeof view.ranges === 'object' ? view.ranges : undefined,
         sort: view?.sort && typeof view.sort === 'object' ? view.sort : current.sort,
-        folderCase: null,
+        // With "Tags as Folders" off the list has no folder case; on, a view without one shows "No folder".
+        folderCase: current.folderCase === null ? null : (typeof view?.folderCase === 'string' && view.folderCase ? view.folderCase : 'none'),
     };
 }
 
@@ -167,7 +196,7 @@ function switchTo(target) {
 
 /** Saves the list over the current view. @returns {Promise<boolean>} */
 async function saveCurrent() {
-    if (!currentId) return false;
+    if (!currentId || isFolderViewId(currentId)) return false;
     const answer = await call('change', { id: currentId, view: deps.getView() });
     if (!answer || answer.notFound) {
         toastr.error(t`The view could not be saved.`);
@@ -216,12 +245,12 @@ function drawUnsavedBar() {
         closePopover();
         applyView(target);
     };
-    if (currentId) {
+    if (currentId && !isFolderViewId(currentId)) {
         button(t`Save`, 'save', async () => {
             if (await saveCurrent() && pendingSwitch) thenSwitch();
         });
     }
-    if (pendingSwitch) {
+    if (pendingSwitch || isFolderViewId(currentId)) {
         button(t`Save as new`, 'save-as', () => {
             const input = popover.querySelector('.view_picker_save input');
             if (input instanceof HTMLInputElement) input.focus();
@@ -241,6 +270,15 @@ function drawUnsavedBar() {
         });
     }
     popover.prepend(bar);
+}
+
+/** Reads the first page of open folders matching the picker's search (or the next one). @param {boolean} more */
+async function readFolders(more) {
+    const page = await deps.folders.list(filterText, more ? foldersCursor : null);
+    if (!page) return false;
+    loadedFolders = more ? [...loadedFolders, ...page.rows] : page.rows;
+    foldersCursor = page.cursor;
+    return true;
 }
 
 /** Reads the first page of views (or the next one), for the picker. @param {boolean} more */
@@ -264,10 +302,6 @@ function closePopover() {
     popover = null;
     pendingSwitch = null;
 }
-
-document.addEventListener('pointerdown', event => {
-    if (popover && event.target instanceof Node && !popover.contains(event.target) && !picker?.contains(event.target)) closePopover();
-}, true);
 
 /**
  * A row of the picker.
@@ -437,12 +471,52 @@ function drawPopover() {
         });
         list.append(more);
     }
+    if (loadedFolders.length === 0) return;
+    const heading = document.createElement('div');
+    heading.className = 'view_picker_heading';
+    heading.textContent = t`Folders`;
+    list.append(heading);
+    for (const folder of loadedFolders) list.append(makeFolderRow(folder));
+    if (foldersCursor) {
+        const more = document.createElement('div');
+        more.className = 'menu_button view_picker_more';
+        more.textContent = t`Show more folders`;
+        more.addEventListener('click', async () => {
+            if (await readFolders(true)) drawPopover();
+        });
+        list.append(more);
+    }
+}
+
+/**
+ * A row of the picker's Folders section: an open folder, shown as the view "tag is <folder>".
+ * @param {{ id: string, name: string }} folder
+ */
+function makeFolderRow(folder) {
+    const saved = folderView(folder);
+    const row = document.createElement('div');
+    row.className = 'view_picker_row view_picker_folder';
+    row.dataset.viewId = saved.id;
+    if (saved.id === currentId) row.classList.add('current');
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid fa-folder-open';
+    const name = document.createElement('span');
+    name.className = 'view_picker_row_name';
+    name.textContent = folder.name;
+    name.tabIndex = 0;
+    name.setAttribute('role', 'button');
+    name.addEventListener('click', () => switchTo(saved));
+    name.addEventListener('keydown', event => {
+        if (event.key === 'Enter') name.click();
+    });
+    row.append(icon, name);
+    return row;
 }
 
 async function refreshPopover() {
-    if (!(await readViews(false))) {
-        toastr.error(t`Views could not be loaded.`);
-    }
+    const [views, folders] = await Promise.all([readViews(false), readFolders(false)]);
+    if (!views) toastr.error(t`Views could not be loaded.`);
+    if (!folders) toastr.error(t`Folders could not be loaded.`);
     drawPopover();
 }
 
@@ -489,7 +563,7 @@ async function openPopover() {
 export async function onSavedViewsChanged() {
     if (!deps) return;
     if (popover) await refreshPopover();
-    if (!currentId) return;
+    if (!currentId || isFolderViewId(currentId)) return;
     const answer = await call('get', { id: currentId });
     if (!answer) return;
     if (answer.notFound) {
@@ -521,10 +595,14 @@ export async function onSavedViewsChanged() {
  * @param {() => Record<string, string>} options.headers
  * @param {{ getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }} options.storage
  * @param {typeof t} options.translate i18n's `t`.
+ * @param {FolderReads} options.folders
  */
-export function initSavedViews({ before, getView, setView, sameView, headers, storage, translate }) {
+export function initSavedViews({ before, getView, setView, sameView, headers, storage, translate, folders }) {
+    document.addEventListener('pointerdown', event => {
+        if (popover && event.target instanceof Node && !popover.contains(event.target) && !picker?.contains(event.target)) closePopover();
+    }, true);
     t = translate;
-    deps = { getView, setView, sameView, headers, storage };
+    deps = { getView, setView, sameView, headers, storage, folders };
     picker = document.createElement('div');
     picker.id = 'character_view_picker';
     picker.className = 'menu_button view_picker';
@@ -557,7 +635,16 @@ export async function restoreCurrentView() {
     if (!deps) return;
     // Read before the view is applied: applying it draws a list with no changes, which clears the draft.
     const draft = readDraft();
-    if (currentId) {
+    if (isFolderViewId(currentId)) {
+        const folder = await deps.folders.get(currentId.slice(FOLDER_VIEW_PREFIX.length));
+        if (folder === undefined) {
+            toastr.warning(t`The folder you were looking at could not be loaded. The list shows all characters until it can be.`);
+            return;
+        }
+        restored = true;
+        if (folder === null) setCurrent(null, t`All characters`);
+        else applyView(folderView(folder));
+    } else if (currentId) {
         const answer = await call('get', { id: currentId });
         if (!answer) {
             toastr.warning(t`The view you were using could not be loaded. The list shows all characters until it can be.`);

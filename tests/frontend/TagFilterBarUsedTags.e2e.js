@@ -267,7 +267,7 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await expect(pill(page, deleted)).toHaveCount(0);
     });
 
-    test('a folder whose tag is not among the tags the bar drew opens and closes', async ({ browser, page }) => {
+    test('an open folder whose tag is not among the tags the bar drew opens and closes', async ({ browser, page }) => {
         const stamp = `bar-folder-${Date.now()}`;
         const ids = Array.from({ length: 51 }, (_, i) => `${stamp}-${pad(i)}`);
         const folder = `${stamp}-folder`;
@@ -291,13 +291,14 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await expect(pill(page, ids[0])).toBeVisible();
         await expect(pill(page, folder)).toHaveCount(0);
 
-        await page.locator(`#rm_print_characters_block .bogus_folder_select[tagid="${folder}"]`).click();
+        // Open folders have no tiles in the list any more; upstream's chooseBogusFolder() is what a tile click called.
+        await page.evaluate(async folder => (await import('/scripts/tags.js')).chooseBogusFolder($('#rm_characters_block .rm_tag_filter'), folder), folder);
         await expect(pill(page, folder)).toHaveClass(/selected/);
         await expect(page.locator(`#rm_characters_block .rm_tag_bogus_drilldown .tag[id="${folder}"]`)).toBeVisible();
         await expect(page.locator(`#rm_print_characters_block .character_select[data-avatar="${card}"]`)).toBeVisible();
         expect(await stored(page, `CharacterList_tag_${folder}`)).toBe('SELECTED');
 
-        await page.locator('#rm_print_characters_block .bogus_folder_select_back').click();
+        await page.evaluate(async () => (await import('/scripts/tags.js')).chooseBogusFolder($('#rm_characters_block .rm_tag_filter'), 'back'));
         await expect(page.locator(`#rm_characters_block .rm_tag_bogus_drilldown .tag[id="${folder}"]`)).toHaveCount(0);
         await expect.poll(() => stored(page, `CharacterList_tag_${folder}`)).toBe('UNDEFINED');
 
