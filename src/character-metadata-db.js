@@ -174,6 +174,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {Promise<void> | null} bootstrapPromise
  * @property {boolean} [tagNameKeysReady] Set once tagNameKeysReady() is true, which stays true.
  * @property {boolean} [tagFolderUsageIndex] Set once the tags_folder_usage_count index is found, which stays.
+ * @property {boolean} [entitySortIndexes] Set once every ENTITY_SORT_INDEXES index is found, which stays.
  * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
  */
 
@@ -9977,6 +9978,69 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
 // Columns queryCharacters() may sort by via a plain `ORDER BY <column>`. Deliberately excludes 'random'
 // (sorts by RANDHASH(id, seed), not a column) and 'search' (relevance order supplied by the caller as idOrder).
 /** @type {Record<string, string>} */
+/** The sort columns /query orders characters by, each with an index pair that starts with fav. */
+const CHARACTER_SORT_INDEX_COLUMNS = ['name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'];
+/** The same for groups. create_date sorts groups by date_added; data_size has no group column, so ties decide. */
+const GROUP_SORT_INDEX_COLUMNS = ['name_fold', 'date_added', 'date_last_chat', 'chat_size'];
+
+/**
+ * The indexes that hand out one fav value's rows in a sort's order, ties included, so a page stops after the page
+ * (search plan step 4). Each column has an ascending and a descending index, both ending in the tie key ascending,
+ * because ties stay in ascending tie order in both directions; reading one index backwards would reverse the ties.
+ * A group's tie key is `id || '.json'`, its file name, as upstream reads groups.
+ * @type {{ name: string, sql: string }[]}
+ */
+const ENTITY_SORT_INDEXES = [
+    ...CHARACTER_SORT_INDEX_COLUMNS.flatMap(column => ['asc', 'desc'].map(dir => ({
+        name: `idx_characters_sort_fav_${column}_${dir}`,
+        sql: `CREATE INDEX IF NOT EXISTS idx_characters_sort_fav_${column}_${dir} ON characters(fav, ${column} ${dir.toUpperCase()}, id ASC)`,
+    }))),
+    ...GROUP_SORT_INDEX_COLUMNS.flatMap(column => ['asc', 'desc'].map(dir => ({
+        name: `idx_groups_sort_fav_${column}_${dir}`,
+        sql: `CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_${column}_${dir} ON groups(fav, ${column} ${dir.toUpperCase()}, (id || '.json') ASC)`,
+    }))),
+    {
+        name: 'idx_groups_sort_fav_key',
+        sql: 'CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_key ON groups(fav, (id || \'.json\') ASC)',
+    },
+];
+
+/**
+ * Builds the sort indexes a store doesn't have yet, one statement at a time, in the migration worker after the
+ * server is listening. Until every one exists, /query keeps its one-statement-per-table page read.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{ batches: number, rowsChanged: number } | undefined>}
+ */
+export async function buildEntitySortIndexesIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    let built = 0;
+    for (const index of ENTITY_SORT_INDEXES) {
+        if (entry.db.get('SELECT 1 FROM sqlite_master WHERE type = \'index\' AND name = ?', [index.name])) continue;
+        entry.db.exec(index.sql);
+        built++;
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    return { batches: built, rowsChanged: 0 };
+}
+
+/**
+ * Whether every sort index exists. Stays true once it is.
+ * @param {MetadataDbEntry} entry
+ * @returns {boolean}
+ */
+function entitySortIndexesReady(entry) {
+    if (entry.entitySortIndexes === true) return true;
+    const placeholders = ENTITY_SORT_INDEXES.map(() => '?').join(', ');
+    const found = /** @type {{ n: number } | undefined} */ (entry.db.get(
+        `SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name IN (${placeholders})`,
+        ENTITY_SORT_INDEXES.map(index => index.name),
+    ));
+    if (Number(found?.n ?? 0) !== ENTITY_SORT_INDEXES.length) return false;
+    entry.entitySortIndexes = true;
+    return true;
+}
+
 const QUERYABLE_SORT_COLUMNS = {
     name: 'name_fold',
     date_added: 'date_added',
@@ -11156,7 +11220,7 @@ function getRandomSortedEntityIds(db, handle, seed, seq, groupsVersion) {
 function makeEntityMergeComparator(sortField, sortOrder, seed) {
     const dir = sortOrder === 'desc' ? -1 : 1;
     /** @type {(a: EntityRow, b: EntityRow) => number} */
-    const tiebreak = (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    const tiebreak = compareEntityTie;
 
     if (sortField === 'random') {
         return (a, b) => {
@@ -11170,17 +11234,44 @@ function makeEntityMergeComparator(sortField, sortOrder, seed) {
     if (!column) return tiebreak;
 
     if (column === 'name_fold') {
-        return (a, b) => dir * (a.name_fold < b.name_fold ? -1 : a.name_fold > b.name_fold ? 1 : 0) || tiebreak(a, b);
+        return (a, b) => dir * compareUtf8(a.name_fold, b.name_fold) || tiebreak(a, b);
     }
     if (column === 'fav') {
-        // Matches the SQL side's extra `name_fold ASC` tiebreak pushed right after `fav` in orderParts.
+        // The direction picks which fav value comes first; names stay ascending inside each.
         return (a, b) => dir * ((a.fav ? 1 : 0) - (b.fav ? 1 : 0))
-            || (a.name_fold < b.name_fold ? -1 : a.name_fold > b.name_fold ? 1 : 0)
+            || compareUtf8(a.name_fold, b.name_fold)
             || tiebreak(a, b);
     }
     // Remaining columns (date_added, date_last_chat, chat_size, create_date, data_size) are all plain numeric.
     // Dynamic-by-name lookup, hence the `any` casts - `column` is a runtime string, not a literal key.
     return (a, b) => dir * (Number(/** @type {any} */ (a)[column] ?? 0) - Number(/** @type {any} */ (b)[column] ?? 0)) || tiebreak(a, b);
+}
+
+/**
+ * Compares two strings by their UTF-8 bytes, as SQLite's BINARY collation does. JS `<` compares UTF-16 code units,
+ * which differs from it for characters from U+E000 upward against characters outside the BMP.
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function compareUtf8(a, b) {
+    if (a === b) return 0;
+    return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+}
+
+/**
+ * Upstream's order for entities with the same sort key, in both directions: it sorts every character, then every
+ * group, with a stable sort, and reads each from its folder in file-name byte order. So characters come before
+ * groups, a character by its id (its file name) and a group by `<id>.json`.
+ * @param {EntityRow} a
+ * @param {EntityRow} b
+ * @returns {number}
+ */
+function compareEntityTie(a, b) {
+    const ka = a.type === 'group' ? 1 : 0;
+    const kb = b.type === 'group' ? 1 : 0;
+    if (ka !== kb) return ka - kb;
+    return ka === 1 ? compareUtf8(`${a.id}.json`, `${b.id}.json`) : compareUtf8(a.id, b.id);
 }
 
 // Avoids UNION ALL across characters/groups, which would defeat each table's own index-backed ORDER BY.
@@ -11512,34 +11603,77 @@ export async function queryEntities(directories, params = {}) {
                 }
             }
         } else {
-            // create_date: a group's own date_added stands in, projected as create_date, so it interleaves
-            // correctly with characters instead of parking every group at one end of the sort (NULL would).
-            //
-            // data_size: no equivalent for groups, stays NULL on the group side - every group sorts equal on
-            // that key and falls through to the tiebreaker.
-            const groupOrderBy = orderBy
-                .replace(/\bcreate_date\b/g, 'date_added');
-
-            const charArgs = [...charWhere.args, ...orderArgs, fetchLimit];
-            const charRawRows = groupsOnly ? [] : /** @type {EntityRow[]} */ (entry.db.all(
-                `SELECT ${ENTITY_CHARACTER_COLUMNS}
-                FROM ${charWhere.from} ${charWhere.where}
-                ${orderBy}
-                LIMIT ?`,
-                charArgs,
-            ));
-
-            const groupArgs = [...groupWhere.args, ...orderArgs, fetchLimit];
-            const groupRawRows = /** @type {EntityRow[]} */ (entry.db.all(
-                `SELECT ${ENTITY_GROUP_COLUMNS}
-                FROM ${groupWhere.from} ${groupWhere.where}
-                ${groupOrderBy}
-                LIMIT ?`,
-                groupArgs,
-            ));
-
             const comparator = makeEntityMergeComparator(sortField, sortOrder, seed);
-            const merged = mergeSortedRows(charRawRows, groupRawRows, comparator);
+            const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
+            /** @type {EntityRow[][]} */
+            const streams = [];
+            /**
+             * @param {string} sql
+             * @param {unknown[]} args
+             * @returns {EntityRow[]} at most fetchLimit rows, by the LIMIT in `sql`
+             */
+            const readStream = (sql, args) => {
+                /** @type {EntityRow[]} */
+                const out = [];
+                for (const row of entry.db.iterate(sql, args)) out.push(/** @type {EntityRow} */ (row));
+                return out;
+            };
+            /** @param {string} where @param {string} clause */
+            const andWhere = (where, clause) => where ? `${where} AND ${clause}` : `WHERE ${clause}`;
+
+            if (column && entitySortIndexesReady(entry)) {
+                // One stream per table and fav value, each read through its fav-first index in the page's order,
+                // so each stops after fetchLimit rows. The fav sort orders by name inside each fav value.
+                const keyColumn = column === 'fav' ? 'name_fold' : column;
+                const keyDirection = column !== 'fav' && sortOrder === 'desc' ? 'DESC' : 'ASC';
+                const favValues = typeof fav === 'boolean' ? [fav ? 1 : 0] : [1, 0];
+                const groupKeyColumn = keyColumn === 'create_date' ? 'date_added' : keyColumn === 'data_size' ? null : keyColumn;
+                for (const favValue of favValues) {
+                    if (!groupsOnly) {
+                        streams.push(readStream(
+                            `SELECT ${ENTITY_CHARACTER_COLUMNS}
+                            FROM ${charWhere.from} ${andWhere(charWhere.where, 'fav = ?')}
+                            ORDER BY ${keyColumn} ${keyDirection}, id ASC
+                            LIMIT ?`,
+                            [...charWhere.args, favValue, fetchLimit],
+                        ));
+                    }
+                    streams.push(readStream(
+                        `SELECT ${ENTITY_GROUP_COLUMNS}
+                        FROM ${groupWhere.from} ${andWhere(groupWhere.where, 'fav = ?')}
+                        ORDER BY ${groupKeyColumn ? `${groupKeyColumn} ${keyDirection}, ` : ''}(id || '.json') ASC
+                        LIMIT ?`,
+                        [...groupWhere.args, favValue, fetchLimit],
+                    ));
+                }
+            } else {
+                // Until the sort indexes exist: one statement per table, merged in JS.
+                // create_date: a group's own date_added stands in, projected as create_date, so it interleaves
+                // correctly with characters instead of parking every group at one end of the sort (NULL would).
+                // data_size: no equivalent for groups, stays NULL on the group side - every group sorts equal on
+                // that key and falls through to the tiebreaker.
+                const groupOrderBy = orderBy
+                    .replace(/\bcreate_date\b/g, 'date_added')
+                    .replace(/\bid ASC$/, '(id || \'.json\') ASC');
+                if (!groupsOnly) {
+                    streams.push(readStream(
+                        `SELECT ${ENTITY_CHARACTER_COLUMNS}
+                        FROM ${charWhere.from} ${charWhere.where}
+                        ${orderBy}
+                        LIMIT ?`,
+                        [...charWhere.args, ...orderArgs, fetchLimit],
+                    ));
+                }
+                streams.push(readStream(
+                    `SELECT ${ENTITY_GROUP_COLUMNS}
+                    FROM ${groupWhere.from} ${groupWhere.where}
+                    ${groupOrderBy}
+                    LIMIT ?`,
+                    [...groupWhere.args, ...orderArgs, fetchLimit],
+                ));
+            }
+
+            const merged = streams.reduce((acc, stream) => mergeSortedRows(acc, stream, comparator), /** @type {EntityRow[]} */ ([]));
             const rawRows = merged.slice(numericOffset, numericOffset + numericLimit);
 
             if (wantHashes) {

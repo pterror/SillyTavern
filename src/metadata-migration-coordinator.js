@@ -32,6 +32,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'dropTreeOwnerCreatedAtIndex',
     // Runs every boot: reads the metadata store, writes only the message tree.
     'fillTreeOwnerKinds',
+    // Builds /query's sort indexes; until they exist, /query reads each table in one statement.
+    'buildEntitySortIndexesIfNeeded',
     // Last: until its walk passes an entity, the counter triggers skip that entity's writes, so the passes above
     // don't also write counters.
     'fillEntityCountsIfNeeded',
