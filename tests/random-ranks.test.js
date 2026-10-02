@@ -341,6 +341,43 @@ describe('random order pages (search plan step 7c)', () => {
         }
     });
 
+    test('before the ranks are filled, every shape still lists each match once, past gaps from deleted rows, without reading every id', async () => {
+        withDb(db => {
+            db.prepare('DELETE FROM characters WHERE id IN (\'c04.png\', \'c11.png\')').run();
+            db.prepare('DELETE FROM groups WHERE id = \'g2\'').run();
+            db.prepare('DELETE FROM random_ranks').run();
+            db.prepare('DELETE FROM meta WHERE key LIKE \'random_ranks_%\'').run();
+        });
+        const Statement = Object.getPrototypeOf(new Database(':memory:').prepare('SELECT 1'));
+        const wholeTableReads = [];
+        const original = Statement.all;
+        Statement.all = function (...args) {
+            if (/FROM (characters|groups)\b/.test(this.source) && !/\bWHERE\b|COUNT\(\*\)|MAX\(rowid\)/.test(this.source)) wholeTableReads.push(this.source);
+            return original.apply(this, args);
+        };
+        try {
+            for (const shape of SHAPES) {
+                const want = (await matching(shape.params)).sort();
+                expect(want.some(e => /c04\.png|c11\.png|:g2$/.test(e))).toBe(false);
+                for (const sortOrder of ['asc', 'desc']) {
+                    const whole = await metadataDb.queryEntities(directories, { ...shape.params, sortField: 'random', seed: 21, sortOrder, offset: 0, limit: 1000, wantTotal: false });
+                    const order = whole.rows.map(r => `${r.type}:${r.id}`);
+                    expect({ shape: shape.name, sortOrder, set: [...order].sort() }).toEqual({ shape: shape.name, sortOrder, set: want });
+                    expect({ shape: shape.name, sortOrder, rows: await followed(shape.params, { seed: 21, sortOrder, limit: 3 }) }).toEqual({ shape: shape.name, sortOrder, rows: order });
+                    const byOffset = [];
+                    for (let offset = 0; offset < order.length; offset += 4) {
+                        const page = await metadataDb.queryEntities(directories, { ...shape.params, sortField: 'random', seed: 21, sortOrder, offset, limit: 4, wantTotal: false });
+                        byOffset.push(...page.rows.map(r => `${r.type}:${r.id}`));
+                    }
+                    expect({ shape: shape.name, sortOrder, rows: byOffset }).toEqual({ shape: shape.name, sortOrder, rows: order });
+                }
+            }
+        } finally {
+            Statement.all = original;
+        }
+        expect(wholeTableReads).toEqual([]);
+    });
+
     test('a page reads the page, not the library: no read of every id', async () => {
         const db = new Database(dbPath(), { readonly: true });
         try {
