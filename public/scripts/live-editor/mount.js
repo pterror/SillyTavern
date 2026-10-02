@@ -1,5 +1,6 @@
 import { state as cmState, view as cmView, commands as cmCommands } from '../../live-editor-lib.js';
 import { markEditorEvent, registerMountedEditor, unregisterMountedEditor } from './registry.js';
+import { chatMarkdownLanguage, liveRendering } from './render.js';
 
 const { EditorState, Compartment, Annotation } = cmState;
 const { EditorView, placeholder: placeholderExtension, keymap } = cmView;
@@ -8,6 +9,9 @@ const { history, historyKeymap, defaultKeymap } = cmCommands;
 /**
  * @typedef {object} LiveEditorOptions
  * @property {Element} [mountAfter] Where the editor goes; the textarea itself by default.
+ * @property {import('./grammar.js').GrammarOptions} [grammar] How the field's text is read (chat's options for it).
+ * @property {(text: string) => string} [render] The field's render function; without one the text is only styled.
+ * @property {string} [contentClass] Classes the field's preview has, so theme CSS styles the editor's text the same.
  */
 
 /**
@@ -129,8 +133,8 @@ export function mountLiveEditor(textarea, options = {}) {
         state: EditorState.create({
             doc: textareaValue.get.call(textarea),
             extensions: [
-                compartments.grammar.of([]),
-                compartments.render.of([]),
+                compartments.grammar.of(chatMarkdownLanguage(options.grammar)),
+                compartments.render.of(options.render ? liveRendering({ render: options.render, emojis: options.grammar?.emojis }) : []),
                 compartments.macros.of([]),
                 compartments.toolbar.of([]),
                 compartments.paste.of([]),
@@ -139,6 +143,7 @@ export function mountLiveEditor(textarea, options = {}) {
                 history(),
                 keymap.of([...defaultKeymap, ...historyKeymap]),
                 EditorView.lineWrapping,
+                EditorView.editorAttributes.of({ class: 'live-editor' }),
                 EditorView.domEventHandlers(forwardHandlers),
                 sync,
                 textarea.placeholder ? placeholderExtension(textarea.placeholder) : [],
@@ -146,6 +151,7 @@ export function mountLiveEditor(textarea, options = {}) {
                 EditorView.editable.of(!textarea.disabled),
                 EditorView.contentAttributes.of({
                     'aria-multiline': 'true',
+                    ...(options.contentClass ? { class: options.contentClass } : {}),
                     ...(textarea.getAttribute('aria-label') ? { 'aria-label': textarea.getAttribute('aria-label') } : {}),
                     ...(textarea.labels?.[0]?.id ? { 'aria-labelledby': textarea.labels[0].id } : {}),
                 }),
@@ -153,7 +159,6 @@ export function mountLiveEditor(textarea, options = {}) {
         }),
     });
 
-    view.dom.classList.add('live-editor');
     applyLook(view, look);
     (options.mountAfter ?? textarea).after(view.dom);
     registerMountedEditor(view.dom, textarea);

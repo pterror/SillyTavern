@@ -284,7 +284,7 @@ function emojiShortcodes(emojis) {
 // ---- Dialogue quotes, as messageFormatting's `quoteRegex`: each style closes on the same line, shortest first. ----
 
 const QUOTE_PAIRS = { '"': '"', '“': '”', '«': '»', '「': '」', '『': '』', '＂': '＂' };
-const QuoteDelim = { resolve: 'DialogueQuote', mark: 'QuoteMark' };
+const QuoteDelim = { resolve: 'DialogueQuote', mark: 'DialogueQuoteMark' };
 
 /** @type {WeakMap<object, Set<number>>} Per inline section, where a quote that has opened closes. */
 const quoteCloses = new WeakMap();
@@ -293,7 +293,7 @@ const quoteCloses = new WeakMap();
 const DialogueQuotes = {
     defineNodes: [
         { name: 'DialogueQuote', style: { 'DialogueQuote/...': tags.quote } },
-        { name: 'QuoteMark', style: tags.processingInstruction },
+        { name: 'DialogueQuoteMark', style: tags.quote },
     ],
     parseInline: [{
         name: 'DialogueQuote',
