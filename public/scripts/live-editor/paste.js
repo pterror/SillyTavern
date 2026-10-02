@@ -1,11 +1,15 @@
 // Paste: copied HTML comes in as markdown where markdown can say it, as HTML where it can't, and as plain text when
-// there's no HTML or it can't be read.
+// there's no HTML or it can't be read. After a paste that could have gone in more than one way, a small button at
+// its end shows how it went in and switches it to another way.
 
-import { view as cmView } from '../../live-editor-lib.js';
+import { state as cmState, view as cmView, commands as cmCommands } from '../../live-editor-lib.js';
 import { DOMPurify } from '../../lib.js';
 import { renderMarkdown } from '../marked-processor.js';
+import { t } from '../i18n.js';
 
-const { EditorView } = cmView;
+const { StateField, StateEffect, Transaction, Prec } = cmState;
+const { EditorView, showTooltip, keymap } = cmView;
+const { invertedEffects } = cmCommands;
 
 const BLOCK_TAGS = new Set(['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'HR', 'TABLE', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER']);
 /** Inline elements that add nothing markdown would lose; their content is kept. */
@@ -188,47 +192,230 @@ function escapeHtml(text) {
 
 const bareUrl = /^(?:https?:\/\/|www\.)\S+$/i;
 
+/** @typedef {'markdown' | 'html' | 'plain'} PasteMode */
+
+/** The ways a paste can go in, in the order the picker lists and the key cycles them. */
+const PASTE_MODES = /** @type {PasteMode[]} */ (['markdown', 'html', 'plain']);
+
+/** @param {PasteMode} mode */
+const modeLabel = (mode) => ({
+    markdown: t`Keep formatting`,
+    html: t`Keep as HTML`,
+    plain: t`Text only`,
+})[mode];
+
+/**
+ * The paste the picker is for: where it is now, how it went in, and its text in each way it can go in.
+ * @typedef {object} PasteChoice
+ * @property {number} from
+ * @property {number} to
+ * @property {PasteMode} mode
+ * @property {PasteMode[]} modes The ways this paste can go in, each with its own text.
+ * @property {Partial<Record<PasteMode, string>>} texts
+ * @property {boolean} menu Whether the list of ways is open.
+ */
+
+/** Sets (or, with null, clears) the paste the picker is for. Positions are in the document after the transaction. */
+const setPasteChoice = StateEffect.define({
+    map: (/** @type {PasteChoice | null} */ value, mapping) => value && { ...value, from: mapping.mapPos(value.from, -1), to: mapping.mapPos(value.to, 1) },
+});
+
+/** @type {import('@codemirror/state').StateField<PasteChoice | null>} */
+const pasteChoiceField = StateField.define({
+    create: () => null,
+    update(value, tr) {
+        for (const effect of tr.effects) {
+            if (effect.is(setPasteChoice)) return effect.value;
+        }
+        // Any other edit, here or anywhere else, ends the choice: the pasted text may no longer be what was pasted.
+        if (tr.docChanged) return null;
+        return value;
+    },
+    provide: field => showTooltip.from(field, value => (value ? pickerTooltip(value) : null)),
+});
+
+/**
+ * @param {PasteChoice} choice
+ * @returns {import('@codemirror/view').Tooltip}
+ */
+function pickerTooltip(choice) {
+    return {
+        pos: choice.to,
+        above: false,
+        strictSide: false,
+        arrow: false,
+        create: (view) => ({ dom: pickerDom(view, choice) }),
+    };
+}
+
+/**
+ * The picker: a small button showing how the paste went in, and, when opened, the ways it can go in.
+ * @param {EditorView} view
+ * @param {PasteChoice} choice
+ * @returns {HTMLElement}
+ */
+function pickerDom(view, choice) {
+    const dom = document.createElement('div');
+    dom.className = 'live-paste-picker';
+    // Clicks here mustn't take focus out of the editor, so typing goes on where it was.
+    dom.addEventListener('mousedown', event => event.preventDefault());
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'live-paste-picker-toggle';
+    toggle.title = t`Paste options: change how the pasted text went in (Ctrl+Alt+V)`;
+    toggle.setAttribute('aria-haspopup', 'menu');
+    toggle.setAttribute('aria-expanded', String(choice.menu));
+    toggle.innerHTML = '<i class="fa-solid fa-paste" aria-hidden="true"></i><span class="live-paste-picker-mode"></span><i class="fa-solid fa-caret-down" aria-hidden="true"></i>';
+    /** @type {HTMLElement} */ (toggle.querySelector('.live-paste-picker-mode')).textContent = modeLabel(choice.mode);
+    toggle.addEventListener('click', () => {
+        const current = view.state.field(pasteChoiceField, false);
+        if (current) view.dispatch({ effects: setPasteChoice.of({ ...current, menu: !current.menu }), annotations: Transaction.addToHistory.of(false) });
+    });
+    dom.append(toggle);
+
+    if (choice.menu) {
+        const menu = document.createElement('div');
+        menu.className = 'live-paste-picker-menu';
+        menu.setAttribute('role', 'menu');
+        for (const mode of choice.modes) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'live-paste-picker-item';
+            item.dataset.mode = mode;
+            item.setAttribute('role', 'menuitemradio');
+            item.setAttribute('aria-checked', String(mode === choice.mode));
+            item.textContent = modeLabel(mode);
+            item.addEventListener('click', () => switchPasteMode(view, mode));
+            menu.append(item);
+        }
+        dom.append(menu);
+    }
+    return dom;
+}
+
+/**
+ * Replaces the pasted text with its text for another way it can go in, as one change (one undo).
+ * @param {EditorView} view
+ * @param {PasteMode} mode
+ * @returns {boolean} Whether there was a paste to switch.
+ */
+function switchPasteMode(view, mode) {
+    const choice = view.state.field(pasteChoiceField, false);
+    if (!choice) return false;
+    const text = choice.texts[mode];
+    if (text === undefined) return false;
+    const to = choice.from + text.length;
+    view.dispatch({
+        changes: { from: choice.from, to: choice.to, insert: text },
+        selection: { anchor: to },
+        effects: setPasteChoice.of({ ...choice, to, mode, menu: false }),
+        scrollIntoView: true,
+        userEvent: 'input.paste',
+    });
+    return true;
+}
+
+/**
+ * @param {EditorView} view
+ * @returns {boolean}
+ */
+function cyclePasteMode(view) {
+    const choice = view.state.field(pasteChoiceField, false);
+    if (!choice) return false;
+    const next = choice.modes[(choice.modes.indexOf(choice.mode) + 1) % choice.modes.length];
+    return switchPasteMode(view, next);
+}
+
+/**
+ * Escape closes the list of ways if it's open, and otherwise puts the picker away (the paste stays as it is).
+ * @param {EditorView} view
+ * @returns {boolean}
+ */
+function dismissPasteChoice(view) {
+    const choice = view.state.field(pasteChoiceField, false);
+    if (!choice) return false;
+    view.dispatch({
+        effects: setPasteChoice.of(choice.menu ? { ...choice, menu: false } : null),
+        annotations: Transaction.addToHistory.of(false),
+    });
+    return true;
+}
+
 /**
  * @param {EditorView} view
  * @param {string} text
+ * @param {PasteChoice | null} [choice] The ways this paste could go in, when there's more than one.
  */
-function insert(view, text) {
+function insert(view, text, choice = null) {
     const range = view.state.selection.main;
     view.dispatch({
         changes: { from: range.from, to: range.to, insert: text },
         selection: { anchor: range.from + text.length },
+        effects: setPasteChoice.of(choice && { ...choice, from: range.from, to: range.from + text.length }),
         scrollIntoView: true,
         userEvent: 'input.paste',
     });
 }
 
 /**
+ * The picker for a paste, or null when it could only have gone in one way.
+ * @param {Partial<Record<PasteMode, string>>} texts
+ * @param {PasteMode} mode How it goes in.
+ * @returns {PasteChoice | null}
+ */
+function choiceFor(texts, mode) {
+    const modes = PASTE_MODES.filter(m => typeof texts[m] === 'string' && texts[m] !== '');
+    const distinct = new Set(modes.map(m => texts[m]));
+    if (distinct.size < 2) return null;
+    return { from: 0, to: 0, mode, modes, texts, menu: false };
+}
+
+/**
  * @returns {import('@codemirror/state').Extension}
  */
 export function livePaste() {
-    return EditorView.domEventHandlers({
-        paste(event, view) {
-            const data = event.clipboardData;
-            if (!data) return false;
-            const plain = data.getData('text/plain');
-            if (bareUrl.test(plain.trim()) && !/\n/.test(plain.trim())) {
+    return [
+        pasteChoiceField,
+        // Undo and redo bring back how the paste went in along with its text.
+        invertedEffects.of((tr) => {
+            /** @type {import('@codemirror/state').StateEffect<PasteChoice | null>[]} */
+            const inverted = [];
+            for (const effect of tr.effects) {
+                if (effect.is(setPasteChoice)) inverted.push(setPasteChoice.of(tr.startState.field(pasteChoiceField, false) ?? null));
+            }
+            return inverted;
+        }),
+        Prec.highest(keymap.of([
+            { key: 'Escape', run: dismissPasteChoice },
+            { key: 'Mod-Alt-v', run: cyclePasteMode, preventDefault: true },
+        ])),
+        EditorView.domEventHandlers({
+            paste(event, view) {
+                const data = event.clipboardData;
+                if (!data) return false;
+                const plain = data.getData('text/plain');
+                if (bareUrl.test(plain.trim()) && !/\n/.test(plain.trim())) {
+                    event.preventDefault();
+                    const autolink = `<${plain.trim()}>`;
+                    insert(view, autolink, choiceFor({ markdown: autolink, plain: plain.trim() }, 'markdown'));
+                    return true;
+                }
+                const html = data.getData('text/html');
+                if (!html) return false;
+                let text;
+                try {
+                    text = pastedHtmlToText(html, renderMarkdown);
+                } catch (error) {
+                    console.warn('Pasted HTML could not be read; pasting it as plain text', error);
+                    return false;
+                }
+                if (!text) return false;
                 event.preventDefault();
-                insert(view, `<${plain.trim()}>`);
+                const sanitized = DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false }).trim();
+                insert(view, text, choiceFor({ markdown: text, html: sanitized, plain }, 'markdown'));
                 return true;
-            }
-            const html = data.getData('text/html');
-            if (!html) return false;
-            let text;
-            try {
-                text = pastedHtmlToText(html, renderMarkdown);
-            } catch (error) {
-                console.warn('Pasted HTML could not be read; pasting it as plain text', error);
-                return false;
-            }
-            if (!text) return false;
-            event.preventDefault();
-            insert(view, text);
-            return true;
-        },
-    });
+            },
+        }),
+    ];
 }

@@ -7191,3 +7191,55 @@ textarea.live-editor-textarea {
 .cm-editor.live-editor .live-presets-status:empty {
     display: none;
 }
+
+/* Floats below the end of the paste, so it never moves the text. */
+.cm-editor.live-editor .cm-tooltip.cm-tooltip-below:has(.live-paste-picker),
+.cm-editor.live-editor .cm-tooltip.cm-tooltip-above:has(.live-paste-picker) {
+    background: transparent;
+    border: none;
+}
+
+.cm-editor.live-editor .live-paste-picker {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    font-size: calc(var(--mainFontSize) * 0.8);
+}
+
+.cm-editor.live-editor .live-paste-picker button {
+    font: inherit;
+    color: var(--SmartThemeBodyColor);
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.cm-editor.live-editor .live-paste-picker-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 5px;
+    opacity: 0.85;
+}
+
+.cm-editor.live-editor .live-paste-picker-toggle:hover,
+.cm-editor.live-editor .live-paste-picker-toggle[aria-expanded="true"] {
+    opacity: 1;
+}
+
+.cm-editor.live-editor .live-paste-picker-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.cm-editor.live-editor .live-paste-picker-item {
+    padding: 2px 8px;
+    text-align: start;
+}
+
+.cm-editor.live-editor .live-paste-picker-item[aria-checked="true"] {
+    border-color: var(--SmartThemeQuoteColor);
+}
