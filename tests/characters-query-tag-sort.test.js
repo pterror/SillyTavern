@@ -159,7 +159,7 @@ describe('/query included tags read from the tag sort tables', () => {
         expect(filled.batches).toBeGreaterThan(0);
         calls.length = 0;
         const after = await everyList();
-        expect(calls.some(c => /FROM character_tag_sort s CROSS JOIN characters/.test(c.sql))).toBe(true);
+        expect(calls.some(c => /FROM character_tag_sort s\b/.test(c.sql))).toBe(true);
         expect(after).toEqual(before);
     });
 
@@ -210,7 +210,7 @@ describe('/query included tags read from the tag sort tables', () => {
             for (const sortOrder of ['asc', 'desc']) {
                 calls.length = 0;
                 await listed({ sortField, sortOrder, tags: { mode: 'and', include: ['T1'] } });
-                const reads = calls.filter(c => /_tag_sort s CROSS JOIN/.test(c.sql));
+                const reads = calls.filter(c => /_tag_sort s\b/.test(c.sql));
                 expect(reads.length).toBe(4);
                 const db = new Database(dbPath(), { readonly: true });
                 try {
@@ -238,8 +238,9 @@ describe('/query included tags read from the tag sort tables', () => {
                     .filter(e => !e.tags.includes('T3') && (tags.include ?? []).every(t => e.tags.includes(t)))
                     .map(e => `${e.type}:${e.id}`);
                 expect(new Set(rows)).toEqual(new Set(want));
-                const reads = calls.filter(c => /\bAS k\b/.test(c.sql));
-                expect(reads.length).toBeGreaterThan(0);
+                // The index reads, and the per-row checks of their windows.
+                const reads = calls.filter(c => /\bAS k\b/.test(c.sql) || /^SELECT id FROM (characters|groups) WHERE id IN \(SELECT value FROM json_each\(\?\)\) AND/.test(c.sql.trim()));
+                expect(reads.some(c => /json_each/.test(c.sql) && /NOT EXISTS/.test(c.sql))).toBe(true);
                 // Before the fill, an included tag is still read as a list (step 5's fallback); only the exclude is checked then.
                 if (!fill && tags.include) continue;
                 const db = new Database(dbPath(), { readonly: true });
@@ -248,12 +249,68 @@ describe('/query included tags read from the tag sort tables', () => {
                         const plan = db.prepare(`EXPLAIN QUERY PLAN ${read.sql}`).all(...read.params).map(r => r.detail).join(' | ');
                         // A list built from the tag table's rows is the whole-tag read; the json list of excluded ids is fine.
                         expect({ fill, tags, plan }).toEqual({ fill, tags, plan: expect.not.stringMatching(/LIST SUBQUERY \d+ \| (SEARCH|SCAN) (character_tags|group_tags)/) });
-                        expect(plan).toMatch(/CORRELATED SCALAR SUBQUERY/);
+                        expect(/NOT EXISTS/.test(read.sql) ? /CORRELATED SCALAR SUBQUERY/.test(plan) : true).toBe(true);
                     }
                 } finally {
                     db.close();
                 }
             }
+        }
+    });
+
+    test('under the work cap, a page that needs more reading comes back with more and a cursor, and following it lists everything once', async () => {
+        await seed();
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        await metadataDb.fillTagSortTablesIfNeeded(directories);
+        metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
+        try {
+            for (const tags of [{ include: ['T1'], exclude: ['T3'] }, { include: ['T1', 'T2'] }, { exclude: ['T3'] }, {}]) {
+                for (const sortOrder of ['asc', 'desc']) {
+                    const filter = { sortField: 'name', sortOrder, tags: { mode: 'and', ...tags } };
+                    metadataDb._setSortedPageWalkForTests(null);
+                    const whole = await listed(filter);
+                    metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
+                    // As the client does: ask for a page, follow `more` with the cursor until it's full or ends.
+                    for (const pageSize of [2, 3]) {
+                        const followed = [];
+                        let cursor;
+                        let sawMore = false;
+                        for (let requests = 0; requests < 200; requests++) {
+                            const result = await metadataDb.queryEntities(directories, { ...filter, offset: followed.length, limit: pageSize, wantTotal: false, cursor });
+                            followed.push(...result.rows.map(r => `${r.type}:${r.id}`));
+                            sawMore ||= result.more === true;
+                            cursor = result.cursor;
+                            if (result.more !== true && result.rows.length < pageSize) break;
+                        }
+                        expect({ tags, sortOrder, pageSize, rows: followed }).toEqual({ tags, sortOrder, pageSize, rows: whole });
+                        expect(sawMore || whole.length <= 1).toBe(true);
+                    }
+                }
+            }
+        } finally {
+            metadataDb._setSortedPageWalkForTests(null);
+        }
+    });
+
+    test('a jump past the cap with no cursor answers an empty page with more, and following it reaches the asked page', async () => {
+        await seed();
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        metadataDb._setSortedPageWalkForTests(null);
+        const whole = await listed({ sortField: 'date_added', sortOrder: 'desc' });
+        metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
+        try {
+            const offset = 6;
+            let result = await metadataDb.queryEntities(directories, { sortField: 'date_added', sortOrder: 'desc', offset, limit: 2, wantTotal: false });
+            expect(result.rows).toEqual([]);
+            expect(result.more).toBe(true);
+            const rows = [];
+            for (let requests = 0; requests < 100 && result.more === true && rows.length < 2; requests++) {
+                result = await metadataDb.queryEntities(directories, { sortField: 'date_added', sortOrder: 'desc', offset, limit: 2 - rows.length, wantTotal: false, cursor: result.cursor });
+                rows.push(...result.rows.map(r => `${r.type}:${r.id}`));
+            }
+            expect(rows).toEqual(whole.slice(offset, offset + 2));
+        } finally {
+            metadataDb._setSortedPageWalkForTests(null);
         }
     });
 

@@ -1482,3 +1482,30 @@ describe('POST /api/characters/changes', () => {
         expect((await postJson('/api/characters/changes', { sinceSeq: 'nope' })).status).toBe(400);
     });
 });
+
+describe('/query sorted pages past the work cap', () => {
+    test('the reply has the rows read so far, more and a cursor; following the cursor gives the whole page', async () => {
+        for (const name of ['delta', 'alpha', 'echo', 'charlie', 'bravo', 'foxtrot']) await seedCharacter(`${name}.png`);
+        await metadataDb.buildEntitySortIndexesIfNeeded(directories);
+        const body = { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 4, want: ['rows'] };
+        const whole = await (await postJson('/api/characters/query', body)).json();
+        expect(whole.more).toBeUndefined();
+        expect(whole.rows.map(r => r.item.avatar)).toEqual(['alpha.png', 'bravo.png', 'charlie.png', 'delta.png']);
+
+        metadataDb._setSortedPageWalkForTests({ cap: 1, window: 1 });
+        try {
+            const rows = [];
+            let reply = await (await postJson('/api/characters/query', body)).json();
+            rows.push(...reply.rows);
+            expect(reply.more).toBe(true);
+            expect(typeof reply.cursor).toBe('string');
+            for (let requests = 0; requests < 50 && reply.more === true && rows.length < 4; requests++) {
+                reply = await (await postJson('/api/characters/query', { ...body, pageSize: 4 - rows.length, cursor: reply.cursor })).json();
+                rows.push(...reply.rows);
+            }
+            expect(rows.map(r => r.item.avatar)).toEqual(['alpha.png', 'bravo.png', 'charlie.png', 'delta.png']);
+        } finally {
+            metadataDb._setSortedPageWalkForTests(null);
+        }
+    });
+});

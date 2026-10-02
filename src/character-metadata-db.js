@@ -21,6 +21,7 @@ import { TAGS_FILE } from './constants.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
+import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js';
 import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
@@ -10199,6 +10200,8 @@ function whereClausesOf(built) {
  * @property {string} id The entity id's SQL.
  * @property {'ASC' | 'DESC'} dir
  * @property {string} field The EntityRow field the merge comparator reads the key from.
+ * @property {{ table: 'characters' | 'groups', where: string[], args: unknown[] } | null} check The filters an index
+ *   doesn't fix, checked per row on the entity table by id, a window at a time; null when the index fixes them all.
  */
 
 /**
@@ -10219,7 +10222,14 @@ function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, i
     const field = column === 'fav' ? 'name_fold' : column;
     const groupKey = keyColumn === 'create_date' ? 'date_added' : keyColumn === 'data_size' ? null : keyColumn;
     const favValues = typeof fav === 'boolean' ? [fav ? 1 : 0] : [1, 0];
-    const plan = tagSortTablesReady(entry) ? includedTagSortPlan(entry.db, { tags, ids }, deletions) : null;
+    const hasIds = Array.isArray(ids);
+    const plan = !hasIds && tagSortTablesReady(entry) ? includedTagSortPlan(entry.db, { tags, ids }, deletions) : null;
+    /**
+     * @param {'characters' | 'groups'} table
+     * @param {string[]} where
+     * @param {unknown[]} args
+     */
+    const checkOf = (table, where, args) => where.length > 0 ? { table, where, args } : null;
     /** @type {SortedStream[]} */
     const streams = [];
     for (const favValue of favValues) {
@@ -10229,37 +10239,144 @@ function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, i
             if (!groupsOnly) {
                 streams.push({
                     name: `c${favValue}`, type: 'character', fav: favValue, dir, field,
-                    from: 'character_tag_sort s CROSS JOIN characters ON characters.id = s.entity_id',
-                    where: ['s.tag_id = ?', 's.k_fav = ?', ...whereClausesOf(restChar),
-                        ...plan.character.others.map(() => 'EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id = ?)')],
-                    args: [plan.character.driver, favValue, ...restChar.args, ...plan.character.others],
+                    from: 'character_tag_sort s', where: ['s.tag_id = ?', 's.k_fav = ?'], args: [plan.character.driver, favValue],
                     key: `s.k_${keyColumn}`, tie: 's.entity_id', id: 's.entity_id',
+                    check: checkOf('characters', [...whereClausesOf(restChar),
+                        ...plan.character.others.map(() => 'EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id = ?)')],
+                    [...restChar.args, ...plan.character.others]),
                 });
             }
             streams.push({
                 name: `g${favValue}`, type: 'group', fav: favValue, dir, field,
-                from: 'group_tag_sort s CROSS JOIN groups ON groups.id = s.entity_id',
-                where: ['s.tag_id = ?', 's.k_fav = ?', ...whereClausesOf(restGroup),
-                    ...plan.group.others.map(() => 'EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id = ?)')],
-                args: [plan.group.driver, favValue, ...restGroup.args, ...plan.group.others],
+                from: 'group_tag_sort s', where: ['s.tag_id = ?', 's.k_fav = ?'], args: [plan.group.driver, favValue],
                 key: groupKey ? `s.k_${groupKey}` : null, tie: '(s.entity_id || \'.json\')', id: 's.entity_id',
+                check: checkOf('groups', [...whereClausesOf(restGroup),
+                    ...plan.group.others.map(() => 'EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id = ?)')],
+                [...restGroup.args, ...plan.group.others]),
             });
-        } else {
+        } else if (hasIds) {
+            // An id list drives the read and bounds it; every filter goes in the one statement.
             if (!groupsOnly) {
                 streams.push({
                     name: `c${favValue}`, type: 'character', fav: favValue, dir, field,
                     from: charWhere.from, where: [...whereClausesOf(charWhere), 'fav = ?'], args: [...charWhere.args, favValue],
-                    key: keyColumn, tie: 'id', id: 'id',
+                    key: keyColumn, tie: 'id', id: 'id', check: null,
                 });
             }
             streams.push({
                 name: `g${favValue}`, type: 'group', fav: favValue, dir, field,
                 from: groupWhere.from, where: [...whereClausesOf(groupWhere), 'fav = ?'], args: [...groupWhere.args, favValue],
+                key: groupKey, tie: '(id || \'.json\')', id: 'id', check: null,
+            });
+        } else {
+            if (!groupsOnly) {
+                streams.push({
+                    name: `c${favValue}`, type: 'character', fav: favValue, dir, field,
+                    from: 'characters', where: ['fav = ?'], args: [favValue],
+                    key: keyColumn, tie: 'id', id: 'id',
+                    check: checkOf('characters', whereClausesOf(charWhere), charWhere.args),
+                });
+            }
+            streams.push({
+                name: `g${favValue}`, type: 'group', fav: favValue, dir, field,
+                from: 'groups', where: ['fav = ?'], args: [favValue],
                 key: groupKey, tie: '(id || \'.json\')', id: 'id',
+                check: checkOf('groups', whereClausesOf(groupWhere), groupWhere.args),
             });
         }
     }
     return streams;
+}
+
+/**
+ * A sorted page's streams walked under the work cap (search plan step 1b, T2): each stream reads its index a window
+ * at a time and checks the window's rows against the filters its index doesn't fix, the streams taking turns, until
+ * each has `need` rows, has ended, or SEARCH_WORK_CAP rows have been read in all. When the cap stops a stream early,
+ * only the merged rows no later than that stream's last row read are certain, so only those are returned, with
+ * `more`.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {SortedStream[]} streams
+ * @param {Record<string, [unknown, string]> | null} startAt
+ * @param {number} need
+ * @param {(a: any, b: any) => number} comparator
+ * @param {number} [cap]
+ * @returns {{ rows: SortedKeyRow[], ends: Record<string, [unknown, string]>, more: boolean }} rows: the merged
+ *   rows, at most `need`, in order. ends: where each stream it moved should carry on from.
+ */
+/** walkSortedStreams()'s cap and window; tests make them small. */
+const sortedPageWalk = { cap: SEARCH_WORK_CAP, window: SEARCH_WALK_WINDOW };
+
+/**
+ * Sets walkSortedStreams()'s work cap and window, so a test can reach the cap with a few rows. Tests only.
+ * @param {{ cap?: number, window?: number } | null} values null restores the defaults.
+ */
+export function _setSortedPageWalkForTests(values) {
+    sortedPageWalk.cap = values?.cap ?? SEARCH_WORK_CAP;
+    sortedPageWalk.window = values?.window ?? SEARCH_WALK_WINDOW;
+}
+
+function walkSortedStreams(db, streams, startAt, need, comparator, cap = sortedPageWalk.cap) {
+    const states = streams.map(stream => ({
+        stream,
+        /** @type {[unknown, string] | null} */
+        position: startAt?.[stream.name] ?? null,
+        /** @type {SortedKeyRow[]} */
+        kept: [],
+        /** @type {SortedKeyRow | null} */
+        lastRead: null,
+        ended: false,
+    }));
+    let examined = 0;
+    // Whole rounds: every stream still going reads a window per round, so each makes progress in every request.
+    for (;;) {
+        const active = states.filter(state => !state.ended && state.kept.length < need);
+        if (active.length === 0 || examined >= cap) break;
+        for (const state of active) {
+            const { stream } = state;
+            const want = stream.check ? sortedPageWalk.window : Math.min(sortedPageWalk.window, need - state.kept.length);
+            const window = readSortedKeys(db, stream, state.position, want);
+            examined += window.length;
+            if (window.length < want) state.ended = true;
+            if (window.length === 0) continue;
+            const last = window[window.length - 1];
+            state.lastRead = last;
+            state.position = [last.k, last.t];
+            if (!stream.check) {
+                state.kept.push(...window);
+                continue;
+            }
+            const { table, where, args } = stream.check;
+            /** @type {Set<string>} */
+            const passing = new Set();
+            for (const row of db.iterate(
+                `SELECT id FROM ${table} WHERE id IN (SELECT value FROM json_each(?)) AND ${where.join(' AND ')}`,
+                [JSON.stringify(window.map(keyRow => keyRow.id)), ...args],
+            )) passing.add(/** @type {{ id: string }} */ (row).id);
+            state.kept.push(...window.filter(keyRow => passing.has(keyRow.id)));
+        }
+    }
+
+    /** @type {SortedKeyRow[]} */
+    let merged = [];
+    for (const state of states) merged = /** @type {SortedKeyRow[]} */ (/** @type {unknown} */ (mergeSortedRows(/** @type {any} */ (merged), /** @type {any} */ (state.kept), comparator)));
+    // A stream the cap stopped early may still hold rows before any row past its last row read.
+    const cut = states.filter(state => !state.ended && state.kept.length < need);
+    if (cut.length > 0) {
+        merged = merged.filter(row => cut.every(state => state.lastRead !== null && comparator(row, state.lastRead) <= 0));
+    }
+    const rows = merged.slice(0, need);
+
+    /** @type {Record<string, [unknown, string]>} */
+    const ends = {};
+    for (const row of rows) ends[row.stream] = [row.k, row.t];
+    if (cut.length > 0 && merged.length <= need) {
+        // Every row this request read up to the earliest cut stream's last row read is now returned or failed its
+        // check, so that stream carries on after it; otherwise a stream whose window held nothing that passed would
+        // be read again from the same place.
+        const earliest = cut.reduce((a, b) => (a.lastRead !== null && b.lastRead !== null && comparator(b.lastRead, a.lastRead) < 0) ? b : a);
+        if (earliest.lastRead !== null) ends[earliest.stream.name] = [earliest.lastRead.k, earliest.lastRead.t];
+    }
+    return { rows, ends, more: cut.length > 0 };
 }
 
 /**
@@ -10318,17 +10435,19 @@ function sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly, so
 
 /**
  * @param {string} key
- * @param {Record<string, [unknown, string]>} ends Each stream's last [key, tie] read so far.
+ * @param {Record<string, [unknown, string]>} ends Each stream's last [key, tie] returned so far.
+ * @param {number} skip How much of a jump's skip is still to come.
  * @returns {string}
  */
-function encodeSortedPageCursor(key, ends) {
-    return Buffer.from(JSON.stringify({ v: 'sp1', k: key, s: ends })).toString('base64url');
+function encodeSortedPageCursor(key, ends, skip) {
+    return Buffer.from(JSON.stringify({ v: 'sp1', k: key, s: ends, r: skip })).toString('base64url');
 }
 
 /**
  * @param {unknown} cursor
  * @param {string} key
- * @returns {Record<string, [unknown, string]> | null} null when absent, malformed, or made for another query.
+ * @returns {{ ends: Record<string, [unknown, string]>, skip: number } | null} null when absent, malformed, or made
+ *   for another query.
  */
 function decodeSortedPageCursor(cursor, key) {
     if (typeof cursor !== 'string' || cursor.length === 0 || cursor.length > 8192) return null;
@@ -10342,7 +10461,9 @@ function decodeSortedPageCursor(cursor, key) {
             if (end[0] !== null && typeof end[0] !== 'string' && typeof end[0] !== 'number') return null;
             ends[name] = [end[0], end[1]];
         }
-        return ends;
+        const skip = parsed.r ?? 0;
+        if (!Number.isSafeInteger(skip) || skip < 0) return null;
+        return { ends, skip };
     } catch {
         return null;
     }
@@ -11929,6 +12050,7 @@ export async function queryEntities(directories, params = {}) {
     let rows, hashRows;
     /** @type {string | undefined} */
     let nextCursor;
+    let moreRows = false;
     if (wantRows || wantHashes) {
         const orderParts = [];
         if (sortField === 'random') {
@@ -12019,23 +12141,19 @@ export async function queryEntities(directories, params = {}) {
                     column, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly, charWhere, groupWhere, deletions,
                 });
                 const cursorKey = sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly, sortField, sortOrder });
-                const startAt = decodeSortedPageCursor(params.cursor, cursorKey);
-                const need = startAt ? numericLimit : numericOffset + numericLimit;
-                const skip = startAt ? 0 : numericOffset;
+                const cursorAt = decodeSortedPageCursor(params.cursor, cursorKey);
+                // A cursor knows how much of a jump's skip is left; without one, the skip is the offset.
+                const skip = cursorAt ? cursorAt.skip : numericOffset;
+                const need = skip + numericLimit;
 
-                // Keys only, through the indexes; full rows are read for the page alone.
-                /** @type {SortedKeyRow[]} */
-                let prefix = [];
-                for (const stream of streams) {
-                    prefix = mergeSortedRows(prefix, /** @type {any} */ (readSortedKeys(entry.db, stream, startAt?.[stream.name] ?? null, need)), comparator);
-                    if (prefix.length > need) prefix.length = need;
-                }
-                const pageKeys = prefix.slice(skip);
+                // Keys only, through the indexes and under the work cap; full rows are read for the page alone.
+                const walked = walkSortedStreams(entry.db, streams, cursorAt?.ends ?? null, need, comparator);
+                const pageKeys = walked.rows.slice(skip);
+                moreRows = walked.more && pageKeys.length < numericLimit;
 
-                /** @type {Record<string, [unknown, string]>} */
-                const ends = { ...(startAt ?? {}) };
-                for (const keyRow of /** @type {SortedKeyRow[]} */ (/** @type {unknown} */ (prefix))) ends[keyRow.stream] = [keyRow.k, keyRow.t];
-                nextCursor = pageKeys.length === numericLimit ? encodeSortedPageCursor(cursorKey, ends) : undefined;
+                const ends = { ...(cursorAt?.ends ?? {}), ...walked.ends };
+                const skipLeft = Math.max(0, skip - walked.rows.length);
+                nextCursor = moreRows || pageKeys.length === numericLimit ? encodeSortedPageCursor(cursorKey, ends, skipLeft) : undefined;
 
                 rawRows = readEntityRowsInOrder(entry.db, pageKeys);
             } else {
@@ -12084,7 +12202,7 @@ export async function queryEntities(directories, params = {}) {
         }
     }
 
-    return { rows, hashRows, total, approxTotal, seq, groupsVersion, ...(nextCursor !== undefined ? { cursor: nextCursor } : {}) };
+    return { rows, hashRows, total, approxTotal, seq, groupsVersion, ...(nextCursor !== undefined ? { cursor: nextCursor } : {}), ...(moreRows ? { more: true } : {}) };
 }
 
 /**

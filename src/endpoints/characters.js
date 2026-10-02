@@ -2960,12 +2960,15 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
                 approxTotal: result.approxTotal,
                 hashRows: result.hashRows,
                 searchBackend: undefined,
+                more: result.more === true,
                 cursor: result.cursor,
             });
         }
         const payload = { seq: result.seq, token: tokenFor(result) };
         if (wantTotal) payload.total = result.approxTotal ? `~${result.total}` : result.total;
         if (wantRows) payload.rows = await timePhase('hydrate', () => hydrateEntityRows(user.directories, result.rows));
+        // Past the work cap: the rows read so far, and the cursor to carry on from (search plan step 1b).
+        if (result.more === true) payload.more = true;
         if (result.cursor !== undefined) payload.cursor = result.cursor;
         return queryReply(200, payload);
     }
