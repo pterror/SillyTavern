@@ -13,11 +13,11 @@ const MODEL = 'generation-stop-model';
 const PIECES = 40;
 
 /**
- * A mock llama.cpp server whose streamed reply takes PIECES * delayMs, recording whether its connection
+ * A mock llama.cpp server whose streamed reply is `pieces` pieces, each followed by a delayMs pause, recording whether its connection
  * was closed before the reply finished.
- * @param {{ delayMs?: number }} [options]
+ * @param {{ delayMs?: number, pieces?: number }} [options]
  */
-function startSlowLlamaCpp({ delayMs = 100 } = {}) {
+function startSlowLlamaCpp({ delayMs = 100, pieces = PIECES } = {}) {
     const state = { written: 0, finished: false, closedEarly: false, closedAt: 0 };
     const server = http.createServer((req, res) => {
         let body = '';
@@ -47,7 +47,7 @@ function startSlowLlamaCpp({ delayMs = 100 } = {}) {
                 });
                 res.writeHead(200, { 'Content-Type': 'text/event-stream' });
                 (async () => {
-                    for (let i = 0; i < PIECES; i++) {
+                    for (let i = 0; i < pieces; i++) {
                         if (state.closedEarly) return;
                         res.write(`data: ${JSON.stringify({ content: `piece${i} `, stop: false })}\n\n`);
                         state.written++;
@@ -219,6 +219,32 @@ test.describe('stopping a generation', () => {
                 return chat[chat.length - 1]?.node_id ?? null;
             });
             expect(typeof lastNode).toBe('string');
+        } finally {
+            await mock.close();
+        }
+    });
+});
+
+test.describe('streaming display', () => {
+    test('the latest streamed text shows even when no further chunk follows it', async ({ page }) => {
+        // One piece, then a long pause before the stream ends: nothing else arrives to trigger a draw.
+        const mock = await startSlowLlamaCpp({ pieces: 1, delayMs: 4000 });
+        try {
+            await testSetup.awaitST({ page });
+            const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+            const avatar = await createCharacter(page, `OneChunk-${stamp}`);
+            await openCharacter(page, avatar);
+            await connectLlamaCpp(page, mock.url);
+            // @ts-ignore
+            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
+            await page.waitForTimeout(2500);
+
+            await page.locator('#send_textarea').fill(`Say one thing ${stamp}.`);
+            await page.locator('#send_but').click();
+            await expect.poll(() => mock.state.written, { timeout: 30000 }).toBe(1);
+
+            await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('piece0', { timeout: 1500 });
+            expect(mock.state.finished).toBe(false);
         } finally {
             await mock.close();
         }
