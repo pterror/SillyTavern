@@ -53,7 +53,12 @@ test.describe('the chat box with the live editor', () => {
         const editor = chatBoxEditor(page);
         await expect(editor).toHaveCount(1, { timeout: 10000 });
         await expect(page.locator('#send_textarea')).toHaveClass(/live-editor-textarea/);
-        await expect(editor.locator('.live-toolbar')).toBeHidden();
+        // Opening a chat puts focus in the chat box once it has loaded, which can land after a click; away from the
+        // chat box, the toolbar is hidden.
+        await expect(async () => {
+            await page.locator('#chat .mes[mesid="0"] .mes_text').click();
+            await expect(editor.locator('.live-toolbar')).toBeHidden({ timeout: 1000 });
+        }).toPass();
         await editor.locator('.cm-content').click();
         await expect(editor.locator('.live-toolbar')).toBeVisible();
         await page.keyboard.type('Hello *there*');
@@ -223,6 +228,49 @@ test.describe('the chat box with the live editor', () => {
         await expect.poll(() => chatBoxValue(page)).toBe('Hi {{user}}\n*said* 你好!');
         await expect(chatBoxEditor(page).locator('.macro-substituted')).toHaveText(user);
         expect(errors).toEqual([]);
+        await clearChatBox(page);
+    });
+
+    test('extension patterns on the chat box keep working with the editor on it', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openChat(page);
+        await expect(chatBoxEditor(page)).toHaveCount(1, { timeout: 10000 });
+        await page.evaluate(async () => {
+            const { power_user } = await import('/scripts/power-user.js');
+            power_user.send_on_enter = 1;
+        });
+        // A plain value write plus an input event, then reading it back (GuidedGenerations and others).
+        const read = await page.evaluate(() => {
+            const box = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
+            box.value = 'written plainly';
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+            return box.value;
+        });
+        expect(read).toBe('written plainly');
+        await expect(chatBoxEditor(page).locator('.cm-content')).toHaveText('written plainly');
+        // An input listener added on the textarea hears the user typing in the editor.
+        await page.evaluate(() => {
+            window['__heard'] = 0;
+            document.getElementById('send_textarea').addEventListener('input', () => { window['__heard']++; });
+        });
+        await chatBoxEditor(page).locator('.cm-content').click();
+        await page.keyboard.press('End');
+        await page.keyboard.type('!');
+        expect(await page.evaluate(() => window['__heard'])).toBeGreaterThan(0);
+        // A synthetic Enter dispatched on the textarea by code sends, as upstream's handler on it does.
+        await page.evaluate(() => {
+            const box = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
+            box.value = 'sent by a synthetic Enter';
+            box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+        });
+        await expect.poll(() => page.evaluate(() => {
+            // @ts-ignore
+            return SillyTavern.getContext().chat.some(m => m.is_user && m.mes === 'sent by a synthetic Enter');
+        })).toBe(true);
+        await page.evaluate(() => {
+            // @ts-ignore
+            SillyTavern.getContext().stopGeneration?.();
+        });
         await clearChatBox(page);
     });
 });
