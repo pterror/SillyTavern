@@ -398,24 +398,45 @@ describe('/query totals while a tag is marked deleted', () => {
 });
 
 describe('/query approximate total form', () => {
-    test('the counted path\'s approximate JSON total has the same `~<number>` form as the search path\'s', async () => {
-        // The search sort with a capped id list sends an approximate total.
-        for (let i = 0; i < 8; i++) await seedCharacterWithFile(`zephyr${i}.png`, `Zephyr ${i}`);
-        const searchResponse = await postJson({ filter: { search: 'zephyr' }, sort: { field: 'search' }, page: 1, pageSize: 1 });
-        expect(searchResponse.status).toBe(200);
-        const searchTotal = (await searchResponse.json()).total;
-
+    test('the counted path\'s approximate JSON total is a `~<number>` string', async () => {
+        for (let i = 0; i < 2; i++) await seedCharacterWithFile(`zephyr${i}.png`, `Zephyr ${i}`);
         await saveTags(['t1', 't2']);
         await assign('zephyr0.png', 't1');
         await assign('zephyr1.png', 't2');
         await fill();
         expect(await metadataDb.deleteTagDefinition(directories, 't2', 't1')).toMatchObject({ refused: [] });
         const { total } = await jsonTotal({ tags: { include: ['t1'] } });
-        expect(typeof total).toBe(typeof searchTotal);
-        expect(total).toMatch(/^~\d+$/);
-        expect(searchTotal).toMatch(/^~\d+$/);
         expect(total).toBe('~2');
     }, 20000);
+});
+
+describe('/query search totals on a small set', () => {
+    /** The total of a search request, as JSON (a number, or `~<number>` when approximate) or from the binary header. */
+    async function searchTotal(body, binary) {
+        const response = await postJson({ ...body, want: [binary ? 'hashes' : 'rows', 'total'] });
+        expect(response.status).toBe(200);
+        if (!binary) return (await response.json()).total;
+        const view = new DataView(await response.arrayBuffer());
+        const flags = view.getUint8(0);
+        const total = view.getFloat64(1 + 1 + 8, true);
+        return (flags & 0b10) !== 0 ? `~${total}` : total;
+    }
+
+    test('twelve matches give an exact total of 12 on every page, in every sort, with and without groups, JSON and binary', async () => {
+        for (let i = 0; i < 12; i++) await seedCharacterWithFile(`zephyr${i}.png`, `Zephyr ${i}`);
+        for (let i = 0; i < 3; i++) await seedCharacterWithFile(`other${i}.png`, `Other ${i}`);
+        const sorts = [{ field: 'search' }, { field: 'name', order: 'asc' }, { field: 'date_added', order: 'desc' }];
+        for (const sort of sorts) {
+            for (const includeGroups of [false, true]) {
+                for (const binary of [false, true]) {
+                    for (const page of [1, 2, 3]) {
+                        const total = await searchTotal({ filter: { search: 'zephyr', ...(includeGroups ? { includeGroups } : {}) }, sort, page, pageSize: 5 }, binary);
+                        expect({ sort: sort.field, includeGroups, binary, page, total }).toEqual({ sort: sort.field, includeGroups, binary, page, total: 12 });
+                    }
+                }
+            }
+        }
+    }, 60000);
 });
 
 /** A read of the count sampler: a run of a tag's rows or of an entity table, or a whole population read at once. */
