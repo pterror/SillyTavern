@@ -38,6 +38,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'fillTagSortTablesIfNeeded',
     // Numbers every entity older than the rank triggers; until it finishes, the random sort reads today's way.
     'fillRandomRanksIfNeeded',
+    // Numbers the full name order once; until it finishes, searches sorted by name or fav walk in SQL order.
+    'fillNameOrderIfNeeded',
     // Last: until its walk passes an entity, the counter triggers skip that entity's writes, so the passes above
     // don't also write counters.
     'fillEntityCountsIfNeeded',
