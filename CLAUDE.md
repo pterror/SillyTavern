@@ -8,6 +8,10 @@ Nothing may be O(total cards) in memory, reads, or scans on any request path, se
 
 No `.all()` on database statements. Stream rows with `.iterate()`; anything that must be materialized goes through a read with an explicit bound.
 
+## Storage
+
+Every piece of data is stored once, as its own values, never as a blob of a format meant for exchange. Anything derived from it is computed when read, unless that can't meet the scale rule; then it is stored narrow and brought up to date when it is next needed, not on every write. A write costs what actually changed. Reads, writes and disk space are kept at their lowest asymptotic cost together; none is bought with an unbounded amount of another.
+
 ## Tests
 
 Subagents run only the tests covering what they changed, never the full suite. Every test run is scoped to the area the change actually touches.
