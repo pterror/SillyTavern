@@ -6346,8 +6346,9 @@ body:not(.movingUI) .drawer-content.maximized {
 .fillLeft,
 .fillRight {
     width: calc((var(--besideDrawerBarWidth) - var(--sheldWidth) - 2px) /2);
-    max-height: calc(100vh - var(--topBarBlockSize));
-    max-height: calc(100dvh - var(--topBarBlockSize));
+    /* They sit beside the drawer bar, from the top of the screen, so the bar's thickness isn't theirs to give up. */
+    max-height: 100vh;
+    max-height: 100dvh;
     height: 0;
     position: fixed;
     top: 0;
