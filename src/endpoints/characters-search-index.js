@@ -78,6 +78,7 @@ const TANTIVY_INDEX_SEQ_META_KEY = CHARACTERS_INDEX_SEQ_META_KEY;
 const TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY = CHARACTERS_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY;
 const TANTIVY_INDEX_RETRY_SEQ_META_KEY = CHARACTERS_INDEX_RETRY_SEQ_META_KEY;
 const TANTIVY_INDEX_SCHEMA_VERSION_META_KEY = 'tantivy_char_index_schema_version';
+const TANTIVY_INDEX_TAG_RENAME_RESUME_META_KEY = 'tantivy_char_index_tag_rename_resume';
 
 const CHECKPOINT_EVERY_N_BATCHES = 20;
 
@@ -359,6 +360,12 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
     let deleteCursor = 0;
     // Bumped by each catch-up whose retries changed the index, which moves neither cursor.
     let retrySeq = 0;
+    /**
+     * A tag-rename page a tick stopped partway through: the page ends at untilSeq, and its characters up to and
+     * including afterId are re-indexed. null when no page is part done.
+     * @type {{ untilSeq: number, afterId: string } | null}
+     */
+    let renameResume = null;
 
     function getWriter() {
         return writer ?? (writer = index.writer());
@@ -376,7 +383,22 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             [TANTIVY_INDEX_TAG_NAME_CHANGE_SEQ_META_KEY]: String(tagNameCursor),
             [TANTIVY_INDEX_RETRY_SEQ_META_KEY]: String(retrySeq),
             [TANTIVY_INDEX_SCHEMA_VERSION_META_KEY]: String(TANTIVY_SCHEMA_VERSION),
+            [TANTIVY_INDEX_TAG_RENAME_RESUME_META_KEY]: renameResume ? JSON.stringify(renameResume) : '',
         };
+    }
+
+    /**
+     * @param {string | null} stored
+     * @returns {{ untilSeq: number, afterId: string } | null}
+     */
+    function parseRenameResume(stored) {
+        if (!stored) return null;
+        try {
+            const parsed = JSON.parse(stored);
+            return Number.isInteger(parsed?.untilSeq) && typeof parsed?.afterId === 'string' ? { untilSeq: parsed.untilSeq, afterId: parsed.afterId } : null;
+        } catch {
+            return null;
+        }
     }
 
     /** @returns {Promise<boolean>} false: the database was locked and nothing was persisted. */
@@ -417,6 +439,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         deleteCursor = 0;
         setCursors(Number(persistedSeq), persistedTagNameChangeSeq !== null ? Number(persistedTagNameChangeSeq) : 0);
         retrySeq = persistedRetrySeq !== null ? Number(persistedRetrySeq) : 0;
+        renameResume = parseRenameResume(await getMetaValue(directories, TANTIVY_INDEX_TAG_RENAME_RESUME_META_KEY));
         return indexDir;
     }
 
@@ -605,6 +628,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
 
         deleteCursor = 0;
         setCursors(lastSeq, lastTagNameChangeSeq);
+        renameResume = null;
         // Not skipped on a lock like a tick's: the new index is already in place, and the cursors persisted for the
         // old one would have the next start replay the change log from there.
         while (!await persistCursors()) {
@@ -648,8 +672,10 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const tagNameSeqFrom = tagNameCursor;
         const deleteCursorFrom = deleteCursor;
         const retrySeqFrom = retrySeq;
+        const renameResumeFrom = renameResume;
         let lastSeq = seqCursor;
         let lastTagNameChangeSeq = tagNameCursor;
+        let resume = renameResume;
         /** @type {Map<string, number>} */
         const writers = new Map();
         /** @type {Set<string>} */
@@ -752,12 +778,15 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
             }
 
             // A tag rename doesn't produce a `changes` row for the characters carrying it, so it's tracked separately.
-            // Its loop always takes at least one page and gets its share of the budget from its own start, even when
-            // the last change page ran past the change loop's deadline, plus whatever the change loop left unused.
+            // Its loop always takes at least one batch of characters and gets its share of the budget from its own
+            // start, even when the last change page ran past the change loop's deadline, plus whatever the change loop
+            // left unused. A page whose characters outlast the deadline is left part done, and the next tick goes on
+            // from the character after the last one re-indexed.
             const renamesStart = Date.now();
             const renamesDeadline = renamesStart + tickBudgetMs * TAG_RENAME_BUDGET_SHARE + Math.max(0, changesDeadline - renamesStart);
             for (;;) {
-                const page = await timeAsync(phases, 'read', () => getTagNameChangesSince(directories, lastTagNameChangeSeq, { limit: INDEX_BUILD_BATCH_SIZE }));
+                const resumed = resume;
+                const page = await timeAsync(phases, 'read', () => getTagNameChangesSince(directories, lastTagNameChangeSeq, { limit: INDEX_BUILD_BATCH_SIZE, untilSeq: resumed?.untilSeq }));
                 if (!page) {
                     w.rollback();
                     return null;
@@ -766,24 +795,36 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
                     w.rollback();
                     return { swapped: await rebuild() };
                 }
+                /** @type {string | null} */
+                let stoppedAfter = null;
                 if (page.tagIds.length > 0) {
                     for (const tagId of page.tagIds) renamedTagIds.add(tagId);
-                    const affected = streamCharacterIdsForTagIds(directories, page.tagIds)[Symbol.asyncIterator]();
+                    const affected = streamCharacterIdsForTagIds(directories, page.tagIds, { after: resumed?.afterId ?? null })[Symbol.asyncIterator]();
                     try {
-                        for (;;) {
-                            const next = await timeAsync(phases, 'read', () => affected.next());
-                            if (next.done) break;
+                        let next = await timeAsync(phases, 'read', () => affected.next());
+                        while (!next.done) {
                             const affectedIds = next.value;
                             upserts += affectedIds.length;
                             const outcome = await addCharacterDocs(directories, tantivy, schema, w, affectedIds, phases, { replace: true });
                             await noteOutcomes([...outcome.indexed, ...outcome.missing], outcome.failures);
+                            next = await timeAsync(phases, 'read', () => affected.next());
+                            if (!next.done && Date.now() >= renamesDeadline) {
+                                stoppedAfter = affectedIds[affectedIds.length - 1];
+                                break;
+                            }
                         }
                     } finally {
                         await affected.return?.();
                     }
                 }
+                if (stoppedAfter !== null) {
+                    resume = { untilSeq: page.seq, afterId: stoppedAfter };
+                    break;
+                }
+                resume = null;
                 lastTagNameChangeSeq = page.seq;
-                if (!page.hasMore || Date.now() >= renamesDeadline) break;
+                // A resumed page was read only up to where it ended, so rows may lie past it whatever hasMore says.
+                if ((!page.hasMore && !resumed) || Date.now() >= renamesDeadline) break;
             }
 
             // Cards this tick already re-indexed or failed on aren't attempted again in it.
@@ -809,8 +850,10 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         if (changed) {
             timeSync(phases, 'commit', () => w.commit());
         }
-        const moved = lastSeq !== seqCursor || lastTagNameChangeSeq !== tagNameCursor || retriesChanged;
+        const moved = lastSeq !== seqCursor || lastTagNameChangeSeq !== tagNameCursor || retriesChanged
+            || resume?.untilSeq !== renameResume?.untilSeq || resume?.afterId !== renameResume?.afterId;
         setCursors(lastSeq, lastTagNameChangeSeq);
+        renameResume = resume;
         deleteCursor = Math.max(deleteCursor, maxSeq);
         if (retriesChanged) retrySeq++;
         let persistSkipped = false;
@@ -823,6 +866,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         if (persistSkipped) {
             seqCursor = seqFrom;
             tagNameCursor = tagNameSeqFrom;
+            renameResume = renameResumeFrom;
             deleteCursor = deleteCursorFrom;
             retrySeq = retrySeqFrom;
         } else {
