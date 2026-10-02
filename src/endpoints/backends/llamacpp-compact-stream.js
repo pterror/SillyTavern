@@ -2,7 +2,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { EventEmitter } from 'node:events';
 
 import { forwardFetchResponse } from '../../util.js';
-import { persistAssistantReply } from '../../assistant-reply-persist.js';
+import { persistAssistantReply, takeReplyNotSaved } from '../../assistant-reply-persist.js';
 import { storedMessagesOf } from '../../stored-messages.js';
 import { generationIdFor, isGenerationStopped } from '../../generation-stop.js';
 
@@ -162,6 +162,19 @@ export function encodeImageFrame(image) {
 
 export function encodeControlFrame(data) {
     return encodeLengthPrefixedJsonFrame(FRAME_TYPE_CONTROL, data);
+}
+
+/**
+ * The frame that ends a raw-action stream: the stored reply's node id, or, when storing it failed, a
+ * warnings frame naming the generation so the page can ask for it to be stored again.
+ * @param {{node_id: string}|null} persisted
+ * @param {object|null|undefined} persist
+ * @returns {Buffer|null}
+ */
+export function encodeStoredReplyFrame(persisted, persist) {
+    if (persisted) return encodeAssistantNodeIdFrame(persisted.node_id);
+    const warning = takeReplyNotSaved(persist);
+    return warning ? encodeControlFrame({ warnings: [warning] }) : null;
 }
 
 /**
@@ -611,7 +624,8 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
             if (persist && accumulatedText) {
                 persistAssistantReply(persist, accumulatedText)
                     .then(persisted => {
-                        if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
+                        const frame = encodeStoredReplyFrame(persisted, persist);
+                        if (frame) writer.write(frame);
                     })
                     .catch(error => console.error('Failed to persist streamed llama.cpp assistant reply:', error))
                     .finally(() => {

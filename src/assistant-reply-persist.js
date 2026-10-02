@@ -94,19 +94,91 @@ export function unreadableReplyWarning(data, key) {
  *   not run through any client-side cleanup step, matching every other cut-over type's own
  *   already-accepted standard).
  * @returns {Promise<{node_id: string, mes: string}|null>} `mes` is the node's whole stored text. `node_id` is the node the reply now lives at (the edited anchor
- *   for `isContinue`, the new alternative for `isSwipe`, the new child otherwise) - callers use
- *   this to tell the client which node already holds this content, so the client's own legacy
- *   diff-save (`_saveTreeChat()`, public/script.js) can mark it clean instead of re-persisting the
- *   same reply a second time. `null` on a no-op or a failed write - callers must not tell the
- *   client anything was persisted in that case.
+ *   for `isContinue`, the new alternative for `isSwipe`, the new child otherwise); callers send it to
+ *   the page, which never stores a reply itself. `null` when there was no text, or when storing failed:
+ *   a failure is kept on the generation for a retry and reported as a `reply-not-saved` warning (see
+ *   `recordReplyNotSaved()`).
  */
 export async function persistAssistantReply(pending, generatedText) {
-    const persisted = await persistReply(pending, generatedText);
-    recordGenerationPersisted(pending.generationStop, persisted);
-    return persisted;
+    /** @type {{node_id: string, mes: string}|{error: string}|null} */
+    let result;
+    try {
+        result = await persistReply(pending, generatedText);
+    } catch (error) {
+        console.error('Failed to store the reply:', error);
+        result = { error: String(error?.message ?? error) };
+    }
+    if (result && 'error' in result) {
+        recordReplyNotSaved(pending, generatedText, result.error);
+        return null;
+    }
+    recordGenerationPersisted(pending.generationStop, result);
+    return result;
 }
 
-/** @returns {Promise<{node_id: string, mes: string}|null>} */
+/**
+ * Stores a reply whose first store failed, from the text the server kept. Same modes as
+ * `persistAssistantReply()`.
+ * @param {object} pending
+ * @param {string} generatedText
+ * @returns {Promise<{node_id: string, mes: string}|{error: string}|null>}
+ */
+export async function retryPersistReply(pending, generatedText) {
+    try {
+        return await persistReply(pending, generatedText);
+    } catch (error) {
+        return { error: String(error?.message ?? error) };
+    }
+}
+
+/**
+ * The warning the page gets for a reply that was generated but couldn't be stored. It names the
+ * generation, so the page can ask the server to try storing it again.
+ * @param {string} generationId
+ * @param {string} reason
+ * @returns {{ kind: 'reply-not-saved', key: string, generation_id: string, reason: string, message: string }}
+ */
+export function replyNotSavedWarning(generationId, reason) {
+    return {
+        kind: 'reply-not-saved',
+        key: generationId,
+        generation_id: generationId,
+        reason,
+        message: `This reply wasn't saved (${reason}). It's shown, but it will be gone after a reload unless saving it again works.`,
+    };
+}
+
+/**
+ * Keeps a failed reply's text on its generation, so a retry can store it, and adds the warning to the
+ * request's warnings: a non-streaming answer sends them after storing, and a stream sends this one in
+ * its own frame (`takeReplyNotSaved()`).
+ * @param {object} pending
+ * @param {string} generatedText
+ * @param {string} reason
+ */
+function recordReplyNotSaved(pending, generatedText, reason) {
+    const entry = pending.generationStop;
+    if (!entry) {
+        console.error(`Reply not saved and can't be retried (no generation to keep it on): ${reason}`);
+        return;
+    }
+    const warning = replyNotSavedWarning(entry.id, reason);
+    entry.unsaved = { pending, text: generatedText, reason, warning };
+    if (Array.isArray(pending.warnings)) {
+        pending.warnings.push(warning);
+    }
+}
+
+/**
+ * For a stream: the not-saved warning of this reply, if storing it failed, to send in its own frame.
+ * @param {object|null|undefined} pending
+ * @returns {object|null}
+ */
+export function takeReplyNotSaved(pending) {
+    return pending?.generationStop?.unsaved?.warning ?? null;
+}
+
+/** @returns {Promise<{node_id: string, mes: string}|{error: string}|null>} */
 async function persistReply({ directories, ownerId, anchorNodeId, name2, isSwipe, isContinue, anchorContent }, generatedText) {
     if (!generatedText) {
         return null;
@@ -117,7 +189,7 @@ async function persistReply({ directories, ownerId, anchorNodeId, name2, isSwipe
     if (isContinue) {
         if (!anchorContent) {
             console.error('Failed to persist continue edit onto the tree: no anchor content resolved.');
-            return null;
+            return { error: 'the message being continued could not be read' };
         }
 
         const oldText = typeof anchorContent.mes === 'string' ? anchorContent.mes : '';
@@ -125,14 +197,14 @@ async function persistReply({ directories, ownerId, anchorNodeId, name2, isSwipe
         const editResult = await editMessage(directories, ownerId, anchorNodeId, { ...anchorContent, mes });
         if (!editResult.ok) {
             console.error('Failed to persist continue edit onto the tree:', editResult.reason);
-            return null;
+            return { error: String(editResult.reason ?? 'the continued message could not be written') };
         }
         return { node_id: anchorNodeId, mes };
     } else if (isSwipe) {
         const addResult = await addAlternatives(directories, ownerId, anchorNodeId, [replyContent]);
         if (!addResult.ok) {
             console.error('Failed to persist swipe alternative onto the tree:', addResult.reason);
-            return null;
+            return { error: String(addResult.reason ?? 'the new swipe could not be written') };
         }
         if (addResult.node_ids?.length) {
             const selected = await selectDefaultChild(directories, addResult.node_ids[0]);
@@ -141,13 +213,15 @@ async function persistReply({ directories, ownerId, anchorNodeId, name2, isSwipe
             }
             return { node_id: addResult.node_ids[0], mes: generatedText };
         }
-        return null;
+        return { error: 'the new swipe could not be written' };
     } else {
         const appendResult = await appendMessages(directories, ownerId, anchorNodeId, [replyContent]);
         if (!appendResult.ok) {
             console.error('Failed to persist assistant reply onto the tree:', appendResult.reason);
-            return null;
+            return { error: String(appendResult.reason ?? 'the reply could not be written') };
         }
-        return appendResult.node_ids?.length ? { node_id: appendResult.node_ids[appendResult.node_ids.length - 1], mes: generatedText } : null;
+        return appendResult.node_ids?.length
+            ? { node_id: appendResult.node_ids[appendResult.node_ids.length - 1], mes: generatedText }
+            : { error: 'the reply could not be written' };
     }
 }

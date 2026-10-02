@@ -15,7 +15,7 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeAssistantNodeIdFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeStoredReplyFrame, encodeIndexFrame, encodeReasoningFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend, resolveServerUrl } from '../../textgen-backend-resolve.js';
 import { resolveConnectionProfile } from '../../connection-profile-resolve.js';
 import { mergeTextGenPreset } from '../../textgen-preset-merge.js';
@@ -97,7 +97,8 @@ async function parseOllamaStream(jsonStream, request, response, persist, itemiza
             if (persist && accumulatedText) {
                 persistAssistantReply(persist, accumulatedText)
                     .then(persisted => {
-                        if (persisted) writer.write(encodeAssistantNodeIdFrame(persisted.node_id));
+                        const frame = encodeStoredReplyFrame(persisted, persist);
+                        if (frame) writer.write(frame);
                     })
                     .catch(error => console.error('Failed to persist streamed Ollama assistant reply:', error))
                     .finally(() => {
@@ -339,9 +340,8 @@ export async function forwardAndPersistCompactStream(fetchResponse, response, pe
 
     if (persist && text) {
         const persisted = await persistAssistantReply(persist, text);
-        if (persisted) {
-            safeWrite(encodeAssistantNodeIdFrame(persisted.node_id));
-        }
+        const frame = encodeStoredReplyFrame(persisted, persist);
+        if (frame) safeWrite(frame);
     }
 
     response.socket?.off('close', onSocketClose);
@@ -902,10 +902,13 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             // message - a swipe/regenerate REPLACES the anchor with a sibling instead, see below).
             const skipPersistence = isImpersonate || type === 'quiet';
             let replyAnchorNodeId = built.anchorNodeId;
+            const userMessage = typeof userMessageText === 'string'
+                ? { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() }
+                : null;
             if (!skipPersistence && typeof userMessageText === 'string' && built.anchorNodeId) {
                 const userNodeId = await storeUserMessage(response, {
                     directories, ownerId, anchorNodeId: built.anchorNodeId, ref: request.body.user_message_ref,
-                    message: { name: built.name1, is_user: true, mes: userMessageText, extra: userMessageExtra, send_date: Date.now() },
+                    message: userMessage,
                 });
                 if (userNodeId) {
                     replyAnchorNodeId = userNodeId;
@@ -938,40 +941,19 @@ router.post('/generate', withGenerationStop(async function (request, response) {
             // `sanitizeForStorage()`), so the reply text must be spliced into a full copy of the
             // existing message object, not sent alone.
             //
-            // REAL EDGE CASE found and guarded against (not hypothetical): public/script.js's own
-            // `Generate()` does NOT exclude `type === 'continue'` from its "read+clear the send
-            // textarea as this turn's `user_message`" condition (only 'regenerate'/'swipe'/'quiet'/
-            // impersonate/dryRun/depth>0 are excluded there) - so a user who leaves text in the box and
-            // clicks Continue DOES send it as a genuine new user message, same as any other type. If
-            // that happened, `replyAnchorNodeId` above was just advanced to that BRAND NEW user node -
-            // editing it with the OLD assistant's content (`anchorContent`, resolved before that append
-            // ran) would corrupt the wrong node. This is bounded to CONTINUE-ONLY (swipe/regenerate/
-            // impersonate/quiet already can't reach here with a real `userMessageText`), so the guard
-            // needs to special-case it: skip persisting the ASSISTANT'S REPLY ENTIRELY (not just fall
-            // back to a plain appendMessages(), which would be its own new bug - the generated text for
-            // a continue is only a CONTINUATION FRAGMENT of the old leaf, not a complete reply, so
-            // appending it as a brand-new child after the just-added user message would read as
-            // incoherent, fragment-shaped nonsense) whenever a user message was actually appended
-            // alongside a continue - detected by `built.anchorNodeId` (the anchor BEFORE any append) no
-            // longer equaling `replyAnchorNodeId` in that case. Nothing NEW is lost by skipping: this
-            // combination was already a pre-existing, independent client-side oddity before this task
-            // (public/script.js's own `saveReply({type: 'appendFinal'})` reads `chat[chat.length - 1]`
-            // too, which by then is that SAME just-appended user message, not the real assistant leaf -
-            // so the legacy path was already not doing anything coherent for this combination either).
-            // The user message itself is still committed either way (matching every other type's real
-            // `user_message` handling) - only the reply's persistence is skipped; the raw generated text
-            // still reaches the client unchanged via the normal response, exactly like every other
-            // skipped-persistence case above.
-            const continueUserTextConflict = isContinue && replyAnchorNodeId !== built.anchorNodeId;
-            if (!skipPersistence && !continueUserTextConflict) {
+            // A continue sent with text in the box stores that text as the user's message first, and the page then
+            // continues that message, as upstream does: the reply is stored as an edit of it.
+            const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
+            if (!skipPersistence) {
                 pendingAssistantPersist = {
                     directories, ownerId, anchorNodeId: replyAnchorNodeId, name2: built.name2,
-                    isSwipe, isContinue, anchorContent: built.anchorContent,
+                    isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+                    warnings,
                     generationStop: response.locals.generationStop,
                 };
                 // Same gating as `pendingAssistantPersist` above, not unconditional on `built.itemization`
-                // existing - impersonate/quiet/the continue-text-conflict case must still reach the
-                // client completely unmodified (see this block's own comment above), matching how
+                // existing - impersonate/quiet must still reach the client completely unmodified
+                // (see this block's own comment above), matching how
                 // `data.assistant_node_id` below is likewise only ever set when persistence itself ran.
                 rawActionItemization = built.itemization;
             }
