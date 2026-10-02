@@ -3135,10 +3135,68 @@ export async function renameGroupMemberInMessages(directories, groupOwnerId, old
     return updated;
 }
 
+/**
+ * Replaces a node's chat metadata (the JSON a label carries).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @param {string} metadataJson
+ */
+function setNodeMetadataSync(db, id, metadataJson) {
+    db.run('UPDATE messages SET metadata = @m WHERE id = @id', { m: metadataJson, id });
+}
+
+/**
+ * Labels a node and replaces its chat metadata.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @param {string} label
+ * @param {string} metadataJson
+ */
+function labelNodeSync(db, id, label, metadataJson) {
+    db.run('UPDATE messages SET label = @label, metadata = @m WHERE id = @id', { label, m: metadataJson, id });
+}
+
+/**
+ * Moves a node under another parent. `identityHash` is the node's identity under its new parent (identityHashOf).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {string} id
+ * @param {string} parentId
+ * @param {string} identityHash
+ */
+function reparentNodeSync(db, id, parentId, identityHash) {
+    db.run('UPDATE messages SET parent_id = @parentId, identity_hash = @h WHERE id = @id', { parentId, h: identityHash, id });
+}
+
+/**
+ * Points `id`'s default child from `from` to `to`, only while it still points at `from`.
+ * @param {{ run: (sql: string, params: object) => { changes: number } }} db
+ * @param {{ id: string, ownerId: string, from: string, to: string }} change
+ * @returns {number} Rows changed (0 or 1).
+ */
+function swapDefaultChildSync(db, { id, ownerId, from, to }) {
+    return db.run('UPDATE messages SET default_child_id = @to WHERE id = @id AND owner_id = @ownerId AND default_child_id = @from',
+        { to, id, ownerId, from }).changes;
+}
+
+/**
+ * Deletes nodes of one owner, in one statement.
+ * @param {{ run: (sql: string, params: object) => { changes: number } }} db
+ * @param {string} ownerId
+ * @param {string[]} ids
+ * @returns {number} Rows deleted.
+ */
+function deleteNodesSync(db, ownerId, ids) {
+    if (ids.length === 0) return 0;
+    const params = Object.fromEntries(ids.map((id, i) => [`id${i}`, id]));
+    return db.run(`DELETE FROM messages WHERE owner_id = @ownerId AND id IN (${ids.map((_, i) => `@id${i}`).join(', ')})`,
+        { ownerId, ...params }).changes;
+}
+
 export {
     insertMessageSync, createBranchSync, getPathSync, getBranchByNameSync, hasBranchesSync,
     newId, sanitizeForStorage, extractLastMes,
     ensureAnchorSync, descendDefaultSync, setDefaultChildSync, alternativesFromMessage, branchViewSync,
+    setNodeMetadataSync, labelNodeSync, reparentNodeSync, swapDefaultChildSync, deleteNodesSync,
 };
 
 /** Closes all open DB handles (close() also TRUNCATE-checkpoints the WAL). */

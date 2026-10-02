@@ -1,3 +1,5 @@
+import { deleteTreeMetaSync, setTreeMetaSync } from './message-tree-meta.js';
+
 /**
  * Per-owner message statistics, derived from the message tree: the stored messages are the only source. Triggers on
  * `messages` keep `owner_message_stats` current inside the writing statement's own transaction, through SQL functions
@@ -216,8 +218,7 @@ export function migrateMessageStatsSync(db) {
     }
     db.exec(MESSAGE_STATS_SQL);
     if (version?.value !== MESSAGE_STATS_VERSION) {
-        db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-            { key: VERSION_KEY, value: MESSAGE_STATS_VERSION });
+        setTreeMetaSync(db, VERSION_KEY, MESSAGE_STATS_VERSION);
     }
 }
 
@@ -331,14 +332,12 @@ export function fillMessageStatsBatchSync(db, limit) {
                 totals.first_user_at = totals.first_user_at === null ? counted.first_user_at : Math.min(totals.first_user_at, counted.first_user_at);
             }
             writeRowSync(db, TOTALS_OWNER, totals);
-            db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-                { key: FILL_AFTER_KEY, value: ownerId });
+            setTreeMetaSync(db, FILL_AFTER_KEY, ownerId);
         });
     }
     const done = ownerIds.length < limit;
     if (done) {
-        db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-            { key: FILL_DONE_KEY, value: '1' });
+        setTreeMetaSync(db, FILL_DONE_KEY, '1');
     }
     return { owners: ownerIds.length, done };
 }
@@ -348,7 +347,7 @@ export function fillMessageStatsBatchSync(db, limit) {
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  */
 export function restartMessageStatsFillSync(db) {
-    db.run('DELETE FROM meta WHERE key IN (@after, @done)', { after: FILL_AFTER_KEY, done: FILL_DONE_KEY });
+    deleteTreeMetaSync(db, [FILL_AFTER_KEY, FILL_DONE_KEY]);
 }
 
 /**

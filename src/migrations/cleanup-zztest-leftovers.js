@@ -9,6 +9,7 @@ import { getConfigValue, setConfigFilePath } from '../util.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import { normalizeGroupRecord } from '../group-id.js';
 import { openNativeTreeDatabase } from '../message-stats.js';
+import { deleteNodesSync, swapDefaultChildSync } from '../message-tree-db.js';
 import { groupDigestContentHash, groupDigestFavHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 
 /**
@@ -579,18 +580,12 @@ function applyTree({ Database, treePath, backupDir, repoint, stray, characterFil
             writeBackupFile(path.join(backupDir, 'message-tree-rows.json'), JSON.stringify({ database: treePath, rows }, null, 4));
 
             if (repoint) {
-                const { changes } = db.run(
-                    'UPDATE messages SET default_child_id = @ivy WHERE id = @a AND owner_id = @o AND default_child_id = @hi',
-                    { ivy: IVY_OPENING_ID, a: GROUP_ANCHOR_ID, o: GROUP_ID, hi: HI_GROUP_ID },
-                );
+                const changes = swapDefaultChildSync(db, { id: GROUP_ANCHOR_ID, ownerId: GROUP_ID, from: HI_GROUP_ID, to: IVY_OPENING_ID });
                 if (changes !== 1) throw new Error(`anchor update changed ${changes} rows`);
             }
             if (stray) {
                 // One statement, so the anchor's default_child_id reference to the child never dangles mid-way.
-                const { changes } = db.run(
-                    'DELETE FROM messages WHERE owner_id = @o AND id IN (@a, @c)',
-                    { o: STRAY_OWNER, a: STRAY_ANCHOR_ID, c: STRAY_CHILD_ID },
-                );
+                const changes = deleteNodesSync(db, STRAY_OWNER, [STRAY_ANCHOR_ID, STRAY_CHILD_ID]);
                 if (changes !== 2) throw new Error(`delete removed ${changes} rows`);
             }
             db.exec('COMMIT');

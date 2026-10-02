@@ -10,7 +10,9 @@ import { isChatHeaderEntry, parseChatFile } from '../chat-header.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import {
     getDbHandle, insertMessageSync, newId, ensureAnchorSync, setDefaultChildSync, alternativesFromMessage, identityHashOf,
+    setNodeMetadataSync, labelNodeSync, reparentNodeSync,
 } from '../message-tree-db.js';
+import { setTreeMetaSync } from '../message-tree-meta.js';
 import { openNativeTreeDatabase } from '../message-stats.js';
 
 /**
@@ -325,7 +327,7 @@ function childWithContentSync(db, ownerId, parentId, content, createdAt) {
  */
 function addMetadataSync(db, labelId, labelMetadata, metadataAdd) {
     const current = JSON.parse(labelMetadata);
-    db.run('UPDATE messages SET metadata = @m WHERE id = @id', { m: JSON.stringify({ ...current, ...metadataAdd }), id: labelId });
+    setNodeMetadataSync(db, labelId, JSON.stringify({ ...current, ...metadataAdd }));
 }
 
 /**
@@ -362,8 +364,7 @@ export function applyChatRestore(db, plan, input, now) {
         });
 
         const bContent = /** @type {{ content: string }} */ (db.get('SELECT content FROM messages WHERE id = @id', { id: plan.bId })).content;
-        db.run('UPDATE messages SET parent_id = @x, identity_hash = @h WHERE id = @b',
-            { x: xId, h: identityHashOf(xId, bContent), b: plan.bId });
+        reparentNodeSync(db, plan.bId, xId, identityHashOf(xId, bContent));
 
         const second = alternativesFromMessage(/** @type {any} */ (messages[1]));
         second.contents.forEach((content, k) => {
@@ -398,8 +399,7 @@ export function applyChatRestore(db, plan, input, now) {
         }
         parent = chosen;
     }
-    db.run('UPDATE messages SET label = @chatId, metadata = @m WHERE id = @last',
-        { chatId, m: JSON.stringify({ ...plan.metadataAdd, __is_group: true }), last: parent });
+    labelNodeSync(db, parent, chatId, JSON.stringify({ ...plan.metadataAdd, __is_group: true }));
 }
 
 /**
@@ -681,8 +681,7 @@ export async function runOnceAtBoot(directories, options = {}) {
     lines.slice(0, logged).forEach(line => log(line));
     lines.slice(logged).forEach(line => warn(color.yellow(line)));
 
-    db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        { key: MARKER_KEY, value: String(Date.now()) });
+    setTreeMetaSync(db, MARKER_KEY, String(Date.now()));
     return { status: 'ran', result };
 }
 
