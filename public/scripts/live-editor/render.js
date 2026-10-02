@@ -418,4 +418,4 @@ export function liveRendering(options) {
     ];
 }
 
-export { renderField };
+export { renderField, renderOptions };
