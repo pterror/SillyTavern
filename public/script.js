@@ -4150,8 +4150,35 @@ export class StreamingProcessor {
         const isContinue = this.type == 'continue';
         this.stoppingStrings = getStoppingStrings(isImpersonate, isContinue, main_api);
 
+        // Draws at most once per frame interval. An update that falls inside the interval is drawn when it
+        // ends, so the latest text shows even when no further chunk arrives to trigger a draw.
+        const interval = new Stopwatch(1000 / power_user.streaming_fps).interval;
+        let lastDraw = Date.now();
+        /** @type {ReturnType<typeof setTimeout>|null} */
+        let trailingDraw = null;
+        let drawing = Promise.resolve();
+        const draw = () => {
+            if (trailingDraw) {
+                clearTimeout(trailingDraw);
+                trailingDraw = null;
+            }
+            lastDraw = Date.now();
+            drawing = drawing.then(() => this.onProgressStreaming(this.messageId, this.continueMessage + this.result));
+            return drawing;
+        };
+        const requestDraw = async () => {
+            const wait = interval - (Date.now() - lastDraw);
+            if (wait <= 0) {
+                await draw();
+            } else if (!trailingDraw) {
+                trailingDraw = setTimeout(() => {
+                    trailingDraw = null;
+                    if (!this.isStopped && !this.isFinished && !this.abortController.signal.aborted) void draw();
+                }, wait);
+            }
+        };
+
         try {
-            const sw = new Stopwatch(1000 / power_user.streaming_fps);
             const timestamps = [];
             for await (const { text, swipes, logprobs, toolCalls, state } of this.generator()) {
                 const now = Date.now();
@@ -4189,11 +4216,20 @@ export class StreamingProcessor {
                 this.images = state?.images ?? [];
                 this.reasoningSignature = state?.signature ?? null;
                 await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
-                await sw.tick(async () => await this.onProgressStreaming(this.messageId, this.continueMessage + text));
+                await requestDraw();
             }
+            if (trailingDraw) {
+                clearTimeout(trailingDraw);
+                trailingDraw = null;
+            }
+            await drawing;
             const seconds = (timestamps[timestamps.length - 1] - timestamps[0]) / 1000;
             console.warn(`Stream stats: ${timestamps.length} tokens, ${seconds.toFixed(2)} seconds, rate: ${Number(timestamps.length / seconds).toFixed(2)} TPS`);
         } catch (err) {
+            if (trailingDraw) {
+                clearTimeout(trailingDraw);
+                trailingDraw = null;
+            }
             // in the case of a self-inflicted abort, we have already cleaned up
             if (!this.isFinished) {
                 console.error(err);
