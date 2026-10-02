@@ -36,6 +36,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'buildEntitySortIndexesIfNeeded',
     // Copies tag rows older than the tag sort tables' triggers; until it finishes, /query's tag filters read today's way.
     'fillTagSortTablesIfNeeded',
+    // Numbers every entity older than the rank triggers; until it finishes, the random sort reads today's way.
+    'fillRandomRanksIfNeeded',
     // Last: until its walk passes an entity, the counter triggers skip that entity's writes, so the passes above
     // don't also write counters.
     'fillEntityCountsIfNeeded',
