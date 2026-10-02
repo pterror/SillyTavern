@@ -34,6 +34,8 @@ export const MIGRATION_PASSES = /** @type {const} */ ([
     'fillTreeOwnerKinds',
     // Builds /query's sort indexes; until they exist, /query reads each table in one statement.
     'buildEntitySortIndexesIfNeeded',
+    // Copies tag rows older than the tag sort tables' triggers; until it finishes, /query's tag filters read today's way.
+    'fillTagSortTablesIfNeeded',
     // Last: until its walk passes an entity, the counter triggers skip that entity's writes, so the passes above
     // don't also write counters.
     'fillEntityCountsIfNeeded',
