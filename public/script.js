@@ -790,7 +790,12 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
             return true;
         } catch (error) {
             console.error(`Failed to save ${formId} for ${avatar}`, error);
-            toastr.error(t`Something went wrong while saving the character. Your edit is still shown here, but it was not saved.`);
+            const fieldName = mapping.v2.replace(/^data\.extensions\.depth_prompt\./, 'Depth Prompt ')
+                .replace(/^data\.extensions\./, '')
+                .replace(/^data\./, '')
+                .replace(/_/g, ' ');
+            const characterName = String(charactersStore.get(avatar)?.name ?? avatar);
+            toastr.error(t`${fieldName} of ${characterName} was not saved. What you typed is still in the field, and is kept if you reload.`, t`Not saved`, { timeOut: 0, extendedTimeOut: 0 });
             return false;
         }
     };
@@ -1408,6 +1413,7 @@ async function firstLoadInit() {
         uploadImage: uploadEditorImage,
         onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
         onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
+        editorKey: () => (menu_type === 'create' ? '' : getEditorCharacterAvatar()),
     });
     initChatLiveEditor({
         messageFormatting,
@@ -8907,6 +8913,8 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     }
 
     $('#add_avatar_button').val('');
+    // Before the fields: a field keeps its unsaved text per character, keyed by this.
+    $('#avatar_url_pole').val(character.avatar);
 
     $('#character_name_pole').val(characterFormValue(character, '#character_name_pole'));
     setFieldValue('description_textarea', characterFormValue(character, '#description_textarea'));

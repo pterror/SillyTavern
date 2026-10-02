@@ -76,6 +76,8 @@ export function insertMacroSpans(html, values) {
  * @property {(title: string, text: string) => Promise<boolean>} confirmDiscard Asks before an edit's change is thrown away.
  * @property {(id: string) => void} [onEditStart] Called once a field has entered edit mode.
  * @property {(id: string) => void} [onEditEnd] Called once a field has left edit mode (Done or cancel).
+ * @property {() => string} [editorKey] Which character's fields are in the editor ('' when none), so a field's
+ * unsaved text is kept per character.
  */
 
 /** @type {CharacterFieldEditorDeps} */
@@ -188,6 +190,7 @@ export function setFieldValue(id, value) {
     }
     getTextarea(id).val(value ?? '');
     refreshFieldPreview(id);
+    showDraftNotice(id);
 }
 
 /**
@@ -339,9 +342,16 @@ function scheduleAutoSave(id, value) {
             return false;
         });
         autoSaveInFlight = save;
-        void save.then(() => {
+        void save.then((saved) => {
             if (autoSaveInFlight === save) {
                 autoSaveInFlight = null;
+            }
+            if (!saved) return;
+            if (isFieldInEdit(id)) {
+                activeEdit.original = value;
+                writeDraft(id, activeEdit.userText, value);
+            } else if (readDraft(id) === value) {
+                forgetDraft(id);
             }
         });
     }, deps.autoSaveTimeout);
@@ -349,6 +359,101 @@ function scheduleAutoSave(id, value) {
 
 // Greetings are saved per greeting through the pager, never from the field's value.
 const GREETING_FIELD_ID = 'greeting_field';
+
+// What the user typed in a field and hasn't got saved yet, kept in browser storage so it survives a reload. Greetings
+// keep theirs through the greetings popup's own kept edit.
+const DRAFT_PREFIX = 'CharacterFieldDraft:';
+
+/** @param {string} id @returns {string | null} */
+function draftKey(id) {
+    const owner = deps?.editorKey?.() ?? '';
+    return owner && id !== GREETING_FIELD_ID ? `${DRAFT_PREFIX}${owner}:${id}` : null;
+}
+
+/** @param {string} id @returns {string | null} */
+function readDraft(id) {
+    const key = draftKey(id);
+    if (!key) return null;
+    try {
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Keeps the field's typed text, or forgets it once it matches what is stored.
+ * @param {string} id
+ * @param {string} text
+ * @param {string} stored
+ */
+function writeDraft(id, text, stored) {
+    const key = draftKey(id);
+    if (!key) return;
+    try {
+        if (text === stored) localStorage.removeItem(key);
+        else localStorage.setItem(key, text);
+    } catch {
+        // Browser storage may be unavailable; the edit itself still holds the text.
+    }
+}
+
+/** @param {string} id */
+function forgetDraft(id) {
+    const key = draftKey(id);
+    if (!key) return;
+    try {
+        localStorage.removeItem(key);
+    } catch {
+        // Nothing to forget.
+    }
+}
+
+/**
+ * Shows, on a field that isn't being edited, that an earlier edit of it was never saved, with the means to take it
+ * back up or let it go.
+ * @param {string} id
+ */
+function showDraftNotice(id) {
+    const panel = getPanel(id);
+    panel.find('.field_draft_notice').remove();
+    if (isFieldInEdit(id)) return;
+    const draft = readDraft(id);
+    const stored = String(getTextarea(id).val() ?? '');
+    if (draft === null || draft === stored) {
+        if (draft !== null) forgetDraft(id);
+        return;
+    }
+    const { t } = deps;
+    const notice = $('<div class="field_draft_notice"></div>');
+    notice.append($('<span></span>').text(t`You have an edit of this field that wasn't saved.`));
+    const restore = $('<button type="button" class="menu_button field_draft_restore"></button>').text(t`Restore it`);
+    const discard = $('<button type="button" class="menu_button field_draft_discard"></button>').text(t`Discard it`);
+    restore.on('click', () => restoreDraft(id));
+    discard.on('click', () => {
+        forgetDraft(id);
+        notice.remove();
+    });
+    notice.append(restore, discard);
+    getPreview(id).before(notice);
+}
+
+/** @param {string} id */
+function restoreDraft(id) {
+    const draft = readDraft(id);
+    if (draft === null) return;
+    const textarea = getTextarea(id);
+    const stored = String(textarea.val() ?? '');
+    textarea.val(draft);
+    beginEdit(id);
+    if (!isFieldInEdit(id)) {
+        textarea.val(stored);
+        return;
+    }
+    activeEdit.original = stored;
+    activeEdit.userText = draft;
+    getPanel(id).find('.field_draft_notice').remove();
+}
 
 /**
  * Saves at once (in create mode that sets the value Create builds from before the writer's next line runs). While a
@@ -416,11 +521,14 @@ async function confirmEdit() {
         await autoSaveInFlight;
         cancelAutoSave();
     }
-    const saved = await FIELDS[edit.id].save()(String(getTextarea(edit.id).val() ?? ''));
+    const value = String(getTextarea(edit.id).val() ?? '');
+    const saved = await FIELDS[edit.id].save()(value);
     edit.saving = false;
+    if (saved) edit.original = value;
     if (saved && activeEdit === edit) {
         endEdit();
     }
+    if (saved) forgetDraft(edit.id);
 }
 
 function cancelEdit() {
@@ -429,6 +537,7 @@ function cancelEdit() {
     }
     if (!deps.power_user.auto_save_msg_edits) {
         getTextarea(activeEdit.id).val(activeEdit.original).trigger('input');
+        forgetDraft(activeEdit.id);
     }
     endEdit();
 }
@@ -700,6 +809,7 @@ export function initCharacterFieldEditor(dependencies) {
             if (isUserEvent(event.originalEvent)) {
                 if (isFieldInEdit(id)) {
                     activeEdit.userText = value;
+                    writeDraft(id, value, activeEdit.original);
                     if (deps.power_user.auto_save_msg_edits) {
                         scheduleAutoSave(id, value);
                     }
