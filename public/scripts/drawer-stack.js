@@ -9,7 +9,8 @@
  * - ordered layers: the chat (#sheld), every top-bar drawer, every floating window (#movingDivs' children,
  *   draggables on <body> such as zoomed avatars). Clicking, tapping or typing in one brings it forward; a floating
  *   window also comes forward when it appears.
- * - floating lists (autocomplete menus, select2 dropdowns): above every ordered layer while shown.
+ * - floating lists (autocomplete menus, select2 dropdowns, the hold-Ctrl hotkey list): above every ordered layer
+ *   while shown.
  *
  * The stack is told when something changes (drawerStackChanged, drawerLayersChanged) by the code that opens,
  * closes, fronts, moves or resizes a layer, and by the dropdown libraries' events. The only things it watches are
@@ -24,8 +25,8 @@ export const STACK_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-c
 const FLOATING_SELECTOR = '#movingDivs > *, body > .draggable';
 /** The chat. Ordered like any layer; it starts at the bottom. */
 const CHAT_ID = 'sheld';
-/** Floating lists: above every ordered layer while shown. */
-const LIST_SELECTOR = '.ui-menu, .select2-container--open > .select2-dropdown';
+/** Floating lists and the hold-Ctrl hotkey list: above every ordered layer while shown. */
+const LIST_SELECTOR = '.ui-menu, .select2-container--open > .select2-dropdown, .hotkeyOverlay';
 const ORDERED_SELECTOR = `#${CHAT_ID}, ${STACK_DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
 const HOLE_SOURCE = 'drawer-stack';
 /** Past this, the ordered layers are renumbered from 1, keeping the numbers small. */
