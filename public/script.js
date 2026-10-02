@@ -1382,7 +1382,7 @@ async function firstLoadInit() {
     initCharacterFieldEditor({
         substituteParams,
         messageFormatting,
-        formatCreatorNotes: text => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar),
+        formatCreatorNotes: text => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, { safeMacros: true }),
         power_user,
         t,
         autoSaveTimeout: DEFAULT_SAVE_EDIT_TIMEOUT,
@@ -3154,13 +3154,14 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
     };
 
     if (_replaceCharacterCard) {
-        const fields = getCharacterCardFields();
-        environment.charPrompt = fields.system || '';
-        environment.charInstruction = environment.charJailbreak = fields.jailbreak || '';
-        environment.description = fields.description || '';
-        environment.personality = fields.personality || '';
-        environment.scenario = fields.scenario || '';
-        environment.persona = fields.persona || '';
+        const fields = getCharacterCardFieldsLazy();
+        // Functions, so a field is read (and its own macros run) only when the text uses that macro.
+        environment.charPrompt = () => fields.system || '';
+        environment.charInstruction = environment.charJailbreak = () => fields.jailbreak || '';
+        environment.description = () => fields.description || '';
+        environment.personality = () => fields.personality || '';
+        environment.scenario = () => fields.scenario || '';
+        environment.persona = () => fields.persona || '';
         environment.mesExamples = () => {
             const isInstruct = power_user.instruct.enabled && main_api !== 'openai';
             const mesExamplesArray = parseMesExamples(fields.mesExamples, isInstruct);
@@ -3170,11 +3171,11 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
             }
             return mesExamplesArray.join('');
         };
-        environment.mesExamplesRaw = fields.mesExamples || '';
-        environment.charVersion = fields.version || '';
-        environment.char_version = fields.version || '';
-        environment.charDepthPrompt = fields.charDepthPrompt || '';
-        environment.creatorNotes = fields.creatorNotes || '';
+        environment.mesExamplesRaw = () => fields.mesExamples || '';
+        environment.charVersion = () => fields.version || '';
+        environment.char_version = () => fields.version || '';
+        environment.charDepthPrompt = () => fields.charDepthPrompt || '';
+        environment.creatorNotes = () => fields.creatorNotes || '';
     }
 
     // Must be substituted last so that they're replaced inside {{description}}

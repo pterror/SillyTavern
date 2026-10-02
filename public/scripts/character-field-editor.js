@@ -2,6 +2,7 @@ import { DOMPurify } from '../lib.js';
 import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
+import { insertSafeMacroSpans, substituteSafeMacros } from './safe-macros.js';
 
 // A leaf module: everything it needs from the rest of the app is passed to initCharacterFieldEditor()
 // (and to substituteMacrosWithPlaceholders()), so importing it never adds an import cycle.
@@ -79,17 +80,17 @@ let deps = null;
 
 /** @param {string} text @returns {string} */
 function renderLiteralTagsPreview(text) {
-    const { text: substituted, values } = substituteMacrosWithPlaceholders(text, deps.substituteParams);
+    const { text: substituted, values, raws } = substituteSafeMacros(text, deps.substituteParams);
     const html = DOMPurify.sanitize(renderMarkdownLiteralTags(substituted));
-    return insertMacroSpans(html, values);
+    return insertSafeMacroSpans(html, values, raws);
 }
 
 /** @param {string} text @returns {string} */
 function renderGreetingPreview(text) {
     const name = String($('#character_name_pole').val() ?? '');
-    const { text: substituted, values } = substituteMacrosWithPlaceholders(text, deps.substituteParams, { name2Override: name });
+    const { text: substituted, values, raws } = substituteSafeMacros(text, deps.substituteParams, { name2Override: name });
     const html = deps.messageFormatting(substituted, name, false, false, 0);
-    return insertMacroSpans(html, values);
+    return insertSafeMacroSpans(html, values, raws);
 }
 
 /**

@@ -26,6 +26,7 @@ import {
 } from '../script.js';
 import { renderMarkdown } from './marked-processor.js';
 import { insertMacroSpans, substituteMacrosWithPlaceholders } from './character-field-editor.js';
+import { insertSafeMacroSpans, substituteSafeMacros, substituteSafeMacrosAsText } from './safe-macros.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
 import { openEditorLayer } from './editor-layer.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -649,9 +650,12 @@ async function migrateAllowGlobalStylesToDb() {
 /**
  * @param {string} text Raw Markdown text
  * @param {string} avatarId Avatar ID
+ * @param {object} [options]
+ * @param {boolean} [options.safeMacros=false] Evaluate only macros safe to run on every redraw (no side effects or
+ * randomness), leaving the rest as written; for previews.
  * @returns {string} Formatted HTML text
  */
-export function formatCreatorNotes(text, avatarId) {
+export function formatCreatorNotes(text, avatarId, { safeMacros = false } = {}) {
     const preference = new StylesPreference(avatarId);
     const sanitizeStyles = !preference.get();
     const decodeStyleParam = { prefix: sanitizeStyles ? '#creator_notes_preview ' : '' };
@@ -664,13 +668,15 @@ export function formatCreatorNotes(text, avatarId) {
         ADD_TAGS: ['custom-style'],
     };
 
-    const { text: substituted, values } = substituteMacrosWithPlaceholders(text, substituteParams);
+    const { text: substituted, values, raws } = safeMacros
+        ? substituteSafeMacros(text, substituteParams)
+        : { ...substituteMacrosWithPlaceholders(text, substituteParams), raws: [] };
     let html = renderMarkdown(substituted);
     html = encodeStyleTags(html);
     html = DOMPurify.sanitize(html, config);
     html = decodeStyleTags(html, decodeStyleParam);
 
-    return insertMacroSpans(html, values);
+    return safeMacros ? insertSafeMacroSpans(html, values, raws) : insertMacroSpans(html, values);
 }
 
 async function openGlobalStylesPreferenceDialog() {
@@ -780,7 +786,7 @@ function getStyleContentsFromMarkdown(text) {
         return '';
     }
 
-    const html = renderMarkdown(substituteParams(text));
+    const html = renderMarkdown(substituteSafeMacrosAsText(text, substituteParams));
     const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
     const styleElements = Array.from(parsedDocument.querySelectorAll('style'));
     return styleElements
@@ -1500,7 +1506,7 @@ async function openAttachmentManager() {
         }
     }
 
-    
+
     async function renderButtons() {
         const sources = {
             [ATTACHMENT_SOURCE.GLOBAL]: '.globalAttachmentsTitle',

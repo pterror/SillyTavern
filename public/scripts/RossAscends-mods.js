@@ -1,4 +1,5 @@
 import { handleFieldEditKey } from './character-field-editor.js';
+import { substituteSafeMacrosAsText } from './safe-macros.js';
 import { DOMPurify, Bowser } from '../lib.js';
 
 import {
@@ -285,7 +286,7 @@ export async function RA_CountCharTokens() {
             total_tokens += Number(counter.text());
             permanent_tokens += isPermanent ? Number(counter.text()) : 0;
         } else {
-            const valueToCount = menu_type === 'create' ? value : substituteParams(value);
+            const valueToCount = menu_type === 'create' ? value : substituteSafeMacrosAsText(value, substituteParams);
             pending.push({ counter, input, isPermanent, valueHash, valueToCount });
         }
     }
