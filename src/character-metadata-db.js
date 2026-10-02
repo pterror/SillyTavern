@@ -2564,9 +2564,13 @@ export async function bootstrapIfNeeded(directories) {
     const progress = new ProgressLog({ what: '[character-metadata] reading character cards into the index', total: files.length });
 
     // Chunked with bounded concurrency per chunk to bound peak memory to one chunk's worth of computed rows.
+    // A file whose character already has a row is never read: the row is the source of truth for its card and
+    // tags (a png's own card can be stale or stripped), so a rerun on an existing library only adds what's missing.
     for (let i = 0; i < files.length; i += BATCH_FLUSH_SIZE) {
         const chunkFiles = files.slice(i, i + BATCH_FLUSH_SIZE);
-        const chunkResults = await mapWithConcurrency(chunkFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
+        const existingIds = knownEntityIdsOf(entry.db, 'characters', chunkFiles);
+        const newFiles = chunkFiles.filter(file => !existingIds.has(file));
+        const chunkResults = await mapWithConcurrency(newFiles, BOOTSTRAP_READ_CONCURRENCY, async (file) => {
             try {
                 const filePath = path.join(directories.characters, file);
                 const stat = await fsPromises.stat(filePath);
@@ -2600,7 +2604,6 @@ export async function bootstrapIfNeeded(directories) {
     if (files.length > 0) progress.finish();
 
     entry.db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value', { key: 'bootstrap_completed', value: String(Date.now()) });
-    await resyncTags(directories);
 }
 
 // Backfills content_identity_hash for poisoned rows without clearing import_poisoned (see SCHEMA_SQL). Reads
@@ -5513,6 +5516,8 @@ export async function bootstrapGroupsIfNeeded(directories) {
                                 fav: normalizeFav(group.fav),
                                 group,
                                 dateAdded: Math.round(stat.birthtimeMs),
+                                // A group that already has a row keeps it as it is.
+                                insertOnly: true,
                             });
                             if (changed) insertGroupChange(entry.db, group.id);
                         });
