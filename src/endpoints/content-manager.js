@@ -185,11 +185,23 @@ async function seedContent(contentIndex, contentLogPath, resolveTarget, forceCat
             // Inlined rather than importing characters.js's own fireMetadataUpsertHook() wrapper around this
             // same call, which would create an import cycle (characters.js imports from sprites.js, which
             // imports from this file).
-            try {
+            const seed = async () => {
                 const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(await fs.promises.readFile(targetPath));
                 await upsertCharacterFromWrite(directories, basePath, sourceData, null, avatarIdentityHash);
-            } catch (err) {
-                console.error(`[character-metadata] Failed to seed the metadata store for "${basePath}":`, err);
+            };
+            try {
+                await seed();
+            } catch (firstError) {
+                try {
+                    await seed();
+                } catch (err) {
+                    // Undo the copy and leave it out of the content log, so the next start seeds it again.
+                    console.error(`Couldn't add the bundled character "${basePath}"; it will be tried again on the next start.`, err, firstError);
+                    fs.rmSync(targetPath, { force: true });
+                    contentLog.pop();
+                    newLogEntries.pop();
+                    continue;
+                }
             }
         } else {
             fs.cpSync(contentPath, targetPath, { recursive: true, force: false });
