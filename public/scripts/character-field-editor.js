@@ -291,7 +291,7 @@ async function mountFieldEditor(id) {
             return;
         }
         holder.editor = editor;
-        if (document.activeElement === textarea) editor.view.focus();
+        if (document.activeElement === textarea) editor.takeFocus();
     } catch (error) {
         console.error('The editor could not be loaded; the field stays a plain text box', error);
     }

@@ -5,6 +5,7 @@ import { AutoCompleteFuzzyScore } from './AutoCompleteFuzzyScore.js';
 import { BlankAutoCompleteOption } from './BlankAutoCompleteOption.js';
 import { AutoCompleteNameResult } from './AutoCompleteNameResult.js';
 import { AutoCompleteSecondaryNameResult } from './AutoCompleteSecondaryNameResult.js';
+import { getFocusedField, getMountedEditor } from '../live-editor/registry.js';
 
 /**@readonly*/
 /**@enum {Number}*/
@@ -32,6 +33,7 @@ export const AUTOCOMPLETE_STATE = {
 export class AutoComplete {
     /**@type {HTMLTextAreaElement|HTMLInputElement}*/ textarea;
     /**@type {boolean}*/ isFloating = false;
+    /**@type {boolean} Suggests macros (an editor mounted on the textarea that suggests macros itself takes over)*/ isMacroAutoComplete = false;
     /**@type {()=>boolean}*/ checkIfActivate;
     /**@type {(text:string, index:number) => Promise<AutoCompleteNameResult>}*/ getNameAt;
 
@@ -287,8 +289,12 @@ export class AutoComplete {
         this.isReplaceable = false;
         this.isShowForced = isForced; // Store forced state for checkIfActivate to access
 
-        if (document.activeElement != this.textarea) {
+        if (getFocusedField() != this.textarea) {
             // only show with textarea in focus
+            return this.hide();
+        }
+        if (this.isMacroAutoComplete && getMountedEditor(this.textarea)?.macroSuggestions) {
+            // the editor on the textarea suggests macros itself
             return this.hide();
         }
         if (!this.checkIfActivate()) {
@@ -537,6 +543,13 @@ export class AutoComplete {
 
 
     /**
+     * @returns {DOMRect} The field's box on screen: the editor mounted on the textarea, or the textarea itself.
+     */
+    getFieldRect() {
+        return (getMountedEditor(this.textarea)?.root ?? this.textarea).getBoundingClientRect();
+    }
+
+    /**
      * Update position of DOM.
      */
     updatePosition() {
@@ -544,7 +557,7 @@ export class AutoComplete {
             this.updateFloatingPosition();
         } else {
             const rect = {};
-            rect[AUTOCOMPLETE_WIDTH.INPUT] = this.textarea.getBoundingClientRect();
+            rect[AUTOCOMPLETE_WIDTH.INPUT] = this.getFieldRect();
             rect[AUTOCOMPLETE_WIDTH.CHAT] = document.querySelector('#sheld').getBoundingClientRect();
             rect[AUTOCOMPLETE_WIDTH.FULL] = this.getLayer().getBoundingClientRect();
             this.domWrap.style.setProperty('--bottom', `${window.innerHeight - rect[AUTOCOMPLETE_WIDTH.INPUT].top}px`);
@@ -571,7 +584,7 @@ export class AutoComplete {
                 this.updateFloatingDetailsPosition();
             } else {
                 const rect = {};
-                rect[AUTOCOMPLETE_WIDTH.INPUT] = this.textarea.getBoundingClientRect();
+                rect[AUTOCOMPLETE_WIDTH.INPUT] = this.getFieldRect();
                 rect[AUTOCOMPLETE_WIDTH.CHAT] = document.querySelector('#sheld').getBoundingClientRect();
                 rect[AUTOCOMPLETE_WIDTH.FULL] = this.getLayer().getBoundingClientRect();
                 if (this.isReplaceable) {
@@ -598,7 +611,7 @@ export class AutoComplete {
      */
     updateFloatingPosition() {
         const location = this.getCursorPosition();
-        const rect = this.textarea.getBoundingClientRect();
+        const rect = this.getFieldRect();
         const layerRect = this.getLayer().getBoundingClientRect();
         // cursor is out of view -> hide
         if (location.bottom < rect.top || location.top > rect.bottom || location.left < rect.left || location.left > rect.right) {
@@ -621,7 +634,7 @@ export class AutoComplete {
 
     updateFloatingDetailsPosition(location = null) {
         if (!location) location = this.getCursorPosition();
-        const rect = this.textarea.getBoundingClientRect();
+        const rect = this.getFieldRect();
         const layerRect = this.getLayer().getBoundingClientRect();
         if (location.bottom < rect.top || location.top > rect.bottom || location.left < rect.left || location.left > rect.right) {
             return this.hide();
@@ -677,6 +690,10 @@ export class AutoComplete {
      * @returns {{left:number, top:number, bottom:number}}
      */
     getCursorPosition() {
+        const caret = getMountedEditor(this.textarea)?.caretRect();
+        if (caret) {
+            return { left: caret.left, top: caret.top, bottom: caret.bottom };
+        }
         const inputRect = this.textarea.getBoundingClientRect();
         const style = window.getComputedStyle(this.textarea);
         if (!this.clone) {

@@ -3,20 +3,42 @@
 /** @type {WeakMap<Element, HTMLTextAreaElement>} An editor's root element to the textarea it's mounted on. */
 const mounted = new WeakMap();
 
+/**
+ * @typedef {object} MountedEditorInfo
+ * @property {Element} root The editor's root element: the field's box on screen while the editor is mounted.
+ * @property {() => DOMRect | null} caretRect Where the cursor is on screen.
+ * @property {boolean} macroSuggestions Whether the editor suggests macros itself.
+ */
+
+/** @type {WeakMap<HTMLTextAreaElement, MountedEditorInfo>} A textarea to the editor mounted on it. */
+const byTextarea = new WeakMap();
+
 /** @type {WeakSet<Event>} Events the editor dispatched on its textarea on behalf of the user. */
 const editorEvents = new WeakSet();
 
 /**
  * @param {Element} editorRoot
  * @param {HTMLTextAreaElement} textarea
+ * @param {Omit<MountedEditorInfo, 'root'>} info
  */
-export function registerMountedEditor(editorRoot, textarea) {
+export function registerMountedEditor(editorRoot, textarea, info) {
     mounted.set(editorRoot, textarea);
+    byTextarea.set(textarea, { root: editorRoot, ...info });
 }
 
 /** @param {Element} editorRoot */
 export function unregisterMountedEditor(editorRoot) {
+    const textarea = mounted.get(editorRoot);
+    if (textarea && byTextarea.get(textarea)?.root === editorRoot) byTextarea.delete(textarea);
     mounted.delete(editorRoot);
+}
+
+/**
+ * @param {Element | null | undefined} textarea
+ * @returns {MountedEditorInfo | null} The editor mounted on this textarea, if any.
+ */
+export function getMountedEditor(textarea) {
+    return textarea instanceof HTMLTextAreaElement ? byTextarea.get(textarea) ?? null : null;
 }
 
 /**
