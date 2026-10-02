@@ -132,7 +132,8 @@ describe('unimport-embedded-lore - streamed linked-world reads', () => {
         const result = await migration.run(directories, { apply: true, log: () => {} });
         expect(result).toMatchObject({ safe: 1, migrated: 1, failed: 0, ambiguous: 2, orphanedWorlds: 1 });
 
-        const worldReads = calls.filter(c => c.method !== 'run' && /^\s*SELECT\b/i.test(c.sql) && /\bworld\b/.test(c.sql));
+        // The progress line's one COUNT(*) reads no rows out; every read that returns rows is paged.
+        const worldReads = calls.filter(c => c.method !== 'run' && /^\s*SELECT\b/i.test(c.sql) && /\bworld\b/.test(c.sql) && !/^\s*SELECT COUNT\(\*\)/i.test(c.sql));
         expect(worldReads.map(c => c.method)).toEqual(expect.arrayContaining(['iterate', 'get']));
         for (const { method, sql, params, handle } of worldReads) {
             expect(method).not.toBe('all');
@@ -167,15 +168,11 @@ describe('unimport-embedded-lore - streamed linked-world reads', () => {
             expect(await linkedWorldOf(`Char${pad(i)}.png`)).toBeFalsy();
         }
 
-        // Every World left without a linker is named exactly once, over several bounded lines.
-        const orphanLines = lines.map(line => /(\d+) World file\(s\) came from an embedded-lore import .*?: (.*?)(\u001b\[\d+m)?$/.exec(line)).filter(Boolean);
-        expect(orphanLines.length).toBeGreaterThan(1);
-        const orphanNames = orphanLines.flatMap(([, count, names]) => {
-            const listed = names.split(', ');
-            expect(listed).toHaveLength(Number(count));
-            return listed;
-        });
+        // Every World left without a linker is named exactly once, in the report; the console has one finished line.
+        const report = fs.readFileSync(result.reportPath, 'utf8').split('\n');
+        const orphanNames = report.map(line => /^lorebook no character links any more: "(.*?)"/.exec(line)?.[1]).filter(Boolean);
         expect(orphanNames.sort()).toEqual(Array.from({ length: MORE_THAN_ONE_PAGE }, (_, i) => `World${pad(i)}`));
+        expect(lines).toHaveLength(1);
 
         // Streamed, not gathered first: the world list's second page is read after the first unlink was written.
         const worldListPages = calls.map((c, i) => ({ ...c, i })).filter(c => c.method === 'iterate' && /GROUP BY world/.test(c.sql));
@@ -206,7 +203,7 @@ describe('unimport-embedded-lore - streamed linked-world reads', () => {
         const result = await migration.run(directories, { apply: true, log: line => lines.push(line) });
         expect(result).toMatchObject({ safe: 0, migrated: 0, failed: 0, ambiguous: MORE_THAN_ONE_PAGE });
 
-        const reported = lines.map(line => /AMBIGUOUS, not touched: (\S+) \(linked to "Crowd"\)/.exec(line)?.[1]).filter(Boolean);
+        const reported = fs.readFileSync(result.reportPath, 'utf8').split('\n').map(line => /^left alone: (\S+) links "Crowd"/.exec(line)?.[1]).filter(Boolean);
         expect(reported.sort()).toEqual(avatars);
         for (const avatar of avatars) {
             expect(await linkedWorldOf(avatar)).toBe('Crowd');

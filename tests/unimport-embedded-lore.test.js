@@ -298,7 +298,8 @@ describe('unimport-embedded-lore - apply', () => {
         const lines = [];
         const result = await migration.run(directories, { apply: true, log: line => lines.push(line) });
         expect(result.orphanedWorlds).toBe(1);
-        expect(lines).toContainEqual(expect.stringMatching(/1 World file\(s\) came from an embedded-lore import and now have no character linking to them - .*: Alice's Lorebook/));
+        const report = fs.readFileSync(result.reportPath, 'utf8');
+        expect(report).toContain('lorebook no character links any more: "Alice\'s Lorebook"');
         expect(fs.existsSync(path.join(worldsDir, "Alice's Lorebook.json"))).toBe(true);
     });
 });

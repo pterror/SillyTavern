@@ -113,6 +113,5 @@ describe('characters-search-index.js: catch-up backlog', () => {
         // The tick applied a change its start read didn't see.
         expect(r.seq).toBeGreaterThan(/** @type {number} */ (seqAtTickStart));
         expect(r.backlog).toBeGreaterThanOrEqual(0);
-        expect(searchIndex.formatCatchUpLine(r)).toContain(` backlog=${r.backlog} `);
     }, 20000);
 });

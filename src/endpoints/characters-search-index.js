@@ -6,8 +6,9 @@ import {
     getChangesSince, getCurrentSeq, getCurrentTagNameChangeSeq, getTagNameChangesSince, streamCharacterIdsForTagIds, streamCharacterCardJsonBatches,
     streamDeletedIdsBetween, getMetaValue, trySetMetaValuesAndRetryMarks, getCharacterFavsByIds, getCharacterIndexRowsByIds,
     getCharacterIndexRetryMarksByIds, getDueCharacterIndexRetries, checkCharactersExist,
-    getNameOrderPositions, getNameOrderChangesSince, getNameOrderState, placeNameOrderRows,
+    getNameOrderPositions, getNameOrderChangesSince, getNameOrderState, placeNameOrderRows, countCharacterRows,
 } from '../character-metadata-db.js';
+import { ProgressLog } from '../progress-log.js';
 import { processCharacter, processCharacterOrPlaceholder } from './characters.js';
 import { buildSchema as buildTantivySchema, buildSearchQuery as buildTantivyQuery, runSearch as runTantivySearch, DATA_FIELD, FAV_FIELD, buildTagFilterQuery, buildExcludeIdsQuery, buildIdsQuery, withFavFilter } from './tantivy-search.js';
 import { resolveSearchEngine } from './search-engine.js';
@@ -311,35 +312,33 @@ async function addCharacterBatch(directories, tantivy, schema, writer, batchIds,
  */
 
 /**
- * Whether a committed catch-up is worth a console line. A single update (one card added, changed, deleted or
- * retried successfully) logs nothing; a tick that applied several changes, renamed tags or left a backlog is a
- * batch and logs one line. A tick with a failed card or a skipped cursor persist always logs, and a failed card is
- * also named on its own line when it fails.
- * @param {TickResult} r
+ * The console output of the catch-up: a catch-up that keeps up (no backlog left after a tick) logs nothing, whatever
+ * it applied. Once a tick leaves a backlog, the catch-up is a pass with a progress line at most every
+ * PROGRESS_INTERVAL_MS (progress-log.js) and a finished line when the backlog is gone. A failed card is named on its
+ * own line when it fails, either way.
  */
-export function isBatchCatchUp(r) {
-    return r.deletes + r.upserts > 1 || r.tagRenames > 0 || r.backlog > 0
-        || r.failed > 0 || Boolean(r.persistSkipped);
-}
+export class CatchUpProgress {
+    /** @param {(line: string) => void} [log] */
+    constructor(log = console.log) {
+        this.log = log;
+        /** @type {ProgressLog | null} */
+        this.pass = null;
+    }
 
-/**
- * One full-rebuild batch's progress line, logged as each batch is done.
- * @param {{ batch: number, cards: number, failed: number, doneSoFar: number, ms: number }} b
- */
-export function formatRebuildBatchLine(b) {
-    return `[search] full rebuild: batch ${b.batch}, ${b.cards} cards${b.failed ? ` (${b.failed} failed)` : ''}, ${b.doneSoFar} done so far, ${b.ms} ms`;
-}
-
-/** @param {TickResult} r */
-export function formatCatchUpLine(r) {
-    const p = r.phases;
-    const tagSeq = r.tagNameSeq !== r.tagNameSeqFrom ? ` tagseq=${r.tagNameSeqFrom}..${r.tagNameSeq}` : '';
-    const writers = Object.entries(r.writers).map(([field, n]) => `${field === 'null' ? 'whole-record' : field}:${n}`).join(',');
-    return `[search] catch-up: seq=${r.seqFrom}..${r.seq}${tagSeq} backlog=${r.backlog} writers=${writers} tagrenames=${r.tagRenames}`
-        + ` deletes=${r.deletes} upserts=${r.upserts} total_ms=${r.ms} read_ms=${p.read} deletes_ms=${p.deletes} tags_ms=${p.tags}`
-        + ` load_ms=${p.load} build_ms=${p.build} add_ms=${p.add} commit_ms=${p.commit} persist_ms=${p.persist}`
-        + `${r.retried || r.failed ? ` retried=${r.retried} failed=${r.failed}` : ''}`
-        + `${r.persistSkipped ? ' persist=skipped' : ''} lockwait_ms=${r.lockWaitMs}`;
+    /** @param {TickResult} r */
+    onTick(r) {
+        const applied = r.deletes + r.upserts;
+        if (this.pass === null) {
+            if (r.backlog === 0) return;
+            this.pass = new ProgressLog({ what: '[search] search index catching up on changes', total: applied + r.backlog, log: this.log });
+        }
+        this.pass.setTotal(this.pass.done + applied + r.backlog);
+        this.pass.add(applied);
+        if (r.backlog === 0) {
+            this.pass.finish();
+            this.pass = null;
+        }
+    }
 }
 
 /**
@@ -624,18 +623,15 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         const linked = await linkPersistedIndexInto(tempDir);
         const built = linked ?? createEmptyTantivyIndexAt(tantivy, tempDir);
         const tempWriter = built.index.writer();
-        const rebuildStart = Date.now();
-        let doneSoFar = 0;
+        const progress = new ProgressLog({ what: '[search] building the search index', total: await countCharacterRows(directories) });
         try {
             let batchIndex = 0;
             // Each streamed batch is one unit: its rows came with it, and its tag/fav lookups cover exactly it.
             for await (const rows of streamCharacterCardJsonBatches(directories)) {
-                const batchStart = Date.now();
                 const { indexed, failures } = await addCharacterBatch(directories, tantivy, built.schema, tempWriter, rows.map(row => row.id), new Map(rows.map(row => [row.id, row])), undefined, { replace: Boolean(linked) });
                 await persistRebuildMarks(indexed, failures, Boolean(linked));
                 batchIndex++;
-                doneSoFar += rows.length;
-                console.log(formatRebuildBatchLine({ batch: batchIndex, cards: rows.length, failed: failures.length, doneSoFar, ms: Date.now() - batchStart }));
+                progress.add(rows.length);
                 if (batchIndex % CHECKPOINT_EVERY_N_BATCHES === 0) {
                     tempWriter.commit();
                 }
@@ -648,7 +644,7 @@ export function createCharacterIndexMaintainer(directories, tantivy, { tickBudge
         }
 
         swapIndexIntoPlace(indexDir, tempDir);
-        console.log(`[search] full rebuild done: ${doneSoFar} cards in ${Date.now() - rebuildStart} ms`);
+        progress.finish();
         index = tantivy.Index.open(indexDir);
         schema = index.schema;
         getWriter();

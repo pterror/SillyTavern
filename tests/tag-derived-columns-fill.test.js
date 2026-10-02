@@ -244,9 +244,8 @@ describe('fillTagDerivedColumnsIfNeeded', () => {
 
         metadataDb.disposeMetadataStores();
         warn.mockClear();
-        const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+        jest.spyOn(console, 'log').mockImplementation(() => {});
         expect(await metadataDb.fillTagDerivedColumnsIfNeeded(directories)).toEqual({ batches: 2, rowsChanged: 1500 });
-        expect(log.mock.calls.map(args => String(args[0])).join('\n')).toContain(`resuming after rowid ${last}`);
         expect(mismatches()).toEqual([]);
         const loggedSecond = warn.mock.calls.flatMap(args => String(args[0]).split('\n').filter(line => line.startsWith('  ')));
         expect(loggedFirst.filter(line => loggedSecond.includes(line))).toEqual([]);

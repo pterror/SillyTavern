@@ -289,7 +289,7 @@ describe('removeOrphanTagRowsIfNeeded over many batches', () => {
         insertRaw('character_tags', rows);
         insertRaw('group_tags', [['ghostgroup', 'x']]);
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+        jest.spyOn(console, 'log').mockImplementation(() => {});
 
         transactionCalls = 0;
         crashAtTransaction = 2;
@@ -304,7 +304,6 @@ describe('removeOrphanTagRowsIfNeeded over many batches', () => {
         metadataDb.disposeMetadataStores();
         const result = await metadataDb.removeOrphanTagRowsIfNeeded(directories);
 
-        expect(log.mock.calls.map(args => String(args[0])).join('\n')).toMatch(/resuming after/);
         expect(result).toEqual({ batches: 3, rowsChanged: COUNT - 1000 + 1 });
         expect(allRows('character_tags')).toEqual([]);
         expect(allRows('group_tags')).toEqual([]);

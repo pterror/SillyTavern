@@ -114,13 +114,17 @@ async function flush() {
  */
 function realWorkerWithOutput() {
     let text = '';
+    /** @type {string[]} */
+    const ran = [];
     return {
         spawnWorker: (workerData) => {
             const worker = new Worker(WORKER_PATH, { workerData, stdout: true });
             worker.stdout.on('data', chunk => { text += chunk; });
+            worker.on('message', msg => { if (msg?.type === 'pass-ran') ran.push(msg.name); });
             return worker;
         },
         output: () => text,
+        passesRan: () => [...ran],
     };
 }
 
@@ -346,22 +350,15 @@ describe('createMetadataMigrationCoordinator()', () => {
 });
 
 describe('metadata-migration-worker.js', () => {
-    test('runs the passes in order, after the store\'s boot chain, with a boot-timing line per pass', async () => {
+    test('runs the passes in order, after the store\'s boot chain, with no per-pass start or timing lines', async () => {
         await writeCardFile('Alice.png', ['Beta']);
         await Promise.all(await metadataDb.initializeMetadataStores([directories]));
-        const { spawnWorker, output } = realWorkerWithOutput();
+        const { spawnWorker, output, passesRan } = realWorkerWithOutput();
 
         await coordinatorModule.createMetadataMigrationCoordinator({ spawnWorker }).start(directories);
 
-        const lines = output().split('\n');
-        const started = lines
-            .map(line => line.match(/^\[boot-timing\] \[metadata-migrations\] \((.*)\) (\w+): start$/))
-            .filter(match => match && match[1] === directories.root)
-            .map(match => match?.[2]);
-        expect(started).toEqual([...coordinatorModule.MIGRATION_PASSES]);
-        for (const name of coordinatorModule.MIGRATION_PASSES) {
-            expect(lines.some(line => new RegExp(`^\\[boot-timing\\] \\[metadata-migrations\\] \\(.*\\) ${name}: [0-9.]+ms`).test(line))).toBe(true);
-        }
+        expect(passesRan()).toEqual([...coordinatorModule.MIGRATION_PASSES]);
+        expect(output()).not.toMatch(/: start$|\d+ms|batch\(es\)/m);
         expect(await metadataDb.getMetaValue(directories, 'character_tag_ids_normalized_v1')).not.toBeNull();
     });
 
@@ -539,15 +536,11 @@ describe('createMetadataMigrationCoordinator().request(): a pass on demand', () 
     test('the real worker runs only the requested pass', async () => {
         await writeCardFile('Alice.png', ['Beta']);
         await Promise.all(await metadataDb.initializeMetadataStores([directories]));
-        const { spawnWorker, output } = realWorkerWithOutput();
+        const { spawnWorker, output, passesRan } = realWorkerWithOutput();
 
         await coordinatorModule.createMetadataMigrationCoordinator({ spawnWorker }).request(directories, 'finishDeletedTags');
 
-        const started = output().split('\n')
-            .map(line => line.match(/\[metadata-migrations\] \((.*)\) (\w+): start$/))
-            .filter(match => match && match[1] === directories.root)
-            .map(match => match?.[2]);
-        expect(started).toEqual(['finishDeletedTags']);
+        expect(passesRan()).toEqual(['finishDeletedTags']);
         expect(output()).not.toContain('[boot-timing]');
         expect(await metadataDb.getMetaValue(directories, 'character_tag_ids_normalized_v1')).toBeNull();
     });

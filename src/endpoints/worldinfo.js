@@ -145,9 +145,10 @@ function inflateSidecarWorldInfo(manifest, entriesDir) {
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {string} worldInfoName Name of the World Info file
  * @param {boolean} allowDummy If true, returns an empty object if the file doesn't exist
+ * @param {{ logMissing?: boolean }} [options] logMissing: false for a caller that reports a missing file itself.
  * @returns {object} World Info file contents
  */
-export function readWorldInfoFile(directories, worldInfoName, allowDummy) {
+export function readWorldInfoFile(directories, worldInfoName, allowDummy, { logMissing = true } = {}) {
     const dummyObject = allowDummy ? { entries: {} } : null;
 
     if (!worldInfoName) {
@@ -159,7 +160,7 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy) {
     const miss = findWorldInfoMiss(directories.worlds, pathToWorldInfo);
     if (miss) {
         // Once per miss: repeated reads of a book that stays missing don't print again.
-        if (!miss.logged) {
+        if (logMissing && !miss.logged) {
             miss.logged = true;
             console.error(`World info file ${filename} doesn't exist.`);
         }

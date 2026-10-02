@@ -287,7 +287,7 @@ describe('a one-time pass counts every row\'s chat stats', () => {
         await writeMetadata('DELETE FROM chat_stats_pending');
     }
 
-    test('drifted character and group rows are fixed with a change row or groups version row, each logged, and the pass is marked done', async () => {
+    test('drifted character and group rows are fixed with a change row or groups version row, the pass logs one finished line, and it is marked done', async () => {
         await seedMessages('Alice', { kind: 'character', rowId: 'Alice.png' }, ['hello', 'there é']);
         await seedMessages('g1', { kind: 'group', rowId: 'g1' }, ['one']);
         await seedUnqueued(['Alice.png', 'Empty.png'], ['g1']);
@@ -306,10 +306,12 @@ describe('a one-time pass counts every row\'s chat stats', () => {
         const { changes } = await metadataDb.getChangesSince(directories, seqBefore, { limit: 100 });
         expect(changes.map(c => c.id).sort()).toEqual(['Alice.png', 'Empty.png']);
         expect(await metadataDb.getGroupsVersion(directories)).toBeGreaterThan(versionBefore);
-        const logged = log.mock.calls.map(args => String(args[0]));
-        for (const what of ['character Alice.png', 'character Empty.png', 'group g1']) {
-            expect(logged.some(line => line.includes(`Chat stats of ${what} counted`))).toBe(true);
-        }
+        // eslint-disable-next-line no-control-regex
+        const logged = log.mock.calls.map(args => String(args[0]).replace(/\u001b\[[0-9;]*m/g, ''));
+        expect(logged.filter(line => line.includes('counting chat sizes and last-chat dates'))).toEqual([
+            expect.stringMatching(/^\[character-metadata\] counting chat sizes and last-chat dates: done, 3 in \d+ s, 3 corrected$/),
+        ]);
+        expect(logged.join('\n')).not.toContain('Alice.png');
         expect(await fullPassProgress()).toBe('done');
         expect(await queued()).toEqual([]);
     });

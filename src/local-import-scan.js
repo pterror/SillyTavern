@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import process from 'node:process';
 
 import { getConfigValue, color, mapWithConcurrency } from './util.js';
+import { ProgressLog } from './progress-log.js';
 import { DEFAULT_USER, UPLOADS_DIRECTORY } from './constants.js';
 import { getUserDirectories } from './users.js';
 import { readSettingsAtPaths } from './settings-store.js';
@@ -17,12 +18,12 @@ import { LocalImportWorkerPool, resolveWorkerPoolSize } from './local-import-wor
 import { importFailure } from './character-import-error.js';
 
 /**
- * @param {string} avatar
+ * Counts a card whose tags wait for the tag upgrade, for the scan pass's finished line.
+ * @param {DirectoryScanState} state
  * @param {string[]} heldTagNames
  */
-function warnHeldTagNames(avatar, heldTagNames) {
-    if (heldTagNames.length === 0) return;
-    console.warn(color.yellow(`[local-import] ${avatar}: tags ${heldTagNames.map(n => `'${n}'`).join(', ')} will be added once the tag upgrade finishes.`));
+function countHeldTagNames(state, heldTagNames) {
+    if (heldTagNames.length > 0 && state.scanCounts) state.scanCounts.heldTags++;
 }
 
 /**
@@ -83,6 +84,9 @@ export function touchLastSeenMtime(state, filename, mtimeMs) {
  * @property {Map<string, () => void>} pendingHeartbeats
  * @property {Map<string, Promise<void>>} [hashLocks] Lazily created.
  * @property {Map<string, Promise<void>>} [inFlightFiles] Lazily created.
+ * @property {ProgressLog | null} [scanProgress] The running scan pass's console output; imports outside a pass (a
+ *   watch event's single file) log nothing on success.
+ * @property {{ heldTags: number } | null} [scanCounts] The running scan pass's counts for its finished line.
  */
 
 /**
@@ -485,10 +489,10 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     } catch (err) {
                         console.debug(`[local-import] Failed to set date_added for ${pngName}.png from source mtime ${sourcePath}:`, err.message);
                     }
-                    console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${pngName}.png`));
+                    state.scanProgress?.add();
                     if (tagImportSetting !== 2) {
                         try {
-                            warnHeldTagNames(`${pngName}.png`, (await seedCardTagsForSingleCharacter(directories, `${pngName}.png`)).heldTagNames);
+                            countHeldTagNames(state, (await seedCardTagsForSingleCharacter(directories, `${pngName}.png`)).heldTagNames);
                         } catch (err) {
                             console.warn(`[local-import] Failed to seed tags for ${pngName}.png:`, err.message);
                         }
@@ -509,7 +513,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     console.debug(`[local-import] Skipped ${sourcePath} - duplicate of already-imported character ${result.duplicateOf}.`);
                 } else {
                     importedCharacterId = `${result.fileName}.png`;
-                    console.log(color.cyan(`[local-import] Imported ${sourcePath} as ${result.fileName}.png`));
+                    state.scanProgress?.add();
                     try {
                         await setCharacterDateAdded(directories, `${result.fileName}.png`, stat.mtimeMs);
                     } catch (err) {
@@ -517,7 +521,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
                     }
                     if (tagImportSetting !== 2) {
                         try {
-                            warnHeldTagNames(`${result.fileName}.png`, (await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`)).heldTagNames);
+                            countHeldTagNames(state, (await seedCardTagsForSingleCharacter(directories, `${result.fileName}.png`)).heldTagNames);
                         } catch (err) {
                             console.warn(`[local-import] Failed to seed tags for ${result.fileName}.png:`, err.message);
                         }
@@ -553,6 +557,8 @@ export async function scanDirectory(state, directories) {
     }
 
     await beginBatchImport(directories);
+    state.scanProgress = new ProgressLog({ what: `[local-import] importing new cards from ${state.sourceDir}` });
+    state.scanCounts = { heldTags: 0 };
     try {
         await sweepRemovedFiles(state, directories);
 
@@ -591,6 +597,13 @@ export async function scanDirectory(state, directories) {
     } finally {
         await endBatchImport(directories);
         state.hashLocks?.clear();
+        const { scanProgress, scanCounts } = state;
+        state.scanProgress = null;
+        state.scanCounts = null;
+        // One imported card is a single update, which logs nothing.
+        if (scanProgress && scanProgress.done > 1) {
+            scanProgress.finish(scanCounts?.heldTags ? `${scanCounts.heldTags} get their tags once the tag upgrade finishes` : '');
+        }
     }
 }
 
