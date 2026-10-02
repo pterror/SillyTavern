@@ -598,12 +598,16 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
     test('the shown text is still an opening after another session\'s changes: the chat shows that opening', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
-        const opening = await chatAfterOtherSession(page, {
+        await chatAfterOtherSession(page, {
             name: `SlotStillThere-${s}`, g, shown: 2, defaultRow: 1, expected: g[2],
             otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) }),
         });
-        // Zero stays: the chat opened on it, so it is a stored opening.
-        expect(opening).toEqual({ mes: g[2], swipe_id: 2, swipes: [g[0], g[1], g[2]] });
+        // Zero was never replied to, so it has no stored row and leaves the chat with the card.
+        await expect.poll(() => page.evaluate(() => {
+            // @ts-ignore
+            const m = SillyTavern.getContext().chat[0];
+            return { mes: m.mes, swipe_id: m.swipe_id, swipes: [...m.swipes] };
+        }), { timeout: 10000 }).toEqual({ mes: g[2], swipe_id: 1, swipes: [g[1], g[2]] });
     });
 
     test('the shown greeting is gone: the chat shows the opening now at the same index', async ({ page }) => {
@@ -778,7 +782,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expectPageHoldsServerList(page, avatar);
     });
 
-    test('a popup row being edited keeps its text through /char-update, its edit lands on its own greeting, and the list re-renders when the edit ends', async ({ page }) => {
+    test('a popup row being edited keeps its text through /char-update while the other rows update, and its edit lands on its own greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `RowOwnHashFocused-${s}`, g);
@@ -789,24 +793,26 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
         await charUpdate(page, `Personality ${s}`);
 
-        expect(await popupTexts(page)).toEqual(g);
-        await expect(textarea).toBeFocused();
+        await expect.poll(() => popupTexts(page), { timeout: 10000 }).toEqual([g[1], g[2]]);
+        // One is now the first row, and the same element: still focused.
+        const moved = popupRow(page, 0).locator('.alternate_greeting_text');
+        await expect(moved).toBeFocused();
 
         const more = ' and more';
         const response = greetingOpResponse(page, 'edit');
-        await textarea.press('End');
-        await textarea.pressSequentially(more);
+        await moved.press('End');
+        await moved.pressSequentially(more);
         expect((await response).ok()).toBe(true);
         expect((await storedModel(page, avatar)).greetings).toEqual([g[1] + more, g[2]]);
-        await expect(textarea).toHaveValue(g[1] + more);
-        expect(await popupTexts(page)).toEqual([g[0], g[1] + more, g[2]]);
+        await expect(moved).toHaveValue(g[1] + more);
+        expect(await popupTexts(page)).toEqual([g[1] + more, g[2]]);
 
         await greetingsPopup(page).locator('.greeting-filter-input').focus();
-        await expect.poll(() => popupTexts(page), { timeout: 10000 }).toEqual([g[1] + more, g[2]]);
+        expect(await popupTexts(page)).toEqual([g[1] + more, g[2]]);
         await expectPageHoldsServerList(page, avatar);
     });
 
-    test('a popup row open in the maximize editor isn\'t redrawn by /char-update, keeps what is typed, and its edit lands on its own greeting', async ({ page }) => {
+    test('a popup row open in the maximize editor keeps what is typed through /char-update while the other rows update, and its edit lands on its own greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `RowMaximized-${s}`, g);
@@ -826,13 +832,14 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
 
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
         await charUpdate(page, `Personality ${s}`);
-        expect(await popupTexts(page)).toEqual([g[0], typed, g[2]]);
+        await expect.poll(() => popupTexts(page), { timeout: 10000 }).toEqual([typed, g[2]]);
+        await expect(editor).toHaveValue(typed);
 
         const more = `${typed} and more`;
         response = greetingOpResponse(page, 'edit');
         await editor.pressSequentially(' and more');
         await expect(editor).toHaveValue(more);
-        await expect(popupRow(page, 1).locator('.alternate_greeting_text')).toHaveValue(more);
+        await expect(popupRow(page, 0).locator('.alternate_greeting_text')).toHaveValue(more);
         expect((await response).ok()).toBe(true);
         expect((await storedModel(page, avatar)).greetings).toEqual([more, g[2]]);
 
