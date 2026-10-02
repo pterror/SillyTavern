@@ -203,23 +203,37 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
         return { branch, id, text, nodeId, warnings, branchName };
     }
 
+    /** The stored reply carries when it was generated, as ISO strings, started no later than it finished. */
+    function assertGenerationTimes(message, before, after) {
+        assert.equal(typeof message.gen_started, 'string', `${label}: the reply's gen_started is stored`);
+        assert.equal(typeof message.gen_finished, 'string', `${label}: the reply's gen_finished is stored`);
+        const started = Date.parse(message.gen_started);
+        const finished = Date.parse(message.gen_finished);
+        assert.ok(started >= before && started <= finished && finished <= after, `${label}: ${message.gen_started} .. ${message.gen_finished} lies within the request`);
+    }
+
     try {
         // Stored normally: exactly one reply, and the page is told where.
         {
+            const before = Date.now();
             const result = await generate(`ok-${label}`);
+            const afterTime = Date.now();
             const after = await loadBranch(directories, avatar, result.branchName);
             assert.equal(after.messages.length, result.branch.messages.length + 2, `${label}: one user message and one reply`);
             const last = after.messages[after.messages.length - 1];
             assert.equal(last.mes, reply, `${label}: the stored reply is the generated text`);
             assert.equal(result.nodeId, last.node_id, `${label}: the page is told the stored reply's node`);
             assert.ok(!result.warnings.some(w => w.kind === 'reply-not-saved'), `${label}: no not-saved warning when it was stored`);
+            assertGenerationTimes(last, before, afterTime);
         }
 
         // The store fails: nothing is stored, the page is told, and the retry stores it once.
         {
             const branchName = `fail-${label}`;
             failures.reply = 1;
+            const before = Date.now();
             const result = await generate(branchName);
+            const generatedBy = Date.now();
             failures.reply = 0;
             const after = await loadBranch(directories, avatar, branchName);
             const notSaved = result.warnings.find(w => w.kind === 'reply-not-saved');
@@ -245,6 +259,8 @@ async function storeCase({ label, router, settings, format, json, stream, avatar
             const last = final.messages[final.messages.length - 1];
             assert.equal(last.mes, reply);
             assert.equal(last.node_id, stored.node_id);
+            // A retry keeps the times of the generation, not of the retry.
+            assertGenerationTimes(last, before, generatedBy);
         }
     } finally {
         backend.server.close();

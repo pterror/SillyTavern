@@ -27,6 +27,7 @@ const STOP_WAIT_MS = 15000;
  * @property {{pending: object, text: string, reason: string, warning: object}|null} [unsaved] A reply whose store
  *   failed, kept so `POST /api/generation/store/:id` can try again.
  * @property {boolean} done
+ * @property {number} startedAt When the request arrived: the stored reply's `gen_started`.
  * @property {number} doneAt
  * @property {Promise<void>} settled Resolves once the route has finished with this generation.
  * @property {() => void} settle
@@ -63,7 +64,7 @@ export function openGenerationStop(request, response) {
     /** @type {StopEntry} */
     const entry = {
         id, owner: request.user?.profile?.handle, stopped: false, flushHooks: [], aborts: [],
-        persisted: null, unsaved: null, done: false, doneAt: 0, settled, settle,
+        persisted: null, unsaved: null, done: false, startedAt: Date.now(), doneAt: 0, settled, settle,
     };
     entries.set(id, entry);
     response.locals.generationStop = entry;
