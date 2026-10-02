@@ -1499,7 +1499,7 @@ const UNUSED_INDEXES = [
     'idx_groups_fav_desc_name_fold_asc',
     ...['name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'].flatMap(column => [`idx_characters_sort_fav_${column}_desc`, `idx_character_tag_sort_${column}_desc`]),
     ...['name_fold', 'date_added', 'date_last_chat', 'chat_size'].flatMap(column => [`idx_groups_sort_fav_${column}_desc`, `idx_group_tag_sort_${column}_desc`]),
-    'idx_name_order_desc', 'idx_name_order_unplaced',
+    'idx_name_order_desc', 'idx_name_order_unplaced', 'idx_character_tag_sort_key',
 ];
 /** meta key: the last schema step (dropUnusedIndexes()) has run. cleanup-zztest-leftovers.js checks for it. */
 export const UNUSED_INDEXES_DROPPED_FLAG = 'unused_indexes_dropped_v1';
@@ -4610,6 +4610,8 @@ function dropOldCounterTriggers(db) {
  * @property {'character_tag_sort' | 'group_tag_sort'} sortTable
  * @property {{ key: string, source: string }[]} columns Each sort key column and the entity column it copies.
  * @property {string} tieKey The tie key, over the sort table's `entity_id`.
+ * @property {boolean} keylessSort Whether a sort has no key column here (a group has no data_size), so its page reads
+ *   the tie order alone.
  * @property {(column: string) => string} tagRowCounts Whether a tag row with this entity id counts for its tag.
  */
 
@@ -4619,12 +4621,14 @@ const TAG_SORT_KINDS = [
         name: 'character', table: 'characters', tagTable: 'character_tags', entityColumn: 'character_id', sortTable: 'character_tag_sort',
         columns: ['fav', 'name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'].map(c => ({ key: `k_${c}`, source: c })),
         tieKey: 'entity_id',
+        keylessSort: false,
         tagRowCounts: () => 'true',
     },
     {
         name: 'group', table: 'groups', tagTable: 'group_tags', entityColumn: 'group_id', sortTable: 'group_tag_sort',
         columns: ['fav', 'name_fold', 'date_added', 'date_last_chat', 'chat_size'].map(c => ({ key: `k_${c}`, source: c })),
         tieKey: '(entity_id || \'.json\')',
+        keylessSort: true,
         tagRowCounts: groupTagRowIsGroupSql,
     },
 ];
@@ -4635,13 +4639,13 @@ const TAG_SORT_KINDS = [
  * @param {TagSortKind} kind
  * @returns {{ tableSql: string, triggers: { name: string, sql: string }[] }}
  */
-function tagSortSchema({ table, tagTable, entityColumn, sortTable, columns, tieKey, tagRowCounts }) {
+function tagSortSchema({ table, tagTable, entityColumn, sortTable, columns, tieKey, keylessSort, tagRowCounts }) {
     const keyColumns = columns.map(c => c.key).join(', ');
     const sortColumns = columns.filter(c => c.key !== 'k_fav');
     const indexes = [
         ...sortColumns.map(c =>
             `CREATE INDEX IF NOT EXISTS idx_${sortTable}_${c.source}_asc ON ${sortTable}(tag_id, k_fav, ${c.key} ASC, ${tieKey} ASC);`),
-        `CREATE INDEX IF NOT EXISTS idx_${sortTable}_key ON ${sortTable}(tag_id, k_fav, ${tieKey} ASC);`,
+        ...(keylessSort ? [`CREATE INDEX IF NOT EXISTS idx_${sortTable}_key ON ${sortTable}(tag_id, k_fav, ${tieKey} ASC);`] : []),
         `CREATE INDEX IF NOT EXISTS idx_${sortTable}_entity ON ${sortTable}(entity_id, tag_id);`,
     ];
     const tableSql = `

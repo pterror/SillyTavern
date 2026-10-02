@@ -100,6 +100,20 @@ describe('the sort indexes are the only indexes on a sort key', () => {
         ].sort());
     });
 
+    test('the tag sort tables have one index per sort key, the entity index, and a tie-order index where a sort has no key', async () => {
+        await seed();
+        recorded.length = 0;
+        await metadataDb.queryEntities(directories, { sortField: 'name', sortOrder: 'asc', offset: 0, limit: 1, wantTotal: false });
+        const { handle } = recorded[0];
+        const indexes = Array.from(handle.iterate('SELECT name FROM sqlite_master WHERE type = \'index\' AND tbl_name IN (\'character_tag_sort\', \'group_tag_sort\') AND sql IS NOT NULL ORDER BY name'), row => /** @type {{ name: string }} */ (row).name);
+        expect(indexes).toEqual([
+            ...['chat_size', 'create_date', 'data_size', 'date_added', 'date_last_chat', 'name_fold'].map(key => `idx_character_tag_sort_${key}_asc`),
+            'idx_character_tag_sort_entity',
+            ...['chat_size', 'date_added', 'date_last_chat'].map(key => `idx_group_tag_sort_${key}_asc`),
+            'idx_group_tag_sort_entity', 'idx_group_tag_sort_key', 'idx_group_tag_sort_name_fold_asc',
+        ].sort());
+    });
+
     const RANGE_FIELDS = ['create_date', 'date_last_chat', 'chat_size', 'data_size'];
 
     test.each(RANGE_FIELDS)('a %s range, counted and paged, reads the fav-first sort index for it', async (field) => {
