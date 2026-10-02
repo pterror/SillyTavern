@@ -2,6 +2,7 @@ import { state as cmState, view as cmView, commands as cmCommands } from '../../
 import { markEditorEvent, registerMountedEditor, unregisterMountedEditor } from './registry.js';
 import { chatMarkdownLanguage, liveRendering } from './render.js';
 import { liveMacros } from './macros.js';
+import { liveFormatting } from './formatting.js';
 
 const { EditorState, Compartment, Annotation } = cmState;
 const { EditorView, placeholder: placeholderExtension, keymap } = cmView;
@@ -14,6 +15,8 @@ const { history, historyKeymap, defaultKeymap } = cmCommands;
  * @property {(text: string) => string} [render] The field's render function; without one the text is only styled.
  * @property {import('./macros.js').MacroOptions} [macros] Filling in macros and suggesting them; without it macros
  *   are left as written and nothing is suggested.
+ * @property {import('./formatting.js').FormattingOptions | false} [formatting] The toolbar and formatting keys; on unless
+ *   false.
  * @property {string} [contentClass] Classes the field's preview has, so theme CSS styles the editor's text the same.
  */
 
@@ -139,7 +142,7 @@ export function mountLiveEditor(textarea, options = {}) {
                 compartments.grammar.of(chatMarkdownLanguage(options.grammar)),
                 compartments.render.of(options.render ? liveRendering({ render: options.render, emojis: options.grammar?.emojis }) : []),
                 compartments.macros.of(options.macros ? liveMacros(options.macros) : []),
-                compartments.toolbar.of([]),
+                compartments.toolbar.of(options.formatting === false ? [] : liveFormatting(options.formatting || {})),
                 compartments.paste.of([]),
                 compartments.search.of([]),
                 compartments.sync.of([]),

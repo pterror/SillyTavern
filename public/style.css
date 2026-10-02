@@ -7102,3 +7102,27 @@ textarea.live-editor-textarea {
     max-width: 100%;
     vertical-align: middle;
 }
+
+.cm-editor.live-editor .cm-panels-top {
+    background: transparent;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.cm-editor.live-editor .live-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 3px;
+}
+
+.cm-editor.live-editor .live-toolbar-block {
+    width: auto;
+    margin: 0;
+}
+
+.cm-editor.live-editor .live-toolbar-button {
+    margin: 0;
+    padding: 4px 6px;
+    font-size: calc(var(--mainFontSize) * 0.9);
+}
