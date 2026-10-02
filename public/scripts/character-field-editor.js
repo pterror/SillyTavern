@@ -591,7 +591,7 @@ export function initCharacterFieldEditor(dependencies) {
         if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
         // An open suggestion list or panel in the editor takes the Escape first.
         const editor = /** @type {Element} */ (event.target).closest?.('.cm-editor');
-        if (editor?.querySelector('.cm-tooltip-autocomplete, .cm-panels .cm-panel')) return;
+        if (editor?.querySelector('.cm-tooltip-autocomplete, .cm-panels .cm-search, .cm-panels .live-presets')) return;
         if (handleFieldEditKey('escape')) {
             event.preventDefault();
         }

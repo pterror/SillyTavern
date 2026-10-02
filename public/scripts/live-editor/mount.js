@@ -4,6 +4,7 @@ import { chatMarkdownLanguage, liveRendering } from './render.js';
 import { liveMacros } from './macros.js';
 import { liveFormatting } from './formatting.js';
 import { livePaste } from './paste.js';
+import { liveSearch } from './search.js';
 
 const { EditorState, Compartment, Annotation, Prec } = cmState;
 const { EditorView, placeholder: placeholderExtension, keymap } = cmView;
@@ -18,6 +19,7 @@ const { history, historyKeymap, defaultKeymap } = cmCommands;
  *   are left as written and nothing is suggested.
  * @property {import('./formatting.js').FormattingOptions | false} [formatting] The toolbar and formatting keys; on unless
  *   false.
+ * @property {import('./search.js').SearchOptions | false} [search] Find and replace and its presets; on unless false.
  * @property {string} [contentClass] Classes the field's preview has, so theme CSS styles the editor's text the same.
  */
 
@@ -145,7 +147,7 @@ export function mountLiveEditor(textarea, options = {}) {
                 compartments.macros.of(options.macros ? liveMacros(options.macros) : []),
                 compartments.toolbar.of(options.formatting === false ? [] : liveFormatting(options.formatting || {})),
                 compartments.paste.of(livePaste()),
-                compartments.search.of([]),
+                compartments.search.of(options.search === false ? [] : liveSearch(options.search || {})),
                 compartments.sync.of([]),
                 history(),
                 keymap.of([...defaultKeymap, ...historyKeymap]),

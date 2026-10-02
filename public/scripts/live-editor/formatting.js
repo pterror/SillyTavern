@@ -4,6 +4,7 @@
 import { state as cmState, view as cmView } from '../../live-editor-lib.js';
 import { t } from '../i18n.js';
 import { power_user } from '../power-user.js';
+import { hasPresets, showPresets } from './search.js';
 
 const { EditorSelection, Facet } = cmState;
 const { keymap, showPanel } = cmView;
@@ -249,6 +250,9 @@ function toolbarPanel(view) {
     button('fa-code', t`Code (Ctrl+K)`, code);
     if (view.state.facet(formattingOptions).uploadImage) {
         button('fa-image', t`Image`, insertImage);
+    }
+    if (hasPresets(view.state)) {
+        button('fa-wand-magic-sparkles', t`Find and replace presets`, v => showPresets(v));
     }
     return { dom, top: true };
 }

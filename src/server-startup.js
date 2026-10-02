@@ -10,6 +10,7 @@ import { router as usersAdminRouter } from './endpoints/users-admin.js';
 import { router as movingUIRouter } from './endpoints/moving-ui.js';
 import { router as imagesRouter } from './endpoints/images.js';
 import { router as quickRepliesRouter } from './endpoints/quick-replies.js';
+import { router as editorPresetsRouter } from './endpoints/editor-presets.js';
 import { router as itemizedPromptsRouter } from './endpoints/itemized-prompts.js';
 import { router as avatarsRouter } from './endpoints/avatars.js';
 import { router as themesRouter } from './endpoints/themes.js';
@@ -149,6 +150,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/moving-ui', movingUIRouter);
     app.use('/api/images', imagesRouter);
     app.use('/api/quick-replies', quickRepliesRouter);
+    app.use('/api/editor-presets', editorPresetsRouter);
     app.use('/api/itemized-prompts', itemizedPromptsRouter);
     app.use('/api/avatars', avatarsRouter);
     app.use('/api/themes', themesRouter);
