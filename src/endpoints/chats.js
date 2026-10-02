@@ -26,7 +26,7 @@ import {
     isAvailable as isTreeAvailable, hasSavedChats,
     saveChatToTree, loadBranch, forkBranch, labelNode,
     deleteBranch, renameBranch as renameBranchInTree, listBranches, listRecentBranches, searchBranchesByContent,
-    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
+    ownerDescriptorOf, renameCharacterInMessages, renameGroupMemberInMessages, getAlternatives, getContinuation, getAncestorPath, editMessage, editMessages, appendMessages, addAlternatives, setChatMetadata, getOpeningAlternatives, chooseCardOpening, findOpeningToLandOn, LANDING_EDITS_MAX, addOpeningAlternatives, loadAtNode, listLabels, setNodeMetadata, selectDefaultChild, endPathAt, endPathAtAnchor, graftMessage, degraftRange, swapAdjacent, deleteAlternative,
 } from '../message-tree-db.js';
 
 /**
@@ -964,6 +964,28 @@ router.post('/openings/land', validateAvatarUrlMiddleware, async function (reque
         return response.send(result);
     } catch (error) {
         console.error('Error finding the opening to land on:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+/**
+ * Records that the character's chat was switched to one of its card greetings that has no row yet, so reopening the
+ * chat shows it. Body: `text` (the greeting's text) and `index` (its card position). Selecting a stored opening
+ * (`/message/select`) replaces it.
+ */
+router.post('/openings/choose', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        if (!avatar) return response.status(400).send({ error: 'avatar_url is required' });
+        const text = request.body.text;
+        if (typeof text !== 'string' || text.length === 0) return response.status(400).send({ error: 'text is required' });
+        const index = request.body.index;
+        if (!Number.isInteger(index) || index < 0) return response.status(400).send({ error: 'index must be a non-negative integer' });
+        const ok = await chooseCardOpening(request.user.directories, ownerOf(request), text, index);
+        if (!ok) return response.status(404).send({ error: 'Tree storage unavailable' });
+        return response.send({ ok: true });
+    } catch (error) {
+        console.error('Error recording the chosen opening:', error);
         return response.status(500).send({ error: true });
     }
 });

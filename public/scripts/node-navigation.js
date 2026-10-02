@@ -4,7 +4,7 @@ import { getCurrentChatId, getCurrentCharacter,
 import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { selected_group } from './group-chats.js';
-import { updateMessage, _setCurrentTarget } from './chat-store.js';
+import { updateMessage, _setCurrentTarget, rememberCardOpening } from './chat-store.js';
 import { isProvisionalNodeId } from './node-identity.js';
 import { _snapshotMessages } from './generation.js';
 
@@ -62,6 +62,9 @@ export async function switchToAlternativePath(mesId, swipeId) {
     await redisplayChat({ startIndex: mesId });
     updateViewMessageIds();
     refreshSwipeButtons(true);
+    if (unstored && mesId === 0) {
+        await rememberCardOpening(message.swipes?.[swipeId]);
+    }
     return true;
 }
 
