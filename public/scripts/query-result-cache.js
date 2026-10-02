@@ -121,7 +121,7 @@ async function evict(index) {
 
 /**
  * Pins `keys` for `owner` (a saved view) and lets go of every key it pinned before that isn't among them. A pinned
- * entry is never evicted.
+ * entry is never evicted; a key pinned before its page is kept stays pinned once it is.
  * @param {string} owner
  * @param {string[]} keys
  */
@@ -134,11 +134,18 @@ export async function pinQueryCache(owner, keys) {
             const has = item.pins.includes(owner);
             if (has && !wanted.has(key)) {
                 item.pins = item.pins.filter(pin => pin !== owner);
+                // A pin on a page never kept leaves nothing behind once let go.
+                if (item.size === 0 && item.pins.length === 0) delete index[key];
                 changed = true;
             } else if (!has && wanted.has(key)) {
                 item.pins = [...item.pins, owner];
                 changed = true;
             }
+        }
+        for (const key of wanted) {
+            if (index[key]) continue;
+            index[key] = { size: 0, used: Date.now(), pins: [owner] };
+            changed = true;
         }
         if (changed) {
             await evict(index);
