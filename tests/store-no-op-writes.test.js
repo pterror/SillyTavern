@@ -6,6 +6,7 @@ import os from 'node:os';
 import Database from 'better-sqlite3';
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
 import { openNativeDatabase, openWasmDatabase } from '../src/endpoints/sqlite-engine.js';
+import { writeRowIfChanged } from '../src/row-values.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -55,33 +56,74 @@ function walFrames(file, { reset = false } = {}) {
 
 const SCHEMA = `
     CREATE TABLE t (id TEXT PRIMARY KEY, a TEXT, b INTEGER);
-    CREATE TABLE fired (n INTEGER);
-    INSERT INTO fired VALUES (0);
-    CREATE TRIGGER t_au AFTER UPDATE ON t BEGIN UPDATE fired SET n = n + 1; END;
+    CREATE TABLE fired (col TEXT);
+    CREATE TRIGGER t_au_a AFTER UPDATE OF a ON t BEGIN INSERT INTO fired VALUES ('a'); END;
+    CREATE TRIGGER t_au_b AFTER UPDATE OF b ON t BEGIN INSERT INTO fired VALUES ('b'); END;
 `;
+
+/**
+ * Adds a trigger, through a second connection, that logs each statement naming one of `columns` in its SET.
+ * @param {string} file
+ * @param {string} table
+ * @param {string[]} columns
+ * @returns {() => string[]} The columns logged so far.
+ */
+function logColumnWrites(file, table, columns) {
+    const db = new Database(file);
+    try {
+        db.exec('CREATE TABLE IF NOT EXISTS test_column_writes (col TEXT)');
+        for (const column of columns) {
+            db.exec(`CREATE TRIGGER test_log_${table}_${column} AFTER UPDATE OF ${column} ON ${table} BEGIN INSERT INTO test_column_writes VALUES ('${column}'); END`);
+        }
+    } finally {
+        db.close();
+    }
+    return () => {
+        const reader = new Database(file, { readonly: true });
+        try {
+            return Array.from(reader.prepare('SELECT col FROM test_column_writes').iterate(), (/** @type {any} */ r) => r.col);
+        } finally {
+            reader.close();
+        }
+    };
+}
 
 describe.each([
     ['native', (/** @type {string} */ file) => openNativeDatabase(Database, file)],
     ['wasm', (/** @type {string} */ file) => openWasmDatabase(WasmDatabase, file)],
-])('the %s engine skips writes that change nothing', (_kind, open) => {
-    test('an UPDATE or upsert that sets stored values touches no row and fires no trigger; a real change does', () => {
+])('writeRowIfChanged on the %s engine', (_kind, open) => {
+    test('writes nothing for stored values, only the changed column for a change, and inserts only when asked', () => {
+        const file = path.join(tempDir(), 'x.sqlite');
+        const db = open(file);
+        try {
+            db.exec(SCHEMA);
+            db.run('INSERT INTO t (id, a, b) VALUES (@id, @a, @b)', { id: 'x', a: 'hello', b: 1 });
+            const fired = () => Array.from(db.iterate('SELECT col FROM fired'), (/** @type {any} */ r) => r.col);
+
+            expect(writeRowIfChanged(db, 't', { id: 'x' }, { a: 'hello', b: 1 })).toBe(false);
+            expect(writeRowIfChanged(db, 't', { id: 'x' }, { a: 'hello', b: '1' })).toBe(false);
+            expect(writeRowIfChanged(db, 't', { id: 'x' }, { a: 'hello' }, { insert: true })).toBe(false);
+            expect(fired()).toEqual([]);
+
+            expect(writeRowIfChanged(db, 't', { id: 'x' }, { a: 'hello', b: 2 })).toBe(true);
+            expect(fired()).toEqual(['b']);
+            expect(db.get('SELECT a, b FROM t WHERE id = @id', { id: 'x' })).toEqual({ a: 'hello', b: 2 });
+
+            expect(writeRowIfChanged(db, 't', { id: 'y' }, { a: 'new' })).toBe(false);
+            expect(db.get('SELECT 1 AS present FROM t WHERE id = @id', { id: 'y' })).toBeUndefined();
+            expect(writeRowIfChanged(db, 't', { id: 'y' }, { a: 'new' }, { insert: true })).toBe(true);
+            expect(db.get('SELECT a, b FROM t WHERE id = @id', { id: 'y' })).toEqual({ a: 'new', b: null });
+        } finally {
+            db.close();
+        }
+    });
+
+    test('no SQL is rewritten: a hand-written same-value UPDATE runs as written', () => {
         const db = open(path.join(tempDir(), 'x.sqlite'));
         try {
             db.exec(SCHEMA);
             db.run('INSERT INTO t (id, a, b) VALUES (@id, @a, @b)', { id: 'x', a: 'hello', b: 1 });
-            const fired = () => db.get('SELECT n FROM fired').n;
-
-            expect(db.run('UPDATE t SET a = @a, b = @b WHERE id = @id', { id: 'x', a: 'hello', b: 1 }).changes).toBe(0);
-            expect(db.run('INSERT INTO t (id, a, b) VALUES (@id, @a, @b) ON CONFLICT(id) DO UPDATE SET a = excluded.a, b = excluded.b',
-                { id: 'x', a: 'hello', b: 1 }).changes).toBe(0);
-            expect(db.run('UPDATE t SET b = b + @d WHERE id = @id', { id: 'x', d: 0 }).changes).toBe(0);
-            expect(fired()).toBe(0);
-
-            expect(db.run('UPDATE t SET a = @a, b = @b WHERE id = @id', { id: 'x', a: 'hello', b: 2 }).changes).toBe(1);
-            expect(db.run('INSERT INTO t (id, a, b) VALUES (@id, @a, @b) ON CONFLICT(id) DO UPDATE SET a = excluded.a, b = excluded.b',
-                { id: 'x', a: 'bye', b: 2 }).changes).toBe(1);
-            expect(fired()).toBe(2);
-            expect(db.get('SELECT a, b FROM t WHERE id = @id', { id: 'x' })).toEqual({ a: 'bye', b: 2 });
+            expect(db.run('UPDATE t SET a = @a WHERE id = @id', { id: 'x', a: 'hello' }).changes).toBe(1);
         } finally {
             db.close();
         }
@@ -89,18 +131,19 @@ describe.each([
 });
 
 describe('a write that changes nothing adds no WAL frames', () => {
-    test('engine: same-value UPDATE, same-value upsert, delete of a missing row', () => {
+    test('writeRowIfChanged: same values, a missing row without insert', () => {
         const file = path.join(tempDir(), 'x.sqlite');
         const db = openNativeDatabase(Database, file);
         try {
             db.exec(SCHEMA);
             db.run('INSERT INTO t (id, a, b) VALUES (@id, @a, @b)', { id: 'x', a: 'hello', b: 1 });
             walFrames(file, { reset: true });
-            db.run('UPDATE t SET a = @a WHERE id = @id', { id: 'x', a: 'hello' });
-            db.run('INSERT INTO t (id, a, b) VALUES (@id, @a, @b) ON CONFLICT(id) DO UPDATE SET a = excluded.a', { id: 'x', a: 'hello', b: 1 });
+            writeRowIfChanged(db, 't', { id: 'x' }, { a: 'hello', b: 1 });
+            writeRowIfChanged(db, 't', { id: 'x' }, { a: 'hello' }, { insert: true });
+            writeRowIfChanged(db, 't', { id: 'nope' }, { a: 'hello' });
             db.run('DELETE FROM t WHERE id = @id', { id: 'nope' });
             expect(walFrames(file)).toBe(0);
-            db.run('UPDATE t SET a = @a WHERE id = @id', { id: 'x', a: 'changed' });
+            writeRowIfChanged(db, 't', { id: 'x' }, { a: 'changed' });
             expect(walFrames(file)).toBeGreaterThan(0);
         } finally {
             db.close();
@@ -142,10 +185,13 @@ describe('a write that changes nothing adds no WAL frames', () => {
         expect(walFrames(file)).toBe(0);
         expect(changesRows()).toBe(before);
 
+        // A change to the card writes the card, not the columns it leaves alone.
+        const columnWrites = logColumnWrites(file, 'characters', ['fav', 'name', 'date_added']);
         const changed = JSON.stringify({ ...JSON.parse(card), data: { name: 'Rex', description: 'a good dog', extensions: {} } });
         await metadataDb.upsertCharacterFromWrite(directories, 'rex.png', changed);
         expect(walFrames(file)).toBeGreaterThan(0);
         expect(changesRows()).toBe(before + 1);
+        expect(columnWrites()).toEqual([]);
     });
 
     test('message tree store: the same meta value, the same node metadata', async () => {
@@ -171,5 +217,13 @@ describe('a write that changes nothing adds no WAL frames', () => {
 
         treeMeta.setTreeMetaSync(db, 'k', 'w');
         expect(walFrames(file)).toBeGreaterThan(0);
+
+        // A change to one column writes only that column.
+        const columnWrites = logColumnWrites(file, 'messages', ['metadata', 'label', 'content', 'parent_id', 'identity_hash']);
+        treeDb.setNodeMetadataSync(db, nodeId, '{"a":2}');
+        expect(columnWrites()).toEqual(['metadata']);
+        const { label } = db.get('SELECT label FROM messages WHERE id = @id', { id: nodeId });
+        treeDb.labelNodeSync(db, nodeId, label, '{"a":3}');
+        expect(columnWrites()).toEqual(['metadata', 'metadata']);
     });
 });

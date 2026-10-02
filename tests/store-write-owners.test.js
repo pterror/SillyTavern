@@ -18,11 +18,14 @@ const TREE_OVERRIDES = {
     token_ids: 'token-count-store.js',
 };
 
+/** Writes whatever table its caller names; the call names the table, and that is what's checked (writtenTables()). */
+const ROW_WRITER = 'row-values.js';
+
 const SQL_KEYWORDS = new Set(['SET', 'OF', 'ON', 'INTO', 'FROM', 'WHERE', 'SELECT', 'VALUES']);
 
 /**
- * The tables a source text writes, by statement keyword. Comment lines are skipped; upserts' `DO UPDATE` and triggers'
- * `UPDATE OF` aren't statements of their own.
+ * The tables a source text writes, by statement keyword or by a `writeRowIfChanged(db, 'table', ...)` call. Comment
+ * lines are skipped; upserts' `DO UPDATE` and triggers' `UPDATE OF` aren't statements of their own.
  * @param {string} source
  * @returns {string[]} Table names; a name built at runtime (`${...}`) comes back as '*'.
  */
@@ -42,6 +45,9 @@ function writtenTables(source) {
         if (!/^(INSERT|REPLACE|UPDATE|DELETE)/.test(m[0])) continue;
         tables.push(name.split('.').pop());
     }
+    for (const m of code.matchAll(/\bwriteRowIfChanged\(\s*[^,]+,\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|[^,]+)/g)) {
+        tables.push(m[1] ?? '*');
+    }
     return tables;
 }
 
@@ -52,6 +58,7 @@ function writtenTables(source) {
  * @returns {string[]} The writes that aren't the file's to make.
  */
 function strayWrites(file, tables, stores) {
+    if (file === ROW_WRITER) return tables.filter(table => table !== '*').map(table => `${file}: writes ${table}`);
     const owns = (/** @type {string} */ table) =>
         (stores.metadata.has(table) && file === METADATA_OWNER)
         || (stores.tree.has(table) && (TREE_OVERRIDES[table] ?? TREE_OWNER) === file);
@@ -145,6 +152,21 @@ describe('each store table has one writer', () => {
             `${TREE_OWNER}: writes meta`,
             `${TREE_OWNER}: writes characters`,
         ]);
+    });
+
+    test('a write through writeRowIfChanged counts as a write of the table it names', () => {
+        const source = [
+            'writeRowIfChanged(db, \'messages\', { id }, { label });',
+            'writeRowIfChanged(entry.db, \'meta\', { key }, { value }, { insert: true });',
+            'writeRowIfChanged(db, table, { id }, { label });',
+        ].join('\n');
+        expect(writtenTables(source)).toEqual(['messages', 'meta', '*']);
+        expect(strayWrites('endpoints/whatever.js', writtenTables(source), stores)).toEqual([
+            'endpoints/whatever.js: writes messages',
+            'endpoints/whatever.js: writes meta',
+            'endpoints/whatever.js: writes *',
+        ]);
+        expect(strayWrites(TREE_OWNER, writtenTables(source), stores)).toEqual([`${TREE_OWNER}: writes meta`]);
     });
 
     test('comments and upsert/trigger clauses aren\'t writes', () => {

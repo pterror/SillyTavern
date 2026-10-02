@@ -1,6 +1,5 @@
 import { color } from '../util.js';
 import { getBetterSqlite3 } from './native-sqlite.js';
-import { guardNoOpWrites } from './sqlite-no-op-guard.js';
 
 /**
  * Resolves which SQLite FTS5 engine backs the character/group search indexes: native better-sqlite3, falling
@@ -51,29 +50,6 @@ let engine = undefined;
  *   read-only (better-sqlite3 `readonly`, `fileMustExist`), sets no journal_mode, and close() doesn't checkpoint.
  *   Writes fail in SQLite (SQLITE_READONLY). Default false.
  */
-
-/** Statements whose no-op guard didn't prepare, warned about once each. */
-const unguardedWarned = new Set();
-
-/**
- * Prepares `sql` with its no-op guard (sqlite-no-op-guard.js). If the guarded form doesn't prepare, the statement runs
- * as written, so the write still happens, and the statement is named once on the console.
- * @param {{ prepare: (sql: string) => any }} db
- * @param {string} sql
- */
-function prepareGuarded(db, sql) {
-    const guarded = guardNoOpWrites(sql);
-    if (guarded === sql) return db.prepare(sql);
-    try {
-        return db.prepare(guarded);
-    } catch (err) {
-        if (!unguardedWarned.has(sql)) {
-            unguardedWarned.add(sql);
-            console.warn(color.yellow(`[sqlite] A write runs without its no-op guard (${err?.message ?? err}): ${sql.replace(/\s+/g, ' ').trim()}`));
-        }
-        return db.prepare(sql);
-    }
-}
 
 const WRITE_WHILE_ITERATING_MESSAGE = 'write while iterate() is open';
 const HANDLE_CLOSED_MESSAGE = 'database handle is closed';
@@ -247,7 +223,7 @@ export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TI
     const prepare = (sql) => {
         let stmt = stmtCache.get(sql);
         if (!stmt) {
-            stmt = prepareGuarded(db, sql);
+            stmt = db.prepare(sql);
             stmtCache.set(sql, stmt);
         }
         return stmt;
@@ -337,7 +313,7 @@ export function openWasmDatabase(WasmDatabaseCtor, path, { busyTimeoutMs = BUSY_
     const prepare = (sql) => {
         let stmt = stmtCache.get(sql);
         if (!stmt) {
-            stmt = prepareGuarded(db, sql);
+            stmt = db.prepare(sql);
             stmtCache.set(sql, stmt);
         }
         return stmt;

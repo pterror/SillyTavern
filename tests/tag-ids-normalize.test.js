@@ -173,6 +173,11 @@ function readShallow(id) {
     });
 }
 
+/** @param {string} id @param {string[]} tagIds */
+async function assignTags(id, tagIds) {
+    for (const tagId of tagIds) expect(await metadataDb.assignEntityTag(directories, id, tagId)).toBe('ok');
+}
+
 /** @param {string} id @param {(shallow: any) => void} mutate */
 function plantShallow(id, mutate) {
     withRawDb(db => {
@@ -183,9 +188,9 @@ function plantShallow(id, mutate) {
 }
 
 describe('server: shallow_json.tag_ids is written sorted', () => {
-    test('a bulk tag set given in any order', async () => {
+    test('tags assigned in any order', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'));
-        await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['tb', 'ta', 'tc'] });
+        await assignTags('Bob.png', ['tb', 'ta', 'tc']);
         expect(readShallow('Bob.png').shallow.tag_ids).toEqual(['ta', 'tb', 'tc']);
 
         const [fields] = await postJson('/api/characters/batch', { avatars: ['Bob.png'], fields: ['tag_ids'] });
@@ -201,14 +206,14 @@ describe('server: shallow_json.tag_ids is written sorted', () => {
     test('a batch-import row tagged while still buffered', async () => {
         await metadataDb.beginBatchImport(directories);
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'), null, null, { fromImport: true });
-        await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['tb', 'ta'] });
+        await assignTags('Bob.png', ['tb', 'ta']);
         await metadataDb.endBatchImport(directories);
         expect(readShallow('Bob.png').shallow.tag_ids).toEqual(['ta', 'tb']);
     });
 
     test('ids SQLite and JS order differently are stored in JS order', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'));
-        await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': [HIGH_BMP, ASTRAL] });
+        await assignTags('Bob.png', [HIGH_BMP, ASTRAL]);
         expect(readShallow('Bob.png').shallow.tag_ids).toEqual(JS_SORTED);
     });
 });
@@ -216,7 +221,7 @@ describe('server: shallow_json.tag_ids is written sorted', () => {
 describe('server: an absent shallow_json.tag_ids is filled from character_tags, never stored as []', () => {
     test('a write to a row with no tag_ids key fills it, sorted, with a matching digest', async () => {
         await metadataDb.upsertCharacterFromWrite(directories, 'Bob.png', card('Bob'));
-        await metadataDb.setEntityTagIdsMany(directories, { 'Bob.png': ['tb', 'ta'] });
+        await assignTags('Bob.png', ['tb', 'ta']);
         plantShallow('Bob.png', shallow => { delete shallow.tag_ids; });
 
         await metadataDb.setCharacterFav(directories, 'Bob.png', true);
@@ -244,7 +249,7 @@ describe('server: every route sending tag_ids sends them sorted', () => {
             body: JSON.stringify({ ch_name: 'Zorkmid', file_name: 'Zorkmid', description: 'd' }),
         });
         expect(await created.text()).toBe('Zorkmid.png');
-        await metadataDb.setEntityTagIdsMany(directories, { 'Zorkmid.png': [HIGH_BMP, ASTRAL] });
+        await assignTags('Zorkmid.png', [HIGH_BMP, ASTRAL]);
 
         const [full] = await postJson('/api/characters/batch', { avatars: ['Zorkmid.png'] });
         expect(full.tag_ids).toEqual(JS_SORTED);
@@ -261,7 +266,7 @@ describe('server: one-time sort of existing shallow_json.tag_ids (normalizeChara
     async function seed() {
         for (const id of ['A.png', 'B.png', 'C.png']) {
             await metadataDb.upsertCharacterFromWrite(directories, id, card(id));
-            await metadataDb.setEntityTagIdsMany(directories, { [id]: ['ta', 'tb'] });
+            await assignTags(id, ['ta', 'tb']);
         }
         plantShallow('A.png', shallow => { shallow.tag_ids = ['tb', 'ta']; });
         plantShallow('C.png', shallow => { delete shallow.tag_ids; });

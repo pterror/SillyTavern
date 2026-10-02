@@ -137,8 +137,10 @@ describe('POST /api/tags/backup', () => {
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
         const many = Array.from({ length: 1500 }, (_, i) => `t${String(i).padStart(4, '0')}`);
-        // One write for all 1500 rows: assigning them one by one took most of jest's 5 s timeout under load.
-        expect(await metadataDb.setEntityTagIdsMany(directories, { 'Alice.png': many })).toEqual({ 'Alice.png': 'ok' });
+        // One restore for all 1500 rows: assigning them one by one took most of jest's 5 s timeout under load.
+        const restored = await metadataDb.restoreTagBackup(directories, { tags: many.map(id => ({ id, name: id })), tagMap: { 'Alice.png': many }, overwrite: false });
+        expect(restored).not.toBe('names-not-ready');
+        expect(restored?.undefinedTagIds).toEqual([]);
         await assign('Bob.png', ['t0001']);
 
         const { status, body } = await post('/api/tags/backup', {});

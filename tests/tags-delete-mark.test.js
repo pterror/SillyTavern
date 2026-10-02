@@ -441,19 +441,6 @@ describe('writes that name a marked tag', () => {
         expect(warn.mock.calls.map(args => args.join(' ')).some(m => m.includes('d') && m.includes('c4.png'))).toBe(true);
     });
 
-    test('setEntityTagIdsMany maps x to y and drops a tag with no target, warning', async () => {
-        await seedLibrary();
-        await deleteTag('x', 'y');
-        await deleteTag('d');
-        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        expect(await metadataDb.setEntityTagIdsMany(directories, { 'c4.png': ['x', 'y', 'd'], g2: ['x'] })).toEqual({ 'c4.png': 'ok', g2: 'ok' });
-        await withDb((db) => {
-            expect(Array.from(db.prepare('SELECT tag_id FROM character_tags WHERE character_id = ?').iterate('c4.png'), r => r.tag_id)).toEqual(['y']);
-            expect(Array.from(db.prepare('SELECT tag_id FROM group_tags WHERE group_id = ?').iterate('g2'), r => r.tag_id)).toEqual(['y']);
-        });
-        expect(warn.mock.calls.map(args => args.join(' ')).some(m => m.includes('d') && m.includes('c4.png'))).toBe(true);
-    });
-
     test('unassign x removes only the x row, so an entity that also has y keeps it', async () => {
         await seedLibrary();
         await deleteTag('x', 'y');
