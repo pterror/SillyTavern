@@ -126,4 +126,39 @@ test.describe('message edits in the live editor', () => {
         await expect(page.locator('#chat .cm-editor')).toHaveCount(0);
         await expect.poll(async () => (await storedMessage(page, id)).extra?.reasoning).toBe('Thinking *hard*');
     });
+
+    test('typing a macro shows the editor\'s suggestions only, not the old list as well', async ({ page }) => {
+        await setAutoSave(page, false);
+        const id = await chatWithUserMessage(page, 'Macro');
+        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
+        await mes.locator('.mes_edit').click();
+        await expect(mes.locator('.cm-editor')).toBeVisible();
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type(' {{us');
+        await expect(mes.locator('.cm-tooltip-autocomplete')).toBeVisible();
+        await page.waitForTimeout(300);
+        await expect(page.locator('.autoComplete-wrap')).toHaveCount(0);
+        await page.keyboard.press('Escape');
+        await mes.locator('.mes_edit_cancel').click();
+    });
+
+    test('focus moving from the edit box into its editor is not seen as the box losing focus', async ({ page }) => {
+        await setAutoSave(page, false);
+        const id = await chatWithUserMessage(page, 'Focus');
+        await page.evaluate(() => {
+            // @ts-ignore
+            window.__editBlurs = 0;
+            document.addEventListener('focusout', (event) => {
+                // @ts-ignore
+                if (event.target instanceof HTMLElement && event.target.id === 'curEditTextarea') window.__editBlurs++;
+            }, true);
+        });
+        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
+        await mes.locator('.mes_edit').click();
+        await expect(mes.locator('.cm-editor')).toBeVisible();
+        await expect(mes.locator('.cm-content')).toBeFocused();
+        // @ts-ignore
+        expect(await page.evaluate(() => window.__editBlurs)).toBe(0);
+        await mes.locator('.mes_edit_cancel').click();
+    });
 });

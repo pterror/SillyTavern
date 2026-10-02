@@ -29,6 +29,8 @@ const { history, historyKeymap, defaultKeymap } = cmCommands;
  * @property {Record<'grammar'|'render'|'macros'|'toolbar'|'paste'|'search'|'sync', import('@codemirror/state').Compartment>} compartments
  *   One per feature, so each can be swapped without rebuilding the editor.
  * @property {() => void} destroy Takes the editor away; the textarea is shown again and keeps the text.
+ * @property {() => void} takeFocus Moves focus into the editor. If the textarea had it, the field keeps focus as far as
+ *   anything listening on the textarea can tell: no blur, focusout, focus or focusin is seen for the move.
  */
 
 /** Marks a transaction that came from code writing the textarea, so it isn't copied back as the user's input. */
@@ -193,10 +195,20 @@ export function mountLiveEditor(textarea, options = {}) {
 
     applyLook(view, look);
     (options.mountAfter ?? textarea).after(view.dom);
-    registerMountedEditor(view.dom, textarea);
+    registerMountedEditor(view.dom, textarea, {
+        caretRect: () => {
+            const coords = view.coordsAtPos(view.state.selection.main.head);
+            return coords ? new DOMRect(coords.left, coords.top, 0, coords.bottom - coords.top) : null;
+        },
+        macroSuggestions: Boolean(options.macros),
+    });
+
+    // While focus moves from the textarea into its own editor, the field doesn't lose or gain focus.
+    let movingFocusIn = false;
 
     // Focus moving into or out of the editor is the textarea gaining or losing focus, at the same moment.
     const onContentFocus = (/** @type {FocusEvent} */ event) => {
+        if (movingFocusIn) return;
         const pair = event.type === 'focus' ? [['focus', false], ['focusin', true]] : [['blur', false], ['focusout', true]];
         for (const [type, bubbles] of pair) {
             const copy = new FocusEvent(String(type), { bubbles: Boolean(bubbles), relatedTarget: event.relatedTarget });
@@ -231,6 +243,25 @@ export function mountLiveEditor(textarea, options = {}) {
     return {
         view,
         compartments,
+        takeFocus() {
+            if (document.activeElement !== textarea) {
+                view.focus();
+                return;
+            }
+            const swallow = (/** @type {Event} */ event) => {
+                if (event.target === textarea) event.stopImmediatePropagation();
+            };
+            window.addEventListener('blur', swallow, true);
+            window.addEventListener('focusout', swallow, true);
+            movingFocusIn = true;
+            try {
+                view.focus();
+            } finally {
+                movingFocusIn = false;
+                window.removeEventListener('blur', swallow, true);
+                window.removeEventListener('focusout', swallow, true);
+            }
+        },
         destroy() {
             if (destroyed) return;
             destroyed = true;

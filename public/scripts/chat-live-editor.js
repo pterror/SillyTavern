@@ -1,6 +1,6 @@
 // The live editor on the chat's own text boxes: a message being edited, and a reasoning block being edited.
-// Each editor lives exactly as long as its textarea's edit: mounted when the edit starts, taken away before the
-// textarea is removed.
+// Each editor lives exactly as long as its edit: mounted when the edit starts, taken away before the textarea is
+// removed.
 
 import { showdown } from '../lib.js';
 import { evaluateSafeMacro } from './safe-macros.js';
@@ -60,7 +60,8 @@ export async function mountChatEditor(textarea, target) {
             },
             // A reasoning block's own class also draws its box (border, padding), which the edit box doesn't have.
             contentClass: isReasoning ? '' : 'mes_text',
-            macros: { evaluate: text => (fillsMacros ? evaluateSafeMacro(text, substituteParams, { name2Override: name }) : null) },
+            // {{char}} is the speaker only where a character speaks.
+            macros: { evaluate: text => (fillsMacros ? evaluateSafeMacro(text, substituteParams, isUser ? {} : { name2Override: name }) : null) },
             formatting: { uploadImage },
             search: { context: () => ({ characterName: name }) },
         });
@@ -70,7 +71,7 @@ export async function mountChatEditor(textarea, target) {
             return;
         }
         holder.editor = editor;
-        if (document.activeElement === textarea) editor.view.focus();
+        if (document.activeElement === textarea) editor.takeFocus();
     } catch (error) {
         editors.delete(textarea);
         console.error('The editor could not be loaded; the text box stays a plain text box', error);

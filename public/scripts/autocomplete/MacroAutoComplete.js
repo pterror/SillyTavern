@@ -124,6 +124,8 @@ export function setMacroAutoComplete(textarea, { autocompleteMode = MACRO_AUTOCO
         true, // isFloating - always use floating mode for free text macro autocomplete
     );
 
+    ac.isMacroAutoComplete = true;
+
     // Set the style via data attribute for CSS targeting
     ac.domWrap.dataset.macrosAutocompleteStyle = autocompleteStyle;
     ac.detailsWrap.dataset.macrosAutocompleteStyle = autocompleteStyle;
