@@ -1107,6 +1107,21 @@ describe('POST /api/characters/query - filter.search (design doc §5.1/§5)', ()
         expect(body.rows.map(r => r.avatar)).toEqual(['Vampire.png']);
     });
 
+    test('random with a term lists every match in one request, in the order the same seed gives without the term', async () => {
+        const card = name => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        for (let i = 0; i < 12; i++) {
+            await seedCharacterWithFile(`Vamp${i}.png`, card(i % 3 === 0 ? `Vampire ${i}` : `Werewolf ${i}`));
+        }
+        await metadataDb.fillRandomRanksIfNeeded(directories);
+        for (const order of ['asc', 'desc']) {
+            const sort = { field: 'random', seed: 31, order };
+            const all = await (await postJson('/api/characters/query', { sort, page: 1, pageSize: 50 })).json();
+            const vampires = all.rows.map(r => r.avatar).filter(avatar => ['Vamp0.png', 'Vamp3.png', 'Vamp6.png', 'Vamp9.png'].includes(avatar));
+            const body = await (await postJson('/api/characters/query', { filter: { search: 'vampire' }, sort, page: 1, pageSize: 50, want: ['rows', 'total'] })).json();
+            expect({ order, rows: body.rows.map(r => r.avatar), total: body.total, more: body.more }).toEqual({ order, rows: vampires, total: 4, more: undefined });
+        }
+    });
+
     test('no matches returns an empty page, not an error', async () => {
         await seedCharacterWithFile('Vampire.png', { name: 'Vampire Lord', data: { name: 'Vampire Lord', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
 

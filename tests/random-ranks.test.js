@@ -329,6 +329,18 @@ describe('random order pages (search plan step 7c)', () => {
         }
     });
 
+    test('an id list keeps the order the same filter gives without it', async () => {
+        for (const params of [{}, { fav: true }, { tags: { include: ['t1'], mode: 'and' } }, { tags: { include: ['t1', 't2'], mode: 'and' } }]) {
+            for (const sortOrder of ['asc', 'desc']) {
+                const order = await followed(params, { seed: 11, sortOrder, limit: 100 });
+                const some = order.filter((_, i) => i % 2 === 0);
+                const ids = some.map(e => e.slice(e.indexOf(':') + 1));
+                const listed = await metadataDb.queryEntities(directories, { ...params, ids, sortField: 'random', seed: 11, sortOrder, offset: 0, limit: 1000, wantTotal: false, handle: 'test' });
+                expect({ params, sortOrder, rows: listed.rows.map(r => `${r.type}:${r.id}`) }).toEqual({ params, sortOrder, rows: some });
+            }
+        }
+    });
+
     test('a page reads the page, not the library: no read of every id', async () => {
         const db = new Database(dbPath(), { readonly: true });
         try {
