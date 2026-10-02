@@ -10,11 +10,14 @@ import { _snapshotMessages } from './generation.js';
 
 /**
  * Switches to a sibling's path; nothing is removed from the database, so swiping back reaches the old alternative's children again.
+ * With `redraw: false` only the data moves (node, selection, the continuation in `chat`); the caller redraws
+ * from mesId + 1 itself, e.g. mid-animation, so the old text stays on screen until the swipe hides it.
  * @param {number} mesId
  * @param {number} swipeId
+ * @param {{redraw?: boolean}} [options]
  * @returns {Promise<boolean>}
  */
-export async function switchToAlternativePath(mesId, swipeId) {
+export async function switchToAlternativePath(mesId, swipeId, { redraw = true } = {}) {
     const message = chat[mesId];
     const targetNodeId = message.swipe_info?.[swipeId]?.node_id;
 
@@ -59,9 +62,11 @@ export async function switchToAlternativePath(mesId, swipeId) {
     // Without this the freshly-fetched messages read as changed against the snapshot on the next save.
     _snapshotMessages();
 
-    await redisplayChat({ startIndex: mesId });
-    updateViewMessageIds();
-    refreshSwipeButtons(true);
+    if (redraw) {
+        await redisplayChat({ startIndex: mesId });
+        updateViewMessageIds();
+        refreshSwipeButtons(true);
+    }
     if (unstored && mesId === 0) {
         await rememberCardOpening(message.swipes?.[swipeId]);
     }

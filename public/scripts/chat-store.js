@@ -529,11 +529,16 @@ export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, gree
 }
 
 // Re-fetches what followed an overswiped message, since the nodes are still in the tree.
-/** @param {number} mesId */
-export async function _restoreContinuation(mesId) {
+// With `redraw: false` only `chat` changes and the caller redraws from mesId + 1.
+/**
+ * @param {number} mesId
+ * @param {{redraw?: boolean}} [options]
+ * @returns {Promise<boolean>} Whether what follows mesId changed.
+ */
+export async function _restoreContinuation(mesId, { redraw = true } = {}) {
     const message = _chatAt(mesId);
     // A provisional-id opening has no row, so nothing can follow it.
-    if (!isStoredNodeId(message?.node_id)) return;
+    if (!isStoredNodeId(message?.node_id)) return false;
 
     let payload;
     try {
@@ -542,20 +547,23 @@ export async function _restoreContinuation(mesId) {
             headers: getRequestHeaders(),
             body: JSON.stringify({ node_id: message.node_id, chat_name: getCurrentChatId() }),
         });
-        if (!response.ok) return;
+        if (!response.ok) return false;
         payload = await response.json();
     } catch (error) {
         console.warn('[restore] Could not fetch what follows:', error);
-        return;
+        return false;
     }
 
     const following = payload?.messages ?? [];
-    if (!following.length && chat.length === mesId + 1) return;
+    if (!following.length && chat.length === mesId + 1) return false;
 
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...following);
-    await redisplayChat({ startIndex: mesId });
-    updateViewMessageIds();
-    refreshSwipeButtons(true);
+    if (redraw) {
+        await redisplayChat({ startIndex: mesId });
+        updateViewMessageIds();
+        refreshSwipeButtons(true);
+    }
+    return true;
 }
 
 /**
