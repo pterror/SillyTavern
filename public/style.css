@@ -7028,3 +7028,29 @@ body:not(.movingUI) .drawer-content.maximized {
 .greeting-filter-input {
     margin-bottom: 8px;
 }
+
+/* A textarea a live editor is mounted on: still in the page with its id, value and events, but not shown. Only its
+ * box is taken away, so its font, colours and padding still resolve for the editor to copy. */
+textarea.live-editor-textarea {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    clip-path: inset(50%) !important;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.cm-editor.live-editor {
+    width: 100%;
+}
+
+.cm-editor.live-editor.cm-focused {
+    outline: none;
+}
+
+.cm-editor.live-editor .cm-scroller {
+    font-family: inherit;
+    line-height: inherit;
+}
