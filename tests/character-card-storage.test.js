@@ -55,11 +55,39 @@ describe('character card storage', () => {
         expect(parts.extra.filter(r => r.path.startsWith('mirror:')).map(r => r.path).sort()).toEqual(
             ['mirror:creatorcomment', 'mirror:description', 'mirror:fav', 'mirror:first_mes', 'mirror:mes_example', 'mirror:name', 'mirror:personality', 'mirror:scenario', 'mirror:tags', 'mirror:talkativeness'].sort());
         expect(parts.fields.find(f => f.field === 'description')?.value).toBe('A traveller.');
-        expect(parts.columns).toEqual({ name: 'Alice', creator: 'bob', character_version: '1.0', fav: false, world: 'Elsewhere' });
+        expect(parts.columns).toEqual({ name: 'Alice', creator: 'bob', character_version: '1.0', fav: false, world: 'Elsewhere', create_date: '2024-1-2 @03h04m05s678ms' });
+        expect(parts.tags).toEqual([{ position: 0, name: 'fantasy' }, { position: 1, name: 'tavern' }]);
+        expect(parts.extra.some(r => r.path === 'data:tags' || r.path === 'top:create_date')).toBe(false);
         expect(parts.greetings).toEqual([
             { list: 'alternate_greetings', position: 0, text: 'Hi there' },
             { list: 'alternate_greetings', position: 1, text: 'Greetings' },
         ]);
+    });
+
+    test('tag names that are not a non-empty list of strings are not tag rows', () => {
+        for (const tags of [[], ['a', 2], null]) {
+            const card = { data: { tags } };
+            expectLossless(card);
+            expect(splitCard(card).tags).toEqual([]);
+            expect(splitCard(card).extra.some(r => r.path === 'data:tags')).toBe(true);
+        }
+        expectLossless({ data: { tags: 'a,b' } });
+        const drifted = { tags: ['old'], data: { tags: ['new'] } };
+        expectLossless(drifted);
+        expect(splitCard(drifted).extra.some(r => r.path === 'top:tags')).toBe(true);
+    });
+
+    test('create_date is a column when it is a string or a number, otherwise extra; absent and null stay apart', () => {
+        expect(splitCard({ create_date: 1700000000000 }).columns.create_date).toBe(1700000000000);
+        expect(splitCard({ create_date: '' }).columns.create_date).toBe('');
+        for (const createDate of [null, true, { at: 1 }, [1]]) {
+            const card = { create_date: createDate };
+            expectLossless(card);
+            expect(splitCard(card).columns.create_date).toBeUndefined();
+            expect(splitCard(card).extra.some(r => r.path === 'top:create_date')).toBe(true);
+        }
+        expect(Object.hasOwn(/** @type {object} */ (roundTrip({ name: 'x' })), 'create_date')).toBe(false);
+        expect(roundTrip({ create_date: null })).toEqual({ create_date: null });
     });
 
     test('a V1 key that drifted from data keeps both values', () => {
@@ -97,7 +125,7 @@ describe('character card storage', () => {
         const pick = (list) => list[Math.floor(rand() * list.length)];
         const keys = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example', 'creator_notes', 'creatorcomment',
             'tags', 'fav', 'talkativeness', 'creator', 'character_version', 'alternate_greetings', 'group_only_greetings',
-            'extensions', 'character_book', 'system_prompt', 'unknown_field', 'world', 'spec', 'data'];
+            'extensions', 'character_book', 'system_prompt', 'unknown_field', 'world', 'spec', 'data', 'create_date'];
         const value = (depth) => {
             const kind = Math.floor(rand() * (depth > 2 ? 5 : 8));
             switch (kind) {
