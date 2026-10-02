@@ -115,3 +115,34 @@ test.describe('live editor find and replace', () => {
         expect(await value(page)).toBe('AXC');
     });
 });
+
+test.describe('live editor built-in presets', () => {
+    test.beforeEach(testSetup.awaitST);
+    test.afterEach(async ({ page }) => {
+        await page.evaluate(() => {
+            // @ts-ignore
+            window.liveEditorTest?.editor.destroy();
+            document.getElementById('liveEditorTestHost')?.remove();
+        });
+    });
+
+    test('the app\'s built-in presets are in the panel and run', async ({ page }) => {
+        await page.evaluate(async () => {
+            const registry = await import('/scripts/live-editor/registry.js');
+            const host = document.createElement('div');
+            host.id = 'liveEditorTestHost';
+            host.style.cssText = 'position:fixed;top:60px;left:60px;width:600px;z-index:100000;background:#000;color:#fff';
+            const textarea = document.createElement('textarea');
+            textarea.id = 'liveEditorTestTextarea';
+            textarea.value = 'She *smiled* and said “hi” — **loudly**.';
+            host.append(textarea);
+            document.body.append(host);
+            // @ts-ignore
+            window.liveEditorTest = { editor: await registry.mountLiveEditor(textarea), textarea };
+        });
+        await page.locator('#liveEditorTestHost .live-toolbar-button.fa-wand-magic-sparkles').click();
+        await panel(page).locator('.live-presets-row', { hasText: 'Remove italics' }).getByRole('button', { name: 'Run' }).click();
+        await panel(page).locator('.live-presets-row', { hasText: 'Typography to plain characters' }).getByRole('button', { name: 'Run' }).click();
+        expect(await value(page)).toBe('She smiled and said "hi" - **loudly**.');
+    });
+});

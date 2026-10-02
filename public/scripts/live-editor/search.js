@@ -4,6 +4,7 @@
 import { state as cmState, view as cmView, search as cmSearch } from '../../live-editor-lib.js';
 import { getRequestHeaders } from '../../script.js';
 import { t } from '../i18n.js';
+import { builtinPresets } from './presets.js';
 
 const { StateField, StateEffect, Facet } = cmState;
 const { keymap, showPanel } = cmView;
@@ -18,7 +19,8 @@ const { search, searchKeymap, getSearchQuery } = cmSearch;
 
 /**
  * @typedef {object} SearchOptions
- * @property {BuiltinPreset[]} [builtins] Presets that come with the app; their ids start with `builtin:`.
+ * @property {BuiltinPreset[]} [builtins] Presets that come with the app (ids start with `builtin:`); the app's own by
+ *   default.
  * @property {() => PresetContext} [context] What code presets may need, such as the character's name.
  */
 
@@ -129,7 +131,7 @@ function presetsPanel(view) {
     const say = (/** @type {string} */ text) => {
         status.textContent = text;
     };
-    const { builtins = [], context = () => ({}) } = view.state.facet(searchOptions);
+    const { builtins = builtinPresets(), context = () => ({}) } = view.state.facet(searchOptions);
 
     /** @param {string} id */
     const runFor = (id) => {
