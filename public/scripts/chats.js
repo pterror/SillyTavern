@@ -27,6 +27,7 @@ import {
 import { renderMarkdown } from './marked-processor.js';
 import { insertMacroSpans, substituteMacrosWithPlaceholders } from './character-field-editor.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
+import { openEditorLayer } from './editor-layer.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
@@ -2378,7 +2379,18 @@ export function initChatUtilities() {
             });
         }
 
-        await callGenericPopup(wrapper, POPUP_TYPE.TEXT, '', { wide: true, large: true });
+        // A modal popup blocks everything outside it, a layer included, so a field inside one still expands in a popup.
+        if (this.closest('dialog:modal')) {
+            await callGenericPopup(wrapper, POPUP_TYPE.TEXT, '', { wide: true, large: true });
+            return;
+        }
+        openEditorLayer(wrapper, {
+            closeTitle: t`Restore`,
+            onClose: () => {
+                if (bro[0].isConnected) bro[0].focus({ preventScroll: true });
+            },
+        });
+        textarea.focus();
     });
 
     $(document).on('click', '.macro_preview_button', async function (e) {

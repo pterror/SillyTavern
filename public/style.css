@@ -1691,20 +1691,56 @@ textarea.autoSetHeight {
     max-width: 100%;
 }
 
-/* The drawer's backdrop-filter makes it the containing block, so this fills the drawer. */
-.char_info_tab_panel.maximized {
+/* An expanded editor: a layer across the three columns, capped to Chat Width Max, like fullscreen character info. */
+.editorLayer {
     position: fixed;
-    inset: 0;
-    z-index: 10;
-    overflow-y: auto;
+    top: var(--drawerBarTop);
+    bottom: var(--drawerBarBottom);
+    left: var(--drawerBarLeft);
+    right: var(--drawerBarRight);
+    width: min(var(--besideDrawerBarWidth), var(--chatWidthMax, 120ch));
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
     padding: 5px;
+    box-sizing: border-box;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
     background-color: var(--SmartThemeBlurTintColor);
     backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
     -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
 }
 
+.editorLayerBar {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.editorLayerBody {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.editorLayerBody > .tab-contents {
+    display: block;
+}
+
 .char_info_tab_panel.maximized .field_preview {
     max-height: none;
+}
+
+.char_info_tab_panel_placeholder {
+    opacity: 0.7;
+    padding: 10px 5px;
+}
+
+.char_info_tab_panel_placeholder .menu_button {
+    margin-top: 5px;
+    width: fit-content;
 }
 
 input,

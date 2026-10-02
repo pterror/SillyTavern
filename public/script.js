@@ -14175,6 +14175,7 @@ jQuery(async function () {
             '#avatar-and-name-block',
             '#shadow_popup',
             '.popup',
+            '.editorLayer',
             '#world_popup',
             '.ui-widget',
             '.text_pole',
