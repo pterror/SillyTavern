@@ -281,12 +281,22 @@ let keepScrollOnNextRender = false;
 let pageFetchesInFlight = 0;
 let searchIndexRefreshPending = false;
 let shownRefreshPending = false;
+// The list filter a page kept in browser storage was drawn for, when the server's fresher answer for it came while a
+// page fetch was still running; the page is drawn again once they settle.
+/** @type {object | null} */
+let freshRefreshPendingFor = null;
 // Whether printCharacters() has built the server-paged list.
 let serverPagedList = false;
 
 function pageFetchSettled() {
     pageFetchesInFlight--;
     if (pageFetchesInFlight !== 0) return;
+    const freshFor = freshRefreshPendingFor;
+    freshRefreshPendingFor = null;
+    if (freshFor !== null && listPageContext.query?.filter === freshFor && !shownRefreshPending) {
+        refreshCharacterListCurrentPage();
+        return;
+    }
     // The shown refresh re-queries the page whatever the search term, so it covers a pending search-index one.
     if (shownRefreshPending) {
         shownRefreshPending = false;
@@ -358,7 +368,7 @@ let renderedPageEntities = [];
  * @typedef {object} CharacterListPageContext
  * @property {{ filter: object, sort: object|undefined } | null} query The `/query` filter and sort the drawn page came from.
  * @property {string} queryKey `query` as a string, to tell whether a later page came from the same list.
- * @property {number} pageOffset The position in the list of the drawn page's first row (folder tiles not counted).
+ * @property {number} pageOffset The position in the list of the drawn page's first row.
  * @property {number} total How many rows the list has.
  * @property {boolean} totalApprox Whether `total` is an estimate.
  */
@@ -517,8 +527,18 @@ export async function printCharacters(fullRefresh = false) {
         const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
 
         // Page 1 is fetched before the plugin is built, so every later page uses the sort it settled on.
+        // A page kept in browser storage from an earlier visit is drawn at once; if the server says it changed, the
+        // page on screen is drawn again where it is.
+        const onFresh = () => {
+            // A fresh answer arriving while a page is still being fetched or drawn waits for it to settle.
+            if (pageFetchesInFlight > 0 || listPageContext.query?.filter !== filter) {
+                freshRefreshPendingFor = filter;
+                return;
+            }
+            refreshCharacterListCurrentPage();
+        };
         const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
-            trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT));
+            trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT, { onFresh }));
 
         // The page response's `hidden`: every entity less the rows on that page, `~`-prefixed when approximate.
         /** @type {number|string} */
@@ -552,7 +572,7 @@ export async function printCharacters(fullRefresh = false) {
                 const requestedPageSize = ajaxParams.data.pageSize;
                 const resultPromise = (page === 1 && requestedPageSize === pageSize && pendingFirstPage)
                     ? Promise.resolve(pendingFirstPage)
-                    : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT);
+                    : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT, { onFresh });
                 pendingFirstPage = undefined;
                 resultPromise
                     .then(async result => {
