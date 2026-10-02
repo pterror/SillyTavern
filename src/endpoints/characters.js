@@ -36,7 +36,7 @@ import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
 import { CHARACTER_INDEX_FAILED_EVENT } from './search-index-coordinator.js';
-import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT } from '../character-metadata-db.js';
+import { upsertCharacterFromWrite, deleteCharacterRow, reconcile as reconcileMetadataStore, beginBatchImport, endBatchImport, queryCharacters, queryEntities, checkCharactersExist, findCharacterMatches, findGroupMatches, getChangesSince, findCharacterIdByContentHash, findCharacterIdByContentIdentityHash, findCharacterIdByAvatarIdentityHash, setCharacterFav, toggleCharacterFav, getCharacterFavsByIds, setCharacterActiveChat, getCharacterActiveChatsByIds, getCharacterTagIdsByIds, getEntityTagIdsForMany, getShallowByIds, setCharacterAllowGlobalStyles, getCharacterAllowGlobalStylesByIds, characterChangeEmitter, getCurrentSeq, getCurrentSeqAndGroupsVersion, seedCardTagsForSingleCharacter, assignEntityTag, unassignEntityTag, streamCharacterIdsMatching, beginBulkSelection, bulkSelectionExists, addToBulkSelection, removeFromBulkSelection, describeBulkSelection, readBulkSelectionPage, streamBulkSelection, mutualTagIdsOfBulkSelection, dropBulkSelection, getCharacterCardJson, getCharacterChatStats, getCharacterIndexRowsByIds, streamCharacterCardJsonBatches, characterRowExists, characterRowOrPendingExistsSync, getEntityRowsByIds, getFolderTileTags, copyEntityTags, TAG_MOVE_FAILED_EVENT, TAG_ORDER_SETTLED_EVENT, TAG_CHANGES_EVENT, GROUP_CHANGES_EVENT, QUERY_RANGE_COLUMNS } from '../character-metadata-db.js';
 import { characterDigestFieldsHash, characterDigestCardBodyHash, getStringHash, normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
 import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
@@ -2191,6 +2191,32 @@ router.post('/metadata/batch-import/end', async function (request, response) {
 });
 
 // Sortable fields this HTTP layer accepts. 'random' and 'search' don't map to a plain SQL column sort.
+/**
+ * A /query `filter.ranges`, checked: each key a QUERY_RANGE_COLUMNS field, each bound a finite number. Empty bounds
+ * are dropped, and no bounds at all is `undefined`.
+ * @param {unknown} raw
+ * @returns {import('../character-metadata-db.js').QueryRanges | undefined | null} null when it isn't valid.
+ */
+export function parseQueryRanges(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    /** @type {import('../character-metadata-db.js').QueryRanges} */
+    const ranges = {};
+    for (const [field, bound] of Object.entries(raw)) {
+        if (!Object.hasOwn(QUERY_RANGE_COLUMNS, field)) return null;
+        if (!bound || typeof bound !== 'object' || Array.isArray(bound)) return null;
+        /** @type {{ min?: number, max?: number }} */
+        const checked = {};
+        for (const end of /** @type {const} */ (['min', 'max'])) {
+            const value = /** @type {any} */ (bound)[end];
+            if (value === undefined || value === null) continue;
+            if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+            checked[end] = value;
+        }
+        if (Object.keys(checked).length > 0) ranges[field] = checked;
+    }
+    return Object.keys(ranges).length > 0 ? ranges : undefined;
+}
+
 const QUERY_SORT_FIELDS = new Set(['name', 'date_added', 'date_last_chat', 'chat_size', 'fav', 'create_date', 'data_size', 'random', 'search']);
 
 const DEFAULT_QUERY_PAGE_SIZE = 500;
@@ -2485,8 +2511,8 @@ async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, inclu
             check: async batch => {
                 const ids = batch.map(entity => entity.id);
                 const result = includeGroups
-                    ? await queryEntities(directories, { tags: filter.tags, fav: filter.fav, world: filter.world, excludeIds: filter.excludeIds, ids, groupsOnly, offset: 0, limit: ids.length, wantRows: false, wantHashes: true, wantTotal: false })
-                    : await queryCharacters(directories, { tags: filter.tags, fav: filter.fav, world: filter.world, excludeIds: filter.excludeIds, ids, offset: 0, limit: ids.length, wantRows: false, wantHashes: true, wantTotal: false });
+                    ? await queryEntities(directories, { tags: filter.tags, fav: filter.fav, world: filter.world, ranges: filter.ranges, excludeIds: filter.excludeIds, ids, groupsOnly, offset: 0, limit: ids.length, wantRows: false, wantHashes: true, wantTotal: false })
+                    : await queryCharacters(directories, { tags: filter.tags, fav: filter.fav, world: filter.world, ranges: filter.ranges, excludeIds: filter.excludeIds, ids, offset: 0, limit: ids.length, wantRows: false, wantHashes: true, wantTotal: false });
                 if (result === null) return null;
                 const kept = new Set();
                 for (const row of result.hashRows ?? []) {
@@ -2501,7 +2527,7 @@ async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, inclu
         /** @type {Set<string> | null} */
         let groupMatches = null;
         const sqlParams = {
-            tags: filter.tags, fav: filter.fav, world: filter.world, excludeIds: filter.excludeIds, ids: filter.ids,
+            tags: filter.tags, fav: filter.fav, world: filter.world, ranges: filter.ranges, excludeIds: filter.excludeIds, ids: filter.ids,
             sortField: sort.field, sortOrder: sort.order, seed, handle,
         };
         walked = await walkSorted({
@@ -2702,6 +2728,13 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
     if (sort.field !== undefined && !QUERY_SORT_FIELDS.has(sort.field)) {
         return queryReply(400, { error: true, reason: 'invalid-sort-field' });
     }
+    if (filter.ranges !== undefined) {
+        const ranges = parseQueryRanges(filter.ranges);
+        if (ranges === null) {
+            return queryReply(400, { error: true, reason: 'invalid-ranges', message: `filter.ranges takes { field: { min?, max? } } with numbers, for: ${Object.keys(QUERY_RANGE_COLUMNS).join(', ')}.` });
+        }
+        filter.ranges = ranges;
+    }
     const seed = Number(sort.seed);
     if (sort.field === 'random' && !Number.isFinite(seed)) {
         return queryReply(400, { error: true, reason: 'random-seed-required', message: 'sort.field "random" requires a finite sort.seed - design doc §5.3 decision 10, the client mints and persists this (public/scripts/random-sort.js).' });
@@ -2746,6 +2779,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         tags: filter.tags,
         fav: filter.fav,
         world: filter.world,
+        ranges: filter.ranges,
         excludeIds: filter.excludeIds,
         ids: filter.ids,
         sortField: sort.field,
@@ -2780,7 +2814,9 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         const handle = user.profile.handle;
 
         const tagsLeftToSql = await searchTagsLeftToSql(user.directories, filter.tags);
-        const indexSorts = sort.field !== undefined && !filter.world && !tagsLeftToSql
+        // The index has no world or range fields: a filter on either is checked in SQL.
+        const sqlOnlyFilter = !!filter.world || filter.ranges !== undefined;
+        const indexSorts = sort.field !== undefined && !sqlOnlyFilter && !tagsLeftToSql
             && await indexCanSort(user.directories, await getCharacterIndexPosition(handle, user.directories), sort.field);
         // A match the index can't fully filter (tags left to SQL, or a world, which it has no field for) or can't
         // order (any sort but relevance and its fast fields) is walked and checked under the work cap.
@@ -2802,7 +2838,7 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         if (walkMode) {
             return runSearchWalk(user, {
                 mode: walkMode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql,
-                indexComplete: walkMode === 'rank' && !tagsLeftToSql && !filter.world,
+                indexComplete: walkMode === 'rank' && !tagsLeftToSql && !sqlOnlyFilter,
                 offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor,
             });
         }

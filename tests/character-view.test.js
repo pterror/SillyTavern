@@ -65,6 +65,7 @@ describe('character view', () => {
             tagsInclude: ['t1'],
             tagsExclude: ['t2'],
             tagsMode: 'and',
+            ranges: undefined,
             fav: true,
             sortField: 'date_added',
             sortOrder: 'desc',
@@ -80,6 +81,14 @@ describe('character view', () => {
         const b = view({ ...parseSearchText('creator:alice castle'), tags: { include: ['a', 'b'], exclude: [] } });
         expect(sameView(a, b)).toBe(true);
         expect(sameView(a, view({ ...a, fav: true }))).toBe(false);
+    });
+
+    test('ranges go to the request with empty bounds and unknown fields dropped, and are part of what the view is', () => {
+        const state = viewToQueryState(view({ ranges: { chat_size: { min: 10 }, data_size: {}, bogus: { min: 1 } } }));
+        expect(state.ranges).toEqual({ chat_size: { min: 10 } });
+        expect(viewToQueryState(view({ ranges: { data_size: {} } })).ranges).toBeUndefined();
+        expect(sameView(view({ ranges: { chat_size: { min: 10 } } }), view({}))).toBe(false);
+        expect(sameView(view({ ranges: { data_size: {} } }), view({}))).toBe(true);
     });
 
     test('included tags combine with "or" only when there are two or more of them', () => {

@@ -23,6 +23,8 @@ import { characterDigestFieldsHash, characterDigestSource, normalizeFav, normali
  * @typedef {object} CharacterQueryFilter - mirrors the server's `POST /api/characters/query` filter shape.
  * @property {string} [search] - routed to the FTS/tantivy index, joined back to SQLite by id.
  * @property {{include: string[], exclude: string[], mode: 'and'|'or'}} [tags]
+ * @property {Record<string, { min?: number, max?: number }>} [ranges] Inclusive bounds on create_date, date_last_chat,
+ * chat_size or data_size; groups have no data_size, so a bound on it leaves them out.
  * @property {boolean} [fav]
  * @property {string} [world]
  * @property {string[]} [excludeIds] - group member exclusion.
@@ -125,6 +127,7 @@ export function parseQueryTotal(total) {
  * @property {string[]} [tagsInclude] - selected tag ids.
  * @property {string[]} [tagsExclude] - excluded tag ids.
  * @property {'and'|'or'} [tagsMode] - 'or': a row needs any one of `tagsInclude`.
+ * @property {Record<string, { min?: number, max?: number }>} [ranges] - see `CharacterQueryFilter.ranges`.
  * @property {boolean} [fav] - `undefined` for no fav filter; this module takes no dependency on filters.js, so
  * callers normalize the tri-state themselves before calling.
  * @property {string} [sortField] - `power_user.sort_field`, or `'random'`/`'search'` for those two special cases.
@@ -146,6 +149,7 @@ export function buildCharacterQuery({
     tagsInclude = [],
     tagsExclude = [],
     tagsMode = 'and',
+    ranges = undefined,
     fav = undefined,
     sortField = undefined,
     sortOrder = 'asc',
@@ -161,6 +165,7 @@ export function buildCharacterQuery({
     if (tagsInclude.length > 0 || tagsExclude.length > 0) {
         filter.tags = { include: tagsInclude, exclude: tagsExclude, mode: tagsMode === 'or' ? 'or' : 'and' };
     }
+    if (ranges && Object.keys(ranges).length > 0) filter.ranges = ranges;
     if (typeof fav === 'boolean') filter.fav = fav;
     if (includeGroups) filter.includeGroups = true;
     if (typeof group === 'boolean') filter.group = group;

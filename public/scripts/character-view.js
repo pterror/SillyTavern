@@ -6,6 +6,8 @@
  * @property {{ include: string[], exclude: string[], mode?: 'and'|'or' }} tags Tag ids the list must carry / must not carry.
  *   `mode` 'or': a row needs any one of `include`, not all of them.
  * @property {boolean|undefined} fav `true` favorites only, `false` no favorites, `undefined` either.
+ * @property {Record<string, { min?: number, max?: number }>} [ranges] Inclusive bounds on the fields of RANGE_FIELDS;
+ *   a missing end is open.
  * @property {boolean|undefined} group `true` groups only, `false` no groups, `undefined` either.
  * @property {CharacterViewSort} sort
  * @property {string|null} folderCase The closed-folder case shown, `null` for every row.
@@ -110,6 +112,7 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
         tagsInclude: view.tags.include,
         tagsExclude: view.tags.exclude,
         tagsMode: tagMode(view.tags),
+        ranges: cleanRanges(view.ranges),
         fav: view.fav,
         sortField: view.sort.field,
         sortOrder: view.sort.order,
@@ -117,6 +120,38 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
         includeGroups,
         group: view.group,
     };
+}
+
+/**
+ * The fields a range can bound: the server's `filter.ranges` fields (character-metadata-db.js QUERY_RANGE_COLUMNS).
+ * `unit` says how the pill reads and writes the stored number.
+ * @type {Readonly<Record<string, { unit: 'date'|'kb'|'count' }>>}
+ */
+export const RANGE_FIELDS = Object.freeze({
+    create_date: { unit: 'date' },
+    date_last_chat: { unit: 'date' },
+    chat_size: { unit: 'kb' },
+    data_size: { unit: 'count' },
+});
+
+/**
+ * A view's ranges with empty bounds and unknown fields dropped, in field order; undefined when nothing is bounded.
+ * @param {CharacterView['ranges']} ranges
+ * @returns {CharacterView['ranges'] | undefined}
+ */
+export function cleanRanges(ranges) {
+    /** @type {Record<string, { min?: number, max?: number }>} */
+    const clean = {};
+    for (const field of Object.keys(RANGE_FIELDS)) {
+        const bound = ranges?.[field];
+        if (!bound) continue;
+        /** @type {{ min?: number, max?: number }} */
+        const kept = {};
+        if (Number.isFinite(bound.min)) kept.min = bound.min;
+        if (Number.isFinite(bound.max)) kept.max = bound.max;
+        if (Object.keys(kept).length > 0) clean[field] = kept;
+    }
+    return Object.keys(clean).length > 0 ? clean : undefined;
 }
 
 /**
@@ -147,6 +182,7 @@ function viewKey(view) {
         include: [...view.tags.include].sort(),
         exclude: [...view.tags.exclude].sort(),
         mode: tagMode(view.tags),
+        ranges: cleanRanges(view.ranges) ?? null,
         fav: view.fav ?? null,
         group: view.group ?? null,
         sort: view.sort,

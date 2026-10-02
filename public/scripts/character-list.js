@@ -10,7 +10,7 @@ import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, prin
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
-import { parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
+import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
@@ -72,6 +72,7 @@ let showViewInSearchBox = () => {};
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
 
 const TAG_MODE_STORAGE_KEY = 'characterListTagMode';
+const RANGES_STORAGE_KEY = 'characterListRanges';
 
 function getBackBlock() {
     const template = $('#bogus_folder_back_template .bogus_folder_select').clone();
@@ -747,6 +748,30 @@ function readTagMode() {
     }
 }
 
+/**
+ * The list's range bounds. Upstream's filter helper has no ranges, so they are kept beside it, per browser.
+ * @returns {import('./character-view.js').CharacterView['ranges']}
+ */
+function readRanges() {
+    try {
+        return cleanRanges(JSON.parse(accountStorage.getItem(RANGES_STORAGE_KEY) ?? 'null') ?? undefined);
+    } catch {
+        return undefined;
+    }
+}
+
+/** @param {import('./character-view.js').CharacterView['ranges']} ranges */
+function writeRanges(ranges) {
+    const clean = cleanRanges(ranges);
+    try {
+        if (JSON.stringify(readRanges() ?? null) === JSON.stringify(clean ?? null)) return;
+        if (clean) accountStorage.setItem(RANGES_STORAGE_KEY, JSON.stringify(clean));
+        else accountStorage.removeItem(RANGES_STORAGE_KEY);
+    } catch {
+        // The ranges just aren't remembered.
+    }
+}
+
 /** @param {'and'|'or'} mode */
 function writeTagMode(mode) {
     try {
@@ -783,6 +808,7 @@ export function getCharacterView() {
             exclude: [...(tagFilterData.excluded ?? [])],
             mode: readTagMode(),
         },
+        ranges: readRanges(),
         fav: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.FAV)),
         group: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.GROUP)),
         sort,
@@ -805,6 +831,7 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
     entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, serializeSearchText(next), true);
     entitiesFilter.setFilterData(FILTER_TYPES.TAG, { selected: [...next.tags.include], excluded: [...next.tags.exclude] }, true);
     writeTagMode(next.tags.mode === 'or' ? 'or' : 'and');
+    writeRanges(next.ranges);
     entitiesFilter.setFilterData(FILTER_TYPES.FAV, booleanToTriState(next.fav), true);
     entitiesFilter.setFilterData(FILTER_TYPES.GROUP, booleanToTriState(next.group), true);
     if (JSON.stringify(current.sort) !== JSON.stringify(next.sort) && next.sort.field !== 'search') {
