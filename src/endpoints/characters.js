@@ -296,8 +296,8 @@ export async function fireMetadataUpsertHook(directories, avatar, data, contentH
     try {
         await upsertCharacterFromWrite(directories, avatar, data, contentHash, avatarIdentityHash, options);
     } catch (err) {
-        // The reconciler only picks up files with no row yet, so a stale existing row is invisible to it.
-        console.error(`[character-metadata] Failed to update the metadata store for "${avatar}" after its character write succeeded. The row is now STALE and nothing will repair it automatically - re-save the character, or run POST /api/characters/metadata/rescan.`, err);
+        console.error(`[character-metadata] "${avatar}" was not saved to the character store:`, err);
+        throw err;
     }
 }
 
@@ -462,8 +462,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             && path.resolve(inputFile) === path.resolve(outputImagePath);
 
         if (isMetadataOnlyWrite) {
-            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, contentHash, null, { fromImport })
-                .catch(err => console.error('[character-metadata] Failed to persist a metadata-only character write:', err));
+            await upsertCharacterFromWrite(request.user.directories, `${outputFile}.png`, data, contentHash, null, { fromImport });
             if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
             return true;
         }
@@ -471,8 +470,15 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         if (imageOnly) {
             const outputImage = stripCardData(await getInputImage());
             const avatarIdentityHash = computeAvatarIdentityHashFromImageBuffer(outputImage);
+            const isNewFile = !fs.existsSync(outputImagePath);
             writeFileAtomicSync(outputImagePath, outputImage);
-            await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash, { fromImport });
+            try {
+                await fireMetadataUpsertHook(request.user.directories, `${outputFile}.png`, data, contentHash, avatarIdentityHash, { fromImport });
+            } catch (err) {
+                // The image holds no card data, so without its row it is a character with no content: take it back.
+                if (isNewFile) fs.rmSync(outputImagePath, { force: true });
+                throw err;
+            }
             await reflinkAgainstExistingDuplicate(request.user.directories, `${outputFile}.png`, outputImagePath, data, avatarIdentityHash);
             if (oldDiskCacheKey) await diskCache.invalidateKey(oldDiskCacheKey);
             return true;
@@ -3740,14 +3746,21 @@ async function duplicateOneCharacter(request, avatarUrl) {
     // copied file's bytes: canonical PNGs are never written to after creation.
     const newAvatar = path.parse(newFilename).base;
     const rawData = await readCardContent(request.user.directories, path.basename(filename));
-    if (rawData !== undefined) {
+    if (rawData === undefined) {
+        fs.rmSync(newFilename, { force: true });
+        return { ok: false, status: 500, error: `Could not read "${path.basename(filename)}", so it was not duplicated` };
+    }
+    try {
         await fireMetadataUpsertHook(request.user.directories, newAvatar, rawData);
-        try {
-            await copyEntityTags(request.user.directories, path.basename(filename), newAvatar);
-        } catch (err) {
-            // The duplicate stands; the page's own copy request for it reports the failure.
-            console.error(`Could not copy tags from ${path.basename(filename)} to ${newAvatar}`, err);
-        }
+    } catch (err) {
+        fs.rmSync(newFilename, { force: true });
+        return { ok: false, status: 500, error: `The duplicate of "${path.basename(filename)}" could not be saved` };
+    }
+    try {
+        await copyEntityTags(request.user.directories, path.basename(filename), newAvatar);
+    } catch (err) {
+        // The duplicate stands; the page's own copy request for it reports the failure.
+        console.error(`Could not copy tags from ${path.basename(filename)} to ${newAvatar}`, err);
     }
 
     return { ok: true, newAvatar };

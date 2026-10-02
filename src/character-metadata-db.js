@@ -1887,14 +1887,14 @@ function warnTagMapEntryNotArray(key, value, outcome) {
  */
 export async function upsertCharacterFromWrite(directories, avatar, cardJson, contentHash = null, avatarIdentityHash = null, { fromImport = false } = {}) {
     const entry = await getEntry(directories);
-    if (!entry) return;
+    // The store holds the only complete copy of a card, so a write it can't take must fail, never vanish.
+    if (!entry) throw new Error(`The character store is unavailable, so "${avatar}" was not saved.`);
 
     let card;
     try {
         card = JSON.parse(cardJson);
     } catch (err) {
-        console.error(`[character-metadata] Failed to parse just-written card for ${avatar}, skipping metadata upsert:`, err);
-        return;
+        throw new Error(`The card for "${avatar}" is not valid JSON, so it was not saved.`, { cause: err });
     }
 
     const contentIdentityHash = computeContentIdentityHash(card);
@@ -2439,7 +2439,14 @@ function applyOrBuffer(entry, row, tagIds) {
     if (entry.batch) {
         entry.batch.pending.set(row.id, { row, tagIds });
         if (entry.batch.pending.size >= BATCH_IMPORT_FLUSH_SIZE) {
-            flushBatch(entry);
+            try {
+                flushBatch(entry);
+            } catch (err) {
+                // This row's write fails with the flush and its caller takes the file back, so the row must not
+                // be committed by a later flush. The other buffered rows stay for the next flush.
+                if (entry.batch.pending.get(row.id)?.row === row) entry.batch.pending.delete(row.id);
+                throw err;
+            }
         }
         return;
     }
@@ -2453,12 +2460,15 @@ function applyOrBuffer(entry, row, tagIds) {
 function flushBatch(entry) {
     if (!entry.batch || entry.batch.pending.size === 0) return;
     const rows = [...entry.batch.pending.values()];
-    entry.batch.pending.clear();
     entry.db.transaction(() => {
         for (const { row, tagIds } of rows) {
             writeRowSync(entry.db, row, tagIds);
         }
     });
+    // Cleared only once committed: a failed commit keeps the rows for the next flush instead of dropping them.
+    for (const { row } of rows) {
+        if (entry.batch.pending.get(row.id)?.row === row) entry.batch.pending.delete(row.id);
+    }
 }
 
 // Buffers writes - but only up to BATCH_IMPORT_FLUSH_SIZE rows at a time; flushBatch() commits and clears the
