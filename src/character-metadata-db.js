@@ -10216,7 +10216,7 @@ function whereClausesOf(built) {
  * @param {object} p
  * @returns {SortedStream[]}
  */
-function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly, charWhere, groupWhere, deletions }) {
+function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly, charactersOnly = false, charWhere, groupWhere, deletions }) {
     const keyColumn = column === 'fav' ? 'name_fold' : column;
     const dir = column !== 'fav' && sortOrder === 'desc' ? 'DESC' : 'ASC';
     const field = column === 'fav' ? 'name_fold' : column;
@@ -10246,7 +10246,7 @@ function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, i
                     [...restChar.args, ...plan.character.others]),
                 });
             }
-            streams.push({
+            if (!charactersOnly) streams.push({
                 name: `g${favValue}`, type: 'group', fav: favValue, dir, field,
                 from: 'group_tag_sort s', where: ['s.tag_id = ?', 's.k_fav = ?'], args: [plan.group.driver, favValue],
                 key: groupKey ? `s.k_${groupKey}` : null, tie: '(s.entity_id || \'.json\')', id: 's.entity_id',
@@ -10263,7 +10263,7 @@ function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, i
                     key: keyColumn, tie: 'id', id: 'id', check: null,
                 });
             }
-            streams.push({
+            if (!charactersOnly) streams.push({
                 name: `g${favValue}`, type: 'group', fav: favValue, dir, field,
                 from: groupWhere.from, where: [...whereClausesOf(groupWhere), 'fav = ?'], args: [...groupWhere.args, favValue],
                 key: groupKey, tie: '(id || \'.json\')', id: 'id', check: null,
@@ -10277,7 +10277,7 @@ function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, i
                     check: checkOf('characters', whereClausesOf(charWhere), charWhere.args),
                 });
             }
-            streams.push({
+            if (!charactersOnly) streams.push({
                 name: `g${favValue}`, type: 'group', fav: favValue, dir, field,
                 from: 'groups', where: ['fav = ?'], args: [favValue],
                 key: groupKey, tie: '(id || \'.json\')', id: 'id',
@@ -10429,8 +10429,8 @@ function readSortedKeys(db, stream, after, limit) {
  * @param {object} params
  * @returns {string}
  */
-function sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly, sortField, sortOrder }) {
-    return String(getStringHash(JSON.stringify({ tags: tags ?? null, fav: fav ?? null, world: world ?? null, excludeIds: excludeIds ?? null, ids: ids ?? null, groupsOnly: !!groupsOnly, sortField: sortField ?? null, sortOrder: sortOrder ?? null })));
+function sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly, charactersOnly = false, sortField, sortOrder }) {
+    return String(getStringHash(JSON.stringify({ tags: tags ?? null, fav: fav ?? null, world: world ?? null, excludeIds: excludeIds ?? null, ids: ids ?? null, groupsOnly: !!groupsOnly, ...(charactersOnly ? { charactersOnly: true } : {}), sortField: sortField ?? null, sortOrder: sortOrder ?? null })));
 }
 
 /**
@@ -11602,6 +11602,32 @@ export async function queryCharacters(directories, params = {}) {
         // args, so its bind value goes right after `args` and before the LIMIT/OFFSET pair - SQLite binds `?`
         // placeholders strictly in the order they appear in the SQL text.
         const orderArgs = sortField === 'random' ? [Number(seed) || 0] : [];
+        const sortColumn = sortField === 'random' ? undefined : QUERYABLE_SORT_COLUMNS[sortField ?? ''];
+        if (sortColumn && entitySortIndexesReady(entry)) {
+            // The same walk as queryEntities()'s sorted page, with characters only: keys through the fav-first sort
+            // indexes or the tag sort tables, under the work cap, a cursor to seek from, full rows for the page alone.
+            const charWhere = { from, where, args };
+            const streams = sortedPageStreams(entry, {
+                column: sortColumn, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly: false, charactersOnly: true, charWhere, groupWhere: null, deletions,
+            });
+            const cursorKey = sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly: false, charactersOnly: true, sortField, sortOrder });
+            const cursorAt = decodeSortedPageCursor(params.cursor, cursorKey);
+            const skip = cursorAt ? cursorAt.skip : numericOffset;
+            const walked = walkSortedStreams(entry.db, streams, cursorAt?.ends ?? null, skip + numericLimit, makeEntityMergeComparator(sortField, sortOrder, seed), Array.isArray(ids) ? Infinity : undefined);
+            const pageIds = walked.rows.slice(skip).map(r => r.id);
+            const more = walked.more && pageIds.length < numericLimit;
+            const ends = { ...(cursorAt?.ends ?? {}), ...walked.ends };
+            const cursor = more || pageIds.length === numericLimit ? encodeSortedPageCursor(cursorKey, ends, Math.max(0, skip - walked.rows.length)) : undefined;
+            const pageJson = JSON.stringify(pageIds);
+            if (wantHashes) {
+                const byId = new Map(Array.from(/** @type {Iterable<HashSourceRow>} */ (entry.db.iterate(`SELECT ${HASH_COLUMNS} FROM characters WHERE id IN (SELECT value FROM json_each(?))`, [pageJson]))).map(r => [r.id, r]));
+                hashRows = pageIds.filter(id => byId.has(id)).map(id => toHashRow(/** @type {HashSourceRow} */ (byId.get(id))));
+            } else {
+                const byId = new Map(Array.from(/** @type {Iterable<{ id: string, shallow_json: string }>} */ (entry.db.iterate('SELECT id, shallow_json FROM characters WHERE id IN (SELECT value FROM json_each(?))', [pageJson]))).map(r => [r.id, r.shallow_json]));
+                rows = pageIds.filter(id => byId.has(id)).map(id => parseShallowResolvingTags(/** @type {string} */ (byId.get(id)), deletions));
+            }
+            return { rows, hashRows, total, approxTotal, seq, ...(cursor !== undefined ? { cursor } : {}), ...(more ? { more: true } : {}) };
+        }
         if (wantHashes) {
             const rawRows = (/** @type {HashSourceRow[]} */ (entry.db.readBounded(`SELECT ${HASH_COLUMNS} FROM ${from} ${where} ${orderBy} LIMIT ? OFFSET ?`, [...args, ...orderArgs, numericLimit, numericOffset], numericLimit)));
             hashRows = rawRows.map(toHashRow);
