@@ -124,6 +124,13 @@ describe('characters-search-index.js: catch-up log line', () => {
             .toContain('seq=10..20 tagseq=5..7 backlog=4 writers=fav:2,tag_ids:1,whole-record:1 tagrenames=2 ');
     });
 
+    test('a full rebuild batch logs its own progress line, naming failures only when there are some', () => {
+        expect(searchIndex.formatRebuildBatchLine({ batch: 3, cards: 500, failed: 0, doneSoFar: 1500, ms: 42 }))
+            .toBe('[search] full rebuild: batch 3, 500 cards, 1500 done so far, 42 ms');
+        expect(searchIndex.formatRebuildBatchLine({ batch: 1, cards: 7, failed: 2, doneSoFar: 7, ms: 3 }))
+            .toBe('[search] full rebuild: batch 1, 7 cards (2 failed), 7 done so far, 3 ms');
+    });
+
     test('a single update logs nothing; several changes, renames, a backlog, a failure or a skipped persist log', () => {
         const single = {
             changed: true, deletes: 0, upserts: 1, ms: 5, seq: 11, seqFrom: 10, tagNameSeqFrom: 5, tagNameSeq: 5,
