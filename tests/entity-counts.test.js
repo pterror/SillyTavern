@@ -374,10 +374,11 @@ describe('entity counters', () => {
             db.prepare('UPDATE characters SET fav = fav WHERE id = ?').run('a1.png');
             db.prepare('UPDATE groups SET fav = fav WHERE id = ?').run('ga1');
             db.prepare('UPDATE characters SET name = name, chat_size = chat_size + 1 WHERE id = ?').run('a1.png');
-            // One changed row per statement; a trigger write would add to total_changes().
-            expect(db.prepare('SELECT total_changes() AS n').get().n - before).toBe(3);
+            // One changed row per statement, plus a1's 2 tag sort rows taking the new chat_size; a counter trigger
+            // write would add to total_changes().
+            expect(db.prepare('SELECT total_changes() AS n').get().n - before).toBe(3 + 2);
             db.prepare('INSERT OR IGNORE INTO character_tags (character_id, tag_id) VALUES (?, ?)').run('a1.png', 't1');
-            expect(db.prepare('SELECT total_changes() AS n').get().n - before).toBe(3);
+            expect(db.prepare('SELECT total_changes() AS n').get().n - before).toBe(3 + 2);
         });
         expectCountersExact();
     });
@@ -392,9 +393,10 @@ describe('entity counters', () => {
         withRawDb(db => {
             const before = db.prepare('SELECT total_changes() AS n').get().n;
             db.prepare('UPDATE characters SET fav = 1 WHERE id = ?').run('a1.png');
-            // The row, then for each of its 4 counters (entity + 3 tags) at most a decrement, a removal at 0 and an increment.
+            // The row, then for each of its 4 counters (entity + 3 tags) at most a decrement, a removal at 0 and an
+            // increment, and its 3 tag sort rows taking the new fav.
             const writes = db.prepare('SELECT total_changes() AS n').get().n - before;
-            expect(writes).toBeLessThanOrEqual(1 + 4 * 3);
+            expect(writes).toBeLessThanOrEqual(1 + 4 * 3 + 3);
             expect(counterMismatches(db)).toEqual([]);
         });
     });

@@ -175,6 +175,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {boolean} [tagNameKeysReady] Set once tagNameKeysReady() is true, which stays true.
  * @property {boolean} [tagFolderUsageIndex] Set once the tags_folder_usage_count index is found, which stays.
  * @property {boolean} [entitySortIndexes] Set once every ENTITY_SORT_INDEXES index is found, which stays.
+ * @property {boolean} [tagSortFilled] Set once fillTagSortTablesIfNeeded() has finished, which stays.
  * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
  */
 
@@ -1222,8 +1223,9 @@ function migrateCardJsonColumn(db, directories) {
     }
 
     // A trigger that names `characters` makes the RENAME below fail while the table is gone. The rows are copied
-    // unchanged, so the counters stay right; getEntry() creates the triggers again after this.
+    // unchanged, so the counters and the tag sort rows stay right; getEntry() creates the triggers again after this.
     db.exec(DROP_ENTITY_COUNT_TRIGGERS_SQL);
+    db.exec(DROP_TAG_SORT_TRIGGERS_SQL);
     db.exec('CREATE TABLE characters_new (' + columns.map(c => {
         let def = `${/** @type {string} */ (c.name)} ${/** @type {string} */ (c.type)}`;
         if (c.name === 'card_json' || c.notnull) def += ' NOT NULL';
@@ -1512,6 +1514,8 @@ async function getEntry(directories) {
     replaceTagUsageTriggers(db);
     // Last: the group triggers read groups.fav, which migrateGroupsColumns() adds to an old table.
     db.exec(ENTITY_COUNT_TRIGGERS_SQL);
+    db.exec(TAG_SORT_TABLES_SQL);
+    db.exec(TAG_SORT_TRIGGERS_SQL);
     defineRandHash(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
@@ -4539,6 +4543,96 @@ function entityCountTriggers({ name, table, tagTable, entityColumn, tagRowCounts
     return triggers.map(([triggerName, when, body]) => ({ name: triggerName, sql: `CREATE TRIGGER IF NOT EXISTS ${triggerName} ${when} BEGIN ${body} END;` }));
 }
 
+/**
+ * One kind of entity's tag sort table (search plan step 5): one row per tag row whose entity exists, holding the
+ * entity's sort keys, so an included tag's entities can be read in a sort's order and a page stops after the page.
+ * Its columns are prefixed `k_` so a query joining it to the entity table names no column twice.
+ * @typedef {object} TagSortKind
+ * @property {'character' | 'group'} name
+ * @property {'characters' | 'groups'} table
+ * @property {'character_tags' | 'group_tags'} tagTable
+ * @property {'character_id' | 'group_id'} entityColumn
+ * @property {'character_tag_sort' | 'group_tag_sort'} sortTable
+ * @property {{ key: string, source: string }[]} columns Each sort key column and the entity column it copies.
+ * @property {string} tieKey The tie key, over the sort table's `entity_id`.
+ * @property {(column: string) => string} tagRowCounts Whether a tag row with this entity id counts for its tag.
+ */
+
+/** @type {TagSortKind[]} */
+const TAG_SORT_KINDS = [
+    {
+        name: 'character', table: 'characters', tagTable: 'character_tags', entityColumn: 'character_id', sortTable: 'character_tag_sort',
+        columns: ['fav', 'name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'].map(c => ({ key: `k_${c}`, source: c })),
+        tieKey: 'entity_id',
+        tagRowCounts: () => 'true',
+    },
+    {
+        name: 'group', table: 'groups', tagTable: 'group_tags', entityColumn: 'group_id', sortTable: 'group_tag_sort',
+        columns: ['fav', 'name_fold', 'date_added', 'date_last_chat', 'chat_size'].map(c => ({ key: `k_${c}`, source: c })),
+        tieKey: '(entity_id || \'.json\')',
+        tagRowCounts: groupTagRowIsGroupSql,
+    },
+];
+
+/**
+ * The tables, indexes and triggers of one kind's tag sort table. The triggers keep a row for every tag row whose
+ * entity exists, whatever writes; fillTagSortTablesIfNeeded() adds the rows that existed before them.
+ * @param {TagSortKind} kind
+ * @returns {{ tableSql: string, triggers: { name: string, sql: string }[] }}
+ */
+function tagSortSchema({ table, tagTable, entityColumn, sortTable, columns, tieKey, tagRowCounts }) {
+    const keyColumns = columns.map(c => c.key).join(', ');
+    const sortColumns = columns.filter(c => c.key !== 'k_fav');
+    const indexes = [
+        ...sortColumns.flatMap(c => ['ASC', 'DESC'].map(dir =>
+            `CREATE INDEX IF NOT EXISTS idx_${sortTable}_${c.source}_${dir.toLowerCase()} ON ${sortTable}(tag_id, k_fav, ${c.key} ${dir}, ${tieKey} ASC);`)),
+        `CREATE INDEX IF NOT EXISTS idx_${sortTable}_key ON ${sortTable}(tag_id, k_fav, ${tieKey} ASC);`,
+        `CREATE INDEX IF NOT EXISTS idx_${sortTable}_entity ON ${sortTable}(entity_id, tag_id);`,
+    ];
+    const tableSql = `
+        CREATE TABLE IF NOT EXISTS ${sortTable} (
+            tag_id    TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            ${columns.map(c => `${c.key} ${c.source === 'name_fold' ? 'TEXT' : 'INTEGER'}`).join(',\n            ')},
+            PRIMARY KEY (tag_id, entity_id)
+        ) WITHOUT ROWID;
+        ${indexes.join('\n        ')}`;
+    const fromEntity = (/** @type {string} */ ref) => columns.map(c => `${ref}.${c.source}`).join(', ');
+    const changed = columns.map(c => `OLD.${c.source} IS NOT NEW.${c.source}`).join(' OR ');
+    const triggers = [
+        [`trg_${table}_tagsort_ai`, `AFTER INSERT ON ${table}`, `
+            INSERT OR REPLACE INTO ${sortTable} (tag_id, entity_id, ${keyColumns})
+                SELECT tag_id, NEW.id, ${fromEntity('NEW')} FROM ${tagTable} WHERE ${entityColumn} = NEW.id AND ${tagRowCounts(entityColumn)};`],
+        [`trg_${table}_tagsort_ad`, `AFTER DELETE ON ${table}`, `
+            DELETE FROM ${sortTable} WHERE entity_id = OLD.id;`],
+        [`trg_${table}_tagsort_au`, `AFTER UPDATE OF ${columns.map(c => c.source).join(', ')} ON ${table} WHEN ${changed}`, `
+            UPDATE ${sortTable} SET ${columns.map(c => `${c.key} = NEW.${c.source}`).join(', ')} WHERE entity_id = NEW.id;`],
+        [`trg_${tagTable}_tagsort_ai`, `AFTER INSERT ON ${tagTable} WHEN ${tagRowCounts(`NEW.${entityColumn}`)}`, `
+            INSERT OR REPLACE INTO ${sortTable} (tag_id, entity_id, ${keyColumns})
+                SELECT NEW.tag_id, id, ${fromEntity(table)} FROM ${table} WHERE id = NEW.${entityColumn};`],
+        [`trg_${tagTable}_tagsort_ad`, `AFTER DELETE ON ${tagTable}`, `
+            DELETE FROM ${sortTable} WHERE tag_id = OLD.tag_id AND entity_id = OLD.${entityColumn};`],
+        [`trg_${tagTable}_tagsort_au`, `AFTER UPDATE ON ${tagTable}`, `
+            DELETE FROM ${sortTable} WHERE tag_id = OLD.tag_id AND entity_id = OLD.${entityColumn};
+            INSERT OR REPLACE INTO ${sortTable} (tag_id, entity_id, ${keyColumns})
+                SELECT NEW.tag_id, id, ${fromEntity(table)} FROM ${table} WHERE id = NEW.${entityColumn} AND ${tagRowCounts(`NEW.${entityColumn}`)};`],
+    ];
+    return {
+        tableSql,
+        triggers: triggers.map(([name, when, body]) => ({ name, sql: `CREATE TRIGGER IF NOT EXISTS ${name} ${when} BEGIN ${body} END;` })),
+    };
+}
+
+const TAG_SORT_SCHEMAS = TAG_SORT_KINDS.map(tagSortSchema);
+const TAG_SORT_TABLES_SQL = TAG_SORT_SCHEMAS.map(schema => schema.tableSql).join('\n');
+const TAG_SORT_TRIGGERS_SQL = TAG_SORT_SCHEMAS.flatMap(schema => schema.triggers).map(trigger => trigger.sql).join('\n');
+const DROP_TAG_SORT_TRIGGERS_SQL = TAG_SORT_SCHEMAS.flatMap(schema => schema.triggers).map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
+/** meta key: every tag sort table holds a row for every tag row that existed before its triggers. */
+const TAG_SORT_FILLED_FLAG = 'tag_sort_tables_filled';
+/** meta key prefix: the last entity id, per kind, whose tag rows the fill has copied. */
+const TAG_SORT_FILL_UPTO_KEY = 'tag_sort_fill_upto_';
+const TAG_SORT_FILL_BATCH_SIZE = 500;
+
 const ENTITY_COUNT_TRIGGERS = ENTITY_COUNT_KINDS.flatMap(entityCountTriggers);
 const ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => trigger.sql).join('\n');
 const DROP_ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
@@ -6457,6 +6551,80 @@ function ownerKindFromRowsSync(db, ownerId) {
         console.warn(color.yellow(`[character-metadata] Message tree owner ${ownerId} matches more than one entity (${matches.map(m => `${m.kind} ${m.rowId}`).join(', ')}), so its chat stats aren't kept.`));
     }
     return undefined;
+}
+
+/**
+ * Copies into the tag sort tables the tag rows that existed before their triggers did, a batch of entities at a
+ * time in id order, pausing between batches; the triggers keep every row written since. INSERT OR IGNORE leaves a
+ * row a trigger already wrote, which is current. /query reads the tables only once this has finished.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{ batches: number, rowsChanged: number } | undefined>}
+ */
+export async function fillTagSortTablesIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
+
+    let batches = 0;
+    let rowsChanged = 0;
+    for (const { name, table, tagTable, entityColumn, sortTable, columns, tagRowCounts } of TAG_SORT_KINDS) {
+        const uptoKey = `${TAG_SORT_FILL_UPTO_KEY}${name}`;
+        const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: uptoKey }));
+        if (saved?.value === '\u0000done') continue;
+        /** @type {string | null} */
+        let after = saved ? saved.value : null;
+        for (;;) {
+            /** @type {string[]} */
+            const page = [];
+            const rows = after === null
+                ? db.iterate(`SELECT id FROM ${table} ORDER BY id LIMIT @limit`, { limit: TAG_SORT_FILL_BATCH_SIZE })
+                : db.iterate(`SELECT id FROM ${table} WHERE id > @after ORDER BY id LIMIT @limit`, { after, limit: TAG_SORT_FILL_BATCH_SIZE });
+            for (const row of /** @type {Iterable<{ id: string }>} */ (rows)) page.push(row.id);
+            const last = page.length > 0 ? page[page.length - 1] : after;
+            const done = page.length < TAG_SORT_FILL_BATCH_SIZE;
+            const state = { inserted: 0 };
+            db.transaction(() => {
+                // Reset here: a transaction that hits busy is rolled back and rerun.
+                state.inserted = 0;
+                if (page.length > 0) {
+                    const range = after === null ? 'e.id <= @last' : 'e.id > @after AND e.id <= @last';
+                    const result = db.run(
+                        `INSERT OR IGNORE INTO ${sortTable} (tag_id, entity_id, ${columns.map(c => c.key).join(', ')})
+                            SELECT t.tag_id, e.id, ${columns.map(c => `e.${c.source}`).join(', ')}
+                            FROM ${table} e JOIN ${tagTable} t ON t.${entityColumn} = e.id
+                            WHERE ${range} AND ${tagRowCounts(`t.${entityColumn}`)}`,
+                        after === null ? { last } : { after, last },
+                    );
+                    state.inserted = Number(result.changes);
+                }
+                db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                    { key: uptoKey, value: done ? '\u0000done' : /** @type {string} */ (last) });
+            });
+            batches++;
+            rowsChanged += state.inserted;
+            if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+            if (done) break;
+            after = last;
+            await delay(MIGRATION_BATCH_PAUSE_MS);
+        }
+    }
+    db.run('INSERT INTO meta (key, value) VALUES (@key, \'1\') ON CONFLICT(key) DO NOTHING', { key: TAG_SORT_FILLED_FLAG });
+    entry.tagSortFilled = true;
+    if (batches > 0 && !isReadOnlyMode()) db.checkpoint();
+    return { batches, rowsChanged };
+}
+
+/**
+ * Whether the tag sort tables are filled. Stays true once it is.
+ * @param {MetadataDbEntry} entry
+ * @returns {boolean}
+ */
+function tagSortTablesReady(entry) {
+    if (entry.tagSortFilled === true) return true;
+    if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: TAG_SORT_FILLED_FLAG })) return false;
+    entry.tagSortFilled = true;
+    return true;
 }
 
 /**
@@ -9978,6 +10146,60 @@ export async function seedCardTagsForSingleCharacter(directories, avatar, { only
 // Columns queryCharacters() may sort by via a plain `ORDER BY <column>`. Deliberately excludes 'random'
 // (sorts by RANDHASH(id, seed), not a column) and 'search' (relevance order supplied by the caller as idOrder).
 /** @type {Record<string, string>} */
+/**
+ * When a tag filter can be read from the tag sort tables: no id list, 'and' mode, at least one included tag and no
+ * marked tag touching the filter. For each kind, the driver is the included tag with the fewest entities of that kind
+ * (by entity_tag_counts once filled, otherwise the first), and the others are checked per row.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {{ tags?: any, ids?: string[] }} filter
+ * @param {import('./tag-deletions.js').TagDeletions} deletions
+ * @returns {{ character: { driver: string, others: string[] }, group: { driver: string, others: string[] }, rest: { exclude: string[], mode: 'and' } } | null}
+ */
+function includedTagSortPlan(db, { tags, ids }, deletions) {
+    if (Array.isArray(ids)) return null;
+    if (!tags || tags.mode === 'or') return null;
+    if (expandTagFilter(tags, deletions)) return null;
+    const include = Array.isArray(tags.include) ? [...new Set(tags.include.filter(Boolean).map(String))] : [];
+    if (include.length === 0) return null;
+    const exclude = Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean).map(String) : [];
+    /** @param {'character' | 'group'} kind */
+    const order = (kind) => {
+        const filled = db.get('SELECT 1 FROM entity_count_fill WHERE kind = @kind AND done = 1', { kind });
+        if (!filled || include.length === 1) return { driver: include[0], others: include.slice(1) };
+        const sized = include.map(tagId => ({
+            tagId,
+            n: Number(/** @type {{ n: number }} */ (db.get('SELECT COALESCE(SUM(count), 0) AS n FROM entity_tag_counts WHERE tag_id = @tagId AND kind = @kind', { tagId, kind })).n),
+        }));
+        sized.sort((a, b) => a.n - b.n);
+        return { driver: sized[0].tagId, others: sized.slice(1).map(x => x.tagId) };
+    };
+    return { character: order('character'), group: order('group'), rest: { exclude, mode: 'and' } };
+}
+
+/**
+ * A column list such as ENTITY_CHARACTER_COLUMNS with each plain column name qualified by its table, for a query
+ * that joins another table.
+ * @param {string} columns
+ * @param {string} table
+ * @returns {string}
+ */
+function qualifiedColumns(columns, table) {
+    return columns.split(',').map(part => {
+        const column = part.trim();
+        if (/^[a-z_]+$/.test(column)) return `${table}.${column}`;
+        return column.replace(/^([a-z_]+)( as [a-z_]+)$/, `${table}.$1$2`);
+    }).join(', ');
+}
+
+/**
+ * The conditions of a buildWhereClause()/buildGroupWhereClause() result, without its WHERE.
+ * @param {{ where: string }} built
+ * @returns {string[]}
+ */
+function whereClausesOf(built) {
+    return built.where ? [built.where.replace(/^WHERE /, '')] : [];
+}
+
 /** The sort columns /query orders characters by, each with an index pair that starts with fav. */
 const CHARACTER_SORT_INDEX_COLUMNS = ['name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'];
 /** The same for groups. create_date sorts groups by date_added; data_size has no group column, so ties decide. */
@@ -11621,7 +11843,41 @@ export async function queryEntities(directories, params = {}) {
             /** @param {string} where @param {string} clause */
             const andWhere = (where, clause) => where ? `${where} AND ${clause}` : `WHERE ${clause}`;
 
-            if (column && entitySortIndexesReady(entry)) {
+            const tagStreams = column && entitySortIndexesReady(entry) && tagSortTablesReady(entry)
+                ? includedTagSortPlan(entry.db, { tags, ids }, deletions)
+                : null;
+            if (column && tagStreams) {
+                // An included tag's entities read from its tag sort table, in the page's order, one stream per kind
+                // and fav value; the other included tags and every other filter are checked per row.
+                const keyColumn = column === 'fav' ? 'name_fold' : column;
+                const keyDirection = column !== 'fav' && sortOrder === 'desc' ? 'DESC' : 'ASC';
+                const favValues = typeof fav === 'boolean' ? [fav ? 1 : 0] : [1, 0];
+                const restCharWhere = buildWhereClause({ tags: tagStreams.rest, fav, world, excludeIds }, deletions);
+                const restGroupWhere = buildGroupWhereClause({ tags: tagStreams.rest, fav, excludeIds }, deletions);
+                for (const favValue of favValues) {
+                    if (!groupsOnly) {
+                        const probes = tagStreams.character.others.map(() => 'EXISTS (SELECT 1 FROM character_tags WHERE character_id = characters.id AND tag_id = ?)');
+                        streams.push(readStream(
+                            `SELECT ${qualifiedColumns(ENTITY_CHARACTER_COLUMNS, 'characters')}
+                            FROM character_tag_sort s CROSS JOIN characters ON characters.id = s.entity_id
+                            WHERE ${['s.tag_id = ?', 's.k_fav = ?', ...whereClausesOf(restCharWhere), ...probes].join(' AND ')}
+                            ORDER BY s.k_${keyColumn} ${keyDirection}, s.entity_id ASC
+                            LIMIT ?`,
+                            [tagStreams.character.driver, favValue, ...restCharWhere.args, ...tagStreams.character.others, fetchLimit],
+                        ));
+                    }
+                    const groupKey = keyColumn === 'create_date' ? 'date_added' : keyColumn === 'data_size' ? null : keyColumn;
+                    const probes = tagStreams.group.others.map(() => 'EXISTS (SELECT 1 FROM group_tags WHERE group_id = groups.id AND tag_id = ?)');
+                    streams.push(readStream(
+                        `SELECT ${qualifiedColumns(ENTITY_GROUP_COLUMNS, 'groups')}
+                        FROM group_tag_sort s CROSS JOIN groups ON groups.id = s.entity_id
+                        WHERE ${['s.tag_id = ?', 's.k_fav = ?', ...whereClausesOf(restGroupWhere), ...probes].join(' AND ')}
+                        ORDER BY ${groupKey ? `s.k_${groupKey} ${keyDirection}, ` : ''}(s.entity_id || '.json') ASC
+                        LIMIT ?`,
+                        [tagStreams.group.driver, favValue, ...restGroupWhere.args, ...tagStreams.group.others, fetchLimit],
+                    ));
+                }
+            } else if (column && entitySortIndexesReady(entry)) {
                 // One stream per table and fav value, each read through its fav-first index in the page's order,
                 // so each stops after fetchLimit rows. The fav sort orders by name inside each fav value.
                 const keyColumn = column === 'fav' ? 'name_fold' : column;
