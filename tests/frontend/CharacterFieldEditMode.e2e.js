@@ -12,7 +12,8 @@ const MESSAGE_BLOCKED_TOAST = 'A message is being edited - confirm or cancel it 
  * @typedef {object} Field
  * @property {string} id Textarea id.
  * @property {string} tab The `charInfoTabs_tab` radio value of the field's tab.
- * @property {string} key The field's name both in the create request and under the stored card's `data`.
+ * @property {string} key The field's name in the create request, and under the stored card's `data` unless `stored` says otherwise.
+ * @property {string[]} [stored] Where the stored card keeps the value, when that isn't `data[key]`.
  */
 
 /** @type {Field[]} */
@@ -22,7 +23,20 @@ const FIELDS = [
     { id: 'greeting_field', tab: 'greeting', key: 'first_mes' },
     { id: 'system_prompt_textarea', tab: 'mainPrompt', key: 'system_prompt' },
     { id: 'post_history_instructions_textarea', tab: 'postHistoryInstructions', key: 'post_history_instructions' },
+    { id: 'personality_textarea', tab: 'personality', key: 'personality' },
+    { id: 'scenario_pole', tab: 'scenario', key: 'scenario' },
+    { id: 'depth_prompt_prompt', tab: 'characterNote', key: 'depth_prompt_prompt', stored: ['extensions', 'depth_prompt', 'prompt'] },
+    { id: 'mes_example_textarea', tab: 'exampleMessages', key: 'mes_example' },
 ];
+
+/**
+ * @param {any} card A stored card, as /api/characters/get returns it.
+ * @param {Field} field
+ * @returns {any} The field's stored value.
+ */
+function storedValue(card, field) {
+    return (field.stored ?? [field.key]).reduce((value, key) => value?.[key], card.data);
+}
 
 /** Every `charInfoTabs_tab` radio value, in tab order. */
 const TABS = ['creatorNotes', 'description', 'greeting', 'mainPrompt', 'postHistoryInstructions', 'personality', 'scenario', 'characterNote', 'exampleMessages'];
@@ -345,7 +359,7 @@ test.describe('character field edit mode', () => {
                     // eslint-disable-next-line playwright/no-wait-for-timeout
                     await page.waitForTimeout(await getAutoSaveTimeout(page) + 2000);
                     expect(saves).toEqual([]);
-                    expect((await fetchStoredCharacter(page, avatar)).data[field.key]).toBe('original');
+                    expect(storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('original');
                     await expectEditMode(page, field);
                     await fieldLocators(page, field.id).cancel.click();
                 });
@@ -360,7 +374,7 @@ test.describe('character field edit mode', () => {
                     await f.done.click();
                     await expectPreviewMode(page, field);
                     await expect(f.preview).toContainText('confirmed');
-                    await expect.poll(async () => (await fetchStoredCharacter(page, avatar)).data[field.key]).toBe('confirmed');
+                    await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('confirmed');
                     expect(saves.length).toBeGreaterThan(0);
                 });
             });
@@ -373,7 +387,7 @@ test.describe('character field edit mode', () => {
                     await f.textarea.press('Control+Enter');
                     await expectPreviewMode(page, field);
                     await expect(f.preview).toContainText('confirmed by key');
-                    await expect.poll(async () => (await fetchStoredCharacter(page, avatar)).data[field.key]).toBe('confirmed by key');
+                    await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('confirmed by key');
                 });
             });
 
@@ -388,7 +402,7 @@ test.describe('character field edit mode', () => {
                     await expect(f.textarea).toHaveValue('original');
                     await expect(f.preview).toContainText('original');
                     expect(saves).toEqual([]);
-                    expect((await fetchStoredCharacter(page, avatar)).data[field.key]).toBe('original');
+                    expect(storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('original');
                 });
             });
 
@@ -403,7 +417,7 @@ test.describe('character field edit mode', () => {
                     await expect(f.textarea).toHaveValue('original');
                     await expect(f.preview).toContainText('original');
                     expect(saves).toEqual([]);
-                    expect((await fetchStoredCharacter(page, avatar)).data[field.key]).toBe('original');
+                    expect(storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('original');
                 });
             });
 
@@ -415,7 +429,7 @@ test.describe('character field edit mode', () => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
                             await f.textarea.fill('autosaved');
-                            await expect.poll(async () => (await fetchStoredCharacter(page, avatar)).data[field.key], { timeout: 10000 }).toBe('autosaved');
+                            await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field), { timeout: 10000 }).toBe('autosaved');
                             await expectEditMode(page, field);
                             await f.cancel.click();
                         });
@@ -434,7 +448,7 @@ test.describe('character field edit mode', () => {
                             await f.textarea.press('Escape');
                             await expectPreviewMode(page, field);
                             await expect(f.preview).toContainText('confirmed by escape');
-                            await expect.poll(async () => (await fetchStoredCharacter(page, avatar)).data[field.key]).toBe('confirmed by escape');
+                            await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('confirmed by escape');
                         });
                     } finally {
                         await setPowerUserSetting(page, 'auto_save_msg_edits', previous);
@@ -448,12 +462,12 @@ test.describe('character field edit mode', () => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
                             await f.textarea.fill('kept');
-                            await expect.poll(async () => (await fetchStoredCharacter(page, avatar)).data[field.key], { timeout: 10000 }).toBe('kept');
+                            await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field), { timeout: 10000 }).toBe('kept');
                             await f.cancel.click();
                             await expectPreviewMode(page, field);
                             await expect(f.textarea).toHaveValue('kept');
                             await expect(f.preview).toContainText('kept');
-                            expect((await fetchStoredCharacter(page, avatar)).data[field.key]).toBe('kept');
+                            expect(storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('kept');
                         });
                     } finally {
                         await setPowerUserSetting(page, 'auto_save_msg_edits', previous);
@@ -640,7 +654,7 @@ test.describe('character field edit mode', () => {
             });
 
             test('switching tabs keeps the edit open', async ({ page }) => {
-                const nextTab = TABS[TABS.indexOf(field.tab) + 1];
+                const nextTab = TABS[(TABS.indexOf(field.tab) + 1) % TABS.length];
                 await withCharacter(page, field, 'original', async () => {
                     await enterEdit(page, field);
                     const f = fieldLocators(page, field.id);
@@ -852,6 +866,17 @@ test.describe('character field edit mode', () => {
         });
     }
 
+    test('code writing a field outside edit mode, as upstream extensions do, still saves it and updates the preview', async ({ page }) => {
+        const field = FIELDS.find(x => x.id === 'personality_textarea');
+        await withCharacter(page, field, 'original', async (avatar) => {
+            await openInfoTab(page, field.tab);
+            await page.evaluate(() => $('#personality_textarea').val('written by code').trigger('input'));
+            await expectPreviewMode(page, field);
+            await expect(fieldLocators(page, field.id).preview).toContainText('written by code');
+            await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field), { timeout: 10000 }).toBe('written by code');
+        });
+    });
+
     test.describe('rendering', () => {
         test('Greeting renders as chat message 0, HTML included', async ({ page }) => {
             const field = FIELDS.find(x => x.id === 'greeting_field');
@@ -876,7 +901,7 @@ test.describe('character field edit mode', () => {
             });
         });
 
-        for (const id of ['description_textarea', 'system_prompt_textarea', 'post_history_instructions_textarea']) {
+        for (const id of ['description_textarea', 'system_prompt_textarea', 'post_history_instructions_textarea', 'personality_textarea', 'scenario_pole', 'depth_prompt_prompt', 'mes_example_textarea']) {
             test(`${id} renders markdown with raw HTML tags shown literally`, async ({ page }) => {
                 const field = FIELDS.find(x => x.id === id);
                 const text = '<b>literal</b> and **strong** and `<i>code</i>`\n\n> quoted';
@@ -1019,19 +1044,27 @@ test.describe('expanded editor layer', () => {
     });
 
     test('an .editor_maximize field opens the same layer, kept in sync, and Escape returns to the field', async ({ page }) => {
-        const personality = { id: 'personality_textarea', tab: 'personality', key: 'personality' };
-        await withCharacter(page, personality, 'calm', async () => {
-            await openInfoTab(page, personality.tab);
-            await page.locator('.editor_maximize[data-for="personality_textarea"]').click();
+        // A field and button of its own, as an extension would add them, so the test doesn't depend on which drawer holds one.
+        await page.evaluate(() => {
+            const holder = document.createElement('div');
+            holder.id = 'expand_test_holder';
+            holder.style.cssText = 'position: fixed; top: 60px; left: 10px; z-index: 5000;';
+            holder.innerHTML = '<i class="editor_maximize fa-solid fa-maximize" data-for="expand_test_textarea"></i><textarea id="expand_test_textarea">calm</textarea>';
+            document.body.append(holder);
+        });
+        try {
+            await page.locator('.editor_maximize[data-for="expand_test_textarea"]').click();
             const editor = layer(page).locator('textarea.maximized_textarea');
             await expect(editor).toBeVisible();
             await expect(page.locator('dialog[open]')).toHaveCount(0);
             await expect(editor).toHaveValue('calm');
             await editor.fill('calm and kind');
-            await expect(page.locator('#personality_textarea')).toHaveValue('calm and kind');
+            await expect(page.locator('#expand_test_textarea')).toHaveValue('calm and kind');
             await page.keyboard.press('Escape');
             await expect(layer(page)).toHaveCount(0);
-            await expect(page.locator('#personality_textarea')).toBeFocused();
-        });
+            await expect(page.locator('#expand_test_textarea')).toBeFocused();
+        } finally {
+            await page.evaluate(() => document.getElementById('expand_test_holder')?.remove());
+        }
     });
 });

@@ -6544,11 +6544,15 @@
                                 <div id="charInfoTab_personality" class="char_info_tab_panel tab-contents">
                                     <div id="personality_div">
                                         <h4 class="flex-container alignItemsBaseline">
-                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="personality_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#personality-summary" class="notes-link" target="_blank"><span class="fa-solid fa-circle-question note-link-span"></span></a>
+                                            <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="personality_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="personality_textarea" title="Edit" data-i18n="[title]Edit"></i>
+                                            <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="personality_textarea" title="Confirm" data-i18n="[title]Confirm"></i>
+                                            <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="personality_textarea" title="Cancel" data-i18n="[title]Cancel"></i>
+                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#personality-summary" class="notes-link field_edit_nav" target="_blank"><span class="fa-solid fa-circle-question note-link-span"></span></a>
                                             <small>(<span data-token-counter="personality_textarea" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
-                                        <textarea id="personality_textarea" name="personality" data-macros data-i18n="[placeholder](A brief description of the personality)" placeholder="(A brief description of the personality)" form="form_create" class="text_pole autoSetHeight" autocomplete="off" rows="4"></textarea>
+                                        <textarea id="personality_textarea" name="personality" data-macros data-i18n="[placeholder](A brief description of the personality)" placeholder="(A brief description of the personality)" form="form_create" class="field_edit_textarea text_pole autoSetHeight" autocomplete="off" rows="4"></textarea>
+                                        <div class="field_preview macro_preview_content" data-for="personality_textarea"></div>
                                     </div>
                                 </div>
                                 <label class="tab-title">
@@ -6558,13 +6562,17 @@
                                 <div id="charInfoTab_scenario" class="char_info_tab_panel tab-contents">
                                     <div id="scenario_div">
                                         <h4 class="flex-container alignItemsBaseline">
-                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="scenario_pole" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#scenario" class="notes-link" target="_blank">
+                                            <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="scenario_pole" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                            <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="scenario_pole" title="Edit" data-i18n="[title]Edit"></i>
+                                            <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="scenario_pole" title="Confirm" data-i18n="[title]Confirm"></i>
+                                            <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="scenario_pole" title="Cancel" data-i18n="[title]Cancel"></i>
+                                            <a href="https://docs.sillytavern.app/usage/core-concepts/characterdesign/#scenario" class="notes-link field_edit_nav" target="_blank">
                                                 <span class="fa-solid fa-circle-question note-link-span"></span>
                                             </a>
                                             <small>(<span data-token-counter="scenario_pole" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
-                                        <textarea id="scenario_pole" name="scenario" data-macros data-i18n="[placeholder](Circumstances and context of the interaction)" placeholder="(Circumstances and context of the interaction)" class="text_pole autoSetHeight" value="" autocomplete="off" form="form_create" rows="4"></textarea>
+                                        <textarea id="scenario_pole" name="scenario" data-macros data-i18n="[placeholder](Circumstances and context of the interaction)" placeholder="(Circumstances and context of the interaction)" class="field_edit_textarea text_pole autoSetHeight" value="" autocomplete="off" form="form_create" rows="4"></textarea>
+                                        <div class="field_preview macro_preview_content" data-for="scenario_pole"></div>
                                     </div>
                                 </div>
                                 <label class="tab-title">
@@ -6589,10 +6597,14 @@
                                         </div>
                                         <div class="flex1">
                                             <h4 class="flex-container alignItemsBaseline">
-                                                <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="depth_prompt_prompt" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                                <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="depth_prompt_prompt" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                                <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="depth_prompt_prompt" title="Edit" data-i18n="[title]Edit"></i>
+                                                <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="depth_prompt_prompt" title="Confirm" data-i18n="[title]Confirm"></i>
+                                                <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="depth_prompt_prompt" title="Cancel" data-i18n="[title]Cancel"></i>
                                                 <small>(<span data-token-counter="depth_prompt_prompt" data-token-permanent="true">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                             </h4>
-                                            <textarea id="depth_prompt_prompt" name="depth_prompt_prompt" data-macros class="text_pole autoSetHeight" rows="5" autocomplete="off" form="form_create" data-i18n="[placeholder](Text to be inserted in-chat @ designated depth and role)" placeholder="(Text to be inserted in-chat @ designated depth and role)"></textarea>
+                                            <textarea id="depth_prompt_prompt" name="depth_prompt_prompt" data-macros class="field_edit_textarea text_pole autoSetHeight" rows="5" autocomplete="off" form="form_create" data-i18n="[placeholder](Text to be inserted in-chat @ designated depth and role)" placeholder="(Text to be inserted in-chat @ designated depth and role)"></textarea>
+                                            <div class="field_preview macro_preview_content" data-for="depth_prompt_prompt"></div>
                                         </div>
                                     </div>
                                 </div>
@@ -6604,7 +6616,10 @@
                                     <div id="mes_example_div" class="flex-container flexFlowColumn">
                                         <div>
                                             <h4 class="flex-container alignItemsBaseline">
-                                                <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="mes_example_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                                <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="mes_example_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                                <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="mes_example_textarea" title="Edit" data-i18n="[title]Edit"></i>
+                                                <i class="field_edit_done fa-solid fa-check right_menu_button" data-for="mes_example_textarea" title="Confirm" data-i18n="[title]Confirm"></i>
+                                                <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="mes_example_textarea" title="Cancel" data-i18n="[title]Cancel"></i>
                                                 <small>(<span data-token-counter="mes_example_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                             </h4>
                                             <h5>
@@ -6614,7 +6629,8 @@
                                                 </a>
                                             </h5>
                                         </div>
-                                        <textarea id="mes_example_textarea" class="flexGrow mdHotkeys autoSetHeight" name="mes_example" data-macros data-i18n="[placeholder](Examples of chat dialog. Begin each example with START on a new line.)" placeholder="(Examples of chat dialog. Begin each example with &lt;START&gt; on a new line.)" form="form_create" rows="6"></textarea>
+                                        <textarea id="mes_example_textarea" class="field_edit_textarea flexGrow mdHotkeys autoSetHeight" name="mes_example" data-macros data-i18n="[placeholder](Examples of chat dialog. Begin each example with START on a new line.)" placeholder="(Examples of chat dialog. Begin each example with &lt;START&gt; on a new line.)" form="form_create" rows="6"></textarea>
+                                        <div class="field_preview macro_preview_content" data-for="mes_example_textarea"></div>
                                         <!-- TODO: Example chats handhold-editor concept: https://gist.github.com/Cohee1207/50da02a4001ac1adae9b440f9b8e1079 -->
                                     </div>
                                 </div>

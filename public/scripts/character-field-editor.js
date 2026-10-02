@@ -65,6 +65,10 @@ export function insertMacroSpans(html, values) {
  * @property {(value: string) => Promise<boolean>} saveGreetingField
  * @property {(value: string) => Promise<boolean>} saveSystemPromptField
  * @property {(value: string) => Promise<boolean>} savePostHistoryInstructionsField
+ * @property {(value: string) => Promise<boolean>} savePersonalityField
+ * @property {(value: string) => Promise<boolean>} saveScenarioField
+ * @property {(value: string) => Promise<boolean>} saveCharacterNoteField
+ * @property {(value: string) => Promise<boolean>} saveExampleMessagesField
  * @property {(id: string) => void} [onEditStart] Called once a field has entered edit mode.
  * @property {(id: string) => void} [onEditEnd] Called once a field has left edit mode (Done or cancel).
  */
@@ -100,6 +104,10 @@ const FIELDS = {
     greeting_field: { save: () => deps.saveGreetingField, render: renderGreetingPreview },
     system_prompt_textarea: { save: () => deps.saveSystemPromptField, render: renderLiteralTagsPreview },
     post_history_instructions_textarea: { save: () => deps.savePostHistoryInstructionsField, render: renderLiteralTagsPreview },
+    personality_textarea: { save: () => deps.savePersonalityField, render: renderLiteralTagsPreview },
+    scenario_pole: { save: () => deps.saveScenarioField, render: renderLiteralTagsPreview },
+    depth_prompt_prompt: { save: () => deps.saveCharacterNoteField, render: renderLiteralTagsPreview },
+    mes_example_textarea: { save: () => deps.saveExampleMessagesField, render: renderLiteralTagsPreview },
 };
 
 /** @type {{ id: string, original: string, saving: boolean } | null} The one field in edit mode. */

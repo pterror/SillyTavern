@@ -875,6 +875,26 @@ export function savePostHistoryInstructionsField(value) {
     return saveTextField('#post_history_instructions_textarea', 'post_history_instructions', value);
 }
 
+/** @param {string} value @returns {Promise<boolean>} */
+function savePersonalityField(value) {
+    return saveTextField('#personality_textarea', 'personality', value);
+}
+
+/** @param {string} value @returns {Promise<boolean>} */
+function saveScenarioField(value) {
+    return saveTextField('#scenario_pole', 'scenario', value);
+}
+
+/** @param {string} value @returns {Promise<boolean>} */
+function saveCharacterNoteField(value) {
+    return saveTextField('#depth_prompt_prompt', 'depth_prompt_prompt', value);
+}
+
+/** @param {string} value @returns {Promise<boolean>} */
+function saveExampleMessagesField(value) {
+    return saveTextField('#mes_example_textarea', 'mes_example', value);
+}
+
 let is_delete_mode = false;
 let fav_ch_checked = false;
 let scrollLock = false;
@@ -1371,6 +1391,10 @@ async function firstLoadInit() {
         saveGreetingField,
         saveSystemPromptField,
         savePostHistoryInstructionsField,
+        savePersonalityField,
+        saveScenarioField,
+        saveCharacterNoteField,
+        saveExampleMessagesField,
         onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
         onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
     });
@@ -8792,15 +8816,15 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
     $('#tags_textarea').val(characterFormValue(character, '#tags_textarea'));
     $('#creator_textarea').val(characterFormValue(character, '#creator_textarea'));
     $('#character_version_textarea').val(characterFormValue(character, '#character_version_textarea'));
-    $('#personality_textarea').val(characterFormValue(character, '#personality_textarea'));
+    setFieldValue('personality_textarea', characterFormValue(character, '#personality_textarea'));
     const greetingModel = cardToGreetingsModel(character);
     setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
-    $('#scenario_pole').val(characterFormValue(character, '#scenario_pole'));
-    $('#depth_prompt_prompt').val(characterFormValue(character, '#depth_prompt_prompt'));
+    setFieldValue('scenario_pole', characterFormValue(character, '#scenario_pole'));
+    setFieldValue('depth_prompt_prompt', characterFormValue(character, '#depth_prompt_prompt'));
     $('#depth_prompt_depth').val(characterFormValue(character, '#depth_prompt_depth'));
     $('#depth_prompt_role').val(characterFormValue(character, '#depth_prompt_role'));
     $('#talkativeness_slider').val(characterFormValue(character, '#talkativeness_slider'));
-    $('#mes_example_textarea').val(characterFormValue(character, '#mes_example_textarea'));
+    setFieldValue('mes_example_textarea', characterFormValue(character, '#mes_example_textarea'));
     refreshCharInfoTabDimming();
     $('#selected_chat_pole').val(character.chat);
     setFormBaseline('#selected_chat_pole', String($('#selected_chat_pole').val()));
@@ -8888,15 +8912,15 @@ function select_rm_create({ switchMenu = true } = {}) {
     $('#tags_textarea').val(create_save.tags);
     $('#creator_textarea').val(create_save.creator);
     $('#character_version_textarea').val(create_save.character_version);
-    $('#personality_textarea').val(create_save.personality);
+    setFieldValue('personality_textarea', create_save.personality);
     const greetingModel = cardToGreetingsModel({ first_mes: create_save.first_message, data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } });
     setGreetingPagerGreetings(greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
     $('#talkativeness_slider').val(create_save.talkativeness);
-    $('#scenario_pole').val(create_save.scenario);
-    $('#depth_prompt_prompt').val(create_save.depth_prompt_prompt);
+    setFieldValue('scenario_pole', create_save.scenario);
+    setFieldValue('depth_prompt_prompt', create_save.depth_prompt_prompt);
     $('#depth_prompt_depth').val(create_save.depth_prompt_depth);
     $('#depth_prompt_role').val(create_save.depth_prompt_role);
-    $('#mes_example_textarea').val(create_save.mes_example);
+    setFieldValue('mes_example_textarea', create_save.mes_example);
     refreshCharInfoTabDimming();
     autosizeTextareas(document.getElementById('form_create'));
     $('#character_json_data').val('');
@@ -13294,6 +13318,15 @@ jQuery(async function () {
 
     Object.keys(elementsToUpdate).forEach(function (id) {
         $(id).on('input', function () {
+            // A previewed field in edit mode saves through the field editor (Done, or autosave). Input outside
+            // edit mode comes from code writing the field, as upstream extensions do; it saves as before.
+            const fieldId = id.slice(1);
+            if (isFieldInEdit(fieldId)) {
+                return;
+            }
+            if (this instanceof HTMLTextAreaElement) {
+                setFieldValue(fieldId, String($(id).val() ?? ''));
+            }
             if (menu_type == 'create') {
                 elementsToUpdate[id]();
             } else {
