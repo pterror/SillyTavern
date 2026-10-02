@@ -21,6 +21,7 @@ const { history, historyKeymap, defaultKeymap } = cmCommands;
  *   false.
  * @property {import('./search.js').SearchOptions | false} [search] Find and replace and its presets; on unless false.
  * @property {string} [contentClass] Classes the field's preview has, so theme CSS styles the editor's text the same.
+ * @property {string} [editorClass] Classes for the editor's root, for field-specific CSS.
  */
 
 /**
@@ -48,8 +49,8 @@ const STOPPED = [...FORWARDED, 'input', 'beforeinput', 'focusin', 'focusout', 'c
 /** What the editor takes from the textarea's own look (inline style, classes, theme CSS by id), so it looks the same. */
 const COPIED_STYLE = [
     'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing', 'word-spacing',
-    'word-break', 'overflow-wrap', 'color', 'background-color', 'border-top', 'border-right', 'border-bottom',
-    'border-left', 'border-radius', 'max-height', 'text-align',
+    'word-break', 'overflow-wrap', 'color', 'background-color', 'background-image', 'transition', 'border-top',
+    'border-right', 'border-bottom', 'border-left', 'border-radius', 'max-height', 'text-align',
 ];
 const COPIED_CONTENT_STYLE = ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'];
 
@@ -159,6 +160,8 @@ export function mountLiveEditor(textarea, options = {}) {
         }
     });
 
+    const placeholderSlot = new Compartment();
+
     const view = new EditorView({
         state: EditorState.create({
             doc: textareaValue.get.call(textarea),
@@ -175,12 +178,12 @@ export function mountLiveEditor(textarea, options = {}) {
                 history(),
                 keymap.of([...defaultKeymap, ...historyKeymap]),
                 EditorView.lineWrapping,
-                EditorView.editorAttributes.of({ class: 'live-editor' }),
+                EditorView.editorAttributes.of({ class: options.editorClass ? `live-editor ${options.editorClass}` : 'live-editor' }),
                 // First, so listeners on the textarea get every event before the editor's own handlers.
                 Prec.highest(EditorView.domEventHandlers(forwardHandlers)),
                 sync,
                 keepChatScroll,
-                textarea.placeholder ? placeholderExtension(textarea.placeholder) : [],
+                placeholderSlot.of(textarea.placeholder ? placeholderExtension(textarea.placeholder) : []),
                 EditorState.readOnly.of(textarea.readOnly),
                 EditorView.editable.of(!textarea.disabled),
                 EditorView.contentAttributes.of({
@@ -235,9 +238,15 @@ export function mountLiveEditor(textarea, options = {}) {
     textarea.addEventListener('input', onOutsideInput, true);
 
     // Inline styles and classes set on the textarea later (fonts, themes) still reach the editor. The hiding class
-    // changes none of the properties copied, so the textarea can be read while hidden.
-    const observer = new MutationObserver(() => applyLook(view, readLook(textarea)));
-    observer.observe(textarea, { attributes: true, attributeFilter: ['style', 'class'] });
+    // changes none of the properties copied, so the textarea can be read while hidden. So does a changed placeholder
+    // (the chat box's says whether an API is connected).
+    const observer = new MutationObserver((mutations) => {
+        applyLook(view, readLook(textarea));
+        if (mutations.some(m => m.attributeName === 'placeholder')) {
+            view.dispatch({ effects: placeholderSlot.reconfigure(textarea.placeholder ? placeholderExtension(textarea.placeholder) : []) });
+        }
+    });
+    observer.observe(textarea, { attributes: true, attributeFilter: ['style', 'class', 'placeholder'] });
 
     let destroyed = false;
     return {

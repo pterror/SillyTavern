@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, chatBox } from './frontent-test-utils.js';
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
@@ -21,12 +21,11 @@ async function openChatWithCharacterMessage(page) {
     await page.locator('#create_button').evaluate(el => el.click());
     await page.locator('.character_select', { hasText: name }).first().click();
     await page.waitForFunction(n => window['SillyTavern'].getContext().name2 === n, name);
-    const sendTextarea = page.locator('#send_textarea');
-    await sendTextarea.fill(`/sendas name="${name}" hello`);
+    await chatBox(page).fill(`/sendas name="${name}" hello`);
     // Enter can go unhandled while the freshly selected chat loads; the text stays in the box until it is sent.
     await expect(async () => {
-        if (await sendTextarea.inputValue()) {
-            await sendTextarea.press('Enter');
+        if (await page.locator('#send_textarea').inputValue()) {
+            await chatBox(page).press('Enter');
         }
         await expect(page.locator('#chat .mes .avatar').first()).toBeVisible({ timeout: 2000 });
     }).toPass();

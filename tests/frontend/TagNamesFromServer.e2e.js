@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
 
 // Finding a tag by its name, in the tag input, the slash commands, a card's tag import, the delete popup's merge
 // picker and a lorebook entry's character filter, asks the server: none of them needs the page to hold the tag. Each
@@ -191,7 +191,7 @@ test.describe('tag names are looked up on the server', () => {
         }, `TagNamesRandom-${stamp}`);
         await api(page, '/api/tags/assign', { id: avatar, tagId: `random-used-${stamp}` });
 
-        const input = page.locator('#send_textarea');
+        const input = chatBox(page);
         await input.click();
         await input.pressSequentially(`/random ${stamp}`);
         // An optional argument's options show when asked for.

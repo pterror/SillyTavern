@@ -241,7 +241,7 @@ import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, showMediaLightbox } from './scripts/chats.js';
 import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
-import { initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
+import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
@@ -1403,7 +1403,15 @@ async function firstLoadInit() {
         onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
         onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
     });
-    initChatLiveEditor({ messageFormatting, substituteParams, power_user, uploadImage: uploadEditorImage });
+    initChatLiveEditor({
+        messageFormatting,
+        substituteParams,
+        power_user,
+        uploadImage: uploadEditorImage,
+        userName: () => name1,
+        nextMessageId: () => chat.length,
+    });
+    initChatBoxEditor(/** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')));
     initCharInfoTabDimming(() => greetingPagerState.greetings.some((greeting, i) => i !== greetingPagerState.index && greeting !== ''));
     initDefaultSlashCommands();
     initTextGenModels();
