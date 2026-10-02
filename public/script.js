@@ -240,6 +240,7 @@ import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, showMediaLightbox } from './scripts/chats.js';
+import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
@@ -7101,7 +7102,7 @@ export async function getChat({ isNewChat = false } = {}) {
 
         // Focus on the textarea if not already focused on a visible text input
         delay(debounce_timeout.short).then(() => {
-            if ($(document.activeElement).is('input:visible, textarea:visible')) {
+            if (getMountedTextarea(document.activeElement) || $(document.activeElement).is('input:visible, textarea:visible')) {
                 return;
             }
             $('#send_textarea').trigger('click').trigger('focus');
@@ -13265,7 +13266,7 @@ jQuery(async function () {
         }
     });
     $(document).on('click', event => {
-        if ($(':focus').attr('id') !== 'send_textarea') {
+        if (getFocusedField()?.id !== 'send_textarea') {
             var validIDs = ['options_button', 'send_but', 'mes_impersonate', 'mes_continue', 'send_textarea', 'option_regenerate', 'option_continue'];
             if (!validIDs.includes($(event.target).attr('id'))) {
                 S_TAPreviouslyFocused = false;

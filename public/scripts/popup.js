@@ -3,6 +3,7 @@ import { shouldSendOnEnter } from './RossAscends-mods.js';
 import { t } from './i18n.js';
 import { power_user, toastPositionClasses } from './power-user.js';
 import { clamp, removeFromArray, runAfterAnimation, uuidv4 } from './utils.js';
+import { getFocusedField } from './live-editor/registry.js';
 
 /** @readonly */
 /** @enum {Number} */
@@ -637,20 +638,23 @@ export class Popup {
                     if (evt.altKey || evt.shiftKey)
                         return;
 
+                    // A mounted editor's textarea stands for the editor holding focus.
+                    const active = getFocusedField() ?? document.activeElement;
+
                     // Check if we are the currently active popup
-                    if (this.dlg != document.activeElement?.closest('.popup'))
+                    if (this.dlg != active?.closest('.popup'))
                         return;
 
                     // Check if the current focus is a result control. Only should we apply the complete action
-                    const resultControl = document.activeElement?.closest('.result-control');
+                    const resultControl = active?.closest('.result-control');
                     if (!resultControl)
                         return;
 
                     // Check if we are inside an input type text or a textarea field and send on enter is disabled
-                    const textarea = document.activeElement?.closest('textarea');
+                    const textarea = active?.closest('textarea');
                     if (textarea instanceof HTMLTextAreaElement && !shouldSendOnEnter())
                         return;
-                    const input = document.activeElement?.closest('input[type="text"]');
+                    const input = active?.closest('input[type="text"]');
                     if (input instanceof HTMLInputElement && !shouldSendOnEnter())
                         return;
 
@@ -663,7 +667,7 @@ export class Popup {
 
                     evt.preventDefault();
                     evt.stopPropagation();
-                    const result = Number(document.activeElement.getAttribute('data-result') ?? this.defaultResult);
+                    const result = Number(active.getAttribute('data-result') ?? this.defaultResult);
 
                     // Call complete on the popup. Make sure that we handle `onClosing` cancels correctly and don't remove the listener then.
                     await this.complete(result);
