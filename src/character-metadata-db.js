@@ -179,6 +179,7 @@ export const allowExpensiveDuplicateFallback = !!getConfigValue('performance.all
  * @property {boolean} [entitySortIndexes] Set once every ENTITY_SORT_INDEXES index is found, which stays.
  * @property {boolean} [tagSortFilled] Set once fillTagSortTablesIfNeeded() has finished, which stays.
  * @property {boolean} [randomRanksFilled] Set once fillRandomRanksIfNeeded() has finished, which stays.
+ * @property {boolean} [nameOrderFilled] Set once fillNameOrderIfNeeded() has finished, which stays.
  * @property {boolean} [tagQueryColumnsReady] Set once tagQueryColumnsReady() is true, which stays true.
  */
 
@@ -1230,6 +1231,7 @@ function migrateCardJsonColumn(db, directories) {
     db.exec(DROP_ENTITY_COUNT_TRIGGERS_SQL);
     db.exec(DROP_TAG_SORT_TRIGGERS_SQL);
     db.exec(DROP_RANDOM_RANK_TRIGGERS_SQL);
+    db.exec(DROP_NAME_ORDER_TRIGGERS_SQL);
     db.exec('CREATE TABLE characters_new (' + columns.map(c => {
         let def = `${/** @type {string} */ (c.name)} ${/** @type {string} */ (c.type)}`;
         if (c.name === 'card_json' || c.notnull) def += ' NOT NULL';
@@ -1522,6 +1524,8 @@ async function getEntry(directories) {
     db.exec(TAG_SORT_TRIGGERS_SQL);
     db.exec(RANDOM_RANKS_TABLE_SQL);
     db.exec(RANDOM_RANK_TRIGGERS_SQL);
+    db.exec(NAME_ORDER_TABLE_SQL);
+    db.exec(NAME_ORDER_TRIGGERS_SQL);
     defineRandHash(db);
     /** @type {MetadataDbEntry} */
     const entry = { db, directories, batch: null, bootstrapPromise: null };
@@ -4760,6 +4764,71 @@ const RANDOM_RANKS_FILLED_FLAG = 'random_ranks_filled';
 const RANDOM_RANKS_FILL_UPTO_KEY = 'random_ranks_fill_upto_';
 const RANDOM_RANKS_FILL_BATCH_SIZE = 500;
 
+/**
+ * The full name order (search plan step 7f): every character and group holds a gap-spaced position in each of two
+ * orders, so the search index can sort by name exactly. Ascending: `name_fold` ASC, then `tie_key`. Descending:
+ * `name_fold` DESC, then `tie_key` (ties stay in the same order both ways). `tie_key` is the tie rule of step 4:
+ * characters before groups, then the id in UTF-8 bytes, a group's as `<id>.json`.
+ * A NULL position is one that still has to be placed: the triggers write NULL on every add and rename, and
+ * placeNameOrderRows() places them. name_order_changes logs every character whose position changed after its doc
+ * may have been built, so the characters index can update those docs; a row with entity_id NULL means every one.
+ */
+const NAME_ORDER_TABLE_SQL = `
+    CREATE TABLE IF NOT EXISTS name_order (
+        kind      TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        name_fold TEXT NOT NULL,
+        tie_key   TEXT NOT NULL,
+        pos_asc   INTEGER,
+        pos_desc  INTEGER,
+        PRIMARY KEY (kind, entity_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS idx_name_order_asc ON name_order(name_fold ASC, tie_key ASC);
+    CREATE INDEX IF NOT EXISTS idx_name_order_desc ON name_order(name_fold DESC, tie_key ASC);
+    CREATE INDEX IF NOT EXISTS idx_name_order_unplaced ON name_order(kind, entity_id) WHERE pos_asc IS NULL OR pos_desc IS NULL;
+    CREATE TABLE IF NOT EXISTS name_order_changes (
+        seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id TEXT
+    );`;
+
+/** @param {'c' | 'g'} code @param {string} idSql */
+const nameOrderTieKeySql = (code, idSql) => code === 'c' ? `'c' || char(31) || ${idSql}` : `'g' || char(31) || ${idSql} || '.json'`;
+
+const NAME_ORDER_TRIGGERS = [['c', 'characters'], ['g', 'groups']].flatMap(([code, table]) => [
+    {
+        name: `trg_${table}_name_order_ai`,
+        sql: `CREATE TRIGGER IF NOT EXISTS trg_${table}_name_order_ai AFTER INSERT ON ${table} BEGIN
+            INSERT INTO name_order (kind, entity_id, name_fold, tie_key) VALUES ('${code}', NEW.id, NEW.name_fold, ${nameOrderTieKeySql(/** @type {'c'|'g'} */ (code), 'NEW.id')})
+                ON CONFLICT(kind, entity_id) DO UPDATE SET name_fold = excluded.name_fold, pos_asc = NULL, pos_desc = NULL;
+        END;`,
+    },
+    {
+        name: `trg_${table}_name_order_au`,
+        sql: `CREATE TRIGGER IF NOT EXISTS trg_${table}_name_order_au AFTER UPDATE OF name_fold ON ${table} WHEN OLD.name_fold IS NOT NEW.name_fold BEGIN
+            UPDATE name_order SET name_fold = NEW.name_fold, pos_asc = NULL, pos_desc = NULL WHERE kind = '${code}' AND entity_id = NEW.id;
+        END;`,
+    },
+    {
+        name: `trg_${table}_name_order_ad`,
+        sql: `CREATE TRIGGER IF NOT EXISTS trg_${table}_name_order_ad AFTER DELETE ON ${table} BEGIN
+            DELETE FROM name_order WHERE kind = '${code}' AND entity_id = OLD.id;
+        END;`,
+    },
+]);
+const NAME_ORDER_TRIGGERS_SQL = NAME_ORDER_TRIGGERS.map(trigger => trigger.sql).join('\n');
+const DROP_NAME_ORDER_TRIGGERS_SQL = NAME_ORDER_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
+/** meta key: every entity has a name_order row and both orders were numbered once. */
+const NAME_ORDER_FILLED_FLAG = 'name_order_filled';
+/** meta key prefix: how far the name order fill has got, per phase. */
+const NAME_ORDER_FILL_UPTO_KEY = 'name_order_fill_upto_';
+const NAME_ORDER_FILL_BATCH_SIZE = 500;
+/** The gap a fill or an append leaves between neighbouring positions. */
+export const NAME_ORDER_SPACING = 2 ** 16;
+/** Positions lie in (0, NAME_ORDER_LIMIT). With the fav bit above, every search index key stays below 2^53. */
+export const NAME_ORDER_LIMIT = 2 ** 52;
+/** The window a respace starts with, doubled while the window has no room. */
+const NAME_ORDER_RESPACE_WINDOW = 64;
+
 const ENTITY_COUNT_TRIGGERS = ENTITY_COUNT_KINDS.flatMap(entityCountTriggers);
 const ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => trigger.sql).join('\n');
 const DROP_ENTITY_COUNT_TRIGGERS_SQL = ENTITY_COUNT_TRIGGERS.map(trigger => `DROP TRIGGER IF EXISTS ${trigger.name};`).join('\n');
@@ -6838,6 +6907,328 @@ function randomRanksReady(entry) {
     if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: RANDOM_RANKS_FILLED_FLAG })) return false;
     entry.randomRanksFilled = true;
     return true;
+}
+
+/**
+ * @typedef {'asc' | 'desc'} NameOrderDirection
+ * @typedef {{ kind: string, entity_id: string, name_fold: string, tie_key: string, pos: number | null }} NameOrderRow
+ */
+
+/** @param {NameOrderDirection} dir */
+const namePosColumn = dir => dir === 'asc' ? 'pos_asc' : 'pos_desc';
+
+/**
+ * Up to `limit` name_order rows after (name_fold, tie_key) in `dir`'s order, nearest first. Each part reads an index
+ * in its own order, so no row before the key is read.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {NameOrderDirection} dir
+ * @param {string} nameFold
+ * @param {string} tieKey
+ * @param {number} limit
+ * @returns {NameOrderRow[]}
+ */
+function nameOrderRowsAfter(db, dir, nameFold, tieKey, limit) {
+    const pos = namePosColumn(dir);
+    const cols = `kind, entity_id, name_fold, tie_key, ${pos} AS pos`;
+    const sameName = /** @type {NameOrderRow[]} */ (Array.from(db.iterate(
+        `SELECT ${cols} FROM name_order WHERE name_fold = @nameFold AND tie_key > @tieKey ORDER BY tie_key LIMIT @limit`, { nameFold, tieKey, limit })));
+    if (sameName.length >= limit) return sameName;
+    const rest = dir === 'asc'
+        ? `SELECT ${cols} FROM name_order WHERE name_fold > @nameFold ORDER BY name_fold ASC, tie_key ASC LIMIT @limit`
+        : `SELECT ${cols} FROM name_order WHERE name_fold < @nameFold ORDER BY name_fold DESC, tie_key ASC LIMIT @limit`;
+    const restRows = /** @type {NameOrderRow[]} */ (Array.from(db.iterate(rest, { nameFold, limit: limit - sameName.length })));
+    return [...sameName, ...restRows];
+}
+
+/**
+ * Up to `limit` name_order rows before (name_fold, tie_key) in `dir`'s order, nearest first.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {NameOrderDirection} dir
+ * @param {string} nameFold
+ * @param {string} tieKey
+ * @param {number} limit
+ * @returns {NameOrderRow[]}
+ */
+function nameOrderRowsBefore(db, dir, nameFold, tieKey, limit) {
+    const pos = namePosColumn(dir);
+    const cols = `kind, entity_id, name_fold, tie_key, ${pos} AS pos`;
+    const sameName = /** @type {NameOrderRow[]} */ (Array.from(db.iterate(
+        `SELECT ${cols} FROM name_order WHERE name_fold = @nameFold AND tie_key < @tieKey ORDER BY tie_key DESC LIMIT @limit`, { nameFold, tieKey, limit })));
+    if (sameName.length >= limit) return sameName;
+    const rest = dir === 'asc'
+        ? `SELECT ${cols} FROM name_order WHERE name_fold < @nameFold ORDER BY name_fold DESC, tie_key DESC LIMIT @limit`
+        : `SELECT ${cols} FROM name_order WHERE name_fold > @nameFold ORDER BY name_fold ASC, tie_key DESC LIMIT @limit`;
+    const restRows = /** @type {NameOrderRow[]} */ (Array.from(db.iterate(rest, { nameFold, limit: limit - sameName.length })));
+    return [...sameName, ...restRows];
+}
+
+/**
+ * The window of rows to renumber around a row: at least `size` rows on each side, extended past any unplaced rows,
+ * and the placed positions bounding it (0 and NAME_ORDER_LIMIT at the ends).
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {NameOrderDirection} dir
+ * @param {NameOrderRow} row
+ * @param {number} size
+ */
+function nameOrderWindow(db, dir, row, size) {
+    /**
+     * @param {(nameFold: string, tieKey: string, limit: number) => NameOrderRow[]} fetch
+     * @returns {{ rows: NameOrderRow[], bound: number | null }}
+     */
+    const side = (fetch) => {
+        /** @type {NameOrderRow[]} */
+        const rows = [];
+        let from = row;
+        for (;;) {
+            const page = fetch(from.name_fold, from.tie_key, size);
+            for (const next of page) {
+                if (rows.length >= size && next.pos !== null) return { rows, bound: next.pos };
+                rows.push(next);
+            }
+            if (page.length < size) return { rows, bound: null };
+            from = page[page.length - 1];
+        }
+    };
+    const before = side((nf, tk, limit) => nameOrderRowsBefore(db, dir, nf, tk, limit));
+    const after = side((nf, tk, limit) => nameOrderRowsAfter(db, dir, nf, tk, limit));
+    return {
+        rows: [...before.rows.reverse(), row, ...after.rows],
+        lo: before.bound ?? 0,
+        hi: after.bound ?? NAME_ORDER_LIMIT,
+    };
+}
+
+/**
+ * Places one unplaced row in one order: between its placed neighbours when there's room, otherwise by spreading a
+ * window around it evenly, doubled until it has room.
+ * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
+ * @param {NameOrderDirection} dir
+ * @param {NameOrderRow} row
+ * @returns {NameOrderRow[]} The rows whose position was written.
+ */
+function placeNameOrderRow(db, dir, row) {
+    const pos = namePosColumn(dir);
+    const write = (/** @type {NameOrderRow} */ r, /** @type {number} */ value) => {
+        db.run(`UPDATE name_order SET ${pos} = @value WHERE kind = @kind AND entity_id = @id`, { value, kind: r.kind, id: r.entity_id });
+    };
+    const before = nameOrderRowsBefore(db, dir, row.name_fold, row.tie_key, 1);
+    const after = nameOrderRowsAfter(db, dir, row.name_fold, row.tie_key, 1);
+    if (before.every(r => r.pos !== null) && after.every(r => r.pos !== null)) {
+        const lo = before.length > 0 ? Number(before[0].pos) : 0;
+        const hi = after.length > 0 ? Number(after[0].pos) : NAME_ORDER_LIMIT;
+        const value = after.length === 0 ? lo + NAME_ORDER_SPACING
+            : before.length === 0 ? hi - NAME_ORDER_SPACING
+                : Math.floor((lo + hi) / 2);
+        const placed = value > lo && value < hi ? value : Math.floor((lo + hi) / 2);
+        if (placed > lo && placed < hi) {
+            write(row, placed);
+            return [row];
+        }
+    }
+    for (let size = NAME_ORDER_RESPACE_WINDOW; ; size *= 2) {
+        const { rows, lo, hi } = nameOrderWindow(db, dir, row, size);
+        const step = Math.floor((hi - lo) / (rows.length + 1));
+        if (step >= 1) {
+            rows.forEach((r, i) => write(r, lo + step * (i + 1)));
+            return rows;
+        }
+        if (lo === 0 && hi === NAME_ORDER_LIMIT) throw new Error('the name order has no room left for its rows');
+    }
+}
+
+/**
+ * Places up to `limit` unplaced name_order rows, each in a transaction of its own, and logs the characters whose
+ * position moved in name_order_changes. Run while the name order is filled; a fill places everything itself.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} limit
+ * @returns {Promise<{ placed: number, moved: number } | null>} null when the metadata store is unavailable.
+ */
+export async function placeNameOrderRows(directories, limit) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const { db } = entry;
+    if (!nameOrderReady(entry)) return { placed: 0, moved: 0 };
+    const unplaced = /** @type {{ kind: string, entity_id: string }[]} */ (Array.from(db.iterate(
+        'SELECT kind, entity_id FROM name_order WHERE pos_asc IS NULL OR pos_desc IS NULL LIMIT @limit', { limit })));
+    let moved = 0;
+    for (const { kind, entity_id } of unplaced) {
+        const state = { moved: 0 };
+        db.transaction(() => {
+            state.moved = 0;
+            const current = /** @type {{ name_fold: string, tie_key: string, pos_asc: number | null, pos_desc: number | null } | undefined} */ (
+                db.get('SELECT name_fold, tie_key, pos_asc, pos_desc FROM name_order WHERE kind = @kind AND entity_id = @entity_id', { kind, entity_id }));
+            if (!current) return;
+            /** @type {Set<string>} */
+            const movedCharacters = new Set();
+            for (const dir of /** @type {NameOrderDirection[]} */ (['asc', 'desc'])) {
+                if (current[namePosColumn(dir)] !== null) continue;
+                const rows = placeNameOrderRow(db, dir, { kind, entity_id, name_fold: current.name_fold, tie_key: current.tie_key, pos: null });
+                for (const r of rows) if (r.kind === 'c') movedCharacters.add(r.entity_id);
+            }
+            for (const id of movedCharacters) db.run('INSERT INTO name_order_changes (entity_id) VALUES (@id)', { id });
+            state.moved = movedCharacters.size;
+        });
+        moved += state.moved;
+    }
+    return { placed: unplaced.length, moved };
+}
+
+/**
+ * Gives every character and group a name_order row, then numbers both orders once (search plan step 7f), a batch at
+ * a time, pausing between batches. The triggers keep the rows' names since, and leave the positions of rows added or
+ * renamed behind the numbering unplaced, for placeNameOrderRows(). Ends with one name_order_changes row for every
+ * character, since every position moved.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{ batches: number, rowsChanged: number } | undefined>}
+ */
+export async function fillNameOrderIfNeeded(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return;
+    const { db } = entry;
+    if (db.get('SELECT 1 FROM meta WHERE key = @key', { key: NAME_ORDER_FILLED_FLAG })) return { batches: 0, rowsChanged: 0 };
+    let batches = 0;
+    let rowsChanged = 0;
+    /** @param {string} phase */
+    const readUpto = phase => {
+        const saved = /** @type {{ value: string } | undefined} */ (db.get('SELECT value FROM meta WHERE key = @key', { key: `${NAME_ORDER_FILL_UPTO_KEY}${phase}` }));
+        return saved ? JSON.parse(saved.value) : null;
+    };
+    /** @param {string} phase @param {unknown} value */
+    const writeUpto = (phase, value) => db.run('INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        { key: `${NAME_ORDER_FILL_UPTO_KEY}${phase}`, value: JSON.stringify(value) });
+    const pause = async () => {
+        batches++;
+        if (batches % MIGRATION_PASSIVE_CHECKPOINT_EVERY_BATCHES === 0 && !isReadOnlyMode()) db.get('PRAGMA wal_checkpoint(PASSIVE)');
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    };
+
+    for (const [code, table] of /** @type {['c' | 'g', string][]} */ ([['c', 'characters'], ['g', 'groups']])) {
+        const phase = `copy_${code}`;
+        let upto = readUpto(phase);
+        while (upto?.done !== true) {
+            const after = upto?.after ?? null;
+            const ids = /** @type {{ id: string }[]} */ (Array.from(after === null
+                ? db.iterate(`SELECT id FROM ${table} ORDER BY id LIMIT @limit`, { limit: NAME_ORDER_FILL_BATCH_SIZE })
+                : db.iterate(`SELECT id FROM ${table} WHERE id > @after ORDER BY id LIMIT @limit`, { after, limit: NAME_ORDER_FILL_BATCH_SIZE }))).map(r => r.id);
+            const next = ids.length < NAME_ORDER_FILL_BATCH_SIZE ? { done: true } : { after: ids[ids.length - 1] };
+            const state = { inserted: 0 };
+            db.transaction(() => {
+                state.inserted = 0;
+                for (const id of ids) {
+                    state.inserted += db.run(`INSERT INTO name_order (kind, entity_id, name_fold, tie_key)
+                        SELECT '${code}', id, name_fold, ${nameOrderTieKeySql(code, 'id')} FROM ${table} WHERE id = @id
+                        ON CONFLICT(kind, entity_id) DO NOTHING`, { id }).changes;
+                }
+                writeUpto(phase, next);
+            });
+            rowsChanged += state.inserted;
+            upto = next;
+            await pause();
+        }
+    }
+
+    for (const dir of /** @type {NameOrderDirection[]} */ (['asc', 'desc'])) {
+        const phase = `number_${dir}`;
+        const pos = namePosColumn(dir);
+        let upto = readUpto(phase) ?? { rank: 0, nameFold: null, tieKey: null };
+        while (upto.done !== true) {
+            const rows = upto.nameFold === null
+                ? /** @type {NameOrderRow[]} */ (Array.from(db.iterate(dir === 'asc'
+                    ? 'SELECT kind, entity_id, name_fold, tie_key FROM name_order ORDER BY name_fold ASC, tie_key ASC LIMIT @limit'
+                    : 'SELECT kind, entity_id, name_fold, tie_key FROM name_order ORDER BY name_fold DESC, tie_key ASC LIMIT @limit', { limit: NAME_ORDER_FILL_BATCH_SIZE })))
+                : nameOrderRowsAfter(db, dir, upto.nameFold, upto.tieKey, NAME_ORDER_FILL_BATCH_SIZE);
+            const last = rows[rows.length - 1];
+            const next = rows.length < NAME_ORDER_FILL_BATCH_SIZE
+                ? { done: true }
+                : { rank: upto.rank + rows.length, nameFold: last.name_fold, tieKey: last.tie_key };
+            const from = upto.rank;
+            db.transaction(() => {
+                rows.forEach((r, i) => db.run(`UPDATE name_order SET ${pos} = @value WHERE kind = @kind AND entity_id = @id`,
+                    { value: (from + i + 1) * NAME_ORDER_SPACING, kind: r.kind, id: r.entity_id }));
+                writeUpto(phase, next);
+            });
+            rowsChanged += rows.length;
+            upto = next;
+            await pause();
+        }
+    }
+
+    db.transaction(() => {
+        db.run('INSERT INTO name_order_changes (entity_id) VALUES (NULL)');
+        db.run('INSERT INTO meta (key, value) VALUES (@key, \'1\') ON CONFLICT(key) DO NOTHING', { key: NAME_ORDER_FILLED_FLAG });
+    });
+    entry.nameOrderFilled = true;
+    if (batches > 0 && !isReadOnlyMode()) db.checkpoint();
+    return { batches, rowsChanged };
+}
+
+/**
+ * Whether the name order has been filled. Stays true once it is.
+ * @param {MetadataDbEntry} entry
+ * @returns {boolean}
+ */
+function nameOrderReady(entry) {
+    if (entry.nameOrderFilled === true) return true;
+    if (!entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: NAME_ORDER_FILLED_FLAG })) return false;
+    entry.nameOrderFilled = true;
+    return true;
+}
+
+/**
+ * Whether a search index can sort by the stored name order: it's filled and every row is placed. `seq` is the last
+ * name_order_changes row, which an index's docs must cover too.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<{ usable: boolean, seq: number } | null>} null when the metadata store is unavailable.
+ */
+export async function getNameOrderState(directories) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const { db } = entry;
+    const seq = Number(/** @type {{ seq: number | null }} */ (db.get('SELECT MAX(seq) AS seq FROM name_order_changes')).seq ?? 0);
+    if (!nameOrderReady(entry)) return { usable: false, seq };
+    const unplaced = db.get('SELECT 1 FROM name_order WHERE pos_asc IS NULL OR pos_desc IS NULL LIMIT 1');
+    return { usable: !unplaced, seq };
+}
+
+/**
+ * The name_order_changes rows past sinceSeq, at most `limit`: the characters whose position moved, or `all` when a
+ * row says every one did.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {number} sinceSeq
+ * @param {number} limit
+ * @returns {Promise<{ seq: number, ids: string[], all: boolean, hasMore: boolean } | null>}
+ */
+export async function getNameOrderChangesSince(directories, sinceSeq, limit) {
+    const entry = await getEntry(directories);
+    if (!entry) return null;
+    const rows = /** @type {{ seq: number, entity_id: string | null }[]} */ (Array.from(entry.db.iterate(
+        'SELECT seq, entity_id FROM name_order_changes WHERE seq > @sinceSeq ORDER BY seq LIMIT @limit', { sinceSeq, limit })));
+    return {
+        seq: rows.length > 0 ? rows[rows.length - 1].seq : sinceSeq,
+        ids: [...new Set(rows.filter(r => r.entity_id !== null).map(r => /** @type {string} */ (r.entity_id)))],
+        all: rows.some(r => r.entity_id === null),
+        hasMore: rows.length === limit,
+    };
+}
+
+/**
+ * Each listed entity's name order positions; an entity with no row, or not yet placed, is left out.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {'c' | 'g'} kind
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, { asc: number, desc: number }>>}
+ */
+export async function getNameOrderPositions(directories, kind, ids) {
+    const entry = await getEntry(directories);
+    /** @type {Map<string, { asc: number, desc: number }>} */
+    const out = new Map();
+    if (!entry || ids.length === 0) return out;
+    for (const row of /** @type {Iterable<{ entity_id: string, pos_asc: number, pos_desc: number }>} */ (entry.db.iterate(
+        'SELECT entity_id, pos_asc, pos_desc FROM name_order WHERE kind = @kind AND entity_id IN (SELECT value FROM json_each(@ids)) AND pos_asc IS NOT NULL AND pos_desc IS NOT NULL',
+        { kind, ids: JSON.stringify(ids) }))) {
+        out.set(row.entity_id, { asc: Number(row.pos_asc), desc: Number(row.pos_desc) });
+    }
+    return out;
 }
 
 /**
