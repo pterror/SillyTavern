@@ -13,11 +13,12 @@ export default function getWebpackServeMiddleware() {
     function devMiddleware(req, res, next) {
         const publicLibConfig = getPublicLibConfig();
         const outputPath = publicLibConfig.output?.path;
-        const outputFile = publicLibConfig.output?.filename;
         const parsedPath = path.parse(req.path);
+        // Only the files the config builds: one per entry, `<name>.js`.
+        const outputFiles = Object.keys(publicLibConfig.entry ?? {}).map(name => `${name}.js`);
 
-        if (req.method === 'GET' && parsedPath.dir === '/' && parsedPath.base === outputFile) {
-            return res.sendFile(outputFile, { root: outputPath });
+        if (req.method === 'GET' && parsedPath.dir === '/' && outputFiles.includes(parsedPath.base)) {
+            return res.sendFile(parsedPath.base, { root: outputPath });
         }
 
         next();

@@ -15,7 +15,7 @@ import { getVersion, color } from './src/util.js';
  * repo, and hashing on `gitRevision` would invalidate (and re-prune) the cache on nearly
  * every restart regardless of whether frontend source actually changed.
  */
-const FRONTEND_CACHE_VERSION = 1;
+const FRONTEND_CACHE_VERSION = 2;
 
 /**
  * Generate a cache version string based on the application version, the manually-bumped
@@ -62,7 +62,7 @@ function pruneWebpackCache(webpackRoot, currentCacheVersion) {
 const appVersion = await getVersion();
 
 /**
- * Get the Webpack configuration for the public/lib.js file.
+ * Get the Webpack configuration for the public/lib.js and public/live-editor-lib.js files.
  * 1. Docker has got cache and the output file pre-baked.
  * 2. Non-Docker environments use the global DATA_ROOT variable to determine the cache and output directories.
  * @param {object} options Configuration options.
@@ -103,7 +103,11 @@ export default function getPublicLibConfig({ forceDist = false, pruneCache = fal
 
     return {
         mode: 'production',
-        entry: path.join(serverDirectory, 'public/lib.js'),
+        // One file per entry, each served at the root as `/<name>.js`. No chunks are shared between them.
+        entry: {
+            'lib': path.join(serverDirectory, 'public/lib.js'),
+            'live-editor-lib': path.join(serverDirectory, 'public/live-editor-lib.js'),
+        },
         cache: {
             type: 'filesystem',
             cacheDirectory: cacheDirectory,
@@ -128,7 +132,7 @@ export default function getPublicLibConfig({ forceDist = false, pruneCache = fal
         },
         output: {
             path: outputDirectory,
-            filename: 'lib.js',
+            filename: '[name].js',
             libraryTarget: 'module',
         },
     };
