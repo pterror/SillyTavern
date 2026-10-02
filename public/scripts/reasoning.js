@@ -1,4 +1,5 @@
 import { blockWhileFieldEditing } from './character-field-editor.js';
+import { mountChatEditor, unmountChatEditor } from './chat-live-editor.js';
 import {
     moment,
 } from '../lib.js';
@@ -1278,7 +1279,7 @@ function setReasoningEventHandlers() {
     $(document).on('click', '.mes_reasoning_edit', function (e) {
         e.stopPropagation();
         e.preventDefault();
-        const { message, messageBlock } = getMessageFromJquery(this);
+        const { message, messageId, messageBlock } = getMessageFromJquery(this);
         if (!message?.extra) {
             return;
         }
@@ -1314,6 +1315,14 @@ function setReasoningEventHandlers() {
         textarea.focus();
         textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
+        void mountChatEditor(textarea, {
+            name: message.name ?? '',
+            isSystem: Boolean(message.is_system),
+            isUser: Boolean(message.is_user),
+            messageId,
+            isReasoning: true,
+        });
+
         const textareaRect = textarea.getBoundingClientRect();
         const chatRect = chatElement.getBoundingClientRect();
 
@@ -1342,6 +1351,7 @@ function setReasoningEventHandlers() {
         const textarea = messageBlock.find('.reasoning_edit_textarea');
         let newReasoning = String(textarea.val());
         newReasoning = substituteParams(newReasoning);
+        unmountChatEditor(textarea[0]);
         textarea.remove();
         if (newReasoning === message.extra.reasoning) {
             closeReasoningDetailsWithoutContent(messageBlock);
@@ -1363,6 +1373,7 @@ function setReasoningEventHandlers() {
 
         const { messageBlock } = getMessageFromJquery(this);
         const textarea = messageBlock.find('.reasoning_edit_textarea');
+        unmountChatEditor(textarea[0]);
         textarea.remove();
 
         messageBlock.find('.mes_reasoning_edit_cancel:visible').trigger('click');
@@ -1421,6 +1432,7 @@ function setReasoningEventHandlers() {
             console.error('Could not save the cleared reasoning block:', error));
         updateMessageBlock(messageId, chat[messageId]);
         const textarea = messageBlock.find('.reasoning_edit_textarea');
+        unmountChatEditor(textarea[0]);
         textarea.remove();
         await eventSource.emit(event_types.MESSAGE_REASONING_DELETED, messageId);
     });

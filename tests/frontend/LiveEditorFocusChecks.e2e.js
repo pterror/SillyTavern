@@ -67,27 +67,19 @@ test.describe('focus checks with a live editor mounted', () => {
         const chat = page.locator('#chat');
         const firstMes = page.locator('#chat .mes[mesid="0"]');
         await firstMes.locator('.mes_edit').click();
-        await expect(page.locator('#curEditTextarea')).toBeVisible();
-        await page.evaluate(async () => {
-            const registry = await import('/scripts/live-editor/registry.js');
-            const textarea = /** @type {HTMLTextAreaElement} */ (document.getElementById('curEditTextarea'));
-            const editor = await registry.mountLiveEditor(textarea, { formatting: false, search: false });
-            editor.view.focus();
-            editor.view.dispatch({ selection: { anchor: editor.view.state.doc.length } });
-            // @ts-ignore
-            window.liveEditorTest = { editor };
+        await expect(firstMes.locator('.cm-editor')).toBeVisible();
+        await page.evaluate(() => {
+            document.getElementById('chat').scrollTop = 0;
+        });
+        await firstMes.locator('.cm-content').click();
+        await page.keyboard.press('Control+End');
+        await page.evaluate(() => {
             document.getElementById('chat').scrollTop = 0;
         });
         const before = await chat.evaluate(el => el.scrollTop);
         for (let i = 0; i < 8; i++) await page.keyboard.press('Enter');
         await page.waitForTimeout(100);
         expect(await chat.evaluate(el => el.scrollTop)).toBe(before);
-        await page.evaluate(() => {
-            // @ts-ignore
-            window.liveEditorTest.editor.destroy();
-            // @ts-ignore
-            window.liveEditorTest = null;
-        });
         await firstMes.locator('.mes_edit_cancel').click();
     });
 });

@@ -1128,11 +1128,14 @@ export function initRossMods() {
             const reasoningMesDone = $('.mes_reasoning_edit_done:visible');
             if (editMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
+                // The key accepts the edit; it doesn't also add a line to the text being accepted.
+                event.preventDefault();
                 $('#send_textarea').trigger('focus');
                 editMesDone.trigger('click');
                 return;
             } else if (reasoningMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
+                event.preventDefault();
                 $('#send_textarea').trigger('focus');
                 reasoningMesDone.trigger('click');
                 return;

@@ -241,6 +241,7 @@ import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, showMediaLightbox } from './scripts/chats.js';
 import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
+import { initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldInEdit, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { getFormBaseline, setFormBaseline } from './scripts/character-form-baseline.js';
@@ -1398,19 +1399,11 @@ async function firstLoadInit() {
         saveCharacterNoteField,
         saveExampleMessagesField,
         confirmDiscard: async (title, text) => Boolean(await Popup.show.confirm(title, text)),
-        uploadImage: async (file) => {
-            const extension = /\.[a-z0-9]+$/i.exec(file.name)?.[0] ?? '';
-            const response = await fetch('/api/files/upload', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ name: `${Date.now()}_${getStringHash(file.name)}${extension}`, data: (await getBase64Async(file)).split(',')[1] }),
-            });
-            if (!response.ok) throw new Error(await response.text());
-            return (await response.json()).path;
-        },
+        uploadImage: uploadEditorImage,
         onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
         onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
     });
+    initChatLiveEditor({ messageFormatting, substituteParams, power_user, uploadImage: uploadEditorImage });
     initCharInfoTabDimming(() => greetingPagerState.greetings.some((greeting, i) => i !== greetingPagerState.index && greeting !== ''));
     initDefaultSlashCommands();
     initTextGenModels();
@@ -8088,6 +8081,22 @@ const messageEditAutoSaveDebounced = debounce((mesId) => {
         console.error('Could not save the edited message:', error));
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
 
+/**
+ * Uploads an image an editor's image button picked, to the user's files.
+ * @param {File} file
+ * @returns {Promise<string>} The image's URL.
+ */
+async function uploadEditorImage(file) {
+    const extension = /\.[a-z0-9]+$/i.exec(file.name)?.[0] ?? '';
+    const response = await fetch('/api/files/upload', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: `${Date.now()}_${getStringHash(file.name)}${extension}`, data: (await getBase64Async(file)).split(',')[1] }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return (await response.json()).path;
+}
+
 function messageEditAuto(div) {
     const { mesBlock, text, mes, bias } = applyMessageEdit(div);
 
@@ -8167,6 +8176,13 @@ export async function messageEdit(editMessageId) {
     // Sets the cursor at the end of the text
     editTextArea.setSelectionRange(text.length, text.length);
 
+    void mountChatEditor(editTextArea, {
+        name: this_edit_mes_chname,
+        isSystem: Boolean(editMessage.is_system),
+        isUser: Boolean(editMessage.is_user),
+        messageId: editMessageId,
+    });
+
     if (Number(this_edit_mes_id) === chat.length - 1) {
         chatElement.scrollTop(chatScrollPosition);
     }
@@ -8209,6 +8225,7 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
     }
 
     const thisMesBlock = thisMesDiv.find('.mes_block');
+    unmountChatEditor(thisMesBlock.find('#curEditTextarea')[0]);
     thisMesBlock.find('.mes_text').empty();
     thisMesDiv.find('.mes_edit_buttons').css('display', 'none');
     thisMesBlock.find('.mes_buttons').css('display', '');
@@ -8299,6 +8316,7 @@ async function messageEditDone(div) {
 
     await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
     text = chat[this_edit_mes_id]?.mes ?? text;
+    unmountChatEditor(mesBlock.find('#curEditTextarea')[0]);
     mesBlock.find('.mes_text').empty();
     mesBlock.find('.mes_edit_buttons').css('display', 'none');
     mesBlock.find('.mes_buttons').css('display', '');
