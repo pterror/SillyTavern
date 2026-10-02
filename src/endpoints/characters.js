@@ -31,7 +31,7 @@ import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { searchCharacters, searchCharacterIds, searchCharacterIdsSorted, searchCharacterIdsWindow, searchTagsLeftToSql, rebuildCharacterSearchIndex, TANTIVY_SORT_FIELDS, tantivySortOrder, getCharacterIndexPosition } from './characters-search-index.js';
-import { walkKey, encodeWalkCursor, decodeWalkCursor, walkRanking, walkSorted, walkTotal } from './search-walk.js';
+import { walkKey, encodeWalkCursor, decodeWalkCursor, walkRanking, walkSorted, walkTotal, SEARCH_WORK_CAP } from './search-walk.js';
 import { mergeSortedWindow } from './tantivy-search.js';
 import { searchGroups, searchGroupIds, searchGroupsSorted, getGroupIndexPosition } from './groups-search-index.js';
 import { getGroupsByIds } from './groups.js';
@@ -2786,7 +2786,19 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         // order (any sort but relevance and its fast fields) is walked and checked under the work cap.
         // Relevance is always walked: the page and its margin are read from the index's ranking, and only the
         // page's rows are read (search plan step 1). When the index applies every filter it is complete.
-        const walkMode = sort.field === 'search' ? 'rank' : (indexSorts ? null : 'sorted');
+        let walkMode = sort.field === 'search' ? 'rank' : (indexSorts ? null : 'sorted');
+        // Random with a term: when the matches fit in the work cap, list them all by id and let the random order place
+        // them, one request. The walk over positions would examine up to the cap per request to find a few sparse
+        // matches. Both order by the same space, so which one answers doesn't change the order.
+        if (walkMode === 'sorted' && sort.field === 'random') {
+            const fav = typeof filter.fav === 'boolean' ? filter.fav : undefined;
+            const indexTags = tagsLeftToSql ? undefined : filter.tags;
+            const charactersCounted = groupsOnly ? { total: 0 } : await searchCharacterIdsWindow(handle, user.directories, searchTerm, 0, 1, {
+                fav, tags: indexTags, excludeIds: filter.excludeIds, ids: Array.isArray(filter.ids) ? filter.ids : undefined,
+            });
+            const groupsCounted = includeGroups ? await searchGroupIds(handle, user.directories, searchTerm, Number.MAX_SAFE_INTEGER, { fav, tags: indexTags }) : { total: 0 };
+            if (charactersCounted.total + groupsCounted.total <= SEARCH_WORK_CAP) walkMode = null;
+        }
         if (walkMode) {
             return runSearchWalk(user, {
                 mode: walkMode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql,
@@ -2842,8 +2854,9 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             }
         }
 
-        // Relevance was walked above; the sorts left here order in SQL, so they need every match.
-        const idFetchCap = undefined;
+        // Relevance was walked above; the sorts left here order in SQL, so they need every match. A random sort only
+        // gets here when its matches fit in the work cap.
+        const idFetchCap = sort.field === 'random' ? SEARCH_WORK_CAP : undefined;
         // fav, tags, ids and excludeIds (for groups: fav and tags) are applied inside the search engine itself
         // (runIdSearch/runGroupSearch), before idFetchCap, so a hit they rule out never takes a place in the
         // capped list and leaves the page short. world isn't: the search engine has no world field. The SQL

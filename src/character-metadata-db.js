@@ -12569,9 +12569,18 @@ function randomOrderPage(entry, { kinds, tags, fav, world, excludeIds, ids, sort
         return candidates.filter(e => (e.type === 'character' ? chars : groups).has(e.id));
     };
 
-    // An id list: its own ids, each at its position in the base space, so the read is bounded by the list.
+    // The space whose positions give the order: the smallest included tag's when the filter needs every included tag,
+    // otherwise the fav / whole-list space. An id list orders by the same space, so a search's matches listed by id
+    // come in the order the walk over that space would give them.
+    let space = randomSpaceName('', favValue);
+    if (!orMode && !expanded && include.length > 0) {
+        const sized = include.map(tagId => ({ space: randomSpaceName(tagId, favValue), n: randomSpaceSize(db, randomSpaceName(tagId, favValue)) }));
+        sized.sort((a, b) => a.n - b.n);
+        space = sized[0].space;
+    }
+
+    // An id list: its own ids, each at its position in that space, so the read is bounded by the list.
     if (Array.isArray(ids)) {
-        const space = randomSpaceName('', favValue);
         const n = randomSpaceSize(db, space);
         const orderKeyOfSpace = orderKey(seed, space);
         /** @type {{ type: 'character' | 'group', id: string, position: number }[]} */
@@ -12596,7 +12605,6 @@ function randomOrderPage(entry, { kinds, tags, fav, world, excludeIds, ids, sort
 
     const oneSpace = !orMode && !expanded && exclude.length === 0 && include.length <= 1 && (typeof world !== 'string' || world === '') && !(Array.isArray(excludeIds) && excludeIds.length > 0) && kinds.character && kinds.group;
     if (oneSpace) {
-        const space = randomSpaceName(include[0] ?? '', favValue);
         const n = randomSpaceSize(db, space);
         const k = orderKey(seed, space);
         const start = at ? at.position : offset;
@@ -12609,13 +12617,7 @@ function randomOrderPage(entry, { kinds, tags, fav, world, excludeIds, ids, sort
         return { entities, more: false, cursor: end - start === limit ? encodeRandomPageCursor(key, end, 0) : undefined };
     }
 
-    // Walked: the smallest space that holds every match drives, and each entity is checked against the whole filter.
-    let space = randomSpaceName('', favValue);
-    if (!orMode && !expanded && include.length > 0) {
-        const sized = include.map(tagId => ({ space: randomSpaceName(tagId, favValue), n: randomSpaceSize(db, randomSpaceName(tagId, favValue)) }));
-        sized.sort((a, b) => a.n - b.n);
-        space = sized[0].space;
-    }
+    // Walked: the space chosen above drives, and each entity is checked against the whole filter.
     const n = randomSpaceSize(db, space);
     const k = orderKey(seed, space);
     let skip = at ? at.skip : offset;
