@@ -95,6 +95,14 @@ export function getFocusedField() {
  * @returns {Promise<import('./mount.js').LiveEditor>}
  */
 export async function mountLiveEditor(textarea, options = {}) {
-    const { mountLiveEditor: mount } = await import('./mount.js');
+    const { mountLiveEditor: mount } = await loadLiveEditor();
     return mount(textarea, options);
+}
+
+/**
+ * Loads the editor's code, so a caller can mount it at a moment it picks, in the same task as a check.
+ * @returns {Promise<typeof import('./mount.js')>}
+ */
+export function loadLiveEditor() {
+    return import('./mount.js');
 }

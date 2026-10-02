@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, chatBox } from './frontent-test-utils.js';
 
 // Places that offer character names to pick from search the server, so they find a character the page doesn't hold.
 // Each test makes its characters after the page has loaded and keeps the page from hearing of them.
@@ -73,7 +73,7 @@ test.describe('character names searched on the server', () => {
         const name = `Autocompletee${stamp}`;
         const avatar = await createUnheldCharacter(page, name);
         try {
-            const input = page.locator('#send_textarea');
+            const input = chatBox(page);
             await input.click();
             await input.pressSequentially(`/char-find Autocompletee${stamp.slice(0, 6)}`);
             // An optional argument's options show when asked for.
@@ -105,7 +105,7 @@ test.describe('character names searched on the server', () => {
                 await route.fulfill({ response });
                 laterAnswered();
             });
-            const input = page.locator('#send_textarea');
+            const input = chatBox(page);
             await input.click();
             await input.pressSequentially('/char-find Staleone');
             await input.press('Control+Space');

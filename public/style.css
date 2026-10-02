@@ -7103,6 +7103,11 @@ textarea.live-editor-textarea {
     vertical-align: middle;
 }
 
+/* The chat box's toolbar shows only while the user is in the chat box. */
+.cm-editor.live-editor.live-toolbar-when-focused:not(:focus-within) .cm-panels-top {
+    display: none;
+}
+
 .cm-editor.live-editor .cm-panels-top {
     background: transparent;
     border-bottom: 1px solid var(--SmartThemeBorderColor);

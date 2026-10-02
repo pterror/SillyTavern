@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -141,7 +141,7 @@ test.describe('stopping a generation', () => {
                 if (new URL(request.url()).pathname.includes('/generate/stop/')) stopRequests.push(request.url());
             });
 
-            await page.locator('#send_textarea').fill(`Tell me a long story ${stamp}.`);
+            await chatBox(page).fill(`Tell me a long story ${stamp}.`);
             await page.locator('#send_but').click();
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('piece2', { timeout: 30000 });
 
@@ -207,7 +207,7 @@ test.describe('stopping a generation', () => {
                 await route.fulfill({ response }).catch(() => { });
             });
 
-            await page.locator('#send_textarea').fill(`Say something ${stamp}.`);
+            await chatBox(page).fill(`Say something ${stamp}.`);
             await page.locator('#send_but').click();
             await expect.poll(() => serverAnswered, { timeout: 30000 }).toBe(true);
             await page.locator('#mes_stop').click();
@@ -239,7 +239,7 @@ test.describe('streaming display', () => {
             await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
             await page.waitForTimeout(2500);
 
-            await page.locator('#send_textarea').fill(`Say one thing ${stamp}.`);
+            await chatBox(page).fill(`Say one thing ${stamp}.`);
             await page.locator('#send_but').click();
             await expect.poll(() => mock.state.written, { timeout: 30000 }).toBe(1);
 

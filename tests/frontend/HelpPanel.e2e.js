@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, setStackedDrawers } from './frontent-test-utils.js';
+import { testSetup, setStackedDrawers, chatBox } from './frontent-test-utils.js';
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
@@ -51,10 +51,10 @@ test.describe('Help panel', () => {
         try {
             await runSlash(page, '/help');
             await page.locator('#chatDrawerIcon').click();
-            await page.locator('#send_textarea').click();
+            await chatBox(page).click();
             await page.keyboard.type('still usable');
             await expect(page.locator('#send_textarea')).toHaveValue('still usable');
-            await page.locator('#send_textarea').fill('');
+            await chatBox(page).fill('');
             await expect(panel(page)).toBeAttached();
         } finally {
             await setStackedDrawers(page, false);
@@ -195,16 +195,17 @@ test.describe('Hotkeys', () => {
     });
 
     test('holding Ctrl on its own shows the list without taking focus; letting go hides it', async ({ page }) => {
-        await page.locator('#send_textarea').focus();
+        await chatBox(page).focus();
         await page.keyboard.down('Control');
         await expect(overlay(page)).toBeVisible();
-        await expect(page.locator('#send_textarea')).toBeFocused();
+        // The chat box keeps focus (with the live editor on it, focus is in its editor).
+        expect(await page.evaluate(async () => (await import('/scripts/live-editor/registry.js')).getFocusedField()?.id)).toBe('send_textarea');
         await page.keyboard.up('Control');
         await expect(overlay(page)).toHaveCount(0);
     });
 
     test('a shortcut, a click or scrolling while Ctrl is down hides it or keeps it from showing', async ({ page }) => {
-        await page.locator('#send_textarea').focus();
+        await chatBox(page).focus();
         // A quick shortcut never shows it.
         await page.keyboard.down('Control');
         await page.keyboard.press('a');

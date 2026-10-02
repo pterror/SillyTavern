@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -29,10 +29,13 @@ async function createAndOpenCharacter(page, name) {
     await openCharacterManagementDrawer(page);
     await page.locator('#rm_button_create').click();
     await page.locator('#character_name_pole').fill(name);
+    const createResponse = page.waitForResponse(response => response.url().endsWith('/api/characters/create'));
     await page.locator('#create_button_label').click();
+    const avatar = await (await createResponse).text();
     await page.locator('.character_select', { hasText: name }).first().click();
-    await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
-    return String(await page.locator('#avatar_url_pole').inputValue());
+    await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
+    await expect(page.locator('#right-nav-panel')).toHaveAttribute('data-menu-type', 'character_edit');
+    return avatar;
 }
 
 /**
@@ -88,10 +91,10 @@ for (const path of ['css-anchor', 'js-fallback']) {
 
                 // Non-modal: no dialog/backdrop, and the rest of the page still takes input while it is open.
                 expect(await page.locator('dialog[open]').count()).toBe(0);
-                await page.locator('#send_textarea').fill('still interactive');
+                await chatBox(page).fill('still interactive');
                 await expect(page.locator('#send_textarea')).toHaveValue('still interactive');
                 expect(await isPopoverOpen(page)).toBe(true);
-                await page.locator('#send_textarea').fill('');
+                await chatBox(page).fill('');
 
                 // The slider keeps its existing save binding.
                 await page.locator('#talkativeness_slider').press('ArrowRight');

@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, setStackedDrawers, findCharacterAvatarByName } from './frontent-test-utils.js';
+import { testSetup, setStackedDrawers, findCharacterAvatarByName, chatBox } from './frontent-test-utils.js';
 
 async function awaitAppReady(page) {
     await page.evaluate(() => new Promise(resolve => {
@@ -79,12 +79,11 @@ async function openChatWithCharacterMessage(page) {
         }
         await expect(page.locator('#right-nav-panel')).toHaveClass(/closedDrawer/, { timeout: 1000 });
     }).toPass();
-    const sendTextarea = page.locator('#send_textarea');
-    await sendTextarea.fill(`/sendas name="${name}" hello`);
+    await chatBox(page).fill(`/sendas name="${name}" hello`);
     // Enter can go unhandled while the freshly selected chat loads; the text stays in the box until it is sent.
     await expect(async () => {
-        if (await sendTextarea.inputValue()) {
-            await sendTextarea.press('Enter');
+        if (await page.locator('#send_textarea').inputValue()) {
+            await chatBox(page).press('Enter');
         }
         await expect(page.locator('#chat .mes .avatar').first()).toBeVisible({ timeout: 2000 });
     }).toPass();
@@ -1036,7 +1035,7 @@ test.describe('Layers found by what they are', () => {
         const point = await overlapPoint(page);
         await expect.poll(() => hitAt(page, point)).toBe('extWindow');
         // Focus moved by the page itself doesn't bring a layer forward; typing does.
-        await page.locator('#send_textarea').evaluate(el => el.focus());
+        await chatBox(page).evaluate(el => el.focus());
         expect(await hitAt(page, point)).toBe('extWindow');
         await page.keyboard.type('a');
         await expect.poll(() => hitAt(page, point)).toBe('sheld');

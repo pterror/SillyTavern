@@ -168,3 +168,12 @@ export async function findCharacterAvatarByName(page, name) {
         return (await findCharAsync({ name, allowAvatar: false, insensitive: false, preferCurrentChar: false, quiet: true }))?.avatar;
     }, name);
 }
+
+/**
+ * The chat box as it is on screen: the live editor on it once that is mounted, the plain textarea before. Act on
+ * this (click, fill, press); read the text from `#send_textarea`, which always holds it.
+ * @param {import('@playwright/test').Page} page
+ */
+export function chatBox(page) {
+    return page.locator('#send_form .cm-editor .cm-content').or(page.locator('#send_textarea:not(.live-editor-textarea)'));
+}

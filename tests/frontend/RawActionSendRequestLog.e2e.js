@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -159,7 +159,7 @@ function recordApiRequests(page) {
  * @param {number} mesid
  */
 async function send(page, text, mesid) {
-    await page.locator('#send_textarea').fill(text);
+    await chatBox(page).fill(text);
     await page.locator('#send_but').click();
     await expect(page.locator(`#chat .mes[mesid="${mesid}"] .mes_text`)).toContainText('Mock reply', { timeout: 30000 });
     await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
@@ -236,7 +236,7 @@ test.describe('raw-action send request log', () => {
             await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
             await page.waitForTimeout(SETTLE_MS);
 
-            await page.locator('#send_textarea').fill(`Unreadable question ${stamp}?`);
+            await chatBox(page).fill(`Unreadable question ${stamp}?`);
             await page.locator('#send_but').click();
             await expect(page.locator('#toast-container .toast-warning', { hasText: 'The reply came back in a format SillyTavern can\'t read, so it wasn\'t saved.' }))
                 .toHaveCount(1, { timeout: 15000 });
@@ -299,7 +299,7 @@ test.describe('raw-action send request log', () => {
                 await page.waitForTimeout(SETTLE_MS);
 
                 const first = `First question ${stamp}?`;
-                await page.locator('#send_textarea').fill(first);
+                await chatBox(page).fill(first);
                 await page.locator('#send_but').click();
                 await expect(page.locator('#chat .mes[mesid="1"] .mes_text')).toContainText(first, { timeout: 30000 });
                 await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
@@ -478,7 +478,7 @@ test.describe('raw-action send request log', () => {
             await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
             await page.waitForTimeout(SETTLE_MS);
 
-            await page.locator('#send_textarea').fill(`First question ${stamp}?`);
+            await chatBox(page).fill(`First question ${stamp}?`);
             const second = `Second question ${stamp}?`;
             // Clicks Send the moment the button is shown again while the send lock is still held, as a user
             // clicking right after the reply appears would.
@@ -546,7 +546,7 @@ test.describe('raw-action send request log', () => {
             await sendAndHoldGap(page, `First question ${stamp}?`);
 
             const second = `Second question ${stamp}?`;
-            await page.locator('#send_textarea').fill(second);
+            await chatBox(page).fill(second);
             await page.locator('#send_but').click();
             expect(await isQueued(page)).toBe(true);
             await expect(page.locator('#send_but')).toHaveAttribute('title', 'Send queued - click to cancel');
@@ -559,7 +559,7 @@ test.describe('raw-action send request log', () => {
                 await expect(page.locator('#chat .mes[mesid="3"]')).toHaveCount(0);
                 await expect(page.locator('#send_textarea')).toHaveValue(second);
             } else {
-                await page.locator('#send_textarea').press('Enter');
+                await chatBox(page).press('Enter');
                 expect(await isQueued(page)).toBe(true);
                 await releaseGap(page);
                 await expect(page.locator('#chat .mes[mesid="3"] .mes_text')).toContainText(second, { timeout: 15000 });
@@ -583,7 +583,7 @@ test.describe('raw-action send request log', () => {
         await sendAndHoldGap(page, `First question ${stamp}?`);
 
         const second = `Second question ${stamp}?`;
-        await page.locator('#send_textarea').fill(second);
+        await chatBox(page).fill(second);
         await page.locator('#send_but').click();
         expect(await isQueued(page)).toBe(true);
 
@@ -612,12 +612,12 @@ test.describe('raw-action send request log', () => {
             await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = true; });
             await page.waitForTimeout(SETTLE_MS);
 
-            await page.locator('#send_textarea').fill(`First question ${stamp}?`);
+            await chatBox(page).fill(`First question ${stamp}?`);
             await page.locator('#send_but').click();
             await expect(page.locator('body')).toHaveAttribute('data-generating', 'true', { timeout: 10000 });
             const second = `Second question ${stamp}?`;
-            await page.locator('#send_textarea').fill(second);
-            await page.locator('#send_textarea').press('Enter');
+            await chatBox(page).fill(second);
+            await chatBox(page).press('Enter');
             expect(await isQueued(page)).toBe(false);
 
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('Mock reply', { timeout: 30000 });

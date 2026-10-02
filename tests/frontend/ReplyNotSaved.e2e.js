@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -164,7 +164,7 @@ for (const streaming of [true, false]) {
                 if (/^\/api\/chats\//.test(path) && (request.postData() ?? '').includes(REPLY)) pageWrites.push(path);
             });
 
-            await page.locator('#send_textarea').fill(`When do we leave ${stamp}?`);
+            await chatBox(page).fill(`When do we leave ${stamp}?`);
             await page.locator('#send_but').click();
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText(REPLY, { timeout: 30000 });
             await expect(page.locator('#send_but')).toBeVisible({ timeout: 15000 });
@@ -188,7 +188,7 @@ for (const streaming of [true, false]) {
                 // @ts-ignore
                 await SillyTavern.getContext().saveChat();
             });
-            await page.locator('#send_textarea').fill('And then?');
+            await chatBox(page).fill('And then?');
             await page.locator('#send_but').click();
             await expect(page.locator('.toast-error', { hasText: 'isn\'t saved yet' })).toBeVisible();
             await expect(page.locator('#chat .mes')).toHaveCount(3);
