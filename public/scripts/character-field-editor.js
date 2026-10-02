@@ -4,6 +4,7 @@ import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
 import { evaluateSafeMacro, insertSafeMacroSpans, substituteSafeMacros } from './safe-macros.js';
 import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
+import { drawerStackChanged } from './drawer-stack.js';
 
 // A leaf module: everything it needs from the rest of the app is passed to initCharacterFieldEditor()
 // (and to substituteMacrosWithPlaceholders()), so importing it never adds an import cycle.
@@ -166,8 +167,13 @@ export function blockWhileFieldEditing() {
     if (!activeEdit) {
         return false;
     }
-    const { t } = deps;
-    toastr.warning(t`A field is being edited - confirm or cancel it first.`);
+    // The field being edited is on screen (nothing may cover it), so its ✓ ✕ flash shows why, as a tab click does.
+    if (getPanel(activeEdit.id)[0]?.checkVisibility({ visibilityProperty: true })) {
+        flashEditControls();
+    } else {
+        const { t } = deps;
+        toastr.warning(t`A field is being edited - confirm or cancel it first.`);
+    }
     return true;
 }
 
@@ -255,6 +261,8 @@ export function beginEdit(id) {
     const text = String(textarea.val() ?? '');
     activeEdit = { id, original: text, userText: text, saving: false };
     getPanel(id).addClass('field_editing');
+    // Nothing may cover the field being edited.
+    drawerStackChanged();
     deps.onEditStart?.(id);
     textarea.trigger('focus');
     void mountFieldEditor(id);
@@ -309,6 +317,7 @@ function endEdit() {
     unmountFieldEditor();
     activeEdit = null;
     getPanel(id).removeClass('field_editing');
+    drawerStackChanged();
     deps.onEditEnd?.(id);
     refreshFieldPreview(id);
 }
