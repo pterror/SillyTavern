@@ -124,6 +124,7 @@ export function parseQueryTotal(total) {
  * @property {string} [searchTerm] - current search box value.
  * @property {string[]} [tagsInclude] - selected tag ids.
  * @property {string[]} [tagsExclude] - excluded tag ids.
+ * @property {'and'|'or'} [tagsMode] - 'or': a row needs any one of `tagsInclude`.
  * @property {boolean} [fav] - `undefined` for no fav filter; this module takes no dependency on filters.js, so
  * callers normalize the tri-state themselves before calling.
  * @property {string} [sortField] - `power_user.sort_field`, or `'random'`/`'search'` for those two special cases.
@@ -144,6 +145,7 @@ export function buildCharacterQuery({
     searchTerm = '',
     tagsInclude = [],
     tagsExclude = [],
+    tagsMode = 'and',
     fav = undefined,
     sortField = undefined,
     sortOrder = 'asc',
@@ -157,7 +159,7 @@ export function buildCharacterQuery({
     const search = String(searchTerm ?? '').trim();
     if (search) filter.search = search;
     if (tagsInclude.length > 0 || tagsExclude.length > 0) {
-        filter.tags = { include: tagsInclude, exclude: tagsExclude, mode: 'and' };
+        filter.tags = { include: tagsInclude, exclude: tagsExclude, mode: tagsMode === 'or' ? 'or' : 'and' };
     }
     if (typeof fav === 'boolean') filter.fav = fav;
     if (includeGroups) filter.includeGroups = true;

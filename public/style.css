@@ -3602,6 +3602,13 @@ select option[disabled]:not(:checked) {
     opacity: 0.85;
 }
 
+.view_pill_joiner {
+    align-self: center;
+    font-size: 0.85em;
+    font-style: italic;
+    opacity: 0.8;
+}
+
 .view_pill_value_input {
     min-width: 6em;
     padding: 0 2px;

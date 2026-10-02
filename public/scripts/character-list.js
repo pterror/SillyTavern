@@ -6,7 +6,7 @@ import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav, SHALLOW_CREATOR_NOTES_HEADER } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, readFolderTileTags } from './tags.js';
+import { filterByTagState, isBogusFolderOpen, getTagBlock, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, readFolderTileTags, searchTagsByName, readTagsForIds } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow, parseQueryTotal } from './character-repository.js';
@@ -66,7 +66,12 @@ export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
  */
 export const printCharactersDebounced = debounce(() => { printCharacters(false); }, DEFAULT_PRINT_TIMEOUT);
 
+/** Puts the current view's conditions and text into the search box; set by initCharacterSearch(). */
+let showViewInSearchBox = () => {};
+
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
+
+const TAG_MODE_STORAGE_KEY = 'characterListTagMode';
 
 function getBackBlock() {
     const template = $('#bogus_folder_back_template .bogus_folder_select').clone();
@@ -395,8 +400,8 @@ export async function printCharacters(fullRefresh = false) {
     // Before printing the personas, we check if we should enable/disable search sorting
     verifyCharactersSearchSortRule();
 
-    // A search set from code (upstream's FilterHelper) shows in the box, unless the user is typing in it.
-    if (!$('#form_character_search_form').get(0)?.contains(document.activeElement)) showViewInSearchBox();
+    // A filter set from code (upstream's FilterHelper, the tag bars) shows in the pills and the box.
+    showViewInSearchBox();
 
     // We are actually always reprinting filters, as it "doesn't hurt", and this way they are always up to date
     printTagFilters(tag_filter_type.character);
@@ -730,6 +735,28 @@ function booleanToTriState(value) {
 }
 
 /**
+ * How the list's included tags combine: 'or' shows rows carrying any one of them. Upstream's tag filter has no such
+ * setting, so it is kept beside `entitiesFilter`, per browser.
+ * @returns {'and'|'or'}
+ */
+function readTagMode() {
+    try {
+        return accountStorage.getItem(TAG_MODE_STORAGE_KEY) === 'or' ? 'or' : 'and';
+    } catch {
+        return 'and';
+    }
+}
+
+/** @param {'and'|'or'} mode */
+function writeTagMode(mode) {
+    try {
+        if (readTagMode() !== mode) accountStorage.setItem(TAG_MODE_STORAGE_KEY, mode);
+    } catch {
+        // The mode just isn't remembered.
+    }
+}
+
+/**
  * What the character list shows. It is read from `entitiesFilter` and the sort settings, which stay the store, so an
  * extension setting a filter through upstream's FilterHelper or `power_user.sort_*` changes the view, and a view set
  * here is what they read back.
@@ -751,7 +778,11 @@ export function getCharacterView() {
         text,
         conditions,
         // tagFilterData.selected doubles as "which bogus folder is open", so an open folder is a tag condition.
-        tags: { include: [...(tagFilterData.selected ?? [])], exclude: [...(tagFilterData.excluded ?? [])] },
+        tags: {
+            include: [...(tagFilterData.selected ?? [])],
+            exclude: [...(tagFilterData.excluded ?? [])],
+            mode: readTagMode(),
+        },
         fav: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.FAV)),
         group: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.GROUP)),
         sort,
@@ -773,6 +804,7 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
 
     entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, serializeSearchText(next), true);
     entitiesFilter.setFilterData(FILTER_TYPES.TAG, { selected: [...next.tags.include], excluded: [...next.tags.exclude] }, true);
+    writeTagMode(next.tags.mode === 'or' ? 'or' : 'and');
     entitiesFilter.setFilterData(FILTER_TYPES.FAV, booleanToTriState(next.fav), true);
     entitiesFilter.setFilterData(FILTER_TYPES.GROUP, booleanToTriState(next.group), true);
     if (JSON.stringify(current.sort) !== JSON.stringify(next.sort) && next.sort.field !== 'search') {
@@ -790,8 +822,6 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
     printCharactersDebounced();
 }
 
-/** Puts the current view's conditions and text into the search box; set by initCharacterSearch(). */
-let showViewInSearchBox = () => {};
 
 function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {}) {
     return buildCharacterQuery(viewToQueryState(getCharacterView(), { includeGroups }));
@@ -1567,6 +1597,15 @@ export function initCharacterSearch() {
         getView: getCharacterView,
         translate: t,
         setView: (view, fromSearchBox) => fromSearchBox ? debouncedCharacterSearch(view) : setCharacterView(view, { fromSearchBox: true }),
+        searchTags: async (term) => {
+            const page = await searchTagsByName(term);
+            return page ? page.rows.map(tag => ({ id: String(tag.id), name: String(tag.name) })) : null;
+        },
+        tagNames: async (ids) => {
+            const answer = await readTagsForIds(ids);
+            if (!answer) return null;
+            return { names: new Map([...answer.tags].map(([id, tag]) => [id, String(tag.name)])), gone: answer.gone };
+        },
     });
     showViewInSearchBox();
     $('#character_search_bar_wrapper').after(makeSearchGuide());

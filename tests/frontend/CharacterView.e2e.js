@@ -13,7 +13,8 @@ async function awaitAppReady(page) {
 }
 
 /**
- * Records every list query as `window.__queries` ({ filter, sort }), answering with an empty page.
+ * Records every list query as `window.__queries` ({ filter, sort }), answering with an empty page. The favorites bar
+ * (RossAscends-mods.js) asks too; its queries aren't the list's, so they aren't recorded.
  * @param {import('@playwright/test').Page} page
  */
 async function recordQueries(page) {
@@ -21,7 +22,9 @@ async function recordQueries(page) {
         const { characterRepository } = await import('/scripts/character-repository.js');
         window['__queries'] = [];
         characterRepository.query = async (filter = {}, sort) => {
-            window['__queries'].push({ filter: structuredClone(filter), sort: structuredClone(sort) });
+            if (!String(new Error().stack).includes('RossAscends-mods')) {
+                window['__queries'].push({ filter: structuredClone(filter), sort: structuredClone(sort) });
+            }
             return { seq: 0, token: null, rows: [], total: 0 };
         };
     });
@@ -48,7 +51,8 @@ test.describe('character view', () => {
             entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, 'by:alice castle');
         });
 
-        await expect.poll(async () => (await lastQuery(page))?.filter).toMatchObject({ fav: true, search: 'by:alice castle' });
+        // The list asks with the field's canonical name, which the server reads the same as the alias.
+        await expect.poll(async () => (await lastQuery(page))?.filter).toMatchObject({ fav: true, search: 'creator:alice castle' });
         const view = await page.evaluate(async () => (await import('/scripts/character-list.js')).getCharacterView());
         expect(view).toMatchObject({
             text: 'castle',
@@ -128,6 +132,86 @@ test.describe('character view', () => {
             await page.locator('.view_pill_value_input').press('Escape');
             await expect(page.locator('#character_search_pills .search_pill[data-field]')).toHaveCount(1);
             await expect(page.locator('#rm_characters_block')).toBeVisible();
+        });
+
+        /**
+         * Makes tags on the server, named like their ids, and returns the ids.
+         * @param {import('@playwright/test').Page} page
+         * @param {string[]} names
+         */
+        async function makeTags(page, names) {
+            const stamp = Date.now().toString(36);
+            const ids = names.map(name => `viewpill-${name}-${stamp}`);
+            await page.evaluate(async (ids) => {
+                const headers = window['SillyTavern'].getContext().getRequestHeaders();
+                for (const id of ids) {
+                    const tag = { id, name: id, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now() };
+                    const response = await fetch('/api/tags/create', { method: 'POST', headers, body: JSON.stringify({ tag }) });
+                    if (!response.ok) throw new Error(`create ${id} -> ${response.status}`);
+                }
+            }, ids);
+            return ids;
+        }
+
+        test('+ Tag picks a tag from the server; the pill shows its name and the list asks for it', async ({ page }) => {
+            const [moon] = await makeTags(page, ['moon']);
+            await openSearch(page);
+            await page.locator('.view_pill_add').click();
+            await page.locator('.view_pill_field_option[data-field="@tag"]').click();
+            await page.locator('.view_pill_popover input').fill(moon);
+            await page.locator(`.view_pill_field_option[data-tag-id="${moon}"]`).click();
+
+            await expect.poll(async () => (await lastQuery(page))?.filter?.tags).toMatchObject({ include: [moon], exclude: [], mode: 'and' });
+            await expect(page.locator(`#character_search_pills .view_tag_pill[data-tag-id="${moon}"] .search_pill_value`)).toHaveText(moon);
+        });
+
+        test('two tag pills combine with "and" until the joiner is clicked, then "or"; the operator moves a tag to left out', async ({ page }) => {
+            const [sun, sea] = await makeTags(page, ['sun', 'sea']);
+            await page.evaluate(async (include) => {
+                const { setCharacterView } = await import('/scripts/character-list.js');
+                setCharacterView({ tags: { include, exclude: [], mode: 'and' } });
+            }, [sun, sea]);
+            await expect.poll(async () => (await lastQuery(page))?.filter?.tags).toMatchObject({ include: [sun, sea], mode: 'and' });
+
+            await openSearch(page);
+            await page.locator('#character_search_pills .view_pill_joiner').click();
+            await expect.poll(async () => (await lastQuery(page))?.filter?.tags?.mode).toBe('or');
+            await expect(page.locator('#character_search_pills .view_pill_joiner')).toHaveText('or');
+
+            await page.locator(`#character_search_pills .view_tag_pill[data-tag-id="${sea}"] .view_pill_op`).click();
+            await expect.poll(async () => (await lastQuery(page))?.filter?.tags).toMatchObject({ include: [sun], exclude: [sea] });
+            await expect(page.locator(`#character_search_pills .view_tag_pill[data-tag-id="${sea}"]`)).toHaveAttribute('data-op', 'not_has');
+        });
+
+        test('a tag picked in upstream\'s tag filter shows as a tag pill with its name', async ({ page }) => {
+            const [star] = await makeTags(page, ['star']);
+            await openSearch(page);
+            await page.evaluate(async (id) => {
+                const { entitiesFilter } = await import('/script.js');
+                const { FILTER_TYPES } = await import('/scripts/filters.js');
+                entitiesFilter.setFilterData(FILTER_TYPES.TAG, { selected: [id], excluded: [] });
+            }, star);
+
+            await expect(page.locator(`#character_search_pills .view_tag_pill[data-tag-id="${star}"] .search_pill_value`)).toHaveText(star);
+        });
+
+        test('+ Favorite adds a favorites-only pill; its value flips to no favorites, and removing it drops the filter', async ({ page }) => {
+            await openSearch(page);
+            await page.locator('.view_pill_add').click();
+            await page.locator('.view_pill_field_option[data-field="@fav"]').click();
+            await expect.poll(async () => (await lastQuery(page))?.filter?.fav).toBe(true);
+
+            await page.locator('#character_search_pills .view_fav_pill .search_pill_value').click();
+            await expect.poll(async () => (await lastQuery(page))?.filter?.fav).toBe(false);
+            const fav = await page.evaluate(async () => {
+                const { entitiesFilter } = await import('/script.js');
+                const { FILTER_TYPES } = await import('/scripts/filters.js');
+                return entitiesFilter.getFilterData(FILTER_TYPES.FAV);
+            });
+            expect(fav).toBe('EXCLUDED');
+
+            await page.locator('#character_search_pills .view_fav_pill .search_pill_remove').click();
+            await expect.poll(async () => 'fav' in ((await lastQuery(page))?.filter ?? {})).toBe(false);
         });
 
         test('a search an extension sets through upstream\'s FilterHelper shows as pills', async ({ page }) => {
