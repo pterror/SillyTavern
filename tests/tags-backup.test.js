@@ -137,7 +137,8 @@ describe('POST /api/tags/backup', () => {
         await seedCharacter('Alice.png');
         await seedCharacter('Bob.png');
         const many = Array.from({ length: 1500 }, (_, i) => `t${String(i).padStart(4, '0')}`);
-        await assign('Alice.png', many);
+        // One write for all 1500 rows: assigning them one by one took most of jest's 5 s timeout under load.
+        expect(await metadataDb.setEntityTagIdsMany(directories, { 'Alice.png': many })).toEqual({ 'Alice.png': 'ok' });
         await assign('Bob.png', ['t0001']);
 
         const { status, body } = await post('/api/tags/backup', {});
