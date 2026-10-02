@@ -90,7 +90,23 @@ beforeAll(async () => {
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    // Creating both stores' schemas on the wasm engine takes about a second; done once here and copied into each
+    // test's fresh directory, so no test's time depends on how loaded the machine is.
+    const template = makeDirectories();
+    await metadataDb.ensureSchemaMigrated(template);
+    await treeDb.getMessageTreeDb(template);
+    treeDb.disposeMessageTreeStores();
+    metadataDb.disposeMetadataStores();
+    templateDbFiles = fs.readdirSync(template.root)
+        .filter(name => name.endsWith('.sqlite'))
+        .map(name => ({ name, bytes: fs.readFileSync(path.join(template.root, name)) }));
+    fs.rmSync(template.root, { recursive: true, force: true });
+    tmpDirs.splice(tmpDirs.indexOf(template.root), 1);
 });
+
+/** @type {{ name: string, bytes: Buffer }[]} */
+let templateDbFiles = [];
 
 afterAll(() => new Promise(resolve => server.close(resolve)));
 
@@ -119,6 +135,9 @@ function makeDirectories() {
     };
     for (const dir of [directories.characters, directories.chats, directories.groups, directories.groupChats, directories.backups]) {
         fs.mkdirSync(dir, { recursive: true });
+    }
+    for (const file of templateDbFiles) {
+        fs.writeFileSync(path.join(root, file.name), file.bytes);
     }
     return directories;
 }
