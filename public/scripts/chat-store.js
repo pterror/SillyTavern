@@ -780,7 +780,11 @@ export async function chatOpEditMany(mesIds, silent = false) {
 
 // An opening with no row yet earns one here, since an append must name the row it attaches to.
 /** @param {number} fromIndex */
-export async function chatOpAppend(fromIndex) {
+/**
+ * @param {number} fromIndex
+ * @param {number} [toIndex] Exclusive end; the rest of the chat when left out.
+ */
+export async function chatOpAppend(fromIndex, toIndex = chat.length) {
     /** @type {string|null} */
     let after = null;
     for (let i = fromIndex - 1; i >= 0; i--) {
@@ -792,7 +796,7 @@ export async function chatOpAppend(fromIndex) {
 
     const result = await _chatOpPost('/api/chats/message/append', {
         after_node_id: after,
-        messages: chat.slice(fromIndex),
+        messages: chat.slice(fromIndex, toIndex),
     });
     /** @type {string[]} */
     const ids = result.node_ids ?? [];
@@ -846,8 +850,16 @@ export async function healDirtyMessages() {
         await ensureOpeningRow(0);
     }
 
+    // A generated reply the server couldn't store is never written from here: the server stores it on
+    // retry. Nothing after it can be stored either, since it has nothing stored to follow.
+    let unsavedReplyIndex = -1;
     for (let i = 0; i < chat.length; i++) {
         let msg = _chatAt(i);
+
+        if (typeof msg?.extra?.reply_not_saved === 'string') {
+            unsavedReplyIndex = i;
+            break;
+        }
 
         if (msg?.node_id == null || msg.node_id === '') {
             if (firstNewIndex < 0) firstNewIndex = i;
@@ -935,7 +947,12 @@ export async function healDirtyMessages() {
     }
 
     if (lastPersisted != null && firstNewIndex >= 0) {
-        await chatOpAppend(firstNewIndex);
+        await chatOpAppend(firstNewIndex, unsavedReplyIndex >= 0 ? unsavedReplyIndex : chat.length);
+    }
+
+    const leftAfter = unsavedReplyIndex >= 0 ? chat.length - unsavedReplyIndex - 1 : 0;
+    if (leftAfter > 0) {
+        toastr.warning(`${leftAfter} message(s) after the unsaved reply weren't saved: save that reply again first.`, 'Not saved', { preventDuplicates: true });
     }
 
     return lastPersisted != null;
