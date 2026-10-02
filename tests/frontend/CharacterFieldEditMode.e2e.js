@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab, setStackedDrawers } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -813,7 +813,7 @@ test.describe('character field edit mode', () => {
             });
 
             for (const mode of ['preview', 'edit']) {
-                test(`maximize toggles the panel and the drawer in ${mode} mode`, async ({ page }) => {
+                test(`maximize moves the panel into an editor layer and back in ${mode} mode`, async ({ page }) => {
                     await withCharacter(page, field, 'original', async () => {
                         if (mode === 'edit') {
                             await enterEdit(page, field);
@@ -821,19 +821,23 @@ test.describe('character field edit mode', () => {
                             await openInfoTab(page, field.tab);
                         }
                         const f = fieldLocators(page, field.id);
-                        const drawer = page.locator('.drawer-content', { has: f.panel });
-                        const drawerWasMaximized = await drawer.evaluate(el => el.classList.contains('maximized'));
+                        const inLayer = page.locator('#movingDivs > .editorLayer .char_info_tab_panel', { has: f.textarea });
+                        const inDrawer = page.locator('#char-info-panel .char_info_tab_panel', { has: f.textarea });
 
                         await f.maximize.click();
                         await expect(f.panel).toHaveClass(/\bmaximized\b/);
-                        await expect(drawer).toHaveClass(/\bmaximized\b/);
+                        await expect(inLayer).toBeVisible();
+                        await expect(inDrawer).toHaveCount(0);
+                        await expect(page.locator('#char-info-panel .char_info_tab_panel_placeholder')).toBeVisible();
                         await expect(f.maximize).toHaveClass(/\bfa-minimize\b/);
                         await expect(f.maximize).not.toHaveClass(/\bfa-maximize\b/);
                         await expect(f.maximize).toHaveAttribute('title', 'Restore');
 
                         await f.maximize.click();
                         await expect(f.panel).not.toHaveClass(/\bmaximized\b/);
-                        expect(await drawer.evaluate(el => el.classList.contains('maximized'))).toBe(drawerWasMaximized);
+                        await expect(inDrawer).toHaveCount(1);
+                        await expect(page.locator('.editorLayer')).toHaveCount(0);
+                        await expect(page.locator('.char_info_tab_panel_placeholder')).toHaveCount(0);
                         await expect(f.maximize).toHaveClass(/\bfa-maximize\b/);
                         await expect(f.maximize).not.toHaveClass(/\bfa-minimize\b/);
                         await expect(f.maximize).toHaveAttribute('title', 'Expand the editor');
@@ -888,5 +892,146 @@ test.describe('character field edit mode', () => {
                 });
             });
         }
+    });
+});
+
+test.describe('expanded editor layer', () => {
+    test.beforeEach(testSetup.awaitST);
+    test.beforeEach(async ({ page }) => awaitAppReady(page));
+
+    const description = FIELDS.find(x => x.id === 'description_textarea');
+    const layer = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#movingDivs > .editorLayer');
+
+    /**
+     * @param {import('@playwright/test').Page} page
+     * @param {number} x
+     * @param {number} y
+     * @returns {Promise<string>} The id of the layer the page shows at that point: the editor layer, the chat, or a drawer.
+     */
+    function layerAt(page, x, y) {
+        return page.evaluate(([x, y]) => {
+            const hit = document.elementFromPoint(x, y);
+            if (hit?.closest('.editorLayer')) return 'editor';
+            return hit?.closest('#sheld, .drawer-content')?.id ?? '';
+        }, [x, y]);
+    }
+
+    test('spans the three columns capped to Chat Width Max, with no backdrop and no modal', async ({ page }) => {
+        await withCharacter(page, description, 'some text', async () => {
+            await openInfoTab(page, description.tab);
+            await fieldLocators(page, description.id).maximize.click();
+            await expect(layer(page)).toBeVisible();
+            const { box, expectedWidth, viewport } = await page.evaluate(() => {
+                const el = /** @type {HTMLElement} */ (document.querySelector('#movingDivs > .editorLayer'));
+                const probe = document.createElement('div');
+                probe.style.width = 'min(var(--besideDrawerBarWidth), var(--chatWidthMax, 120ch))';
+                probe.style.position = 'fixed';
+                document.body.appendChild(probe);
+                const expectedWidth = probe.getBoundingClientRect().width;
+                probe.remove();
+                const r = el.getBoundingClientRect();
+                return { box: { left: r.left, right: r.right, width: r.width }, expectedWidth, viewport: window.innerWidth };
+            });
+            expect(Math.abs(box.width - expectedWidth)).toBeLessThan(2);
+            expect(Math.abs(box.left - (viewport - box.right))).toBeLessThan(2);
+            await expect(page.locator('dialog[open]')).toHaveCount(0);
+        });
+    });
+
+    test('Escape and the button close it; in edit mode Escape first ends the edit', async ({ page }) => {
+        await withCharacter(page, description, 'original', async () => {
+            const f = fieldLocators(page, description.id);
+            await openInfoTab(page, description.tab);
+            await f.maximize.click();
+            await expect(layer(page)).toBeVisible();
+            await layer(page).locator('.editorLayerClose').click();
+            await expect(layer(page)).toHaveCount(0);
+
+            await f.maximize.click();
+            await layer(page).locator('.editorLayerClose').focus();
+            await page.keyboard.press('Escape');
+            await expect(layer(page)).toHaveCount(0);
+
+            await enterEdit(page, description);
+            await f.maximize.click();
+            await f.textarea.focus();
+            await page.keyboard.press('Escape');
+            await expect(f.panel).not.toHaveClass(/\bfield_editing\b/);
+            await expect(layer(page)).toBeVisible();
+            await layer(page).locator('.editorLayerClose').focus();
+            await page.keyboard.press('Escape');
+            await expect(layer(page)).toHaveCount(0);
+        });
+    });
+
+    test('typing, the cursor and the edit survive maximize and restore', async ({ page }) => {
+        await withCharacter(page, description, 'original', async () => {
+            const f = fieldLocators(page, description.id);
+            await enterEdit(page, description);
+            await f.textarea.fill('typed text');
+            await f.textarea.evaluate(el => (/** @type {HTMLTextAreaElement} */ (el)).setSelectionRange(5, 5));
+            await f.maximize.click();
+            await expect(layer(page).locator(`#${description.id}`)).toBeVisible();
+            await page.keyboard.type('X');
+            await expect(f.textarea).toHaveValue('typedX text');
+            await f.maximize.click();
+            await expect(layer(page)).toHaveCount(0);
+            await expectEditMode(page, description);
+            await expect(f.textarea).toHaveValue('typedX text');
+            await f.cancel.click();
+        });
+    });
+
+    test('with stacked drawers on, the chat and a drawer come forward over it and it comes back when clicked', async ({ page }) => {
+        await setStackedDrawers(page, true);
+        try {
+            await withCharacter(page, description, 'original', async () => {
+                await openInfoTab(page, description.tab);
+                await fieldLocators(page, description.id).maximize.click();
+                await expect(layer(page)).toBeVisible();
+                const box = await layer(page).boundingBox();
+                const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+                await expect.poll(() => layerAt(page, center.x, center.y)).toBe('editor');
+
+                // The chat is covered by the layer; its icon brings it forward.
+                await page.locator('#chatDrawerIcon').click();
+                await expect.poll(() => layerAt(page, center.x, center.y)).toBe('sheld');
+
+                // A click on the layer's visible part brings it back.
+                await page.mouse.click(box.x + 5, box.y + box.height / 2);
+                await expect.poll(() => layerAt(page, center.x, center.y)).toBe('editor');
+
+                // A click on the character info drawer's visible part brings that forward over the layer.
+                // An empty spot near the drawer's bottom, past the layer's right edge.
+                const drawer = await page.locator('#char-info-panel').boundingBox();
+                const strip = { x: Math.max(drawer.x, box.x + box.width) + 5, y: drawer.y + drawer.height - 10 };
+                await page.mouse.click(strip.x, strip.y);
+                const overlap = { x: Math.max(drawer.x, box.x) + 5, y: strip.y };
+                await expect.poll(() => layerAt(page, overlap.x, overlap.y)).toBe('char-info-panel');
+
+                await page.mouse.click(box.x + 5, box.y + box.height / 2);
+                await expect.poll(() => layerAt(page, overlap.x, overlap.y)).toBe('editor');
+                await layer(page).locator('.editorLayerClose').click();
+            });
+        } finally {
+            await setStackedDrawers(page, false);
+        }
+    });
+
+    test('an .editor_maximize field opens the same layer, kept in sync, and Escape returns to the field', async ({ page }) => {
+        const personality = { id: 'personality_textarea', tab: 'personality', key: 'personality' };
+        await withCharacter(page, personality, 'calm', async () => {
+            await openInfoTab(page, personality.tab);
+            await page.locator('.editor_maximize[data-for="personality_textarea"]').click();
+            const editor = layer(page).locator('textarea.maximized_textarea');
+            await expect(editor).toBeVisible();
+            await expect(page.locator('dialog[open]')).toHaveCount(0);
+            await expect(editor).toHaveValue('calm');
+            await editor.fill('calm and kind');
+            await expect(page.locator('#personality_textarea')).toHaveValue('calm and kind');
+            await page.keyboard.press('Escape');
+            await expect(layer(page)).toHaveCount(0);
+            await expect(page.locator('#personality_textarea')).toBeFocused();
+        });
     });
 });

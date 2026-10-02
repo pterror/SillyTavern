@@ -1,6 +1,7 @@
 import { DOMPurify } from '../lib.js';
 import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
+import { keepViewState, openEditorLayer } from './editor-layer.js';
 
 // A leaf module: everything it needs from the rest of the app is passed to initCharacterFieldEditor()
 // (and to substituteMacrosWithPlaceholders()), so importing it never adds an import cycle.
@@ -297,28 +298,79 @@ export function handleFieldEditKey(key) {
     return true;
 }
 
-/** @param {HTMLElement} button */
+/** @type {Map<string, { layer: import('./editor-layer.js').EditorLayer, placeholder: HTMLElement }>} Maximized tab panels by field id. */
+const maximizedPanels = new Map();
+
+/**
+ * Maximizing moves the whole tab panel, in whatever state it's in, into an expanded editor layer; a placeholder
+ * stands in for it in the drawer. Restoring moves it back.
+ * @param {HTMLElement} button
+ */
 function toggleMaximize(button) {
     const id = String($(button).attr('data-for'));
-    const panel = getPanel(id);
-    const drawer = panel.closest('.drawer-content');
-    const maximize = !panel.hasClass('maximized');
-
-    if (maximize) {
-        drawer.attr('data-field-maximize-was-maximized', String(drawer.hasClass('maximized')));
-        drawer.addClass('maximized');
-    } else {
-        drawer.toggleClass('maximized', drawer.attr('data-field-maximize-was-maximized') === 'true');
-        drawer.removeAttr('data-field-maximize-was-maximized');
+    const open = maximizedPanels.get(id);
+    if (open) {
+        open.layer.close();
+        return;
     }
-    panel.toggleClass('maximized', maximize);
 
     const { t } = deps;
+    const panel = getPanel(id);
+    const panelEl = panel[0];
+    if (!panelEl) return;
+
+    const placeholder = document.createElement('div');
+    placeholder.classList.add('char_info_tab_panel_placeholder', 'tab-contents');
+    const note = document.createElement('div');
+    note.textContent = t`This field is open in the expanded editor.`;
+    const restore = document.createElement('div');
+    restore.classList.add('menu_button', 'menu_button_icon');
+    restore.textContent = t`Restore`;
+    restore.addEventListener('click', () => maximizedPanels.get(id)?.layer.close());
+    placeholder.append(note, restore);
+
+    const putBack = keepViewState(panelEl);
+    panelEl.replaceWith(placeholder);
+    panel.addClass('maximized');
+    setMaximizeButton(panel, true);
+    const layer = openEditorLayer(panelEl, {
+        closeTitle: t`Restore`,
+        // Escape first ends an edit in progress, as it does in the drawer.
+        escapeCloses: () => !panel.hasClass('field_editing'),
+        onClose: () => {
+            maximizedPanels.delete(id);
+            const keep = keepViewState(panelEl);
+            placeholder.replaceWith(panelEl);
+            panel.removeClass('maximized');
+            setMaximizeButton(panel, false);
+            keep();
+            focusEditing(id);
+        },
+    });
+    maximizedPanels.set(id, { layer, placeholder });
+    putBack();
+    focusEditing(id);
+}
+
+/**
+ * A field in edit mode takes focus after it moves, at the cursor it had, so typing carries on.
+ * @param {string} id
+ */
+function focusEditing(id) {
+    if (isFieldInEdit(id)) getTextarea(id)[0]?.focus({ preventScroll: true });
+}
+
+/**
+ * @param {JQuery<HTMLElement>} panel
+ * @param {boolean} maximized
+ */
+function setMaximizeButton(panel, maximized) {
+    const { t } = deps;
     panel.find('.field_maximize')
-        .toggleClass('fa-maximize', !maximize)
-        .toggleClass('fa-minimize', maximize)
-        .attr('title', maximize ? t`Restore` : t`Expand the editor`)
-        .attr('data-i18n', maximize ? '[title]Restore' : '[title]Expand the editor');
+        .toggleClass('fa-maximize', !maximized)
+        .toggleClass('fa-minimize', maximized)
+        .attr('title', maximized ? t`Restore` : t`Expand the editor`)
+        .attr('data-i18n', maximized ? '[title]Restore' : '[title]Expand the editor');
 }
 
 /**
