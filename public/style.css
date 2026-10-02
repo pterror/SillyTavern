@@ -3612,6 +3612,24 @@ select option[disabled]:not(:checked) {
     padding: 3px 8px;
 }
 
+.view_picker.unsaved .view_picker_name::after {
+    content: ' •';
+    color: var(--SmartThemeQuoteColor);
+}
+
+.view_picker_unsaved {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.view_picker_unsaved .menu_button {
+    margin: 0;
+}
+
 .view_picker_name {
     overflow: hidden;
     text-overflow: ellipsis;
