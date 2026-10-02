@@ -44,8 +44,11 @@ async function getModels(force) {
         headers: getRequestHeaders(),
         body: JSON.stringify({ force }),
     });
-    const data = await response.json();
-    console.log('getModels', data);
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !Array.isArray(data)) {
+        const message = data?.message ?? response.statusText;
+        throw new Error(message || 'AI Horde did not send a model list.');
+    }
     return data;
 }
 
@@ -311,8 +314,18 @@ export async function getHordeModels(force) {
     const sortByWhitelisted = (a, b) => b.is_whitelisted - a.is_whitelisted;
     const sortByPopular = (a, b) => b.tags?.includes('popular') - a.tags?.includes('popular');
 
+    let fetched;
+    try {
+        fetched = await getModels(force);
+    } catch (error) {
+        // Keep the list and the chosen models as they are: a failed fetch says nothing about which models exist.
+        console.warn('Could not load AI Horde models:', error);
+        toastr.warning(String(error?.message ?? error), t`Could not load AI Horde models`);
+        return;
+    }
+
     $('#horde_model').empty();
-    models = (await getModels(force)).sort((a, b) => {
+    models = fetched.sort((a, b) => {
         return sortByWhitelisted(a, b) || sortByPopular(a, b) || sortByPerformance(a, b);
     });
     for (const model of models) {
