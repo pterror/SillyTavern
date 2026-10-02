@@ -13307,26 +13307,14 @@ jQuery(async function () {
         '#character_version_textarea': function () { create_save.character_version = String($('#character_version_textarea').val()); },
         '#creator_textarea': function () { create_save.creator = String($('#creator_textarea').val()); },
         '#tags_textarea': function () { create_save.tags = String($('#tags_textarea').val()); },
-        '#personality_textarea': function () { create_save.personality = String($('#personality_textarea').val()); },
-        '#scenario_pole': function () { create_save.scenario = String($('#scenario_pole').val()); },
-        '#mes_example_textarea': function () { create_save.mes_example = String($('#mes_example_textarea').val()); },
         '#talkativeness_slider': function () { create_save.talkativeness = Number($('#talkativeness_slider').val()); },
-        '#depth_prompt_prompt': function () { create_save.depth_prompt_prompt = String($('#depth_prompt_prompt').val()); },
         '#depth_prompt_depth': function () { create_save.depth_prompt_depth = Number($('#depth_prompt_depth').val()); },
         '#depth_prompt_role': function () { create_save.depth_prompt_role = String($('#depth_prompt_role').val()); },
     };
 
+    // The previewed text fields are saved by character-field-editor.js, including values written by code.
     Object.keys(elementsToUpdate).forEach(function (id) {
         $(id).on('input', function () {
-            // A previewed field in edit mode saves through the field editor (Done, or autosave). Input outside
-            // edit mode comes from code writing the field, as upstream extensions do; it saves as before.
-            const fieldId = id.slice(1);
-            if (isFieldInEdit(fieldId)) {
-                return;
-            }
-            if (this instanceof HTMLTextAreaElement) {
-                setFieldValue(fieldId, String($(id).val() ?? ''));
-            }
             if (menu_type == 'create') {
                 elementsToUpdate[id]();
             } else {

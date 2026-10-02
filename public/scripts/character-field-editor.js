@@ -110,8 +110,15 @@ const FIELDS = {
     mes_example_textarea: { save: () => deps.saveExampleMessagesField, render: renderLiteralTagsPreview },
 };
 
-/** @type {{ id: string, original: string, saving: boolean } | null} The one field in edit mode. */
+/**
+ * The one field in edit mode. `userText` is what the user last typed, so a write from code during the edit can be
+ * stored without losing it.
+ * @type {{ id: string, original: string, userText: string, saving: boolean } | null}
+ */
 let activeEdit = null;
+
+/** @type {Map<string, { next: string | null }>} Saves of values written by code that are in flight, by field. */
+const outsideWrites = new Map();
 
 /** @type {ReturnType<typeof setTimeout> | null} */
 let autoSaveTimer = null;
@@ -222,7 +229,8 @@ export function beginEdit(id) {
         return;
     }
     const textarea = getTextarea(id);
-    activeEdit = { id, original: String(textarea.val() ?? ''), saving: false };
+    const text = String(textarea.val() ?? '');
+    activeEdit = { id, original: text, userText: text, saving: false };
     getPanel(id).addClass('field_editing');
     deps.onEditStart?.(id);
     textarea.trigger('focus');
@@ -259,6 +267,64 @@ function scheduleAutoSave(id, value) {
             }
         });
     }, deps.autoSaveTimeout);
+}
+
+// Greetings are saved per greeting through the pager, never from the field's value.
+const GREETING_FIELD_ID = 'greeting_field';
+
+/**
+ * Saves at once (in create mode that sets the value Create builds from before the writer's next line runs). While a
+ * save of this field is in flight, only the latest value waits for it.
+ * @param {string} id
+ * @param {string} value
+ */
+function scheduleOutsideWriteSave(id, value) {
+    const pending = outsideWrites.get(id);
+    if (pending) {
+        pending.next = value;
+        return;
+    }
+    const entry = { next: /** @type {string | null} */ (null) };
+    outsideWrites.set(id, entry);
+    const run = (/** @type {string} */ text) => FIELDS[id].save()(text)
+        .catch((error) => {
+            console.error('Saving a field written by code failed', { id, error });
+        })
+        .then(() => {
+            if (entry.next === null) {
+                outsideWrites.delete(id);
+                return;
+            }
+            const next = entry.next;
+            entry.next = null;
+            return run(next);
+        });
+    void run(value);
+}
+
+/**
+ * Code wrote a field and fired `input`, as upstream extensions do: the value is stored, as upstream stores it.
+ * During an edit the write has replaced the user's text in the textarea; the written value is stored and becomes
+ * what Cancel returns to, and the user's text is put back so their edit goes on.
+ * @param {string} id
+ * @param {string} value
+ */
+function onCodeWrite(id, value) {
+    if (!isFieldInEdit(id)) {
+        refreshFieldPreview(id);
+        scheduleOutsideWriteSave(id, value);
+        return;
+    }
+    if (value === activeEdit.original) {
+        return;
+    }
+    activeEdit.original = value;
+    scheduleOutsideWriteSave(id, value);
+    if (activeEdit.userText !== value) {
+        getTextarea(id).val(activeEdit.userText);
+        const { t } = deps;
+        toastr.info(t`This field was changed by an extension while you were editing it. Its change was saved; your edit is still open, and confirming it replaces that change.`);
+    }
 }
 
 async function confirmEdit() {
@@ -431,9 +497,20 @@ export function initCharacterFieldEditor(dependencies) {
     });
 
     for (const id of Object.keys(FIELDS)) {
-        getTextarea(id).on('input', function () {
-            if (isFieldInEdit(id) && deps.power_user.auto_save_msg_edits) {
-                scheduleAutoSave(id, String($(this).val() ?? ''));
+        getTextarea(id).on('input', function (event) {
+            const value = String($(this).val() ?? '');
+            // Typing is a trusted event; `.val(x).trigger('input')` or a dispatched Event is code writing the field.
+            if (event.originalEvent?.isTrusted) {
+                if (isFieldInEdit(id)) {
+                    activeEdit.userText = value;
+                    if (deps.power_user.auto_save_msg_edits) {
+                        scheduleAutoSave(id, value);
+                    }
+                }
+                return;
+            }
+            if (id !== GREETING_FIELD_ID) {
+                onCodeWrite(id, value);
             }
         });
         refreshFieldPreview(id);
