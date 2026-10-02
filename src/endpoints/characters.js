@@ -2436,7 +2436,7 @@ async function searchSortedPage(handle, directories, { searchTerm, sortField, so
  * @param {object} params
  * @returns {Promise<QueryReply>}
  */
-async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql, offset, pageSize, wantRows, wantTotal, wantHashes, cursor }) {
+async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql, indexComplete = false, offset, pageSize, wantRows, wantTotal, wantHashes, cursor }) {
     const { directories } = user;
     const handle = user.profile.handle;
     const unavailable = () => queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
@@ -2467,7 +2467,11 @@ async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, inclu
         walked = await walkRanking({
             groups,
             need: pageSize,
-            count: wantTotal,
+            // When the index applies every filter, its counts are the total and the walk's check only drops rows
+            // the index still has after they changed or went (it lags the db by about a second): the page and a
+            // margin for those is all it reads.
+            count: wantTotal && !indexComplete,
+            ...(indexComplete ? { window: pageSize + pageOverFetch(pageSize) } : {}),
             start,
             fetchCharacters: async (windowOffset, count) => {
                 if (groupsOnly) return [];
@@ -2563,7 +2567,15 @@ async function runSearchWalk(user, { mode, searchTerm, filter, sort, seed, inclu
     const extra = {};
     if (capped && entities.length < pageSize) extra.more = true;
     if (!exhausted) extra.cursor = encodeWalkCursor(key, walked.position);
-    const counted = wantTotal ? walkTotal(walked.seen, base) : null;
+    /** @type {{ total: number, approx: boolean } | null} */
+    let counted = null;
+    if (wantTotal && indexComplete && !walked.seen.ended) {
+        // The index's count, less the rows the check dropped; a dropped row means others may be gone too.
+        const dropped = walked.seen.e - walked.seen.n;
+        counted = { total: Math.max(walked.seen.n, base - dropped), approx: dropped > 0 };
+    } else if (wantTotal) {
+        counted = walkTotal(walked.seen, base);
+    }
 
     const read = includeGroups
         ? await timePhase('page_rows', () => getEntityRowsByIds(directories, entities, { wantRows, wantHashes }))
@@ -2758,10 +2770,6 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
      */
     let totalFromRows = rowsFound => ({ total: rowsFound, approx: false });
 
-    // Populated only in the hasSearch+includeGroups branch below, for JS-sorting merged relevance order
-    // when sort.field === 'search' (no SQL column exists for text relevance).
-    let combinedScoresById = null;
-
     // The indexes' positions as of the search reads, for the token.
     let searchPosition = null;
     let groupsSearchPosition = null;
@@ -2776,12 +2784,13 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         const indexSorts = sort.field !== undefined && TANTIVY_SORT_FIELDS.has(sort.field) && !filter.world && !tagsLeftToSql;
         // A match the index can't fully filter (tags left to SQL, or a world, which it has no field for) or can't
         // order (any sort but relevance and its fast fields) is walked and checked under the work cap.
-        const walkMode = sort.field === 'search'
-            ? (tagsLeftToSql || filter.world ? 'rank' : null)
-            : (indexSorts ? null : 'sorted');
+        // Relevance is always walked: the page and its margin are read from the index's ranking, and only the
+        // page's rows are read (search plan step 1). When the index applies every filter it is complete.
+        const walkMode = sort.field === 'search' ? 'rank' : (indexSorts ? null : 'sorted');
         if (walkMode) {
             return runSearchWalk(user, {
                 mode: walkMode, searchTerm, filter, sort, seed, includeGroups, groupsOnly, tagsLeftToSql,
+                indexComplete: walkMode === 'rank' && !tagsLeftToSql && !filter.world,
                 offset, pageSize, wantRows, wantTotal, wantHashes, cursor: body.cursor,
             });
         }
@@ -2833,10 +2842,8 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
             }
         }
 
-        // 'search' sort only needs a relevance-ordered page-sized window, plus a margin for hits whose row is
-        // gone (the rows read below drop them, since the index can lag a delete); any other sort needs the full
-        // matched set since ordering comes from SQL. Undefined tells the search engine to return all matches.
-        const idFetchCap = sort.field === 'search' ? offset + pageSize + pageOverFetch(pageSize) : undefined;
+        // Relevance was walked above; the sorts left here order in SQL, so they need every match.
+        const idFetchCap = undefined;
         // fav, tags, ids and excludeIds (for groups: fav and tags) are applied inside the search engine itself
         // (runIdSearch/runGroupSearch), before idFetchCap, so a hit they rule out never takes a place in the
         // capped list and leaves the page short. world isn't: the search engine has no world field. The SQL
@@ -2900,36 +2907,24 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         if (includeGroups) {
             // Groups have their own full-text index - resolve both id sets, then answer from
             // queryEntities()'s UNION ALL restricted to their union.
-            combinedScoresById = timePhase('merge_ids', () => new Map([...searchResult.scoresById, ...groupSearchResult.scoresById]));
             const combinedIds = timePhase('merge_ids', () => [...effectiveIds, ...effectiveGroupIds]);
             const entityParams = {
                 tags: filter.tags, fav: filter.fav, excludeIds: filter.excludeIds,
                 ids: combinedIds, handle, wantRows, wantTotal, wantHashes, groupsOnly,
             };
-            if (sort.field === 'search') {
-                // No SQL column for relevance - fetch every matched row so the JS reorder+slice below sees the true top-K.
-                entityParams.offset = 0;
-                entityParams.limit = combinedIds.length;
-            } else {
-                // A non-relevance sort composes with search narrowing - SQL does ORDER BY/LIMIT/OFFSET directly.
-                entityParams.sortField = sort.field;
-                entityParams.sortOrder = sort.order;
-                entityParams.seed = seed;
-                entityParams.offset = offset;
-                entityParams.limit = pageSize;
-            }
+            // A field sort composes with search narrowing: SQL does the ORDER BY and paging.
+            entityParams.sortField = sort.field;
+            entityParams.sortOrder = sort.order;
+            entityParams.seed = seed;
+            entityParams.offset = offset;
+            entityParams.limit = pageSize;
             const result = await timePhase('query_entities', () => queryEntities(user.directories, entityParams));
             if (result === null) {
                 return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
             }
 
-            let rows = result.rows;
-            let hashRows = result.hashRows;
-            if (sort.field === 'search' && (wantRows || wantHashes)) {
-                // No SQL column for relevance - queryEntities() returned every matched row in id order; reorder by score here.
-                if (wantRows) rows = timePhase('js_sort', () => rows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
-                if (wantHashes) hashRows = timePhase('js_sort', () => hashRows.slice().sort((a, b) => combinedScoresById.get(a.id) - combinedScoresById.get(b.id)).slice(offset, offset + pageSize));
-            }
+            const rows = result.rows;
+            const hashRows = result.hashRows;
 
             const counted = totalFromRows(result.total, combinedIds.length);
             const totalApprox = counted.approx || result.approxTotal;
@@ -2951,11 +2946,6 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
         }
 
         queryParams = { ...queryParams, ids: effectiveIds, idOrder: searchResult.ids };
-        if (sort.field === 'search') {
-            // queryCharacters() pages the ranked ids before reading rows, so hits whose row is gone would
-            // leave the page short; it reads the margin too, and the page is trimmed back below.
-            queryParams.limit = pageSize + pageOverFetch(pageSize);
-        }
     }
 
     // A non-search request with includeGroups reaches queryEntities()'s UNION ALL path directly.
@@ -2991,11 +2981,6 @@ async function runQueryPage(user, body, { groupsOnly: onlyGroups = false } = {})
 
     if (result === null) {
         return queryReply(503, { error: true, reason: 'metadata-store-unavailable' });
-    }
-
-    if (hasSearch && sort.field === 'search') {
-        if (result.rows) result.rows = result.rows.slice(0, pageSize);
-        if (result.hashRows) result.hashRows = result.hashRows.slice(0, pageSize);
     }
 
     // includeGroups is always false here - both includeGroups branches already returned above.

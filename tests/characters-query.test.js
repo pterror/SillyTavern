@@ -1509,3 +1509,33 @@ describe('/query sorted pages past the work cap', () => {
         }
     });
 });
+
+describe('/query relevance pages read from the ranking', () => {
+    test('pages followed by cursor give the one-page list in rank order, each with the index\'s exact total', async () => {
+        const card = name => ({ name, data: { name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        for (let i = 0; i < 9; i++) await seedCharacterWithFile(`Zeta${i}.png`, card(i % 3 === 0 ? `Zeta Zeta ${i}` : `Zeta ${i}`));
+        await seedGroup('ZetaGroup', { name: 'Zeta Group' });
+        await seedGroup('OtherGroup', { name: 'Other Group' });
+        const request = { filter: { includeGroups: true, search: 'zeta' }, sort: { field: 'search' }, want: ['rows', 'total'] };
+        const key = row => row.type === 'group' ? `group:${row.item.id}` : `character:${row.item.avatar}`;
+
+        const whole = await (await postJson('/api/characters/query', { ...request, page: 1, pageSize: 20 })).json();
+        expect(whole.total).toBe(10);
+        expect(whole.rows).toHaveLength(10);
+
+        const followed = [];
+        let cursor;
+        for (let page = 1; page <= 4; page++) {
+            const reply = await (await postJson('/api/characters/query', { ...request, page, pageSize: 3, ...(cursor ? { cursor } : {}) })).json();
+            expect(reply.total).toBe(10);
+            followed.push(...reply.rows.map(key));
+            cursor = reply.cursor;
+        }
+        expect(followed).toEqual(whole.rows.map(key));
+
+        // A page number with no cursor gives the same page.
+        const third = await (await postJson('/api/characters/query', { ...request, page: 3, pageSize: 3 })).json();
+        expect(third.rows.map(key)).toEqual(whole.rows.map(key).slice(6, 9));
+    });
+});
+
