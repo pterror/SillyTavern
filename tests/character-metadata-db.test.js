@@ -2630,16 +2630,17 @@ describe('getChangesSince / getTagNameChangesSince with { limit }', () => {
     });
 
     test('collapses per page, so an id changed in two pages shows up in both', async () => {
+        // A's whole-record row (its insert) stays where it is; its later field change is a row of its own.
         await metadataDb.upsertCharacterFromWrite(directories, 'A.png', cardJson({ name: 'A' }));
-        await metadataDb.upsertCharacterFromWrite(directories, 'A.png', cardJson({ name: 'A', fav: true }));
-        await metadataDb.deleteCharacterRow(directories, 'A.png');
+        await metadataDb.upsertCharacterFromWrite(directories, 'B.png', cardJson({ name: 'B' }));
+        expect(await metadataDb.setCharacterFav(directories, 'A.png', true)).toBe(true);
 
         const first = await metadataDb.getChangesSince(directories, 0, { limit: 2 });
-        expect(first.changes).toEqual([expect.objectContaining({ id: 'A.png', op: 'upsert' })]);
+        expect(first.changes).toEqual([{ id: 'A.png', op: 'upsert', fields: null }, { id: 'B.png', op: 'upsert', fields: null }]);
         expect(first.hasMore).toBe(true);
 
         const second = await metadataDb.getChangesSince(directories, first.seq, { limit: 2 });
-        expect(second.changes).toEqual([{ id: 'A.png', op: 'delete' }]);
+        expect(second.changes).toEqual([{ id: 'A.png', op: 'upsert', fields: ['fav'] }]);
         expect(second.hasMore).toBe(false);
     });
 

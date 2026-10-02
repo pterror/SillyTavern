@@ -67,15 +67,17 @@ function planOfTheOnlyRecordedGet() {
 }
 
 describe('change-log seq bounds read without scanning the log', () => {
-    test('getChangesSince() reads MIN/MAX(seq) of changes without a SCAN of changes', async () => {
+    test('getChangesSince() reads MAX(seq) of changes without a SCAN of changes, and the trimmed floor by key', async () => {
         await metadataDb.ensureSchemaMigrated(directories);
         recordedGets.length = 0;
 
         await metadataDb.getChangesSince(directories, 0, { limit: 1 });
 
-        const details = planOfTheOnlyRecordedGet();
-        expect(details).not.toContainEqual(expect.stringMatching(/\bSCAN changes\b/));
-        expect(details).toContainEqual(expect.stringMatching(/\bSEARCH changes\b/));
+        expect(recordedGets.map(r => r.sql)).toHaveLength(2);
+        const [changes, floor] = recordedGets.map(({ sql, handle }) => Array.from(handle.iterate(`EXPLAIN QUERY PLAN ${sql}`, { key: '' }), row => row.detail));
+        expect(changes).not.toContainEqual(expect.stringMatching(/\bSCAN changes\b/));
+        expect(changes).toContainEqual(expect.stringMatching(/\bSEARCH changes\b/));
+        expect(floor).toContainEqual(expect.stringMatching(/\bSEARCH meta USING INDEX\b/));
     });
 
     test('getTagNameChangesSince() reads MIN/MAX(seq) of tag_name_changes without a SCAN of tag_name_changes', async () => {

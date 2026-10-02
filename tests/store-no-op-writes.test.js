@@ -169,7 +169,8 @@ describe('a write that changes nothing adds no WAL frames', () => {
         const changesRows = () => {
             const db = new Database(file, { readonly: true });
             try {
-                return db.prepare('SELECT COUNT(*) AS n FROM changes').get().n;
+                // The log's current seq: a change moves it by one, whether it adds a row or replaces the id's row.
+                return db.prepare('SELECT COALESCE(MAX(seq), 0) AS n FROM changes').get().n;
             } finally {
                 db.close();
             }

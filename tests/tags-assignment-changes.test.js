@@ -217,14 +217,15 @@ describe('POST /api/tags/assignment-changes', () => {
     });
 
     test('pages at 500 log rows across both logs, and the cursors reach the end', async () => {
-        await seedCharacter('Alice.png');
+        // The characters log keeps one field row per character, so its 300 rows are 300 characters' assignments.
+        const characters = Array.from({ length: 300 }, (_, i) => `C${String(i).padStart(3, '0')}.png`);
+        for (const id of characters) await seedCharacter(id);
         await seedGroup('1001');
         const since = await cursors();
 
         // 300 rows in each log: 600 in all, so two pages.
+        for (const id of characters) expect(await metadataDb.assignEntityTag(directories, id, 't')).toBe('ok');
         for (let i = 0; i < 150; i++) {
-            expect(await metadataDb.assignEntityTag(directories, 'Alice.png', 't')).toBe('ok');
-            expect(await metadataDb.unassignEntityTag(directories, 'Alice.png', 't')).toBe('ok');
             expect(await metadataDb.assignEntityTag(directories, '1001', 't')).toBe('ok');
             expect(await metadataDb.unassignEntityTag(directories, '1001', 't')).toBe('ok');
         }
@@ -234,7 +235,7 @@ describe('POST /api/tags/assignment-changes', () => {
         expect(first.hasMore).toBe(true);
         expect((first.seq - since.sinceSeq) + (first.groupsVersion - since.sinceGroupsVersion)).toBe(500);
         expect((first.endSeq - first.seq) + (first.endGroupsVersion - first.groupsVersion)).toBe(100);
-        expect(first.ids.sort()).toEqual(['1001', 'Alice.png']);
+        expect(first.ids.sort()).toEqual(['1001', ...characters]);
 
         const second = await changes(next(first));
         expect(second.hasMore).toBe(false);
