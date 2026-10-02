@@ -10,6 +10,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import yaml from 'yaml';
 import _ from 'lodash';
 import mime from 'mime-types';
+import extractPngChunks from 'png-chunks-extract';
 import { Jimp, JimpMime } from '../jimp.js';
 import storage from 'node-persist';
 
@@ -423,15 +424,14 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
          */
         async function getInputImage() {
             try {
-                if (Buffer.isBuffer(inputFile)) {
-                    return await parseImageBuffer(inputFile, crop);
-                }
-
-                return await tryReadImage(inputFile, crop);
+                const image = Buffer.isBuffer(inputFile)
+                    ? await parseImageBuffer(inputFile, crop)
+                    : await tryReadImage(inputFile, crop);
+                // A file that only starts like a PNG fails here, before anything is written.
+                extractPngChunks(new Uint8Array(image));
+                return image;
             } catch (error) {
-                const message = Buffer.isBuffer(inputFile) ? 'Failed to read image buffer.' : `Failed to read image: ${inputFile}.`;
-                console.warn(message, 'Using a fallback image.', error);
-                return await fs.promises.readFile(DEFAULT_AVATAR_PATH);
+                throw new ImageReadError(imageDisplayName(inputFile, request), error);
             }
         }
 
@@ -597,10 +597,60 @@ async function tryReadImage(imgPath, crop) {
         const rawImg = await Jimp.read(imgPath);
         return await applyAvatarCropResize(rawImg, crop);
     } catch (error) {
-        // If it's an unsupported type of image (APNG) - just read the file as buffer
-        console.error(`Failed to read image: ${imgPath}`, error);
-        return fs.readFileSync(imgPath);
+        // Jimp can't decode APNG, which is still a PNG: keep its bytes as they are. Anything else isn't an image.
+        const raw = fs.readFileSync(imgPath);
+        if (raw.subarray(0, 8).equals(PNG_SIGNATURE)) {
+            return raw;
+        }
+        throw error;
     }
+}
+
+/**
+ * An uploaded or given image that can't be read. Nothing is written when it's thrown; routes answer 400 with its
+ * message, which names the file.
+ */
+class ImageReadError extends Error {
+    /**
+     * @param {string} name The file as the user knows it
+     * @param {unknown} cause Why it couldn't be read
+     */
+    constructor(name, cause) {
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        super(`couldn't read ${name} as an image: ${reason}`);
+        this.name = 'ImageReadError';
+        this.cause = cause;
+    }
+}
+
+/**
+ * The name a user would recognise for an image passed to writeCharacterData(): the upload's original file name when
+ * it's the request's upload, else the file's own name.
+ * @param {string|Buffer} inputFile
+ * @param {import('express').Request} request
+ * @returns {string}
+ */
+function imageDisplayName(inputFile, request) {
+    if (Buffer.isBuffer(inputFile)) {
+        return 'the card\'s image';
+    }
+    const file = request?.file;
+    if (file && path.resolve(path.join(file.destination, file.filename)) === path.resolve(inputFile)) {
+        return file.originalname || path.basename(inputFile);
+    }
+    return path.basename(inputFile);
+}
+
+/**
+ * Answers a failed character write: 400 with the reason for an image that couldn't be read, else 500.
+ * @param {import('express').Response} response
+ * @param {unknown} err
+ */
+function sendWriteFailure(response, err) {
+    if (err instanceof ImageReadError) {
+        return response.status(400).send(err.message);
+    }
+    return response.sendStatus(500);
 }
 
 /**
@@ -1041,8 +1091,6 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         const avatarName = `${internalName}.png`;
         const chatsPath = path.join(request.user.directories.chats, internalName);
 
-        if (!fs.existsSync(chatsPath)) fs.mkdirSync(chatsPath);
-
         if (!request.file) {
             await writeCharacterData(DEFAULT_AVATAR_PATH, char, internalName, request, undefined, null, null, true);
         } else {
@@ -1056,13 +1104,15 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
             }
         }
 
+        if (!fs.existsSync(chatsPath)) fs.mkdirSync(chatsPath);
+
         if (initialFav) {
             await setCharacterFav(request.user.directories, avatarName, true);
         }
         return response.send(avatarName);
     } catch (err) {
         console.error(err);
-        response.sendStatus(500);
+        sendWriteFailure(response, err);
     }
 });
 
@@ -1179,7 +1229,7 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         return response.sendStatus(200);
     } catch (err) {
         console.error('An error occurred, character edit invalidated.', err);
-        return response.sendStatus(500);
+        return sendWriteFailure(response, err);
     }
 });
 
@@ -1221,7 +1271,7 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
         return response.sendStatus(200);
     } catch (err) {
         console.error('An error occurred while editing avatar', err);
-        return response.sendStatus(500);
+        return sendWriteFailure(response, err);
     }
 });
 
@@ -1271,7 +1321,7 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
         return response.sendStatus(200);
     } catch (err) {
         console.error('An error occurred, character edit invalidated.', err);
-        return response.sendStatus(500);
+        return sendWriteFailure(response, err);
     }
 });
 
@@ -3685,7 +3735,7 @@ router.post('/import', async function (request, response) {
     } catch (err) {
         const error = importFailure(importName, err);
         console.error(error);
-        response.status(error.code === NO_CARD_DATA ? 400 : 500).send({ error: error.message });
+        response.status(error.code === NO_CARD_DATA || err instanceof ImageReadError ? 400 : 500).send({ error: error.message });
     }
 });
 
