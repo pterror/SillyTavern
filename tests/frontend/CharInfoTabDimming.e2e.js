@@ -117,6 +117,7 @@ test.describe('character info tab dimming', () => {
         await withCharacter(page, { first_mes: 'Greeting' }, async () => {
             await openInfoTab(page, 'personality');
             await expect(heading(page, 'personality')).toHaveClass(/\btab-empty\b/);
+            await page.locator('.field_edit_toggle[data-for="personality_textarea"]').click();
             await page.locator('#personality_textarea').fill(' ');
             await expect(heading(page, 'personality')).not.toHaveClass(/\btab-empty\b/);
             await page.locator('#personality_textarea').fill('');

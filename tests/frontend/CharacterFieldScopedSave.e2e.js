@@ -113,7 +113,9 @@ test.describe('field-scoped character saves', () => {
             await page.locator('#description_textarea').fill('first field');
             await page.locator('.field_edit_done[data-for="description_textarea"]').click();
             await openInfoTab(page, 'personality');
+            await page.locator('.field_edit_toggle[data-for="personality_textarea"]').click();
             await page.locator('#personality_textarea').fill('second field');
+            await page.locator('.field_edit_done[data-for="personality_textarea"]').click();
 
             await expect.poll(() => mergeBodies.length, { timeout: 10000 }).toBe(2);
             const sentFields = mergeBodies.map(body => Object.keys(body.data));
