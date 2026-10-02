@@ -3,8 +3,9 @@ import { markEditorEvent, registerMountedEditor, unregisterMountedEditor } from 
 import { chatMarkdownLanguage, liveRendering } from './render.js';
 import { liveMacros } from './macros.js';
 import { liveFormatting } from './formatting.js';
+import { livePaste } from './paste.js';
 
-const { EditorState, Compartment, Annotation } = cmState;
+const { EditorState, Compartment, Annotation, Prec } = cmState;
 const { EditorView, placeholder: placeholderExtension, keymap } = cmView;
 const { history, historyKeymap, defaultKeymap } = cmCommands;
 
@@ -143,14 +144,15 @@ export function mountLiveEditor(textarea, options = {}) {
                 compartments.render.of(options.render ? liveRendering({ render: options.render, emojis: options.grammar?.emojis }) : []),
                 compartments.macros.of(options.macros ? liveMacros(options.macros) : []),
                 compartments.toolbar.of(options.formatting === false ? [] : liveFormatting(options.formatting || {})),
-                compartments.paste.of([]),
+                compartments.paste.of(livePaste()),
                 compartments.search.of([]),
                 compartments.sync.of([]),
                 history(),
                 keymap.of([...defaultKeymap, ...historyKeymap]),
                 EditorView.lineWrapping,
                 EditorView.editorAttributes.of({ class: 'live-editor' }),
-                EditorView.domEventHandlers(forwardHandlers),
+                // First, so listeners on the textarea get every event before the editor's own handlers.
+                Prec.highest(EditorView.domEventHandlers(forwardHandlers)),
                 sync,
                 textarea.placeholder ? placeholderExtension(textarea.placeholder) : [],
                 EditorState.readOnly.of(textarea.readOnly),
