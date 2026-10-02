@@ -24,7 +24,7 @@ import { normalizeGroupRecord, tagEntityTypeOf } from './group-id.js';
 import { expandTagFilter, resolveTagId, resolveTagIds, NO_TAG_DELETIONS } from './tag-deletions.js';
 import { SEARCH_WORK_CAP, SEARCH_WALK_WINDOW } from './endpoints/search-walk.js';
 import { orderKey, permute, unpermute } from './random-order.js';
-import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
+import { characterAvatarsForOwnerId, characterOwnerIdOf, dropOwnerCreatedAtIndex, fillMessageStats, listOwnersWithoutKind, openOwnerStatsView, recordOwnerKinds } from './message-tree-db.js';
 // getStringHash must match public/scripts/random-sort.js's compareByRandomSeed() exactly, or server/client random-sort ordering diverges.
 import { getStringHash, characterDigestFavHash, characterDigestFieldsHash, characterDigestTagIdsHash, groupDigestFavHash, groupDigestTagIdsHash, groupDigestContentHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
@@ -6671,6 +6671,36 @@ export async function fillTreeOwnerKinds(directories) {
         rowsChanged += await recordOwnerKinds(directories, found);
         batches++;
     }
+    return { batches, rowsChanged };
+}
+
+/** Owners recounted per message stats fill batch. */
+const MESSAGE_STATS_FILL_BATCH = 50;
+
+/**
+ * Counts every message tree owner's message stats from its rows once (message-stats.js), a batch of owners at a time
+ * with a pause between; the triggers keep them current after. Resumes where it stopped.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @returns {Promise<CharacterPassResult | undefined>} `rowsChanged` counts the owners recounted.
+ */
+export async function fillMessageStatsIfNeeded(directories) {
+    let batches = 0;
+    let rowsChanged = 0;
+    /** @type {ProgressLog | null} */
+    let progress = null;
+    for (;;) {
+        const result = await fillMessageStats(directories, MESSAGE_STATS_FILL_BATCH);
+        if (!result) return;
+        if (result.owners > 0) {
+            progress ??= new ProgressLog({ what: 'counting message stats from stored chats' });
+            progress.add(result.owners);
+            rowsChanged += result.owners;
+            batches++;
+        }
+        if (result.done) break;
+        await delay(MIGRATION_BATCH_PAUSE_MS);
+    }
+    progress?.finish('owners');
     return { batches, rowsChanged };
 }
 

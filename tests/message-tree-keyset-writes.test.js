@@ -5,6 +5,7 @@ import os from 'node:os';
 
 import NodeSqlite3Wasm from 'node-sqlite3-wasm';
 import { isBusyError, openWasmDatabase, streamRows } from '../src/endpoints/sqlite-engine.js';
+import { defineMessageStatsFunctions } from '../src/message-stats.js';
 
 const { Database: WasmDatabase } = NodeSqlite3Wasm;
 
@@ -149,6 +150,8 @@ describe('renameCharacterInMessages reads the rows to rename in keyset chunks', 
         await treeDb.getDbHandle(directories);
         treeDb.disposeMessageTreeStores();
         const raw = new WasmDatabase(path.join(directories.root, 'message-tree.sqlite'));
+        // The message stats triggers fire on rows written here.
+        defineMessageStatsFunctions({ defineFunction: (name, fn) => raw.function(name, fn, { deterministic: true }) });
         try {
             raw.exec('BEGIN');
             raw.run(insertSql, [`${ownerId}-anchor`, null, ownerId, treeDb.ANCHOR_CONTENT, 1, null]);
@@ -251,6 +254,8 @@ describe('renameGroupMemberInMessages reads the member\'s rows in keyset chunks'
         await treeDb.getDbHandle(directories);
         treeDb.disposeMessageTreeStores();
         const raw = new WasmDatabase(path.join(directories.root, 'message-tree.sqlite'));
+        // The message stats triggers fire on rows written here.
+        defineMessageStatsFunctions({ defineFunction: (name, fn) => raw.function(name, fn, { deterministic: true }) });
         try {
             raw.exec('BEGIN');
             raw.run(insertSql, [`${ownerId}-anchor`, null, ownerId, treeDb.ANCHOR_CONTENT, 1, null]);
