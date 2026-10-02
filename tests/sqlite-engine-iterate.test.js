@@ -363,6 +363,34 @@ describe('native WAL housekeeping and close()', () => {
         }
     });
 
+    test('checkpoint() with another connection mid-read returns at once and keeps no lock, so a write elsewhere goes straight through', () => {
+        const reader = new Database(dbPath, { readonly: true });
+        const writer = new Database(dbPath);
+        writer.pragma('busy_timeout = 15000');
+        const rows = reader.prepare('SELECT id FROM t ORDER BY id').iterate();
+        try {
+            rows.next();
+            handle.run('UPDATE t SET v = ?', ['new']);
+            let started = Date.now();
+            handle.checkpoint();
+            expect(Date.now() - started).toBeLessThan(500);
+            started = Date.now();
+            writer.prepare('UPDATE t SET v = ? WHERE id = 1').run('again');
+            expect(Date.now() - started).toBeLessThan(500);
+        } finally {
+            rows.return();
+            reader.close();
+            writer.close();
+        }
+    });
+
+    test('checkpoint() shrinks the WAL once nothing is reading', () => {
+        handle.run('UPDATE t SET v = ?', ['new']);
+        expect(fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
+        handle.checkpoint();
+        expect(fs.statSync(`${dbPath}-wal`).size).toBe(0);
+    });
+
     test('a streamRows() pass that writes per batch leaves nothing pinning the WAL: every checkpoint between batches is complete, and the WAL restarts', async () => {
         const other = new Database(dbPath);
         const checkpoints = [];

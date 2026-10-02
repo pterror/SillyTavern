@@ -33,9 +33,10 @@ let engine = undefined;
  *   returned as if it were whole. max must be a non-negative integer. Callers that expect more than max rows page
  *   instead.
  * @property {(fn: () => void) => void} transaction Runs fn inside a single BEGIN/COMMIT, rolling back on throw.
- * @property {() => void} checkpoint Folds WAL into the main file (native only; no-op on wasm).
+ * @property {() => void} checkpoint Folds the WAL into the main file without waiting on any lock, and shrinks the WAL
+ *   file when nothing is reading (native only; no-op on wasm).
  * @property {(name: string, fn: (...args: any[]) => any) => void} defineFunction Registers a scalar SQL function.
- * @property {() => void} close Native: TRUNCATE-checkpoints the WAL (unless opened `readonly`), then closes.
+ * @property {() => void} close Native: checkpoints as checkpoint() does (unless opened `readonly`), then closes.
  *   On both engines, iterate() afterwards throws, so a streamRows()/streamWrite() interrupted by close() throws instead of ending early.
  */
 
@@ -236,6 +237,22 @@ export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TI
         return { rows, finalize: () => { rows.return(); } };
     });
 
+    // A TRUNCATE checkpoint holds the write lock while it waits for every reader to finish, so with the normal busy
+    // timeout one open read stalled every writer (every request's write included) for up to busyTimeoutMs. This never
+    // waits: PASSIVE folds in what it can without locking anyone out, then TRUNCATE runs only if it can start right
+    // away, shrinking the file when nothing is reading and doing nothing otherwise.
+    const checkpointWithoutWaiting = () => {
+        db.pragma('wal_checkpoint(PASSIVE)');
+        db.pragma('busy_timeout = 0');
+        try {
+            db.pragma('wal_checkpoint(TRUNCATE)');
+        } catch (err) {
+            if (!isBusyError(err)) throw err;
+        } finally {
+            db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+        }
+    };
+
     return {
         path,
         exec: (sql) => { assertNoOpenIterator(); db.exec(sql); },
@@ -261,15 +278,15 @@ export function openNativeDatabase(DatabaseCtor, path, { busyTimeoutMs = BUSY_TI
         // .immediate, not deferred: takes the write lock up front so a read-then-write transaction never needs
         // to upgrade mid-transaction and hit SQLITE_BUSY_SNAPSHOT (which the busy handler doesn't cover).
         transaction: (fn) => { assertNoOpenIterator(); return withBusyRetry(() => db.transaction(fn).immediate(), 'transaction'); },
-        checkpoint: () => { assertNoOpenIterator(); db.pragma('wal_checkpoint(TRUNCATE)'); },
+        checkpoint: () => { assertNoOpenIterator(); checkpointWithoutWaiting(); },
         // deterministic: true is safe - every registered function in this codebase is a pure hash.
         defineFunction: (name, fn) => { db.function(name, { deterministic: true }, fn); },
-        // An ordinary close never shrinks the WAL file; the TRUNCATE checkpoint does (best-effort). A read-only
-        // handle doesn't checkpoint.
+        // An ordinary close never shrinks the WAL file; the checkpoint does when nothing else is reading
+        // (best-effort, never waiting). A read-only handle doesn't checkpoint.
         close: () => {
             closed = true;
             if (!readonly) {
-                try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best-effort */ }
+                try { checkpointWithoutWaiting(); } catch { /* best-effort */ }
             }
             db.close();
         },
