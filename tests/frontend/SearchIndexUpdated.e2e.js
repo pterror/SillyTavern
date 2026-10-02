@@ -23,6 +23,45 @@ async function awaitAppReady(page) {
 }
 
 /**
+ * Turns the fullscreen character list on or off through its toggle and waits for the save.
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
+async function setGalleryFullscreen(page, on) {
+    const panel = page.locator('#right-nav-panel');
+    if (await panel.evaluate(el => el.classList.contains('galleryFullscreen')) === on) return;
+    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
+        && response.ok()
+        && (response.request().postData() ?? '').includes('charGalleryFullscreen'));
+    await page.locator('#galleryFullscreenToggle').evaluate(el => el.click());
+    await saved;
+}
+
+/**
+ * Covers the whole list with character info. With stacked drawers on, a drawer is cut only where another covers it,
+ * so the list must sit where character info does: in the sidebar, not fullscreen.
+ * @param {import('@playwright/test').Page} page
+ */
+async function coverListWithCharacterInfo(page) {
+    drawerSettingsChanged = true;
+    await setStackedDrawers(page, true);
+    await setGalleryFullscreen(page, false);
+    await page.locator('#rm_button_create').click();
+    await expect.poll(() => listShowing(page)).toBe(false);
+}
+
+// Set by tests that change the drawer settings. The data root is shared by the worker's later tests, which expect
+// the defaults.
+let drawerSettingsChanged = false;
+
+test.afterEach(async ({ page }) => {
+    if (!drawerSettingsChanged) return;
+    drawerSettingsChanged = false;
+    await setGalleryFullscreen(page, true);
+    await setStackedDrawers(page, false);
+});
+
+/**
  * Records /api/characters/query and /api/characters/changes requests, and can hold /query responses.
  * The real /changes/stream is replaced by one that never sends anything, so the only stream messages are
  * the ones a test sends with sendStreamMessage(). It answers with `log.streamStatus`. A 200 ends at once, and its
@@ -344,10 +383,7 @@ test.describe('the list going from hidden to showing', () => {
 
     /** Covers the list with the character info panel, then waits for quiet. */
     async function coverList(page) {
-        // Only stacked drawers keep the list open behind character info; with it off, opening character info closes it.
-        await setStackedDrawers(page, true);
-        await page.locator('#rm_button_create').click();
-        await expect.poll(() => listShowing(page)).toBe(false);
+        await coverListWithCharacterInfo(page);
         await waitForQuiet(log);
     }
 
@@ -360,6 +396,22 @@ test.describe('the list going from hidden to showing', () => {
         expect(topSearchQueries(log, from)).toEqual([]);
         expect(log.changes).toBe(changesBefore);
     }
+
+    test('partly covered by character info, it is still showing and takes a change message at once', async ({ page }) => {
+        drawerSettingsChanged = true;
+        await setStackedDrawers(page, true);
+        await setGalleryFullscreen(page, true);
+        await page.locator('#rm_button_create').click();
+        await expect.poll(() => page.locator('#char-info-panel').evaluate(el => el.classList.contains('openDrawer'))).toBe(true);
+        await waitForQuiet(log);
+        expect(await listShowing(page)).toBe(true);
+        await expect(page.locator('#right-nav-panel')).toHaveAttribute('data-stack-cut', 'true');
+        const changesBefore = log.changes;
+
+        await sendStreamMessage(page, {});
+
+        await expect.poll(() => log.changes, { timeout: CHANGE_DEBOUNCE_TIMEOUT_MS }).toBeGreaterThan(changesBefore);
+    });
 
     test('closing the panel covering it re-queries the visible page once', async ({ page }) => {
         await coverList(page);
@@ -622,10 +674,7 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
     }
 
     async function coverList(page) {
-        // Only stacked drawers keep the list open behind character info; with it off, opening character info closes it.
-        await setStackedDrawers(page, true);
-        await page.locator('#rm_button_create').click();
-        await expect.poll(() => listShowing(page)).toBe(false);
+        await coverListWithCharacterInfo(page);
         await waitForQuiet(log);
     }
 
@@ -912,10 +961,7 @@ test.describe('the change stream reopening', () => {
         });
 
         test('with the list covered, sends nothing; uncovering it syncs and fetches the page once', async ({ page }) => {
-            // Only stacked drawers keep the list open behind character info; with it off, opening character info closes it.
-            await setStackedDrawers(page, true);
-            await page.locator('#rm_button_create').click();
-            await expect.poll(() => listShowing(page)).toBe(false);
+            await coverListWithCharacterInfo(page);
             await waitForQuiet(log);
             const from = log.queries.length;
             const changesBefore = log.changes;
