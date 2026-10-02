@@ -435,7 +435,15 @@ async function run() {
         const viaNodeId = await resolveTextCompletionGenerationInput(directories, {
             avatar, ownerId, nodeId: mainLeafId, countTokens, encodeTokens,
         });
-        assert.deepEqual(viaNodeId.chat, input.chat, 'an explicit node_id resolves the exact same chat history as the equivalent explicit branch_name');
+        // A load by branch name hides that chat's own name from its first message's bookmark_link (6e5fa5820);
+        // a load by node id has no chat name to hide. Apart from that label, the histories are the same.
+        const withoutOwnName = chat => chat.map(m => {
+            if (m.extra?.bookmark_link !== branchName) return m;
+            const extra = { ...m.extra };
+            delete extra.bookmark_link;
+            return { ...m, extra };
+        });
+        assert.deepEqual(withoutOwnName(viaNodeId.chat), input.chat, 'an explicit node_id resolves the exact same chat history as the equivalent explicit branch_name');
         assert.equal(viaNodeId.resolvedNodeId, mainLeafId, 'resolvedNodeId echoes back the given node_id');
         assert.equal(viaNodeId.chatResolutionAmbiguous, false);
 
