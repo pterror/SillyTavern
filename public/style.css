@@ -4976,7 +4976,15 @@ input[type="range"]::-webkit-slider-thumb {
     margin: 0;
     outline: none;
     background-color: var(--black50a);
-    line-height: calc(var(--mainFontSize) + .25rem);
+    /* The message text's own metrics, so editing changes the content shown and not the font or wrapping. */
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    line-height: inherit;
+    letter-spacing: inherit;
+    word-spacing: inherit;
+    word-break: inherit;
+    overflow-wrap: inherit;
     max-height: 75vh;
     max-height: 75dvh;
     field-sizing: content;

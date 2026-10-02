@@ -1001,6 +1001,44 @@ test.describe('character field edit mode', () => {
             });
         }
 
+        const TEXT_METRICS = ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'word-break', 'overflow-wrap'];
+
+        for (const field of FIELDS) {
+            test(`${field.id}: the textarea in edit mode has the preview's text metrics`, async ({ page }) => {
+                await withCharacter(page, field, 'some text', async () => {
+                    await openInfoTab(page, field.tab);
+                    const f = fieldLocators(page, field.id);
+                    const read = (/** @type {import('@playwright/test').Locator} */ locator) => locator.evaluate((el, props) => {
+                        const style = getComputedStyle(el);
+                        return Object.fromEntries(props.map(p => [p, style.getPropertyValue(p)]));
+                    }, TEXT_METRICS);
+                    const preview = await read(f.preview);
+                    await enterEdit(page, field);
+                    expect(await read(f.textarea)).toEqual(preview);
+                    await f.cancel.click();
+                });
+            });
+        }
+
+        test('a chat message being edited keeps the message text\'s metrics', async ({ page }) => {
+            const field = FIELDS.find(x => x.id === 'description_textarea');
+            await withCharacter(page, field, 'x', async () => {
+                await withDrawerPinned(page, async () => {
+                    const mesText = page.locator('#chat .mes[mesid="0"] .mes_text');
+                    await expect(mesText).toHaveCount(1, { timeout: 10000 });
+                    const read = (/** @type {import('@playwright/test').Locator} */ locator) => locator.evaluate((el, props) => {
+                        const style = getComputedStyle(el);
+                        return Object.fromEntries(props.map(p => [p, style.getPropertyValue(p)]));
+                    }, TEXT_METRICS);
+                    const before = await read(mesText);
+                    await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+                    await expect(page.locator('#curEditTextarea')).toBeVisible();
+                    expect(await read(page.locator('#curEditTextarea'))).toEqual(before);
+                    await page.locator('#chat .mes[mesid="0"] .mes_edit_cancel').click();
+                });
+            });
+        });
+
         // The chat itself runs the greeting's macros when it shows it, so only the preview's rendering is checked.
         test('greeting_field: the preview shows macros with side effects or randomness as written', async ({ page }) => {
             const field = FIELDS.find(x => x.id === 'greeting_field');

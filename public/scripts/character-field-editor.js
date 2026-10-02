@@ -219,6 +219,24 @@ export function blockFieldEditStart() {
     return false;
 }
 
+/** What decides how the text is laid out, so entering edit changes the content shown and not the font or wrapping. */
+const TEXT_METRICS = ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'word-spacing', 'word-break', 'overflow-wrap'];
+
+/**
+ * Gives the field's textarea its preview's text metrics. Read while the preview is still shown, so a theme's or the
+ * user's CSS on the preview carries over.
+ * @param {string} id
+ */
+function matchPreviewText(id) {
+    const preview = getPreview(id)[0];
+    const textarea = getTextarea(id)[0];
+    if (!preview || !textarea) return;
+    const style = getComputedStyle(preview);
+    for (const prop of TEXT_METRICS) {
+        textarea.style.setProperty(prop, style.getPropertyValue(prop));
+    }
+}
+
 /**
  * Puts a field in edit mode and focuses its textarea, unless {@link blockFieldEditStart} blocks it.
  * @param {string} id Textarea id.
@@ -231,6 +249,7 @@ export function beginEdit(id) {
         return;
     }
     const textarea = getTextarea(id);
+    matchPreviewText(id);
     const text = String(textarea.val() ?? '');
     activeEdit = { id, original: text, userText: text, saving: false };
     getPanel(id).addClass('field_editing');
