@@ -227,7 +227,8 @@ async function consumeHordeStream(response, signal, reportProgress) {
                 } else if ('control' in event && event.control?.itemization) {
                     itemization = event.control.itemization;
                 } else if ('control' in event && event.control?.warnings) {
-                    warnings = event.control.warnings;
+                    // A stream can carry more than one warnings frame (the request's, then a reply that wasn't saved).
+                    warnings = [...(warnings ?? []), ...event.control.warnings];
                 }
             }
         }
