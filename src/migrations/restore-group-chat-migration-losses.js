@@ -11,6 +11,7 @@ import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import {
     getDbHandle, insertMessageSync, newId, ensureAnchorSync, setDefaultChildSync, alternativesFromMessage, identityHashOf,
 } from '../message-tree-db.js';
+import { openNativeTreeDatabase } from '../message-stats.js';
 
 /**
  * Repairs group chats damaged by an older tree migration, which took a headerless chat file's first line
@@ -735,7 +736,7 @@ if (isMain) {
         backups: path.join(root, USER_DIRECTORY_TEMPLATE.backups),
     };
 
-    const db = new Database(path.join(root, 'message-tree.sqlite'), { readonly: true, fileMustExist: true });
+    const db = openNativeTreeDatabase(Database, path.join(root, 'message-tree.sqlite'), { readonly: true, fileMustExist: true });
     const reader = {
         get: (sql, p) => db.prepare(sql).get(p ?? {}),
         iterate: (sql, p) => db.prepare(sql).iterate(p ?? {}),

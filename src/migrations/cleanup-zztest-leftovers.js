@@ -8,7 +8,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { getConfigValue, setConfigFilePath } from '../util.js';
 import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 import { normalizeGroupRecord } from '../group-id.js';
-import { defineMessageStatsFunctions } from '../message-stats.js';
+import { openNativeTreeDatabase } from '../message-stats.js';
 import { groupDigestContentHash, groupDigestFavHash, normalizeFav } from '../../public/scripts/hash-utils.js';
 
 /**
@@ -497,7 +497,7 @@ export async function runCleanup(options) {
     }
     let repointPlan;
     let strayPlan;
-    const tree = openReadOnly(Database, treePath);
+    const tree = wrap(openNativeTreeDatabase(Database, treePath, { readonly: true, fileMustExist: true }));
     try {
         repointPlan = planRepoint(tree);
         strayPlan = planStrayOwner(tree, { characterFileExists, characterRowExists });
@@ -567,9 +567,7 @@ async function queueStrayOwnerChatStats(dirs, warn) {
  * @returns {boolean} Whether it committed.
  */
 function applyTree({ Database, treePath, backupDir, repoint, stray, characterFileExists, characterRowExists, log, warn }) {
-    const db = wrap(new Database(treePath, { fileMustExist: true }));
-    // The message stats triggers fire on the rows this deletes.
-    defineMessageStatsFunctions(/** @type {any} */ (db));
+    const db = wrap(openNativeTreeDatabase(Database, treePath, { fileMustExist: true }));
     try {
         db.exec('BEGIN IMMEDIATE');
         try {

@@ -111,6 +111,22 @@ export function defineMessageStatsFunctions(db) {
     });
 }
 
+/**
+ * Opens message-tree.sqlite with a raw better-sqlite3 constructor, with the stats functions already registered. Any
+ * code outside message-tree-db.js that opens the tree file goes through this, read-only or not: a connection without
+ * the functions has every message write refused by the triggers ("no such function: st_kind").
+ * tests/message-tree-openers.test.js fails if a file under src/ opens the tree another way.
+ * @param {typeof import('better-sqlite3')} Database
+ * @param {string} file
+ * @param {import('better-sqlite3').Options} [options]
+ * @returns {import('better-sqlite3').Database}
+ */
+export function openNativeTreeDatabase(Database, file, options) {
+    const db = new Database(file, options);
+    defineMessageStatsFunctions(/** @type {any} */ ({ defineFunction: (name, fn) => db.function(name, { deterministic: true }, fn) }));
+    return db;
+}
+
 /** Bumped when the table or triggers change; a store on another version is rebuilt and recounted. */
 const MESSAGE_STATS_VERSION = '1';
 const VERSION_KEY = 'message_stats_version';
