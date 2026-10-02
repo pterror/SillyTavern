@@ -6498,6 +6498,8 @@
                                             </span>
                                         </div>
                                         <textarea id="greeting_field" class="field_edit_textarea mdHotkeys autoSetHeight" rows="6" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
+                                        <!-- Upstream's first message field, for extensions: holds the default greeting; a write saves it. -->
+                                        <textarea id="firstmessage_textarea" class="displayNone" tabindex="-1" aria-hidden="true"></textarea>
                                         <div class="field_preview macro_preview_content mes_text" data-for="greeting_field"></div>
                                     </div>
                                 </div>

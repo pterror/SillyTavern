@@ -10173,6 +10173,7 @@ function setGreetingPagerGreetings(greetings, defaultIndex, hashes) {
     greetingPagerState.committed = greetingPagerState.greetings.map(() => true);
     greetingPagerState.index = Math.max(0, Math.min(greetingPagerState.index, greetingPagerState.greetings.length - 1));
     renderGreetingPager();
+    $('#firstmessage_textarea').val(greetings.length > 0 && defaultIndex !== null ? greetings[defaultIndex] ?? '' : '');
     greetingsPopupListener?.(greetings.slice(), greetings.length > 0 ? defaultIndex : null);
 }
 
@@ -10282,6 +10283,96 @@ async function commitGreetingFieldValue(value) {
  */
 export async function saveGreetingField(value) {
     return await commitGreetingFieldValue(value);
+}
+
+/** @type {{value: string}|null} A write to `#firstmessage_textarea` queued behind an earlier save, not yet sent. */
+let queuedFirstMessageWrite = null;
+
+/**
+ * Saves what code wrote into `#firstmessage_textarea`, upstream's first message field, as the default greeting:
+ * its text is replaced; with no default, the value is added and made the default; an empty value clears the default
+ * and keeps the greeting. Writes made while one is waiting to be sent replace its value, so only the latest is sent.
+ */
+function onFirstMessageFieldInput() {
+    const value = String($('#firstmessage_textarea').val());
+    if (queuedFirstMessageWrite) {
+        queuedFirstMessageWrite.value = value;
+        return;
+    }
+    if (menu_type === 'create') {
+        setCreateModeFirstMessage(value);
+        return;
+    }
+    const avatar = $('.open_alternate_greetings').data('avatar');
+    const character = avatar ? charactersStore.get(avatar) : null;
+    if (!character) return;
+    const write = { value };
+    queuedFirstMessageWrite = write;
+    void queueGreetingSave(avatar, async () => {
+        if (queuedFirstMessageWrite === write) queuedFirstMessageWrite = null;
+        const result = await saveFirstMessage(avatar, character, write.value);
+        if (result.ok) return;
+        console.error('First message save failed', { avatar, status: result.status, reason: result.reason });
+        toastr.error(result.status === 409
+            ? t`The greetings were changed in another session, so the first message written by an extension was not saved.`
+            : t`Failed to save the first message written by an extension.`, t`First message not saved`);
+        const stored = cardToGreetingsModel(character);
+        $('#firstmessage_textarea').val(stored.defaultIndex === null ? '' : stored.greetings[stored.defaultIndex]);
+    });
+}
+
+/**
+ * Sends the ops that make `value` the default greeting. Call it only from inside {@link queueGreetingSave}.
+ * @param {string} avatar
+ * @param {object} character
+ * @param {string} value
+ * @returns {Promise<{ok: boolean, status?: number, reason?: string}>}
+ */
+async function saveFirstMessage(avatar, character, value) {
+    const { greetings, defaultIndex } = cardToGreetingsModel(character);
+    const current = defaultIndex === null ? '' : greetings[defaultIndex];
+    if (value === current) return { ok: true };
+    if (defaultIndex !== null) {
+        const expectedHash = hashGreetingText(current);
+        if (value === '') {
+            const result = await postGreetingOp('default/unset', { avatar_url: avatar, expected_default_hash: expectedHash });
+            if (result.ok) applyGreetingOpSuccess(character, result);
+            return result;
+        }
+        const result = await postGreetingOp('edit', { avatar_url: avatar, position: defaultIndex, expected_hash: expectedHash, text: value });
+        if (result.ok) applyGreetingOpSuccess(character, result, { expectedHash, text: value });
+        return result;
+    }
+    const added = await postGreetingOp('add', { avatar_url: avatar, append: true, text: value });
+    if (!added.ok) return added;
+    applyGreetingOpSuccess(character, added);
+    const result = await postGreetingOp('default/set', { avatar_url: avatar, position: added.position, expected_hash: added.hashes[added.position] });
+    if (result.ok) applyGreetingOpSuccess(character, result);
+    return result;
+}
+
+/**
+ * Create mode: makes `value` the default greeting of the character being created, by the same rules as
+ * {@link onFirstMessageFieldInput}.
+ * @param {string} value
+ */
+function setCreateModeFirstMessage(value) {
+    const greetings = greetingPagerState.greetings.slice();
+    let defaultIndex = greetingPagerState.defaultIndex;
+    if (value === '') {
+        defaultIndex = null;
+    } else if (defaultIndex === null || defaultIndex >= greetings.length) {
+        greetings.push(value);
+        defaultIndex = greetings.length - 1;
+    } else {
+        greetings[defaultIndex] = value;
+    }
+    const fields = greetingsModelToCardFields({ greetings, defaultIndex });
+    create_save.first_message = fields.firstMes;
+    create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'first message field (create mode)');
+    if (!create_save.extensions) create_save.extensions = {};
+    create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
+    setGreetingPagerGreetings(greetings, defaultIndex, greetings.map(hashGreetingText));
 }
 
 /**
@@ -13517,6 +13608,8 @@ jQuery(async function () {
     $('.greeting-pager-input').on('blur', function () {
         jumpGreetingPager();
     });
+
+    $('#firstmessage_textarea').on('input', onFirstMessageFieldInput);
 
     $('#favorite_button').on('click', async function () {
         const newState = !fav_ch_checked;
