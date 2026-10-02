@@ -56,6 +56,8 @@ import cacheBuster from './middleware/cacheBuster.js';
 import corsProxyMiddleware from './middleware/corsProxy.js';
 import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
 import userCssMiddleware from './middleware/userCss.js';
+import { FrontendAssets, frontendAssetMiddleware } from './frontend-assets.js';
+import getPublicLibConfig from '../webpack.config.js';
 import compressionMiddleware from './middleware/compression.js';
 import {
     getVersion,
@@ -223,15 +225,53 @@ if (!cliArgs.disableCsrf) {
 }
 
 // Static files
+/** @type {import('webpack').Configuration|null} */
+let publicLibConfig = null;
+const libConfig = () => (publicLibConfig ??= getPublicLibConfig());
+const frontendAssets = new FrontendAssets({
+    publicDirectory: path.join(serverDirectory, 'public'),
+    webpackOutputDirectory: () => libConfig().output?.path,
+    webpackOutputFiles: () => Object.keys(libConfig().entry ?? {}).map(name => `${name}.js`),
+    globalExtensionsDirectory: () => globalThis.GLOBAL_EXTENSIONS_PATH,
+    userCssPath: () => path.join(globalThis.DATA_ROOT, '_css', 'user.css'),
+    extensionsEnabled: () => !!getConfigValue('extensions.enabled', true, 'boolean'),
+});
+
 // Host index page
-app.get('/', cacheBuster.middleware, (request, response) => {
+app.get('/', cacheBuster.middleware, async (request, response, next) => {
     if (shouldRedirectToLogin(request)) {
         const query = request.url.split('?')[1];
         const redirectUrl = query ? `/login?${query}` : '/login';
         return response.redirect(redirectUrl);
     }
 
-    return response.sendFile('index.html', { root: path.join(serverDirectory, 'public') });
+    try {
+        const { body, buildId } = await frontendAssets.renderIndex(path.join(serverDirectory, 'public', 'index.html'), request.user?.directories);
+        response.setHeader('Cache-Control', 'no-cache');
+        response.setHeader('ETag', `"${buildId}"`);
+        response.type('html');
+        if (request.fresh) {
+            return response.status(304).end();
+        }
+        return response.send(body);
+    } catch (error) {
+        return next(error);
+    }
+});
+
+// The build id a fresh load of `/` would carry now: an open page compares it with its own to tell whether the
+// server's files changed under it.
+app.get('/api/frontend/build', async (request, response, next) => {
+    if (shouldRedirectToLogin(request)) {
+        return response.sendStatus(403);
+    }
+    try {
+        const { buildId } = await frontendAssets.renderIndex(path.join(serverDirectory, 'public', 'index.html'), request.user?.directories);
+        response.setHeader('Cache-Control', 'no-store');
+        return response.json({ buildId });
+    } catch (error) {
+        return next(error);
+    }
 });
 
 // Callback endpoint for OAuth PKCE flows (e.g. OpenRouter)
@@ -250,6 +290,7 @@ app.get('/login', loginPageMiddleware);
 
 // Host frontend assets
 const webpackMiddleware = getWebpackServeMiddleware();
+app.use(frontendAssetMiddleware(frontendAssets));
 app.use(webpackMiddleware);
 app.use(userCssMiddleware);
 app.use(express.static(path.join(serverDirectory, 'public'), {}));

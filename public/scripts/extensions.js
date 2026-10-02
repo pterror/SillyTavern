@@ -14,6 +14,7 @@ import { addLocaleData, getCurrentLocale, t } from './i18n.js';
 import { debounce_timeout } from './constants.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { SimpleMutex } from './util/SimpleMutex.js';
+import { assetUrl, fetchAsset } from './asset-url.js';
 
 export {
     getContext,
@@ -570,7 +571,7 @@ async function getManifests(names) {
 
     for (const name of names) {
         const promise = new Promise((resolve, reject) => {
-            fetch(`/scripts/extensions/${name}/manifest.json`).then(async response => {
+            fetchAsset(`/scripts/extensions/${name}/manifest.json`).then(async response => {
                 if (response.ok) {
                     const json = await response.json();
                     obj[name] = json;
@@ -927,7 +928,7 @@ function addExtensionStyle(name, manifest) {
             link.id = id;
             link.rel = 'stylesheet';
             link.type = 'text/css';
-            link.href = url;
+            link.href = assetUrl(url);
             link.onload = function () {
                 resolve();
             };
@@ -959,7 +960,7 @@ function addExtensionScript(name, manifest) {
             const script = document.createElement('script');
             script.id = id;
             script.type = 'module';
-            script.src = url;
+            script.src = assetUrl(url);
             script.async = true;
             script.onerror = function (err) {
                 reject(err);
@@ -994,7 +995,7 @@ function addExtensionLocale(name, manifest) {
         return Promise.resolve();
     }
 
-    return fetch(`/scripts/extensions/${name}/${localeFile}`)
+    return fetchAsset(`/scripts/extensions/${name}/${localeFile}`)
         .then(async response => {
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);

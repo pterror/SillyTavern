@@ -1,5 +1,6 @@
 import { DOMPurify, Handlebars } from '../lib.js';
 import { applyLocale } from './i18n.js';
+import { assetUrl, showReloadNotice } from './asset-url.js';
 
 /**
  * @type {Map<string, function>}
@@ -15,11 +16,14 @@ const TEMPLATE_CACHE = new Map();
 function getUrlSync(url) {
     console.debug('Loading URL synchronously', url);
     const request = new XMLHttpRequest();
-    request.open('GET', url, false); // `false` makes the request synchronous
+    request.open('GET', assetUrl(url), false); // `false` makes the request synchronous
     request.send();
 
     if (request.status >= 200 && request.status < 300) {
         return request.responseText;
+    }
+    if (request.status === 409 && request.getResponseHeader('X-ST-Stale-Asset')) {
+        showReloadNotice();
     }
 
     throw new Error(`Error loading ${url}: ${request.status} ${request.statusText}`);
@@ -33,11 +37,14 @@ function getUrlSync(url) {
 function getUrlAsync(url) {
     return new Promise((resolve, reject) => {
         const request = new XMLHttpRequest();
-        request.open('GET', url, true);
+        request.open('GET', assetUrl(url), true);
         request.onload = () => {
             if (request.status >= 200 && request.status < 300) {
                 resolve(request.responseText);
             } else {
+                if (request.status === 409 && request.getResponseHeader('X-ST-Stale-Asset')) {
+                    showReloadNotice();
+                }
                 reject(new Error(`Error loading ${url}: ${request.status} ${request.statusText}`));
             }
         };

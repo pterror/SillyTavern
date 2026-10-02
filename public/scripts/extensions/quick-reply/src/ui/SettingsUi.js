@@ -1,5 +1,6 @@
 import { Popup } from '../../../../popup.js';
 import { getSortableDelay } from '../../../../utils.js';
+import { fetchAsset } from '../../../../asset-url.js';
 import { log, warn } from '../../index.js';
 import { QuickReply } from '../QuickReply.js';
 import { QuickReplySet } from '../QuickReplySet.js';
@@ -51,7 +52,7 @@ export class SettingsUi {
     }
     async render() {
         if (!this.dom) {
-            const response = await fetch('/scripts/extensions/quick-reply/html/settings.html', { cache: 'no-store' });
+            const response = await fetchAsset('/scripts/extensions/quick-reply/html/settings.html');
             if (response.ok) {
                 this.template = document.createRange().createContextualFragment(await response.text()).querySelector('#qr--settings');
                 // @ts-ignore
