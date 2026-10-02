@@ -121,8 +121,9 @@ async function seed() {
 const bytes = (a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 
 /**
- * The expected list, from the rule itself: the sort key in the asked direction, then characters before groups, then
- * a character's id or a group's `<id>.json` in byte order, ascending in both directions.
+ * The expected list, from the rule itself: ascending, the sort key, then characters before groups, then a character's
+ * id or a group's `<id>.json` in byte order; descending, that list reversed. A fav sort only picks which fav value
+ * comes first, with names and ties ascending inside each.
  * @param {string} sortField
  * @param {'asc'|'desc'} sortOrder
  * @param {boolean | undefined} fav
@@ -145,7 +146,7 @@ function expected(sortField, sortOrder, fav) {
         if (sortField === 'fav') return dir * (a.fav - b.fav) || bytes(a.name_fold, b.name_fold) || tie(a, b);
         const ka = key(a), kb = key(b);
         const byKey = typeof ka === 'string' ? bytes(ka, kb) : byNumber(ka, kb);
-        return dir * byKey || tie(a, b);
+        return dir * (byKey || tie(a, b));
     }).map(e => `${e.type}:${e.id}`);
 }
 

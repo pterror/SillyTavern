@@ -1490,13 +1490,15 @@ export function tagDerivedColumns(tag) {
 
 /**
  * Indexes no query reads any more: every sort, range, name lookup and fav filter reads the (fav, key, tie) sort
- * indexes (ENTITY_SORT_INDEXES).
+ * indexes (ENTITY_SORT_INDEXES), and a descending sort reads its ascending index backwards.
  */
 const UNUSED_INDEXES = [
     'idx_characters_name_fold', 'idx_characters_date_added', 'idx_characters_date_last_chat', 'idx_characters_create_date',
     'idx_characters_data_size', 'idx_characters_chat_size', 'idx_characters_fav_name_fold', 'idx_characters_fav_desc_name_fold_asc',
     'idx_groups_name_fold', 'idx_groups_date_added', 'idx_groups_date_last_chat', 'idx_groups_chat_size', 'idx_groups_fav_name_fold',
     'idx_groups_fav_desc_name_fold_asc',
+    ...['name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'].flatMap(column => [`idx_characters_sort_fav_${column}_desc`, `idx_character_tag_sort_${column}_desc`]),
+    ...['name_fold', 'date_added', 'date_last_chat', 'chat_size'].flatMap(column => [`idx_groups_sort_fav_${column}_desc`, `idx_group_tag_sort_${column}_desc`]),
 ];
 /** meta key: the last schema step (dropUnusedIndexes()) has run. cleanup-zztest-leftovers.js checks for it. */
 export const UNUSED_INDEXES_DROPPED_FLAG = 'unused_indexes_dropped_v1';
@@ -4636,8 +4638,8 @@ function tagSortSchema({ table, tagTable, entityColumn, sortTable, columns, tieK
     const keyColumns = columns.map(c => c.key).join(', ');
     const sortColumns = columns.filter(c => c.key !== 'k_fav');
     const indexes = [
-        ...sortColumns.flatMap(c => ['ASC', 'DESC'].map(dir =>
-            `CREATE INDEX IF NOT EXISTS idx_${sortTable}_${c.source}_${dir.toLowerCase()} ON ${sortTable}(tag_id, k_fav, ${c.key} ${dir}, ${tieKey} ASC);`)),
+        ...sortColumns.map(c =>
+            `CREATE INDEX IF NOT EXISTS idx_${sortTable}_${c.source}_asc ON ${sortTable}(tag_id, k_fav, ${c.key} ASC, ${tieKey} ASC);`),
         `CREATE INDEX IF NOT EXISTS idx_${sortTable}_key ON ${sortTable}(tag_id, k_fav, ${tieKey} ASC);`,
         `CREATE INDEX IF NOT EXISTS idx_${sortTable}_entity ON ${sortTable}(entity_id, tag_id);`,
     ];
@@ -11078,6 +11080,7 @@ function whereClausesOf(built) {
  */
 function sortedPageStreams(entry, { column, sortOrder, fav, world, ranges, excludeIds, ids, tags, groupsOnly, charactersOnly = false, charWhere, groupWhere, deletions }) {
     const keyColumn = column === 'fav' ? 'name_fold' : column;
+    // A fav sort reads each fav value's stream by name ascending in both directions; the merge puts one fav value first.
     const dir = column !== 'fav' && sortOrder === 'desc' ? 'DESC' : 'ASC';
     const field = column === 'fav' ? 'name_fold' : column;
     const groupKey = keyColumn === 'create_date' ? 'date_added' : keyColumn === 'data_size' ? null : keyColumn;
@@ -11242,7 +11245,8 @@ function walkSortedStreams(db, streams, startAt, need, comparator, cap = sortedP
 /**
  * Up to `limit` of a stream's key rows in its order, after `after` (a cursor's last [key, tie] for this stream) when
  * given. Each part seeks its index: the rest of the run sharing the last key, then the keys past it, then (for a
- * descending key) the rows with no key, which SQLite puts last.
+ * descending sort) the rows with no key, which sort first ascending and so last descending. A descending sort is the
+ * ascending one reversed, ties included, so it reads the same index backwards.
  * @param {import('./endpoints/sqlite-engine.js').SqliteEngineHandle} db
  * @param {SortedStream} stream
  * @param {[unknown, string] | null} after
@@ -11256,17 +11260,17 @@ function readSortedKeys(db, stream, after, limit) {
     if (!after) {
         parts = [[null, []]];
     } else if (key === null) {
-        parts = [[`${tie} > ?`, [after[1]]]];
+        parts = [[`${tie} ${dir === 'ASC' ? '>' : '<'} ?`, [after[1]]]];
     } else {
         const [lastKey, lastTie] = after;
-        parts = [[`${key} IS ? AND ${tie} > ?`, [lastKey, lastTie]]];
+        parts = [[`${key} IS ? AND ${tie} ${dir === 'ASC' ? '>' : '<'} ?`, [lastKey, lastTie]]];
         if (dir === 'ASC') {
             parts.push(lastKey === null ? [`${key} IS NOT NULL`, []] : [`${key} > ?`, [lastKey]]);
         } else if (lastKey !== null) {
             parts.push([`${key} < ?`, [lastKey]], [`${key} IS NULL`, []]);
         }
     }
-    const order = `ORDER BY ${key !== null ? `${key} ${dir}, ` : ''}${tie} ASC`;
+    const order = `ORDER BY ${key !== null ? `${key} ${dir}, ` : ''}${tie} ${dir}`;
     /** @type {SortedKeyRow[]} */
     const out = [];
     for (const [condition, conditionArgs] of parts) {
@@ -11354,27 +11358,27 @@ function readEntityRowsInOrder(db, entities) {
     return entities.map(e => byKey.get(`${e.type}:${e.id}`)).filter(row => row !== undefined);
 }
 
-/** The sort columns /query orders characters by, each with an index pair that starts with fav. */
+/** The sort columns /query orders characters by, each with an index that starts with fav. */
 const CHARACTER_SORT_INDEX_COLUMNS = ['name_fold', 'date_added', 'date_last_chat', 'create_date', 'data_size', 'chat_size'];
 /** The same for groups. create_date sorts groups by date_added; data_size has no group column, so ties decide. */
 const GROUP_SORT_INDEX_COLUMNS = ['name_fold', 'date_added', 'date_last_chat', 'chat_size'];
 
 /**
  * The indexes that hand out one fav value's rows in a sort's order, ties included, so a page stops after the page
- * (search plan step 4). Each column has an ascending and a descending index, both ending in the tie key ascending,
- * because ties stay in ascending tie order in both directions; reading one index backwards would reverse the ties.
- * A group's tie key is `id || '.json'`, its file name, as upstream reads groups.
+ * (search plan step 4). One per column, read forwards for an ascending sort and backwards for a descending one, so a
+ * descending sort is the ascending one reversed, ties included. A group's tie key is `id || '.json'`, its file name,
+ * as upstream reads groups.
  * @type {{ name: string, sql: string }[]}
  */
 const ENTITY_SORT_INDEXES = [
-    ...CHARACTER_SORT_INDEX_COLUMNS.flatMap(column => ['asc', 'desc'].map(dir => ({
-        name: `idx_characters_sort_fav_${column}_${dir}`,
-        sql: `CREATE INDEX IF NOT EXISTS idx_characters_sort_fav_${column}_${dir} ON characters(fav, ${column} ${dir.toUpperCase()}, id ASC)`,
-    }))),
-    ...GROUP_SORT_INDEX_COLUMNS.flatMap(column => ['asc', 'desc'].map(dir => ({
-        name: `idx_groups_sort_fav_${column}_${dir}`,
-        sql: `CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_${column}_${dir} ON groups(fav, ${column} ${dir.toUpperCase()}, (id || '.json') ASC)`,
-    }))),
+    ...CHARACTER_SORT_INDEX_COLUMNS.map(column => ({
+        name: `idx_characters_sort_fav_${column}_asc`,
+        sql: `CREATE INDEX IF NOT EXISTS idx_characters_sort_fav_${column}_asc ON characters(fav, ${column} ASC, id ASC)`,
+    })),
+    ...GROUP_SORT_INDEX_COLUMNS.map(column => ({
+        name: `idx_groups_sort_fav_${column}_asc`,
+        sql: `CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_${column}_asc ON groups(fav, ${column} ASC, (id || '.json') ASC)`,
+    })),
     {
         name: 'idx_groups_sort_fav_key',
         sql: 'CREATE INDEX IF NOT EXISTS idx_groups_sort_fav_key ON groups(fav, (id || \'.json\') ASC)',
@@ -12567,15 +12571,17 @@ export async function queryCharacters(directories, params = {}) {
         const orderParts = [];
         const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
         if (column) {
-            orderParts.push(`${column} ${sortOrder === 'desc' ? 'DESC' : 'ASC'}`);
+            orderParts.push(column);
             // fav is boolean-valued, so many rows tie on it; name_fold breaks the tie.
             if (sortField === 'fav') {
-                orderParts.push('name_fold ASC');
+                orderParts.push('name_fold');
             }
         }
         // Final tie-break by unique id, or ties get inconsistent order across separate paged queries.
-        orderParts.push('id ASC');
-        const orderBy = `ORDER BY ${orderParts.join(', ')}`;
+        orderParts.push('id');
+        // A descending sort is the ascending one reversed, ties included; a fav sort only puts the other fav value first.
+        const orderDir = sortOrder === 'desc' && orderParts.length > 1 ? 'DESC' : 'ASC';
+        const orderBy = `ORDER BY ${orderParts.map((part, i) => `${part} ${sortField === 'fav' && i > 0 ? 'ASC' : orderDir}`).join(', ')}`;
 
         const numericOffset = typeof offset === 'number' && Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
         const numericLimit = typeof limit === 'number' && Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
@@ -12717,7 +12723,25 @@ function buildGroupWhereClause({ tags, fav, ranges, excludeIds, ids } = {}, dele
  * @returns {(a: EntityRow, b: EntityRow) => number}
  */
 function makeEntityMergeComparator(sortField, sortOrder, seed) {
-    const dir = sortOrder === 'desc' ? -1 : 1;
+    if (sortField === 'fav') {
+        // The direction picks which fav value comes first; names and ties stay ascending inside each.
+        const favFirst = sortOrder === 'desc' ? -1 : 1;
+        return (a, b) => favFirst * ((a.fav ? 1 : 0) - (b.fav ? 1 : 0))
+            || compareUtf8(a.name_fold, b.name_fold)
+            || compareEntityTie(a, b);
+    }
+    if (sortField !== 'random' && !QUERYABLE_SORT_COLUMNS[sortField ?? '']) return compareEntityTie;
+    const ascending = makeAscendingEntityComparator(sortField, seed);
+    return sortOrder === 'desc' ? (a, b) => ascending(b, a) : ascending;
+}
+
+/**
+ * The ascending order of a sort; a descending sort is its reverse, ties included.
+ * @param {string} [sortField]
+ * @param {number} [seed]
+ * @returns {(a: EntityRow, b: EntityRow) => number}
+ */
+function makeAscendingEntityComparator(sortField, seed) {
     /** @type {(a: EntityRow, b: EntityRow) => number} */
     const tiebreak = compareEntityTie;
 
@@ -12725,25 +12749,17 @@ function makeEntityMergeComparator(sortField, sortOrder, seed) {
         return (a, b) => {
             const ha = getStringHash(a.id, Number(seed ?? 0));
             const hb = getStringHash(b.id, Number(seed ?? 0));
-            return dir * (ha - hb) || tiebreak(a, b);
+            return (ha - hb) || tiebreak(a, b);
         };
     }
 
     const column = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
-    if (!column) return tiebreak;
-
     if (column === 'name_fold') {
-        return (a, b) => dir * compareUtf8(a.name_fold, b.name_fold) || tiebreak(a, b);
-    }
-    if (column === 'fav') {
-        // The direction picks which fav value comes first; names stay ascending inside each.
-        return (a, b) => dir * ((a.fav ? 1 : 0) - (b.fav ? 1 : 0))
-            || compareUtf8(a.name_fold, b.name_fold)
-            || tiebreak(a, b);
+        return (a, b) => compareUtf8(a.name_fold, b.name_fold) || tiebreak(a, b);
     }
     // Remaining columns (date_added, date_last_chat, chat_size, create_date, data_size) are all plain numeric.
     // Dynamic-by-name lookup, hence the `any` casts - `column` is a runtime string, not a literal key.
-    return (a, b) => dir * compareNullableNumbers(/** @type {any} */ (a)[column], /** @type {any} */ (b)[column]) || tiebreak(a, b);
+    return (a, b) => compareNullableNumbers(/** @type {any} */ (a)[column], /** @type {any} */ (b)[column]) || tiebreak(a, b);
 }
 
 /**
@@ -12772,9 +12788,9 @@ function compareUtf8(a, b) {
 }
 
 /**
- * Upstream's order for entities with the same sort key, in both directions: it sorts every character, then every
- * group, with a stable sort, and reads each from its folder in file-name byte order. So characters come before
- * groups, a character by its id (its file name) and a group by `<id>.json`.
+ * The ascending order of entities with the same sort key, upstream's: it sorts every character, then every group,
+ * with a stable sort, and reads each from its folder in file-name byte order. So characters come before groups, a
+ * character by its id (its file name) and a group by `<id>.json`. A descending sort reverses it.
  * @param {EntityRow} a
  * @param {EntityRow} b
  * @returns {number}
@@ -13043,13 +13059,15 @@ export async function queryEntities(directories, params = {}) {
         const orderParts = [];
         const sortColumnName = QUERYABLE_SORT_COLUMNS[sortField ?? ''];
         if (sortColumnName) {
-            orderParts.push(`${sortColumnName} ${sortOrder === 'desc' ? 'DESC' : 'ASC'}`);
+            orderParts.push(sortColumnName);
             if (sortField === 'fav') {
-                orderParts.push('name_fold ASC');
+                orderParts.push('name_fold');
             }
         }
-        orderParts.push('id ASC');
-        const orderBy = `ORDER BY ${orderParts.join(', ')}`;
+        orderParts.push('id');
+        // A descending sort is the ascending one reversed, ties included; a fav sort only puts the other fav value first.
+        const orderDir = sortOrder === 'desc' && orderParts.length > 1 ? 'DESC' : 'ASC';
+        const orderBy = `ORDER BY ${orderParts.map((part, i) => `${part} ${sortField === 'fav' && i > 0 ? 'ASC' : orderDir}`).join(', ')}`;
 
         const numericOffset = typeof offset === 'number' && Number.isFinite(offset) && offset > 0 ? Math.trunc(offset) : 0;
         const numericLimit = typeof limit === 'number' && Number.isFinite(limit) && limit >= 0 ? Math.trunc(limit) : DEFAULT_QUERY_LIMIT;
@@ -13109,7 +13127,7 @@ export async function queryEntities(directories, params = {}) {
                 // that key and falls through to the tiebreaker.
                 const groupOrderBy = orderBy
                     .replace(/\bcreate_date\b/g, 'date_added')
-                    .replace(/\bid ASC$/, '(id || \'.json\') ASC');
+                    .replace(/\bid (ASC|DESC)$/, '(id || \'.json\') $1');
                 /** @param {string} sql @param {unknown[]} args */
                 const readStream = (sql, args) => {
                     /** @type {EntityRow[]} */

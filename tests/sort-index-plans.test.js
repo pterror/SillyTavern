@@ -92,11 +92,11 @@ describe('the sort indexes are the only indexes on a sort key', () => {
             'idx_characters_avatar_identity_hash',
             'idx_characters_content_hash',
             'idx_characters_content_identity_hash',
-            ...['chat_size', 'create_date', 'data_size', 'date_added', 'date_last_chat', 'name_fold'].flatMap(key => [`idx_characters_sort_fav_${key}_asc`, `idx_characters_sort_fav_${key}_desc`]),
+            ...['chat_size', 'create_date', 'data_size', 'date_added', 'date_last_chat', 'name_fold'].map(key => `idx_characters_sort_fav_${key}_asc`),
             'idx_characters_world',
-            ...['chat_size', 'date_added', 'date_last_chat'].flatMap(key => [`idx_groups_sort_fav_${key}_asc`, `idx_groups_sort_fav_${key}_desc`]),
+            ...['chat_size', 'date_added', 'date_last_chat'].map(key => `idx_groups_sort_fav_${key}_asc`),
             'idx_groups_sort_fav_key',
-            'idx_groups_sort_fav_name_fold_asc', 'idx_groups_sort_fav_name_fold_desc',
+            'idx_groups_sort_fav_name_fold_asc',
         ].sort());
     });
 
@@ -116,6 +116,30 @@ describe('the sort indexes are the only indexes on a sort key', () => {
             const plan = planOf(call);
             const tableReads = plan.filter(detail => /\b(SCAN|SEARCH) (characters|groups)\b/.test(detail));
             expect({ sql: call.sql, tableReads }).toEqual({ sql: call.sql, tableReads: tableReads.map(() => expect.stringMatching(/^SEARCH (characters|groups) USING (COVERING )?INDEX idx_(characters|groups)_sort_fav_\w+ \(fav=\?/)) });
+        }
+    });
+
+    test.each([
+        ['every entity', {}],
+        ['a tag', { tags: { include: ['t1'], mode: 'and' } }],
+    ])('a descending page of %s reads the ascending sort index backwards, with no sort of its own', async (_name, filter) => {
+        await seed();
+        for (const id of ['c0.png', 'c1.png', 'c3.png']) await metadataDb.assignEntityTag(directories, id, 't1');
+        await metadataDb.assignEntityTag(directories, 'g1', 't1');
+        await metadataDb.fillTagSortTablesIfNeeded(directories);
+        for (const sortField of ['name', 'date_added', 'date_last_chat', 'chat_size', 'create_date', 'data_size']) {
+            recorded.length = 0;
+            const first = await metadataDb.queryEntities(directories, { ...filter, sortField, sortOrder: 'desc', offset: 0, limit: 1, wantTotal: false });
+            await metadataDb.queryEntities(directories, { ...filter, sortField, sortOrder: 'desc', offset: 0, limit: 1, wantTotal: false, cursor: first.cursor });
+            const streamReads = recorded.filter(call => /\bAS k\b/.test(call.sql));
+            expect(streamReads.length).toBeGreaterThan(0);
+            for (const call of streamReads) {
+                const plan = planOf(call);
+                expect({ sortField, sql: call.sql, plan }).toEqual({
+                    sortField, sql: call.sql,
+                    plan: [expect.stringMatching(/^SEARCH (characters|groups|s) USING (COVERING )?INDEX idx_\w+_(asc|key) \(/)],
+                });
+            }
         }
     });
 
