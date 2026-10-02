@@ -127,7 +127,7 @@ test('mergeRetryNotice adds the skipped lists and replaces the failing list', ()
     expect(notices.mergeRetryNotice(previous, collector)).toEqual({
         skipped: { total: 22, entries: previousSkipped },
         failing: { total: 0, entries: [] },
-        noWorld: { total: 0, entries: [] },
+        undone: { total: 0, entries: [] },
     });
 
     const emptyPrevious = { version: 1, skipped: { total: 0, entries: [] }, failing: { total: 1, entries: [x] } };
@@ -148,28 +148,42 @@ test('getNoticesForClient names each listed character from the index, or null wh
         version,
         skipped: { total: 1, entries: [{ avatar: 'Named.png', world: 'Lost', reason: 'world-unreadable', name: 'Named Person' }] },
         failing: { total: 1, entries: [{ avatar: 'Gone.png', world: 'W', name: null }] },
-        noWorld: { total: 0, entries: [] },
+        undone: { total: 0, entries: [] },
         hasReport: false,
     }]);
 });
 
-test('a card whose lorebook file is missing is counted as linking a missing lorebook, not as skipped', async () => {
+test('a card whose lorebook file is missing is nothing to tell: it is not collected, and alone it stores no notice', async () => {
     const collector = new notices.NoticeCollector();
     collector.addSkipped({ avatar: 'a.png', world: 'Gone', reason: 'world-missing' });
+    expect(collector.isEmpty()).toBe(true);
+    await notices.replaceNotice(directories, NOTICE_ID, collector);
+    expect(await notices.readNotice(directories, NOTICE_ID)).toBeNull();
+
     collector.addSkipped({ avatar: 'b.png', world: 'Bad', reason: 'world-unreadable' });
-    expect(collector.noWorld).toEqual({ total: 1, entries: [{ avatar: 'a.png', world: 'Gone', reason: 'world-missing' }] });
-    expect(collector.skipped.total).toBe(1);
+    expect(collector.skipped).toEqual({ total: 1, entries: [{ avatar: 'b.png', world: 'Bad', reason: 'world-unreadable' }] });
+});
+
+test('undone cards are collected, stored and add up across retries', async () => {
+    const collector = new notices.NoticeCollector();
+    collector.addUndone({ avatar: 'a.png', world: 'A' });
     await notices.replaceNotice(directories, NOTICE_ID, collector);
     const stored = await notices.readNotice(directories, NOTICE_ID);
-    expect(stored.noWorld.total).toBe(1);
-    expect(stored.skipped.total).toBe(1);
+    expect(stored.undone).toEqual({ total: 1, entries: [{ avatar: 'a.png', world: 'A' }] });
 
-    const merged = notices.mergeRetryNotice(stored, (() => {
-        const more = new notices.NoticeCollector();
-        more.addSkipped({ avatar: 'c.png', world: 'Gone2', reason: 'world-missing' });
-        return more;
-    })());
-    expect(merged.noWorld.total).toBe(2);
+    const more = new notices.NoticeCollector();
+    more.addUndone({ avatar: 'b.png', world: 'B' });
+    expect(notices.mergeRetryNotice(stored, more).undone.total).toBe(2);
+});
+
+test('a notice an earlier version stored with only cards linking a missing lorebook is not shown', async () => {
+    await metadataDb.setMetaValue(directories, notices.noticeKey(NOTICE_ID), JSON.stringify({
+        version: 5,
+        skipped: { total: 0, entries: [] },
+        failing: { total: 0, entries: [] },
+        noWorld: { total: 2538, entries: [{ avatar: 'n.png', world: 'Nowhere', reason: 'world-missing' }] },
+    }));
+    expect(await notices.getNoticesForClient(directories)).toEqual([]);
 });
 
 test('migration_pending: add, settle, stream in id order, and commit deletes settled rows with the notice in one call', async () => {

@@ -43,6 +43,7 @@ function showUnimportEmbeddedLoreNotice(helpers, notice) {
     const { t, escapeHtml } = helpers;
     const failing = notice.failing ?? { total: 0, entries: [] };
     const skipped = notice.skipped ?? { total: 0, entries: [] };
+    const undone = notice.undone ?? { total: 0, entries: [] };
     const parts = [];
     let shown = 0;
     if (failing.total > 0) {
@@ -61,9 +62,12 @@ function showUnimportEmbeddedLoreNotice(helpers, notice) {
             + (lines.length > 0 ? `<br />${lines.join('<br />')}` : '')
             + (rest > 0 ? `<br />${t`and ${rest} more.`}` : ''));
     }
-    const noWorld = notice.noWorld ?? { total: 0, entries: [] };
-    if (noWorld.total > 0) {
-        parts.push(t`${noWorld.total} character(s) link a lorebook that isn't in your worlds folder, so there was nothing to undo for them. They weren't changed.`);
+    if (undone.total > 0) {
+        const names = undone.entries.slice(0, Math.max(NAMED_LIMIT - shown, 0)).map(entry => escapeHtml(String(entry.name ?? entry.avatar)));
+        const rest = Math.max(undone.total - names.length, 0);
+        parts.push(t`${undone.total} character(s) use their own embedded lorebook again, instead of the separate lorebook file it had been copied into:`
+            + (names.length > 0 ? `<br />${names.join(', ')}` : '')
+            + (rest > 0 ? `<br />${t`and ${rest} more.`}` : ''));
     }
     if (parts.length === 0) return;
     const reportLink = notice.hasReport
@@ -89,8 +93,6 @@ function showUnimportEmbeddedLoreNotice(helpers, notice) {
 function reasonText({ t, escapeHtml }, entry) {
     const world = escapeHtml(String(entry.world));
     switch (entry.reason) {
-        case 'world-missing':
-            return t`its lorebook ${world} doesn't exist`;
         case 'world-unreadable':
             return t`its lorebook ${world} couldn't be read`;
         case 'world-snapshot-unusable':
