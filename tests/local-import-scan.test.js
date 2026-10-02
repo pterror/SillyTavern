@@ -390,25 +390,19 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         }
 
         /**
-         * Builds a poisoned library row (a real reconcile()-discovered PNG, then backfilled - the same two steps
-         * a real boot's background chain performs) for `computeCandidateContentIdentityHash()`'s discovery-side
-         * check to be compared against. Always seeds with the flag forced ON regardless of what the calling
-         * test wants it set to for the scan itself below - backfillContentIdentityHashes() is gated on the exact
-         * same flag (see its own doc comment), so a "flag off" test still needs a real backfilled hash to exist
-         * in order to prove the scan-side gate (not "there was never anything to find") is what's actually being
-         * exercised.
+         * Builds a poisoned library row (a real reconcile()-discovered PNG, hashed from its pristine chunk as
+         * reconcile() inserts it) for `computeCandidateContentIdentityHash()`'s discovery-side check to be compared
+         * against. Always seeds with the flag forced ON regardless of what the calling test wants it set to for the
+         * scan itself below - reconcile()'s hash is gated on the exact same flag, so a "flag off" test still needs a
+         * real hash to exist in order to prove the scan-side gate (not "there was never anything to find") is what's
+         * actually being exercised.
          * @param {object} data
          */
-        async function seedBackfilledPoisonedRow(data) {
+        async function seedPoisonedRow(data) {
             writePoisonedLibraryCard('Poisoned.png', data);
-            await metadataDb.reconcile(directories);
-            const before = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
-            expect(before.import_poisoned).toBe(1);
-            expect(before.content_identity_hash).toBeNull();
-
             const previousFlag = process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK;
             process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
-            await metadataDb.backfillContentIdentityHashes(directories);
+            await metadataDb.reconcile(directories);
             if (previousFlag === undefined) {
                 delete process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK;
             } else {
@@ -416,6 +410,7 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             }
 
             const after = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+            expect(after.import_poisoned).toBe(1);
             expect(after.content_identity_hash).toEqual(expect.any(String));
         }
 
@@ -423,7 +418,7 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
 
             const data = poisonedCardData();
-            await seedBackfilledPoisonedRow(data);
+            await seedPoisonedRow(data);
 
             // Today's write() never adds a ccv3 chunk for a v2 source (see 293f4294b) - so this file's bytes
             // necessarily differ from Poisoned.png's, even though it carries the exact same `data`.
@@ -441,7 +436,7 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
 
             const data = poisonedCardData();
-            await seedBackfilledPoisonedRow(data);
+            await seedPoisonedRow(data);
             const knownDateAdded = 1_000_000_000_000;
             await metadataDb.setCharacterDateAdded(directories, 'Poisoned.png', knownDateAdded);
 
@@ -460,7 +455,7 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
             process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'false';
 
             const data = poisonedCardData();
-            await seedBackfilledPoisonedRow(data);
+            await seedPoisonedRow(data);
 
             const discoveredBuffer = cardParser.write(BLANK_PNG, JSON.stringify(data));
             fs.writeFileSync(path.join(sourceDir, 'discovered.png'), discoveredBuffer);
@@ -473,7 +468,7 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
         test('flag on: a genuinely different character is still imported normally, not falsely matched to the poisoned row', async () => {
             process.env.SILLYTAVERN_PERFORMANCE_ALLOWEXPENSIVEDUPLICATEFALLBACK = 'true';
 
-            await seedBackfilledPoisonedRow(poisonedCardData());
+            await seedPoisonedRow(poisonedCardData());
 
             const differentData = poisonedCardData();
             differentData.name = 'Someone Else';

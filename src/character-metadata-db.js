@@ -877,7 +877,7 @@ function migrateContentIdentityColumns(db) {
         db.exec('ALTER TABLE characters ADD COLUMN import_poisoned INTEGER NOT NULL DEFAULT 1');
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_identity_hash ON characters(content_identity_hash)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_import_poisoned ON characters(import_poisoned)');
+    db.exec('DROP INDEX IF EXISTS idx_characters_import_poisoned');
 }
 
 /**
@@ -908,7 +908,7 @@ function migrateActiveChatColumn(db) {
             db.exec('UPDATE characters SET active_chat_checked = 1');
         }
     }
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_active_chat_checked ON characters(active_chat_checked)');
+    db.exec('DROP INDEX IF EXISTS idx_characters_active_chat_checked');
 }
 
 // Converts create_date from TEXT to INTEGER epoch ms. SQLite has no ALTER COLUMN, so: add a new INTEGER column,
@@ -1333,9 +1333,7 @@ function migrateCardJsonColumn(db, directories) {
     db.exec(SCHEMA_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_hash ON characters(content_hash)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_content_identity_hash ON characters(content_identity_hash)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_import_poisoned ON characters(import_poisoned)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_characters_avatar_identity_hash ON characters(avatar_identity_hash)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_characters_active_chat_checked ON characters(active_chat_checked)');
 }
 
 // idx_characters_fav_name_fold has default ASC on both columns, which SQLite can't use for a DESC/ASC ORDER BY.
@@ -1736,12 +1734,14 @@ function setShallowFav(shallow, fav) {
  * @param {number} params.dateAddedCandidate
  * @param {string | null} [params.contentHash]
  * @param {string | null} [params.contentIdentityHash]
+ * @param {boolean} [params.importPoisoned] Whether the file may carry old-write-path artifacts (see SCHEMA_SQL): true
+ * for a row read from a file the current write path didn't write.
  * @param {string | null} [params.avatarIdentityHash]
  * @param {string[]} [params.tagIds]
  * @param {string} params.cardJson
  * @returns {CharacterUpsertRow}
  */
-function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdentityHash, avatarIdentityHash, tagIds = [], cardJson }) {
+function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdentityHash, importPoisoned = contentIdentityHash == null, avatarIdentityHash, tagIds = [], cardJson }) {
     if (typeof cardJson !== 'string') throw new TypeError(`buildRow(${id}): cardJson is required (card_json is NOT NULL) - got ${typeof cardJson}`);
     const includeCreatorNotes = !!getConfigValue('performance.shallowCharactersIncludeCreatorNotes', false, 'boolean');
     const dataSize = calculateDataSize(character.data ?? {});
@@ -1780,7 +1780,7 @@ function buildRow(id, character, { dateAddedCandidate, contentHash, contentIdent
         content_hash: contentHash ?? null,
         content_identity_hash: contentIdentityHash ?? null,
         avatar_identity_hash: avatarIdentityHash ?? null,
-        import_poisoned: contentIdentityHash != null ? 0 : 1,
+        import_poisoned: importPoisoned ? 1 : 0,
         active_chat: character.chat ?? null,
         active_chat_checked: 1,
         card_json: cardJson,
@@ -2611,10 +2611,12 @@ export async function bootstrapIfNeeded(directories) {
                 const stat = await fsPromises.stat(filePath);
                 const rawBuffer = await fsPromises.readFile(filePath);
                 const imgData = readCharacterCardFromBuffer(rawBuffer);
-                const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
+                const chunks = extract(new Uint8Array(rawBuffer));
+                const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
+                const contentIdentityHash = fileContentIdentityHash(directories, file, chunks);
                 const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                 const tagIds = tagMapEntryTagIds(tag_map, file);
-                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), avatarIdentityHash, tagIds, cardJson: imgData });
+                const row = buildRow(file, character, { dateAddedCandidate: Math.round(stat.ctimeMs), contentIdentityHash, importPoisoned: true, avatarIdentityHash, tagIds, cardJson: imgData });
                 return { row, tagIds };
             } catch (err) {
                 console.error(`[character-metadata] Bootstrap failed to process ${file}, skipping it this pass (the reconciler will retry it):`, /** @type {any} */ (err).message);
@@ -2641,15 +2643,36 @@ export async function bootstrapIfNeeded(directories) {
     setMetaSync(entry.db, 'bootstrap_completed', String(Date.now()));
 }
 
-// Backfills content_identity_hash for poisoned rows without clearing import_poisoned (see SCHEMA_SQL). Reads
-// the PNG's pristine 'chara' chunk, which stays valid even when 'ccv3' doesn't.
-// Resumable without a meta flag: re-queries import_poisoned=1 AND content_identity_hash IS NULL every call.
+/**
+ * content_identity_hash of a card file the current write path didn't write, from the PNG's pristine 'chara' chunk,
+ * which stays valid even when 'ccv3' doesn't. Null when that is turned off by config or the chunk can't be read.
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {string} id
+ * @param {ReturnType<typeof extract>} chunks
+ * @returns {string | null}
+ */
+function fileContentIdentityHash(directories, id, chunks) {
+    if (!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean')) return null;
+    try {
+        const pristine = readCharaChunkPristineFromChunks(chunks);
+        return computeContentIdentityHash(getCharaCardV2(JSON.parse(pristine), directories, false));
+    } catch (err) {
+        console.error(`[character-metadata] Couldn't work out the content fingerprint of ${id}; duplicate checks on import won't match it:`, /** @type {any} */ (err).message);
+        return null;
+    }
+}
+
+const CONTENT_IDENTITY_BACKFILLED_FLAG = 'content_identity_backfilled_v1';
+
+// Backfills content_identity_hash for rows from before bootstrap and reconcile computed it, without clearing
+// import_poisoned (see SCHEMA_SQL). Runs once: every row inserted since gets its hash when it's inserted.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */
 export async function backfillContentIdentityHashes(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: CONTENT_IDENTITY_BACKFILLED_FLAG })) return;
 
     if (!getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean')) return;
 
@@ -2657,8 +2680,6 @@ export async function backfillContentIdentityHashes(directories) {
 
     const progress = new ProgressLog({ what: '[character-metadata] working out content fingerprints for cards imported with damaged data' });
 
-    // Paged by rowid, not id: idx_characters_import_poisoned keeps rowid order within import_poisoned = 1, so a page
-    // seeks instead of sorting every match.
     for await (const rows of streamRows(entry.db, {
         firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE import_poisoned = 1 AND content_identity_hash IS NULL ORDER BY rowid LIMIT @limit',
         firstPageParams: {},
@@ -2670,17 +2691,15 @@ export async function backfillContentIdentityHashes(directories) {
         for (let i = 0; i < poisonedIds.length; i += BATCH_FLUSH_SIZE) {
             const chunkIds = poisonedIds.slice(i, i + BATCH_FLUSH_SIZE);
             const chunkResults = await mapWithConcurrency(chunkIds, BOOTSTRAP_READ_CONCURRENCY, async (id) => {
+                let chunks;
                 try {
-                    const filePath = path.join(directories.characters, id);
-                    const buffer = await fs.promises.readFile(filePath);
-                    const chunks = extract(new Uint8Array(buffer));
-                    const pristine = readCharaChunkPristineFromChunks(chunks);
-                    const character = getCharaCardV2(JSON.parse(pristine), directories, false);
-                    return { id, hash: computeContentIdentityHash(character), avatarHash: computeAvatarIdentityHashFromChunks(chunks) };
+                    chunks = extract(new Uint8Array(await fs.promises.readFile(path.join(directories.characters, id))));
                 } catch (err) {
-                    console.error(`[character-metadata] Content-identity backfill failed to process ${id}, leaving it poisoned (will retry next boot):`, /** @type {any} */ (err).message);
+                    console.error(`[character-metadata] Couldn't read ${id} to work out its content fingerprint; duplicate checks on import won't match it:`, /** @type {any} */ (err).message);
                     return null;
                 }
+                const hash = fileContentIdentityHash(directories, id, chunks);
+                return hash === null ? null : { id, hash, avatarHash: computeAvatarIdentityHashFromChunks(chunks) };
             });
 
             const updates = chunkResults.filter((r) => r !== null);
@@ -2700,23 +2719,26 @@ export async function backfillContentIdentityHashes(directories) {
     }
 
     if (progress.done > 0) progress.finish();
+    setMetaSync(entry.db, CONTENT_IDENTITY_BACKFILLED_FLAG, String(Date.now()));
 }
 
-// Keyed on active_chat_checked, not active_chat IS NULL, since the latter can't distinguish "confirmed no
-// chat" from "not examined". Resumable without a flag: re-queries active_chat_checked = 0 every call.
+const ACTIVE_CHAT_BACKFILLED_FLAG = 'active_chat_backfilled_v1';
+
+// Reads the last opened chat off the card for rows from before active_chat_checked existed. Keyed on
+// active_chat_checked, not active_chat IS NULL, since the latter can't distinguish "confirmed no chat" from "not
+// examined". Runs once: every row written since is inserted with active_chat_checked = 1.
 /**
  * @param {import('./users.js').UserDirectoryList} directories
  */
 export async function backfillActiveChatFromCards(directories) {
     const entry = await getEntry(directories);
     if (!entry) return;
+    if (entry.db.get('SELECT 1 FROM meta WHERE key = @key', { key: ACTIVE_CHAT_BACKFILLED_FLAG })) return;
 
     if (!fs.existsSync(directories.characters)) return;
 
     const progress = new ProgressLog({ what: '[character-metadata] reading each card\'s last opened chat' });
 
-    // Paged by rowid, not id: idx_characters_active_chat_checked keeps rowid order within active_chat_checked = 0, so a
-    // page seeks instead of sorting every match.
     for await (const rows of streamRows(entry.db, {
         firstPageSql: 'SELECT rowid AS rid, id FROM characters WHERE active_chat_checked = 0 ORDER BY rowid LIMIT @limit',
         firstPageParams: {},
@@ -2735,7 +2757,7 @@ export async function backfillActiveChatFromCards(directories) {
                     const chat = character.chat ?? null;
                     return { id, chat, resolved: true };
                 } catch (err) {
-                    console.error(`[character-metadata] Active-chat backfill failed to process ${id}, leaving it unchecked (will retry next boot):`, /** @type {any} */ (err).message);
+                    console.error(`[character-metadata] Active-chat backfill failed to process ${id}, so its last opened chat stays unknown:`, /** @type {any} */ (err).message);
                     return { id, resolved: false };
                 }
             });
@@ -2757,6 +2779,7 @@ export async function backfillActiveChatFromCards(directories) {
     }
 
     if (progress.done > 0) progress.finish();
+    setMetaSync(entry.db, ACTIVE_CHAT_BACKFILLED_FLAG, String(Date.now()));
 }
 
 const MIGRATION_BATCH_PAUSE_MS = 10;
@@ -3026,10 +3049,12 @@ export async function reconcile(directories) {
                     const filePath = path.join(directories.characters, file);
                     const rawBuffer = await fsPromises.readFile(filePath);
                     const imgData = readCharacterCardFromBuffer(rawBuffer);
-                    const avatarIdentityHash = computeAvatarIdentityHashFromChunks(extract(new Uint8Array(rawBuffer)));
+                    const chunks = extract(new Uint8Array(rawBuffer));
+                    const avatarIdentityHash = computeAvatarIdentityHashFromChunks(chunks);
+                    const contentIdentityHash = fileContentIdentityHash(directories, file, chunks);
                     const character = getCharaCardV2(JSON.parse(imgData), directories, false);
                     const tagIds = getTagIdsFor(directories, file);
-                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), avatarIdentityHash, tagIds, cardJson: imgData });
+                    const row = buildRow(file, character, { dateAddedCandidate: Date.now(), contentIdentityHash, importPoisoned: true, avatarIdentityHash, tagIds, cardJson: imgData });
                     return { row, tagIds };
                 } catch (err) {
                     console.error(`[character-metadata] Reconcile failed to process ${file}, will retry next boot:`, /** @type {any} */ (err).message);
