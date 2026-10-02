@@ -23,6 +23,7 @@ import {
     waitUntilCondition,
 } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
+import { bringChatForward } from './drawer-stack.js';
 import { RA_CountCharTokens, dragElement, favsToHotswap, getMessageTimeStamp } from './RossAscends-mods.js';
 import { power_user, loadMovingUIState, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
@@ -2886,9 +2887,11 @@ jQuery(() => {
         });
     }
 
-    $(document).on('click', '.group_select', function () {
+    $(document).on('click', '.group_select', async function () {
         const groupId = $(this).attr('data-grid');
-        openGroupById(groupId);
+        await openGroupById(groupId);
+        // Picking a group is picking its conversation: it comes to the front, over a fullscreen list.
+        if (selected_group === groupId) bringChatForward();
     });
     $('#rm_group_filter').on('input', filterGroupMembers);
     $('#rm_group_members_filter').on('input', filterGroupMemberList);
