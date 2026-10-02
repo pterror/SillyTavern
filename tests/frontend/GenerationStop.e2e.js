@@ -34,6 +34,10 @@ function startSlowLlamaCpp({ delayMs = 100 } = {}) {
                 const content = String(JSON.parse(body || '{}').content ?? '');
                 return json({ tokens: content.split(/(?=\s)/).filter(Boolean).map((_, i) => 100 + i) });
             }
+            if (path === '/completion' && JSON.parse(body || '{}').stream === false) {
+                state.finished = true;
+                return json({ content: 'The whole reply, already stored.', stop: true, model: MODEL, tokens_predicted: 6, tokens_evaluated: 10 });
+            }
             if (path === '/completion') {
                 res.on('close', () => {
                     if (!state.finished) {
@@ -177,6 +181,44 @@ test.describe('stopping a generation', () => {
             expect(stored.storedText).not.toContain(`piece${PIECES - 1}`);
             expect(stored.pageIds).toEqual(stored.pathIds);
             expect(stored.replies).toBe(1);
+        } finally {
+            await mock.close();
+        }
+    });
+
+    test('stop on a non-streaming reply the server already stored shows that reply at once', async ({ page }) => {
+        const mock = await startSlowLlamaCpp();
+        try {
+            await testSetup.awaitST({ page });
+            const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+            const avatar = await createCharacter(page, `StopNS-${stamp}`);
+            await openCharacter(page, avatar);
+            await connectLlamaCpp(page, mock.url);
+            // @ts-ignore
+            await page.evaluate(() => { SillyTavern.getContext().textCompletionSettings.streaming = false; });
+            await page.waitForTimeout(2500);
+
+            // The server answers in full, but the answer is held back from the page until after stop is pressed.
+            let serverAnswered = false;
+            await page.route('**/api/backends/text-completions/generate', async (route) => {
+                const response = await route.fetch();
+                serverAnswered = true;
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                await route.fulfill({ response }).catch(() => { });
+            });
+
+            await page.locator('#send_textarea').fill(`Say something ${stamp}.`);
+            await page.locator('#send_but').click();
+            await expect.poll(() => serverAnswered, { timeout: 30000 }).toBe(true);
+            await page.locator('#mes_stop').click();
+
+            await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('The whole reply, already stored.', { timeout: 4000 });
+            const lastNode = await page.evaluate(() => {
+                // @ts-ignore
+                const chat = SillyTavern.getContext().chat;
+                return chat[chat.length - 1]?.node_id ?? null;
+            });
+            expect(typeof lastNode).toBe('string');
         } finally {
             await mock.close();
         }

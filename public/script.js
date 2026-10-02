@@ -275,7 +275,7 @@ import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPro
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
-import { beginServerGeneration, endServerGeneration } from './scripts/generation-stop.js';
+import { beginServerGeneration, endServerGeneration, takeStopResult } from './scripts/generation-stop.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
 import { active_character, active_group, name1, default_user_name, setActiveCharacter, setActiveGroup, setActiveCharacterAndGroupFromSettings, setName1Raw } from './scripts/app-selection-state.js';
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
@@ -5375,9 +5375,23 @@ export async function sendGenerationRequest(type, data, options = {}) {
         const answer = await response.json();
         adoptStored(answer?.stored);
         return answer;
+    } catch (error) {
+        if (generationId) takeInStoppedReply(generationId);
+        throw error;
     } finally {
         if (generationId) endServerGeneration(generationId);
     }
+}
+
+/**
+ * A stopped non-streaming request leaves no message on the page. If the server had already stored its
+ * reply when the stop arrived, the chat is read again so the page shows it.
+ * @param {string} generationId
+ */
+export function takeInStoppedReply(generationId) {
+    takeStopResult(generationId)?.then(stop => {
+        if (stop && isStoredNodeId(stop.node_id)) void reloadCurrentChat();
+    });
 }
 
 /**
