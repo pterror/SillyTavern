@@ -1128,13 +1128,13 @@ describe('content_identity_hash / import_poisoned (unfuck-the-import: cheap dedu
         expect(alice.content_identity_hash).not.toBe(bob.content_identity_hash);
     });
 
-    test('a row discovered by reconcile/bootstrap (never written through this module) starts poisoned with no hash', async () => {
+    test('a row discovered by reconcile/bootstrap (never written through this module) starts poisoned, hashed from its file', async () => {
         await writeCardFile('Discovered.png');
         await metadataDb.reconcile(directories);
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Discovered.png');
         expect(row.import_poisoned).toBe(1);
-        expect(row.content_identity_hash).toBeNull();
+        expect(row.content_identity_hash).toMatch(/^[0-9a-f]{64}$/);
     });
 
     test('reconcile re-observing an already-written row leaves import_poisoned/content_identity_hash untouched', async () => {
@@ -1264,9 +1264,30 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
         };
     }
 
+    /** Clears every row's content_identity_hash, as rows inserted before reconcile() hashed them have it. */
+    async function forgetContentIdentityHashes() {
+        metadataDb.disposeMetadataStores();
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        rawDb.prepare('UPDATE characters SET content_identity_hash = NULL').run();
+        rawDb.close();
+    }
+
+    test('reconcile hashes a poisoned row from the pristine chara chunk, the hash the backfill gives it', async () => {
+        await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
+        await metadataDb.reconcile(directories);
+        const atInsert = (await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png')).content_identity_hash;
+        await forgetContentIdentityHashes();
+        await metadataDb.backfillContentIdentityHashes(directories);
+
+        expect(atInsert).toMatch(/^[0-9a-f]{64}$/);
+        expect((await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png')).content_identity_hash).toBe(atInsert);
+    });
+
     test('backfill computes a content_identity_hash for a poisoned row, from the pristine chara chunk, leaving import_poisoned set', async () => {
         await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
         await metadataDb.reconcile(directories);
+        await forgetContentIdentityHashes();
 
         const before = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
         expect(before.import_poisoned).toBe(1);
@@ -1286,6 +1307,7 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
         const data = pristineCard();
         await writeOldStylePoisonedCard('Poisoned.png', data);
         await metadataDb.reconcile(directories);
+        await forgetContentIdentityHashes();
         await metadataDb.backfillContentIdentityHashes(directories);
         const poisoned = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
 
@@ -1308,6 +1330,7 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
     test('findCharacterIdByContentIdentityHash finds a backfilled poisoned row by its recovered hash', async () => {
         await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
         await metadataDb.reconcile(directories);
+        await forgetContentIdentityHashes();
         await metadataDb.backfillContentIdentityHashes(directories);
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
 
@@ -1316,26 +1339,30 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
         expect(await metadataDb.findCharacterIdByContentIdentityHash(directories, '')).toBeNull();
     });
 
-    test('a second backfill call is a no-op for an already-hashed row (idempotent, no re-read)', async () => {
+    test('the backfill runs once: a later call reads nothing, even for a row left without a hash', async () => {
         await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
         await metadataDb.reconcile(directories);
         await metadataDb.backfillContentIdentityHashes(directories);
-        const first = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
+        await forgetContentIdentityHashes();
 
-        // Corrupt the file so a re-read would fail loudly if the backfill mistakenly tried it again.
-        await fs.promises.writeFile(path.join(charactersDir, 'Poisoned.png'), 'not a png');
         await metadataDb.backfillContentIdentityHashes(directories);
 
-        const second = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
-        expect(second.content_identity_hash).toBe(first.content_identity_hash);
+        expect((await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png')).content_identity_hash).toBeNull();
     });
 
-    test('a row that fails to parse is left poisoned/hashless (retried on a later call), without throwing', async () => {
+    test('a row whose file fails to parse is left poisoned/hashless and named in the log, without throwing', async () => {
         const filePath = await writeOldStylePoisonedCard('Poisoned.png', pristineCard());
         await metadataDb.reconcile(directories);
+        await forgetContentIdentityHashes();
         await fs.promises.writeFile(filePath, 'not a valid png at all');
 
-        await expect(metadataDb.backfillContentIdentityHashes(directories)).resolves.toBeUndefined();
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            await expect(metadataDb.backfillContentIdentityHashes(directories)).resolves.toBeUndefined();
+            expect(errorSpy.mock.calls.some(([message]) => String(message).includes('Poisoned.png'))).toBe(true);
+        } finally {
+            errorSpy.mockRestore();
+        }
 
         const row = await metadataDb.getCharacterMetadataRow(directories, 'Poisoned.png');
         expect(row.import_poisoned).toBe(1);
@@ -1382,7 +1409,7 @@ describe('backfillContentIdentityHashes / findCharacterIdByContentIdentityHash (
         try {
             await metadataDb.backfillContentIdentityHashes(directories);
             const processed = errorSpy.mock.calls
-                .map(([message]) => String(message).match(/Content-identity backfill failed to process (\S+),/)?.[1])
+                .map(([message]) => String(message).match(/Couldn't read (\S+) to work out its content fingerprint/)?.[1])
                 .filter(id => id !== undefined);
             expect(processed.sort()).toEqual(avatars);
         } finally {
@@ -2308,6 +2335,23 @@ describe('active_chat is db-authoritative once a character row exists (2026-08 c
 
         const second = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
         expect(second.active_chat).toBe(first.active_chat);
+    });
+
+    test('backfillActiveChatFromCards() runs once: a later call reads nothing, even for a row left unchecked', async () => {
+        await writeCardFile('Alice.png', { name: 'Alice', chat: 'Alice - From Disk', data: { name: 'Alice', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [], creator: '', character_version: '', creator_notes: '', extensions: { fav: false, world: '' } } });
+        await metadataDb.reconcile(directories);
+        await metadataDb.backfillActiveChatFromCards(directories);
+        metadataDb.disposeMetadataStores();
+        const { default: Database } = await import('better-sqlite3');
+        const rawDb = new Database(path.join(tempDir, 'character-metadata.sqlite'));
+        rawDb.prepare('UPDATE characters SET active_chat = NULL, active_chat_checked = 0').run();
+        rawDb.close();
+
+        await metadataDb.backfillActiveChatFromCards(directories);
+
+        const row = await metadataDb.getCharacterMetadataRow(directories, 'Alice.png');
+        expect(row.active_chat_checked).toBe(0);
+        expect(row.active_chat).toBeNull();
     });
 });
 

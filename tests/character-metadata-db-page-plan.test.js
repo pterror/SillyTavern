@@ -186,7 +186,7 @@ describe('a keyset stream\'s later page seeks on its key instead of re-reading f
         expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
     }, 60000);
 
-    test('backfillContentIdentityHashes() SEARCHes characters on (import_poisoned=? AND rowid>?)', async () => {
+    test('backfillContentIdentityHashes() SEARCHes characters by rowid, past the last page', async () => {
         await addCharacters(() => '');
         metadataDb.disposeMetadataStores();
         const { default: Database } = await import('better-sqlite3');
@@ -204,11 +204,11 @@ describe('a keyset stream\'s later page seeks on its key instead of re-reading f
         }
 
         const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(import_poisoned=\? AND rowid>\?\)/));
+        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\browid>\?\)/));
         expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
     }, 60000);
 
-    test('backfillActiveChatFromCards() SEARCHes characters on (active_chat_checked=? AND rowid>?)', async () => {
+    test('backfillActiveChatFromCards() SEARCHes characters on (rowid>?)', async () => {
         await addCharacters(() => '');
         metadataDb.disposeMetadataStores();
         const { default: Database } = await import('better-sqlite3');
@@ -226,7 +226,7 @@ describe('a keyset stream\'s later page seeks on its key instead of re-reading f
         }
 
         const plan = planOf(recordedLaterPage());
-        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(active_chat_checked=\? AND rowid>\?\)/));
+        expect(plan).toContainEqual(expect.stringMatching(/\bSEARCH characters\b.*\(rowid>\?\)/));
         expect(plan).not.toContainEqual(expect.stringMatching(/\bSCAN characters\b/));
     }, 60000);
 
