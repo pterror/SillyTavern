@@ -26,6 +26,7 @@ import {
     substituteParams,
     substituteParamsExtended,
     system_message_types,
+    takeInStoppedReply,
 } from '../script.js';
 import { name1 } from './app-selection-state.js';
 import { beginServerGeneration, endServerGeneration } from './generation-stop.js';
@@ -3221,6 +3222,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ra
             headers: { ...getRequestHeaders(), 'X-Generation-Id': generationId },
             signal: signal,
         });
+    } catch (error) {
+        if (!stream) takeInStoppedReply(generationId);
+        throw error;
     } finally {
         if (!stream) endServerGeneration(generationId);
     }

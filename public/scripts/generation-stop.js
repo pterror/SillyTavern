@@ -68,6 +68,17 @@ export function stopServerGenerations() {
 }
 
 /**
+ * The answer to the stop sent for this generation, or `undefined` if none was sent.
+ * @param {string} id
+ * @returns {Promise<StopResult|null>|undefined}
+ */
+export function takeStopResult(id) {
+    const stop = stops.get(id);
+    stops.delete(id);
+    return stop;
+}
+
+/**
  * For the streamed reply that just finished: whether it was stopped, and if so what the server stored.
  * @returns {Promise<StopResult|null|undefined>} `undefined` if it wasn't stopped; `null` if the stop
  * couldn't be confirmed.
