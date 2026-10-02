@@ -174,6 +174,9 @@ describe('a card with an empty name is indexed', () => {
         await writeCard('Nameless.png', '');
         await writeCard('Alpha.png', 'Alpha');
         await metadataDb.bootstrapIfNeeded(directories);
+        // The index sorts by name only from the stored name order (3a662e99d); /query walks SQL order until then.
+        expect(await searchIndex.indexCanSort(directories, null, 'name')).toBe(false);
+        await metadataDb.fillNameOrderIfNeeded(directories);
 
         const handle = 'empty-name-sort';
         expect(await searchIndex.rebuildCharacterSearchIndex(handle, directories)).toEqual({ ok: true, backend: 'tantivy' });
