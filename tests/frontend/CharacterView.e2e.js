@@ -214,6 +214,42 @@ test.describe('character view', () => {
             await expect.poll(async () => 'fav' in ((await lastQuery(page))?.filter ?? {})).toBe(false);
         });
 
+        test('+ Created adds a date range: From alone is "on or after", To fills the end of that day, and removing it drops it', async ({ page }) => {
+            await openSearch(page);
+            await page.locator('.view_pill_add').click();
+            await page.locator('.view_pill_field_option[data-field="@range:create_date"]').click();
+            await page.locator('.view_range_editor input[data-end="min"]').fill('2024-03-05');
+            await page.locator('.view_range_editor input[data-end="min"]').press('Enter');
+
+            const startOfDay = await page.evaluate(() => new Date(2024, 2, 5).getTime());
+            await expect.poll(async () => (await lastQuery(page))?.filter?.ranges).toEqual({ create_date: { min: startOfDay } });
+            await expect(page.locator('#character_search_pills .view_range_pill[data-range="create_date"] .search_pill_value')).toContainText('on or after');
+
+            await page.locator('#character_search_pills .view_range_pill .search_pill_value').click();
+            await page.locator('.view_range_editor input[data-end="max"]').fill('2024-03-07');
+            await page.locator('.view_range_editor .menu_button').click();
+            const endOfDay = await page.evaluate(() => new Date(2024, 2, 7, 23, 59, 59, 999).getTime());
+            await expect.poll(async () => (await lastQuery(page))?.filter?.ranges).toEqual({ create_date: { min: startOfDay, max: endOfDay } });
+            await expect(page.locator('#character_search_pills .view_range_pill .search_pill_value')).toContainText('between');
+
+            await page.locator('#character_search_pills .view_range_pill .search_pill_remove').click();
+            await expect.poll(async () => 'ranges' in ((await lastQuery(page))?.filter ?? {})).toBe(false);
+        });
+
+        test('a size range is typed in kilobytes and sent in bytes, and it survives a reload', async ({ page }) => {
+            await openSearch(page);
+            await page.locator('.view_pill_add').click();
+            await page.locator('.view_pill_field_option[data-field="@range:chat_size"]').click();
+            await page.locator('.view_range_editor input[data-end="max"]').fill('64');
+            await page.locator('.view_range_editor input[data-end="max"]').press('Enter');
+            await expect.poll(async () => (await lastQuery(page))?.filter?.ranges).toEqual({ chat_size: { max: 64 * 1024 } });
+
+            await page.reload();
+            await awaitAppReady(page);
+            const view = await page.evaluate(async () => (await import('/scripts/character-list.js')).getCharacterView());
+            expect(view.ranges).toEqual({ chat_size: { max: 64 * 1024 } });
+        });
+
         test('a search an extension sets through upstream\'s FilterHelper shows as pills', async ({ page }) => {
             await openSearch(page);
             await page.locator('#character_search_bar').blur();

@@ -10819,7 +10819,7 @@ function whereClausesOf(built) {
  * @param {object} p
  * @returns {SortedStream[]}
  */
-function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly, charactersOnly = false, charWhere, groupWhere, deletions }) {
+function sortedPageStreams(entry, { column, sortOrder, fav, world, ranges, excludeIds, ids, tags, groupsOnly, charactersOnly = false, charWhere, groupWhere, deletions }) {
     const keyColumn = column === 'fav' ? 'name_fold' : column;
     const dir = column !== 'fav' && sortOrder === 'desc' ? 'DESC' : 'ASC';
     const field = column === 'fav' ? 'name_fold' : column;
@@ -10837,8 +10837,8 @@ function sortedPageStreams(entry, { column, sortOrder, fav, world, excludeIds, i
     const streams = [];
     for (const favValue of favValues) {
         if (plan) {
-            const restChar = buildWhereClause({ tags: plan.rest, fav, world, excludeIds }, deletions);
-            const restGroup = buildGroupWhereClause({ tags: plan.rest, fav, excludeIds }, deletions);
+            const restChar = buildWhereClause({ tags: plan.rest, fav, world, ranges, excludeIds }, deletions);
+            const restGroup = buildGroupWhereClause({ tags: plan.rest, fav, ranges, excludeIds }, deletions);
             if (!groupsOnly) {
                 streams.push({
                     name: `c${favValue}`, type: 'character', fav: favValue, dir, field,
@@ -11032,8 +11032,8 @@ function readSortedKeys(db, stream, after, limit) {
  * @param {object} params
  * @returns {string}
  */
-function sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly, charactersOnly = false, sortField, sortOrder }) {
-    return String(getStringHash(JSON.stringify({ tags: tags ?? null, fav: fav ?? null, world: world ?? null, excludeIds: excludeIds ?? null, ids: ids ?? null, groupsOnly: !!groupsOnly, ...(charactersOnly ? { charactersOnly: true } : {}), sortField: sortField ?? null, sortOrder: sortOrder ?? null })));
+function sortedPageCursorKey({ tags, fav, world, ranges, excludeIds, ids, groupsOnly, charactersOnly = false, sortField, sortOrder }) {
+    return String(getStringHash(JSON.stringify({ tags: tags ?? null, fav: fav ?? null, world: world ?? null, ...(hasRanges(ranges) ? { ranges } : {}), excludeIds: excludeIds ?? null, ids: ids ?? null, groupsOnly: !!groupsOnly, ...(charactersOnly ? { charactersOnly: true } : {}), sortField: sortField ?? null, sortOrder: sortOrder ?? null })));
 }
 
 /**
@@ -11238,6 +11238,58 @@ function pushExpandedTagClauses(clauses, args, expanded, { tagTable, entityColum
     }
 }
 
+/**
+ * The fields a /query range filter can bound, with the column each kind keeps it in. A group has no card text, so a
+ * bound on `data_size` leaves groups out; groups keep their creation date in date_added.
+ * @type {Readonly<Record<string, { character: string, group: string | null }>>}
+ */
+export const QUERY_RANGE_COLUMNS = Object.freeze({
+    create_date: { character: 'create_date', group: 'date_added' },
+    date_last_chat: { character: 'date_last_chat', group: 'date_last_chat' },
+    chat_size: { character: 'chat_size', group: 'chat_size' },
+    data_size: { character: 'data_size', group: null },
+});
+
+/**
+ * @typedef {Record<string, { min?: number, max?: number }>} QueryRanges Inclusive bounds per QUERY_RANGE_COLUMNS
+ *   field; a missing end is open.
+ */
+
+/**
+ * Whether `ranges` bounds anything.
+ * @param {QueryRanges | undefined} ranges
+ * @returns {boolean}
+ */
+function hasRanges(ranges) {
+    return !!ranges && Object.keys(ranges).length > 0;
+}
+
+/**
+ * Pushes `ranges` as row conditions on `kind`'s own columns: each row is checked as a walk or count reaches it.
+ * @param {string[]} clauses
+ * @param {any[]} args
+ * @param {QueryRanges | undefined} ranges
+ * @param {'character' | 'group'} kind
+ */
+function pushRangeClauses(clauses, args, ranges, kind) {
+    if (!hasRanges(ranges)) return;
+    for (const [field, bound] of Object.entries(ranges)) {
+        const column = Object.hasOwn(QUERY_RANGE_COLUMNS, field) ? QUERY_RANGE_COLUMNS[field][kind] : null;
+        if (column === null) {
+            clauses.push('0');
+            continue;
+        }
+        if (typeof bound.min === 'number') {
+            clauses.push(`${column} >= ?`);
+            args.push(bound.min);
+        }
+        if (typeof bound.max === 'number') {
+            clauses.push(`${column} <= ?`);
+            args.push(bound.max);
+        }
+    }
+}
+
 // `ids: []` is handled specially by the caller (queryCharacters()): "match zero ids" is different from "no id
 // filter requested". This function only ever sees a non-empty `ids` array, or none.
 /**
@@ -11245,12 +11297,13 @@ function pushExpandedTagClauses(clauses, args, expanded, { tagTable, entityColum
  * @param {{ include?: string[], exclude?: string[], mode?: 'and'|'or' }} [filter.tags]
  * @param {boolean} [filter.fav]
  * @param {string} [filter.world]
+ * @param {QueryRanges} [filter.ranges]
  * @param {string[]} [filter.excludeIds]
  * @param {string[]} [filter.ids]
  * @param {import('./tag-deletions.js').TagDeletions} [deletions]
  * @returns {{ from: string, where: string, args: any[] }} `args` binds `from`'s placeholders, then `where`'s.
  */
-function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}, deletions = NO_TAG_DELETIONS) {
+function buildWhereClause({ tags, fav, world, ranges, excludeIds, ids } = {}, deletions = NO_TAG_DELETIONS) {
     const clauses = [];
     const args = [];
     let from = 'characters';
@@ -11272,6 +11325,7 @@ function buildWhereClause({ tags, fav, world, excludeIds, ids } = {}, deletions 
         clauses.push('world = ?');
         args.push(world);
     }
+    pushRangeClauses(clauses, args, ranges, 'character');
     const expanded = expandTagFilter(tags, deletions);
     if (expanded) {
         pushExpandedTagClauses(clauses, args, expanded, { tagTable: 'character_tags', entityColumn: 'character_id', outer: 'characters', rowSql: '' }, hasIds);
@@ -11354,6 +11408,7 @@ export async function streamCharacterIdsMatching(directories, filter) {
                 tags: filter.tags,
                 fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
                 world: filter.world,
+                ranges: filter.ranges,
                 excludeIds: filter.excludeIds,
             }, readTagDeletionsSync(entry.db));
             const sql = `SELECT characters.rowid AS rid, characters.id AS id FROM ${from} ${where ? `${where} AND` : 'WHERE'} characters.rowid > ? ORDER BY characters.rowid LIMIT ?`;
@@ -11732,8 +11787,9 @@ const COUNT_SAMPLE_BUDGET = COUNT_SAMPLE_RUNS * COUNT_SAMPLE_RUN_SIZE;
  * @param {import('./tag-deletions.js').TagDeletions} deletions
  * @returns {{ total: number, approxTotal: boolean } | null}
  */
-function countFromCounters(db, kinds, { include, exclude, fav, world }, deletions) {
+function countFromCounters(db, kinds, { include, exclude, fav, world, ranges }, deletions) {
     if (typeof world === 'string' && world) return null;
+    if (hasRanges(ranges)) return null;
     // Two entries, even the same tag twice ('and' mode then matches nothing), have no single counter.
     if (include.length + exclude.length > 1) return null;
     const named = include.length > 0 ? include[0] : exclude.length > 0 ? exclude[0] : null;
@@ -11818,7 +11874,7 @@ function storedMergedTagCounts(db, target, kinds, favs) {
  * @param {number} seq The store's change seq, which seeds the sample with the filter.
  * @returns {{ total: number, approxTotal: boolean } | null}
  */
-function totalWithoutCount(db, kindNames, { tags, fav, world, excludeIds, ids }, deletions, seq) {
+function totalWithoutCount(db, kindNames, { tags, fav, world, ranges, excludeIds, ids }, deletions, seq) {
     if (Array.isArray(ids) && ids.length > 0) return null;
     const include = tags && Array.isArray(tags.include) ? tags.include.filter(Boolean) : [];
     const exclude = tags && Array.isArray(tags.exclude) ? tags.exclude.filter(Boolean) : [];
@@ -11838,13 +11894,13 @@ function totalWithoutCount(db, kindNames, { tags, fav, world, excludeIds, ids },
     const counted = [];
     /** @type {EntityCountKind[]} */
     const sampled = [];
-    const whole = countFromCounters(db, kindNames, { include, exclude, fav, world }, deletions);
+    const whole = countFromCounters(db, kindNames, { include, exclude, fav, world, ranges }, deletions);
     if (whole) {
         ({ total, approxTotal } = whole);
         counted.push(...kinds);
     } else {
         for (const kind of kinds) {
-            const part = countFromCounters(db, [kind.name], { include, exclude, fav, world: worldOf(kind) }, deletions);
+            const part = countFromCounters(db, [kind.name], { include, exclude, fav, world: worldOf(kind), ranges }, deletions);
             if (!part) {
                 sampled.push(kind);
                 continue;
@@ -11857,8 +11913,8 @@ function totalWithoutCount(db, kindNames, { tags, fav, world, excludeIds, ids },
     if (listed) {
         for (const kind of counted) {
             const { from, where, args } = kind.name === 'character'
-                ? buildWhereClause({ tags, fav, world, ids: listed }, deletions)
-                : buildGroupWhereClause({ tags, fav, ids: listed }, deletions);
+                ? buildWhereClause({ tags, fav, world, ranges, ids: listed }, deletions)
+                : buildGroupWhereClause({ tags, fav, ranges, ids: listed }, deletions);
             total -= Number((/** @type {{ n: number }} */ (db.get(`SELECT COUNT(*) AS n FROM ${from} ${where}`, args))).n);
         }
     }
@@ -11866,8 +11922,9 @@ function totalWithoutCount(db, kindNames, { tags, fav, world, excludeIds, ids },
         const seed = JSON.stringify([
             kindNames, typeof fav === 'boolean' ? fav : null, [...include].sort(), [...exclude].sort(), mode,
             typeof world === 'string' && world ? world : null, listed ? listed.map(String).sort() : null, seq,
+            ...(hasRanges(ranges) ? [ranges] : []),
         ]);
-        const estimate = sampleEstimate(db, sampled, { tags, include, exclude, mode, fav, world, excludeIds }, deletions, seededRandom(seed));
+        const estimate = sampleEstimate(db, sampled, { tags, include, exclude, mode, fav, world, ranges, excludeIds }, deletions, seededRandom(seed));
         total += estimate.total;
         approxTotal ||= estimate.approxTotal;
     }
@@ -11926,7 +11983,7 @@ function seededRandom(text) {
  * @param {() => number} random
  * @returns {{ total: number, approxTotal: boolean }}
  */
-function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, excludeIds }, deletions, random) {
+function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, ranges, excludeIds }, deletions, random) {
     /** @typedef {{ target: string, merged: boolean }} SampledTag An included tag; merged when marked tags merge into it. */
     /** @type {SampledTag[]} */
     const included = [];
@@ -11992,8 +12049,8 @@ function sampleEstimate(db, kinds, { tags, include, exclude, mode, fav, world, e
             if (ids.size === 0) continue;
             const idsJson = JSON.stringify([...ids]);
             const checked = term.tag !== null && terms.length > 1
-                ? { tags: { exclude: [...exclude, ...term.earlier] }, fav, world: kindWorld, excludeIds, ids: [...ids] }
-                : { tags, fav, world: kindWorld, excludeIds, ids: [...ids] };
+                ? { tags: { exclude: [...exclude, ...term.earlier] }, fav, world: kindWorld, ranges, excludeIds, ids: [...ids] }
+                : { tags, fav, world: kindWorld, ranges, excludeIds, ids: [...ids] };
             const { from, where, args } = kind.name === 'character' ? buildWhereClause(checked, deletions) : buildGroupWhereClause(checked, deletions);
             const hits = Number((/** @type {{ n: number }} */ (db.get(`SELECT COUNT(*) AS n FROM ${from} ${where}`, args))).n);
             if (full) {
@@ -12096,7 +12153,7 @@ export async function queryCharacters(directories, params = {}) {
     if (!entry) return null;
 
     const {
-        tags, fav, world, excludeIds, ids,
+        tags, fav, world, ranges, excludeIds, ids,
         sortField, sortOrder, seed, idOrder,
         offset, limit,
         wantRows = true, wantTotal = true,
@@ -12111,12 +12168,12 @@ export async function queryCharacters(directories, params = {}) {
     }
 
     const deletions = readTagDeletionsSync(entry.db);
-    const { from, where, args } = buildWhereClause({ tags, fav, world, excludeIds, ids }, deletions);
+    const { from, where, args } = buildWhereClause({ tags, fav, world, ranges, excludeIds, ids }, deletions);
 
     let total;
     let approxTotal = false;
     if (wantTotal) {
-        const counted = totalWithoutCount(entry.db, ['character'], { tags, fav, world, excludeIds, ids }, deletions, seq);
+        const counted = totalWithoutCount(entry.db, ['character'], { tags, fav, world, ranges, excludeIds, ids }, deletions, seq);
         if (counted) {
             ({ total, approxTotal } = counted);
         } else {
@@ -12210,7 +12267,7 @@ export async function queryCharacters(directories, params = {}) {
         let walkedPage = null;
         if (sortField === 'random' && randomRanksReady(entry)) {
             const page = randomOrderPage(entry, {
-                kinds: { character: true, group: false }, tags, fav, world, excludeIds, ids, sortOrder,
+                kinds: { character: true, group: false }, tags, fav, world, ranges, excludeIds, ids, sortOrder,
                 seed: Number(seed) || 0, offset: numericOffset, limit: numericLimit, cursor: params.cursor, deletions,
             });
             walkedPage = { ids: page.entities.map(e => e.id), cursor: page.cursor, more: page.more };
@@ -12219,9 +12276,9 @@ export async function queryCharacters(directories, params = {}) {
             // indexes or the tag sort tables, under the work cap, a cursor to seek from, full rows for the page alone.
             const charWhere = { from, where, args };
             const streams = sortedPageStreams(entry, {
-                column: sortColumn, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly: false, charactersOnly: true, charWhere, groupWhere: null, deletions,
+                column: sortColumn, sortOrder, fav, world, ranges, excludeIds, ids, tags, groupsOnly: false, charactersOnly: true, charWhere, groupWhere: null, deletions,
             });
-            const cursorKey = sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly: false, charactersOnly: true, sortField, sortOrder });
+            const cursorKey = sortedPageCursorKey({ tags, fav, world, ranges, excludeIds, ids, groupsOnly: false, charactersOnly: true, sortField, sortOrder });
             const cursorAt = decodeSortedPageCursor(params.cursor, cursorKey);
             const skip = cursorAt ? cursorAt.skip : numericOffset;
             const walked = walkSortedStreams(entry.db, streams, cursorAt?.ends ?? null, skip + numericLimit, makeEntityMergeComparator(sortField, sortOrder, seed), Array.isArray(ids) ? Infinity : undefined);
@@ -12271,7 +12328,7 @@ const DEFAULT_QUERY_LIMIT = 500;
  * @param {import('./tag-deletions.js').TagDeletions} [deletions]
  * @returns {{ from: string, where: string, args: any[] }} `args` binds `from`'s placeholders, then `where`'s.
  */
-function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = NO_TAG_DELETIONS) {
+function buildGroupWhereClause({ tags, fav, ranges, excludeIds, ids } = {}, deletions = NO_TAG_DELETIONS) {
     const clauses = [];
     const args = [];
     let from = 'groups';
@@ -12289,6 +12346,7 @@ function buildGroupWhereClause({ tags, fav, excludeIds, ids } = {}, deletions = 
         clauses.push('fav = ?');
         args.push(fav ? 1 : 0);
     }
+    pushRangeClauses(clauses, args, ranges, 'group');
     const expanded = expandTagFilter(tags, deletions);
     if (expanded) {
         pushExpandedTagClauses(clauses, args, expanded, { tagTable: 'group_tags', entityColumn: 'group_id', outer: 'groups', rowSql: GROUP_TAG_ROW_IS_GROUP_SQL }, hasIds);
@@ -12646,7 +12704,7 @@ export async function queryEntities(directories, params = {}) {
     if (!entry) return null;
 
     const {
-        tags, fav, world, excludeIds, ids,
+        tags, fav, world, ranges, excludeIds, ids,
         sortField, sortOrder, seed,
         offset, limit, handle,
         wantRows = true, wantTotal = true,
@@ -12663,12 +12721,12 @@ export async function queryEntities(directories, params = {}) {
     }
 
     const deletions = readTagDeletionsSync(entry.db);
-    const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids }, deletions);
-    const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids }, deletions);
+    const charWhere = buildWhereClause({ tags, fav, world, ranges, excludeIds, ids }, deletions);
+    const groupWhere = buildGroupWhereClause({ tags, fav, ranges, excludeIds, ids }, deletions);
 
     let total;
     let approxTotal = false;
-    const counted = wantTotal ? totalWithoutCount(entry.db, groupsOnly ? ['group'] : ['character', 'group'], { tags, fav, world, excludeIds, ids }, deletions, seq) : null;
+    const counted = wantTotal ? totalWithoutCount(entry.db, groupsOnly ? ['group'] : ['character', 'group'], { tags, fav, world, ranges, excludeIds, ids }, deletions, seq) : null;
     if (counted) {
         ({ total, approxTotal } = counted);
     } else if (wantTotal && groupsOnly) {
@@ -12720,7 +12778,7 @@ export async function queryEntities(directories, params = {}) {
 
         if (sortField === 'random' && randomRanksReady(entry)) {
             const page = randomOrderPage(entry, {
-                kinds: { character: !groupsOnly, group: true }, tags, fav, world, excludeIds, ids, sortOrder,
+                kinds: { character: !groupsOnly, group: true }, tags, fav, world, ranges, excludeIds, ids, sortOrder,
                 seed: Number(seed) || 0, offset: numericOffset, limit: numericLimit, cursor: params.cursor, deletions,
             });
             const rawRows = readEntityRowsInOrder(entry.db, page.entities);
@@ -12793,9 +12851,9 @@ export async function queryEntities(directories, params = {}) {
 
             if (column && entitySortIndexesReady(entry)) {
                 const streams = sortedPageStreams(entry, {
-                    column, sortOrder, fav, world, excludeIds, ids, tags, groupsOnly, charWhere, groupWhere, deletions,
+                    column, sortOrder, fav, world, ranges, excludeIds, ids, tags, groupsOnly, charWhere, groupWhere, deletions,
                 });
-                const cursorKey = sortedPageCursorKey({ tags, fav, world, excludeIds, ids, groupsOnly, sortField, sortOrder });
+                const cursorKey = sortedPageCursorKey({ tags, fav, world, ranges, excludeIds, ids, groupsOnly, sortField, sortOrder });
                 const cursorAt = decodeSortedPageCursor(params.cursor, cursorKey);
                 // A cursor knows how much of a jump's skip is left; without one, the skip is the offset.
                 const skip = cursorAt ? cursorAt.skip : numericOffset;
@@ -12941,7 +12999,7 @@ function idsPassing(db, built, ids) {
  * @param {import('./tag-deletions.js').TagDeletions} p.deletions
  * @returns {{ entities: { type: 'character' | 'group', id: string }[], more: boolean, cursor: string | undefined }}
  */
-function randomOrderPage(entry, { kinds, tags, fav, world, excludeIds, ids, sortOrder, seed, offset, limit, cursor, deletions }) {
+function randomOrderPage(entry, { kinds, tags, fav, world, ranges, excludeIds, ids, sortOrder, seed, offset, limit, cursor, deletions }) {
     const { db } = entry;
     const favValue = typeof fav === 'boolean' ? (fav ? 1 : 0) : null;
     const include = tags && !Array.isArray(tags) && Array.isArray(tags.include) ? [...new Set(tags.include.filter(Boolean).map(String))] : [];
@@ -12949,10 +13007,10 @@ function randomOrderPage(entry, { kinds, tags, fav, world, excludeIds, ids, sort
     const orMode = tags?.mode === 'or';
     const expanded = !!expandTagFilter(tags, deletions);
     const descending = sortOrder === 'desc';
-    const key = String(getStringHash(JSON.stringify({ random: true, seed, tags: tags ?? null, fav: favValue, world: world ?? null, excludeIds: excludeIds ?? null, ids: ids ?? null, kinds, sortOrder: descending })));
+    const key = String(getStringHash(JSON.stringify({ random: true, seed, tags: tags ?? null, fav: favValue, world: world ?? null, ...(hasRanges(ranges) ? { ranges } : {}), excludeIds: excludeIds ?? null, ids: ids ?? null, kinds, sortOrder: descending })));
     const at = decodeRandomPageCursor(cursor, key);
-    const charWhere = buildWhereClause({ tags, fav, world, excludeIds, ids }, deletions);
-    const groupWhere = buildGroupWhereClause({ tags, fav, excludeIds, ids }, deletions);
+    const charWhere = buildWhereClause({ tags, fav, world, ranges, excludeIds, ids }, deletions);
+    const groupWhere = buildGroupWhereClause({ tags, fav, ranges, excludeIds, ids }, deletions);
     /** @param {{ type: 'character' | 'group', id: string }[]} candidates */
     const passing = (candidates) => {
         const chars = kinds.character ? idsPassing(db, charWhere, candidates.filter(e => e.type === 'character').map(e => e.id)) : new Set();
@@ -12994,7 +13052,7 @@ function randomOrderPage(entry, { kinds, tags, fav, world, excludeIds, ids, sort
         };
     }
 
-    const oneSpace = !orMode && !expanded && exclude.length === 0 && include.length <= 1 && (typeof world !== 'string' || world === '') && !(Array.isArray(excludeIds) && excludeIds.length > 0) && kinds.character && kinds.group;
+    const oneSpace = !orMode && !expanded && exclude.length === 0 && include.length <= 1 && (typeof world !== 'string' || world === '') && !hasRanges(ranges) && !(Array.isArray(excludeIds) && excludeIds.length > 0) && kinds.character && kinds.group;
     if (oneSpace) {
         const n = randomSpaceSize(db, space);
         const k = orderKey(seed, space);

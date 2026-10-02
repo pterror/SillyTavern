@@ -1,4 +1,4 @@
-import { SEARCH_FIELDS, canonicalSearchField } from './character-view.js';
+import { RANGE_FIELDS, SEARCH_FIELDS, canonicalSearchField, cleanRanges } from './character-view.js';
 
 /** Translates a tagged template; the caller passes i18n's `t`, so this module stays a leaf. */
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
@@ -51,7 +51,134 @@ document.addEventListener('pointerdown', event => {
 const SPECIAL_FIELDS = () => ({
     '@tag': t`Tag`,
     '@fav': t`Favorite`,
+    ...Object.fromEntries(Object.keys(RANGE_FIELDS).map(field => [`@range:${field}`, rangeName(field)])),
 });
+
+/** Plain-language names for the range fields. */
+const RANGE_NAMES = () => ({
+    create_date: t`Created`,
+    date_last_chat: t`Last chat`,
+    chat_size: t`Chat history size`,
+    data_size: t`Card length`,
+});
+
+/** @param {string} field */
+function rangeName(field) {
+    return RANGE_NAMES()[field] ?? field;
+}
+
+/**
+ * A range end as the pill shows it: a date, kilobytes, or a count of characters.
+ * @param {string} field
+ * @param {number} value
+ */
+function formatRangeValue(field, value) {
+    const unit = RANGE_FIELDS[field]?.unit;
+    if (unit === 'date') return new Date(value).toLocaleDateString();
+    if (unit === 'kb') return t`${Math.round(value / 1024)} KB`;
+    return t`${value} characters`;
+}
+
+/**
+ * What a range pill says about its bounds.
+ * @param {string} field
+ * @param {{ min?: number, max?: number }} bound
+ */
+function describeRange(field, bound) {
+    const date = RANGE_FIELDS[field]?.unit === 'date';
+    const from = bound.min !== undefined ? formatRangeValue(field, bound.min) : null;
+    const to = bound.max !== undefined ? formatRangeValue(field, bound.max) : null;
+    if (from && to) return t`between ${from} and ${to}`;
+    if (from) return date ? t`on or after ${from}` : t`at least ${from}`;
+    if (to) return date ? t`on or before ${to}` : t`at most ${to}`;
+    return t`any`;
+}
+
+/** A local date (yyyy-mm-dd) as epoch ms: its first millisecond, or with `end` its last. */
+function dateInputToMs(/** @type {string} */ value, /** @type {boolean} */ end) {
+    const [y, m, d] = value.split('-').map(Number);
+    return end ? new Date(y, m - 1, d, 23, 59, 59, 999).getTime() : new Date(y, m - 1, d).getTime();
+}
+
+/** @param {number} ms */
+function msToDateInput(ms) {
+    const date = new Date(ms);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Opens the From / To boxes of a range under `anchor`. An empty box is an open end.
+ * @param {HTMLElement} anchor
+ * @param {string} field
+ * @param {{ min?: number, max?: number }} bound
+ * @param {(bound: { min?: number, max?: number }) => void} onApply
+ */
+function openRangeEditor(anchor, field, bound, onApply) {
+    closePopover();
+    const unit = RANGE_FIELDS[field]?.unit;
+    const popover = document.createElement('div');
+    popover.className = 'view_pill_popover view_range_editor';
+    /** @param {string} label @param {number|undefined} value @param {boolean} end */
+    const box = (label, value, end) => {
+        const row = document.createElement('label');
+        row.className = 'view_range_row';
+        const text = document.createElement('span');
+        text.textContent = label;
+        const input = document.createElement('input');
+        input.className = 'text_pole textarea_compact';
+        input.dataset.end = end ? 'max' : 'min';
+        if (unit === 'date') {
+            input.type = 'date';
+            if (value !== undefined) input.value = msToDateInput(value);
+        } else {
+            input.type = 'number';
+            input.min = '0';
+            if (value !== undefined) input.value = String(unit === 'kb' ? Math.round(value / 1024) : value);
+        }
+        row.append(text, input);
+        return { row, input };
+    };
+    const suffix = unit === 'kb' ? t` (KB)` : unit === 'count' ? t` (characters)` : '';
+    const min = box(t`From` + suffix, bound.min, false);
+    const max = box(t`To` + suffix, bound.max, true);
+    const apply = document.createElement('div');
+    apply.className = 'menu_button';
+    apply.textContent = t`Apply`;
+    popover.append(min.row, max.row, apply);
+
+    /** @param {HTMLInputElement} input @param {boolean} end */
+    const read = (input, end) => {
+        if (input.value === '') return undefined;
+        if (unit === 'date') return dateInputToMs(input.value, end);
+        const number = Number(input.value);
+        if (!Number.isFinite(number)) return undefined;
+        return unit === 'kb' ? number * 1024 : number;
+    };
+    const commit = () => {
+        /** @type {{ min?: number, max?: number }} */
+        const next = {};
+        const from = read(min.input, false);
+        const to = read(max.input, true);
+        if (from !== undefined) next.min = from;
+        if (to !== undefined) next.max = to;
+        closePopover();
+        onApply(next);
+    };
+    apply.addEventListener('click', commit);
+    for (const input of [min.input, max.input]) {
+        input.addEventListener('keydown', event => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                commit();
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                closePopover();
+                anchor.focus();
+            }
+        });
+    }
+    showPopover(popover, anchor, min.input);
+}
 
 /**
  * Opens a list of fields under `anchor`, with a box to narrow it; `onPick` gets the chosen field.
@@ -206,6 +333,8 @@ export function initViewPills({ container, input, getView, setView, translate, s
     let tags = { include: [], exclude: [], mode: 'and' };
     /** @type {boolean|undefined} */
     let fav;
+    /** @type {Record<string, { min?: number, max?: number }>} */
+    let ranges = {};
     /** The condition whose value is being typed, or -1. */
     let editing = -1;
     /** Tag names already read, by id; null for a tag that no longer exists. @type {Map<string, string|null>} */
@@ -218,6 +347,7 @@ export function initViewPills({ container, input, getView, setView, translate, s
         conditions: conditions.filter(c => c.value.trim()),
         tags: { include: [...tags.include], exclude: [...tags.exclude], mode: tags.mode },
         fav,
+        ranges: cleanRanges(ranges),
     }, fromSearchBox);
 
     /** Reads the names of tags pills show and doesn't know yet, then draws again. */
@@ -308,6 +438,32 @@ export function initViewPills({ container, input, getView, setView, translate, s
         return pill.append(field, value, remove);
     }
 
+    /** @param {string} field */
+    function renderRangePill(field) {
+        const bound = ranges[field] ?? {};
+        const pill = $('<span class="search_pill view_range_pill">').attr('data-range', field);
+        const label = $('<span class="search_pill_label">').text(rangeName(field));
+        const value = $('<span class="search_pill_value view_pill_part" tabindex="0" role="button">')
+            .text(describeRange(field, bound)).attr('title', t`Change the range`);
+        value.on('click', () => openRangeEditor(value.get(0), field, bound, next => {
+            const rest = { ...ranges };
+            delete rest[field];
+            ranges = Object.keys(next).length > 0 ? { ...rest, [field]: next } : rest;
+            render();
+            send();
+        }));
+        const remove = $('<i class="fa-solid fa-xmark search_pill_remove" role="button" tabindex="0">').attr('title', t`Remove filter`);
+        remove.on('click', event => {
+            event.stopPropagation();
+            const rest = { ...ranges };
+            delete rest[field];
+            ranges = rest;
+            render();
+            send();
+        });
+        return pill.append(label, value, remove);
+    }
+
     function render() {
         container.empty();
         tags.include.forEach((id, index) => {
@@ -316,6 +472,7 @@ export function initViewPills({ container, input, getView, setView, translate, s
         });
         tags.exclude.forEach(id => container.append(renderTagPill(id, false)));
         if (typeof fav === 'boolean') container.append(renderFavPill());
+        Object.keys(ranges).forEach(field => container.append(renderRangePill(field)));
         readMissingNames();
         conditions.forEach((condition, index) => container.append(renderPill(condition, index)));
         const add = $('<span class="search_pill view_pill_add" tabindex="0" role="button">')
@@ -329,6 +486,16 @@ export function initViewPills({ container, input, getView, setView, translate, s
                     fav = typeof fav === 'boolean' ? fav : true;
                     render();
                     send();
+                    return;
+                }
+                if (field.startsWith('@range:')) {
+                    const rangeField = field.slice('@range:'.length);
+                    openRangeEditor(add.get(0), rangeField, ranges[rangeField] ?? {}, next => {
+                        if (Object.keys(next).length === 0) return;
+                        ranges = { ...ranges, [rangeField]: next };
+                        render();
+                        send();
+                    });
                     return;
                 }
                 if (field === '@tag') {
@@ -455,6 +622,7 @@ export function initViewPills({ container, input, getView, setView, translate, s
         conditions = view.conditions.map(condition => ({ ...condition }));
         tags = { include: [...view.tags.include], exclude: [...view.tags.exclude], mode: view.tags.mode === 'or' ? 'or' : 'and' };
         fav = view.fav;
+        ranges = { ...(cleanRanges(view.ranges) ?? {}) };
         if (String(input.val()) !== view.text && document.activeElement !== input.get(0)) input.val(view.text);
         render();
     };
